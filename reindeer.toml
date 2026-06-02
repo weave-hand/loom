@@ -1,0 +1,21 @@
+# reindeer (https://github.com/facebookincubator/reindeer) config. Reindeer reads
+# the workspace manifest below, resolves its third-party deps from Cargo.lock,
+# and generates buck2 rules for them into `third-party/BUCK`. First-party crates
+# (workspace members like src/hello) are skipped — their BUCK files are hand-
+# written. Paths here are relative to this file's directory (the repo root).
+#
+# Regenerate after changing any crate's [dependencies]: `./tools/buckify.sh`.
+
+manifest_path = "Cargo.toml"
+third_party_dir = "third-party"
+cargo_env = true
+
+[buck]
+file_name = "BUCK"
+rust_library = "cargo.rust_library"
+rust_binary = "cargo.rust_binary"
+buildscript_genrule = "buildscript_run"
+buckfile_imports = """
+load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
+load("@prelude//rust:cargo_package.bzl", "cargo")
+"""

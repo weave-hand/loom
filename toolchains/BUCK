@@ -1,0 +1,128 @@
+load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
+load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
+load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
+load(":cxx_dist.bzl", "hermetic_cxx_tools")
+load(":rust_dist.bzl", "hermetic_rust_toolchain")
+
+# -- Rust nightly 2026-03-28 (1.96.0-nightly) --------------------------------
+
+RUST_NIGHTLY = "2026-03-28"
+RUST_HOST = "x86_64-unknown-linux-gnu"
+RUST_RPI = "aarch64-unknown-linux-gnu"
+
+http_archive(
+    name = "rustc-x86_64-linux",
+    urls = ["https://static.rust-lang.org/dist/{}/rustc-nightly-{}.tar.xz".format(RUST_NIGHTLY, RUST_HOST)],
+    sha256 = "4ecbf56f21d311bc8aeb43a9f4ca6baf1a6612db7d45a9fce9f6c2b0770a9efd",
+    strip_prefix = "rustc-nightly-{}/rustc".format(RUST_HOST),
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "rust-std-x86_64-linux",
+    urls = ["https://static.rust-lang.org/dist/{}/rust-std-nightly-{}.tar.xz".format(RUST_NIGHTLY, RUST_HOST)],
+    sha256 = "6e6e680502387637fd95cb02ea5abec6476e455c3e33f9c8cc83e1cdd62d5e66",
+    strip_prefix = "rust-std-nightly-{}/rust-std-{}".format(RUST_HOST, RUST_HOST),
+    # PUBLIC so //tools:clippy can assemble a standalone sysroot from it (the
+    # rustc dist ships no host std). The other dists are already PUBLIC.
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "rust-std-aarch64-linux",
+    urls = ["https://static.rust-lang.org/dist/{}/rust-std-nightly-{}.tar.xz".format(RUST_NIGHTLY, RUST_RPI)],
+    sha256 = "6f4333d4d0a91bde4b34eab56642e9d981d1991b0e3f74a0123945f8aac92542",
+    strip_prefix = "rust-std-nightly-{}/rust-std-{}".format(RUST_RPI, RUST_RPI),
+)
+
+http_archive(
+    name = "cargo-x86_64-linux",
+    urls = ["https://static.rust-lang.org/dist/{}/cargo-nightly-{}.tar.xz".format(RUST_NIGHTLY, RUST_HOST)],
+    sha256 = "836cd48b8f8fc4957156272d53ae0b260a808a2ce485a18af75fa3908d414ff2",
+    strip_prefix = "cargo-nightly-{}/cargo".format(RUST_HOST),
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "clippy-x86_64-linux",
+    urls = ["https://static.rust-lang.org/dist/{}/clippy-nightly-{}.tar.xz".format(RUST_NIGHTLY, RUST_HOST)],
+    sha256 = "d79368518f92ed0a06610f7aa89e38b382fe1324baf381464dc87c1816ed6a09",
+    strip_prefix = "clippy-nightly-{}/clippy-preview".format(RUST_HOST),
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "rustfmt-x86_64-linux",
+    urls = ["https://static.rust-lang.org/dist/{}/rustfmt-nightly-{}.tar.xz".format(RUST_NIGHTLY, RUST_HOST)],
+    sha256 = "11ab46dd925df91dd45bb5466a97128e4be2aeda075fb8c49bfd836cb842070c",
+    strip_prefix = "rustfmt-nightly-{}/rustfmt-preview".format(RUST_HOST),
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "rustfmt-aarch64-linux",
+    urls = ["https://static.rust-lang.org/dist/{}/rustfmt-nightly-{}.tar.xz".format(RUST_NIGHTLY, RUST_RPI)],
+    sha256 = "3b9550a877ef0b58445f89da716908db677073c029271867a5c019301eafeb24",
+    strip_prefix = "rustfmt-nightly-{}/rustfmt-preview".format(RUST_RPI),
+    visibility = ["PUBLIC"],
+)
+
+# -- LLVM 22.1.2 (hermetic C/C++ toolchain) -----------------------------------
+
+LLVM_VERSION = "22.1.2"
+
+http_archive(
+    name = "llvm-x86_64-linux",
+    urls = ["https://github.com/llvm/llvm-project/releases/download/llvmorg-{}/LLVM-{}-Linux-X64.tar.xz".format(LLVM_VERSION, LLVM_VERSION)],
+    sha256 = "ff32497b6801267ee427bc69cdaeecfb2d19578af8c2a942e864c45215f9a2ac",
+    strip_prefix = "LLVM-{}-Linux-X64".format(LLVM_VERSION),
+    visibility = ["PUBLIC"],
+)
+
+hermetic_cxx_tools(
+    name = "cxx-tools",
+    llvm_dist = ":llvm-x86_64-linux",
+    visibility = ["PUBLIC"],
+)
+
+# -- Toolchains ----------------------------------------------------------------
+
+system_cxx_toolchain(
+    name = "cxx",
+    _cxx_tools_info = ":cxx-tools",
+    visibility = ["PUBLIC"],
+)
+
+system_genrule_toolchain(
+    name = "genrule",
+    visibility = ["PUBLIC"],
+)
+
+system_python_bootstrap_toolchain(
+    name = "python_bootstrap",
+    visibility = ["PUBLIC"],
+)
+
+noop_test_toolchain(
+    name = "test",
+    visibility = ["PUBLIC"],
+)
+
+remote_test_execution_toolchain(
+    name = "remote_test_execution",
+    visibility = ["PUBLIC"],
+)
+
+hermetic_rust_toolchain(
+    name = "rust",
+    rustc_dist = ":rustc-x86_64-linux",
+    std_dist = ":rust-std-x86_64-linux",
+    clippy_dist = ":clippy-x86_64-linux",
+    rustc_target_triple = RUST_HOST,
+    host_triple = RUST_HOST,
+    default_edition = "2024",
+    rustc_flags = ["-Copt-level=2"],
+    visibility = ["PUBLIC"],
+)

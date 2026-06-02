@@ -1,0 +1,218 @@
+# Reindeer (https://github.com/facebookincubator/reindeer) — third-party Rust
+# dependency importer. Used at dev time to materialize BUCK targets for crates
+# declared in third-party manifests; not a build-time dep of any service.
+#
+# We pull the prebuilt release binary instead of building from source. To bump:
+# replace REINDEER_VERSION below, then update each SHA256 from the matching
+# `.zst` asset on the release page. Decompression uses the host's `zstd` CLI.
+#
+# `buck2 run //tools:reindeer -- <args>` invokes the binary for the current
+# target CPU. Only Linux x86_64 / aarch64 are wired — matches platforms/BUCK.
+
+REINDEER_VERSION = "v2026.04.27.00"
+
+_REINDEER_URL = "https://github.com/facebookincubator/reindeer/releases/download/{version}/reindeer-{triple}.zst"
+
+http_file(
+    name = "reindeer-x86_64-linux.zst",
+    urls = [_REINDEER_URL.format(version = REINDEER_VERSION, triple = "x86_64-unknown-linux-gnu")],
+    sha256 = "3a0548d59373fac6e10cedf3ccb5ad2e940ebc31330b7e282346c53f8a1cb976",
+)
+
+http_file(
+    name = "reindeer-aarch64-linux.zst",
+    urls = [_REINDEER_URL.format(version = REINDEER_VERSION, triple = "aarch64-unknown-linux-gnu")],
+    sha256 = "fbbf16f9fb3af0846cf76edc8f3edbdb8a560b2fcb000d32f6204bccf2367051",
+)
+
+# NOTE: `uses_xz` is borrowed from the prelude's set of "host-only decompressor
+# tool" labels — we use it to keep these genrules off RE since the BuildBuddy
+# workers don't have `zstd` installed. Swap for `uses_zstd` if the prelude ever
+# adds one. Until then, every dev machine that runs `buck2 run //tools:reindeer`
+# needs `zstd` on PATH.
+
+genrule(
+    name = "reindeer-x86_64-linux",
+    out = "reindeer",
+    cmd = "zstd -d -c $(location :reindeer-x86_64-linux.zst) > $OUT && chmod +x $OUT",
+    executable = True,
+    labels = ["uses_xz"],
+)
+
+genrule(
+    name = "reindeer-aarch64-linux",
+    out = "reindeer",
+    cmd = "zstd -d -c $(location :reindeer-aarch64-linux.zst) > $OUT && chmod +x $OUT",
+    executable = True,
+    labels = ["uses_xz"],
+)
+
+command_alias(
+    name = "reindeer",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":reindeer-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":reindeer-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# prek (https://github.com/j178/prek) — a fast Rust reimplementation of
+# pre-commit that manages and runs git hooks. Like reindeer, this is a dev-time
+# tool, not a build-time dep of any service. To bump: replace PREK_VERSION
+# below, then refresh each SHA256 from the matching `<asset>.tar.gz.sha256`
+# sidecar on the release page.
+#
+# `buck2 run //tools:prek -- <args>` invokes the binary for the current target
+# CPU. Only Linux x86_64 / aarch64 are wired — matches platforms/BUCK.
+
+PREK_VERSION = "v0.4.3"
+
+_PREK_URL = "https://github.com/j178/prek/releases/download/{version}/prek-{triple}.tar.gz"
+
+http_file(
+    name = "prek-x86_64-linux.tar.gz",
+    urls = [_PREK_URL.format(version = PREK_VERSION, triple = "x86_64-unknown-linux-gnu")],
+    sha256 = "8a8210d64476657cac3e797afa109011d8d872c09e3a407f50c5a4dde063b381",
+)
+
+http_file(
+    name = "prek-aarch64-linux.tar.gz",
+    urls = [_PREK_URL.format(version = PREK_VERSION, triple = "aarch64-unknown-linux-gnu")],
+    sha256 = "02e5731ce90e737bade91abef4c76c13495b9cc9290f609dfcb2e7b2a05b532e",
+)
+
+# Unlike reindeer's bare `.zst`, prek ships proper `.tar.gz` archives, so these
+# genrules untar with `tar`/`gzip` — both present on the BuildBuddy RE workers,
+# so no host-only `uses_xz` label is needed. The binary lives at
+# `prek-<triple>/prek` inside the archive; `--strip-components=1` flattens that
+# wrapping directory away.
+
+genrule(
+    name = "prek-x86_64-linux",
+    out = "prek",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :prek-x86_64-linux.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/prek $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "prek-aarch64-linux",
+    out = "prek",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :prek-aarch64-linux.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/prek $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "prek",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":prek-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":prek-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# rustfmt — the formatter from the same Rust nightly the toolchain is pinned to
+# (see toolchains/BUCK). The rustfmt-preview dist ships only `bin/rustfmt`, which
+# dynamically links against librustc_driver in the rustc dist's `lib/`, so the
+# wrapper points LD_LIBRARY_PATH there before exec'ing it.
+#
+# `buck2 run //tools:rustfmt -- --check src/hello/src/main.rs`
+#
+# The wrapper bakes absolute `$PWD` paths to the dist outputs, so it is only
+# valid on the machine that built it — the `uses_local_filesystem_abspaths`
+# label (see prelude/genrule_local_labels.bzl) forces the genrule off RE so
+# those paths resolve. Host-only and x86_64-only, matching the rustc dist.
+
+genrule(
+    name = "rustfmt",
+    srcs = [
+        "toolchains//:rustfmt-x86_64-linux",
+        "toolchains//:rustc-x86_64-linux",
+    ],
+    out = "rustfmt",
+    bash = """
+        RUSTFMT_DIR="$PWD/$(location toolchains//:rustfmt-x86_64-linux)"
+        RUSTC_DIR="$PWD/$(location toolchains//:rustc-x86_64-linux)"
+        cat > $OUT <<WRAPPER
+#!/usr/bin/env bash
+export LD_LIBRARY_PATH="$RUSTC_DIR/lib"
+exec "$RUSTFMT_DIR/bin/rustfmt" "\\$@"
+WRAPPER
+        chmod +x $OUT
+    """,
+    labels = ["uses_local_filesystem_abspaths"],
+    executable = True,
+    visibility = ["PUBLIC"],
+)
+
+# clippy — two flavors of clippy are available:
+#
+#   1. The buck2-native lint, already wired via `clippy_driver` in the rust
+#      toolchain (toolchains/BUCK). Run it as a sub-target on any Rust rule:
+#          buck2 build '//src/hello:hello[clippy.txt]'   # diagnostics, text
+#          buck2 build '//src/hello:hello[clippy.json]'  # diagnostics, json
+#      This is the preferred path for CI / `buck2 build //...[clippy.txt]`.
+#
+#   2. `buck2 run //tools:clippy` — a standalone `cargo clippy` for the ad-hoc
+#      Cargo workflow (and prek hooks), built below.
+#
+# `cargo clippy` needs a real sysroot, but the rustc dist ships no host std (it
+# lives in the separate rust-std dist), so we assemble one: rustc at
+# `<root>/bin/rustc` with std merged under `<root>/lib/rustlib/<triple>/lib`, so
+# rustc's default sysroot detection (two dirs up from the binary) finds std.
+# cargo-clippy/clippy-driver/cargo sit alongside in `bin/`. Pinned to the same
+# nightly as the toolchain. x86_64 host only, matching the rustc dist.
+
+CLIPPY_TRIPLE = "x86_64-unknown-linux-gnu"
+
+genrule(
+    name = "clippy-toolchain",
+    srcs = [
+        "toolchains//:rustc-x86_64-linux",
+        "toolchains//:rust-std-x86_64-linux",
+        "toolchains//:cargo-x86_64-linux",
+        "toolchains//:clippy-x86_64-linux",
+    ],
+    out = "toolchain",
+    bash = """
+        set -euo pipefail
+        RUSTC_DIST="$(location toolchains//:rustc-x86_64-linux)"
+        STD_DIST="$(location toolchains//:rust-std-x86_64-linux)"
+        CARGO_DIST="$(location toolchains//:cargo-x86_64-linux)"
+        CLIPPY_DIST="$(location toolchains//:clippy-x86_64-linux)"
+        TRIPLE="{triple}"
+
+        mkdir -p "$OUT/bin" "$OUT/lib/rustlib/$TRIPLE/lib"
+        # rustc's own shared libs (librustc_driver, codegen backends, rust-lld).
+        cp -rfL "$RUSTC_DIST"/lib/. "$OUT/lib/"
+        # std rlibs/rmeta for the host triple, merged into the sysroot.
+        cp -rfL "$STD_DIST/lib/rustlib/$TRIPLE/lib/." "$OUT/lib/rustlib/$TRIPLE/lib/"
+        cp -L "$RUSTC_DIST/bin/rustc" "$OUT/bin/rustc"
+        cp -L "$RUSTC_DIST/bin/rustdoc" "$OUT/bin/rustdoc"
+        cp -L "$CARGO_DIST/bin/cargo" "$OUT/bin/cargo"
+        cp -L "$CLIPPY_DIST/bin/cargo-clippy" "$OUT/bin/cargo-clippy"
+        cp -L "$CLIPPY_DIST/bin/clippy-driver" "$OUT/bin/clippy-driver"
+    """.format(triple = CLIPPY_TRIPLE),
+    visibility = ["PUBLIC"],
+)
+
+# Wrapper that puts the assembled toolchain's bin/ on PATH (so cargo-clippy
+# finds cargo, rustc, and clippy-driver) and points LD_LIBRARY_PATH at its libs.
+# Bakes an absolute path to the assembled dir, hence the local-only label.
+genrule(
+    name = "clippy",
+    srcs = [":clippy-toolchain"],
+    out = "clippy",
+    bash = """
+        ROOT="$PWD/$(location :clippy-toolchain)"
+        cat > $OUT <<WRAPPER
+#!/usr/bin/env bash
+export PATH="$ROOT/bin:\\$PATH"
+export LD_LIBRARY_PATH="$ROOT/lib"
+exec "$ROOT/bin/cargo-clippy" "\\$@"
+WRAPPER
+        chmod +x $OUT
+    """,
+    labels = ["uses_local_filesystem_abspaths"],
+    executable = True,
+    visibility = ["PUBLIC"],
+)

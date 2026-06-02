@@ -1,0 +1,4 @@
+/buck-out
+/target
+cspell.json
+**/target/**

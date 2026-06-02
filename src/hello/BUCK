@@ -1,0 +1,15 @@
+rust_binary(
+    name = "hello",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    deps = [
+        "//third-party:clap",
+    ],
+    # clap's `#[command(version)]` derive reads CARGO_PKG_VERSION at compile
+    # time. cargo sets it automatically; under buck2 first-party crates must
+    # supply it themselves (reindeer injects the same env for third-party crates).
+    env = {
+        "CARGO_PKG_VERSION": "0.1.0",
+    },
+    visibility = ["PUBLIC"],
+)

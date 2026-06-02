@@ -1,0 +1,62 @@
+# prek (https://github.com/j178/prek) hook config. Run hooks with
+# `buck2 run //tools:prek -- run --all-files`; install the git hook with
+# `buck2 run //tools:prek -- install`. All Rust tooling is hermetic — it goes
+# through the pinned buck2 toolchain, so no system rustup is required.
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-toml" },
+  { id = "check-merge-conflict" },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "rustfmt"
+name = "rustfmt (hermetic)"
+entry = "buck2 run root//tools:rustfmt -- --check"
+language = "system"
+types = ["rust"]
+pass_filenames = true
+
+# Runs the buck2-native clippy sub-target over every first-party Rust target
+# (queried from the graph, so new crates are covered automatically) and fails
+# if any emitted diagnostics. See tools/clippy-all.sh.
+[[repos.hooks]]
+id = "clippy"
+name = "clippy (hermetic)"
+entry = "./tools/clippy-all.sh"
+language = "system"
+types = ["rust"]
+pass_filenames = false
+
+# When a Cargo manifest/lock changes, regenerate third-party/BUCK and fail if it
+# drifted — keeps reindeer's output in sync with the dependency graph.
+[[repos.hooks]]
+id = "reindeer-check"
+name = "reindeer in sync"
+entry = "bash -c './tools/buckify.sh && git diff --exit-code third-party/BUCK'"
+language = "system"
+files = "Cargo\\.(toml|lock)$"
+pass_filenames = false
+
+# Heavier checks run only on push, not every commit.
+[[repos.hooks]]
+id = "buck2-build"
+name = "buck2 build"
+entry = "buck2 build root//..."
+language = "system"
+pass_filenames = false
+stages = ["pre-push"]
+
+[[repos.hooks]]
+id = "buck2-test"
+name = "buck2 test"
+entry = "buck2 test //src/..."
+language = "system"
+pass_filenames = false
+stages = ["pre-push"]
