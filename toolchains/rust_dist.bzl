@@ -45,7 +45,12 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             clippy_dist,
         ),
         category = "assemble_sysroot",
-        local_only = True,
+        # RE-eligible (not local_only): on a fresh CI runner this keeps the
+        # rustc/std dists in CAS instead of materializing them locally every
+        # build. allow_cache_upload lets a local dev run populate the shared
+        # remote cache too. (The script only does cp/printf/chmod, no rustc
+        # execution, so it runs fine in the RE container.)
+        allow_cache_upload = True,
     )
 
     clippy_driver = cmd_args(sysroot, format = "{}/bin/clippy-driver")
