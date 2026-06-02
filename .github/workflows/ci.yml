@@ -33,15 +33,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install buck2
-        run: |
-          set -euo pipefail
-          url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
-          curl -fsSL "$url" -o /tmp/buck2.zst
-          zstd -d /tmp/buck2.zst -o /tmp/buck2
-          chmod +x /tmp/buck2
-          sudo mv /tmp/buck2 /usr/local/bin/buck2
-          buck2 --version
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
 
       - name: Build //src/...
         env:
@@ -75,15 +70,10 @@ jobs:
           submodules: recursive
           path: _base
 
-      - name: Install buck2
-        run: |
-          set -euo pipefail
-          url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
-          curl -fsSL "$url" -o /tmp/buck2.zst
-          zstd -d /tmp/buck2.zst -o /tmp/buck2
-          chmod +x /tmp/buck2
-          sudo mv /tmp/buck2 /usr/local/bin/buck2
-          buck2 --version
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
 
       - name: Compute impacted targets (btd)
         id: btd
@@ -141,15 +131,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install buck2
-        run: |
-          set -euo pipefail
-          url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
-          curl -fsSL "$url" -o /tmp/buck2.zst
-          zstd -d /tmp/buck2.zst -o /tmp/buck2
-          chmod +x /tmp/buck2
-          sudo mv /tmp/buck2 /usr/local/bin/buck2
-          buck2 --version
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
 
       - name: Run prek hooks
         env:

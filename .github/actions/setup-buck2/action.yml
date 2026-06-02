@@ -1,0 +1,39 @@
+name: Set up buck2
+description: >
+  Install a pinned buck2 release, cached by version. Keep the release aligned
+  with the vendored prelude submodule (see CLAUDE.md / .gitmodules).
+
+inputs:
+  release:
+    description: buck2 release tag to install (e.g. "2026-05-18").
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Cache the decompressed binary, keyed on the release tag — stable across
+    # runs, so after the first run this is a hit (no download/decompress).
+    - name: Cache buck2
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/buck2-bin
+        key: buck2-${{ inputs.release }}-x86_64-linux
+
+    - name: Download buck2 (cache miss only)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p ~/buck2-bin
+        url="https://github.com/facebook/buck2/releases/download/${{ inputs.release }}/buck2-x86_64-unknown-linux-gnu.zst"
+        curl -fsSL "$url" -o /tmp/buck2.zst
+        zstd -d /tmp/buck2.zst -o ~/buck2-bin/buck2
+        chmod +x ~/buck2-bin/buck2
+
+    # GITHUB_PATH applies to *subsequent* steps, so verify via the full path here.
+    - name: Add buck2 to PATH
+      shell: bash
+      run: |
+        echo "$HOME/buck2-bin" >> "$GITHUB_PATH"
+        "$HOME/buck2-bin/buck2" --version
