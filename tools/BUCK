@@ -150,22 +150,26 @@ WRAPPER
 #      toolchain (toolchains/BUCK). Run it as a sub-target on any Rust rule:
 #          buck2 build '//src/hello:hello[clippy.txt]'   # diagnostics, text
 #          buck2 build '//src/hello:hello[clippy.json]'  # diagnostics, json
-#      This is the preferred path for CI / `buck2 build //...[clippy.txt]`.
+#      To lint all first-party Rust at once, use tools/clippy-all.sh (buck2 has
+#      no `//...[clippy.txt]` syntax).
 #
 #   2. `buck2 run //tools:clippy` — a standalone `cargo clippy` for the ad-hoc
 #      Cargo workflow (and prek hooks), built below.
 #
-# `cargo clippy` needs a real sysroot, but the rustc dist ships no host std (it
-# lives in the separate rust-std dist), so we assemble one: rustc at
-# `<root>/bin/rustc` with std merged under `<root>/lib/rustlib/<triple>/lib`, so
-# rustc's default sysroot detection (two dirs up from the binary) finds std.
-# cargo-clippy/clippy-driver/cargo sit alongside in `bin/`. Pinned to the same
-# nightly as the toolchain. x86_64 host only, matching the rustc dist.
+# `:rust-host-toolchain` — a complete, runnable host Rust toolchain assembled
+# from the dists in toolchains/BUCK. Used by `:clippy` below AND by
+# tools/buckify.sh (reindeer shells out to `cargo metadata`), so neither needs a
+# host rustup. The rustc dist ships no host std (it lives in the separate
+# rust-std dist), so we assemble a sysroot: rustc at `<root>/bin/rustc` with std
+# merged under `<root>/lib/rustlib/<triple>/lib`, so rustc's default sysroot
+# detection (two dirs up from the binary) finds std. cargo, cargo-clippy,
+# clippy-driver, and rustdoc sit alongside in `bin/`. Pinned to the same nightly
+# as the toolchain. x86_64 host only, matching the rustc dist.
 
-CLIPPY_TRIPLE = "x86_64-unknown-linux-gnu"
+RUST_HOST_TRIPLE = "x86_64-unknown-linux-gnu"
 
 genrule(
-    name = "clippy-toolchain",
+    name = "rust-host-toolchain",
     srcs = [
         "toolchains//:rustc-x86_64-linux",
         "toolchains//:rust-std-x86_64-linux",
@@ -191,7 +195,7 @@ genrule(
         cp -L "$CARGO_DIST/bin/cargo" "$OUT/bin/cargo"
         cp -L "$CLIPPY_DIST/bin/cargo-clippy" "$OUT/bin/cargo-clippy"
         cp -L "$CLIPPY_DIST/bin/clippy-driver" "$OUT/bin/clippy-driver"
-    """.format(triple = CLIPPY_TRIPLE),
+    """.format(triple = RUST_HOST_TRIPLE),
     visibility = ["PUBLIC"],
 )
 
@@ -200,10 +204,10 @@ genrule(
 # Bakes an absolute path to the assembled dir, hence the local-only label.
 genrule(
     name = "clippy",
-    srcs = [":clippy-toolchain"],
+    srcs = [":rust-host-toolchain"],
     out = "clippy",
     bash = """
-        ROOT="$PWD/$(location :clippy-toolchain)"
+        ROOT="$PWD/$(location :rust-host-toolchain)"
         cat > $OUT <<WRAPPER
 #!/usr/bin/env bash
 export PATH="$ROOT/bin:\\$PATH"

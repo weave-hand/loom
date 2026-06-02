@@ -1,6 +1,6 @@
 name: ci
 
-# Build and test loom's first-party code on every push to main and every PR.
+# Build, test, and lint loom on every push to main and every PR.
 #
 # buck2 is pinned to the same dated release as the vendored prelude submodule
 # (see CLAUDE.md / .gitmodules) — mismatched buck2/prelude versions break in
@@ -44,3 +44,30 @@ jobs:
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: buck2 test //src/...
+
+  # Runs the prek hooks (rustfmt, clippy, file checks, reindeer-in-sync) so CI
+  # enforces exactly what local pre-commit does — single source of truth in
+  # prek.toml. Fully hermetic via buck2: even the reindeer-check hook uses
+  # loom's own toolchain cargo (see tools/buckify.sh), so no host Rust is needed.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with vendored prelude submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install buck2
+        run: |
+          set -euo pipefail
+          url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
+          curl -fsSL "$url" -o /tmp/buck2.zst
+          zstd -d /tmp/buck2.zst -o /tmp/buck2
+          chmod +x /tmp/buck2
+          sudo mv /tmp/buck2 /usr/local/bin/buck2
+          buck2 --version
+
+      - name: Run prek hooks
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: buck2 run //tools:prek -- run --all-files --show-diff-on-failure

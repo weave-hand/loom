@@ -15,6 +15,15 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUCK_FILE="$REPO_ROOT/third-party/BUCK"
 
 cd "$REPO_ROOT"
+
+# reindeer shells out to `cargo metadata`, so put loom's hermetic Rust toolchain
+# (cargo + rustc + sysroot, assembled by //tools:rust-host-toolchain) ahead of
+# anything on PATH. This keeps buckify reproducible and means no host rustup is
+# needed — locally or in CI.
+TOOLCHAIN="$REPO_ROOT/$(buck2 build root//tools:rust-host-toolchain --show-output 2>/dev/null | awk '{print $2}')"
+export PATH="$TOOLCHAIN/bin:$PATH"
+export LD_LIBRARY_PATH="$TOOLCHAIN/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 buck2 run root//tools:reindeer -- buckify "$@"
 
 # Reorder: each archive is "<pkg>-<ver>.crate", its run is "<pkg>-<ver>-build-script-run".
