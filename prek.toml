@@ -3,6 +3,10 @@
 # `buck2 run //tools:prek -- install`. All Rust tooling is hermetic — it goes
 # through the pinned buck2 toolchain, so no system rustup is required.
 
+# Install all three shim types on a plain `prek install` (default is just
+# pre-commit) — otherwise the commit-msg and pre-push hooks below never fire.
+default_install_hook_types = ["pre-commit", "commit-msg", "pre-push"]
+
 [[repos]]
 repo = "builtin"
 hooks = [
@@ -43,6 +47,15 @@ entry = "bash -c './tools/buckify.sh && git diff --exit-code third-party/BUCK'"
 language = "system"
 files = "Cargo\\.(toml|lock)$"
 pass_filenames = false
+
+# Enforce Conventional Commits on the message itself (commit-msg stage). Local
+# regex check — no Python/Node, so it stays hermetic. See tools/check-commit-msg.sh.
+[[repos.hooks]]
+id = "conventional-commit"
+name = "conventional commit message"
+entry = "tools/check-commit-msg.sh"
+language = "system"
+stages = ["commit-msg"]
 
 # Heavier checks run only on push, not every commit.
 [[repos.hooks]]

@@ -51,8 +51,10 @@ buck2 run root//tools:prek -- install        # install the pre-commit/pre-push h
 buck2 run root//tools:prek -- run --all-files # run them across the whole tree once
 ```
 
-Hooks (rustfmt, clippy, file checks, reindeer-in-sync, and build/test on push)
-are defined in `prek.toml` and are the same set CI runs.
+Hooks (rustfmt, clippy, file checks, reindeer-in-sync, a Conventional Commits
+message check, and build/test on push) are defined in `prek.toml` and are the
+same set CI runs. `prek.toml` sets `default_install_hook_types`, so this one
+`install` wires up the pre-commit, commit-msg, and pre-push shims together.
 
 ## Everyday commands
 

@@ -3,3 +3,4 @@
 cspell.json
 **/target/**
 /.vscode/
+rust-project.json
