@@ -216,3 +216,64 @@ WRAPPER
     executable = True,
     visibility = ["PUBLIC"],
 )
+
+# btd / supertd — Buck Target Determinator (https://github.com/facebookincubator/buck2-change-detector).
+# Upstream ships no prebuilt binaries, so we consume them from a fork that adds a
+# release workflow: rsJames-ttrpg/buck2-change-detector. Each release tarball
+# holds BOTH binaries (`btd` and `supertd`) at its top level. Used to map a set
+# of changed files to the affected buck2 targets, so hooks/CI build & test only
+# what a diff impacts instead of everything.
+#
+# `buck2 run //tools:supertd -- targets root//... --output base.jsonl`
+# `buck2 run //tools:btd -- --changes changes.txt --base base.jsonl --universe root//...`
+#
+# To bump: rebuild the fork's release (tag a new vX.Y.Z), then update BTD_VERSION
+# and refresh each sha256 from the matching `<asset>.tar.gz.sha256` sidecar.
+
+BTD_VERSION = "v0.1.0"
+
+_BTD_URL = "https://github.com/rsJames-ttrpg/buck2-change-detector/releases/download/{version}/btd-{triple}.tar.gz"
+
+http_file(
+    name = "btd-x86_64-linux.tar.gz",
+    urls = [_BTD_URL.format(version = BTD_VERSION, triple = "x86_64-unknown-linux-gnu")],
+    sha256 = "690cc648a34d3b3a8daa31ec2689fff8bb04dbbded9492328529896e4a34a2a6",
+)
+
+http_file(
+    name = "btd-aarch64-linux.tar.gz",
+    urls = [_BTD_URL.format(version = BTD_VERSION, triple = "aarch64-unknown-linux-gnu")],
+    sha256 = "886ab59e280ccc1137e98d0990247449134ee8dc44f41674d2cb062cbc5d86dd",
+)
+
+# One genrule per (binary, arch): untar (no wrapping dir — binaries are at the
+# archive root) and pull out the requested binary. tar/gzip are on RE, so no
+# local-only label needed.
+[
+    genrule(
+        name = "{}-bin-{}".format(binary, arch),
+        out = binary,
+        cmd = "mkdir -p $TMP/x && tar -xzf $(location :btd-{}-linux.tar.gz) -C $TMP/x && cp $TMP/x/{} $OUT && chmod +x $OUT".format(arch, binary),
+        executable = True,
+    )
+    for binary in ["btd", "supertd"]
+    for arch in ["x86_64", "aarch64"]
+]
+
+command_alias(
+    name = "btd",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":btd-bin-x86_64",
+        "prelude//cpu/constraints:arm64": ":btd-bin-aarch64",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "supertd",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":supertd-bin-x86_64",
+        "prelude//cpu/constraints:arm64": ":supertd-bin-aarch64",
+    }),
+    visibility = ["PUBLIC"],
+)

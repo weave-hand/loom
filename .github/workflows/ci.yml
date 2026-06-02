@@ -1,0 +1,46 @@
+name: ci
+
+# Build and test loom's first-party code on every push to main and every PR.
+#
+# buck2 is pinned to the same dated release as the vendored prelude submodule
+# (see CLAUDE.md / .gitmodules) — mismatched buck2/prelude versions break in
+# obscure ways. Builds run on BuildBuddy remote execution, exactly like local
+# dev; the API key comes from the BUILDBUDDY_API_KEY repo secret.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# buck2 release tag to install. Keep aligned with the prelude submodule pin.
+env:
+  BUCK2_RELEASE: "2026-05-18"
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with vendored prelude submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install buck2
+        run: |
+          set -euo pipefail
+          url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
+          curl -fsSL "$url" -o /tmp/buck2.zst
+          zstd -d /tmp/buck2.zst -o /tmp/buck2
+          chmod +x /tmp/buck2
+          sudo mv /tmp/buck2 /usr/local/bin/buck2
+          buck2 --version
+
+      - name: Build //src/...
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: buck2 build //src/...
+
+      - name: Test //src/...
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: buck2 test //src/...
