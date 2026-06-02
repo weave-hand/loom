@@ -1,5 +1,7 @@
 # loom
 
+[![CI](https://github.com/rsJames-ttrpg/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/rsJames-ttrpg/loom/actions/workflows/ci.yml)
+
 **An open-source take on Palantir Foundry — a typed-object data platform with built-in lineage and governance, running on a Rust + DataFusion + DuckLake core.**
 
 > ⚠️ **Status: pre-alpha, scaffold-only.** No production code yet — only build setup and design docs. The architecture is intentionally framed as *exploratory*: the shape is sketched, the load-bearing decisions still need to be argued. If you're here to use loom, the answer is "not yet." If you're here to help design or build it, keep reading.
