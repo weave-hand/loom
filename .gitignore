@@ -2,3 +2,4 @@
 /target
 cspell.json
 **/target/**
+/.vscode/
