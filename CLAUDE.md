@@ -51,14 +51,15 @@ Notes:
 
 ## Continuous integration
 
-GitHub Actions, at `.github/workflows/ci.yml` (repo: `rsJames-ttrpg/loom`). On push to `main` and on PRs, two jobs run after installing the pinned buck2 release and checking out the prelude submodule recursively:
-- **`build-test`** — `buck2 build //src/...` + `buck2 test //src/...`.
-- **`lint`** — `buck2 run //tools:prek -- run --all-files`, so CI enforces exactly the pre-commit hooks defined in `prek.toml` (rustfmt, clippy, file checks, reindeer-in-sync) with no duplicated config. Fully hermetic via buck2 — no host Rust install (the `reindeer-check` hook's `cargo metadata` uses loom's own toolchain cargo; see `tools/buckify.sh`).
+GitHub Actions, at `.github/workflows/ci.yml` (repo: `rsJames-ttrpg/loom`). All jobs install the pinned buck2 release and check out the prelude submodule recursively:
+- **`build-test`** (pushes to `main` only) — full `buck2 build //src/...` + `buck2 test //src/...`; `main` must always be fully green.
+- **`affected`** (PRs only) — builds/tests just the first-party targets the diff impacts, via btd. It does a second checkout at the PR base SHA, snapshots that graph with `//tools:supertd`, then runs `//tools:btd` (`--base` + `--universe`, `--json-lines`) and feeds the impacted `root//src/...` targets into `buck2 build`/`test`. Empty impact ⇒ nothing built.
+- **`lint`** (all events) — `buck2 run //tools:prek -- run --all-files`, so CI enforces exactly the pre-commit hooks defined in `prek.toml` (rustfmt, clippy, file checks, reindeer-in-sync) with no duplicated config. Fully hermetic via buck2 — no host Rust install (the `reindeer-check` hook's `cargo metadata` uses loom's own toolchain cargo; see `tools/buckify.sh`).
 
 - **buck2 is pinned** via the `BUCK2_RELEASE` env (currently `2026-05-18`) to the dated [facebook/buck2 release](https://github.com/facebook/buck2/releases) — keep it aligned with the prelude submodule pin, or builds break in obscure ways. Bump both together.
 - **Remote execution** runs on BuildBuddy just like local dev; the key comes from the `BUILDBUDDY_API_KEY` repo secret. (loom's executor falls back to pure-local when `[project] remote_enabled` is unset — e.g. `buck2 build --config project.remote_enabled= //…` — so a secretless local-only CI is possible if ever needed.)
 - **Scope** is `//src/...` (first-party + their third-party deps). The `//tools` targets are dev-only and some are local-only genrules, so they're deliberately not built in CI.
-- **Not yet wired** (planned): a btd-driven *affected-targets* job (build/test only what a PR's diff impacts, via `//tools:supertd` + `//tools:btd`).
+- **buck2 install** in CI just decompresses the dated `.zst` release to `/usr/local/bin`; `zstd` is preinstalled on the runners.
 
 ## Cell layout
 

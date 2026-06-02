@@ -12,16 +12,18 @@ on:
     branches: [main]
   pull_request:
 
-# buck2 release tag to install. Keep aligned with the prelude submodule pin.
 env:
+  # buck2 release tag to install. Keep aligned with the prelude submodule pin.
   BUCK2_RELEASE: "2026-05-18"
 
 jobs:
+  # Full build + test. Runs on pushes to main (the branch must always be fully
+  # green); PRs use the cheaper `affected` job instead.
   build-test:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with vendored prelude submodule)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -45,6 +47,82 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: buck2 test //src/...
 
+  # On PRs, build & test only the first-party targets the diff impacts, computed
+  # by btd (//tools:btd). btd diffs the target graph before vs after the change,
+  # so we snapshot the base commit's graph with supertd in a second checkout,
+  # then let btd compute the after-state itself (--universe) in the head checkout.
+  affected:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout head (PR)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Checkout base (for the before-state target graph)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          submodules: recursive
+          path: _base
+
+      - name: Install buck2
+        run: |
+          set -euo pipefail
+          url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
+          curl -fsSL "$url" -o /tmp/buck2.zst
+          zstd -d /tmp/buck2.zst -o /tmp/buck2
+          chmod +x /tmp/buck2
+          sudo mv /tmp/buck2 /usr/local/bin/buck2
+          buck2 --version
+
+      - name: Compute impacted targets (btd)
+        id: btd
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+
+          # Changed files in the sapling/`hg status` format btd expects:
+          # one line per file, "<M|A|D> <project-relative-path>".
+          git diff --name-status --no-renames "$base" "$head" \
+            | awk 'NF >= 2 { print substr($1, 1, 1) " " $2 }' > changes.txt
+          echo "::group::Changed files"; cat changes.txt; echo "::endgroup::"
+
+          # Base-state target graph (before the change), from the second checkout.
+          ( cd _base && buck2 run //tools:supertd -- \
+              targets root//... --output "$GITHUB_WORKSPACE/base.jsonl" )
+
+          # Impacted targets. btd runs buck2 in this (head) checkout via --universe
+          # to get the after-state. Scope to first-party //src targets — that's
+          # what we build/test; their third-party deps come along transitively.
+          buck2 run //tools:btd -- \
+            --changes changes.txt --base base.jsonl --universe root//... --json-lines \
+            | jq -r 'select(.target | startswith("root//src/")) | .target' \
+            | sort -u > impacted.txt
+          echo "::group::Impacted targets"; cat impacted.txt; echo "::endgroup::"
+
+          { echo "targets<<EOF"; cat impacted.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
+
+      - name: Build & test impacted
+        if: steps.btd.outputs.targets != ''
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          mapfile -t targets < impacted.txt
+          echo "Building/testing: ${targets[*]}"
+          buck2 build "${targets[@]}"
+          buck2 test "${targets[@]}"
+
+      - name: No impacted targets
+        if: steps.btd.outputs.targets == ''
+        run: echo "No first-party targets impacted by this diff — nothing to build/test."
+
   # Runs the prek hooks (rustfmt, clippy, file checks, reindeer-in-sync) so CI
   # enforces exactly what local pre-commit does — single source of truth in
   # prek.toml. Fully hermetic via buck2: even the reindeer-check hook uses
@@ -52,8 +130,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with vendored prelude submodule)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
