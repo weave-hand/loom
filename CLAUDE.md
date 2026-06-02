@@ -60,6 +60,7 @@ GitHub Actions, at `.github/workflows/ci.yml` (repo: `rsJames-ttrpg/loom`). All 
 - **Remote execution** runs on BuildBuddy just like local dev; the key comes from the `BUILDBUDDY_API_KEY` repo secret. (loom's executor falls back to pure-local when `[project] remote_enabled` is unset — e.g. `buck2 build --config project.remote_enabled= //…` — so a secretless local-only CI is possible if ever needed.)
 - **Scope** is `//src/...` (first-party + their third-party deps). The `//tools` targets are dev-only and some are local-only genrules, so they're deliberately not built in CI.
 - **buck2 install** in CI just decompresses the dated `.zst` release to `/usr/local/bin`; `zstd` is preinstalled on the runners.
+- **Avoid per-run toolchain downloads.** The workflow sets `BUCK_PREFER_REMOTE: "true"` and builds with `-M none`. Compute is already cached on BuildBuddy (~95% action-cache hits), but on a fresh runner any action that runs *locally* must materialize its inputs (LLVM, rustc, std — multiple GiB) from CAS. Preferring remote keeps those actions on RE so nothing is pulled down; `-M none` skips downloading final artifacts too. (Residual local pulls come only from `local_only` actions like the toolchain's `assemble_sysroot` — making that RE-eligible in `toolchains/rust_dist.bzl` would remove even those.)
 
 ## Cell layout
 

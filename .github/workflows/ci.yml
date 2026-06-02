@@ -15,6 +15,12 @@ on:
 env:
   # buck2 release tag to install. Keep aligned with the prelude submodule pin.
   BUCK2_RELEASE: "2026-05-18"
+  # Prefer remote execution for everything that can run on RE, instead of racing
+  # local. On a fresh CI runner, running actions locally means materializing the
+  # whole toolchain (LLVM, rustc, std — multiple GiB) down from CAS every run;
+  # keeping them on RE avoids that download entirely. (The compute is already
+  # cached on BuildBuddy — this is purely about not pulling inputs/outputs local.)
+  BUCK_PREFER_REMOTE: "true"
 
 jobs:
   # Full build + test. Runs on pushes to main (the branch must always be fully
@@ -40,7 +46,8 @@ jobs:
       - name: Build //src/...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        run: buck2 build //src/...
+        # -M none: validate the build on RE without downloading final artifacts.
+        run: buck2 build -M none //src/...
 
       - name: Test //src/...
         env:
@@ -116,7 +123,7 @@ jobs:
           set -euo pipefail
           mapfile -t targets < impacted.txt
           echo "Building/testing: ${targets[*]}"
-          buck2 build "${targets[@]}"
+          buck2 build -M none "${targets[@]}"
           buck2 test "${targets[@]}"
 
       - name: No impacted targets
