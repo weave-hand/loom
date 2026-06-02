@@ -1,7 +1,7 @@
 use clap::Parser;
 
-/// Minimal CLI that exercises the third-party `clap` dependency, imported by
-/// reindeer into //third-party.
+/// A minimal CLI that exercises the third-party `clap` dependency, imported by
+/// reindeer into //third-party. Run with `--help` to see the generated usage.
 #[derive(Parser)]
 #[command(name = "hello", version)]
 struct Args {
