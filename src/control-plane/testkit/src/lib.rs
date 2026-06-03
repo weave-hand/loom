@@ -38,7 +38,9 @@ pub async fn tx_contract<CP: ControlPlane>(cp: &CP) {
     );
     tx4.rollback().await.expect("rollback");
 
-    // isolation: a concurrent tx does not see another tx's uncommitted writes
+    // isolation: a concurrent tx does not see another tx's uncommitted writes.
+    // (This is read-committed: a concurrent tx's writes become visible once it
+    //  commits — snapshot isolation is not required or tested here.)
     let mut a = cp.begin().await.expect("begin");
     a.probe_put("iso", 9).await.expect("put");
     let mut b = cp.begin().await.expect("begin");

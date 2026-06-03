@@ -1,7 +1,8 @@
 //! In-memory fake adapter for the control-plane traits — fast, hermetic tests
-//! and local dev. State is a `HashMap` behind a `Mutex`; a `Tx` stages writes in
-//! its own buffer and applies them on commit (drops them on rollback), so
-//! uncommitted writes are invisible to other transactions.
+//! and local dev. NOT for production use. State is a `HashMap` behind a `Mutex`;
+//! a `Tx` stages writes in its own buffer and applies them on commit (drops them
+//! on rollback), so uncommitted writes are invisible to other transactions
+//! (read-committed semantics).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
