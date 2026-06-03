@@ -1,0 +1,9 @@
+rust_library(
+    name = "memory",
+    crate = "control_plane_memory",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = ["//src/control-plane/core:core"],
+    visibility = ["PUBLIC"],
+)
