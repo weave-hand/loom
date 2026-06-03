@@ -53,7 +53,10 @@ jobs:
       - name: Test //src/...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        run: buck2 test //src/...
+        # --local-only: run tests on the (non-root) runner. The control-plane-postgres
+        # fixture boots a real postgres, which refuses to run as root — and RE workers
+        # run as root. Builds still come from the RE cache; only execution is local.
+        run: buck2 test --local-only //src/...
 
   # On PRs, build & test only the first-party targets the diff impacts, computed
   # by btd (//tools:btd). btd diffs the target graph before vs after the change,
@@ -124,7 +127,9 @@ jobs:
           mapfile -t targets < impacted.txt
           echo "Building/testing: ${targets[*]}"
           buck2 build -M none "${targets[@]}"
-          buck2 test "${targets[@]}"
+          # --local-only: tests run on the non-root runner (the control-plane-postgres
+          # fixture boots postgres, which won't run as root like the RE workers do).
+          buck2 test --local-only "${targets[@]}"
 
       - name: No impacted targets
         if: steps.btd.outputs.targets == ''
