@@ -1,0 +1,13 @@
+rust_library(
+    name = "postgres",
+    crate = "control_plane_postgres",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:async-trait",
+        "//third-party:sqlx",
+    ],
+    visibility = ["PUBLIC"],
+)
