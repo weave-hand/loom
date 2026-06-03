@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Build loom's first-party //src rust_binary targets and (re)point symlinks under
+# .loom/bin, so they're on PATH by name inside the loom dev env (see tools/env.sh).
+# This is the only thing that builds //src for the dev shell. Safe to run anytime.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+BIN="$REPO_ROOT/.loom/bin"
+mkdir -p "$BIN"
+
+mapfile -t targets < <(buck2 uquery "kind('rust_binary', set(root//src/...))" 2>/dev/null)
+if [ "${#targets[@]}" -eq 0 ]; then
+    echo "loom-refresh: no first-party rust_binary targets under //src" >&2
+    exit 0
+fi
+
+# Build first as a checked step so a failure aborts loudly (set -e) with buck2's
+# error output visible — rather than silently producing no symlinks.
+buck2 build "${targets[@]}"
+
+# Re-point one symlink per binary. --show-output prints "<target> <path>"; we
+# split on the first space only (paths theoretically may contain spaces). Binary
+# name is the target label's suffix; if two packages ever share a name, the last
+# one wins (single flat bin dir) — fine for today's single //src binary.
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    tgt="${line%% *}"
+    path="${line#* }"
+    name="${tgt##*:}"          # //src/hello:hello -> hello
+    ln -sfn "$REPO_ROOT/$path" "$BIN/$name"
+    printf 'loom-refresh: %s -> %s\n' "$name" "$path"
+done < <(buck2 build "${targets[@]}" --show-output 2>/dev/null)

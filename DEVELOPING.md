@@ -69,6 +69,42 @@ buck2 run //tools:rustfmt -- --check src/hello/src/main.rs
 ./tools/clippy-all.sh          # clippy over every first-party target
 ```
 
+## Dev shell (toolchain on your PATH)
+
+Instead of prefixing everything with `buck2 run //tools:<x> --`, you can activate
+loom's hermetic toolchain and dev tools directly on your `PATH`. `cargo`,
+`rustc`, `rustfmt`, `reindeer`, `prek`, `btd`, and `supertd` then resolve to
+loom's pinned versions (no host `rustup`), and `cargo clippy` works too.
+
+**With [direnv](https://direnv.net/) (auto):** trust the checked-in `.envrc` once —
+
+```sh
+direnv allow
+```
+
+The environment then loads whenever you `cd` into the repo (or any subdirectory)
+and unloads when you leave.
+
+**Without direnv (manual):** evaluate the engine in your current shell (run it
+from the repo root) —
+
+```sh
+eval "$(./tools/env.sh)"
+```
+
+This also works for any script that needs the toolchain on PATH. Either way, the
+toolchain and dev tools are built once (cached) and exposed via symlinks under
+`.loom/bin` (gitignored).
+
+**First-party binaries:** your `//src` binaries (e.g. `hello`) are exposed on
+PATH by name, but are *not* built on activation. Run `loom-refresh` to build and
+(re)point them:
+
+```sh
+loom-refresh
+hello --name you
+```
+
 ## Adding a third-party dependency
 
 loom imports third-party crates with reindeer (non-vendored / http_archive
