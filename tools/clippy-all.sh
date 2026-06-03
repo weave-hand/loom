@@ -11,9 +11,12 @@
 # Usage: tools/clippy-all.sh  (run from the repo root, e.g. via prek)
 set -euo pipefail
 
-# Collect every Rust target, then project each onto its clippy diagnostics file.
+# Collect every FIRST-PARTY Rust target, then project each onto its clippy
+# diagnostics file. Scope is root//src/... — we lint our own crates, not the
+# vendored third-party deps under //third-party (whose clippy is not our concern
+# and which may not even lint cleanly under buck2's clippy driver).
 mapfile -t subtargets < <(
-    buck2 uquery "kind('rust_(binary|library|test)', set(root//...))" 2>/dev/null \
+    buck2 uquery "kind('rust_(binary|library|test)', set(root//src/...))" 2>/dev/null \
         | sed 's/$/[clippy.txt]/'
 )
 
