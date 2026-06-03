@@ -4,6 +4,22 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
-    deps = ["//src/control-plane/core:core"],
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:async-trait",
+    ],
     visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "contract",
+    crate = "contract",
+    srcs = ["tests/contract.rs"],
+    crate_root = "tests/contract.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tokio",
+    ],
 )
