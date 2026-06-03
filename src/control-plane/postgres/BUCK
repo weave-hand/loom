@@ -1,0 +1,88 @@
+# Prebuilt, self-contained PostgreSQL server from theseus-rs/postgresql-binaries.
+# Used by the hermetic test fixture (PgFixture), which boots an ephemeral cluster
+# per test — no Docker, no external DB. The binary is a buck2 build input, so the
+# pg-backed contract tests stay hermetic. To bump: change PG_VERSION and refresh
+# each sha256 from the matching `<asset>.tar.gz.sha256` sidecar on the release.
+PG_VERSION = "17.9.0"
+
+_PG_URL = "https://github.com/theseus-rs/postgresql-binaries/releases/download/{ver}/postgresql-{ver}-{triple}.tar.gz"
+
+http_archive(
+    name = "postgres-bin",
+    urls = select({
+        "ovr_config//os:linux": [_PG_URL.format(ver = PG_VERSION, triple = "x86_64-unknown-linux-gnu")],
+        "ovr_config//os:macos": [_PG_URL.format(ver = PG_VERSION, triple = "aarch64-apple-darwin")],
+    }),
+    sha256 = select({
+        "ovr_config//os:linux": "463422cb007fd15bb37819b1d3562392dd81bba385205fbd0eef4891cb1d18b5",
+        "ovr_config//os:macos": "69ae8a046b34b201b6a9a22e2e6f45094dede17ddd1d3e91045bbd6ef3f36815",
+    }),
+    strip_prefix = select({
+        "ovr_config//os:linux": "postgresql-{}-x86_64-unknown-linux-gnu".format(PG_VERSION),
+        "ovr_config//os:macos": "postgresql-{}-aarch64-apple-darwin".format(PG_VERSION),
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# The theseus-rs postgres binary dynamically links libxml2.so.2, which it does
+# NOT bundle. We supply it hermetically rather than rely on a system copy: rolling
+# distros (Arch) have bumped libxml2's soname (.so.16), so .so.2 is simply absent
+# there, and a distro libxml2.so.2 generally hard-links a version-specific ICU
+# (libicuuc.so.NN) that differs across machines. CentOS 7's libxml2 is built
+# WITHOUT ICU, so its only deps are libz/liblzma/libm/libc (baseline everywhere) —
+# making it a portable drop-in. We fetch the el7 RPM and extract just the .so.
+http_file(
+    name = "libxml2-el7.rpm",
+    urls = ["https://vault.centos.org/7.9.2009/updates/x86_64/Packages/libxml2-2.9.1-6.el7_9.6.x86_64.rpm"],
+    sha256 = "ffdb0e908ca8cc9013d59da38b6a5d9d04ea15e6af25a38508bc92e04af68500",
+)
+
+# Extract libxml2.so.2 from the RPM with bsdtar (libarchive reads rpm/cpio). RPM
+# isn't a format http_archive understands and bsdtar isn't on the RE workers, so
+# this runs locally — the `uses_xz` label (borrowed, as reindeer does for zstd)
+# forces it off RE. Hosts/CI building the pg tests need `bsdtar` (libarchive).
+genrule(
+    name = "libxml2",
+    out = "lib",
+    cmd = "mkdir -p $TMP/x $OUT && bsdtar -xf $(location :libxml2-el7.rpm) -C $TMP/x ./usr/lib64/libxml2.so.2.9.1 && cp $TMP/x/usr/lib64/libxml2.so.2.9.1 $OUT/libxml2.so.2",
+    labels = ["uses_xz"],
+    visibility = ["PUBLIC"],
+)
+
+rust_library(
+    name = "postgres",
+    crate = "control_plane_postgres",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:async-trait",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Runs the shared tx_contract suite against real Postgres. Hermetic: the server
+# binary comes from the :postgres-bin http_archive (materialized by buck2), and
+# PgFixture boots an ephemeral cluster per test process. POSTGRES_BIN_DIR points
+# the fixture at the extracted server's bin/ directory.
+rust_test(
+    name = "contract",
+    crate = "contract",
+    srcs = ["tests/contract.rs"],
+    crate_root = "tests/contract.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
+        # LD_LIBRARY_PATH for the spawned initdb/postgres: the dist's own libs plus
+        # the bundled ICU-free libxml2.so.2.
+        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+    },
+    deps = [
+        ":postgres",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tokio",
+    ],
+)

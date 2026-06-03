@@ -1,0 +1,18 @@
+[package]
+name = "control-plane-postgres"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+control-plane-core = { path = "../core" }
+async-trait = "0.1"
+# No TLS (local unix-socket connections) and no compile-time query macros yet —
+# Phase 0b uses sqlx's runtime query API; query!/.sqlx offline metadata arrive in
+# Phase 1 (queue) when there's a real schema worth statically checking.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+# Used by the test fixture (src/fixture.rs) for ephemeral data/socket dirs.
+tempfile = "3"
+
+[dev-dependencies]
+control-plane-testkit = { path = "../testkit" }
+tokio = { version = "1", features = ["macros", "rt"] }

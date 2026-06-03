@@ -1,0 +1,33 @@
+name: Install bsdtar
+description: >
+  Install bsdtar (from libarchive-tools), used by the control-plane-postgres
+  libxml2 genrule. The .deb packages are cached across runs, so a cache hit skips
+  both `apt-get update` and the download — only a local `dpkg -i` runs.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache libarchive-tools packages
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/loom-apt
+        key: bsdtar-libarchive-tools-${{ runner.os }}
+
+    - name: Download libarchive-tools (cache miss only)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        mkdir -p ~/.cache/loom-apt
+        # Download the package + any not-yet-installed deps into the cache dir.
+        sudo apt-get install -y --download-only \
+          -o Dir::Cache::archives="$HOME/.cache/loom-apt" libarchive-tools
+        sudo chown -R "$(id -u):$(id -g)" ~/.cache/loom-apt
+
+    - name: Install from cached .debs
+      shell: bash
+      # dpkg -i is offline; the `-f install` fallback only triggers if a dep is
+      # somehow absent (it won't be on a cache hit — all needed .debs are cached).
+      run: sudo dpkg -i ~/.cache/loom-apt/*.deb || sudo apt-get -fy install

@@ -38,6 +38,12 @@ jobs:
         with:
           release: ${{ env.BUCK2_RELEASE }}
 
+      # bsdtar (libarchive) extracts libxml2.so.2 from the CentOS RPM for the
+      # control-plane-postgres test fixture; that genrule runs locally (RPM/bsdtar
+      # aren't on the RE workers), so the runner needs it. Cached across runs.
+      - name: Install bsdtar
+        uses: ./.github/actions/install-bsdtar
+
       - name: Build //src/...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
@@ -47,7 +53,12 @@ jobs:
       - name: Test //src/...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        run: buck2 test //src/...
+        # --local-only: run tests on the (non-root) runner. The control-plane-postgres
+        # fixture boots a real postgres, which refuses to run as root — and RE workers
+        # run as root. Builds still come from the RE cache; only execution is local.
+        # `env -u` drops BUCK_PREFER_REMOTE for this call (it injects --prefer-remote,
+        # which conflicts with --local-only).
+        run: env -u BUCK_PREFER_REMOTE buck2 test --local-only //src/...
 
   # On PRs, build & test only the first-party targets the diff impacts, computed
   # by btd (//tools:btd). btd diffs the target graph before vs after the change,
@@ -74,6 +85,10 @@ jobs:
         uses: ./.github/actions/setup-buck2
         with:
           release: ${{ env.BUCK2_RELEASE }}
+
+      # See build-test: needed for the control-plane-postgres libxml2 genrule.
+      - name: Install bsdtar
+        uses: ./.github/actions/install-bsdtar
 
       - name: Compute impacted targets (btd)
         id: btd
@@ -114,7 +129,10 @@ jobs:
           mapfile -t targets < impacted.txt
           echo "Building/testing: ${targets[*]}"
           buck2 build -M none "${targets[@]}"
-          buck2 test "${targets[@]}"
+          # --local-only: tests run on the non-root runner (the control-plane-postgres
+          # fixture boots postgres, which won't run as root like the RE workers do).
+          # `env -u` drops BUCK_PREFER_REMOTE here (it conflicts with --local-only).
+          env -u BUCK_PREFER_REMOTE buck2 test --local-only "${targets[@]}"
 
       - name: No impacted targets
         if: steps.btd.outputs.targets == ''
