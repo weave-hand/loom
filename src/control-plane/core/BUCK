@@ -1,0 +1,12 @@
+rust_library(
+    name = "core",
+    crate = "control_plane_core",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//third-party:async-trait",
+        "//third-party:thiserror",
+    ],
+    visibility = ["PUBLIC"],
+)

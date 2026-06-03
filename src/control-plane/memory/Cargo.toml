@@ -1,0 +1,16 @@
+[package]
+name = "control-plane-memory"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+control-plane-core = { path = "../core" }
+async-trait = "0.1"
+# Normal (not dev) dependency so reindeer emits //third-party:tokio — reindeer
+# only generates buck targets for normal/build deps, not dev-deps. tokio is used
+# by the #[tokio::test] contract harness in tests/; the memory library itself
+# does not use it (so memory/BUCK's rust_library does not depend on it).
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[dev-dependencies]
+control-plane-testkit = { path = "../testkit" }
