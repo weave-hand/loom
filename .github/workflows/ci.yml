@@ -38,6 +38,12 @@ jobs:
         with:
           release: ${{ env.BUCK2_RELEASE }}
 
+      # bsdtar (libarchive) extracts libxml2.so.2 from the CentOS RPM for the
+      # control-plane-postgres test fixture; that genrule runs locally (RPM/bsdtar
+      # aren't on the RE workers), so the runner needs it.
+      - name: Install libarchive-tools (bsdtar)
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+
       - name: Build //src/...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
@@ -74,6 +80,10 @@ jobs:
         uses: ./.github/actions/setup-buck2
         with:
           release: ${{ env.BUCK2_RELEASE }}
+
+      # See build-test: needed for the control-plane-postgres libxml2 genrule.
+      - name: Install libarchive-tools (bsdtar)
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
 
       - name: Compute impacted targets (btd)
         id: btd
