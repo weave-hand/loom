@@ -85,14 +85,16 @@ direnv allow
 The environment then loads whenever you `cd` into the repo (or any subdirectory)
 and unloads when you leave.
 
-**Without direnv (manual):** evaluate the engine in your current shell —
+**Without direnv (manual):** evaluate the engine in your current shell (run it
+from the repo root) —
 
 ```sh
 eval "$(./tools/env.sh)"
 ```
 
-This is also what CI/scripts use. Either way, the toolchain and dev tools are
-built once (cached) and exposed via symlinks under `.loom/bin` (gitignored).
+This also works for any script that needs the toolchain on PATH. Either way, the
+toolchain and dev tools are built once (cached) and exposed via symlinks under
+`.loom/bin` (gitignored).
 
 **First-party binaries:** your `//src` binaries (e.g. `hello`) are exposed on
 PATH by name, but are *not* built on activation. Run `loom-refresh` to build and
