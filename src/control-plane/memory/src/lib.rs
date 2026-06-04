@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Catalog, ColumnDef, ControlPlane, ControlPlaneError, FileRef, Job, JobId, NewJob, Queue,
-    Result, RetryPolicy, Snapshot, SnapshotId, TableRef, TableSchema, Tx,
+    Catalog, ColumnDef, ControlPlane, ControlPlaneError, FileRef, Job, JobId, LinkDef, NewJob,
+    ObjectType, Ontology, Queue, Result, RetryPolicy, Snapshot, SnapshotId, TableRef, TableSchema,
+    Tx, TypeName,
 };
 use time::OffsetDateTime;
 use tokio::sync::Notify;
@@ -51,11 +52,18 @@ struct CatalogState {
     files: HashMap<(String, String), Vec<Versioned<FileRef>>>,
 }
 
+#[derive(Default)]
+struct OntologyState {
+    types: HashMap<String, ObjectType>,
+    links: Vec<LinkDef>,
+}
+
 #[derive(Clone)]
 pub struct MemoryControlPlane {
     rows: Arc<Mutex<Vec<Row>>>,
     notify: Arc<Notify>,
     catalog: Arc<Mutex<CatalogState>>,
+    ontology: Arc<Mutex<OntologyState>>,
     lock_timeout: Duration,
 }
 
@@ -65,6 +73,7 @@ impl MemoryControlPlane {
             rows: Arc::new(Mutex::new(Vec::new())),
             notify: Arc::new(Notify::new()),
             catalog: Arc::new(Mutex::new(CatalogState::default())),
+            ontology: Arc::new(Mutex::new(OntologyState::default())),
             lock_timeout,
         }
     }
@@ -239,6 +248,69 @@ impl Catalog for MemoryControlPlane {
             .collect();
         cols.sort_by_key(|c| c.order);
         Ok(TableSchema { columns: cols })
+    }
+}
+
+#[async_trait]
+impl Ontology for MemoryControlPlane {
+    async fn define_type(&self, ty: ObjectType) -> Result<()> {
+        self.ontology
+            .lock()
+            .unwrap()
+            .types
+            .insert(ty.name.0.clone(), ty);
+        Ok(())
+    }
+
+    async fn define_link(&self, link: LinkDef) -> Result<()> {
+        let mut ont = self.ontology.lock().unwrap();
+        for endpoint in [&link.from, &link.to] {
+            if !ont.types.contains_key(&endpoint.0) {
+                return Err(ControlPlaneError::NotFound(format!("type {}", endpoint.0)));
+            }
+        }
+        ont.links
+            .retain(|l| !(l.name == link.name && l.from == link.from));
+        ont.links.push(link);
+        Ok(())
+    }
+
+    async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
+        self.ontology
+            .lock()
+            .unwrap()
+            .types
+            .get(&name.0)
+            .cloned()
+            .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))
+    }
+
+    async fn list_types(&self) -> Result<Vec<ObjectType>> {
+        Ok(self
+            .ontology
+            .lock()
+            .unwrap()
+            .types
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    async fn links(&self, name: &TypeName) -> Result<Vec<LinkDef>> {
+        let ont = self.ontology.lock().unwrap();
+        if !ont.types.contains_key(&name.0) {
+            return Err(ControlPlaneError::NotFound(name.0.clone()));
+        }
+        Ok(ont
+            .links
+            .iter()
+            .filter(|l| l.from == *name)
+            .cloned()
+            .collect())
+    }
+
+    async fn resolve(&self, name: &TypeName) -> Result<TableRef> {
+        Ok(self.get_type(name).await?.table)
     }
 }
 

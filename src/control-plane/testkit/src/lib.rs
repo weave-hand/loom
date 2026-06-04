@@ -4,7 +4,10 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use control_plane_core::{Catalog, ControlPlane, NewJob, Queue, RetryPolicy, SnapshotId, TableRef};
+use control_plane_core::{
+    Cardinality, Catalog, ControlPlane, LinkDef, NewJob, ObjectType, Ontology, PropertyDef, Queue,
+    RetryPolicy, SnapshotId, TableRef, TypeName,
+};
 use time::OffsetDateTime;
 
 fn job(kind: &str) -> NewJob {
@@ -334,4 +337,152 @@ where
         ),
         "missing table snapshots is NotFound"
     );
+}
+
+/// Contract for the `Ontology` read+write surface. Self-seeds via `define_*`
+/// (loom owns the ontology schema), so it needs only an `Ontology` handle.
+pub async fn ontology_contract<O: Ontology>(o: &O) {
+    let tn = |s: &str| TypeName(s.to_string());
+    let tref = |s: &str, n: &str| TableRef {
+        schema: s.to_string(),
+        name: n.to_string(),
+    };
+
+    // define + get round-trips with ordered properties and the backing table.
+    let customer = ObjectType {
+        name: tn("Customer"),
+        table: tref("main", "customer"),
+        properties: vec![PropertyDef {
+            name: "email".into(),
+            ty: "EmailAddress".into(),
+            required: true,
+        }],
+    };
+    o.define_type(customer.clone())
+        .await
+        .expect("define Customer");
+    let order = ObjectType {
+        name: tn("Order"),
+        table: tref("main", "orders"),
+        properties: vec![
+            PropertyDef {
+                name: "total".into(),
+                ty: "Currency".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "note".into(),
+                ty: "Text".into(),
+                required: false,
+            },
+        ],
+    };
+    o.define_type(order.clone()).await.expect("define Order");
+
+    assert_eq!(
+        o.get_type(&tn("Order")).await.unwrap(),
+        order,
+        "round-trips"
+    );
+    assert_eq!(
+        o.get_type(&tn("Order"))
+            .await
+            .unwrap()
+            .properties
+            .iter()
+            .map(|p| p.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["total".to_string(), "note".to_string()],
+        "property order preserved"
+    );
+
+    // resolve -> backing table.
+    assert_eq!(
+        o.resolve(&tn("Customer")).await.unwrap(),
+        tref("main", "customer")
+    );
+
+    // list_types contains both.
+    let names: std::collections::HashSet<String> = o
+        .list_types()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name.0)
+        .collect();
+    assert_eq!(
+        names,
+        ["Customer", "Order"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    );
+
+    // re-define replaces the property list (no stale properties).
+    let order_v2 = ObjectType {
+        name: tn("Order"),
+        table: tref("main", "orders"),
+        properties: vec![PropertyDef {
+            name: "total".into(),
+            ty: "Currency".into(),
+            required: true,
+        }],
+    };
+    o.define_type(order_v2).await.unwrap();
+    assert_eq!(
+        o.get_type(&tn("Order")).await.unwrap().properties.len(),
+        1,
+        "redefine replaces properties"
+    );
+
+    // link between existing types, then read it back.
+    let link = LinkDef {
+        name: "customer".into(),
+        from: tn("Order"),
+        to: tn("Customer"),
+        cardinality: Cardinality::One,
+    };
+    o.define_link(link.clone()).await.expect("define link");
+    assert_eq!(o.links(&tn("Order")).await.unwrap(), vec![link.clone()]);
+
+    // re-define same (name, from) upserts (no duplicate; cardinality updated).
+    o.define_link(LinkDef {
+        cardinality: Cardinality::Many,
+        ..link.clone()
+    })
+    .await
+    .unwrap();
+    let ls = o.links(&tn("Order")).await.unwrap();
+    assert_eq!(ls.len(), 1, "link upsert, not duplicate");
+    assert_eq!(ls[0].cardinality, Cardinality::Many, "cardinality updated");
+
+    // link to an undefined endpoint -> NotFound.
+    assert!(
+        matches!(
+            o.define_link(LinkDef {
+                name: "ghost".into(),
+                from: tn("Order"),
+                to: tn("Ghost"),
+                cardinality: Cardinality::One,
+            })
+            .await,
+            Err(control_plane_core::ControlPlaneError::NotFound(_))
+        ),
+        "link to undefined type is NotFound"
+    );
+
+    // unknown-type reads -> NotFound.
+    let nope = tn("Nope");
+    assert!(matches!(
+        o.get_type(&nope).await,
+        Err(control_plane_core::ControlPlaneError::NotFound(_))
+    ));
+    assert!(matches!(
+        o.resolve(&nope).await,
+        Err(control_plane_core::ControlPlaneError::NotFound(_))
+    ));
+    assert!(matches!(
+        o.links(&nope).await,
+        Err(control_plane_core::ControlPlaneError::NotFound(_))
+    ));
 }
