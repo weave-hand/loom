@@ -44,6 +44,14 @@ pub enum RetryPolicy {
     Abandon,
 }
 
+/// What a worker's job handler returns on failure: a message plus the
+/// caller-driven [`RetryPolicy`] to apply.
+#[derive(Debug)]
+pub struct JobFailure {
+    pub error: String,
+    pub policy: RetryPolicy,
+}
+
 #[async_trait]
 pub trait Queue {
     /// Enqueue a job (autocommit). For transactional enqueue, use [`crate::Tx::enqueue`].

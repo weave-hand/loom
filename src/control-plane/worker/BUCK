@@ -1,0 +1,29 @@
+rust_library(
+    name = "worker",
+    crate = "control_plane_worker",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+        "//third-party:tokio-util",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "worker_test",
+    crate = "worker_test",
+    srcs = ["tests/worker.rs"],
+    crate_root = "tests/worker.rs",
+    edition = "2024",
+    deps = [
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tokio-util",
+    ],
+)

@@ -6,5 +6,5 @@ mod queue;
 mod transaction;
 
 pub use error::{ControlPlaneError, Result};
-pub use queue::{Job, JobId, NewJob, Queue, RetryPolicy};
+pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
 pub use transaction::{ControlPlane, Tx};

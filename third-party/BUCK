@@ -1787,6 +1787,11 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "32",
         "CARGO_PKG_VERSION_PRE": "",
     },
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
     visibility = [],
 )
 
@@ -6057,6 +6062,53 @@ cargo.rust_library(
     visibility = [],
     deps = [
         ":futures-core-0.3",
+        ":pin-project-lite-0.2",
+        ":tokio-1",
+    ],
+)
+
+alias(
+    name = "tokio-util",
+    actual = ":tokio-util-0.7",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "tokio-util-0.7.18.crate",
+    sha256 = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098",
+    strip_prefix = "tokio-util-0.7.18",
+    urls = ["https://static.crates.io/crates/tokio-util/0.7.18/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "tokio-util-0.7",
+    srcs = [":tokio-util-0.7.18.crate"],
+    crate = "tokio_util",
+    crate_root = "tokio-util-0.7.18.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "tokio_util",
+        "CARGO_CRATE_NAME": "tokio_util",
+        "CARGO_MANIFEST_DIR": "tokio-util-0.7.18.crate",
+        "CARGO_PKG_AUTHORS": "Tokio Contributors <team@tokio.rs>",
+        "CARGO_PKG_DESCRIPTION": "Additional utilities for working with Tokio.\n",
+        "CARGO_PKG_HOMEPAGE": "https://tokio.rs",
+        "CARGO_PKG_NAME": "tokio-util",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/tokio-rs/tokio",
+        "CARGO_PKG_RUST_VERSION": "1.71",
+        "CARGO_PKG_VERSION": "0.7.18",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "7",
+        "CARGO_PKG_VERSION_PATCH": "18",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":bytes-1",
+        ":futures-core-0.3",
+        ":futures-sink-0.3",
         ":pin-project-lite-0.2",
         ":tokio-1",
     ],
