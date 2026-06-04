@@ -23,3 +23,17 @@ rust_test(
     edition = "2024",
     deps = [":memory", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
+
+rust_test(
+    name = "catalog",
+    crate = "catalog",
+    srcs = ["tests/catalog.rs"],
+    crate_root = "tests/catalog.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)

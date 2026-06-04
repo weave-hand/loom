@@ -2,11 +2,15 @@
 //! and local dev. NOT for production use. Jobs live in a `Vec` behind a `Mutex`;
 //! a `Tx` stages writes and applies them on commit (read-committed semantics).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use control_plane_core::{ControlPlane, Job, JobId, NewJob, Queue, Result, RetryPolicy, Tx};
+use control_plane_core::{
+    Catalog, ColumnDef, ControlPlane, ControlPlaneError, FileRef, Job, JobId, NewJob, Queue,
+    Result, RetryPolicy, Snapshot, SnapshotId, TableRef, TableSchema, Tx,
+};
 use time::OffsetDateTime;
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -23,10 +27,35 @@ struct Row {
     locked_at: Option<OffsetDateTime>,
 }
 
+/// An MVCC-versioned catalog row: live at snapshot `s` when `begin <= s` and
+/// (`end` is None or `end > s`).
+#[derive(Clone)]
+struct Versioned<T> {
+    begin: i64,
+    end: Option<i64>,
+    val: T,
+}
+
+impl<T> Versioned<T> {
+    fn live_at(&self, s: i64) -> bool {
+        self.begin <= s && self.end.is_none_or(|e| e > s)
+    }
+}
+
+#[derive(Default)]
+struct CatalogState {
+    next_snapshot: i64,
+    snapshots: Vec<Snapshot>,
+    tables: HashMap<(String, String), Versioned<()>>,
+    columns: HashMap<(String, String), Vec<Versioned<ColumnDef>>>,
+    files: HashMap<(String, String), Vec<Versioned<FileRef>>>,
+}
+
 #[derive(Clone)]
 pub struct MemoryControlPlane {
     rows: Arc<Mutex<Vec<Row>>>,
     notify: Arc<Notify>,
+    catalog: Arc<Mutex<CatalogState>>,
     lock_timeout: Duration,
 }
 
@@ -35,6 +64,7 @@ impl MemoryControlPlane {
         Self {
             rows: Arc::new(Mutex::new(Vec::new())),
             notify: Arc::new(Notify::new()),
+            catalog: Arc::new(Mutex::new(CatalogState::default())),
             lock_timeout,
         }
     }
@@ -56,6 +86,159 @@ impl MemoryControlPlane {
             attempts: 0,
             locked_at: None,
         });
+    }
+
+    /// Test-support: create `table` (if absent) with `columns` as
+    /// `(name, type, nullable)`, then apply each entry of `batches` as its own
+    /// snapshot adding one data file of that many rows. Returns the per-batch
+    /// snapshot ids, in order. Append-only.
+    pub fn seed_catalog(
+        &self,
+        table: &TableRef,
+        columns: &[(String, String, bool)],
+        batches: &[usize],
+    ) -> Vec<SnapshotId> {
+        let mut cat = self.catalog.lock().unwrap();
+        let key = (table.schema.clone(), table.name.clone());
+
+        if !cat.tables.contains_key(&key) {
+            let s = cat.new_snapshot();
+            cat.tables.insert(
+                key.clone(),
+                Versioned {
+                    begin: s,
+                    end: None,
+                    val: (),
+                },
+            );
+            let cols = columns
+                .iter()
+                .enumerate()
+                .map(|(i, (name, ty, nullable))| Versioned {
+                    begin: s,
+                    end: None,
+                    val: ColumnDef {
+                        order: i as i64,
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        nullable: *nullable,
+                    },
+                })
+                .collect();
+            cat.columns.insert(key.clone(), cols);
+        }
+
+        let mut out = Vec::new();
+        for (i, n) in batches.iter().enumerate() {
+            let s = cat.new_snapshot();
+            let file = FileRef {
+                path: format!("data/{}_{}.parquet", table.name, i),
+                record_count: *n as i64,
+                file_size_bytes: (*n as i64) * 16,
+            };
+            cat.files.entry(key.clone()).or_default().push(Versioned {
+                begin: s,
+                end: None,
+                val: file,
+            });
+            out.push(SnapshotId(s));
+        }
+        out
+    }
+}
+
+impl CatalogState {
+    fn new_snapshot(&mut self) -> i64 {
+        let id = self.next_snapshot;
+        self.next_snapshot += 1;
+        self.snapshots.push(Snapshot {
+            id: SnapshotId(id),
+            time: OffsetDateTime::now_utc(),
+            schema_version: 0,
+        });
+        id
+    }
+
+    fn latest_live(&self, key: &(String, String)) -> Option<i64> {
+        let t = self.tables.get(key)?;
+        self.snapshots
+            .iter()
+            .rev()
+            .map(|s| s.id.0)
+            .find(|&s| t.live_at(s))
+    }
+}
+
+#[async_trait]
+impl Catalog for MemoryControlPlane {
+    async fn current_snapshot(&self, table: &TableRef) -> Result<Snapshot> {
+        let cat = self.catalog.lock().unwrap();
+        let key = (table.schema.clone(), table.name.clone());
+        let s = cat.latest_live(&key).ok_or_else(|| {
+            ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name))
+        })?;
+        Ok(cat
+            .snapshots
+            .iter()
+            .find(|sn| sn.id.0 == s)
+            .cloned()
+            .unwrap())
+    }
+
+    async fn snapshots(&self, table: &TableRef) -> Result<Vec<Snapshot>> {
+        let cat = self.catalog.lock().unwrap();
+        let key = (table.schema.clone(), table.name.clone());
+        let t = cat.tables.get(&key).ok_or_else(|| {
+            ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name))
+        })?;
+        Ok(cat
+            .snapshots
+            .iter()
+            .filter(|sn| t.live_at(sn.id.0))
+            .cloned()
+            .collect())
+    }
+
+    async fn files(&self, table: &TableRef, at: SnapshotId) -> Result<Vec<FileRef>> {
+        let cat = self.catalog.lock().unwrap();
+        let key = (table.schema.clone(), table.name.clone());
+        let live = cat.tables.get(&key).is_some_and(|t| t.live_at(at.0));
+        if !live {
+            return Err(ControlPlaneError::NotFound(format!(
+                "{}.{} @ {}",
+                table.schema, table.name, at.0
+            )));
+        }
+        Ok(cat
+            .files
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter(|f| f.live_at(at.0))
+            .map(|f| f.val.clone())
+            .collect())
+    }
+
+    async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
+        let cat = self.catalog.lock().unwrap();
+        let key = (table.schema.clone(), table.name.clone());
+        let live = cat.tables.get(&key).is_some_and(|t| t.live_at(at.0));
+        if !live {
+            return Err(ControlPlaneError::NotFound(format!(
+                "{}.{} @ {}",
+                table.schema, table.name, at.0
+            )));
+        }
+        let mut cols: Vec<ColumnDef> = cat
+            .columns
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter(|c| c.live_at(at.0))
+            .map(|c| c.val.clone())
+            .collect();
+        cols.sort_by_key(|c| c.order);
+        Ok(TableSchema { columns: cols })
     }
 }
 
