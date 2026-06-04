@@ -4347,6 +4347,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "serde",
+    actual = ":serde-1",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "serde-1.0.228.crate",
     sha256 = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e",
