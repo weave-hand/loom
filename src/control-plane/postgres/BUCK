@@ -49,6 +49,15 @@ genrule(
     visibility = ["PUBLIC"],
 )
 
+# Runtime migrations dir for sqlx Migrator::new (the compile-time sqlx::migrate!
+# macro needs an absolute CARGO_MANIFEST_DIR, which buck2 can't provide). The
+# filegroup preserves the glob's "migrations/" prefix, hence the env appends it.
+filegroup(
+    name = "migrations",
+    srcs = glob(["migrations/**/*.sql"]),
+    visibility = ["PUBLIC"],
+)
+
 rust_library(
     name = "postgres",
     crate = "control_plane_postgres",
@@ -58,10 +67,27 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//third-party:async-trait",
+        "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "queue",
+    crate = "queue",
+    srcs = ["tests/queue.rs"],
+    crate_root = "tests/queue.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
+    },
+    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
 # Runs the shared tx_contract suite against real Postgres. Hermetic: the server
@@ -79,6 +105,7 @@ rust_test(
         # LD_LIBRARY_PATH for the spawned initdb/postgres: the dist's own libs plus
         # the bundled ICU-free libxml2.so.2.
         "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
     },
     deps = [
         ":postgres",

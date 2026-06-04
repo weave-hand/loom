@@ -143,11 +143,17 @@ impl PgFixture {
             .connect_with(self.opts(&db))
             .await
             .expect("connect pool to fresh database");
+        // Apply migrations (queue.jobs, …). Keep the legacy _probe table until the
+        // probe ops are removed (Task 4), so the existing tx_contract still runs.
+        let migrations = std::env::var("LOOM_MIGRATIONS_DIR").expect("LOOM_MIGRATIONS_DIR");
+        crate::run_migrations(&pool, std::path::Path::new(&migrations))
+            .await
+            .expect("run migrations");
         pool.execute("create table _probe (k text primary key, v bigint not null)")
             .await
             .expect("create _probe table");
 
-        PgControlPlane::new(pool)
+        crate::PgControlPlane::new(pool, std::time::Duration::from_millis(300))
     }
 }
 
