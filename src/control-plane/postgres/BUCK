@@ -152,3 +152,25 @@ rust_test(
     },
     deps = [":postgres", "//third-party:tokio"],
 )
+
+rust_test(
+    name = "catalog",
+    crate = "catalog",
+    srcs = ["tests/catalog.rs"],
+    crate_root = "tests/catalog.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
+        "DUCKDB_BIN": "$(location :duckdb-cli)",
+        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
+    },
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
