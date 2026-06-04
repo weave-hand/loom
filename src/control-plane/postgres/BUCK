@@ -49,6 +49,52 @@ genrule(
     visibility = ["PUBLIC"],
 )
 
+# Pinned DuckDB CLI + the ducklake/postgres_scanner extensions, used ONLY by the
+# catalog test fixture's DuckLakeWriter to produce a real ducklake.* catalog.
+# Production code never touches DuckDB. linux-x86_64 only (tests run local-only).
+DUCKDB_VERSION = "v1.5.3"
+
+http_file(
+    name = "duckdb-cli.gz",
+    urls = ["https://github.com/duckdb/duckdb/releases/download/{}/duckdb_cli-linux-amd64.gz".format(DUCKDB_VERSION)],
+    sha256 = "f05f3b448a9a1bc6e7ac27ff14dfe67bf5761b153c2002723365a456618ef35b",
+)
+
+# Gunzip + chmod the single-file CLI. `uses_xz` forces local (off RE).
+genrule(
+    name = "duckdb-cli",
+    out = "duckdb",
+    cmd = "gzip -dc $(location :duckdb-cli.gz) > $OUT && chmod +x $OUT",
+    labels = ["uses_xz"],
+    visibility = ["PUBLIC"],
+)
+
+http_file(
+    name = "ducklake-ext.gz",
+    urls = ["http://extensions.duckdb.org/{}/linux_amd64/ducklake.duckdb_extension.gz".format(DUCKDB_VERSION)],
+    sha256 = "5fe971257a8aca6de035c49b29559982625b3d681b14777e1f2e3b8bd2f60a3d",
+)
+
+http_file(
+    name = "postgres-scanner-ext.gz",
+    urls = ["http://extensions.duckdb.org/{}/linux_amd64/postgres_scanner.duckdb_extension.gz".format(DUCKDB_VERSION)],
+    sha256 = "42e9ba5c2a9f9f77f1415e4cd320295f9623d4c20e09b20687d384a06681e54c",
+)
+
+# DuckDB loads extensions offline from <dir>/<version>/<platform>/<name>.duckdb_extension.
+# Build exactly that layout so the fixture can `SET extension_directory=` + `LOAD` with no network.
+genrule(
+    name = "duckdb-extensions",
+    out = "extdir",
+    cmd = " && ".join([
+        "mkdir -p $OUT/{}/linux_amd64".format(DUCKDB_VERSION),
+        "gzip -dc $(location :ducklake-ext.gz) > $OUT/{}/linux_amd64/ducklake.duckdb_extension".format(DUCKDB_VERSION),
+        "gzip -dc $(location :postgres-scanner-ext.gz) > $OUT/{}/linux_amd64/postgres_scanner.duckdb_extension".format(DUCKDB_VERSION),
+    ]),
+    labels = ["uses_xz"],
+    visibility = ["PUBLIC"],
+)
+
 # Runtime migrations dir for sqlx Migrator::new (the compile-time sqlx::migrate!
 # macro needs an absolute CARGO_MANIFEST_DIR, which buck2 can't provide). The
 # filegroup preserves the glob's "migrations/" prefix, hence the env appends it.
@@ -89,4 +135,20 @@ rust_test(
         "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
     },
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+rust_test(
+    name = "ducklake-smoke",
+    crate = "ducklake_smoke",
+    srcs = ["tests/ducklake_smoke.rs"],
+    crate_root = "tests/ducklake_smoke.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
+        "DUCKDB_BIN": "$(location :duckdb-cli)",
+        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
+    },
+    deps = [":postgres", "//third-party:tokio"],
 )
