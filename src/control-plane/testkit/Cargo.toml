@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 control-plane-core = { path = "../core" }
+serde_json = "1"
+time = "0.3"
+tokio = { version = "1", features = ["time"] }

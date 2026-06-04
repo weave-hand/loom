@@ -6,7 +6,10 @@ rust_library(
     edition = "2024",
     deps = [
         "//third-party:async-trait",
+        "//third-party:serde_json",
         "//third-party:thiserror",
+        "//third-party:time",
+        "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
 )

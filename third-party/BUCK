@@ -1120,6 +1120,45 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "deranged-0.5.8.crate",
+    sha256 = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c",
+    strip_prefix = "deranged-0.5.8",
+    urls = ["https://static.crates.io/crates/deranged/0.5.8/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "deranged-0.5",
+    srcs = [":deranged-0.5.8.crate"],
+    crate = "deranged",
+    crate_root = "deranged-0.5.8.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "deranged",
+        "CARGO_CRATE_NAME": "deranged",
+        "CARGO_MANIFEST_DIR": "deranged-0.5.8.crate",
+        "CARGO_PKG_AUTHORS": "Jacob Pratt <jacob@jhpratt.dev>",
+        "CARGO_PKG_DESCRIPTION": "Ranged integers",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "deranged",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/jhpratt/deranged",
+        "CARGO_PKG_RUST_VERSION": "1.85.0",
+        "CARGO_PKG_VERSION": "0.5.8",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "8",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "powerfmt",
+    ],
+    visibility = [],
+    deps = [":powerfmt-0.2"],
+)
+
+http_archive(
     name = "digest-0.10.7.crate",
     sha256 = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292",
     strip_prefix = "digest-0.10.7",
@@ -3324,6 +3363,40 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "num-conv-0.2.2.crate",
+    sha256 = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441",
+    strip_prefix = "num-conv-0.2.2",
+    urls = ["https://static.crates.io/crates/num-conv/0.2.2/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "num-conv-0.2",
+    srcs = [":num-conv-0.2.2.crate"],
+    crate = "num_conv",
+    crate_root = "num-conv-0.2.2.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "num_conv",
+        "CARGO_CRATE_NAME": "num_conv",
+        "CARGO_MANIFEST_DIR": "num-conv-0.2.2.crate",
+        "CARGO_PKG_AUTHORS": "Jacob Pratt <jacob@jhpratt.dev>",
+        "CARGO_PKG_DESCRIPTION": "`num_conv` is a crate to convert between integer types without using `as` casts. This provides\nbetter certainty when refactoring, makes the exact behavior of code more explicit, and allows using\nturbofish syntax.\n",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "num-conv",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/jhpratt/num-conv",
+        "CARGO_PKG_RUST_VERSION": "1.57.0",
+        "CARGO_PKG_VERSION": "0.2.2",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+http_archive(
     name = "num-traits-0.2.19.crate",
     sha256 = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
     strip_prefix = "num-traits-0.2.19",
@@ -3768,6 +3841,40 @@ cargo.rust_library(
     features = ["zerovec"],
     visibility = [],
     deps = [":zerovec-0.11"],
+)
+
+http_archive(
+    name = "powerfmt-0.2.0.crate",
+    sha256 = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391",
+    strip_prefix = "powerfmt-0.2.0",
+    urls = ["https://static.crates.io/crates/powerfmt/0.2.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "powerfmt-0.2",
+    srcs = [":powerfmt-0.2.0.crate"],
+    crate = "powerfmt",
+    crate_root = "powerfmt-0.2.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "powerfmt",
+        "CARGO_CRATE_NAME": "powerfmt",
+        "CARGO_MANIFEST_DIR": "powerfmt-0.2.0.crate",
+        "CARGO_PKG_AUTHORS": "Jacob Pratt <jacob@jhpratt.dev>",
+        "CARGO_PKG_DESCRIPTION": "    `powerfmt` is a library that provides utilities for formatting values. This crate makes it\n    significantly easier to support filling to a minimum width with alignment, avoid heap\n    allocation, and avoid repetitive calculations.\n",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "powerfmt",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/jhpratt/powerfmt",
+        "CARGO_PKG_RUST_VERSION": "1.67.0",
+        "CARGO_PKG_VERSION": "0.2.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
 )
 
 http_archive(
@@ -4484,6 +4591,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "serde_json",
+    actual = ":serde_json-1",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "serde_json-1.0.150.crate",
     sha256 = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9",
@@ -4793,9 +4906,13 @@ cargo.rust_library(
     },
     features = [
         "_rt-tokio",
+        "json",
+        "migrate",
         "postgres",
         "runtime-tokio",
         "sqlx-postgres",
+        "time",
+        "uuid",
     ],
     visibility = [],
     deps = [
@@ -4845,8 +4962,10 @@ cargo.rust_library(
         "serde",
         "serde_json",
         "sha2",
+        "time",
         "tokio",
         "tokio-stream",
+        "uuid",
     ],
     visibility = [],
     deps = [
@@ -4872,10 +4991,12 @@ cargo.rust_library(
         ":sha2-0.10",
         ":smallvec-1",
         ":thiserror-2",
+        ":time-0.3",
         ":tokio-1",
         ":tokio-stream-0.1",
         ":tracing-0.1",
         ":url-2",
+        ":uuid-1",
     ],
 )
 
@@ -4911,8 +5032,11 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "json",
         "migrate",
         "offline",
+        "time",
+        "uuid",
     ],
     platform = {
         "windows-gnu": dict(
@@ -4950,7 +5074,9 @@ cargo.rust_library(
         ":sqlx-core-0.8",
         ":stringprep-0.1",
         ":thiserror-2",
+        ":time-0.3",
         ":tracing-0.1",
+        ":uuid-1",
         ":whoami-1",
     ],
 )
@@ -5519,6 +5645,139 @@ cargo.rust_library(
         ":proc-macro2-1",
         ":quote-1",
         ":syn-2",
+    ],
+)
+
+alias(
+    name = "time",
+    actual = ":time-0.3",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "time-0.3.47.crate",
+    sha256 = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c",
+    strip_prefix = "time-0.3.47",
+    urls = ["https://static.crates.io/crates/time/0.3.47/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "time-0.3",
+    srcs = [":time-0.3.47.crate"],
+    crate = "time",
+    crate_root = "time-0.3.47.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "time",
+        "CARGO_CRATE_NAME": "time",
+        "CARGO_MANIFEST_DIR": "time-0.3.47.crate",
+        "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
+        "CARGO_PKG_DESCRIPTION": "Date and time library. Fully interoperable with the standard library. Mostly compatible with #![no_std].",
+        "CARGO_PKG_HOMEPAGE": "https://time-rs.github.io",
+        "CARGO_PKG_NAME": "time",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
+        "CARGO_PKG_RUST_VERSION": "1.88.0",
+        "CARGO_PKG_VERSION": "0.3.47",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "3",
+        "CARGO_PKG_VERSION_PATCH": "47",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "alloc",
+        "default",
+        "formatting",
+        "macros",
+        "parsing",
+        "std",
+    ],
+    visibility = [],
+    deps = [
+        ":deranged-0.5",
+        ":itoa-1",
+        ":num-conv-0.2",
+        ":powerfmt-0.2",
+        ":time-core-0.1",
+        ":time-macros-0.2",
+    ],
+)
+
+http_archive(
+    name = "time-core-0.1.8.crate",
+    sha256 = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca",
+    strip_prefix = "time-core-0.1.8",
+    urls = ["https://static.crates.io/crates/time-core/0.1.8/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "time-core-0.1",
+    srcs = [":time-core-0.1.8.crate"],
+    crate = "time_core",
+    crate_root = "time-core-0.1.8.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "time_core",
+        "CARGO_CRATE_NAME": "time_core",
+        "CARGO_MANIFEST_DIR": "time-core-0.1.8.crate",
+        "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
+        "CARGO_PKG_DESCRIPTION": "This crate is an implementation detail and should not be relied upon directly.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "time-core",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
+        "CARGO_PKG_RUST_VERSION": "1.88.0",
+        "CARGO_PKG_VERSION": "0.1.8",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "8",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+http_archive(
+    name = "time-macros-0.2.27.crate",
+    sha256 = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215",
+    strip_prefix = "time-macros-0.2.27",
+    urls = ["https://static.crates.io/crates/time-macros/0.2.27/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "time-macros-0.2",
+    srcs = [":time-macros-0.2.27.crate"],
+    crate = "time_macros",
+    crate_root = "time-macros-0.2.27.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "time_macros",
+        "CARGO_CRATE_NAME": "time_macros",
+        "CARGO_MANIFEST_DIR": "time-macros-0.2.27.crate",
+        "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
+        "CARGO_PKG_DESCRIPTION": "    Procedural macros for the time crate.\n    This crate is an implementation detail and should not be relied upon directly.\n",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "time-macros",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
+        "CARGO_PKG_RUST_VERSION": "1.88.0",
+        "CARGO_PKG_VERSION": "0.2.27",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "27",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "formatting",
+        "parsing",
+    ],
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":num-conv-0.2",
+        ":time-core-0.1",
     ],
 )
 
@@ -6224,6 +6483,53 @@ cargo.rust_library(
     },
     features = ["default"],
     visibility = [],
+)
+
+alias(
+    name = "uuid",
+    actual = ":uuid-1",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "uuid-1.23.2.crate",
+    sha256 = "d258b83ceec21034727ecee8c382cfa6c3e133699b0742c64571814fb420c9f7",
+    strip_prefix = "uuid-1.23.2",
+    urls = ["https://static.crates.io/crates/uuid/1.23.2/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "uuid-1",
+    srcs = [":uuid-1.23.2.crate"],
+    crate = "uuid",
+    crate_root = "uuid-1.23.2.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "uuid",
+        "CARGO_CRATE_NAME": "uuid",
+        "CARGO_MANIFEST_DIR": "uuid-1.23.2.crate",
+        "CARGO_PKG_AUTHORS": "Ashley Mannix<ashleymannix@live.com.au>:Dylan DPC<dylan.dpc@gmail.com>:Hunar Roop Kahlon<hunar.roop@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "A library to generate and parse UUIDs.",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/uuid-rs/uuid",
+        "CARGO_PKG_NAME": "uuid",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/uuid-rs/uuid",
+        "CARGO_PKG_RUST_VERSION": "1.85.0",
+        "CARGO_PKG_VERSION": "1.23.2",
+        "CARGO_PKG_VERSION_MAJOR": "1",
+        "CARGO_PKG_VERSION_MINOR": "23",
+        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "rng",
+        "std",
+        "v4",
+    ],
+    visibility = [],
+    deps = [":getrandom-0.4"],
 )
 
 http_archive(
