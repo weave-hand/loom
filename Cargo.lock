@@ -208,7 +208,10 @@ dependencies = [
  "async-trait",
  "control-plane-core",
  "control-plane-testkit",
+ "serde_json",
+ "time",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -228,6 +231,9 @@ name = "control-plane-testkit"
 version = "0.1.0"
 dependencies = [
  "control-plane-core",
+ "serde_json",
+ "time",
+ "tokio",
 ]
 
 [[package]]

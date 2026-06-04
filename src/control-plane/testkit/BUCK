@@ -4,6 +4,11 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
-    deps = ["//src/control-plane/core:core"],
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+    ],
     visibility = ["PUBLIC"],
 )
