@@ -58,4 +58,10 @@ pub trait Queue {
     async fn fail(&self, id: JobId, error: &str, policy: RetryPolicy) -> Result<()>;
     /// Refresh the lock so a long-running job isn't reclaimed.
     async fn heartbeat(&self, id: JobId) -> Result<()>;
+    /// Block until a job of one of `kinds` may have become available, or until
+    /// `timeout` elapses — whichever comes first. A best-effort wakeup hint for
+    /// workers: spurious early returns are allowed (the caller re-checks via
+    /// `dequeue`), and the `timeout` is the polling fallback that bounds latency
+    /// when a notification is missed.
+    async fn await_jobs(&self, kinds: &[String], timeout: Duration) -> Result<()>;
 }

@@ -49,9 +49,15 @@ pub async fn run_migrations(pool: &PgPool, migrations_dir: &Path) -> Result<()> 
 
 async fn pg_insert<'e, E: sqlx::PgExecutor<'e>>(ex: E, job: &NewJob) -> Result<JobId> {
     let id = Uuid::new_v4();
+    // Insert and fire the wakeup in a single statement: pg_notify inside a
+    // transaction is buffered until commit, so a rolled-back enqueue is silent.
+    // Channel is per-kind so workers only wake for kinds they handle.
     sqlx::query(
-        "insert into queue.jobs (id, kind, payload, state, run_at, priority) \
-         values ($1, $2, $3, 'available', coalesce($4, now()), $5)",
+        "with ins as ( \
+             insert into queue.jobs (id, kind, payload, state, run_at, priority) \
+             values ($1, $2, $3, 'available', coalesce($4, now()), $5) \
+             returning kind) \
+         select pg_notify('loom_queue:' || kind, '') from ins",
     )
     .bind(id)
     .bind(&job.kind)
@@ -147,6 +153,20 @@ impl Queue for PgControlPlane {
             .execute(&self.pool)
             .await
             .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn await_jobs(&self, kinds: &[String], timeout: Duration) -> Result<()> {
+        let mut listener = sqlx::postgres::PgListener::connect_with(&self.pool)
+            .await
+            .map_err(backend)?;
+        let channels: Vec<String> = kinds.iter().map(|k| format!("loom_queue:{k}")).collect();
+        listener
+            .listen_all(channels.iter().map(String::as_str))
+            .await
+            .map_err(backend)?;
+        // A notification, or the polling-fallback timeout — whichever first.
+        let _ = tokio::time::timeout(timeout, listener.recv()).await;
         Ok(())
     }
 }

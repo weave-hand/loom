@@ -9,6 +9,7 @@ rust_library(
         "//third-party:async-trait",
         "//third-party:serde_json",
         "//third-party:time",
+        "//third-party:tokio",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
