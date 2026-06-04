@@ -2,7 +2,6 @@
 //! and local dev. NOT for production use. Jobs live in a `Vec` behind a `Mutex`;
 //! a `Tx` stages writes and applies them on commit (read-committed semantics).
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,7 +25,6 @@ struct Row {
 #[derive(Clone)]
 pub struct MemoryControlPlane {
     rows: Arc<Mutex<Vec<Row>>>,
-    probe: Arc<Mutex<HashMap<String, i64>>>, // retained until Task 4 removes probe
     lock_timeout: Duration,
 }
 
@@ -34,13 +32,17 @@ impl MemoryControlPlane {
     pub fn new(lock_timeout: Duration) -> Self {
         Self {
             rows: Arc::new(Mutex::new(Vec::new())),
-            probe: Arc::new(Mutex::new(HashMap::new())),
             lock_timeout,
         }
     }
 
     fn insert(rows: &mut Vec<Row>, job: NewJob) -> Uuid {
         let id = Uuid::new_v4();
+        Self::insert_with_id(rows, id, job);
+        id
+    }
+
+    fn insert_with_id(rows: &mut Vec<Row>, id: Uuid, job: NewJob) {
         rows.push(Row {
             id,
             kind: job.kind,
@@ -51,7 +53,6 @@ impl MemoryControlPlane {
             attempts: 0,
             locked_at: None,
         });
-        id
     }
 }
 
@@ -132,38 +133,32 @@ impl Queue for MemoryControlPlane {
 impl ControlPlane for MemoryControlPlane {
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         Ok(Box::new(MemoryTx {
-            shared: self.probe.clone(),
-            staged: HashMap::new(),
+            rows: self.rows.clone(),
+            staged: Vec::new(),
         }))
     }
 }
 
-// Probe Tx retained until Task 4 swaps it for transactional enqueue.
 struct MemoryTx {
-    shared: Arc<Mutex<HashMap<String, i64>>>,
-    staged: HashMap<String, i64>,
+    rows: Arc<Mutex<Vec<Row>>>,
+    staged: Vec<(Uuid, NewJob)>,
 }
 
 #[async_trait]
 impl Tx for MemoryTx {
     async fn commit(self: Box<Self>) -> Result<()> {
-        let mut g = self.shared.lock().unwrap();
-        for (k, v) in self.staged {
-            g.insert(k, v);
+        let mut rows = self.rows.lock().unwrap();
+        for (id, job) in self.staged {
+            MemoryControlPlane::insert_with_id(&mut rows, id, job);
         }
         Ok(())
     }
     async fn rollback(self: Box<Self>) -> Result<()> {
         Ok(())
     }
-    async fn probe_put(&mut self, key: &str, val: i64) -> Result<()> {
-        self.staged.insert(key.to_string(), val);
-        Ok(())
-    }
-    async fn probe_get(&mut self, key: &str) -> Result<Option<i64>> {
-        if let Some(v) = self.staged.get(key) {
-            return Ok(Some(*v));
-        }
-        Ok(self.shared.lock().unwrap().get(key).copied())
+    async fn enqueue(&mut self, job: NewJob) -> Result<JobId> {
+        let id = Uuid::new_v4();
+        self.staged.push((id, job));
+        Ok(JobId(id))
     }
 }

@@ -22,16 +22,3 @@ rust_test(
     edition = "2024",
     deps = [":memory", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
-
-rust_test(
-    name = "contract",
-    crate = "contract",
-    srcs = ["tests/contract.rs"],
-    crate_root = "tests/contract.rs",
-    edition = "2024",
-    deps = [
-        ":memory",
-        "//src/control-plane/testkit:testkit",
-        "//third-party:tokio",
-    ],
-)

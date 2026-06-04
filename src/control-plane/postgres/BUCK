@@ -89,27 +89,3 @@ rust_test(
     },
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
-
-# Runs the shared tx_contract suite against real Postgres. Hermetic: the server
-# binary comes from the :postgres-bin http_archive (materialized by buck2), and
-# PgFixture boots an ephemeral cluster per test process. POSTGRES_BIN_DIR points
-# the fixture at the extracted server's bin/ directory.
-rust_test(
-    name = "contract",
-    crate = "contract",
-    srcs = ["tests/contract.rs"],
-    crate_root = "tests/contract.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        # LD_LIBRARY_PATH for the spawned initdb/postgres: the dist's own libs plus
-        # the bundled ICU-free libxml2.so.2.
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-    },
-    deps = [
-        ":postgres",
-        "//src/control-plane/testkit:testkit",
-        "//third-party:tokio",
-    ],
-)

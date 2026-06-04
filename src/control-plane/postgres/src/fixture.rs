@@ -5,7 +5,7 @@
 //! `postgres-bin` http_archive) — one cluster per test process, listening on a
 //! unix socket in a tempdir, torn down on `Drop`. No Docker, no external
 //! database. `fresh_control_plane` hands back a [`PgControlPlane`] bound to a
-//! brand-new database (with the temporary `_probe` table) for each test.
+//! brand-new database for each test.
 //!
 //! This is test-support that happens to live in the library so other crates'
 //! integration tests can reuse it; it is not for production use.
@@ -122,9 +122,8 @@ impl PgFixture {
             .database(db)
     }
 
-    /// Create a fresh, empty database (with the `_probe` table) and return a
-    /// `PgControlPlane` connected to it. Isolated per call, so each test gets a
-    /// clean slate.
+    /// Create a fresh, empty database and return a `PgControlPlane` connected to
+    /// it. Isolated per call, so each test gets a clean slate.
     pub async fn fresh_control_plane(&self) -> PgControlPlane {
         let n = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let db = format!("loom_test_{}_{}", std::process::id(), n);
@@ -143,15 +142,10 @@ impl PgFixture {
             .connect_with(self.opts(&db))
             .await
             .expect("connect pool to fresh database");
-        // Apply migrations (queue.jobs, …). Keep the legacy _probe table until the
-        // probe ops are removed (Task 4), so the existing tx_contract still runs.
         let migrations = std::env::var("LOOM_MIGRATIONS_DIR").expect("LOOM_MIGRATIONS_DIR");
         crate::run_migrations(&pool, std::path::Path::new(&migrations))
             .await
             .expect("run migrations");
-        pool.execute("create table _probe (k text primary key, v bigint not null)")
-            .await
-            .expect("create _probe table");
 
         crate::PgControlPlane::new(pool, std::time::Duration::from_millis(300))
     }
