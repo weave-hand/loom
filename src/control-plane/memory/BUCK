@@ -37,3 +37,16 @@ rust_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "ontology",
+    crate = "ontology",
+    srcs = ["tests/ontology.rs"],
+    crate_root = "tests/ontology.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tokio",
+    ],
+)
