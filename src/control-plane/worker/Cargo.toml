@@ -1,0 +1,18 @@
+[package]
+name = "control-plane-worker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+control-plane-core = { path = "../core" }
+# select! needs the macros feature; the loop itself does not spawn.
+tokio = { version = "1", features = ["macros"] }
+# CancellationToken for graceful shutdown (no extra tokio-util feature needed).
+tokio-util = { version = "0.7", default-features = false }
+
+[dev-dependencies]
+control-plane-memory = { path = "../memory" }
+control-plane-postgres = { path = "../postgres" }
+serde_json = "1"
+# Tests spawn the worker and drive time; the normal-dep tokio-util is reused.
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }

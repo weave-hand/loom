@@ -147,3 +147,45 @@ pub async fn queue_contract<CP: ControlPlane + Queue>(cp: &CP, lock_timeout: Dur
     );
     cp.complete(committed.id).await.unwrap();
 }
+
+/// Contract for `Queue::await_jobs`. Takes `cp` by value (must be `Clone + Send +
+/// Sync + 'static`) so the test can hold one handle in a spawned waiter and use
+/// another to enqueue. Both adapters satisfy these bounds.
+pub async fn await_jobs_contract<CP>(cp: CP)
+where
+    CP: ControlPlane + Queue + Clone + Send + Sync + 'static,
+{
+    let k = vec!["w".to_string()];
+
+    // (a) idle: returns cleanly at/after the timeout (no job ever arrives).
+    let t0 = std::time::Instant::now();
+    cp.await_jobs(&k, Duration::from_millis(150))
+        .await
+        .expect("await_jobs returns Ok on timeout");
+    let idle = t0.elapsed();
+    assert!(
+        idle >= Duration::from_millis(120) && idle < Duration::from_secs(2),
+        "idle await_jobs should block ~the timeout, blocked {idle:?}"
+    );
+
+    // (b) wakeup: a concurrent enqueue releases a waiter well before its long timeout.
+    let cp2 = cp.clone();
+    let kk = k.clone();
+    let waiter = tokio::spawn(async move { cp2.await_jobs(&kk, Duration::from_secs(30)).await });
+    tokio::time::sleep(Duration::from_millis(100)).await; // let the waiter register / LISTEN
+    let t1 = std::time::Instant::now();
+    cp.enqueue(NewJob {
+        kind: "w".into(),
+        payload: serde_json::json!({}),
+        run_at: None,
+        priority: 0,
+    })
+    .await
+    .expect("enqueue");
+    waiter.await.expect("waiter task").expect("await_jobs ok");
+    assert!(
+        t1.elapsed() < Duration::from_secs(5),
+        "enqueue wakeup should beat the 30s timeout, took {:?}",
+        t1.elapsed()
+    );
+}

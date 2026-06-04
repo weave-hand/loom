@@ -71,6 +71,7 @@ rust_library(
         "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:time",
+        "//third-party:tokio",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],

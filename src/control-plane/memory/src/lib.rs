@@ -8,6 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{ControlPlane, Job, JobId, NewJob, Queue, Result, RetryPolicy, Tx};
 use time::OffsetDateTime;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -25,6 +26,7 @@ struct Row {
 #[derive(Clone)]
 pub struct MemoryControlPlane {
     rows: Arc<Mutex<Vec<Row>>>,
+    notify: Arc<Notify>,
     lock_timeout: Duration,
 }
 
@@ -32,6 +34,7 @@ impl MemoryControlPlane {
     pub fn new(lock_timeout: Duration) -> Self {
         Self {
             rows: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
             lock_timeout,
         }
     }
@@ -59,7 +62,9 @@ impl MemoryControlPlane {
 #[async_trait]
 impl Queue for MemoryControlPlane {
     async fn enqueue(&self, job: NewJob) -> Result<JobId> {
-        Ok(JobId(Self::insert(&mut self.rows.lock().unwrap(), job)))
+        let id = Self::insert(&mut self.rows.lock().unwrap(), job);
+        self.notify.notify_waiters();
+        Ok(JobId(id))
     }
 
     async fn dequeue(&self, kinds: &[String], _worker: &str) -> Result<Option<Job>> {
@@ -127,6 +132,14 @@ impl Queue for MemoryControlPlane {
         }
         Ok(())
     }
+
+    async fn await_jobs(&self, _kinds: &[String], timeout: Duration) -> Result<()> {
+        // notify_waiters only wakes already-registered waiters; a notification
+        // racing ahead of `notified()` is intentionally lost — the `timeout`
+        // polling fallback bounds the resulting latency (same contract as pg).
+        let _ = tokio::time::timeout(timeout, self.notify.notified()).await;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -134,6 +147,7 @@ impl ControlPlane for MemoryControlPlane {
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         Ok(Box::new(MemoryTx {
             rows: self.rows.clone(),
+            notify: self.notify.clone(),
             staged: Vec::new(),
         }))
     }
@@ -141,15 +155,22 @@ impl ControlPlane for MemoryControlPlane {
 
 struct MemoryTx {
     rows: Arc<Mutex<Vec<Row>>>,
+    notify: Arc<Notify>,
     staged: Vec<(Uuid, NewJob)>,
 }
 
 #[async_trait]
 impl Tx for MemoryTx {
     async fn commit(self: Box<Self>) -> Result<()> {
-        let mut rows = self.rows.lock().unwrap();
-        for (id, job) in self.staged {
-            MemoryControlPlane::insert_with_id(&mut rows, id, job);
+        let staged_any = !self.staged.is_empty();
+        {
+            let mut rows = self.rows.lock().unwrap();
+            for (id, job) in self.staged {
+                MemoryControlPlane::insert_with_id(&mut rows, id, job);
+            }
+        }
+        if staged_any {
+            self.notify.notify_waiters();
         }
         Ok(())
     }
