@@ -248,6 +248,7 @@ dependencies = [
 name = "control-plane-testkit"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "control-plane-core",
  "serde_json",
  "time",
