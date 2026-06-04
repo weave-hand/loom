@@ -294,7 +294,9 @@ where
         "history ends at the current snapshot"
     );
 
-    // schema at current: the two columns, in order, with type/nullability.
+    // schema at current: the two columns, in order, with non-empty (opaque) types
+    // and correct nullability. `ty` is backend-spelled (DuckLake: `varchar`/`int64`;
+    // the fake: whatever was seeded) so it is treated as opaque, never compared to a literal.
     let sch = catalog.schema(&t, cur.id).await.unwrap();
     assert_eq!(
         sch.columns
@@ -304,7 +306,10 @@ where
         vec!["id", "name"],
         "columns in order"
     );
-    assert_eq!(sch.columns[1].ty, "VARCHAR");
+    assert!(
+        sch.columns.iter().all(|c| !c.ty.is_empty()),
+        "every column has a (backend-spelled) type"
+    );
     assert!(
         sch.columns[1].nullable && !sch.columns[0].nullable,
         "nullability preserved"

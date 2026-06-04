@@ -122,9 +122,15 @@ impl PgFixture {
             .database(db)
     }
 
-    /// Create a fresh, empty database and return a `PgControlPlane` connected to
-    /// it. Isolated per call, so each test gets a clean slate.
-    pub async fn fresh_control_plane(&self) -> PgControlPlane {
+    /// The unix-socket directory the server listens on (for clients that build
+    /// their own connection string, e.g. the DuckLake writer).
+    pub fn socket_path(&self) -> &std::path::Path {
+        self.socket_dir.path()
+    }
+
+    /// Create a fresh database (migrated) and return a `PgControlPlane` bound to it
+    /// together with the database name, so test-support writers can target the same db.
+    pub async fn fresh_db(&self) -> (PgControlPlane, String) {
         let n = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let db = format!("loom_test_{}_{}", std::process::id(), n);
 
@@ -147,7 +153,16 @@ impl PgFixture {
             .await
             .expect("run migrations");
 
-        crate::PgControlPlane::new(pool, std::time::Duration::from_millis(300))
+        (
+            crate::PgControlPlane::new(pool, std::time::Duration::from_millis(300)),
+            db,
+        )
+    }
+
+    /// Create a fresh, empty database and return a `PgControlPlane` connected to
+    /// it. Isolated per call, so each test gets a clean slate.
+    pub async fn fresh_control_plane(&self) -> PgControlPlane {
+        self.fresh_db().await.0
     }
 }
 
@@ -156,5 +171,123 @@ impl Drop for PgFixture {
         let _ = self.server.kill();
         let _ = self.server.wait();
         // TempDirs remove themselves on drop.
+    }
+}
+
+/// Test-support: drives real DuckLake (the pinned DuckDB CLI) to produce a
+/// `ducklake.*` catalog in the hermetic Postgres, so the pg `Catalog` adapter has
+/// real data to read. Reads `DUCKDB_BIN` (the CLI) and `DUCKDB_EXTENSION_DIR` (the
+/// offline extension dir) from the environment, set by the `rust_test` rule.
+pub struct DuckLakeWriter {
+    duckdb_bin: PathBuf,
+    extension_dir: String,
+    socket: PathBuf,
+    db: String,
+    // Parquet data path; removed when the writer drops.
+    _data_dir: TempDir,
+}
+
+impl DuckLakeWriter {
+    pub fn new(socket: &std::path::Path, db: &str) -> Self {
+        Self {
+            duckdb_bin: PathBuf::from(
+                std::env::var("DUCKDB_BIN").expect("DUCKDB_BIN must point at the duckdb CLI"),
+            ),
+            extension_dir: std::env::var("DUCKDB_EXTENSION_DIR")
+                .expect("DUCKDB_EXTENSION_DIR must point at the offline extension dir"),
+            socket: socket.to_path_buf(),
+            db: db.to_string(),
+            _data_dir: tempfile::tempdir().expect("create ducklake data tempdir"),
+        }
+    }
+
+    /// Create `schema.table` (if absent) with `columns` as `(name, sql_type, nullable)`,
+    /// then apply each entry of `batches` as one INSERT of that many rows (one Parquet
+    /// data file per batch, inlining disabled). Returns the per-batch snapshot ids, in order.
+    pub async fn seed(
+        &self,
+        schema: &str,
+        table: &str,
+        columns: &[(String, String, bool)],
+        batches: &[usize],
+    ) -> Vec<i64> {
+        let col_defs: Vec<String> = columns
+            .iter()
+            .map(|(name, ty, nullable)| {
+                format!("{name} {ty}{}", if *nullable { "" } else { " NOT NULL" })
+            })
+            .collect();
+
+        let mut sql = String::new();
+        sql.push_str(&format!(
+            "SET extension_directory='{}';\n",
+            self.extension_dir
+        ));
+        sql.push_str("LOAD ducklake;\nLOAD postgres_scanner;\n");
+        sql.push_str(&format!(
+            "ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\n",
+            self.db,
+            self.socket.display(),
+            self._data_dir.path().display(),
+        ));
+        sql.push_str(&format!(
+            "CREATE TABLE IF NOT EXISTS lake.{schema}.{table} ({});\n",
+            col_defs.join(", ")
+        ));
+        for n in batches {
+            sql.push_str(&format!(
+                "INSERT INTO lake.{schema}.{table} SELECT {} FROM range({}) t(i);\n",
+                Self::row_exprs(columns),
+                n
+            ));
+        }
+
+        let status = Command::new(&self.duckdb_bin)
+            .arg("-c")
+            .arg(&sql)
+            .status()
+            .expect("run duckdb");
+        assert!(status.success(), "duckdb seeding failed");
+
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(self.opts())
+            .await
+            .expect("connect to read back snapshots");
+        sqlx::query_scalar::<_, i64>(
+            "select f.begin_snapshot from ducklake_data_file f \
+             join ducklake_table t on f.table_id = t.table_id \
+             join ducklake_schema s on t.schema_id = s.schema_id \
+             where s.schema_name = $1 and t.table_name = $2 \
+             order by f.data_file_id",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&pool)
+        .await
+        .expect("read back data-file snapshots")
+    }
+
+    fn opts(&self) -> PgConnectOptions {
+        PgConnectOptions::new()
+            .socket(&self.socket)
+            .username("postgres")
+            .database(&self.db)
+    }
+
+    /// Positional row expressions matching `columns`: integer columns count up from
+    /// `i`, everything else is a constant cast to the column type.
+    fn row_exprs(columns: &[(String, String, bool)]) -> String {
+        columns
+            .iter()
+            .map(|(_, ty, _)| {
+                if ty.to_ascii_lowercase().contains("int") {
+                    "i".to_string()
+                } else {
+                    format!("CAST('x' AS {ty})")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
