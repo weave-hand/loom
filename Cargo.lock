@@ -254,6 +254,7 @@ dependencies = [
  "serde_json",
  "time",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
