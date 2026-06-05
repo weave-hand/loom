@@ -6,3 +6,5 @@ cspell.json
 rust-project.json
 /.loom/
 /.direnv/
+**/.cargo/**
+!**/.cargo/config.toml
