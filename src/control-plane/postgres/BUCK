@@ -166,6 +166,20 @@ rust_test(
 )
 
 rust_test(
+    name = "lineage",
+    crate = "lineage",
+    srcs = ["tests/lineage.rs"],
+    crate_root = "tests/lineage.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
+    },
+    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+rust_test(
     name = "ducklake-smoke",
     crate = "ducklake_smoke",
     srcs = ["tests/ducklake_smoke.rs"],
