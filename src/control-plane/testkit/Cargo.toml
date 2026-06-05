@@ -9,3 +9,4 @@ control-plane-core = { path = "../core" }
 serde_json = "1"
 time = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }

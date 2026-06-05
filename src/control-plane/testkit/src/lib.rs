@@ -1,13 +1,15 @@
 //! Backend-agnostic contract tests for the control-plane traits.
 //! Each adapter runs the same suite against its own implementation.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, Decision,
-    LinkDef, NewJob, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy,
-    RoleId, RowFilter, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
+    Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef,
+    Decision, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, Policy,
+    PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
+    SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -742,5 +744,179 @@ pub async fn acl_contract<A: Acl>(a: &A) {
             .unwrap(),
         Decision::Deny,
         "unassigned role's grants no longer apply"
+    );
+}
+
+/// Contract for the `Lineage` ops, including the first cross-concern atomic unit
+/// (`emit` + `enqueue` in one `Tx`). `cp` must be freshly empty.
+pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    // A fixed whole-second timestamp so the pg `timestamptz` round-trip is exact.
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let set = |v: Vec<DatasetRef>| v.into_iter().collect::<HashSet<_>>();
+
+    // --- emit -> events_for round-trips the envelope + opaque payload ---
+    let run = RunId(uuid::Uuid::new_v4());
+    let event = LineageEvent {
+        run_id: run,
+        event_type: EventType::Complete,
+        event_time: ts,
+        inputs: vec![ds("ducklake", "main.a"), ds("ducklake", "main.b")],
+        outputs: vec![ds("ducklake", "main.c")],
+        payload: serde_json::json!({"eventType": "COMPLETE", "run": {"runId": run.0.to_string()}}),
+    };
+    cp.emit(event.clone()).await.expect("emit");
+
+    let got = cp.events_for(&run).await.expect("events_for");
+    assert_eq!(
+        got,
+        vec![event.clone()],
+        "envelope + payload round-trip intact"
+    );
+    assert!(
+        cp.events_for(&RunId(uuid::Uuid::new_v4()))
+            .await
+            .unwrap()
+            .is_empty(),
+        "unknown run -> empty"
+    );
+
+    // --- one-hop graph via per-event co-membership ---
+    assert_eq!(
+        set(cp.upstream(&ds("ducklake", "main.c")).await.unwrap()),
+        set(vec![ds("ducklake", "main.a"), ds("ducklake", "main.b")])
+    );
+    assert_eq!(
+        set(cp.downstream(&ds("ducklake", "main.a")).await.unwrap()),
+        set(vec![ds("ducklake", "main.c")])
+    );
+    assert_eq!(
+        set(cp.downstream(&ds("ducklake", "main.b")).await.unwrap()),
+        set(vec![ds("ducklake", "main.c")])
+    );
+    assert!(
+        cp.downstream(&ds("ducklake", "main.c"))
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing consumes c -> no downstream"
+    );
+    assert!(
+        cp.upstream(&ds("ducklake", "main.a"))
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing produces a -> no upstream"
+    );
+    assert!(
+        cp.upstream(&ds("ducklake", "main.missing"))
+            .await
+            .unwrap()
+            .is_empty(),
+        "unknown dataset -> empty"
+    );
+
+    // multiple events for one run come back in emit order
+    let run2 = RunId(uuid::Uuid::new_v4());
+    let start = LineageEvent {
+        run_id: run2,
+        event_type: EventType::Start,
+        event_time: ts,
+        inputs: vec![],
+        outputs: vec![],
+        payload: serde_json::json!({"eventType": "START"}),
+    };
+    let complete = LineageEvent {
+        run_id: run2,
+        event_type: EventType::Complete,
+        event_time: ts,
+        inputs: vec![ds("ducklake", "main.c")],
+        outputs: vec![ds("ontology", "Customer")],
+        payload: serde_json::json!({"eventType": "COMPLETE"}),
+    };
+    cp.emit(start.clone()).await.unwrap();
+    cp.emit(complete.clone()).await.unwrap();
+    assert_eq!(
+        cp.events_for(&run2).await.unwrap(),
+        vec![start, complete],
+        "events returned in emit order"
+    );
+    // graph spans namespaces (physical -> ontology)
+    assert_eq!(
+        set(cp.downstream(&ds("ducklake", "main.c")).await.unwrap()),
+        set(vec![ds("ontology", "Customer")])
+    );
+
+    // --- the headline cross-concern atomicity test: emit + enqueue in one Tx ---
+    let kinds = vec!["lineage-test".to_string()];
+
+    // rollback -> neither the event nor the job is visible
+    let rolled = RunId(uuid::Uuid::new_v4());
+    {
+        let mut tx = cp.begin().await.expect("begin");
+        tx.emit(LineageEvent {
+            run_id: rolled,
+            event_type: EventType::Complete,
+            event_time: ts,
+            inputs: vec![],
+            outputs: vec![ds("ducklake", "main.rolled")],
+            payload: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        tx.enqueue(NewJob {
+            kind: "lineage-test".into(),
+            payload: serde_json::json!({}),
+            run_at: None,
+            priority: 0,
+        })
+        .await
+        .unwrap();
+        tx.rollback().await.expect("rollback");
+    }
+    assert!(
+        cp.events_for(&rolled).await.unwrap().is_empty(),
+        "rolled-back emit is not visible"
+    );
+    assert!(
+        cp.dequeue(&kinds, "w").await.unwrap().is_none(),
+        "rolled-back enqueue is not visible"
+    );
+
+    // commit -> both the event and the job are visible
+    let committed = RunId(uuid::Uuid::new_v4());
+    {
+        let mut tx = cp.begin().await.expect("begin");
+        tx.emit(LineageEvent {
+            run_id: committed,
+            event_type: EventType::Complete,
+            event_time: ts,
+            inputs: vec![],
+            outputs: vec![ds("ducklake", "main.committed")],
+            payload: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        tx.enqueue(NewJob {
+            kind: "lineage-test".into(),
+            payload: serde_json::json!({}),
+            run_at: None,
+            priority: 0,
+        })
+        .await
+        .unwrap();
+        tx.commit().await.expect("commit");
+    }
+    assert_eq!(
+        cp.events_for(&committed).await.unwrap().len(),
+        1,
+        "committed emit is visible"
+    );
+    assert!(
+        cp.dequeue(&kinds, "w").await.unwrap().is_some(),
+        "committed enqueue is visible"
     );
 }
