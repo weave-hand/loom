@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Cardinality, Catalog, ControlPlane, LinkDef, NewJob, ObjectType, Ontology, PropertyDef, Queue,
-    RetryPolicy, SnapshotId, TableRef, TypeName,
+    Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, Decision,
+    LinkDef, NewJob, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy,
+    RoleId, RowFilter, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -485,4 +486,261 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.links(&nope).await,
         Err(control_plane_core::ControlPlaneError::NotFound(_))
     ));
+}
+
+/// Contract for the `Acl` ops. `a` must be freshly empty.
+pub async fn acl_contract<A: Acl>(a: &A) {
+    let sid = |s: &str| SubjectId(s.to_string());
+    let rid = |s: &str| RoleId(s.to_string());
+    let ttype = |s: &str| PolicyTarget::Type(TypeName(s.to_string()));
+    let ttable = |s: &str, n: &str| {
+        PolicyTarget::Table(TableRef {
+            schema: s.to_string(),
+            name: n.to_string(),
+        })
+    };
+
+    // --- subjects / roles / grants / check ---
+    a.define_subject(&sid("alice")).await.unwrap();
+    a.define_role(&rid("reader")).await.unwrap();
+    a.assign_role(&sid("alice"), &rid("reader")).await.unwrap();
+    a.grant(&rid("reader"), Action::Read, ttype("Customer"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        a.check(&sid("alice"), Action::Read, &ttype("Customer"))
+            .await
+            .unwrap(),
+        Decision::Allow
+    );
+    assert_eq!(
+        a.check(&sid("alice"), Action::Write, &ttype("Customer"))
+            .await
+            .unwrap(),
+        Decision::Deny,
+        "ungranted action denied"
+    );
+    assert_eq!(
+        a.check(&sid("alice"), Action::Read, &ttype("Order"))
+            .await
+            .unwrap(),
+        Decision::Deny,
+        "different target denied"
+    );
+    assert_eq!(
+        a.check(&sid("nobody"), Action::Read, &ttype("Customer"))
+            .await
+            .unwrap(),
+        Decision::Deny,
+        "unknown subject denied, not error"
+    );
+
+    // grant idempotent; one revoke clears it
+    a.grant(&rid("reader"), Action::Read, ttype("Customer"))
+        .await
+        .unwrap();
+    a.revoke(&rid("reader"), Action::Read, &ttype("Customer"))
+        .await
+        .unwrap();
+    assert_eq!(
+        a.check(&sid("alice"), Action::Read, &ttype("Customer"))
+            .await
+            .unwrap(),
+        Decision::Deny,
+        "single revoke clears double grant"
+    );
+
+    // --- role union over two roles, with a Table target ---
+    a.define_role(&rid("writer")).await.unwrap();
+    a.assign_role(&sid("alice"), &rid("writer")).await.unwrap();
+    a.grant(&rid("reader"), Action::Read, ttable("main", "raw"))
+        .await
+        .unwrap();
+    a.grant(&rid("writer"), Action::Write, ttable("main", "raw"))
+        .await
+        .unwrap();
+    assert_eq!(
+        a.check(&sid("alice"), Action::Read, &ttable("main", "raw"))
+            .await
+            .unwrap(),
+        Decision::Allow
+    );
+    assert_eq!(
+        a.check(&sid("alice"), Action::Write, &ttable("main", "raw"))
+            .await
+            .unwrap(),
+        Decision::Allow
+    );
+    a.revoke(&rid("reader"), Action::Read, &ttable("main", "raw"))
+        .await
+        .unwrap();
+    assert_eq!(
+        a.check(&sid("alice"), Action::Read, &ttable("main", "raw"))
+            .await
+            .unwrap(),
+        Decision::Deny,
+        "revoking one role's grant leaves nothing for Read"
+    );
+    assert_eq!(
+        a.check(&sid("alice"), Action::Write, &ttable("main", "raw"))
+            .await
+            .unwrap(),
+        Decision::Allow,
+        "the other role's grant still effective"
+    );
+
+    // --- referential integrity on assign_role ---
+    assert!(matches!(
+        a.assign_role(&sid("ghost"), &rid("reader")).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(matches!(
+        a.assign_role(&sid("alice"), &rid("ghost")).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // --- policies: nested filter + deny columns round-trip ---
+    let filter = RowFilter::And(vec![
+        RowFilter::Compare {
+            property: "tenant".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Text("acme".into()),
+        },
+        RowFilter::Or(vec![
+            RowFilter::Compare {
+                property: "is_public".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Bool(true),
+            },
+            RowFilter::Compare {
+                property: "owner".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Text("alice".into()),
+            },
+        ]),
+        RowFilter::Not(Box::new(RowFilter::Compare {
+            property: "region".into(),
+            op: CompareOp::In,
+            value: ScalarValue::List(vec![
+                ScalarValue::Text("EU".into()),
+                ScalarValue::Text("UK".into()),
+            ]),
+        })),
+    ]);
+    let pol = Policy {
+        target: ttype("Customer"),
+        row_filter: Some(filter),
+        deny_columns: vec!["ssn".into(), "dob".into()],
+    };
+    a.set_policy(&rid("reader"), pol.clone()).await.unwrap();
+
+    let got = a
+        .policies_for(&sid("alice"), &ttype("Customer"))
+        .await
+        .unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        got[0], pol,
+        "nested filter + deny columns round-trip intact"
+    );
+
+    // upsert replaces (no duplicate); None row_filter round-trips as None
+    let pol2 = Policy {
+        target: ttype("Customer"),
+        row_filter: None,
+        deny_columns: vec![],
+    };
+    a.set_policy(&rid("reader"), pol2.clone()).await.unwrap();
+    let got = a
+        .policies_for(&sid("alice"), &ttype("Customer"))
+        .await
+        .unwrap();
+    assert_eq!(got.len(), 1, "upsert, not duplicate");
+    assert_eq!(got[0], pol2);
+    assert!(got[0].row_filter.is_none(), "None row_filter stays None");
+
+    // two roles -> two policies for the same target, no merge
+    let pol_w = Policy {
+        target: ttype("Customer"),
+        row_filter: Some(RowFilter::Compare {
+            property: "active".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Bool(true),
+        }),
+        deny_columns: vec![],
+    };
+    a.set_policy(&rid("writer"), pol_w.clone()).await.unwrap();
+    let got = a
+        .policies_for(&sid("alice"), &ttype("Customer"))
+        .await
+        .unwrap();
+    assert_eq!(got.len(), 2, "both roles' policies returned, no merge");
+    assert!(got.contains(&pol2) && got.contains(&pol_w));
+
+    // target kinds don't bleed; unknown subject -> empty
+    assert!(
+        a.policies_for(&sid("alice"), &ttable("main", "raw"))
+            .await
+            .unwrap()
+            .is_empty(),
+        "a Type policy is not returned for a Table target"
+    );
+    assert!(
+        a.policies_for(&sid("nobody"), &ttype("Customer"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // clear_policy removes only the named (role, target)
+    a.clear_policy(&rid("reader"), &ttype("Customer"))
+        .await
+        .unwrap();
+    let got = a
+        .policies_for(&sid("alice"), &ttype("Customer"))
+        .await
+        .unwrap();
+    assert_eq!(got, vec![pol_w], "only the writer policy remains");
+
+    // --- grant / set_policy on a missing role -> NotFound ---
+    assert!(matches!(
+        a.grant(&rid("ghost"), Action::Read, ttype("X")).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(matches!(
+        a.set_policy(
+            &rid("ghost"),
+            Policy {
+                target: ttype("X"),
+                row_filter: None,
+                deny_columns: vec![],
+            },
+        )
+        .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // --- inverses are idempotent no-ops on absent rows ---
+    a.unassign_role(&sid("alice"), &rid("never-assigned"))
+        .await
+        .unwrap();
+    a.revoke(&rid("reader"), Action::Read, &ttype("Nothing"))
+        .await
+        .unwrap();
+    a.clear_policy(&rid("reader"), &ttype("Nothing"))
+        .await
+        .unwrap();
+
+    // unassign actually unassigns: alice loses writer -> Write on raw denied
+    a.unassign_role(&sid("alice"), &rid("writer"))
+        .await
+        .unwrap();
+    assert_eq!(
+        a.check(&sid("alice"), Action::Write, &ttable("main", "raw"))
+            .await
+            .unwrap(),
+        Decision::Deny,
+        "unassigned role's grants no longer apply"
+    );
 }
