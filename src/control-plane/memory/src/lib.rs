@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Catalog, ColumnDef, ControlPlane, ControlPlaneError, Decision, FileRef, Job,
-    JobId, LinkDef, NewJob, ObjectType, Ontology, Policy, PolicyTarget, Queue, Result, RetryPolicy,
-    RoleId, Snapshot, SnapshotId, SubjectId, TableRef, TableSchema, Tx, TypeName,
+    Acl, Action, Catalog, ColumnDef, ControlPlane, ControlPlaneError, DatasetRef, Decision,
+    FileRef, Job, JobId, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, Policy,
+    PolicyTarget, Queue, Result, RetryPolicy, RoleId, RunId, Snapshot, SnapshotId, SubjectId,
+    TableRef, TableSchema, Tx, TypeName,
 };
 use time::OffsetDateTime;
 use tokio::sync::Notify;
@@ -77,6 +78,11 @@ struct AclState {
     policies: HashMap<(String, TargetKey), Policy>, // (role, target) -> policy
 }
 
+#[derive(Default)]
+struct LineageState {
+    events: Vec<LineageEvent>,
+}
+
 #[derive(Clone)]
 pub struct MemoryControlPlane {
     rows: Arc<Mutex<Vec<Row>>>,
@@ -84,6 +90,7 @@ pub struct MemoryControlPlane {
     catalog: Arc<Mutex<CatalogState>>,
     ontology: Arc<Mutex<OntologyState>>,
     acl: Arc<Mutex<AclState>>,
+    lineage: Arc<Mutex<LineageState>>,
     lock_timeout: Duration,
 }
 
@@ -95,6 +102,7 @@ impl MemoryControlPlane {
             catalog: Arc::new(Mutex::new(CatalogState::default())),
             ontology: Arc::new(Mutex::new(OntologyState::default())),
             acl: Arc::new(Mutex::new(AclState::default())),
+            lineage: Arc::new(Mutex::new(LineageState::default())),
             lock_timeout,
         }
     }
@@ -446,6 +454,54 @@ impl Acl for MemoryControlPlane {
 }
 
 #[async_trait]
+impl Lineage for MemoryControlPlane {
+    async fn emit(&self, event: LineageEvent) -> Result<()> {
+        self.lineage.lock().unwrap().events.push(event);
+        Ok(())
+    }
+
+    async fn events_for(&self, run: &RunId) -> Result<Vec<LineageEvent>> {
+        Ok(self
+            .lineage
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .filter(|e| e.run_id == *run)
+            .cloned()
+            .collect())
+    }
+
+    async fn upstream(&self, dataset: &DatasetRef) -> Result<Vec<DatasetRef>> {
+        let lin = self.lineage.lock().unwrap();
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for e in lin.events.iter().filter(|e| e.outputs.contains(dataset)) {
+            for d in &e.inputs {
+                if seen.insert(d.clone()) {
+                    out.push(d.clone());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn downstream(&self, dataset: &DatasetRef) -> Result<Vec<DatasetRef>> {
+        let lin = self.lineage.lock().unwrap();
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for e in lin.events.iter().filter(|e| e.inputs.contains(dataset)) {
+            for d in &e.outputs {
+                if seen.insert(d.clone()) {
+                    out.push(d.clone());
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[async_trait]
 impl Queue for MemoryControlPlane {
     async fn enqueue(&self, job: NewJob) -> Result<JobId> {
         let id = Self::insert(&mut self.rows.lock().unwrap(), job);
@@ -534,7 +590,9 @@ impl ControlPlane for MemoryControlPlane {
         Ok(Box::new(MemoryTx {
             rows: self.rows.clone(),
             notify: self.notify.clone(),
+            lineage: self.lineage.clone(),
             staged: Vec::new(),
+            staged_events: Vec::new(),
         }))
     }
 }
@@ -542,7 +600,9 @@ impl ControlPlane for MemoryControlPlane {
 struct MemoryTx {
     rows: Arc<Mutex<Vec<Row>>>,
     notify: Arc<Notify>,
+    lineage: Arc<Mutex<LineageState>>,
     staged: Vec<(Uuid, NewJob)>,
+    staged_events: Vec<LineageEvent>,
 }
 
 #[async_trait]
@@ -554,6 +614,13 @@ impl Tx for MemoryTx {
             for (id, job) in self.staged {
                 MemoryControlPlane::insert_with_id(&mut rows, id, job);
             }
+        }
+        if !self.staged_events.is_empty() {
+            self.lineage
+                .lock()
+                .unwrap()
+                .events
+                .extend(self.staged_events);
         }
         if staged_any {
             self.notify.notify_waiters();
@@ -567,5 +634,9 @@ impl Tx for MemoryTx {
         let id = Uuid::new_v4();
         self.staged.push((id, job));
         Ok(JobId(id))
+    }
+    async fn emit(&mut self, event: LineageEvent) -> Result<()> {
+        self.staged_events.push(event);
+        Ok(())
     }
 }

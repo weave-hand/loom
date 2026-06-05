@@ -63,3 +63,16 @@ rust_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "lineage",
+    crate = "lineage",
+    srcs = ["tests/lineage.rs"],
+    crate_root = "tests/lineage.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tokio",
+    ],
+)

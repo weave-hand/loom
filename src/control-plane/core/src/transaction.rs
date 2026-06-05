@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
+use crate::lineage::LineageEvent;
 use crate::queue::{JobId, NewJob};
 
 #[async_trait]
@@ -21,4 +22,8 @@ pub trait Tx: Send {
     /// transaction commits. Makes "commit a change AND enqueue downstream work"
     /// atomic.
     async fn enqueue(&mut self, job: NewJob) -> Result<JobId>;
+    /// Emit a lineage event within this unit of work: persisted only if the
+    /// transaction commits. Makes "record lineage AND enqueue downstream work"
+    /// atomic.
+    async fn emit(&mut self, event: LineageEvent) -> Result<()>;
 }
