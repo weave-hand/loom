@@ -2,15 +2,15 @@
 //! and local dev. NOT for production use. Jobs live in a `Vec` behind a `Mutex`;
 //! a `Tx` stages writes and applies them on commit (read-committed semantics).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Catalog, ColumnDef, ControlPlane, ControlPlaneError, FileRef, Job, JobId, LinkDef, NewJob,
-    ObjectType, Ontology, Queue, Result, RetryPolicy, Snapshot, SnapshotId, TableRef, TableSchema,
-    Tx, TypeName,
+    Acl, Action, Catalog, ColumnDef, ControlPlane, ControlPlaneError, Decision, FileRef, Job,
+    JobId, LinkDef, NewJob, ObjectType, Ontology, Policy, PolicyTarget, Queue, Result, RetryPolicy,
+    RoleId, Snapshot, SnapshotId, SubjectId, TableRef, TableSchema, Tx, TypeName,
 };
 use time::OffsetDateTime;
 use tokio::sync::Notify;
@@ -58,12 +58,32 @@ struct OntologyState {
     links: Vec<LinkDef>,
 }
 
+/// Encoded `PolicyTarget` used as a map/set key: `(kind, a, b)`.
+type TargetKey = (String, String, String);
+
+fn target_key(t: &PolicyTarget) -> TargetKey {
+    match t {
+        PolicyTarget::Type(n) => ("type".into(), n.0.clone(), String::new()),
+        PolicyTarget::Table(r) => ("table".into(), r.schema.clone(), r.name.clone()),
+    }
+}
+
+#[derive(Default)]
+struct AclState {
+    subjects: HashSet<String>,
+    roles: HashSet<String>,
+    members: HashSet<(String, String)>, // (subject, role)
+    grants: HashSet<(String, Action, TargetKey)>, // (role, action, target)
+    policies: HashMap<(String, TargetKey), Policy>, // (role, target) -> policy
+}
+
 #[derive(Clone)]
 pub struct MemoryControlPlane {
     rows: Arc<Mutex<Vec<Row>>>,
     notify: Arc<Notify>,
     catalog: Arc<Mutex<CatalogState>>,
     ontology: Arc<Mutex<OntologyState>>,
+    acl: Arc<Mutex<AclState>>,
     lock_timeout: Duration,
 }
 
@@ -74,6 +94,7 @@ impl MemoryControlPlane {
             notify: Arc::new(Notify::new()),
             catalog: Arc::new(Mutex::new(CatalogState::default())),
             ontology: Arc::new(Mutex::new(OntologyState::default())),
+            acl: Arc::new(Mutex::new(AclState::default())),
             lock_timeout,
         }
     }
@@ -311,6 +332,116 @@ impl Ontology for MemoryControlPlane {
 
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {
         Ok(self.get_type(name).await?.table)
+    }
+}
+
+#[async_trait]
+impl Acl for MemoryControlPlane {
+    async fn define_subject(&self, id: &SubjectId) -> Result<()> {
+        self.acl.lock().unwrap().subjects.insert(id.0.clone());
+        Ok(())
+    }
+
+    async fn define_role(&self, id: &RoleId) -> Result<()> {
+        self.acl.lock().unwrap().roles.insert(id.0.clone());
+        Ok(())
+    }
+
+    async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
+        let mut acl = self.acl.lock().unwrap();
+        if !acl.subjects.contains(&subject.0) {
+            return Err(ControlPlaneError::NotFound(format!(
+                "subject {}",
+                subject.0
+            )));
+        }
+        if !acl.roles.contains(&role.0) {
+            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        acl.members.insert((subject.0.clone(), role.0.clone()));
+        Ok(())
+    }
+
+    async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
+        self.acl
+            .lock()
+            .unwrap()
+            .members
+            .remove(&(subject.0.clone(), role.0.clone()));
+        Ok(())
+    }
+
+    async fn grant(&self, role: &RoleId, action: Action, target: PolicyTarget) -> Result<()> {
+        let mut acl = self.acl.lock().unwrap();
+        if !acl.roles.contains(&role.0) {
+            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        acl.grants
+            .insert((role.0.clone(), action, target_key(&target)));
+        Ok(())
+    }
+
+    async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()> {
+        self.acl
+            .lock()
+            .unwrap()
+            .grants
+            .remove(&(role.0.clone(), action, target_key(target)));
+        Ok(())
+    }
+
+    async fn set_policy(&self, role: &RoleId, policy: Policy) -> Result<()> {
+        let mut acl = self.acl.lock().unwrap();
+        if !acl.roles.contains(&role.0) {
+            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        let key = (role.0.clone(), target_key(&policy.target));
+        acl.policies.insert(key, policy);
+        Ok(())
+    }
+
+    async fn clear_policy(&self, role: &RoleId, target: &PolicyTarget) -> Result<()> {
+        self.acl
+            .lock()
+            .unwrap()
+            .policies
+            .remove(&(role.0.clone(), target_key(target)));
+        Ok(())
+    }
+
+    async fn check(
+        &self,
+        subject: &SubjectId,
+        action: Action,
+        target: &PolicyTarget,
+    ) -> Result<Decision> {
+        let acl = self.acl.lock().unwrap();
+        let tk = target_key(target);
+        let allow = acl
+            .members
+            .iter()
+            .filter(|(s, _)| s == &subject.0)
+            .any(|(_, role)| acl.grants.contains(&(role.clone(), action, tk.clone())));
+        Ok(if allow {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        })
+    }
+
+    async fn policies_for(
+        &self,
+        subject: &SubjectId,
+        target: &PolicyTarget,
+    ) -> Result<Vec<Policy>> {
+        let acl = self.acl.lock().unwrap();
+        let tk = target_key(target);
+        Ok(acl
+            .members
+            .iter()
+            .filter(|(s, _)| s == &subject.0)
+            .filter_map(|(_, role)| acl.policies.get(&(role.clone(), tk.clone())).cloned())
+            .collect())
     }
 }
 
