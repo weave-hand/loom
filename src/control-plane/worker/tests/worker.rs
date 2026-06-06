@@ -31,7 +31,8 @@ async fn drains_jobs_then_shuts_down() {
     let token = CancellationToken::new();
     let t = token.clone();
 
-    let worker = Worker::new(cp.clone(), "w1").with_poll_interval(Duration::from_millis(50));
+    let worker =
+        Worker::new(cp.clone(), "w1", LOCK_TIMEOUT).with_poll_interval(Duration::from_millis(50));
     let handle = tokio::spawn(async move {
         worker
             .run(&[KIND.to_string()], t, move |_job| {
@@ -67,7 +68,8 @@ async fn retry_then_succeed() {
     let token = CancellationToken::new();
     let t = token.clone();
 
-    let worker = Worker::new(cp.clone(), "w1").with_poll_interval(Duration::from_millis(50));
+    let worker =
+        Worker::new(cp.clone(), "w1", LOCK_TIMEOUT).with_poll_interval(Duration::from_millis(50));
     let handle = tokio::spawn(async move {
         worker
             .run(&[KIND.to_string()], t, move |_job| {
@@ -115,7 +117,8 @@ async fn abandon_is_terminal() {
     let token = CancellationToken::new();
     let t = token.clone();
 
-    let worker = Worker::new(cp.clone(), "w1").with_poll_interval(Duration::from_millis(50));
+    let worker =
+        Worker::new(cp.clone(), "w1", LOCK_TIMEOUT).with_poll_interval(Duration::from_millis(50));
     let handle = tokio::spawn(async move {
         worker
             .run(&[KIND.to_string()], t, move |_job| {
@@ -138,5 +141,65 @@ async fn abandon_is_terminal() {
         attempts.load(Ordering::SeqCst),
         1,
         "abandoned job runs exactly once"
+    );
+}
+
+// A handler that runs longer than lock_timeout is NOT reclaimed: the worker
+// heartbeats the lease, so the job runs exactly once and no other worker can
+// steal it mid-flight. Without heartbeating this job would be double-executed.
+#[tokio::test]
+async fn heartbeat_keeps_long_handler_single() {
+    let cp = MemoryControlPlane::new(LOCK_TIMEOUT); // 300ms lease
+    cp.enqueue(job(KIND)).await.unwrap();
+
+    let runs = Arc::new(AtomicU32::new(0));
+    let r = runs.clone();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let started_w = started.clone();
+
+    let token = CancellationToken::new();
+    let t = token.clone();
+    let worker = Worker::new(cp.clone(), "w1", LOCK_TIMEOUT);
+    let handle = tokio::spawn(async move {
+        worker
+            .run(&[KIND.to_string()], t, move |_job| {
+                let r = r.clone();
+                let started_w = started_w.clone();
+                async move {
+                    r.fetch_add(1, Ordering::SeqCst);
+                    started_w.notify_one();
+                    // Run well past LOCK_TIMEOUT so an un-heartbeated lease would expire.
+                    tokio::time::sleep(LOCK_TIMEOUT * 3).await;
+                    Ok(())
+                }
+            })
+            .await
+    });
+
+    // Once the handler is in flight, a different worker must NOT be able to claim
+    // the job: the lease is held by heartbeating, even though we're already past
+    // LOCK_TIMEOUT relative to the original claim by the time we check.
+    started.notified().await;
+    tokio::time::sleep(LOCK_TIMEOUT + Duration::from_millis(100)).await;
+    assert!(
+        cp.dequeue(&[KIND.to_string()], "intruder")
+            .await
+            .unwrap()
+            .is_none(),
+        "lease held by heartbeat: another worker cannot reclaim the in-flight job"
+    );
+
+    // Let the handler finish and the worker drain, then shut down.
+    tokio::time::sleep(LOCK_TIMEOUT * 3).await;
+    token.cancel();
+    handle.await.unwrap().unwrap();
+
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "handler ran exactly once");
+    assert!(
+        cp.dequeue(&[KIND.to_string()], "probe")
+            .await
+            .unwrap()
+            .is_none(),
+        "job completed (removed)"
     );
 }

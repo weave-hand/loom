@@ -20,16 +20,22 @@ pub struct Worker<Q> {
     queue: Q,
     worker_id: String,
     poll_interval: Duration,
+    heartbeat_interval: Duration,
 }
 
 impl<Q: Queue + Send + Sync> Worker<Q> {
     /// Create a worker. `worker_id` stamps the lock (`locked_by`) so reclaim and
-    /// observability can attribute in-flight jobs.
-    pub fn new(queue: Q, worker_id: impl Into<String>) -> Self {
+    /// observability can attribute in-flight jobs. `lease` MUST match the queue's
+    /// configured `lock_timeout` — it is how long a claimed job stays locked
+    /// without a heartbeat. The worker heartbeats the in-flight job every
+    /// `lease / 3` (floored at 1ms) so a handler running longer than the lease is
+    /// not reclaimed and double-executed.
+    pub fn new(queue: Q, worker_id: impl Into<String>, lease: Duration) -> Self {
         Self {
             queue,
             worker_id: worker_id.into(),
             poll_interval: DEFAULT_POLL_INTERVAL,
+            heartbeat_interval: (lease / 3).max(Duration::from_millis(1)),
         }
     }
 
@@ -61,7 +67,24 @@ impl<Q: Queue + Send + Sync> Worker<Q> {
             match self.queue.dequeue(kinds, &self.worker_id).await? {
                 Some(job) => {
                     let id = job.id;
-                    match handler(job).await {
+                    // Run the handler while heartbeating the lease on a timer, so a
+                    // handler that outlives `lock_timeout` isn't reclaimed and
+                    // double-executed. The heartbeat is best-effort: a missed tick is
+                    // recoverable (the next tick retries; worst case the lease lapses
+                    // and reclaim does its job) — deliberately asymmetric with the
+                    // `?`-propagating dequeue/complete/fail below.
+                    let fut = handler(job);
+                    tokio::pin!(fut);
+                    let mut hb = tokio::time::interval(self.heartbeat_interval);
+                    let outcome = loop {
+                        tokio::select! {
+                            res = &mut fut => break res,
+                            _ = hb.tick() => {
+                                let _ = self.queue.heartbeat(id).await;
+                            }
+                        }
+                    };
+                    match outcome {
                         Ok(()) => self.queue.complete(id).await?,
                         Err(JobFailure { error, policy }) => {
                             self.queue.fail(id, &error, policy).await?
