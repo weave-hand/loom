@@ -610,17 +610,17 @@ impl Tx for MemoryTx {
     async fn commit(self: Box<Self>) -> Result<()> {
         let staged_any = !self.staged.is_empty();
         {
+            // Hold BOTH locks across the whole apply so commit is atomic w.r.t. any
+            // single-lock reader (dequeue locks `rows`; events_for locks `lineage`):
+            // no partial commit is observable. Lock order rows-then-lineage must be
+            // consistent everywhere to stay deadlock-free (readers take only one
+            // lock; no reader takes both).
             let mut rows = self.rows.lock().unwrap();
+            let mut lin = self.lineage.lock().unwrap();
             for (id, job) in self.staged {
                 MemoryControlPlane::insert_with_id(&mut rows, id, job);
             }
-        }
-        if !self.staged_events.is_empty() {
-            self.lineage
-                .lock()
-                .unwrap()
-                .events
-                .extend(self.staged_events);
+            lin.events.extend(self.staged_events);
         }
         if staged_any {
             self.notify.notify_waiters();

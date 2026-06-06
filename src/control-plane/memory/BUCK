@@ -76,3 +76,16 @@ rust_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "tx",
+    crate = "tx",
+    srcs = ["tests/tx.rs"],
+    crate_root = "tests/tx.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tokio",
+    ],
+)
