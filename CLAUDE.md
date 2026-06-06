@@ -52,7 +52,7 @@ Notes:
 
 ## Continuous integration
 
-GitHub Actions, at `.github/workflows/ci.yml` (repo: `rsJames-ttrpg/loom`). All jobs install the pinned buck2 release and check out the prelude submodule recursively:
+GitHub Actions, at `.github/workflows/ci.yml` (repo: `weave-hand/loom`). All jobs install the pinned buck2 release and check out the prelude submodule recursively:
 - **`build-test`** (pushes to `main` only) — full `buck2 build //src/...` + `buck2 test //src/...`; `main` must always be fully green.
 - **`affected`** (PRs only) — builds/tests just the first-party targets the diff impacts, via btd. It does a second checkout at the PR base SHA, snapshots that graph with `//tools:supertd`, then runs `//tools:btd` (`--base` + `--universe`, `--json-lines`) and feeds the impacted `root//src/...` targets into `buck2 build`/`test`. Empty impact ⇒ nothing built.
 - **`lint`** (all events) — `buck2 run //tools:prek -- run --all-files`, so CI enforces exactly the pre-commit hooks defined in `prek.toml` (rustfmt, clippy, file checks, reindeer-in-sync) with no duplicated config. Fully hermetic via buck2 — no host Rust install (the `reindeer-check` hook's `cargo metadata` uses loom's own toolchain cargo; see `tools/buckify.sh`).

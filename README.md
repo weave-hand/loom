@@ -1,6 +1,6 @@
 # loom
 
-[![CI](https://github.com/rsJames-ttrpg/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/rsJames-ttrpg/loom/actions/workflows/ci.yml)
+[![CI](https://github.com/weave-hand/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/weave-hand/loom/actions/workflows/ci.yml)
 
 **An open-source take on Palantir Foundry — a typed-object data platform with built-in lineage and governance, running on a Rust + DataFusion + DuckLake core.**
 
