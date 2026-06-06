@@ -4,7 +4,7 @@
 
 **An open-source take on Palantir Foundry — a typed-object data platform with built-in lineage and governance, running on a Rust + DataFusion + DuckLake core.**
 
-> ⚠️ **Status: pre-alpha, scaffold-only.** No production code yet — only build setup and design docs. The architecture is intentionally framed as *exploratory*: the shape is sketched, the load-bearing decisions still need to be argued. If you're here to use loom, the answer is "not yet." If you're here to help design or build it, keep reading.
+> ⚠️ **Status: pre-alpha.** The **control-plane library is built** — five concerns (queue, catalog, ontology, ACL, lineage) as ports-and-adapters, each with an in-memory fake and a real Postgres adapter, run against a shared backend-agnostic contract. The three **services** that consume it (Ingest, Transform, Query API) and the Quack wire shim are **not built yet**. The architecture is still framed as *exploratory*: the shape is sketched, several load-bearing decisions are flagged for hardening. If you're here to use loom, the answer is "not yet." If you're here to help design or build it, keep reading.
 
 ---
 
@@ -28,13 +28,13 @@ For the full design rationale and open questions, see [`ARCHITECTURE.md`](./ARCH
 
 | Foundry concept                  | Loom equivalent                                                                                                  | Status         |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------- |
-| **Ontology** (objects, links, properties) | `ontology` schema in Postgres; resolved to physical DuckLake tables at plan time                          | Designed, not built |
+| **Ontology** (objects, links, properties) | `ontology` schema in Postgres; resolved to physical DuckLake tables at plan time                          | Library built; resolution-at-plan-time pending services |
 | **Actions** (typed write-backs)  | Named actions defined alongside object types; executed as transactional ontology + catalog mutations             | Designed, not built |
-| **Pipelines / Code Repositories** | Transform workers pulling jobs from the `queue` schema; DataFusion plans against DuckLake snapshots             | Designed, not built |
+| **Pipelines / Code Repositories** | Transform workers pulling jobs from the `queue` schema; DataFusion plans against DuckLake snapshots             | Queue + worker library built; transform service not built |
 | **Data Connection** (sources)    | Ingest service — accepts incoming data, writes Parquet, commits a new DuckLake snapshot                          | Designed, not built |
 | **Foundry SQL / Contour**        | Query API exposing a Quack endpoint; clients use any DuckDB-compatible SQL surface                               | Designed, not built |
-| **Markings + project permissions** | `acl` schema — subjects, roles, row- and column-level policy pushed into DataFusion plans                      | Designed, not built |
-| **Data Lineage**                 | `lineage` schema with [OpenLineage](https://openlineage.io/) events; lineage commits atomically with snapshots   | Designed, not built |
+| **Markings + project permissions** | `acl` schema — subjects, roles, row- and column-level policy pushed into DataFusion plans                      | Library built; plan pushdown pending Query API |
+| **Data Lineage**                 | `lineage` schema with [OpenLineage](https://openlineage.io/) events; lineage commits atomically with snapshots   | Library built (one-hop, `emit`+`enqueue` atomic); transitive + catalog leg pending |
 | **Compute backend** (Spark)      | DataFusion single-node by default; optional [Ballista](https://datafusion.apache.org/ballista/) for scale-out    | Designed, not built |
 | **Foundry Branching**            | DuckLake snapshots provide time-travel; named branches TBD                                                        | Open question  |
 
@@ -89,30 +89,32 @@ For per-component detail, tradeoffs, and the list of decisions still up for deba
 
 ## Project status & roadmap
 
-This repo is currently a Buck2 scaffold plus design docs. There is no executable code. The intended order of attack:
+Three steps, tracked in [`docs/superpowers/specs/2026-06-06-loom-roadmap.md`](./docs/superpowers/specs/2026-06-06-loom-roadmap.md). `main` stays green.
 
-1. Stand up the Postgres control plane: DuckLake catalog tables + skeleton `ontology`, `queue`, `acl`, `lineage` schemas.
-2. Build the Quack-over-DataFusion server shim — the translation layer external clients depend on. Validate against a real DuckDB client `ATTACH`.
-3. Ingest service: append-only writes, snapshot commits, lineage emission.
-4. Query API: ontology resolution, ACL rewriting, served over Quack.
-5. Transform workers: queue dequeue, DataFusion plans, snapshot output.
-6. Optional Ballista escalation, ontology actions, branching.
+1. **Control-plane library — ✅ delivered.** Five concerns as ports-and-adapters under `src/control-plane/` (`core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`): **queue** (with a worker and `await_jobs`), **catalog** (DuckLake read surface), **ontology**, **acl**, and **lineage**. Each runs against one backend-agnostic contract on both the in-memory fake and real Postgres. A cross-concern `Tx` seam makes `emit` + `enqueue` atomic.
+2. **Harden the control plane.** Correctness and contract gaps catalogued in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) — worker heartbeat, Tx isolation contract, catalog MVCC delete/evolve coverage, typed cross-concern identity, and deciding the `Tx` seam's future before any service depends on the library. Deferred features are parked in [`docs/FUTURE.md`](./docs/FUTURE.md).
+3. **The services on top.** Quack-over-DataFusion shim, then Query API (ontology resolve + ACL pushdown), Ingest (Parquet writes, snapshot commits, lineage), and Transform workers (built on `control-plane-worker`). Optional Ballista escalation, ontology actions, branching beyond that.
 
 When something gets built, this section moves it from "planned" into a concrete pointer.
 
 ## Building & running
 
 ```sh
-buck2 build //...     # build everything (currently: a hello_world genrule)
-buck2 run  //:<tgt>   # run a target
-buck2 test //...      # run tests (none yet)
+buck2 build //src/...   # build the control-plane crates (+ the hello_world sample)
+buck2 test  //src/...   # run the contract suites (in-memory + hermetic Postgres)
+buck2 run   //:<tgt>    # run a target
 ```
 
-See [`CLAUDE.md`](./CLAUDE.md) for build-system details (cells, bundled prelude, toolchain notes) and [`DEVELOPING.md`](./DEVELOPING.md) for the contributor workflow (currently empty — to be written as conventions emerge).
+See [`CLAUDE.md`](./CLAUDE.md) for build-system details (cells, bundled prelude, toolchain notes) and [`DEVELOPING.md`](./DEVELOPING.md) for the contributor workflow — getting a checkout building, the dev shell, and day-to-day commands.
 
 ## Contributing
 
-Right now the most valuable contributions are *design pushback* on [`ARCHITECTURE.md`](./ARCHITECTURE.md) — especially the section labeled "Open questions." Several load-bearing choices haven't been settled. If you see a tradeoff we've gotten wrong, open an issue or a PR against that doc before writing code.
+Two high-value tracks right now:
+
+- **Design pushback** on [`ARCHITECTURE.md`](./ARCHITECTURE.md) — especially the "Open questions" section. Several load-bearing choices haven't been settled; if you see a tradeoff we've gotten wrong, open an issue or a PR against that doc before writing code.
+- **Hardening the control-plane library** — the gaps in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) (Step 2) are concrete, scoped, and need to land before the services consume the library.
+
+Each change goes through the same spec → plan → implement → PR cycle the control plane was built with.
 
 ## License
 
