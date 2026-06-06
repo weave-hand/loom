@@ -1,332 +1,115 @@
-# Design: Control-Plane Roadmap (trait-first, contract-tested)
+# Design: Control-Plane Roadmap (as-built)
 
-> **Status:** roadmap / exploratory. This is the umbrella design for loom's control
-> plane. The trait surfaces here are **provisional** — sketched loosely so the
-> connections between concerns are visible. Each concern then gets its own
-> spec → plan → implement cycle, during which its trait is pinned down. When a
-> trait stabilizes, update it here.
+> **Status: DELIVERED (2026-06-06).** All five concerns shipped. This was the
+> umbrella design; it has been compacted to reflect what was actually built. The
+> provisional trait sketches have been replaced by the as-built surfaces and the
+> notable divergences from the original plan. Per-concern detail lives in each
+> concern's own spec; a critical read of the result is in
+> `2026-06-06-control-plane-critical-review.md`; deferred work is in `docs/FUTURE.md`.
 
-## Goal
+## Goal (unchanged)
 
-Build loom's **control plane** — the typed, transactional access layer over the
-Postgres schemas described in `ARCHITECTURE.md` (`ducklake.*`, `ontology`,
-`queue`, `lineage`, `acl`). It is a **library** the three services (Ingest,
-Transform, Query API) consume — not a service itself.
+loom's **control plane** — the typed, transactional access layer over the Postgres
+schemas in `ARCHITECTURE.md` (`ducklake.*`, `ontology`, `queue`, `lineage`, `acl`).
+A **library** the three services (Ingest, Transform, Query API) consume, not a
+service itself.
 
-The build methodology, applied per concern:
+## What shipped
 
-1. **Trait** — define the concern's trait surface (provisional, in `core`).
-2. **Test plan** — enumerate the behaviors/edge cases the trait must guarantee.
-3. **Test harness** — generic contract-test functions in `testkit`, backend-agnostic.
-4. **Tests against traits** — write the contract suite; it must fail against an
-   unimplemented adapter.
-5. **Implementation** — make the in-memory fake pass, then the Postgres adapter
-   pass the *same* suite.
+Ports & adapters with one backend-agnostic contract suite per concern, run against
+**both** an in-memory fake and real Postgres. The methodology held for all five
+concerns: trait (in `core`) → contract (in `testkit`) → fake passes → pg adapter +
+migration passes the *same* suite.
 
-## Approach: ports & adapters with shared contract tests
-
-Chosen (over a single-crate / trait-as-module layout) because the methodology's
-centerpiece — "tests written against traits" — requires the traits to be
-implementation-agnostic enough that **two backends pass one identical suite**. An
-in-memory fake gives fast, hermetic tests and a second implementation that keeps
-the trait honest; Postgres gives the real thing.
-
-### Crate layout
-
-`src/control-plane/` (currently a lib scaffold) is restructured into a family of
-workspace crates:
+### Crate layout (as built)
 
 ```
 src/control-plane/
-  core/      control-plane-core       traits, domain types, ControlPlaneError. NO I/O, no sqlx, no tokio runtime.
-  testkit/   control-plane-testkit    generic contract-test fns over the traits; backend-agnostic.
-  memory/    control-plane-memory     in-memory fake adapters (Mutex<…>); fast tests + local dev.
-  postgres/  control-plane-postgres   sqlx adapters + migrations (one dir per schema) + .sqlx offline metadata.
+  core/      control-plane-core      traits, domain types, ControlPlaneError. No I/O, no tokio.
+  testkit/   control-plane-testkit   generic contract fns over the traits; backend-agnostic.
+  memory/    control-plane-memory    in-memory fake (Arc<Mutex<…>>); fast tests + local dev.
+  postgres/  control-plane-postgres  sqlx adapter + migrations/ + hermetic PgFixture.
+  worker/    control-plane-worker    generic Worker<Q: Queue> dequeue→handle→complete/fail loop.
 ```
 
-Dependencies: `core` ← `memory`, `postgres`, `testkit`. Each adapter crate has a
-`tests/contract.rs` that invokes `testkit` against its own adapter. The same
-suite runs twice.
+`worker/` was added beyond the original four crates (Phase 1b). Dependencies:
+`core` ← everything; `testkit` ← `core`; adapters ← `core` (+ `testkit` as dev-dep);
+`worker` ← `core`.
 
-The pre-existing top-level `control-plane` lib scaffold (`add()`/`it_works`) is
-replaced by these crates; there is no `control-plane` binary (the control plane
-is a library).
+### Concern status
 
-### Async & object safety
+| Phase | Concern | Status | Key spec |
+| ----- | ------- | ------ | -------- |
+| 0  | foundations (crate split, `ControlPlaneError`, `Tx` seam, hermetic pg fixture) | ✅ | `2026-06-03-control-plane-phase-0*` |
+| 1  | **queue** (+ worker, `await_jobs`) | ✅ | `2026-06-04-control-plane-queue-design` |
+| 2  | catalog (DuckLake read surface) | ✅ | `2026-06-04-control-plane-catalog-design` |
+| 3  | ontology (types/properties/links, `resolve`) | ✅ | `2026-06-04-control-plane-ontology-design` |
+| 4  | acl (subjects/roles/grants + row/col policy) | ✅ | `2026-06-04-control-plane-acl-design` |
+| 5  | lineage (events + one-hop graph; first cross-concern `Tx`) | ✅ | `2026-06-05-control-plane-lineage-design` |
 
-All trait methods are `async`. To keep the aggregator's `&dyn Queue`-style
-dynamic dispatch object-safe, traits use the `async_trait` crate (boxes the
-returned futures). Adapters run on `tokio`.
+## Durable decisions (still true)
 
-## Error model
+- **Error model:** one `ControlPlaneError` in `core` (`NotFound`/`Conflict`/
+  `Unauthorized`/`Serialization`/`Backend`); contracts assert on **variants, never
+  messages**, so both backends satisfy one suite. (Note: `Conflict`/`Unauthorized`
+  are defined but currently unused — `Acl::check` returns a `Decision`, not an error.)
+- **Async + object safety** via `async_trait`; adapters on `tokio`; `core` runtime-free.
+- **Hermetic Postgres fixture:** the server binary is a buck2 `http_archive` input
+  (theseus-rs), booted as an ephemeral per-process cluster, fresh DB per test. Runs in
+  the default CI path; pg/duckdb tests are `--local-only` (refuse to run as root on RE).
+- **No `rsql`/driver abstraction** — rejected as a generic layer whose value isn't a
+  goal (opinionated, not pluggable). DuckLake is driven only by a pinned DuckDB CLI in
+  the catalog *test fixture*; production code never touches DuckDB.
 
-A single `ControlPlaneError` (`thiserror`) lives in `core`; every method returns
-`Result<T, ControlPlaneError>`:
+## Divergences from the original sketch (worth knowing)
 
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum ControlPlaneError {
-    #[error("not found: {0}")]            NotFound(String),
-    #[error("conflict: {0}")]             Conflict(String),   // optimistic / snapshot conflict
-    #[error("unauthorized")]              Unauthorized,
-    #[error("serialization: {0}")]        Serialization(String),
-    #[error(transparent)]                 Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
-}
-```
+- **The `Tx` seam is object-based, not the closure aggregator.** Shipped:
+  `ControlPlane::begin() -> Box<dyn Tx + Send>` with a flat `Tx { commit, rollback,
+  enqueue, emit }`. The sketched `transaction<F,T>(closure)` + per-concern accessors
+  (`fn queue(&self) -> &dyn Queue`, …) were **dropped** — the finicky-lifetime risk
+  resolved by going object-based. Consequence: `dyn ControlPlane` exposes only
+  `begin()`, and only `enqueue`/`emit` are transactional (see review §2).
+- **No standalone Tx "probe op," and no isolation test.** Tx semantics are covered
+  inline (commit/rollback in `queue_contract`, cross-concern emit+enqueue in
+  `lineage_contract`). The promised concurrent-isolation test was never written
+  (review §1).
+- **catalog:** `files`/`schema` are keyed by `(TableRef, SnapshotId)`, and
+  `current_snapshot` was added; the read surface is MVCC-range based.
+- **ontology:** `actions()` dropped (deferred); write ops (`define_type`/
+  `define_link`) added so the concern is loom-owned and the contract self-seeds.
+- **acl** is much larger than the 2-method sketch: full write surface (subjects,
+  roles, membership, grants, policy + inverses) and a recursive boolean `RowFilter`
+  tree stored as `jsonb`, not just `check`/`policies_for`.
+- **lineage:** added `events_for` (audit read-back); `DatasetRef` is a generic
+  OpenLineage `{namespace, name}`.
+- **sqlx offline metadata (`.sqlx`) was NOT adopted** — the pg adapter uses the
+  runtime query API throughout (SQL is unchecked at compile time; review §2).
 
-Adapters map native errors (sqlx errors, etc.) into these variants. **Contract
-tests assert on variants, never on messages**, so both backends can satisfy them.
+## Open questions → outcome
 
-## Trait surfaces (provisional)
+- Queue durability vs latency → **resolved (P1):** `LISTEN/NOTIFY` + polling-fallback
+  `await_jobs`. (Gap: the shipped `Worker` never heartbeats — review §1.)
+- Multi-writer ingest / DuckLake concurrency → **still open** (catalog is read-only).
+- Ontology authoring & migration → **partial (P3):** control plane is the write API;
+  physical-table migration still open.
+- ACL pushdown completeness → **reframed (P4):** P4 stores/returns predicates as a
+  structured tree; what's pushable is the Query API's call.
+- GC of orphaned Parquet → **still open** (`docs/FUTURE.md`).
+- Tenancy → **still open**, single-tenant everywhere (`docs/FUTURE.md`).
+- Transactional snapshot commit (the third atomic leg) → **not built**; catalog has no
+  write op (review §4).
 
-All `async`, all `-> Result<_, ControlPlaneError>`. Domain types
-(`JobId`, `TableRef`, `TypeName`, `SubjectId`, `DatasetRef`, …) live in `core`.
+## Non-goals (unchanged)
 
-```rust
-// queue — graphile_worker_rs-shaped
-trait Queue {
-    async fn enqueue(&self, job: NewJob) -> Result<JobId>;
-    async fn dequeue(&self, kinds: &[JobKind]) -> Result<Option<Job>>;   // SELECT … FOR UPDATE SKIP LOCKED
-    async fn complete(&self, id: JobId) -> Result<()>;
-    async fn fail(&self, id: JobId, retry: RetryPolicy) -> Result<()>;   // attempt count + backoff
-    async fn heartbeat(&self, id: JobId) -> Result<()>;                  // for crashed-worker reaping
-}
+The Quack-over-DataFusion server shim, the three services, and DataFusion plan
+rewriting (the control plane is the library beneath them); writing `ducklake.*`
+directly (DuckLake client owns it); a fully typed OpenLineage model (payload stays
+opaque); Ballista, GC, and multi-tenancy mechanics.
 
-// catalog — DuckLake read surface. loom reads ducklake.*, never writes it directly.
-trait Catalog {
-    async fn current_snapshot(&self, t: TableRef) -> Result<Snapshot>;
-    async fn snapshots(&self, t: TableRef) -> Result<Vec<Snapshot>>;
-    async fn files(&self, s: SnapshotId) -> Result<Vec<FileRef>>;
-    async fn schema(&self, t: TableRef, at: SnapshotId) -> Result<TableSchema>;
-}
+## Where to look next
 
-// ontology
-trait Ontology {
-    async fn get_type(&self, n: &TypeName) -> Result<ObjectType>;
-    async fn list_types(&self) -> Result<Vec<ObjectType>>;
-    async fn links(&self, n: &TypeName) -> Result<Vec<LinkDef>>;
-    async fn resolve(&self, n: &TypeName) -> Result<TableRef>;           // type → physical DuckLake table
-    async fn actions(&self, n: &TypeName) -> Result<Vec<ActionDef>>;
-}
-
-// acl
-trait Acl {
-    async fn check(&self, s: SubjectId, a: Action, t: PolicyTarget) -> Result<Decision>;
-    async fn policies_for(&self, s: SubjectId, t: PolicyTarget) -> Result<Vec<Policy>>; // row/col predicates the Query API pushes into DF plans
-}
-
-// lineage — opaque OpenLineage payload + typed envelope for the fields we query
-trait Lineage {
-    async fn emit(&self, e: LineageEvent) -> Result<()>;
-    async fn upstream(&self, d: DatasetRef) -> Result<Vec<DatasetRef>>;
-    async fn downstream(&self, d: DatasetRef) -> Result<Vec<DatasetRef>>;
-}
-
-struct LineageEvent {
-    run_id: RunId,
-    event_type: EventType,
-    ts: OffsetDateTime,
-    inputs: Vec<DatasetRef>,
-    outputs: Vec<DatasetRef>,
-    payload: serde_json::Value,   // full OpenLineage event, stored opaquely (JSONB in pg)
-}
-```
-
-These are deliberately loose. Real signatures (pagination, streaming dequeue,
-filter predicates) are pinned during each concern's own cycle.
-
-## The transaction seam (cross-concern unit of work)
-
-`ARCHITECTURE.md`'s headline property: a single transaction can mutate a snapshot
-*and* record lineage *and* enqueue downstream work. The control plane expresses
-this with an aggregator:
-
-```rust
-trait ControlPlane {
-    fn queue(&self)    -> &dyn Queue;
-    fn catalog(&self)  -> &dyn Catalog;
-    fn ontology(&self) -> &dyn Ontology;
-    fn acl(&self)      -> &dyn Acl;
-    fn lineage(&self)  -> &dyn Lineage;
-
-    // Run a closure inside one unit of work. The closure gets a `Tx` exposing the
-    // same per-concern operations; all of them commit together or roll back together.
-    async fn transaction<F, T>(&self, f: F) -> Result<T>
-    where
-        F: for<'t> FnOnce(&'t mut Tx<'t>) -> BoxFuture<'t, Result<T>> + Send;
-}
-```
-
-- **Postgres adapter:** `Tx` wraps a real `sqlx::Transaction`; per-concern ops issued
-  against it share the transaction; commit on `Ok`, rollback on `Err`.
-- **Memory adapter:** `Tx` stages mutations and applies them to the shared state on
-  `Ok`, discards on `Err`, under a single lock for atomicity/isolation.
-
-**Built fully in Phase 0** (per decision). Because there are no real concern
-operations yet in P0, the Tx machinery is contract-tested against a **minimal
-internal probe op** — a scratch table (pg) / counter (memory) that exists only to
-verify the transaction semantics:
-
-- commit makes staged writes visible;
-- an error inside the closure rolls everything back (no partial writes);
-- isolation: concurrent transactions don't observe each other's uncommitted state.
-
-Real cross-concern atomicity (e.g. `lineage.emit` + `queue.enqueue` in one Tx) is
-exercised for real in Phase 5, once ≥2 concerns participate. The probe op is
-test-only and is removed or kept solely under `#[cfg(test)]`/a test schema.
-
-> **Risk note:** the `Tx` lifetime/closure signature is the highest-churn part of
-> this design. The `for<'t> FnOnce(&'t mut Tx<'t>) -> BoxFuture` shape may need
-> revision once real adapters are written (sqlx transaction lifetimes are
-> notoriously finicky). Treat it as provisional even relative to the rest.
-
-## Test harness
-
-`testkit` exposes generic `async fn`s — one suite per concern plus the Tx-semantics
-suite — each taking a **fixture factory** that yields a fresh, empty adapter:
-
-```rust
-// sketch — exact bound pinned in Phase 0
-pub async fn queue_contract<CP, Fut>(make_fresh: impl Fn() -> Fut)
-where CP: ControlPlane, Fut: Future<Output = CP> { /* enqueue→dequeue, SKIP LOCKED, fail/retry, … */ }
-```
-
-- **fake fixture** → `make_fresh()` returns a brand-new in-memory adapter.
-- **pg fixture** → `make_fresh()` boots an **ephemeral, hermetic Postgres** (see
-  below), creates a **fresh database per test** (cheap on an already-running
-  cluster, full superuser via `trust` auth), runs migrations into it, returns the
-  adapter. No external database, no Docker, no env-provided URL.
-
-### Hermetic Postgres fixture
-
-The Postgres binary is a **buck2 build input**, not an ambient dependency: an
-`http_archive` pulls a prebuilt server from
-[`theseus-rs/postgresql-binaries`](https://github.com/theseus-rs/postgresql-binaries),
-pinned per platform, and the `rust_test` receives its `bin/` directory via `env`.
-The fixture then boots a throwaway cluster per test process and tears it down on
-`Drop`. Because the binary is materialized by buck2, these tests are **hermetic
-and run in the default CI path** — same as the fake tests.
-
-```python
-# //src/control-plane/postgres:postgres-bin  (hand-written, not reindeer-generated)
-http_archive(
-    name = "postgres-bin",
-    urls = select({
-        "ovr_config//os:linux": ["https://github.com/theseus-rs/postgresql-binaries/releases/download/<ver>/postgresql-<ver>-x86_64-unknown-linux-gnu.tar.gz"],
-        "ovr_config//os:macos": ["https://github.com/theseus-rs/postgresql-binaries/releases/download/<ver>/postgresql-<ver>-aarch64-apple-darwin.tar.gz"],
-    }),
-    sha256 = select({ ... }),   # pin per platform
-    # check the archive's internal layout — may need strip_prefix for a top-level dir
-)
-
-rust_test(
-    name = "contract_pg",
-    srcs = glob(["tests/**/*.rs"]),
-    env = {"POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin"},
-    deps = ["//third-party:sqlx", "//third-party:tempfile", "//src/control-plane/testkit:testkit", ...],
-)
-```
-
-```rust
-// test-support: boots `postgres` on a unix socket in a tempdir; Drop kills it.
-pub struct PgFixture { _data: tempfile::TempDir, socket: tempfile::TempDir, server: std::process::Child }
-
-impl PgFixture {
-    pub fn start() -> anyhow::Result<Self> {
-        let bin = std::path::PathBuf::from(std::env::var("POSTGRES_BIN_DIR")?);
-        let data = tempfile::tempdir()?;
-        let socket = tempfile::tempdir()?;
-        anyhow::ensure!(Command::new(bin.join("initdb")).arg("-D").arg(data.path())
-            .args(["--no-locale", "--encoding=UTF8", "-A", "trust", "-U", "postgres"])
-            .status()?.success(), "initdb failed");
-        let server = Command::new(bin.join("postgres")).arg("-D").arg(data.path())
-            .arg("-k").arg(socket.path())
-            .args(["-c", "listen_addresses=",            // unix socket only
-                   "-c", "fsync=off", "-c", "full_page_writes=off"]).spawn()?;
-        // poll `pg_isready -h <socket>` with backoff before returning
-        Ok(Self { _data: data, socket, server })
-    }
-    // libpq treats a host starting with `/` as a socket directory
-    pub fn conn_string(&self, db: &str) -> String {
-        format!("host={} user=postgres dbname={db}", self.socket.path().display())
-    }
-}
-impl Drop for PgFixture { fn drop(&mut self) { let _ = self.server.kill(); let _ = self.server.wait(); } }
-```
-
-One cluster per test binary (boot once), one fresh `CREATE DATABASE` per test fn
-for isolation; `fsync=off`/socket-only keep it fast. The fixture lives in
-test-support (the `testkit` crate or a `postgres` test module).
-
-### buck2 / CI integration
-
-- Each crate gets a BUCK `rust_library`; contract suites are `rust_test` targets.
-- **Both** the fake and the Postgres contract tests are hermetic `rust_test`
-  targets and run in the default `//src/...` CI path — the fake needs nothing
-  extra; the pg suite depends on the `:postgres-bin` `http_archive`.
-- **RE caveat to verify in Phase 1:** the pg fixture spawns a `postgres` child
-  process listening on a unix socket inside a tempdir. This should be fine under
-  the BuildBuddy RE sandbox, but confirm it during Phase 1; if the sandbox blocks
-  the spawned server, mark just that one `rust_test` `local_only` (it stays
-  hermetic either way — the binary is still a buck input).
-- **Third-party deps** (`tokio`, `async-trait`, `thiserror`, `sqlx`, `serde`,
-  `serde_json`, `uuid`, `time`; plus test-only `tempfile`, `anyhow`) are imported
-  via reindeer → `//third-party:*` and buckified (`./tools/buckify.sh`). The
-  Postgres *server* binary comes from the `:postgres-bin` `http_archive`, not crates.
-- **sqlx offline metadata** (`.sqlx/`) is committed so `control-plane-postgres`
-  builds hermetically (compile-time-checked queries with no live DB at build time).
-
-## Building blocks to evaluate
-
-Same ecosystem, worth pulling in deliberately:
-
-- **[`theseus-rs/postgresql-binaries`](https://github.com/theseus-rs/postgresql-binaries)**
-  — the prebuilt Postgres server the hermetic pg fixture pulls via `http_archive`
-  (P0/P1, above). Already load-bearing.
-- **[`theseus-rs/rsql`](https://github.com/theseus-rs/rsql)** — a Rust SQL toolkit
-  (Apache-2.0/MIT) whose reusable crates `rsql_driver` (a unified async
-  driver/connection abstraction) and `rsql_drivers` (concrete drivers for **DuckDB**,
-  PostgreSQL incl. *embedded*, SQLite, …) are strong candidates for when DuckLake /
-  DuckDB enters in the **Catalog phase (P2)**:
-  - Its **DuckDB driver** is the obvious way to talk to DuckLake/DuckDB without
-    hand-rolling FFI; evaluate it as the `Catalog`/`postgres`-adapter substrate then.
-  - Its **embedded Postgres** is built on the same `postgresql-binaries`, so it's an
-    alternative to our hand-rolled fixture. Caveat: it *downloads* the binary at
-    runtime by default — to stay hermetic we'd still feed it the buck2-materialized
-    binary. Keep the hand-rolled fixture for P0/P1; revisit `rsql_driver` as a
-    unifying abstraction only if it earns its keep at P2.
-
-  Provisional — not a committed dependency; the call is made in the Catalog cycle.
-
-## Roadmap
-
-Each phase is its own spec → plan → implement cycle; this document is the umbrella.
-
-| Phase | Concern | Deliverable |
-| ----- | ------- | ----------- |
-| **0** | Foundations | Crate split (`core`/`testkit`/`memory`/`postgres` skeletons); `ControlPlaneError`; the `ControlPlane`/`Tx` aggregator implemented in both adapters and contract-tested via the probe op; BUCK files + reindeer deps + sqlx offline; fake CI green. |
-| **1** | **queue** | The **template** that proves the full loop end-to-end: trait → test plan → testkit suite → fake passes → pg adapter + `queue` migration + pg fixture passes. |
-| 2 | catalog | DuckLake read surface (`ducklake.*`). |
-| 3 | ontology | Types/links/actions; `resolve` type → physical table. |
-| 4 | acl | Subjects, policy; predicate output for DataFusion plan rewrite. |
-| 5 | lineage | Typed-envelope + opaque payload; upstream/downstream graph; **first real cross-concern `Tx`** (emit + enqueue atomically). |
-
-### Open questions → phase that resolves it
-
-Pulled from `ARCHITECTURE.md`; the trait sketches stay provisional precisely
-because these aren't settled:
-
-- Queue durability vs latency (LISTEN/NOTIFY + polling fallback, stuck-job reaper) → **P1**.
-- Multi-writer ingest / DuckLake concurrency model → **P2** (catalog).
-- Ontology authoring & migration → **P3**.
-- ACL pushdown completeness (predicates that can't push into one scan) → **P4**.
-- GC of orphaned Parquet → catalog-adjacent, flagged in **P2**, likely its own later cycle.
-- Tenancy (partitioning `acl`/`ontology`) → surfaced in **P3/P4**.
-
-## Non-goals (for this roadmap)
-
-- The Quack-over-DataFusion server shim, the three services themselves, and
-  DataFusion plan rewriting — the control plane is the library beneath them.
-- Writing the `ducklake.*` tables directly (owned by the DuckLake client; loom reads).
-- A fully typed OpenLineage model (payload stays opaque; typed envelope only).
-- Ballista, GC implementation, and multi-tenancy mechanics (tracked as open questions).
+`2026-06-06-control-plane-critical-review.md` — the prioritized "what to fix" list
+(heartbeating worker, Tx isolation contract, catalog MVCC-delete contract, typed
+cross-concern identity, and the `Tx` seam's future). `docs/FUTURE.md` — deferred
+features. The layers *above* this library (services, Quack shim) are the natural next
+project and will want their own brainstorm.
