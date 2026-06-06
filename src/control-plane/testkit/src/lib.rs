@@ -920,3 +920,86 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         "committed enqueue is visible"
     );
 }
+
+/// Contract for `Tx` isolation: while a transaction is open and uncommitted, the
+/// autocommit read path observes none of its writes; on commit the whole unit
+/// (enqueue + emit) becomes visible; on rollback nothing ever does. Deterministic —
+/// the read happens on the same thread while the `Tx` handle is still alive (for pg
+/// the read uses a distinct pool connection, so READ COMMITTED hides the open tx).
+pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) {
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let event = |run: RunId| LineageEvent {
+        run_id: run,
+        event_type: EventType::Complete,
+        event_time: ts,
+        inputs: vec![],
+        outputs: vec![DatasetRef {
+            namespace: "ducklake".into(),
+            name: "main.out".into(),
+        }],
+        payload: serde_json::json!({}),
+    };
+
+    // --- commit path: invisible while open, both visible after commit ---
+    let run = RunId(uuid::Uuid::new_v4());
+    let kinds = vec!["tx-iso".to_string()];
+    let mut tx = cp.begin().await.expect("begin");
+    tx.enqueue(NewJob {
+        kind: "tx-iso".into(),
+        payload: serde_json::json!({}),
+        run_at: None,
+        priority: 0,
+    })
+    .await
+    .expect("staged enqueue");
+    tx.emit(event(run)).await.expect("staged emit");
+
+    // Open + uncommitted: the autocommit read path sees neither write.
+    assert!(
+        cp.dequeue(&kinds, "reader").await.unwrap().is_none(),
+        "uncommitted enqueue is invisible while the tx is open"
+    );
+    assert!(
+        cp.events_for(&run).await.unwrap().is_empty(),
+        "uncommitted emit is invisible while the tx is open"
+    );
+
+    tx.commit().await.expect("commit");
+
+    // After commit: the whole unit is visible.
+    let job = cp
+        .dequeue(&kinds, "reader")
+        .await
+        .unwrap()
+        .expect("committed enqueue is visible");
+    cp.complete(job.id).await.unwrap();
+    assert_eq!(
+        cp.events_for(&run).await.unwrap().len(),
+        1,
+        "committed emit is visible"
+    );
+
+    // --- rollback path: nothing ever becomes visible ---
+    let run_rb = RunId(uuid::Uuid::new_v4());
+    let kinds_rb = vec!["tx-iso-rb".to_string()];
+    let mut tx = cp.begin().await.expect("begin");
+    tx.enqueue(NewJob {
+        kind: "tx-iso-rb".into(),
+        payload: serde_json::json!({}),
+        run_at: None,
+        priority: 0,
+    })
+    .await
+    .unwrap();
+    tx.emit(event(run_rb)).await.unwrap();
+    tx.rollback().await.expect("rollback");
+
+    assert!(
+        cp.dequeue(&kinds_rb, "reader").await.unwrap().is_none(),
+        "rolled-back enqueue never becomes visible"
+    );
+    assert!(
+        cp.events_for(&run_rb).await.unwrap().is_empty(),
+        "rolled-back emit never becomes visible"
+    );
+}
