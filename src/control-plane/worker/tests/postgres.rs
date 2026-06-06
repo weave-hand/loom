@@ -31,7 +31,8 @@ async fn worker_drains_postgres_jobs() {
     let token = CancellationToken::new();
     let t = token.clone();
 
-    let worker = Worker::new(cp.clone(), "w1").with_poll_interval(Duration::from_millis(100));
+    let worker = Worker::new(cp.clone(), "w1", Duration::from_millis(300))
+        .with_poll_interval(Duration::from_millis(100));
     let handle = tokio::spawn(async move {
         worker
             .run(&[KIND.to_string()], t, move |_job| {
@@ -67,7 +68,8 @@ async fn notify_delivers_before_poll_timeout() {
     let t = token.clone();
 
     // Poll fallback is 30s; only NOTIFY can make this finish promptly.
-    let worker = Worker::new(cp.clone(), "w1").with_poll_interval(Duration::from_secs(30));
+    let worker = Worker::new(cp.clone(), "w1", Duration::from_millis(300))
+        .with_poll_interval(Duration::from_secs(30));
     let handle = tokio::spawn(async move {
         worker
             .run(&[KIND.to_string()], t, move |_job| {
