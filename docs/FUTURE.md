@@ -46,7 +46,28 @@ items — they're the "later, if a consumer needs it" pile.
 - **Dataset/target existence validation.** Lineage `emit`, ACL `grant`/`set_policy`, and
   ontology `resolve` all **store without validating** that the referenced dataset / table /
   type exists in the catalog or ontology. Cross-concern referential validation is deferred
-  across the board.
+  across the board. When taken up:
+  - **No new core seam is needed** — the adapters already co-locate every concern on one
+    struct (`PgControlPlane`/`MemoryControlPlane` `impl` all five traits), so a validating
+    `set_policy` can consult the ontology via its own `&self`. `ControlPlaneError` is
+    `#[non_exhaustive]`, so a dedicated validation variant is additive.
+  - **Same-database references can use cross-schema FK constraints** instead of an
+    application read (e.g. `acl.policy.target_type → ontology.object_type`). Within one
+    Postgres transaction, earlier writes are visible to later FK checks, so this gives
+    *transactional* referential integrity — including for a type + policy defined in the
+    **same `Tx`** — without solving read-your-writes-in-`Tx` at the app level. Caveats:
+    (a) the in-memory fake has no FK engine, so it must replicate the check against its
+    staged buffers to stay contract-faithful (the read concern returns, fake-only);
+    (b) lineage `DatasetRef` can name **external** datasets with no catalog row, so it
+    categorically cannot be FK'd — its validation, if any, stays advisory; (c) cross-schema
+    FKs couple schemas we deliberately kept isolated — a tradeoff to weigh.
+- **`TableRef`/`TypeName` → `DatasetRef` naming bridge.** Per the OpenLineage naming spec a
+  dataset's namespace is datasource-derived (`s3://bucket`, `postgres://host:port`) and its
+  name dot-qualified (`database.schema.table`). That mapping needs deployment context (the
+  physical storage location), so it belongs to the Step 3 services, not `core` constants —
+  `DatasetRef` already conforms to the minimal `{namespace, name}` shape. (This is why the
+  "typed cross-concern identity" hardening item collapsed to docs + the `#[non_exhaustive]`
+  reservation rather than a core typed bridge.)
 - **Tenancy.** Every concern is single-tenant. Multi-tenant partitioning (a `tenant_id`
   threaded through the schemas and lookups) is deferred until a deployment needs it.
 - **Wider `Tx` composition.** `Tx` carries only `enqueue` and `emit`. If a third concern ever
