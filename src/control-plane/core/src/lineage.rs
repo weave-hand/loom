@@ -19,8 +19,16 @@ use crate::error::Result;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RunId(pub Uuid);
 
-/// OpenLineage dataset identity. Decoupled from `TableRef`/`TypeName` so lineage
-/// can reference physical tables, ontology types, and external datasets uniformly.
+/// OpenLineage dataset identity (`{namespace, name}` — already the OpenLineage
+/// minimal shape). Decoupled from `TableRef`/`TypeName` so lineage can reference
+/// physical tables, ontology types, and external datasets uniformly.
+///
+/// Per the OpenLineage naming spec the `namespace` is **datasource-derived** (e.g.
+/// `s3://bucket`, `postgres://host:port`) and the `name` is dot-qualified
+/// (`database.schema.table`). That mapping from a loom `TableRef`/`TypeName` to a
+/// `DatasetRef` therefore depends on deployment context (where the data physically
+/// lives), so it belongs to the consuming services, not to `core` — see
+/// `docs/FUTURE.md`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DatasetRef {
     pub namespace: String,

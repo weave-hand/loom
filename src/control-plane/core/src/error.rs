@@ -4,7 +4,11 @@
 /// Result alias used throughout the control plane.
 pub type Result<T> = std::result::Result<T, ControlPlaneError>;
 
+/// `#[non_exhaustive]` so future variants (e.g. a cross-concern validation failure,
+/// when reference validation is taken up — see `docs/FUTURE.md`) are additive rather
+/// than a breaking change for downstream `match`es.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ControlPlaneError {
     #[error("not found: {0}")]
     NotFound(String),
