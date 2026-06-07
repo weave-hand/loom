@@ -25,7 +25,10 @@ items — they're the "later, if a consumer needs it" pile.
 - **The snapshot-commit third leg of the atomic unit.** P5 makes `emit` + `enqueue` atomic via
   `Tx`. The full architecture goal — snapshot commit + lineage + enqueue in one transaction —
   also needs a **transactional catalog write**, which the catalog does not expose (it has been
-  read-only). Wiring a catalog write op into `Tx` is future work.
+  read-only). **Decided (Step 2a #5):** this is an **ingest-worker (Step 3) concern** — *how*
+  loom commits a snapshot is inseparable from the ingest service design and the open
+  multi-writer/DuckLake-concurrency question, so it's owned there and joins the flat `Tx` seam
+  as one more method when ingest defines it. See `2026-06-07-tx-seam-decision-design.md`.
 
 ## Catalog (Phase 2)
 
@@ -70,6 +73,10 @@ items — they're the "later, if a consumer needs it" pile.
   reservation rather than a core typed bridge.)
 - **Tenancy.** Every concern is single-tenant. Multi-tenant partitioning (a `tenant_id`
   threaded through the schemas and lookups) is deferred until a deployment needs it.
-- **Wider `Tx` composition.** `Tx` carries only `enqueue` and `emit`. If a third concern ever
-  needs transactional writes, revisit whether the flat-method seam should become a
-  per-concern-handle aggregator (the roadmap's original, provisional sketch).
+- **Wider `Tx` composition.** `Tx` carries only `enqueue` and `emit`. **Decided (Step 2a #5):**
+  the seam **stays flat** — a new transactional op is added as a flat method when a concern
+  needs it; per-concern sub-handles / a staged-op model are *not* adopted now (only 2–3 ops in
+  sight). Re-open only if a fourth transactional concern (beyond queue, lineage, and the
+  ingest catalog write) proves flat insufficient. `dyn ControlPlane` is likewise left
+  minimal (only `begin()`; no per-concern accessors) until a consumer needs them. See
+  `2026-06-07-tx-seam-decision-design.md`.

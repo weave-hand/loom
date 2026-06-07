@@ -31,31 +31,34 @@ before any Step 3 service consumes the library** (they're correctness/contract g
 a consumer would inherit). 2b can trail. 2c is feature debt, pulled forward only when
 a Step 3 consumer needs it.
 
-### 2a — Must-fix before services depend on it
+### 2a — Must-fix before services depend on it  ✅ COMPLETE
 
-1. **Worker heartbeat.** `Worker::run` never renews its lease, so a handler outliving
-   `lock_timeout` is reclaimed and **double-executed**; `Queue::heartbeat` is dead
-   from the worker's side. Spawn a heartbeat task for the in-flight job + add a
-   slow-handler test asserting single execution. *(Correctness; small.)*
-2. **Tx isolation/concurrency contract.** Write the missing third Tx property
-   (concurrent txns don't see each other's uncommitted state) into `testkit`, run on
-   both adapters. This also forces the fix to the **non-atomic memory `Tx::commit`**
-   (apply all staged buffers under one lock, or the contract fails). *(Correctness +
-   fidelity; small.)*
-3. **Catalog MVCC delete/evolve contract.** Exercise the `end`-snapshot half of the
-   range predicate (drop/supersede a table, schema evolution across snapshots,
-   query-before-existence) — the riskiest duplicated logic, currently tested only on
-   the append path. *(Test gap; small.)*
-4. **Typed qualified identity.** Introduce a shared newtype + namespacing convention
-   for the cross-concern references that are currently bare strings (acl
-   `RowFilter.property`, lineage `DatasetRef`) so the coupling to `TypeName`/
-   `TableRef`/`ColumnDef` is visible. Validation can stay deferred; the goal is to end
-   "coupled in reality, uncoupled in the compiler." *(Coupling; medium.)*
-5. **Decide the `Tx` seam's future.** Either adopt a concern-agnostic staged-op model
-   or keep the flat seam and add the **catalog write leg** — but resolve the useless
-   `dyn ControlPlane` (only `begin()`) either way. Gates the headline
-   "snapshot + lineage + enqueue atomic" feature. *(Extensibility/architecture;
-   medium — do the design before service work.)*
+1. **Worker heartbeat.** ✅ (PR #13) `Worker::new` takes the lease and heartbeats the
+   in-flight job at `lease/3` (best-effort), so a handler outliving `lock_timeout` is no
+   longer reclaimed and double-executed. Regression test added.
+2. **Tx isolation/concurrency contract.** ✅ (PR #14) Deterministic
+   `tx_isolation_contract` (uncommitted invisible until commit; rollback invisible) on
+   both adapters; the **non-atomic memory `Tx::commit`** is fixed to hold both locks in one
+   critical section.
+3. **Catalog MVCC delete contract.** ✅ (PR #15) `CatalogSeed::drop_table` + a
+   `catalog_delete_contract` exercising the `end > s` bound (false at the drop snapshot,
+   true with a non-null `end` in the live past) and `begin <= s` false (before-existence),
+   on both adapters (pg drives a real DuckLake `DROP`). Schema-evolution + file-supersession
+   deferred to `docs/FUTURE.md`.
+4. **Typed qualified identity.** ✅ (PR #16, re-scoped) Brainstorming found a core typed
+   bridge premature: OpenLineage already fixes the dataset shape (`{namespace, name}`, which
+   `DatasetRef` matches) and its namespace is datasource/deployment-derived — so the
+   `TableRef`/`TypeName` → `DatasetRef` mapping is a Step 3 service concern, not core
+   constants. Resolved to **reserve the seams**: `ControlPlaneError` is now `#[non_exhaustive]`
+   (validation variant additive later), `DatasetRef` documents the OpenLineage convention, and
+   `docs/FUTURE.md` records that cross-concern validation needs no new core seam (adapters
+   co-locate concerns via `&self`) and can use **cross-schema FK constraints** for
+   transactional referential integrity without an app read.
+5. **`Tx` seam decision.** ✅ (decided; `2026-06-07-tx-seam-decision-design.md`) The seam
+   **stays flat**; the **catalog write leg is deferred to the ingest worker (Step 3)** (how
+   loom commits a snapshot is an ingest concern, inseparable from the multi-writer question);
+   `dyn ControlPlane` is left minimal. No code change — re-open the flat-vs-aggregator call
+   only if a fourth transactional concern proves it insufficient.
 
 ### 2b — Trailing hardening
 
@@ -102,6 +105,11 @@ top of* the control-plane library and should not start until Step 2a is in.
 
 ## Where we are
 
-Step 1 complete; `main` green. Recommended immediate next move: **Step 2a #1 and #2**
-(small, correctness, and they protect every future consumer), then the **2a#5 `Tx`
-design** before any Step 3 service is specced.
+Step 1 complete; **Step 2a complete** (all five items — PRs #13–#16 + the #5 decision
+record); `main` green. The library is now safe for a consumer to depend on (the
+correctness/contract gaps are closed and the seam direction is settled).
+
+Recommended next move: either pick up **Step 2b** trailing hardening opportunistically
+(the per-concern adapter split and `tracing` are the highest-leverage), or — since 2a
+unblocked it — **start Step 3 with a brainstorm of the ingest worker**, which is where the
+deferred catalog write leg (the snapshot + lineage + enqueue atomic unit) gets designed.
