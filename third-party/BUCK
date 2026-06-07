@@ -409,23 +409,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "bitflags-2.12.1.crate",
-    sha256 = "84d7ced0ae9557296835c32bf1b1e02b44c746701f898460fb000d7eaa84f00a",
-    strip_prefix = "bitflags-2.12.1",
-    urls = ["https://static.crates.io/crates/bitflags/2.12.1/download"],
+    name = "bitflags-2.13.0.crate",
+    sha256 = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8",
+    strip_prefix = "bitflags-2.13.0",
+    urls = ["https://static.crates.io/crates/bitflags/2.13.0/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "bitflags-2",
-    srcs = [":bitflags-2.12.1.crate"],
+    srcs = [":bitflags-2.13.0.crate"],
     crate = "bitflags",
-    crate_root = "bitflags-2.12.1.crate/src/lib.rs",
+    crate_root = "bitflags-2.13.0.crate/src/lib.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "bitflags",
         "CARGO_CRATE_NAME": "bitflags",
-        "CARGO_MANIFEST_DIR": "bitflags-2.12.1.crate",
+        "CARGO_MANIFEST_DIR": "bitflags-2.13.0.crate",
         "CARGO_PKG_AUTHORS": "The Rust Project Developers",
         "CARGO_PKG_DESCRIPTION": "A macro to generate structures which behave like bitflags.\n",
         "CARGO_PKG_HOMEPAGE": "https://github.com/bitflags/bitflags",
@@ -433,10 +433,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/bitflags/bitflags",
         "CARGO_PKG_RUST_VERSION": "1.56.0",
-        "CARGO_PKG_VERSION": "2.12.1",
+        "CARGO_PKG_VERSION": "2.13.0",
         "CARGO_PKG_VERSION_MAJOR": "2",
-        "CARGO_PKG_VERSION_MINOR": "12",
-        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_MINOR": "13",
+        "CARGO_PKG_VERSION_PATCH": "0",
         "CARGO_PKG_VERSION_PRE": "",
     },
     platform = {
@@ -1831,6 +1831,12 @@ cargo.rust_library(
         "std",
     ],
     visibility = [],
+)
+
+alias(
+    name = "futures-util",
+    actual = ":futures-util-0.3",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(

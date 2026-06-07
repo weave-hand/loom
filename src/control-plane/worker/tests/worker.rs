@@ -203,3 +203,55 @@ async fn heartbeat_keeps_long_handler_single() {
         "job completed (removed)"
     );
 }
+
+// A panicking handler is contained: that job is Abandoned and the worker survives to
+// process other jobs, instead of the panic tearing down the run loop. (The panic
+// message is printed to stderr by the default hook before being caught — expected noise.)
+#[tokio::test]
+async fn handler_panic_is_contained() {
+    let cp = MemoryControlPlane::new(LOCK_TIMEOUT);
+    cp.enqueue(job("boom")).await.unwrap();
+    cp.enqueue(job("ok")).await.unwrap();
+
+    let ok_ran = Arc::new(AtomicU32::new(0));
+    let r = ok_ran.clone();
+    let token = CancellationToken::new();
+    let t = token.clone();
+
+    let worker =
+        Worker::new(cp.clone(), "w1", LOCK_TIMEOUT).with_poll_interval(Duration::from_millis(50));
+    let handle = tokio::spawn(async move {
+        worker
+            .run(&["boom".to_string(), "ok".to_string()], t, move |j| {
+                let r = r.clone();
+                async move {
+                    if j.kind == "boom" {
+                        panic!("handler blew up");
+                    }
+                    r.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            })
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    token.cancel();
+    let run_result = handle.await.unwrap();
+    assert!(
+        run_result.is_ok(),
+        "worker survived the panic (run returned Ok)"
+    );
+    assert_eq!(
+        ok_ran.load(Ordering::SeqCst),
+        1,
+        "the non-panicking job was processed"
+    );
+    assert!(
+        cp.dequeue(&["boom".to_string(), "ok".to_string()], "probe")
+            .await
+            .unwrap()
+            .is_none(),
+        "panicking job abandoned (not retried/stuck); good job completed"
+    );
+}

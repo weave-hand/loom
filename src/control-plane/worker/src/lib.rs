@@ -6,9 +6,11 @@
 //! `core` stays runtime-free — the worker carries the tokio dependency.
 
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
-use control_plane_core::{Job, JobFailure, Queue, Result};
+use control_plane_core::{Job, JobFailure, Queue, Result, RetryPolicy};
+use futures_util::FutureExt;
 use tokio_util::sync::CancellationToken;
 
 /// Default polling fallback interval. NOTIFY drives normal latency; this bounds
@@ -21,6 +23,17 @@ pub struct Worker<Q> {
     worker_id: String,
     poll_interval: Duration,
     heartbeat_interval: Duration,
+}
+
+/// Best-effort extraction of a panic payload's message.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 impl<Q: Queue + Send + Sync> Worker<Q> {
@@ -73,7 +86,9 @@ impl<Q: Queue + Send + Sync> Worker<Q> {
                     // recoverable (the next tick retries; worst case the lease lapses
                     // and reclaim does its job) — deliberately asymmetric with the
                     // `?`-propagating dequeue/complete/fail below.
-                    let fut = handler(job);
+                    // catch_unwind contains a panicking handler so it fails the
+                    // job (Abandon) instead of tearing down the loop.
+                    let fut = AssertUnwindSafe(handler(job)).catch_unwind();
                     tokio::pin!(fut);
                     let mut hb = tokio::time::interval(self.heartbeat_interval);
                     let outcome = loop {
@@ -85,9 +100,15 @@ impl<Q: Queue + Send + Sync> Worker<Q> {
                         }
                     };
                     match outcome {
-                        Ok(()) => self.queue.complete(id).await?,
-                        Err(JobFailure { error, policy }) => {
+                        Ok(Ok(())) => self.queue.complete(id).await?,
+                        Ok(Err(JobFailure { error, policy })) => {
                             self.queue.fail(id, &error, policy).await?
+                        }
+                        Err(panic) => {
+                            let msg = panic_message(&*panic);
+                            self.queue
+                                .fail(id, &format!("panic: {msg}"), RetryPolicy::Abandon)
+                                .await?
                         }
                     }
                 }

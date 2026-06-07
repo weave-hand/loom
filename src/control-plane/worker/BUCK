@@ -6,6 +6,7 @@ rust_library(
     edition = "2024",
     deps = [
         "//src/control-plane/core:core",
+        "//third-party:futures-util",
         "//third-party:tokio",
         "//third-party:tokio-util",
     ],
