@@ -15,3 +15,9 @@ async fn memory_passes_await_jobs_contract() {
     let cp = control_plane_memory::MemoryControlPlane::new(std::time::Duration::from_millis(300));
     control_plane_testkit::await_jobs_contract(cp).await;
 }
+
+#[tokio::test]
+async fn memory_passes_queue_concurrency_contract() {
+    let cp = MemoryControlPlane::new(std::time::Duration::from_millis(300));
+    control_plane_testkit::queue_concurrency_contract(cp).await;
+}

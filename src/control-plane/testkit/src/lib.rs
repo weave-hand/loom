@@ -1130,3 +1130,61 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         "rolled-back emit never becomes visible"
     );
 }
+
+/// Contract for concurrent dequeue: N workers draining M jobs must claim each job
+/// **exactly once** (no double-claim, none lost) — the `SKIP LOCKED` fairness guarantee.
+/// `cp` is taken by value (`Clone + Send + Sync + 'static`) so clones move into spawned
+/// tasks. A plain current-thread runtime suffices: the spawned tasks interleave at each
+/// `dequeue().await`, so the pg adapter issues genuinely concurrent `SKIP LOCKED` queries.
+pub async fn queue_concurrency_contract<CP>(cp: CP)
+where
+    CP: ControlPlane + Queue + Clone + Send + Sync + 'static,
+{
+    use std::collections::HashSet;
+
+    let kind = "conc";
+    let m: usize = 50; // jobs
+    let n: usize = 8; // concurrent workers
+
+    for _ in 0..m {
+        cp.enqueue(NewJob {
+            kind: kind.into(),
+            payload: serde_json::json!({}),
+            run_at: None,
+            priority: 0,
+        })
+        .await
+        .expect("enqueue");
+    }
+
+    let mut handles = Vec::new();
+    for w in 0..n {
+        let cp = cp.clone();
+        let kinds = vec![kind.to_string()];
+        handles.push(tokio::spawn(async move {
+            let me = format!("w{w}");
+            let mut claimed = Vec::new();
+            while let Some(job) = cp.dequeue(&kinds, &me).await.expect("dequeue") {
+                claimed.push(job.id);
+                cp.complete(job.id).await.expect("complete");
+            }
+            claimed
+        }));
+    }
+
+    let mut all = Vec::new();
+    for h in handles {
+        all.extend(h.await.expect("worker task"));
+    }
+
+    assert_eq!(
+        all.len(),
+        m,
+        "every job claimed exactly once (none lost, none double-claimed)"
+    );
+    assert_eq!(
+        all.iter().collect::<HashSet<_>>().len(),
+        m,
+        "no job claimed by two workers"
+    );
+}
