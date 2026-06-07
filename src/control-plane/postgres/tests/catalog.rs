@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use control_plane_core::SnapshotId;
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use control_plane_testkit::{CatalogSeed, SeedSpec, SeededSnapshot, catalog_contract};
+use control_plane_testkit::{
+    CatalogSeed, SeedSpec, SeededSnapshot, catalog_contract, catalog_delete_contract,
+};
 
 struct PgSeeder {
     writer: DuckLakeWriter,
@@ -30,6 +32,10 @@ impl CatalogSeed for PgSeeder {
             })
             .collect()
     }
+
+    async fn drop_table(&self, table: &control_plane_core::TableRef) -> SnapshotId {
+        SnapshotId(self.writer.drop_table(&table.schema, &table.name).await)
+    }
 }
 
 #[tokio::test]
@@ -40,4 +46,14 @@ async fn postgres_passes_catalog_contract() {
         writer: DuckLakeWriter::new(fixture.socket_path(), &db),
     };
     catalog_contract(&cp, &seeder).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_catalog_delete_contract() {
+    let fixture = PgFixture::start();
+    let (cp, db) = fixture.fresh_db().await;
+    let seeder = PgSeeder {
+        writer: DuckLakeWriter::new(fixture.socket_path(), &db),
+    };
+    catalog_delete_contract(&cp, &seeder).await;
 }

@@ -228,6 +228,11 @@ pub trait CatalogSeed {
     /// Create the table if absent and apply each row-batch as its own snapshot.
     /// Returns the per-batch snapshots, in order.
     async fn seed(&self, spec: SeedSpec) -> Vec<SeededSnapshot>;
+
+    /// Drop `table`. Returns the snapshot `D` at which it was dropped: the table and
+    /// its files/columns gain `D` as their `end_snapshot`, so the table is not live at
+    /// `D` or later, but remains live (time-travellable) at any snapshot `< D`.
+    async fn drop_table(&self, table: &TableRef) -> SnapshotId;
 }
 
 /// Contract for the `Catalog` read surface. `catalog` and `seeder` may be the
@@ -339,6 +344,128 @@ where
             Err(control_plane_core::ControlPlaneError::NotFound(_))
         ),
         "missing table snapshots is NotFound"
+    );
+}
+
+/// Contract for the MVCC `end`-bound and before-existence branches of the catalog
+/// read surface — the half the append-only `catalog_contract` never reaches. A table
+/// dropped at snapshot `D` is not live at `D` or later (`end > s` false) but remains
+/// time-travellable at any snapshot `< D` (`end > s` true with a non-null `end`); and a
+/// table is not live before its `begin` (`begin <= s` false). `current_snapshot`/
+/// `snapshots` stay drop-aware (latest *live* snapshot), distinct from a never-existed
+/// table's `NotFound`.
+pub async fn catalog_delete_contract<C, S>(catalog: &C, seeder: &S)
+where
+    C: Catalog,
+    S: CatalogSeed,
+{
+    use control_plane_core::ControlPlaneError::NotFound;
+
+    // Pre-seed an unrelated table FIRST so the global snapshot counter advances; its
+    // snapshot predates the target table's existence.
+    let other = TableRef {
+        schema: "main".into(),
+        name: "other".into(),
+    };
+    let pre = seeder
+        .seed(SeedSpec {
+            table: other.clone(),
+            columns: vec![SeedColumn {
+                name: "id".into(),
+                ty: "BIGINT".into(),
+                nullable: false,
+            }],
+            row_batches: vec![1],
+        })
+        .await;
+    let before = pre[0].snapshot;
+
+    // Seed the target table with two batches.
+    let t = TableRef {
+        schema: "main".into(),
+        name: "events".into(),
+    };
+    let seeded = seeder
+        .seed(SeedSpec {
+            table: t.clone(),
+            columns: vec![
+                SeedColumn {
+                    name: "id".into(),
+                    ty: "BIGINT".into(),
+                    nullable: false,
+                },
+                SeedColumn {
+                    name: "name".into(),
+                    ty: "VARCHAR".into(),
+                    nullable: true,
+                },
+            ],
+            row_batches: vec![10, 20],
+        })
+        .await;
+    assert_eq!(seeded.len(), 2);
+    let s1 = seeded[1].snapshot;
+
+    // Live before the drop.
+    assert_eq!(catalog.current_snapshot(&t).await.unwrap().id, s1);
+    assert_eq!(catalog.files(&t, s1).await.unwrap().len(), 2);
+
+    // before-existence: not live at a snapshot before its begin (`begin <= s` false).
+    assert!(
+        matches!(catalog.files(&t, before).await, Err(NotFound(_))),
+        "not live before it existed (files)"
+    );
+    assert!(
+        matches!(catalog.schema(&t, before).await, Err(NotFound(_))),
+        "not live before it existed (schema)"
+    );
+
+    // Drop it.
+    let d = seeder.drop_table(&t).await;
+    assert!(d > s1, "drop creates a later snapshot");
+
+    // `end > s` false: not live AT the drop snapshot.
+    assert!(
+        matches!(catalog.files(&t, d).await, Err(NotFound(_))),
+        "not live at the drop snapshot (files)"
+    );
+    assert!(
+        matches!(catalog.schema(&t, d).await, Err(NotFound(_))),
+        "not live at the drop snapshot (schema)"
+    );
+
+    // `end > s` true (non-null end): time-travel into the live past still works.
+    assert_eq!(
+        catalog.files(&t, s1).await.unwrap().len(),
+        2,
+        "time-travel before the drop still sees files"
+    );
+    assert_eq!(
+        catalog.schema(&t, s1).await.unwrap().columns.len(),
+        2,
+        "time-travel before the drop still sees the schema"
+    );
+
+    // History excludes the drop snapshot; current is still the last LIVE snapshot.
+    let hist = catalog.snapshots(&t).await.unwrap();
+    assert!(
+        hist.iter().all(|sn| sn.id < d),
+        "history excludes the drop snapshot"
+    );
+    assert_eq!(
+        catalog.current_snapshot(&t).await.unwrap().id,
+        s1,
+        "current is the last live snapshot (drop-aware)"
+    );
+
+    // A never-existed table is still NotFound (distinct from dropped).
+    let nope = TableRef {
+        schema: "main".into(),
+        name: "nope".into(),
+    };
+    assert!(
+        matches!(catalog.current_snapshot(&nope).await, Err(NotFound(_))),
+        "never-existed table is NotFound"
     );
 }
 

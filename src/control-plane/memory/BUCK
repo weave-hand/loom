@@ -32,6 +32,7 @@ rust_test(
     edition = "2024",
     deps = [
         ":memory",
+        "//src/control-plane/core:core",
         "//src/control-plane/testkit:testkit",
         "//third-party:async-trait",
         "//third-party:tokio",

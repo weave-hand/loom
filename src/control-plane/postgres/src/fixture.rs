@@ -268,6 +268,48 @@ impl DuckLakeWriter {
         .expect("read back data-file snapshots")
     }
 
+    /// Drop `schema.table` via the DuckDB CLI (DuckLake records the drop, setting
+    /// `end_snapshot` on the table and its files/columns). Returns that drop snapshot.
+    pub async fn drop_table(&self, schema: &str, table: &str) -> i64 {
+        let mut sql = String::new();
+        sql.push_str(&format!(
+            "SET extension_directory='{}';\n",
+            self.extension_dir
+        ));
+        sql.push_str("LOAD ducklake;\nLOAD postgres_scanner;\n");
+        sql.push_str(&format!(
+            "ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\n",
+            self.db,
+            self.socket.display(),
+            self._data_dir.path().display(),
+        ));
+        sql.push_str(&format!("DROP TABLE lake.{schema}.{table};\n"));
+
+        let status = Command::new(&self.duckdb_bin)
+            .arg("-c")
+            .arg(&sql)
+            .status()
+            .expect("run duckdb");
+        assert!(status.success(), "duckdb drop failed");
+
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(self.opts())
+            .await
+            .expect("connect to read back drop snapshot");
+        sqlx::query_scalar::<_, i64>(
+            "select t.end_snapshot from ducklake_table t \
+             join ducklake_schema s on t.schema_id = s.schema_id \
+             where s.schema_name = $1 and t.table_name = $2 and t.end_snapshot is not null \
+             order by t.end_snapshot desc limit 1",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .expect("read back drop snapshot")
+    }
+
     fn opts(&self) -> PgConnectOptions {
         PgConnectOptions::new()
             .socket(&self.socket)

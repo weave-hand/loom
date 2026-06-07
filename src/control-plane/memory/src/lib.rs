@@ -183,6 +183,29 @@ impl MemoryControlPlane {
         }
         out
     }
+
+    /// Test-support: drop `table` at a fresh snapshot, setting `end` on the table and
+    /// its still-open files/columns so the MVCC `end`-bound is exercised at the
+    /// file/column level (not just short-circuited by the table-liveness gate).
+    pub fn drop_table_catalog(&self, table: &TableRef) -> SnapshotId {
+        let mut cat = self.catalog.lock().unwrap();
+        let key = (table.schema.clone(), table.name.clone());
+        let d = cat.new_snapshot();
+        if let Some(t) = cat.tables.get_mut(&key) {
+            t.end = Some(d);
+        }
+        for f in cat.files.get_mut(&key).into_iter().flatten() {
+            if f.end.is_none() {
+                f.end = Some(d);
+            }
+        }
+        for c in cat.columns.get_mut(&key).into_iter().flatten() {
+            if c.end.is_none() {
+                c.end = Some(d);
+            }
+        }
+        SnapshotId(d)
+    }
 }
 
 impl CatalogState {
