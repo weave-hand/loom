@@ -27,6 +27,20 @@ items — they're the "later, if a consumer needs it" pile.
   also needs a **transactional catalog write**, which the catalog does not expose (it has been
   read-only). Wiring a catalog write op into `Tx` is future work.
 
+## Catalog (Phase 2)
+
+- **Schema-evolution test coverage.** The catalog MVCC delete contract (Step 2a #3)
+  exercises the `end`-snapshot bound via `DROP TABLE` (and query-before-existence for the
+  `begin` bound). It does **not** cover schema *evolution* — `ALTER TABLE` add/drop
+  column, asserting `schema(T, old_snapshot)` differs from `schema(T, new_snapshot)` as a
+  table's columns drift across snapshots. `DROP` already exercises the column `end`-bound,
+  so this is a lower-risk path about *which* columns change; it adds an `ALTER` op to the
+  `CatalogSeed` seam and DuckDB-CLI surface. Add it when a consumer (or a bug) makes
+  column-level time travel matter.
+- **File supersession / compaction.** The delete contract covers a dropped table, not
+  files being *replaced* (compaction) — superseded data files gaining an `end_snapshot`
+  while the table stays live. Not deterministically CLI-drivable today; deferred.
+
 ## Cross-cutting
 
 - **Dataset/target existence validation.** Lineage `emit`, ACL `grant`/`set_policy`, and
