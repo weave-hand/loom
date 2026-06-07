@@ -11,6 +11,14 @@ tokio = { version = "1", features = ["macros"] }
 tokio-util = { version = "0.7", default-features = false }
 # catch_unwind to contain a panicking handler (FutureExt::catch_unwind needs `std`).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Tracing facade: libraries emit spans/events; the Step 3 service binaries install
+# the subscriber. No subscriber/metrics here.
+tracing = "0.1"
+# Capturing subscriber for the instrumentation test (handles the global-default-once
+# footgun + cross-thread capture). Test-only in buck (only worker_test's deps wire it);
+# declared as a normal cargo dep so reindeer emits the //third-party:tracing-test target
+# (reindeer skips dev-only deps in non-vendored mode).
+tracing-test = "0.2"
 
 [dev-dependencies]
 control-plane-memory = { path = "../memory" }

@@ -10,6 +10,7 @@ rust_library(
         "//third-party:serde_json",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:tracing",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
