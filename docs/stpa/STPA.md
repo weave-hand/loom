@@ -141,4 +141,3 @@ flowchart TD
 - How are concurrent ingest writers and DuckLake snapshot ordering reconciled (multi-writer is an open question), given catalog writes are not yet wired into Tx?
 - Is there a stuck-job reaper distinct from lock-expiry reclaim, or does a job whose worker crashes after lock expiry but is never re-eligible (e.g. wrong kind set) stall indefinitely? FUTURE/ARCHITECTURE list it as TBD.
 - What lock_timeout vs handler-duration relationship is enforced? The worker loop never calls heartbeat itself, so any handler longer than lock_timeout without manual heartbeats risks premature-reclaim — is the intended contract documented anywhere?
-
