@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ontology.object_type (name, table_schema, table_name) values ($1, $2, $3) on conflict (name) do update set table_schema = excluded.table_schema, table_name = excluded.table_name",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "05a0023f8e17ce28a5133f886629389963502ede8e848396c8e68db6a5c2b581"
+}
