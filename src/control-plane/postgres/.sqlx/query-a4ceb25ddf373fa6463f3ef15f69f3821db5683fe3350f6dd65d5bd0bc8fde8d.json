@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with e as ( insert into lineage.event (run_id, event_type, event_time, payload) values ($1, $2, $3, $4) returning event_id) insert into lineage.event_dataset (event_id, direction, ordinal, namespace, name) select e.event_id, d.direction, d.ordinal, d.namespace, d.name from e, ( select 'input' as direction, ord as ordinal, ns as namespace, nm as name from unnest($5::text[], $6::text[]) with ordinality as t(ns, nm, ord) union all select 'output', ord, ns, nm from unnest($7::text[], $8::text[]) with ordinality as t(ns, nm, ord)) d",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz",
+        "Jsonb",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a4ceb25ddf373fa6463f3ef15f69f3821db5683fe3350f6dd65d5bd0bc8fde8d"
+}

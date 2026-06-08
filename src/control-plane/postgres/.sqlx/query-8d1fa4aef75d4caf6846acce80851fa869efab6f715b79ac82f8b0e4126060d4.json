@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select namespace, name from lineage.event_dataset where event_id = $1 and direction = $2 order by ordinal",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "lineage.event_dataset",
+            "name": "namespace"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "lineage.event_dataset",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "8d1fa4aef75d4caf6846acce80851fa869efab6f715b79ac82f8b0e4126060d4"
+}
