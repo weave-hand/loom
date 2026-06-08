@@ -6,9 +6,8 @@ edition = "2024"
 [dependencies]
 control-plane-core = { path = "../core" }
 async-trait = "0.1"
-# No TLS (local unix-socket connections) and no compile-time query macros yet —
-# Phase 0b uses sqlx's runtime query API; query!/.sqlx offline metadata arrive in
-# Phase 1 (queue) when there's a real schema worth statically checking.
+# Local unix-socket connections only (no TLS). Compile-time query!/query_scalar!
+# macros validate SQL against the committed .sqlx offline cache (see CLAUDE.md).
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "time", "json", "migrate", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 time = "0.3"
@@ -20,6 +19,9 @@ tokio = { version = "1", features = ["time"] }
 # Tracing facade: libraries emit spans/events; the Step 3 service binaries install
 # the subscriber. No subscriber/metrics here.
 tracing = "0.1"
+# Test-only (tests/lineage_roundtrip.rs), declared as a normal dep so reindeer emits
+# //third-party:proptest in non-vendored mode (same pattern as the worker crate).
+proptest = "1"
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }

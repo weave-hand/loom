@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 
 use crate::error::Result;
+use crate::page::{Page, PageReq};
 
 /// A DuckLake catalog-global snapshot id (monotonic).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -58,11 +59,14 @@ pub trait Catalog {
     /// not exist at the catalog's current snapshot.
     async fn current_snapshot(&self, table: &TableRef) -> Result<Snapshot>;
     /// All snapshots at which `table` is live, oldest first. `NotFound` if the
-    /// table never existed.
-    async fn snapshots(&self, table: &TableRef) -> Result<Vec<Snapshot>>;
+    /// table never existed. The `page` request is accepted but not yet enforced;
+    /// results are a single full page.
+    async fn snapshots(&self, table: &TableRef, page: PageReq) -> Result<Page<Snapshot>>;
     /// The Parquet files live for `table` at snapshot `at`. `NotFound` if the
-    /// table is not live at `at`.
-    async fn files(&self, table: &TableRef, at: SnapshotId) -> Result<Vec<FileRef>>;
+    /// table is not live at `at`. The `page` request is accepted but not yet enforced;
+    /// results are a single full page.
+    async fn files(&self, table: &TableRef, at: SnapshotId, page: PageReq)
+    -> Result<Page<FileRef>>;
     /// `table`'s column schema at snapshot `at`, in column order. `NotFound` if
     /// the table is not live at `at`.
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema>;

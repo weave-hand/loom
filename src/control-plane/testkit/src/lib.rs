@@ -7,9 +7,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef,
-    Decision, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, Policy,
-    PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
-    SnapshotId, SubjectId, TableRef, TypeName,
+    Decision, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, Page,
+    PageReq, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
+    ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -279,18 +279,30 @@ where
 
     // files: one live at the first batch, two by the second (begin_snapshot range).
     assert_eq!(
-        catalog.files(&t, seeded[0].snapshot).await.unwrap().len(),
+        catalog
+            .files(&t, seeded[0].snapshot, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         1,
         "one file live at the first batch"
     );
     assert_eq!(
-        catalog.files(&t, seeded[1].snapshot).await.unwrap().len(),
+        catalog
+            .files(&t, seeded[1].snapshot, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         2,
         "two files live by the second batch"
     );
 
     // snapshots: ascending history, includes both batch snapshots, ends at current.
-    let hist = catalog.snapshots(&t).await.unwrap();
+    let hist = catalog
+        .snapshots(&t, PageReq::unbounded())
+        .await
+        .unwrap()
+        .items;
     assert!(
         hist.windows(2).all(|w| w[0].id < w[1].id),
         "snapshots are ascending"
@@ -340,7 +352,7 @@ where
     );
     assert!(
         matches!(
-            catalog.snapshots(&missing).await,
+            catalog.snapshots(&missing, PageReq::unbounded()).await,
             Err(control_plane_core::ControlPlaneError::NotFound(_))
         ),
         "missing table snapshots is NotFound"
@@ -408,11 +420,21 @@ where
 
     // Live before the drop.
     assert_eq!(catalog.current_snapshot(&t).await.unwrap().id, s1);
-    assert_eq!(catalog.files(&t, s1).await.unwrap().len(), 2);
+    assert_eq!(
+        catalog
+            .files(&t, s1, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 
     // before-existence: not live at a snapshot before its begin (`begin <= s` false).
     assert!(
-        matches!(catalog.files(&t, before).await, Err(NotFound(_))),
+        matches!(
+            catalog.files(&t, before, PageReq::unbounded()).await,
+            Err(NotFound(_))
+        ),
         "not live before it existed (files)"
     );
     assert!(
@@ -426,7 +448,10 @@ where
 
     // `end > s` false: not live AT the drop snapshot.
     assert!(
-        matches!(catalog.files(&t, d).await, Err(NotFound(_))),
+        matches!(
+            catalog.files(&t, d, PageReq::unbounded()).await,
+            Err(NotFound(_))
+        ),
         "not live at the drop snapshot (files)"
     );
     assert!(
@@ -436,7 +461,11 @@ where
 
     // `end > s` true (non-null end): time-travel into the live past still works.
     assert_eq!(
-        catalog.files(&t, s1).await.unwrap().len(),
+        catalog
+            .files(&t, s1, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         2,
         "time-travel before the drop still sees files"
     );
@@ -447,7 +476,11 @@ where
     );
 
     // History excludes the drop snapshot; current is still the last LIVE snapshot.
-    let hist = catalog.snapshots(&t).await.unwrap();
+    let hist = catalog
+        .snapshots(&t, PageReq::unbounded())
+        .await
+        .unwrap()
+        .items;
     assert!(
         hist.iter().all(|sn| sn.id < d),
         "history excludes the drop snapshot"
@@ -534,7 +567,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
 
     // list_types contains both.
     let names: std::collections::HashSet<String> = o
-        .list_types()
+        .list_types(PageReq::unbounded())
         .await
         .unwrap()
         .into_iter()
@@ -573,7 +606,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         cardinality: Cardinality::One,
     };
     o.define_link(link.clone()).await.expect("define link");
-    assert_eq!(o.links(&tn("Order")).await.unwrap(), vec![link.clone()]);
+    assert_eq!(
+        o.links(&tn("Order"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .items,
+        vec![link.clone()]
+    );
 
     // re-define same (name, from) upserts (no duplicate; cardinality updated).
     o.define_link(LinkDef {
@@ -582,7 +621,11 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     })
     .await
     .unwrap();
-    let ls = o.links(&tn("Order")).await.unwrap();
+    let ls = o
+        .links(&tn("Order"), PageReq::unbounded())
+        .await
+        .unwrap()
+        .items;
     assert_eq!(ls.len(), 1, "link upsert, not duplicate");
     assert_eq!(ls[0].cardinality, Cardinality::Many, "cardinality updated");
 
@@ -612,7 +655,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         Err(control_plane_core::ControlPlaneError::NotFound(_))
     ));
     assert!(matches!(
-        o.links(&nope).await,
+        o.links(&nope, PageReq::unbounded()).await,
         Err(control_plane_core::ControlPlaneError::NotFound(_))
     ));
 }
@@ -765,12 +808,12 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     a.set_policy(&rid("reader"), pol.clone()).await.unwrap();
 
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"))
+        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
         .await
         .unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(
-        got[0], pol,
+        got.items[0], pol,
         "nested filter + deny columns round-trip intact"
     );
 
@@ -782,12 +825,15 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     };
     a.set_policy(&rid("reader"), pol2.clone()).await.unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"))
+        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
         .await
         .unwrap();
     assert_eq!(got.len(), 1, "upsert, not duplicate");
-    assert_eq!(got[0], pol2);
-    assert!(got[0].row_filter.is_none(), "None row_filter stays None");
+    assert_eq!(got.items[0], pol2);
+    assert!(
+        got.items[0].row_filter.is_none(),
+        "None row_filter stays None"
+    );
 
     // two roles -> two policies for the same target, no merge
     let pol_w = Policy {
@@ -801,22 +847,22 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     };
     a.set_policy(&rid("writer"), pol_w.clone()).await.unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"))
+        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
         .await
         .unwrap();
     assert_eq!(got.len(), 2, "both roles' policies returned, no merge");
-    assert!(got.contains(&pol2) && got.contains(&pol_w));
+    assert!(got.items.contains(&pol2) && got.items.contains(&pol_w));
 
     // target kinds don't bleed; unknown subject -> empty
     assert!(
-        a.policies_for(&sid("alice"), &ttable("main", "raw"))
+        a.policies_for(&sid("alice"), &ttable("main", "raw"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "a Type policy is not returned for a Table target"
     );
     assert!(
-        a.policies_for(&sid("nobody"), &ttype("Customer"))
+        a.policies_for(&sid("nobody"), &ttype("Customer"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty()
@@ -827,10 +873,10 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         .await
         .unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"))
+        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
         .await
         .unwrap();
-    assert_eq!(got, vec![pol_w], "only the writer policy remains");
+    assert_eq!(got.items, vec![pol_w], "only the writer policy remains");
 
     // --- grant / set_policy on a missing role -> NotFound ---
     assert!(matches!(
@@ -883,7 +929,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     };
     // A fixed whole-second timestamp so the pg `timestamptz` round-trip is exact.
     let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
-    let set = |v: Vec<DatasetRef>| v.into_iter().collect::<HashSet<_>>();
+    let set = |p: Page<DatasetRef>| p.into_iter().collect::<HashSet<_>>();
 
     // --- emit -> events_for round-trips the envelope + opaque payload ---
     let run = RunId(uuid::Uuid::new_v4());
@@ -897,14 +943,17 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     };
     cp.emit(event.clone()).await.expect("emit");
 
-    let got = cp.events_for(&run).await.expect("events_for");
+    let got = cp
+        .events_for(&run, PageReq::unbounded())
+        .await
+        .expect("events_for");
     assert_eq!(
-        got,
+        got.items,
         vec![event.clone()],
         "envelope + payload round-trip intact"
     );
     assert!(
-        cp.events_for(&RunId(uuid::Uuid::new_v4()))
+        cp.events_for(&RunId(uuid::Uuid::new_v4()), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
@@ -913,33 +962,48 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
 
     // --- one-hop graph via per-event co-membership ---
     assert_eq!(
-        set(cp.upstream(&ds("ducklake", "main.c")).await.unwrap()),
-        set(vec![ds("ducklake", "main.a"), ds("ducklake", "main.b")])
+        set(cp
+            .upstream(&ds("ducklake", "main.c"), PageReq::unbounded())
+            .await
+            .unwrap()),
+        [ds("ducklake", "main.a"), ds("ducklake", "main.b")]
+            .into_iter()
+            .collect::<HashSet<_>>()
     );
     assert_eq!(
-        set(cp.downstream(&ds("ducklake", "main.a")).await.unwrap()),
-        set(vec![ds("ducklake", "main.c")])
+        set(cp
+            .downstream(&ds("ducklake", "main.a"), PageReq::unbounded())
+            .await
+            .unwrap()),
+        [ds("ducklake", "main.c")]
+            .into_iter()
+            .collect::<HashSet<_>>()
     );
     assert_eq!(
-        set(cp.downstream(&ds("ducklake", "main.b")).await.unwrap()),
-        set(vec![ds("ducklake", "main.c")])
+        set(cp
+            .downstream(&ds("ducklake", "main.b"), PageReq::unbounded())
+            .await
+            .unwrap()),
+        [ds("ducklake", "main.c")]
+            .into_iter()
+            .collect::<HashSet<_>>()
     );
     assert!(
-        cp.downstream(&ds("ducklake", "main.c"))
+        cp.downstream(&ds("ducklake", "main.c"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing consumes c -> no downstream"
     );
     assert!(
-        cp.upstream(&ds("ducklake", "main.a"))
+        cp.upstream(&ds("ducklake", "main.a"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing produces a -> no upstream"
     );
     assert!(
-        cp.upstream(&ds("ducklake", "main.missing"))
+        cp.upstream(&ds("ducklake", "main.missing"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
@@ -967,14 +1031,22 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     cp.emit(start.clone()).await.unwrap();
     cp.emit(complete.clone()).await.unwrap();
     assert_eq!(
-        cp.events_for(&run2).await.unwrap(),
+        cp.events_for(&run2, PageReq::unbounded())
+            .await
+            .unwrap()
+            .items,
         vec![start, complete],
         "events returned in emit order"
     );
     // graph spans namespaces (physical -> ontology)
     assert_eq!(
-        set(cp.downstream(&ds("ducklake", "main.c")).await.unwrap()),
-        set(vec![ds("ontology", "Customer")])
+        set(cp
+            .downstream(&ds("ducklake", "main.c"), PageReq::unbounded())
+            .await
+            .unwrap()),
+        [ds("ontology", "Customer")]
+            .into_iter()
+            .collect::<HashSet<_>>()
     );
 
     // --- the headline cross-concern atomicity test: emit + enqueue in one Tx ---
@@ -1005,7 +1077,10 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         tx.rollback().await.expect("rollback");
     }
     assert!(
-        cp.events_for(&rolled).await.unwrap().is_empty(),
+        cp.events_for(&rolled, PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
         "rolled-back emit is not visible"
     );
     assert!(
@@ -1038,7 +1113,10 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         tx.commit().await.expect("commit");
     }
     assert_eq!(
-        cp.events_for(&committed).await.unwrap().len(),
+        cp.events_for(&committed, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         1,
         "committed emit is visible"
     );
@@ -1087,7 +1165,10 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         "uncommitted enqueue is invisible while the tx is open"
     );
     assert!(
-        cp.events_for(&run).await.unwrap().is_empty(),
+        cp.events_for(&run, PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
         "uncommitted emit is invisible while the tx is open"
     );
 
@@ -1101,7 +1182,10 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         .expect("committed enqueue is visible");
     cp.complete(job.id).await.unwrap();
     assert_eq!(
-        cp.events_for(&run).await.unwrap().len(),
+        cp.events_for(&run, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         1,
         "committed emit is visible"
     );
@@ -1126,7 +1210,10 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         "rolled-back enqueue never becomes visible"
     );
     assert!(
-        cp.events_for(&run_rb).await.unwrap().is_empty(),
+        cp.events_for(&run_rb, PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
         "rolled-back emit never becomes visible"
     );
 }

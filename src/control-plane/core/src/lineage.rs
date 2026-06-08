@@ -14,6 +14,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::Result;
+use crate::page::{Page, PageReq};
 
 /// An OpenLineage run identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,11 +63,14 @@ pub trait Lineage {
     /// Record an event (append-only). Its own transaction.
     async fn emit(&self, event: LineageEvent) -> Result<()>;
     /// All events for a run, in emit order. Empty if the run is unknown.
-    async fn events_for(&self, run: &RunId) -> Result<Vec<LineageEvent>>;
+    /// The `page` request is accepted but not yet enforced; results are a single full page.
+    async fn events_for(&self, run: &RunId, page: PageReq) -> Result<Page<LineageEvent>>;
     /// One hop: datasets that fed directly into a run that produced `dataset`
     /// (order unspecified). Empty if `dataset` is unknown.
-    async fn upstream(&self, dataset: &DatasetRef) -> Result<Vec<DatasetRef>>;
+    /// The `page` request is accepted but not yet enforced; results are a single full page.
+    async fn upstream(&self, dataset: &DatasetRef, page: PageReq) -> Result<Page<DatasetRef>>;
     /// One hop: datasets produced directly by a run that consumed `dataset`
     /// (order unspecified). Empty if `dataset` is unknown.
-    async fn downstream(&self, dataset: &DatasetRef) -> Result<Vec<DatasetRef>>;
+    /// The `page` request is accepted but not yet enforced; results are a single full page.
+    async fn downstream(&self, dataset: &DatasetRef, page: PageReq) -> Result<Page<DatasetRef>>;
 }

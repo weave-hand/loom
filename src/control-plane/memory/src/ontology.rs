@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    ControlPlaneError, LinkDef, ObjectType, Ontology, Result, TableRef, TypeName,
+    ControlPlaneError, LinkDef, ObjectType, Ontology, Page, PageReq, Result, TableRef, TypeName,
 };
 
 use crate::MemoryControlPlane;
@@ -49,28 +49,30 @@ impl Ontology for MemoryControlPlane {
             .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))
     }
 
-    async fn list_types(&self) -> Result<Vec<ObjectType>> {
-        Ok(self
-            .ontology
-            .lock()
-            .unwrap()
-            .types
-            .values()
-            .cloned()
-            .collect())
+    async fn list_types(&self, _page: PageReq) -> Result<Page<ObjectType>> {
+        Ok(Page::from_full(
+            self.ontology
+                .lock()
+                .unwrap()
+                .types
+                .values()
+                .cloned()
+                .collect(),
+        ))
     }
 
-    async fn links(&self, name: &TypeName) -> Result<Vec<LinkDef>> {
+    async fn links(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
         let ont = self.ontology.lock().unwrap();
         if !ont.types.contains_key(&name.0) {
             return Err(ControlPlaneError::NotFound(name.0.clone()));
         }
-        Ok(ont
-            .links
-            .iter()
-            .filter(|l| l.from == *name)
-            .cloned()
-            .collect())
+        Ok(Page::from_full(
+            ont.links
+                .iter()
+                .filter(|l| l.from == *name)
+                .cloned()
+                .collect(),
+        ))
     }
 
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {

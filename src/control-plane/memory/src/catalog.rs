@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Catalog, ColumnDef, ControlPlaneError, FileRef, Result, Snapshot, SnapshotId, TableRef,
-    TableSchema,
+    Catalog, ColumnDef, ControlPlaneError, FileRef, Page, PageReq, Result, Snapshot, SnapshotId,
+    TableRef, TableSchema,
 };
 use time::OffsetDateTime;
 
@@ -56,21 +56,27 @@ impl Catalog for MemoryControlPlane {
             .unwrap())
     }
 
-    async fn snapshots(&self, table: &TableRef) -> Result<Vec<Snapshot>> {
+    async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
         let cat = self.catalog.lock().unwrap();
         let key = (table.schema.clone(), table.name.clone());
         let t = cat.tables.get(&key).ok_or_else(|| {
             ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name))
         })?;
-        Ok(cat
-            .snapshots
-            .iter()
-            .filter(|sn| t.live_at(sn.id.0))
-            .cloned()
-            .collect())
+        Ok(Page::from_full(
+            cat.snapshots
+                .iter()
+                .filter(|sn| t.live_at(sn.id.0))
+                .cloned()
+                .collect(),
+        ))
     }
 
-    async fn files(&self, table: &TableRef, at: SnapshotId) -> Result<Vec<FileRef>> {
+    async fn files(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+        _page: PageReq,
+    ) -> Result<Page<FileRef>> {
         let cat = self.catalog.lock().unwrap();
         let key = (table.schema.clone(), table.name.clone());
         let live = cat.tables.get(&key).is_some_and(|t| t.live_at(at.0));
@@ -80,14 +86,15 @@ impl Catalog for MemoryControlPlane {
                 table.schema, table.name, at.0
             )));
         }
-        Ok(cat
-            .files
-            .get(&key)
-            .into_iter()
-            .flatten()
-            .filter(|f| f.live_at(at.0))
-            .map(|f| f.val.clone())
-            .collect())
+        Ok(Page::from_full(
+            cat.files
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .filter(|f| f.live_at(at.0))
+                .map(|f| f.val.clone())
+                .collect(),
+        ))
     }
 
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {

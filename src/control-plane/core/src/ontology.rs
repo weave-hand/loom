@@ -12,6 +12,7 @@ use async_trait::async_trait;
 
 use crate::TableRef;
 use crate::error::Result;
+use crate::page::{Page, PageReq};
 
 /// An ontology type name (e.g. "Customer").
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -60,10 +61,12 @@ pub trait Ontology {
     async fn define_link(&self, link: LinkDef) -> Result<()>;
     /// Fetch a type by name. `NotFound` if absent.
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType>;
-    /// All defined types (order unspecified).
-    async fn list_types(&self) -> Result<Vec<ObjectType>>;
-    /// All links whose `from` is `name`. `NotFound` if the type itself is absent.
-    async fn links(&self, name: &TypeName) -> Result<Vec<LinkDef>>;
+    /// All defined types (order unspecified). The `page` request is accepted but not yet enforced; results
+    /// are a single full page.
+    async fn list_types(&self, page: PageReq) -> Result<Page<ObjectType>>;
+    /// All links whose `from` is `name`. `NotFound` if the type itself is absent. The `page` request is accepted but not yet enforced; results
+    /// are a single full page.
+    async fn links(&self, name: &TypeName, page: PageReq) -> Result<Page<LinkDef>>;
     /// The physical DuckLake table backing `name`. `NotFound` if the type is absent.
     async fn resolve(&self, name: &TypeName) -> Result<TableRef>;
 }

@@ -254,6 +254,28 @@ rust_test(
 )
 
 rust_test(
+    name = "lineage-roundtrip",
+    crate = "lineage_roundtrip",
+    srcs = ["tests/lineage_roundtrip.rs"],
+    crate_root = "tests/lineage_roundtrip.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
+    },
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:proptest",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+rust_test(
     name = "catalog",
     crate = "catalog",
     srcs = ["tests/catalog.rs"],

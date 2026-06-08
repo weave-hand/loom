@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ControlPlaneError, LinkDef, ObjectType, Ontology, PropertyDef, Result, TableRef, TypeName,
+    ControlPlaneError, LinkDef, ObjectType, Ontology, Page, PageReq, PropertyDef, Result, TableRef,
+    TypeName,
 };
 
 use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
@@ -112,7 +113,7 @@ impl Ontology for PgControlPlane {
         })
     }
 
-    async fn list_types(&self) -> Result<Vec<ObjectType>> {
+    async fn list_types(&self, _page: PageReq) -> Result<Page<ObjectType>> {
         let names = sqlx::query_scalar!("select name from ontology.object_type")
             .fetch_all(&self.pool)
             .await
@@ -121,10 +122,10 @@ impl Ontology for PgControlPlane {
         for n in names {
             out.push(self.get_type(&TypeName(n)).await?);
         }
-        Ok(out)
+        Ok(Page::from_full(out))
     }
 
-    async fn links(&self, name: &TypeName) -> Result<Vec<LinkDef>> {
+    async fn links(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
         let exists: bool = sqlx::query_scalar!(
             "select exists (select 1 from ontology.object_type where name = $1)",
             name.0,
@@ -143,15 +144,16 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| LinkDef {
-                name: r.name,
-                from: TypeName(r.from_type),
-                to: TypeName(r.to_type),
-                cardinality: cardinality_from_str(r.cardinality.as_str()),
-            })
-            .collect())
+        Ok(Page::from_full(
+            rows.into_iter()
+                .map(|r| LinkDef {
+                    name: r.name,
+                    from: TypeName(r.from_type),
+                    to: TypeName(r.to_type),
+                    cardinality: cardinality_from_str(r.cardinality.as_str()),
+                })
+                .collect(),
+        ))
     }
 
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {

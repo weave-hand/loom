@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Policy, PolicyTarget, Result, RoleId, SubjectId,
+    Acl, Action, ControlPlaneError, Decision, Page, PageReq, Policy, PolicyTarget, Result, RoleId,
+    SubjectId,
 };
 
 use crate::{PgControlPlane, action_to_str, backend, target_cols};
@@ -221,7 +222,8 @@ impl Acl for PgControlPlane {
         &self,
         subject: &SubjectId,
         target: &PolicyTarget,
-    ) -> Result<Vec<Policy>> {
+        _page: PageReq,
+    ) -> Result<Page<Policy>> {
         let (kind, a, b) = target_cols(target);
         let rows = sqlx::query!(
             "select p.row_filter, p.deny_columns from acl.role_member m \
@@ -251,6 +253,6 @@ impl Acl for PgControlPlane {
                 deny_columns: r.deny_columns,
             });
         }
-        Ok(out)
+        Ok(Page::from_full(out))
     }
 }
