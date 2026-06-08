@@ -73,3 +73,14 @@ entry = "buck2 test //src/..."
 language = "system"
 pass_filenames = false
 stages = ["pre-push"]
+
+# Regenerate the committed sqlx query cache (boots the pinned postgres + builds
+# sqlx-cli, so it's slow — hence pre-push, not pre-commit) and fail if the
+# checked-in src/control-plane/postgres/.sqlx drifted from the SQL in the code.
+[[repos.hooks]]
+id = "sqlx-prepare"
+name = "sqlx query cache in sync"
+entry = "./tools/sqlx-prepare.sh --check"
+language = "system"
+pass_filenames = false
+stages = ["pre-push"]
