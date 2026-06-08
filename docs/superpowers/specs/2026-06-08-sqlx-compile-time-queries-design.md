@@ -56,9 +56,11 @@ The whole `postgres` crate moves 0.8.6 → 0.9.0 (sqlx is only used there; no
 dual-version collision). Relevant breaks:
 
 - **#3723 `SqlSafeStr`** — runtime `query()/query_as()` now take `impl SqlSafeStr`.
-  Most adapter SQL becomes `query!` (string literal, unaffected). Any query that must
-  stay runtime (none expected in the adapter; `fixture.rs` DuckLake SQL is a DuckDB
-  CLI script, not sqlx) wraps its string in `AssertSqlSafe(...)`.
+  The adapter's own SQL becomes `query!` (string literal, unaffected). The TWO
+  `query_scalar` calls in `fixture.rs` **must stay runtime** (wrapped in
+  `AssertSqlSafe(...)`): they read DuckDB-created `ducklake_*` catalog tables that the
+  loom migrations don't create, so they don't exist in the freshly-migrated pg at
+  `cargo sqlx prepare` time and `query!` can't validate them.
 - **#3383 Migrate trait / `sqlx.toml`** — loom uses runtime
   `sqlx::migrate::Migrator::new(dir).run(&pool)` (`lib.rs:48`). Verify/port the
   `Migrator::new` signature and `Migrate` trait usage for 0.9.
@@ -148,13 +150,16 @@ for a standalone tool (the fixture is Rust test code, not reusable from a shell 
   (the CI-critical proof; the spike confirmed the mechanism on RE).
 - `tools/clippy-all.sh` clean; `prek run --all-files` green; the new `sqlx-prepare`
   pre-push hook passes (no `.sqlx` diff).
-- `git grep 'sqlx::query("'` in the adapter returns nothing (all static SQL migrated).
+- `git grep 'sqlx::query('` in the adapter's concern files (queue/catalog/ontology/
+  acl/lineage + the `pg_insert`/`pg_emit` helpers) returns nothing — all migrated to
+  `query!`. `fixture.rs`'s two `query_scalar` + `AssertSqlSafe` calls remain.
 
 ## Scope / non-goals
 
 - **postgres adapter only.** `memory` has no SQL; `core`/`testkit`/`worker` unaffected.
-- **`fixture.rs` sqlx queries** are migrated to `query!` too (they run against the
-  same schema); its DuckDB-CLI `push_str` scripts are **not** sqlx and stay as-is.
+- **`fixture.rs` sqlx queries stay runtime** (`AssertSqlSafe`): they read DuckDB's
+  `ducklake_*` catalog tables, absent from the loom-migrated schema at prepare time.
+  Its DuckDB-CLI `push_str` scripts are **not** sqlx and stay as-is.
 - No change to the `Queue`/`Catalog`/… trait signatures or behaviour — purely the SQL
   layer's compile-time checking.
 - Incremental delivery: one concern per task, regenerating `.sqlx` and testing after
