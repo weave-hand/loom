@@ -567,7 +567,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
 
     // list_types contains both.
     let names: std::collections::HashSet<String> = o
-        .list_types()
+        .list_types(PageReq::unbounded())
         .await
         .unwrap()
         .into_iter()
@@ -606,7 +606,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         cardinality: Cardinality::One,
     };
     o.define_link(link.clone()).await.expect("define link");
-    assert_eq!(o.links(&tn("Order")).await.unwrap(), vec![link.clone()]);
+    assert_eq!(
+        o.links(&tn("Order"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .items,
+        vec![link.clone()]
+    );
 
     // re-define same (name, from) upserts (no duplicate; cardinality updated).
     o.define_link(LinkDef {
@@ -615,7 +621,11 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     })
     .await
     .unwrap();
-    let ls = o.links(&tn("Order")).await.unwrap();
+    let ls = o
+        .links(&tn("Order"), PageReq::unbounded())
+        .await
+        .unwrap()
+        .items;
     assert_eq!(ls.len(), 1, "link upsert, not duplicate");
     assert_eq!(ls[0].cardinality, Cardinality::Many, "cardinality updated");
 
@@ -645,7 +655,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         Err(control_plane_core::ControlPlaneError::NotFound(_))
     ));
     assert!(matches!(
-        o.links(&nope).await,
+        o.links(&nope, PageReq::unbounded()).await,
         Err(control_plane_core::ControlPlaneError::NotFound(_))
     ));
 }
