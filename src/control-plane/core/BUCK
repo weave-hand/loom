@@ -26,3 +26,16 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "serde-roundtrip",
+    crate = "serde_roundtrip",
+    srcs = ["tests/serde_roundtrip.rs"],
+    crate_root = "tests/serde_roundtrip.rs",
+    edition = "2024",
+    deps = [
+        ":core",
+        "//third-party:proptest",
+        "//third-party:serde_json",
+    ],
+)
