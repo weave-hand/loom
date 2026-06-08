@@ -14,3 +14,15 @@ rust_library(
     ],
     visibility = ["PUBLIC"],
 )
+
+rust_test(
+    name = "page",
+    crate = "page",
+    srcs = ["tests/page.rs"],
+    crate_root = "tests/page.rs",
+    edition = "2024",
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
