@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.row_filter, p.deny_columns from acl.role_member m join acl.policy p on p.role_id = m.role_id where m.subject_id = $1 and p.target_kind = $2 and p.target_a = $3 and p.target_b = $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "row_filter",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "row_filter"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "deny_columns",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "deny_columns"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "52c04bb0d2ee1babd16f7a520b63d69ce1e647e394773ae55b3efafa6f707752"
+}
