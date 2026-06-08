@@ -56,11 +56,12 @@ The whole `postgres` crate moves 0.8.6 → 0.9.0 (sqlx is only used there; no
 dual-version collision). Relevant breaks:
 
 - **#3723 `SqlSafeStr`** — runtime `query()/query_as()` now take `impl SqlSafeStr`.
-  The adapter's own SQL becomes `query!` (string literal, unaffected). The TWO
-  `query_scalar` calls in `fixture.rs` **must stay runtime** (wrapped in
-  `AssertSqlSafe(...)`): they read DuckDB-created `ducklake_*` catalog tables that the
-  loom migrations don't create, so they don't exist in the freshly-migrated pg at
-  `cargo sqlx prepare` time and `query!` can't validate them.
+  All adapter SQL becomes `query!` (string literal, unaffected), **including the
+  `catalog` concern** — see the harness note below. The TWO `query_scalar` calls in
+  `fixture.rs` **stay runtime** (`AssertSqlSafe(...)`) by choice: it's test-harness
+  code, not the adapter surface, so leaving it runtime keeps the change minimal (the
+  `ducklake_*` tables it reads now exist in the prepare DB, so it *could* migrate — we
+  just don't, to bound scope).
 - **#3383 Migrate trait / `sqlx.toml`** — loom uses runtime
   `sqlx::migrate::Migrator::new(dir).run(&pool)` (`lib.rs:48`). Verify/port the
   `Migrator::new` signature and `Migrate` trait usage for 0.9.
@@ -125,7 +126,15 @@ Caveats the implementer must handle (build will force them):
 2. Materialize the pinned postgres + libxml2 (`buck2 build //src/control-plane/postgres:postgres-bin :libxml2`),
    `initdb` a temp cluster, start it on a private socket (mirrors `PgFixture`).
 3. Apply the loom migrations (the same `migrations/` dir the fixture uses) so the
-   schema exists for `query!` validation.
+   loom-owned schemas (queue/ontology/acl/lineage) exist for `query!` validation.
+3b. **Create a real DuckLake catalog** so the `catalog` concern's `ducklake_*` queries
+   validate against the genuine schema (no hand-written DDL, no drift). Run the pinned
+   `:duckdb-cli` with `:duckdb-extensions` to `ATTACH 'ducklake:postgres:dbname=loom
+   host=<sock> user=postgres' AS lake (DATA_PATH '<tmp>/', DATA_INLINING_ROW_LIMIT 0)`
+   — a bare attach creates all `ducklake_*` metadata tables in the postgres DB
+   (`ducklake_snapshot/table/schema/data_file/column`). This mirrors `fixture.rs`'s
+   `DuckLakeWriter` exactly. Needs `DUCKDB_BIN`/`DUCKDB_EXTENSION_DIR` from
+   `:duckdb-cli`/`:duckdb-extensions`.
 4. `DATABASE_URL=… cargo sqlx prepare --workspace -- -p control-plane-postgres`
    (writes `src/control-plane/postgres/.sqlx/query-*.json`).
 5. Stop the cluster, remove the temp dir.
@@ -157,9 +166,10 @@ for a standalone tool (the fixture is Rust test code, not reusable from a shell 
 ## Scope / non-goals
 
 - **postgres adapter only.** `memory` has no SQL; `core`/`testkit`/`worker` unaffected.
-- **`fixture.rs` sqlx queries stay runtime** (`AssertSqlSafe`): they read DuckDB's
-  `ducklake_*` catalog tables, absent from the loom-migrated schema at prepare time.
-  Its DuckDB-CLI `push_str` scripts are **not** sqlx and stay as-is.
+- **`fixture.rs` sqlx queries stay runtime** (`AssertSqlSafe`) — a deliberate
+  scope-bounding choice (test-harness code), not a constraint (the prepare harness now
+  creates the `ducklake_*` tables, so they could migrate). Its DuckDB-CLI `push_str`
+  scripts are **not** sqlx and stay as-is.
 - No change to the `Queue`/`Catalog`/… trait signatures or behaviour — purely the SQL
   layer's compile-time checking.
 - Incremental delivery: one concern per task, regenerating `.sqlx` and testing after

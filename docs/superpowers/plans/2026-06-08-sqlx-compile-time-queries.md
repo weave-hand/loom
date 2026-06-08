@@ -106,16 +106,30 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-## Task 3: Migrate `catalog.rs` (5 queries)
+## Task 3: Extend the harness for DuckLake + migrate `catalog.rs` (5 queries)
 
-**Files:** `…/src/catalog.rs`, `…/src/lib.rs` (`row_to_snapshot` + `resolve_table`), `.sqlx/`.
+`catalog.rs` reads DuckDB's `ducklake_*` catalog tables (NOT loom migrations), so the
+prepare harness must first stand up a real DuckLake catalog in the prepare pg.
 
-- [ ] **Step 1:** Convert all 5 `sqlx::query(AssertSqlSafe(…))` in `catalog.rs` to `query!`, mapping rows into `Snapshot`/`FileRef`/`TableSchema`/`ColumnDef` (inline the mapping; drop `row_to_snapshot` calls). `resolve_table` (returns a table id `i64`) → `query_scalar!`. Watch nullability on joined/aggregate columns — apply `as "col!"`/`as "col?"` as the build demands. Remove unused `AssertSqlSafe` imports.
-- [ ] **Step 2:** `./tools/sqlx-prepare.sh` to regenerate `.sqlx`.
-- [ ] **Step 3:** Build (local + `--remote-only --no-remote-cache`) — both green.
-- [ ] **Step 4:** `env -u BUCK_PREFER_REMOTE buck2 test --local-only //src/control-plane/postgres/...` — counts unchanged.
-- [ ] **Step 5:** Remove `row_to_snapshot` from `lib.rs` if now unused (clippy).
-- [ ] **Step 6:** Format + commit: `feat(postgres): compile-time query! for catalog`.
+**Files:** `tools/sqlx-prepare.sh` (extend), `…/src/catalog.rs`, `…/src/lib.rs` (`row_to_snapshot` + `resolve_table`), `.sqlx/`.
+
+- [ ] **Step 1: Extend `tools/sqlx-prepare.sh` to create the DuckLake catalog.** After applying the loom migrations and BEFORE `cargo sqlx prepare`, run the pinned duckdb-cli to attach a DuckLake catalog backed by the prepare postgres (this creates the `ducklake_*` metadata tables in the `loom` db). Mirror `fixture.rs`'s `DuckLakeWriter`:
+  ```sh
+  DUCKDB="$PWD/$(env -u BUCK_PREFER_REMOTE buck2 build //src/control-plane/postgres:duckdb-cli --show-output 2>/dev/null | awk '{print $2}')"
+  EXTDIR="$PWD/$(env -u BUCK_PREFER_REMOTE buck2 build //src/control-plane/postgres:duckdb-extensions --show-output 2>/dev/null | awk '{print $2}')"
+  DLDATA="$(mktemp -d)"   # add to the cleanup trap's rm -rf
+  "$DUCKDB" -c "SET extension_directory='$EXTDIR';
+  LOAD ducklake; LOAD postgres_scanner;
+  ATTACH 'ducklake:postgres:dbname=loom host=$SOCK user=postgres' AS lake (DATA_PATH '$DLDATA/', DATA_INLINING_ROW_LIMIT 0);"
+  ```
+  A bare attach creates `ducklake_snapshot/table/schema/data_file/column` (empty is fine — prepare only needs the columns to exist). Verify with `psql -c '\dt ducklake_*'` if debugging.
+
+- [ ] **Step 2: Migrate `catalog.rs`.** Convert all 5 `sqlx::query(AssertSqlSafe(…))` to `query!`, mapping rows into `Snapshot`/`FileRef`/`TableSchema`/`ColumnDef` (inline the mapping; drop `row_to_snapshot` calls). `resolve_table` (returns a table id `i64`) → `query_scalar!`. DuckLake metadata columns will very likely need nullability overrides (`as "col!"`/`as "col?"`) — DuckLake's schema is permissive; the build error names each. Remove unused `AssertSqlSafe` imports.
+- [ ] **Step 3:** `./tools/sqlx-prepare.sh` to regenerate `.sqlx` (now incl. the catalog queries validated against the real DuckLake schema).
+- [ ] **Step 4:** Build (local + `--remote-only --no-remote-cache`) — both green.
+- [ ] **Step 5:** `env -u BUCK_PREFER_REMOTE buck2 test --local-only //src/control-plane/postgres/...` — counts unchanged.
+- [ ] **Step 6:** Remove `row_to_snapshot` from `lib.rs` if now unused (clippy).
+- [ ] **Step 7:** Format + commit: `feat(postgres): DuckLake-aware sqlx-prepare + compile-time query! for catalog`.
 
 ---
 
