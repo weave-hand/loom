@@ -42,11 +42,19 @@ filegroup preserves the `.sqlx/` prefix so the env appends it — same idiom as
   boots the pinned `:postgres-bin`, applies the migrations, and runs `cargo sqlx
   prepare`. It's a codegen/CI-time tool, not a build-graph dep, so a script is
   proportionate (no reindeer/fetch infra).
-- **Freshness enforced by a prek pre-push hook** (`sqlx-prepare`), alongside
-  `buck2-build`/`buck2-test`. It runs the script in check mode and `git diff
-  --exit-code`s `src/control-plane/postgres/.sqlx`. Pre-commit would be too heavy
-  (boots pg); the CI build is a backstop anyway — a stale/missing cache makes `query!`
-  fall through to the cargo-metadata path and **fail the build**.
+- **Freshness enforced by a buck2 `rust_test`** (`//src/control-plane/postgres:sqlx-cache-check`),
+  not a hook. It boots the pinned pg, applies migrations, attaches a DuckLake catalog,
+  then re-runs sqlx's runtime `Executor::describe` for every committed `.sqlx` query
+  and asserts the result (column names, exact types via sqlx's own `PgTypeInfo`
+  `Serialize`, nullability, param count) still matches the cache. It runs in the normal
+  `buck2 test --local-only //src/...` sweep, so CI gates it deterministically and buck
+  re-runs it only when its inputs (`.sqlx`, migrations, fixtures) change — a real test
+  with the live-db fixture as an ordinary dependency, not a skippable hook. This catches
+  the case the offline build misses: **schema drift** (a migration changes a column but
+  the query text is unchanged → same hash → stale cached types, build still passes). A
+  changed/new query with a missing cache entry is already caught by the offline build
+  (it falls through to the cargo-metadata path and fails). `tools/sqlx-prepare.sh`
+  remains the **generate/refresh** tool (run it after changing SQL; commit the `.sqlx`).
 - **`.sqlx` lives at `src/control-plane/postgres/.sqlx/`** (crate root, where `cargo
   sqlx prepare` writes it; checked in), globbed into the `:sqlx-cache` filegroup.
 
@@ -138,7 +146,7 @@ Caveats the implementer must handle (build will force them):
 4. `DATABASE_URL=… cargo sqlx prepare --workspace -- -p control-plane-postgres`
    (writes `src/control-plane/postgres/.sqlx/query-*.json`).
 5. Stop the cluster, remove the temp dir.
-6. A `--check` flag runs steps 1–5 then `git diff --exit-code …/.sqlx` for the hook/CI.
+(Freshness is gated by the `sqlx-cache-check` rust_test, not a `--check`/diff flow.)
 
 Booting pg + applying migrations duplicates a little of `PgFixture`; that's acceptable
 for a standalone tool (the fixture is Rust test code, not reusable from a shell hook).
@@ -157,8 +165,8 @@ for a standalone tool (the fixture is Rust test code, not reusable from a shell 
   unchanged (behaviour preserved; `query!` is a compile-time change).
 - A clean **remote-only** build of `//src/control-plane/postgres:postgres` succeeds
   (the CI-critical proof; the spike confirmed the mechanism on RE).
-- `tools/clippy-all.sh` clean; `prek run --all-files` green; the new `sqlx-prepare`
-  pre-push hook passes (no `.sqlx` diff).
+- `tools/clippy-all.sh` clean; `prek run --all-files` green; the `sqlx-cache-check`
+  rust_test passes (and provably fails on a corrupted cache entry).
 - `git grep 'sqlx::query('` in the adapter's concern files (queue/catalog/ontology/
   acl/lineage + the `pg_insert`/`pg_emit` helpers) returns nothing — all migrated to
   `query!`. `fixture.rs`'s two `query_scalar` + `AssertSqlSafe` calls remain.
