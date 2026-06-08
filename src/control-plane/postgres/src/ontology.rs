@@ -8,6 +8,7 @@ use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
 
 #[async_trait]
 impl Ontology for PgControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn define_type(&self, ty: ObjectType) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query(
@@ -45,6 +46,7 @@ impl Ontology for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn define_link(&self, link: LinkDef) -> Result<()> {
         for endpoint in [&link.from, &link.to] {
             let exists: bool = sqlx::query_scalar(

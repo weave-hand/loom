@@ -64,6 +64,7 @@ pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
 
 #[async_trait]
 impl Lineage for PgControlPlane {
+    #[tracing::instrument(skip(self, event), fields(run_id = ?event.run_id, event_type = ?event.event_type), level = "debug")]
     async fn emit(&self, event: LineageEvent) -> Result<()> {
         pg_emit(&self.pool, &event).await
     }
