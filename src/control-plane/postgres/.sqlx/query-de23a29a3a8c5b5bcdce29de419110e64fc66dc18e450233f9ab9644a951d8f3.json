@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select column_order as \"column_order!\", column_name as \"column_name!\", column_type as \"column_type!\", nulls_allowed as \"nulls_allowed!\" from ducklake_column where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) order by column_order",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "column_order!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ducklake_column",
+            "name": "column_order"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "column_name!",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "ducklake_column",
+            "name": "column_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "column_type!",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "ducklake_column",
+            "name": "column_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "nulls_allowed!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "ducklake_column",
+            "name": "nulls_allowed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "de23a29a3a8c5b5bcdce29de419110e64fc66dc18e450233f9ab9644a951d8f3"
+}

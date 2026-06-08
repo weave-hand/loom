@@ -27,12 +27,13 @@ export LD_LIBRARY_PATH="$BIN/lib:$XML"
 # 3. initdb + start a private cluster; trap cleanup.
 DATA="$(mktemp -d)/pgdata"
 SOCK="$(mktemp -d)"
+DLDATA="$(mktemp -d)"
 PORT=54399
 "$BIN/bin/initdb" -D "$DATA" -U postgres --auth=trust >/dev/null
 "$BIN/bin/pg_ctl" -D "$DATA" -o "-p $PORT -k $SOCK -c listen_addresses=''" -w -l "$DATA/log" start
 cleanup() {
   "$BIN/bin/pg_ctl" -D "$DATA" -m immediate stop >/dev/null 2>&1 || true
-  rm -rf "$DATA" "$SOCK"
+  rm -rf "$DATA" "$SOCK" "$DLDATA"
 }
 trap cleanup EXIT
 "$BIN/bin/createdb" -h "$SOCK" -p "$PORT" -U postgres loom
@@ -41,6 +42,15 @@ trap cleanup EXIT
 for f in src/control-plane/postgres/migrations/*.sql; do
   "$BIN/bin/psql" -h "$SOCK" -p "$PORT" -U postgres -d loom -v ON_ERROR_STOP=1 -q -f "$f"
 done
+
+# 4b. ATTACH a DuckLake catalog (backed by this postgres) via the pinned duckdb-cli,
+# so the ducklake_* metadata tables the catalog concern reads exist for query!
+# validation. The bare ATTACH creates them empty — that's all prepare needs.
+DUCKDB="$PWD/$(env -u BUCK_PREFER_REMOTE buck2 build //src/control-plane/postgres:duckdb-cli --show-output 2>/dev/null | awk '{print $2}')"
+EXTDIR="$PWD/$(env -u BUCK_PREFER_REMOTE buck2 build //src/control-plane/postgres:duckdb-extensions --show-output 2>/dev/null | awk '{print $2}')"
+"$DUCKDB" -c "SET extension_directory='$EXTDIR';
+LOAD ducklake; LOAD postgres_scanner;
+ATTACH 'ducklake:postgres:dbname=loom host=$SOCK port=$PORT user=postgres' AS lake (DATA_PATH '$DLDATA/', DATA_INLINING_ROW_LIMIT 0);"
 
 # 5. Prepare.
 export DATABASE_URL="postgres://postgres@localhost:$PORT/loom?host=$SOCK"

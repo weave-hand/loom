@@ -13,10 +13,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Action, Cardinality, ControlPlane, ControlPlaneError, EventType, PolicyTarget, Result,
-    Snapshot, SnapshotId, Tx,
+    Action, Cardinality, ControlPlane, ControlPlaneError, EventType, PolicyTarget, Result, Tx,
 };
-use sqlx::{PgPool, Row as _};
+use sqlx::PgPool;
 
 pub mod fixture;
 
@@ -61,14 +60,6 @@ impl ControlPlane for PgControlPlane {
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         let tx = self.pool.begin().await.map_err(backend)?;
         Ok(Box::new(PgTx { tx }))
-    }
-}
-
-fn row_to_snapshot(row: &sqlx::postgres::PgRow) -> Snapshot {
-    Snapshot {
-        id: SnapshotId(row.get("snapshot_id")),
-        time: row.get("snapshot_time"),
-        schema_version: row.get("schema_version"),
     }
 }
 
