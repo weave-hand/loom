@@ -8,6 +8,7 @@ use crate::{PgControlPlane, action_to_str, backend, target_cols};
 
 #[async_trait]
 impl Acl for PgControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn define_subject(&self, id: &SubjectId) -> Result<()> {
         sqlx::query("insert into acl.subject (id) values ($1) on conflict (id) do nothing")
             .bind(&id.0)
@@ -17,6 +18,7 @@ impl Acl for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn define_role(&self, id: &RoleId) -> Result<()> {
         sqlx::query("insert into acl.role (id) values ($1) on conflict (id) do nothing")
             .bind(&id.0)
@@ -26,6 +28,7 @@ impl Acl for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
         let s_exists: bool =
             sqlx::query_scalar("select exists (select 1 from acl.subject where id = $1)")
@@ -60,6 +63,7 @@ impl Acl for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
         sqlx::query("delete from acl.role_member where subject_id = $1 and role_id = $2")
             .bind(&subject.0)
@@ -70,6 +74,7 @@ impl Acl for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn grant(&self, role: &RoleId, action: Action, target: PolicyTarget) -> Result<()> {
         let r_exists: bool =
             sqlx::query_scalar("select exists (select 1 from acl.role where id = $1)")
@@ -96,6 +101,7 @@ impl Acl for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()> {
         let (kind, a, b) = target_cols(target);
         sqlx::query(
@@ -113,6 +119,7 @@ impl Acl for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, policy), level = "debug")]
     async fn set_policy(&self, role: &RoleId, policy: Policy) -> Result<()> {
         let r_exists: bool =
             sqlx::query_scalar("select exists (select 1 from acl.role where id = $1)")
@@ -150,6 +157,7 @@ impl Acl for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn clear_policy(&self, role: &RoleId, target: &PolicyTarget) -> Result<()> {
         let (kind, a, b) = target_cols(target);
         sqlx::query(

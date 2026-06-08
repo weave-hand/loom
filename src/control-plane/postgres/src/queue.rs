@@ -32,10 +32,12 @@ pub(crate) async fn pg_insert<'e, E: sqlx::PgExecutor<'e>>(ex: E, job: &NewJob) 
 
 #[async_trait]
 impl Queue for PgControlPlane {
+    #[tracing::instrument(skip(self, job), level = "debug")]
     async fn enqueue(&self, job: NewJob) -> Result<JobId> {
         pg_insert(&self.pool, &job).await
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn dequeue(&self, kinds: &[String], worker: &str) -> Result<Option<Job>> {
         let cutoff = OffsetDateTime::now_utc() - self.lock_timeout;
         let row = sqlx::query(
@@ -58,6 +60,7 @@ impl Queue for PgControlPlane {
         Ok(row.as_ref().map(row_to_job))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn complete(&self, id: JobId) -> Result<()> {
         sqlx::query("delete from queue.jobs where id = $1")
             .bind(id.0)
@@ -67,6 +70,7 @@ impl Queue for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn fail(&self, id: JobId, error: &str, policy: RetryPolicy) -> Result<()> {
         match policy {
             RetryPolicy::Retry { delay } => {
@@ -97,6 +101,7 @@ impl Queue for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn heartbeat(&self, id: JobId) -> Result<()> {
         sqlx::query("update queue.jobs set locked_at=now() where id=$1")
             .bind(id.0)

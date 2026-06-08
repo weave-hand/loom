@@ -17,6 +17,9 @@ serde_json = "1"
 tempfile = "3"
 # Used by await_jobs for the polling-fallback timeout around PgListener::recv.
 tokio = { version = "1", features = ["time"] }
+# Tracing facade: libraries emit spans/events; the Step 3 service binaries install
+# the subscriber. No subscriber/metrics here.
+tracing = "0.1"
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }

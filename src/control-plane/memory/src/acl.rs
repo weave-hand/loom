@@ -28,16 +28,19 @@ pub(crate) struct AclState {
 
 #[async_trait]
 impl Acl for MemoryControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn define_subject(&self, id: &SubjectId) -> Result<()> {
         self.acl.lock().unwrap().subjects.insert(id.0.clone());
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn define_role(&self, id: &RoleId) -> Result<()> {
         self.acl.lock().unwrap().roles.insert(id.0.clone());
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
         let mut acl = self.acl.lock().unwrap();
         if !acl.subjects.contains(&subject.0) {
@@ -53,6 +56,7 @@ impl Acl for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
         self.acl
             .lock()
@@ -62,6 +66,7 @@ impl Acl for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn grant(&self, role: &RoleId, action: Action, target: PolicyTarget) -> Result<()> {
         let mut acl = self.acl.lock().unwrap();
         if !acl.roles.contains(&role.0) {
@@ -72,6 +77,7 @@ impl Acl for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()> {
         self.acl
             .lock()
@@ -81,6 +87,7 @@ impl Acl for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, policy), level = "debug")]
     async fn set_policy(&self, role: &RoleId, policy: Policy) -> Result<()> {
         let mut acl = self.acl.lock().unwrap();
         if !acl.roles.contains(&role.0) {
@@ -91,6 +98,7 @@ impl Acl for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn clear_policy(&self, role: &RoleId, target: &PolicyTarget) -> Result<()> {
         self.acl
             .lock()

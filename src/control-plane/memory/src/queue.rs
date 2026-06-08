@@ -8,12 +8,14 @@ use crate::MemoryControlPlane;
 
 #[async_trait]
 impl Queue for MemoryControlPlane {
+    #[tracing::instrument(skip(self, job), level = "debug")]
     async fn enqueue(&self, job: NewJob) -> Result<JobId> {
         let id = Self::insert(&mut self.rows.lock().unwrap(), job);
         self.notify.notify_waiters();
         Ok(JobId(id))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn dequeue(&self, kinds: &[String], _worker: &str) -> Result<Option<Job>> {
         let now = OffsetDateTime::now_utc();
         let cutoff = now - self.lock_timeout;
@@ -49,11 +51,13 @@ impl Queue for MemoryControlPlane {
         }))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn complete(&self, id: JobId) -> Result<()> {
         self.rows.lock().unwrap().retain(|r| r.id != id.0);
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn fail(&self, id: JobId, _error: &str, policy: RetryPolicy) -> Result<()> {
         let mut rows = self.rows.lock().unwrap();
         if let Some(r) = rows.iter_mut().find(|r| r.id == id.0) {
@@ -72,6 +76,7 @@ impl Queue for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn heartbeat(&self, id: JobId) -> Result<()> {
         let mut rows = self.rows.lock().unwrap();
         if let Some(r) = rows.iter_mut().find(|r| r.id == id.0) {
