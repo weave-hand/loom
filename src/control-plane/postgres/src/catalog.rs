@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    Catalog, ColumnDef, ControlPlaneError, FileRef, Result, Snapshot, SnapshotId, TableRef,
-    TableSchema,
+    Catalog, ColumnDef, ControlPlaneError, FileRef, Page, PageReq, Result, Snapshot, SnapshotId,
+    TableRef, TableSchema,
 };
 
 use crate::{PgControlPlane, backend};
@@ -31,7 +31,7 @@ impl Catalog for PgControlPlane {
         })
     }
 
-    async fn snapshots(&self, table: &TableRef) -> Result<Vec<Snapshot>> {
+    async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
         let rows = sqlx::query!(
             "select sn.snapshot_id as \"snapshot_id!\", sn.snapshot_time as \"snapshot_time!\", sn.schema_version as \"schema_version!\" \
              from ducklake_snapshot sn \
@@ -52,17 +52,23 @@ impl Catalog for PgControlPlane {
                 table.schema, table.name
             )));
         }
-        Ok(rows
-            .into_iter()
-            .map(|r| Snapshot {
-                id: SnapshotId(r.snapshot_id),
-                time: r.snapshot_time,
-                schema_version: r.schema_version,
-            })
-            .collect())
+        Ok(Page::from_full(
+            rows.into_iter()
+                .map(|r| Snapshot {
+                    id: SnapshotId(r.snapshot_id),
+                    time: r.snapshot_time,
+                    schema_version: r.schema_version,
+                })
+                .collect(),
+        ))
     }
 
-    async fn files(&self, table: &TableRef, at: SnapshotId) -> Result<Vec<FileRef>> {
+    async fn files(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+        _page: PageReq,
+    ) -> Result<Page<FileRef>> {
         let tid = self.resolve_table(table, at).await?;
         let rows = sqlx::query!(
             "select path as \"path!\", record_count as \"record_count!\", file_size_bytes as \"file_size_bytes!\" from ducklake_data_file \
@@ -74,14 +80,15 @@ impl Catalog for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| FileRef {
-                path: r.path,
-                record_count: r.record_count,
-                file_size_bytes: r.file_size_bytes,
-            })
-            .collect())
+        Ok(Page::from_full(
+            rows.into_iter()
+                .map(|r| FileRef {
+                    path: r.path,
+                    record_count: r.record_count,
+                    file_size_bytes: r.file_size_bytes,
+                })
+                .collect(),
+        ))
     }
 
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {

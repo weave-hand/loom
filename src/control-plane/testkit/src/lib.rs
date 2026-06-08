@@ -7,8 +7,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef,
-    Decision, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, Policy,
-    PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
+    Decision, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, PageReq,
+    Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
     SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
@@ -279,18 +279,30 @@ where
 
     // files: one live at the first batch, two by the second (begin_snapshot range).
     assert_eq!(
-        catalog.files(&t, seeded[0].snapshot).await.unwrap().len(),
+        catalog
+            .files(&t, seeded[0].snapshot, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         1,
         "one file live at the first batch"
     );
     assert_eq!(
-        catalog.files(&t, seeded[1].snapshot).await.unwrap().len(),
+        catalog
+            .files(&t, seeded[1].snapshot, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         2,
         "two files live by the second batch"
     );
 
     // snapshots: ascending history, includes both batch snapshots, ends at current.
-    let hist = catalog.snapshots(&t).await.unwrap();
+    let hist = catalog
+        .snapshots(&t, PageReq::unbounded())
+        .await
+        .unwrap()
+        .items;
     assert!(
         hist.windows(2).all(|w| w[0].id < w[1].id),
         "snapshots are ascending"
@@ -340,7 +352,7 @@ where
     );
     assert!(
         matches!(
-            catalog.snapshots(&missing).await,
+            catalog.snapshots(&missing, PageReq::unbounded()).await,
             Err(control_plane_core::ControlPlaneError::NotFound(_))
         ),
         "missing table snapshots is NotFound"
@@ -408,11 +420,21 @@ where
 
     // Live before the drop.
     assert_eq!(catalog.current_snapshot(&t).await.unwrap().id, s1);
-    assert_eq!(catalog.files(&t, s1).await.unwrap().len(), 2);
+    assert_eq!(
+        catalog
+            .files(&t, s1, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 
     // before-existence: not live at a snapshot before its begin (`begin <= s` false).
     assert!(
-        matches!(catalog.files(&t, before).await, Err(NotFound(_))),
+        matches!(
+            catalog.files(&t, before, PageReq::unbounded()).await,
+            Err(NotFound(_))
+        ),
         "not live before it existed (files)"
     );
     assert!(
@@ -426,7 +448,10 @@ where
 
     // `end > s` false: not live AT the drop snapshot.
     assert!(
-        matches!(catalog.files(&t, d).await, Err(NotFound(_))),
+        matches!(
+            catalog.files(&t, d, PageReq::unbounded()).await,
+            Err(NotFound(_))
+        ),
         "not live at the drop snapshot (files)"
     );
     assert!(
@@ -436,7 +461,11 @@ where
 
     // `end > s` true (non-null end): time-travel into the live past still works.
     assert_eq!(
-        catalog.files(&t, s1).await.unwrap().len(),
+        catalog
+            .files(&t, s1, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         2,
         "time-travel before the drop still sees files"
     );
@@ -447,7 +476,11 @@ where
     );
 
     // History excludes the drop snapshot; current is still the last LIVE snapshot.
-    let hist = catalog.snapshots(&t).await.unwrap();
+    let hist = catalog
+        .snapshots(&t, PageReq::unbounded())
+        .await
+        .unwrap()
+        .items;
     assert!(
         hist.iter().all(|sn| sn.id < d),
         "history excludes the drop snapshot"
