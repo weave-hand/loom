@@ -277,6 +277,7 @@ dependencies = [
  "async-trait",
  "control-plane-core",
  "control-plane-testkit",
+ "proptest",
  "serde_json",
  "sqlx",
  "tempfile",
