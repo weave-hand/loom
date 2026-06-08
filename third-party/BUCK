@@ -6670,6 +6670,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "6",
         "CARGO_PKG_VERSION_PRE": "",
     },
+    features = ["no-env-filter"],
     visibility = [],
     deps = [
         ":tracing-core-0.1",
@@ -6709,6 +6710,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "6",
         "CARGO_PKG_VERSION_PRE": "",
     },
+    features = ["no-env-filter"],
     proc_macro = True,
     visibility = [],
     deps = [

@@ -6,6 +6,7 @@ use control_plane_core::{JobFailure, NewJob, Queue, RetryPolicy};
 use control_plane_memory::MemoryControlPlane;
 use control_plane_worker::Worker;
 use tokio_util::sync::CancellationToken;
+use tracing_test::traced_test;
 
 fn job(kind: &str) -> NewJob {
     NewJob {
@@ -253,5 +254,38 @@ async fn handler_panic_is_contained() {
             .unwrap()
             .is_none(),
         "panicking job abandoned (not retried/stuck); good job completed"
+    );
+}
+
+// The worker's tracing instrumentation actually fires: a contained handler panic
+// emits the "handler panic contained" warn event. Proves the tracing facade is
+// wired end-to-end (catches #[instrument]/event mis-wiring that compiles to nothing).
+#[tokio::test]
+#[traced_test]
+async fn emits_tracing_event_on_contained_panic() {
+    let cp = MemoryControlPlane::new(LOCK_TIMEOUT);
+    cp.enqueue(job("boom")).await.unwrap();
+
+    let token = CancellationToken::new();
+    let t = token.clone();
+    let worker =
+        Worker::new(cp.clone(), "w1", LOCK_TIMEOUT).with_poll_interval(Duration::from_millis(50));
+    let handle = tokio::spawn(async move {
+        worker
+            .run(&["boom".to_string()], t, move |_j| async move {
+                panic!("handler blew up");
+                #[allow(unreachable_code)]
+                Ok(())
+            })
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    token.cancel();
+    handle.await.unwrap().unwrap();
+
+    assert!(
+        logs_contain("handler panic contained"),
+        "worker should emit the panic-contained tracing event"
     );
 }

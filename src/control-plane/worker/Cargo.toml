@@ -18,7 +18,10 @@ tracing = "0.1"
 # footgun + cross-thread capture). Test-only in buck (only worker_test's deps wire it);
 # declared as a normal cargo dep so reindeer emits the //third-party:tracing-test target
 # (reindeer skips dev-only deps in non-vendored mode).
-tracing-test = "0.2"
+# no-env-filter: integration tests (tests/) are a separate crate from the lib under
+# test, so the default `{crate}=trace` filter drops the worker's events. This widens
+# capture to all crates so logs_contain sees the worker's instrumentation.
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
 
 [dev-dependencies]
 control-plane-memory = { path = "../memory" }

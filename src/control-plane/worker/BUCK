@@ -27,6 +27,7 @@ rust_test(
         "//third-party:serde_json",
         "//third-party:tokio",
         "//third-party:tokio-util",
+        "//third-party:tracing",
         "//third-party:tracing-test",
     ],
 )

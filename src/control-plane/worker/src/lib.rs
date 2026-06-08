@@ -12,6 +12,7 @@ use std::time::Duration;
 use control_plane_core::{Job, JobFailure, Queue, Result, RetryPolicy};
 use futures_util::FutureExt;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 /// Default polling fallback interval. NOTIFY drives normal latency; this bounds
 /// the wait when a notification is missed or a lock expires for reclaim.
@@ -80,37 +81,49 @@ impl<Q: Queue + Send + Sync> Worker<Q> {
             match self.queue.dequeue(kinds, &self.worker_id).await? {
                 Some(job) => {
                     let id = job.id;
-                    // Run the handler while heartbeating the lease on a timer, so a
-                    // handler that outlives `lock_timeout` isn't reclaimed and
-                    // double-executed. The heartbeat is best-effort: a missed tick is
-                    // recoverable (the next tick retries; worst case the lease lapses
-                    // and reclaim does its job) — deliberately asymmetric with the
-                    // `?`-propagating dequeue/complete/fail below.
-                    // catch_unwind contains a panicking handler so it fails the
-                    // job (Abandon) instead of tearing down the loop.
-                    let fut = AssertUnwindSafe(handler(job)).catch_unwind();
-                    tokio::pin!(fut);
-                    let mut hb = tokio::time::interval(self.heartbeat_interval);
-                    let outcome = loop {
-                        tokio::select! {
-                            res = &mut fut => break res,
-                            _ = hb.tick() => {
-                                let _ = self.queue.heartbeat(id).await;
+                    let span = tracing::info_span!("job", job_id = ?id, kind = %job.kind);
+                    async {
+                        tracing::debug!("dequeued");
+                        // Run the handler while heartbeating the lease on a timer, so a
+                        // handler that outlives `lock_timeout` isn't reclaimed and
+                        // double-executed. The heartbeat is best-effort: a missed tick is
+                        // recoverable (the next tick retries; worst case the lease lapses
+                        // and reclaim does its job) — deliberately asymmetric with the
+                        // `?`-propagating dequeue/complete/fail below.
+                        // catch_unwind contains a panicking handler so it fails the
+                        // job (Abandon) instead of tearing down the loop.
+                        let fut = AssertUnwindSafe(handler(job)).catch_unwind();
+                        tokio::pin!(fut);
+                        let mut hb = tokio::time::interval(self.heartbeat_interval);
+                        let outcome = loop {
+                            tokio::select! {
+                                res = &mut fut => break res,
+                                _ = hb.tick() => {
+                                    let _ = self.queue.heartbeat(id).await;
+                                }
+                            }
+                        };
+                        match outcome {
+                            Ok(Ok(())) => {
+                                tracing::info!("job completed");
+                                self.queue.complete(id).await?;
+                            }
+                            Ok(Err(JobFailure { error, policy })) => {
+                                tracing::warn!(error = %error, ?policy, "job failed");
+                                self.queue.fail(id, &error, policy).await?;
+                            }
+                            Err(panic) => {
+                                let msg = panic_message(&*panic);
+                                tracing::warn!(panic = %msg, "handler panic contained");
+                                self.queue
+                                    .fail(id, &format!("panic: {msg}"), RetryPolicy::Abandon)
+                                    .await?;
                             }
                         }
-                    };
-                    match outcome {
-                        Ok(Ok(())) => self.queue.complete(id).await?,
-                        Ok(Err(JobFailure { error, policy })) => {
-                            self.queue.fail(id, &error, policy).await?
-                        }
-                        Err(panic) => {
-                            let msg = panic_message(&*panic);
-                            self.queue
-                                .fail(id, &format!("panic: {msg}"), RetryPolicy::Abandon)
-                                .await?
-                        }
+                        Ok::<(), control_plane_core::ControlPlaneError>(())
                     }
+                    .instrument(span)
+                    .await?;
                 }
                 None => {
                     tokio::select! {
