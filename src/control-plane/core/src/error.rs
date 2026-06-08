@@ -12,8 +12,14 @@ pub type Result<T> = std::result::Result<T, ControlPlaneError>;
 pub enum ControlPlaneError {
     #[error("not found: {0}")]
     NotFound(String),
+    /// A write lost an optimistic-concurrency / uniqueness race. No producer yet —
+    /// today's writes are idempotent upserts; reserved for future non-idempotent
+    /// writes (e.g. optimistic snapshot commit).
     #[error("conflict: {0}")]
     Conflict(String),
+    /// The caller is not authorized. Reserved for the Step-3 service auth layer; the
+    /// control plane itself never authenticates a caller (ACL `check` returns a
+    /// `Decision`, not an error).
     #[error("unauthorized")]
     Unauthorized,
     #[error("serialization: {0}")]
@@ -36,5 +42,9 @@ mod tests {
             "not found: job 7"
         );
         assert_eq!(ControlPlaneError::Unauthorized.to_string(), "unauthorized");
+        assert_eq!(
+            ControlPlaneError::Conflict("dup key".into()).to_string(),
+            "conflict: dup key"
+        );
     }
 }
