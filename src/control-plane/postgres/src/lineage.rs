@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use control_plane_core::{DatasetRef, Lineage, LineageEvent, Result, RunId};
-use sqlx::Row as _;
+use sqlx::{AssertSqlSafe, Row as _};
 
 use crate::{PgControlPlane, backend, event_type_from_str, event_type_to_str};
 
@@ -11,7 +11,7 @@ pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
     // One round-trip: insert the event, then its input/output rows via unnest.
     // Ordinals come from WITH ORDINALITY (1-based; the read path orders by
     // `ordinal`, so the absolute base is irrelevant).
-    sqlx::query(
+    sqlx::query(AssertSqlSafe(
         "with e as ( \
              insert into lineage.event (run_id, event_type, event_time, payload) \
              values ($1, $2, $3, $4) returning event_id) \
@@ -23,7 +23,7 @@ pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
              union all \
              select 'output', ord, ns, nm \
              from unnest($7::text[], $8::text[]) with ordinality as t(ns, nm, ord)) d",
-    )
+    ))
     .bind(event.run_id.0)
     .bind(event_type_to_str(event.event_type))
     .bind(event.event_time)
@@ -70,10 +70,10 @@ impl Lineage for PgControlPlane {
     }
 
     async fn events_for(&self, run: &RunId) -> Result<Vec<LineageEvent>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(AssertSqlSafe(
             "select event_id, event_type, event_time, payload from lineage.event \
              where run_id = $1 order by event_id",
-        )
+        ))
         .bind(run.0)
         .fetch_all(&self.pool)
         .await
@@ -105,10 +105,10 @@ impl Lineage for PgControlPlane {
 impl PgControlPlane {
     /// The datasets of one event in one direction, ordered by ordinal.
     async fn event_datasets(&self, event_id: i64, direction: &str) -> Result<Vec<DatasetRef>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(AssertSqlSafe(
             "select namespace, name from lineage.event_dataset \
              where event_id = $1 and direction = $2 order by ordinal",
-        )
+        ))
         .bind(event_id)
         .bind(direction)
         .fetch_all(&self.pool)
@@ -132,12 +132,12 @@ impl PgControlPlane {
         from_dir: &str,
         to_dir: &str,
     ) -> Result<Vec<DatasetRef>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(AssertSqlSafe(
             "select distinct b.namespace, b.name \
              from lineage.event_dataset a \
              join lineage.event_dataset b on b.event_id = a.event_id and b.direction = $4 \
              where a.direction = $3 and a.namespace = $1 and a.name = $2",
-        )
+        ))
         .bind(&dataset.namespace)
         .bind(&dataset.name)
         .bind(from_dir)

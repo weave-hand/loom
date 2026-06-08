@@ -5,6 +5,8 @@ use control_plane_core::{Job, JobId, NewJob, Queue, Result, RetryPolicy};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use sqlx::AssertSqlSafe;
+
 use crate::{PgControlPlane, backend, row_to_job};
 
 pub(crate) async fn pg_insert<'e, E: sqlx::PgExecutor<'e>>(ex: E, job: &NewJob) -> Result<JobId> {
@@ -12,13 +14,13 @@ pub(crate) async fn pg_insert<'e, E: sqlx::PgExecutor<'e>>(ex: E, job: &NewJob) 
     // Insert and fire the wakeup in a single statement: pg_notify inside a
     // transaction is buffered until commit, so a rolled-back enqueue is silent.
     // Channel is per-kind so workers only wake for kinds they handle.
-    sqlx::query(
+    sqlx::query(AssertSqlSafe(
         "with ins as ( \
              insert into queue.jobs (id, kind, payload, state, run_at, priority) \
              values ($1, $2, $3, 'available', coalesce($4, now()), $5) \
              returning kind) \
          select pg_notify('loom_queue:' || kind, '') from ins",
-    )
+    ))
     .bind(id)
     .bind(&job.kind)
     .bind(&job.payload)
@@ -40,7 +42,7 @@ impl Queue for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn dequeue(&self, kinds: &[String], worker: &str) -> Result<Option<Job>> {
         let cutoff = OffsetDateTime::now_utc() - self.lock_timeout;
-        let row = sqlx::query(
+        let row = sqlx::query(AssertSqlSafe(
             "update queue.jobs set state='running', locked_at=now(), locked_by=$1, \
                  attempts=attempts+1, updated_at=now() \
              where id = ( \
@@ -50,7 +52,7 @@ impl Queue for PgControlPlane {
                  order by priority desc, run_at asc \
                  for update skip locked limit 1) \
              returning id, kind, payload, attempts, run_at",
-        )
+        ))
         .bind(worker)
         .bind(kinds)
         .bind(cutoff)
@@ -62,7 +64,7 @@ impl Queue for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn complete(&self, id: JobId) -> Result<()> {
-        sqlx::query("delete from queue.jobs where id = $1")
+        sqlx::query(AssertSqlSafe("delete from queue.jobs where id = $1"))
             .bind(id.0)
             .execute(&self.pool)
             .await
@@ -75,10 +77,10 @@ impl Queue for PgControlPlane {
         match policy {
             RetryPolicy::Retry { delay } => {
                 let run_at = OffsetDateTime::now_utc() + delay;
-                sqlx::query(
+                sqlx::query(AssertSqlSafe(
                     "update queue.jobs set state='available', run_at=$2, locked_at=null, \
                          locked_by=null, last_error=$3, updated_at=now() where id=$1",
-                )
+                ))
                 .bind(id.0)
                 .bind(run_at)
                 .bind(error)
@@ -87,10 +89,10 @@ impl Queue for PgControlPlane {
                 .map_err(backend)?;
             }
             RetryPolicy::Abandon => {
-                sqlx::query(
+                sqlx::query(AssertSqlSafe(
                     "update queue.jobs set state='failed', locked_at=null, locked_by=null, \
                          last_error=$2, updated_at=now() where id=$1",
-                )
+                ))
                 .bind(id.0)
                 .bind(error)
                 .execute(&self.pool)
@@ -103,11 +105,13 @@ impl Queue for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn heartbeat(&self, id: JobId) -> Result<()> {
-        sqlx::query("update queue.jobs set locked_at=now() where id=$1")
-            .bind(id.0)
-            .execute(&self.pool)
-            .await
-            .map_err(backend)?;
+        sqlx::query(AssertSqlSafe(
+            "update queue.jobs set locked_at=now() where id=$1",
+        ))
+        .bind(id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
         Ok(())
     }
 

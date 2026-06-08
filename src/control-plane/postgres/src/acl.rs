@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, Policy, PolicyTarget, Result, RoleId, SubjectId,
 };
-use sqlx::Row as _;
+use sqlx::{AssertSqlSafe, Row as _};
 
 use crate::{PgControlPlane, action_to_str, backend, target_cols};
 
@@ -10,51 +10,57 @@ use crate::{PgControlPlane, action_to_str, backend, target_cols};
 impl Acl for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_subject(&self, id: &SubjectId) -> Result<()> {
-        sqlx::query("insert into acl.subject (id) values ($1) on conflict (id) do nothing")
-            .bind(&id.0)
-            .execute(&self.pool)
-            .await
-            .map_err(backend)?;
+        sqlx::query(AssertSqlSafe(
+            "insert into acl.subject (id) values ($1) on conflict (id) do nothing",
+        ))
+        .bind(&id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_role(&self, id: &RoleId) -> Result<()> {
-        sqlx::query("insert into acl.role (id) values ($1) on conflict (id) do nothing")
-            .bind(&id.0)
-            .execute(&self.pool)
-            .await
-            .map_err(backend)?;
+        sqlx::query(AssertSqlSafe(
+            "insert into acl.role (id) values ($1) on conflict (id) do nothing",
+        ))
+        .bind(&id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
-        let s_exists: bool =
-            sqlx::query_scalar("select exists (select 1 from acl.subject where id = $1)")
-                .bind(&subject.0)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(backend)?;
+        let s_exists: bool = sqlx::query_scalar(AssertSqlSafe(
+            "select exists (select 1 from acl.subject where id = $1)",
+        ))
+        .bind(&subject.0)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
         if !s_exists {
             return Err(ControlPlaneError::NotFound(format!(
                 "subject {}",
                 subject.0
             )));
         }
-        let r_exists: bool =
-            sqlx::query_scalar("select exists (select 1 from acl.role where id = $1)")
-                .bind(&role.0)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(backend)?;
+        let r_exists: bool = sqlx::query_scalar(AssertSqlSafe(
+            "select exists (select 1 from acl.role where id = $1)",
+        ))
+        .bind(&role.0)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
-        sqlx::query(
+        sqlx::query(AssertSqlSafe(
             "insert into acl.role_member (subject_id, role_id) values ($1, $2) \
              on conflict do nothing",
-        )
+        ))
         .bind(&subject.0)
         .bind(&role.0)
         .execute(&self.pool)
@@ -65,31 +71,34 @@ impl Acl for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
-        sqlx::query("delete from acl.role_member where subject_id = $1 and role_id = $2")
-            .bind(&subject.0)
-            .bind(&role.0)
-            .execute(&self.pool)
-            .await
-            .map_err(backend)?;
+        sqlx::query(AssertSqlSafe(
+            "delete from acl.role_member where subject_id = $1 and role_id = $2",
+        ))
+        .bind(&subject.0)
+        .bind(&role.0)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn grant(&self, role: &RoleId, action: Action, target: PolicyTarget) -> Result<()> {
-        let r_exists: bool =
-            sqlx::query_scalar("select exists (select 1 from acl.role where id = $1)")
-                .bind(&role.0)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(backend)?;
+        let r_exists: bool = sqlx::query_scalar(AssertSqlSafe(
+            "select exists (select 1 from acl.role where id = $1)",
+        ))
+        .bind(&role.0)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
         let (kind, a, b) = target_cols(&target);
-        sqlx::query(
+        sqlx::query(AssertSqlSafe(
             "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b) \
              values ($1, $2, $3, $4, $5) on conflict do nothing",
-        )
+        ))
         .bind(&role.0)
         .bind(action_to_str(action))
         .bind(kind)
@@ -104,10 +113,10 @@ impl Acl for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()> {
         let (kind, a, b) = target_cols(target);
-        sqlx::query(
+        sqlx::query(AssertSqlSafe(
             "delete from acl.role_grant where role_id = $1 and action = $2 \
              and target_kind = $3 and target_a = $4 and target_b = $5",
-        )
+        ))
         .bind(&role.0)
         .bind(action_to_str(action))
         .bind(kind)
@@ -121,12 +130,13 @@ impl Acl for PgControlPlane {
 
     #[tracing::instrument(skip(self, policy), level = "debug")]
     async fn set_policy(&self, role: &RoleId, policy: Policy) -> Result<()> {
-        let r_exists: bool =
-            sqlx::query_scalar("select exists (select 1 from acl.role where id = $1)")
-                .bind(&role.0)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(backend)?;
+        let r_exists: bool = sqlx::query_scalar(AssertSqlSafe(
+            "select exists (select 1 from acl.role where id = $1)",
+        ))
+        .bind(&role.0)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
@@ -138,13 +148,13 @@ impl Acl for PgControlPlane {
             ),
             None => None,
         };
-        sqlx::query(
+        sqlx::query(AssertSqlSafe(
             "insert into acl.policy \
                  (role_id, target_kind, target_a, target_b, row_filter, deny_columns) \
              values ($1, $2, $3, $4, $5, $6) \
              on conflict (role_id, target_kind, target_a, target_b) do update set \
                  row_filter = excluded.row_filter, deny_columns = excluded.deny_columns",
-        )
+        ))
         .bind(&role.0)
         .bind(kind)
         .bind(&a)
@@ -160,10 +170,10 @@ impl Acl for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn clear_policy(&self, role: &RoleId, target: &PolicyTarget) -> Result<()> {
         let (kind, a, b) = target_cols(target);
-        sqlx::query(
+        sqlx::query(AssertSqlSafe(
             "delete from acl.policy where role_id = $1 and target_kind = $2 \
              and target_a = $3 and target_b = $4",
-        )
+        ))
         .bind(&role.0)
         .bind(kind)
         .bind(&a)
@@ -181,13 +191,13 @@ impl Acl for PgControlPlane {
         target: &PolicyTarget,
     ) -> Result<Decision> {
         let (kind, a, b) = target_cols(target);
-        let allow: bool = sqlx::query_scalar(
+        let allow: bool = sqlx::query_scalar(AssertSqlSafe(
             "select exists ( \
                  select 1 from acl.role_member m \
                  join acl.role_grant g on g.role_id = m.role_id \
                  where m.subject_id = $1 and g.action = $2 \
                    and g.target_kind = $3 and g.target_a = $4 and g.target_b = $5)",
-        )
+        ))
         .bind(&subject.0)
         .bind(action_to_str(action))
         .bind(kind)
@@ -209,12 +219,12 @@ impl Acl for PgControlPlane {
         target: &PolicyTarget,
     ) -> Result<Vec<Policy>> {
         let (kind, a, b) = target_cols(target);
-        let rows = sqlx::query(
+        let rows = sqlx::query(AssertSqlSafe(
             "select p.row_filter, p.deny_columns from acl.role_member m \
              join acl.policy p on p.role_id = m.role_id \
              where m.subject_id = $1 and p.target_kind = $2 \
                and p.target_a = $3 and p.target_b = $4",
-        )
+        ))
         .bind(&subject.0)
         .bind(kind)
         .bind(&a)

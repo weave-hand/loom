@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, LinkDef, ObjectType, Ontology, PropertyDef, Result, TableRef, TypeName,
 };
-use sqlx::Row as _;
+use sqlx::{AssertSqlSafe, Row as _};
 
 use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
 
@@ -11,28 +11,30 @@ impl Ontology for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_type(&self, ty: ObjectType) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(backend)?;
-        sqlx::query(
+        sqlx::query(AssertSqlSafe(
             "insert into ontology.object_type (name, table_schema, table_name) \
              values ($1, $2, $3) \
              on conflict (name) do update set table_schema = excluded.table_schema, \
                  table_name = excluded.table_name",
-        )
+        ))
         .bind(&ty.name.0)
         .bind(&ty.table.schema)
         .bind(&ty.table.name)
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
-        sqlx::query("delete from ontology.property where type_name = $1")
-            .bind(&ty.name.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
+        sqlx::query(AssertSqlSafe(
+            "delete from ontology.property where type_name = $1",
+        ))
+        .bind(&ty.name.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
         for (i, p) in ty.properties.iter().enumerate() {
-            sqlx::query(
+            sqlx::query(AssertSqlSafe(
                 "insert into ontology.property (type_name, ordinal, name, ty, required) \
                  values ($1, $2, $3, $4, $5)",
-            )
+            ))
             .bind(&ty.name.0)
             .bind(i as i32)
             .bind(&p.name)
@@ -49,9 +51,9 @@ impl Ontology for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_link(&self, link: LinkDef) -> Result<()> {
         for endpoint in [&link.from, &link.to] {
-            let exists: bool = sqlx::query_scalar(
+            let exists: bool = sqlx::query_scalar(AssertSqlSafe(
                 "select exists (select 1 from ontology.object_type where name = $1)",
-            )
+            ))
             .bind(&endpoint.0)
             .fetch_one(&self.pool)
             .await
@@ -60,12 +62,12 @@ impl Ontology for PgControlPlane {
                 return Err(ControlPlaneError::NotFound(format!("type {}", endpoint.0)));
             }
         }
-        sqlx::query(
+        sqlx::query(AssertSqlSafe(
             "insert into ontology.link (name, from_type, to_type, cardinality) \
              values ($1, $2, $3, $4) \
              on conflict (name, from_type) do update set to_type = excluded.to_type, \
                  cardinality = excluded.cardinality",
-        )
+        ))
         .bind(&link.name)
         .bind(&link.from.0)
         .bind(&link.to.0)
@@ -77,18 +79,18 @@ impl Ontology for PgControlPlane {
     }
 
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
-        let row = sqlx::query(
+        let row = sqlx::query(AssertSqlSafe(
             "select table_schema, table_name from ontology.object_type where name = $1",
-        )
+        ))
         .bind(&name.0)
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?
         .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))?;
-        let props = sqlx::query(
+        let props = sqlx::query(AssertSqlSafe(
             "select name, ty, required from ontology.property \
              where type_name = $1 order by ordinal",
-        )
+        ))
         .bind(&name.0)
         .fetch_all(&self.pool)
         .await
@@ -111,10 +113,11 @@ impl Ontology for PgControlPlane {
     }
 
     async fn list_types(&self) -> Result<Vec<ObjectType>> {
-        let names: Vec<String> = sqlx::query_scalar("select name from ontology.object_type")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(backend)?;
+        let names: Vec<String> =
+            sqlx::query_scalar(AssertSqlSafe("select name from ontology.object_type"))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(backend)?;
         let mut out = Vec::with_capacity(names.len());
         for n in names {
             out.push(self.get_type(&TypeName(n)).await?);
@@ -123,9 +126,9 @@ impl Ontology for PgControlPlane {
     }
 
     async fn links(&self, name: &TypeName) -> Result<Vec<LinkDef>> {
-        let exists: bool = sqlx::query_scalar(
+        let exists: bool = sqlx::query_scalar(AssertSqlSafe(
             "select exists (select 1 from ontology.object_type where name = $1)",
-        )
+        ))
         .bind(&name.0)
         .fetch_one(&self.pool)
         .await
@@ -133,9 +136,9 @@ impl Ontology for PgControlPlane {
         if !exists {
             return Err(ControlPlaneError::NotFound(name.0.clone()));
         }
-        let rows = sqlx::query(
+        let rows = sqlx::query(AssertSqlSafe(
             "select name, from_type, to_type, cardinality from ontology.link where from_type = $1",
-        )
+        ))
         .bind(&name.0)
         .fetch_all(&self.pool)
         .await
@@ -152,9 +155,9 @@ impl Ontology for PgControlPlane {
     }
 
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {
-        let row = sqlx::query(
+        let row = sqlx::query(AssertSqlSafe(
             "select table_schema, table_name from ontology.object_type where name = $1",
-        )
+        ))
         .bind(&name.0)
         .fetch_optional(&self.pool)
         .await
