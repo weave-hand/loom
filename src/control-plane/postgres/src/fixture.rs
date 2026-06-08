@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Connection, Executor, PgConnection};
+use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection};
 use tempfile::TempDir;
 
 use crate::PgControlPlane;
@@ -138,7 +138,7 @@ impl PgFixture {
             .await
             .expect("connect to admin database");
         admin
-            .execute(format!("create database {db}").as_str())
+            .execute(AssertSqlSafe(format!("create database {db}")))
             .await
             .expect("create database");
         admin.close().await.ok();
@@ -254,13 +254,13 @@ impl DuckLakeWriter {
             .connect_with(self.opts())
             .await
             .expect("connect to read back snapshots");
-        sqlx::query_scalar::<_, i64>(
+        sqlx::query_scalar::<_, i64>(AssertSqlSafe(
             "select f.begin_snapshot from ducklake_data_file f \
              join ducklake_table t on f.table_id = t.table_id \
              join ducklake_schema s on t.schema_id = s.schema_id \
              where s.schema_name = $1 and t.table_name = $2 \
              order by f.data_file_id",
-        )
+        ))
         .bind(schema)
         .bind(table)
         .fetch_all(&pool)
@@ -297,12 +297,12 @@ impl DuckLakeWriter {
             .connect_with(self.opts())
             .await
             .expect("connect to read back drop snapshot");
-        sqlx::query_scalar::<_, i64>(
+        sqlx::query_scalar::<_, i64>(AssertSqlSafe(
             "select t.end_snapshot from ducklake_table t \
              join ducklake_schema s on t.schema_id = s.schema_id \
              where s.schema_name = $1 and t.table_name = $2 and t.end_snapshot is not null \
              order by t.end_snapshot desc limit 1",
-        )
+        ))
         .bind(schema)
         .bind(table)
         .fetch_one(&pool)

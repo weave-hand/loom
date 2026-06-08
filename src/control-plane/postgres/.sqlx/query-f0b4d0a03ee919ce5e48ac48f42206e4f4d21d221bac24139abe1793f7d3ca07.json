@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct b.namespace, b.name from lineage.event_dataset a join lineage.event_dataset b on b.event_id = a.event_id and b.direction = $4 where a.direction = $3 and a.namespace = $1 and a.name = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "lineage.event_dataset",
+            "name": "namespace"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "lineage.event_dataset",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f0b4d0a03ee919ce5e48ac48f42206e4f4d21d221bac24139abe1793f7d3ca07"
+}

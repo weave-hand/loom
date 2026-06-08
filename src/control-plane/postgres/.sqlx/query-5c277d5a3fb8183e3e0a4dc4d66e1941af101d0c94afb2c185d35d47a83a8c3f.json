@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, from_type, to_type, cardinality from ontology.link where from_type = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.link",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "from_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.link",
+            "name": "from_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "to_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.link",
+            "name": "to_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "cardinality",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.link",
+            "name": "cardinality"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5c277d5a3fb8183e3e0a4dc4d66e1941af101d0c94afb2c185d35d47a83a8c3f"
+}

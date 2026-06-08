@@ -4,18 +4,18 @@
 //! transaction. The [`fixture`] module boots an ephemeral, hermetic Postgres for
 //! tests.
 //!
-//! SQL is issued through sqlx's runtime query API (no compile-time `query!`
-//! macros / `.sqlx` offline metadata yet).
+//! The `queue` concern uses compile-time `query!` macros validated against the
+//! committed `.sqlx/` offline cache (regenerate with `tools/sqlx-prepare.sh`);
+//! the remaining concerns still use sqlx's runtime query API.
 
 use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Action, Cardinality, ControlPlane, ControlPlaneError, EventType, Job, JobId, PolicyTarget,
-    Result, Snapshot, SnapshotId, Tx,
+    Action, Cardinality, ControlPlane, ControlPlaneError, EventType, PolicyTarget, Result, Tx,
 };
-use sqlx::{PgPool, Row as _};
+use sqlx::PgPool;
 
 pub mod fixture;
 
@@ -55,29 +55,11 @@ pub async fn run_migrations(pool: &PgPool, migrations_dir: &Path) -> Result<()> 
     Ok(())
 }
 
-fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
-    Job {
-        id: JobId(row.get("id")),
-        kind: row.get("kind"),
-        payload: row.get("payload"),
-        attempts: row.get("attempts"),
-        run_at: row.get("run_at"),
-    }
-}
-
 #[async_trait]
 impl ControlPlane for PgControlPlane {
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         let tx = self.pool.begin().await.map_err(backend)?;
         Ok(Box::new(PgTx { tx }))
-    }
-}
-
-fn row_to_snapshot(row: &sqlx::postgres::PgRow) -> Snapshot {
-    Snapshot {
-        id: SnapshotId(row.get("snapshot_id")),
-        time: row.get("snapshot_time"),
-        schema_version: row.get("schema_version"),
     }
 }
 

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from acl.role_member where subject_id = $1 and role_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "85f746bd7e1257d1ebcdb54cda0b67fd971bb88060b12b7b05bb8979ead15f6f"
+}

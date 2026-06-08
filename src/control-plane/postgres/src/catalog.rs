@@ -3,43 +3,46 @@ use control_plane_core::{
     Catalog, ColumnDef, ControlPlaneError, FileRef, Result, Snapshot, SnapshotId, TableRef,
     TableSchema,
 };
-use sqlx::Row as _;
 
-use crate::{PgControlPlane, backend, row_to_snapshot};
+use crate::{PgControlPlane, backend};
 
 #[async_trait]
 impl Catalog for PgControlPlane {
     async fn current_snapshot(&self, table: &TableRef) -> Result<Snapshot> {
-        let row = sqlx::query(
-            "select sn.snapshot_id, sn.snapshot_time, sn.schema_version \
+        let row = sqlx::query!(
+            "select sn.snapshot_id as \"snapshot_id!\", sn.snapshot_time as \"snapshot_time!\", sn.schema_version as \"schema_version!\" \
              from ducklake_snapshot sn \
              where exists ( \
                  select 1 from ducklake_table t join ducklake_schema s on t.schema_id = s.schema_id \
                  where s.schema_name = $1 and t.table_name = $2 \
                    and t.begin_snapshot <= sn.snapshot_id and (t.end_snapshot is null or t.end_snapshot > sn.snapshot_id)) \
              order by sn.snapshot_id desc limit 1",
+            table.schema,
+            table.name,
         )
-        .bind(&table.schema)
-        .bind(&table.name)
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?
         .ok_or_else(|| ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name)))?;
-        Ok(row_to_snapshot(&row))
+        Ok(Snapshot {
+            id: SnapshotId(row.snapshot_id),
+            time: row.snapshot_time,
+            schema_version: row.schema_version,
+        })
     }
 
     async fn snapshots(&self, table: &TableRef) -> Result<Vec<Snapshot>> {
-        let rows = sqlx::query(
-            "select sn.snapshot_id, sn.snapshot_time, sn.schema_version \
+        let rows = sqlx::query!(
+            "select sn.snapshot_id as \"snapshot_id!\", sn.snapshot_time as \"snapshot_time!\", sn.schema_version as \"schema_version!\" \
              from ducklake_snapshot sn \
              where exists ( \
                  select 1 from ducklake_table t join ducklake_schema s on t.schema_id = s.schema_id \
                  where s.schema_name = $1 and t.table_name = $2 \
                    and t.begin_snapshot <= sn.snapshot_id and (t.end_snapshot is null or t.end_snapshot > sn.snapshot_id)) \
              order by sn.snapshot_id",
+            table.schema,
+            table.name,
         )
-        .bind(&table.schema)
-        .bind(&table.name)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
@@ -49,51 +52,58 @@ impl Catalog for PgControlPlane {
                 table.schema, table.name
             )));
         }
-        Ok(rows.iter().map(row_to_snapshot).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| Snapshot {
+                id: SnapshotId(r.snapshot_id),
+                time: r.snapshot_time,
+                schema_version: r.schema_version,
+            })
+            .collect())
     }
 
     async fn files(&self, table: &TableRef, at: SnapshotId) -> Result<Vec<FileRef>> {
         let tid = self.resolve_table(table, at).await?;
-        let rows = sqlx::query(
-            "select path, record_count, file_size_bytes from ducklake_data_file \
+        let rows = sqlx::query!(
+            "select path as \"path!\", record_count as \"record_count!\", file_size_bytes as \"file_size_bytes!\" from ducklake_data_file \
              where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) \
              order by data_file_id",
+            tid,
+            at.0,
         )
-        .bind(tid)
-        .bind(at.0)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
         Ok(rows
-            .iter()
+            .into_iter()
             .map(|r| FileRef {
-                path: r.get("path"),
-                record_count: r.get("record_count"),
-                file_size_bytes: r.get("file_size_bytes"),
+                path: r.path,
+                record_count: r.record_count,
+                file_size_bytes: r.file_size_bytes,
             })
             .collect())
     }
 
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
         let tid = self.resolve_table(table, at).await?;
-        let rows = sqlx::query(
-            "select column_order, column_name, column_type, nulls_allowed from ducklake_column \
+        let rows = sqlx::query!(
+            "select column_order as \"column_order!\", column_name as \"column_name!\", column_type as \"column_type!\", nulls_allowed as \"nulls_allowed!\" from ducklake_column \
              where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) \
              order by column_order",
+            tid,
+            at.0,
         )
-        .bind(tid)
-        .bind(at.0)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
         Ok(TableSchema {
             columns: rows
-                .iter()
+                .into_iter()
                 .map(|r| ColumnDef {
-                    order: r.get("column_order"),
-                    name: r.get("column_name"),
-                    ty: r.get("column_type"),
-                    nullable: r.get("nulls_allowed"),
+                    order: r.column_order,
+                    name: r.column_name,
+                    ty: r.column_type,
+                    nullable: r.nulls_allowed,
                 })
                 .collect(),
         })
@@ -103,14 +113,14 @@ impl Catalog for PgControlPlane {
 impl PgControlPlane {
     /// Resolve the `table_id` of `table` live at snapshot `at`, or `NotFound`.
     async fn resolve_table(&self, table: &TableRef, at: SnapshotId) -> Result<i64> {
-        sqlx::query_scalar::<_, i64>(
-            "select t.table_id from ducklake_table t join ducklake_schema s on t.schema_id = s.schema_id \
+        sqlx::query_scalar!(
+            "select t.table_id as \"table_id!\" from ducklake_table t join ducklake_schema s on t.schema_id = s.schema_id \
              where s.schema_name = $1 and t.table_name = $2 \
                and t.begin_snapshot <= $3 and (t.end_snapshot is null or t.end_snapshot > $3)",
+            table.schema,
+            table.name,
+            at.0,
         )
-        .bind(&table.schema)
-        .bind(&table.name)
-        .bind(at.0)
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?

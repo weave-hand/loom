@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.table_id as \"table_id!\" from ducklake_table t join ducklake_schema s on t.schema_id = s.schema_id where s.schema_name = $1 and t.table_name = $2 and t.begin_snapshot <= $3 and (t.end_snapshot is null or t.end_snapshot > $3)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "table_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ducklake_table",
+            "name": "table_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "6601c74f9492d39d23d066e24923cdf90422e984f271e2e5d9a1849a02126aeb"
+}

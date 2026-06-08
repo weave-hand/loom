@@ -104,12 +104,29 @@ filegroup(
     visibility = ["PUBLIC"],
 )
 
+# Committed sqlx offline cache for compile-time query! validation. The filegroup
+# preserves the glob's ".sqlx/" prefix, so SQLX_OFFLINE_DIR appends it. Generated
+# by tools/sqlx-prepare.sh against a freshly-migrated ephemeral postgres.
+filegroup(
+    name = "sqlx-cache",
+    srcs = glob([".sqlx/**"]),
+)
+
 rust_library(
     name = "postgres",
     crate = "control_plane_postgres",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
+    env = {
+        # sqlx's offline resolver needs CARGO_MANIFEST_DIR non-empty but never
+        # dereferences it once SQLX_OFFLINE_DIR hits first. clippy-driver, however,
+        # *does* canonicalize it to locate clippy.toml, so it must be a path that
+        # exists in the action sandbox — "." (the package root) always does.
+        "CARGO_MANIFEST_DIR": ".",
+        "SQLX_OFFLINE": "true",
+        "SQLX_OFFLINE_DIR": "$(location :sqlx-cache)/.sqlx",
+    },
     deps = [
         "//src/control-plane/core:core",
         "//third-party:async-trait",
@@ -208,6 +225,32 @@ rust_test(
         "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
     },
     deps = [":postgres", "//third-party:tokio"],
+)
+
+# Freshness gate for the committed sqlx offline cache: re-runs sqlx's `describe`
+# against the live (migrated + DuckLake-attached) schema and compares to each
+# committed .sqlx/query-*.json. Declaring :sqlx-cache as $(location ...) makes the
+# cache a buck input, so this re-runs only when the cache or schema changes.
+rust_test(
+    name = "sqlx-cache-check",
+    crate = "sqlx_cache",
+    srcs = ["tests/sqlx_cache.rs"],
+    crate_root = "tests/sqlx_cache.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
+        "DUCKDB_BIN": "$(location :duckdb-cli)",
+        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
+        "LOOM_SQLX_DIR": "$(location :sqlx-cache)/.sqlx",
+    },
+    deps = [
+        ":postgres",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
 )
 
 rust_test(

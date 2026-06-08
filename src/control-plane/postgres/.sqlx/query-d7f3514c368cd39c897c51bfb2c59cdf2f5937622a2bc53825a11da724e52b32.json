@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update queue.jobs set state='available', run_at=$2, locked_at=null, locked_by=null, last_error=$3, updated_at=now() where id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d7f3514c368cd39c897c51bfb2c59cdf2f5937622a2bc53825a11da724e52b32"
+}

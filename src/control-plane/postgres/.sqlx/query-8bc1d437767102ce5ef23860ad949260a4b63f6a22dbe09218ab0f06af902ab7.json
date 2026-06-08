@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from acl.policy where role_id = $1 and target_kind = $2 and target_a = $3 and target_b = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8bc1d437767102ce5ef23860ad949260a4b63f6a22dbe09218ab0f06af902ab7"
+}

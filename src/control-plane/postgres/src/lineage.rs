@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use control_plane_core::{DatasetRef, Lineage, LineageEvent, Result, RunId};
-use sqlx::Row as _;
 
 use crate::{PgControlPlane, backend, event_type_from_str, event_type_to_str};
 
@@ -11,7 +10,7 @@ pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
     // One round-trip: insert the event, then its input/output rows via unnest.
     // Ordinals come from WITH ORDINALITY (1-based; the read path orders by
     // `ordinal`, so the absolute base is irrelevant).
-    sqlx::query(
+    sqlx::query!(
         "with e as ( \
              insert into lineage.event (run_id, event_type, event_time, payload) \
              values ($1, $2, $3, $4) returning event_id) \
@@ -23,34 +22,26 @@ pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
              union all \
              select 'output', ord, ns, nm \
              from unnest($7::text[], $8::text[]) with ordinality as t(ns, nm, ord)) d",
-    )
-    .bind(event.run_id.0)
-    .bind(event_type_to_str(event.event_type))
-    .bind(event.event_time)
-    .bind(&event.payload)
-    .bind(
-        event
+        event.run_id.0,
+        event_type_to_str(event.event_type),
+        event.event_time,
+        &event.payload,
+        &event
             .inputs
             .iter()
             .map(|d| d.namespace.clone())
             .collect::<Vec<_>>(),
-    )
-    .bind(
-        event
+        &event
             .inputs
             .iter()
             .map(|d| d.name.clone())
             .collect::<Vec<_>>(),
-    )
-    .bind(
-        event
+        &event
             .outputs
             .iter()
             .map(|d| d.namespace.clone())
             .collect::<Vec<_>>(),
-    )
-    .bind(
-        event
+        &event
             .outputs
             .iter()
             .map(|d| d.name.clone())
@@ -70,24 +61,23 @@ impl Lineage for PgControlPlane {
     }
 
     async fn events_for(&self, run: &RunId) -> Result<Vec<LineageEvent>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query!(
             "select event_id, event_type, event_time, payload from lineage.event \
              where run_id = $1 order by event_id",
+            run.0,
         )
-        .bind(run.0)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
         let mut out = Vec::with_capacity(rows.len());
-        for r in &rows {
-            let event_id: i64 = r.get("event_id");
+        for r in rows {
             out.push(LineageEvent {
                 run_id: *run,
-                event_type: event_type_from_str(r.get::<String, _>("event_type").as_str()),
-                event_time: r.get("event_time"),
-                inputs: self.event_datasets(event_id, "input").await?,
-                outputs: self.event_datasets(event_id, "output").await?,
-                payload: r.get("payload"),
+                event_type: event_type_from_str(&r.event_type),
+                event_time: r.event_time,
+                inputs: self.event_datasets(r.event_id, "input").await?,
+                outputs: self.event_datasets(r.event_id, "output").await?,
+                payload: r.payload,
             });
         }
         Ok(out)
@@ -105,20 +95,20 @@ impl Lineage for PgControlPlane {
 impl PgControlPlane {
     /// The datasets of one event in one direction, ordered by ordinal.
     async fn event_datasets(&self, event_id: i64, direction: &str) -> Result<Vec<DatasetRef>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query!(
             "select namespace, name from lineage.event_dataset \
              where event_id = $1 and direction = $2 order by ordinal",
+            event_id,
+            direction,
         )
-        .bind(event_id)
-        .bind(direction)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
         Ok(rows
-            .iter()
+            .into_iter()
             .map(|r| DatasetRef {
-                namespace: r.get("namespace"),
-                name: r.get("name"),
+                namespace: r.namespace,
+                name: r.name,
             })
             .collect())
     }
@@ -132,24 +122,24 @@ impl PgControlPlane {
         from_dir: &str,
         to_dir: &str,
     ) -> Result<Vec<DatasetRef>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query!(
             "select distinct b.namespace, b.name \
              from lineage.event_dataset a \
              join lineage.event_dataset b on b.event_id = a.event_id and b.direction = $4 \
              where a.direction = $3 and a.namespace = $1 and a.name = $2",
+            &dataset.namespace,
+            &dataset.name,
+            from_dir,
+            to_dir,
         )
-        .bind(&dataset.namespace)
-        .bind(&dataset.name)
-        .bind(from_dir)
-        .bind(to_dir)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
         Ok(rows
-            .iter()
+            .into_iter()
             .map(|r| DatasetRef {
-                namespace: r.get("namespace"),
-                name: r.get("name"),
+                namespace: r.namespace,
+                name: r.name,
             })
             .collect())
     }

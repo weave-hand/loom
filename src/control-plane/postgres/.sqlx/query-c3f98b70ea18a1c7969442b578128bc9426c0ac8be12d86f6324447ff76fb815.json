@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into acl.subject (id) values ($1) on conflict (id) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c3f98b70ea18a1c7969442b578128bc9426c0ac8be12d86f6324447ff76fb815"
+}
