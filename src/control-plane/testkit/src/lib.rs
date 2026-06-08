@@ -808,12 +808,12 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     a.set_policy(&rid("reader"), pol.clone()).await.unwrap();
 
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"))
+        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
         .await
         .unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(
-        got[0], pol,
+        got.items[0], pol,
         "nested filter + deny columns round-trip intact"
     );
 
@@ -825,12 +825,15 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     };
     a.set_policy(&rid("reader"), pol2.clone()).await.unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"))
+        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
         .await
         .unwrap();
     assert_eq!(got.len(), 1, "upsert, not duplicate");
-    assert_eq!(got[0], pol2);
-    assert!(got[0].row_filter.is_none(), "None row_filter stays None");
+    assert_eq!(got.items[0], pol2);
+    assert!(
+        got.items[0].row_filter.is_none(),
+        "None row_filter stays None"
+    );
 
     // two roles -> two policies for the same target, no merge
     let pol_w = Policy {
@@ -844,22 +847,22 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     };
     a.set_policy(&rid("writer"), pol_w.clone()).await.unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"))
+        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
         .await
         .unwrap();
     assert_eq!(got.len(), 2, "both roles' policies returned, no merge");
-    assert!(got.contains(&pol2) && got.contains(&pol_w));
+    assert!(got.items.contains(&pol2) && got.items.contains(&pol_w));
 
     // target kinds don't bleed; unknown subject -> empty
     assert!(
-        a.policies_for(&sid("alice"), &ttable("main", "raw"))
+        a.policies_for(&sid("alice"), &ttable("main", "raw"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "a Type policy is not returned for a Table target"
     );
     assert!(
-        a.policies_for(&sid("nobody"), &ttype("Customer"))
+        a.policies_for(&sid("nobody"), &ttype("Customer"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty()
@@ -870,10 +873,10 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         .await
         .unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"))
+        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
         .await
         .unwrap();
-    assert_eq!(got, vec![pol_w], "only the writer policy remains");
+    assert_eq!(got.items, vec![pol_w], "only the writer policy remains");
 
     // --- grant / set_policy on a missing role -> NotFound ---
     assert!(matches!(

@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Policy, PolicyTarget, Result, RoleId, SubjectId,
+    Acl, Action, ControlPlaneError, Decision, Page, PageReq, Policy, PolicyTarget, Result, RoleId,
+    SubjectId,
 };
 
 use crate::MemoryControlPlane;
@@ -132,14 +133,16 @@ impl Acl for MemoryControlPlane {
         &self,
         subject: &SubjectId,
         target: &PolicyTarget,
-    ) -> Result<Vec<Policy>> {
+        _page: PageReq,
+    ) -> Result<Page<Policy>> {
         let acl = self.acl.lock().unwrap();
         let tk = target_key(target);
-        Ok(acl
-            .members
-            .iter()
-            .filter(|(s, _)| s == &subject.0)
-            .filter_map(|(_, role)| acl.policies.get(&(role.clone(), tk.clone())).cloned())
-            .collect())
+        Ok(Page::from_full(
+            acl.members
+                .iter()
+                .filter(|(s, _)| s == &subject.0)
+                .filter_map(|(_, role)| acl.policies.get(&(role.clone(), tk.clone())).cloned())
+                .collect(),
+        ))
     }
 }

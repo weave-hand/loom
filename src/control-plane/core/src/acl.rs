@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::page::{Page, PageReq};
 use crate::{TableRef, TypeName};
 
 /// A user or service account.
@@ -131,8 +132,13 @@ pub trait Acl {
     ) -> Result<Decision>;
     /// All policies across `subject`'s roles whose target equals `target` (order
     /// unspecified). Unknown subject → empty vec. No merging.
-    async fn policies_for(&self, subject: &SubjectId, target: &PolicyTarget)
-    -> Result<Vec<Policy>>;
+    /// The `page` request is accepted but not yet enforced; results are a single full page.
+    async fn policies_for(
+        &self,
+        subject: &SubjectId,
+        target: &PolicyTarget,
+        page: PageReq,
+    ) -> Result<Page<Policy>>;
 }
 
 #[cfg(test)]
