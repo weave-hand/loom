@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use control_plane_core::{DatasetRef, Lineage, LineageEvent, Result, RunId};
+use control_plane_core::{DatasetRef, Lineage, LineageEvent, Page, PageReq, Result, RunId};
 
 use crate::{PgControlPlane, backend, event_type_from_str, event_type_to_str};
 
@@ -60,7 +60,7 @@ impl Lineage for PgControlPlane {
         pg_emit(&self.pool, &event).await
     }
 
-    async fn events_for(&self, run: &RunId) -> Result<Vec<LineageEvent>> {
+    async fn events_for(&self, run: &RunId, _page: PageReq) -> Result<Page<LineageEvent>> {
         let rows = sqlx::query!(
             "select event_id, event_type, event_time, payload from lineage.event \
              where run_id = $1 order by event_id",
@@ -80,14 +80,14 @@ impl Lineage for PgControlPlane {
                 payload: r.payload,
             });
         }
-        Ok(out)
+        Ok(Page::from_full(out))
     }
 
-    async fn upstream(&self, dataset: &DatasetRef) -> Result<Vec<DatasetRef>> {
+    async fn upstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
         self.graph_step(dataset, "output", "input").await
     }
 
-    async fn downstream(&self, dataset: &DatasetRef) -> Result<Vec<DatasetRef>> {
+    async fn downstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
         self.graph_step(dataset, "input", "output").await
     }
 }
@@ -121,7 +121,7 @@ impl PgControlPlane {
         dataset: &DatasetRef,
         from_dir: &str,
         to_dir: &str,
-    ) -> Result<Vec<DatasetRef>> {
+    ) -> Result<Page<DatasetRef>> {
         let rows = sqlx::query!(
             "select distinct b.namespace, b.name \
              from lineage.event_dataset a \
@@ -135,12 +135,13 @@ impl PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| DatasetRef {
-                namespace: r.namespace,
-                name: r.name,
-            })
-            .collect())
+        Ok(Page::from_full(
+            rows.into_iter()
+                .map(|r| DatasetRef {
+                    namespace: r.namespace,
+                    name: r.name,
+                })
+                .collect(),
+        ))
     }
 }

@@ -7,9 +7,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef,
-    Decision, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, PageReq,
-    Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
-    SnapshotId, SubjectId, TableRef, TypeName,
+    Decision, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, Page,
+    PageReq, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
+    ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -929,7 +929,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     };
     // A fixed whole-second timestamp so the pg `timestamptz` round-trip is exact.
     let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
-    let set = |v: Vec<DatasetRef>| v.into_iter().collect::<HashSet<_>>();
+    let set = |p: Page<DatasetRef>| p.into_iter().collect::<HashSet<_>>();
 
     // --- emit -> events_for round-trips the envelope + opaque payload ---
     let run = RunId(uuid::Uuid::new_v4());
@@ -943,14 +943,17 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     };
     cp.emit(event.clone()).await.expect("emit");
 
-    let got = cp.events_for(&run).await.expect("events_for");
+    let got = cp
+        .events_for(&run, PageReq::unbounded())
+        .await
+        .expect("events_for");
     assert_eq!(
-        got,
+        got.items,
         vec![event.clone()],
         "envelope + payload round-trip intact"
     );
     assert!(
-        cp.events_for(&RunId(uuid::Uuid::new_v4()))
+        cp.events_for(&RunId(uuid::Uuid::new_v4()), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
@@ -959,33 +962,48 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
 
     // --- one-hop graph via per-event co-membership ---
     assert_eq!(
-        set(cp.upstream(&ds("ducklake", "main.c")).await.unwrap()),
-        set(vec![ds("ducklake", "main.a"), ds("ducklake", "main.b")])
+        set(cp
+            .upstream(&ds("ducklake", "main.c"), PageReq::unbounded())
+            .await
+            .unwrap()),
+        [ds("ducklake", "main.a"), ds("ducklake", "main.b")]
+            .into_iter()
+            .collect::<HashSet<_>>()
     );
     assert_eq!(
-        set(cp.downstream(&ds("ducklake", "main.a")).await.unwrap()),
-        set(vec![ds("ducklake", "main.c")])
+        set(cp
+            .downstream(&ds("ducklake", "main.a"), PageReq::unbounded())
+            .await
+            .unwrap()),
+        [ds("ducklake", "main.c")]
+            .into_iter()
+            .collect::<HashSet<_>>()
     );
     assert_eq!(
-        set(cp.downstream(&ds("ducklake", "main.b")).await.unwrap()),
-        set(vec![ds("ducklake", "main.c")])
+        set(cp
+            .downstream(&ds("ducklake", "main.b"), PageReq::unbounded())
+            .await
+            .unwrap()),
+        [ds("ducklake", "main.c")]
+            .into_iter()
+            .collect::<HashSet<_>>()
     );
     assert!(
-        cp.downstream(&ds("ducklake", "main.c"))
+        cp.downstream(&ds("ducklake", "main.c"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing consumes c -> no downstream"
     );
     assert!(
-        cp.upstream(&ds("ducklake", "main.a"))
+        cp.upstream(&ds("ducklake", "main.a"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing produces a -> no upstream"
     );
     assert!(
-        cp.upstream(&ds("ducklake", "main.missing"))
+        cp.upstream(&ds("ducklake", "main.missing"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
@@ -1013,14 +1031,22 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     cp.emit(start.clone()).await.unwrap();
     cp.emit(complete.clone()).await.unwrap();
     assert_eq!(
-        cp.events_for(&run2).await.unwrap(),
+        cp.events_for(&run2, PageReq::unbounded())
+            .await
+            .unwrap()
+            .items,
         vec![start, complete],
         "events returned in emit order"
     );
     // graph spans namespaces (physical -> ontology)
     assert_eq!(
-        set(cp.downstream(&ds("ducklake", "main.c")).await.unwrap()),
-        set(vec![ds("ontology", "Customer")])
+        set(cp
+            .downstream(&ds("ducklake", "main.c"), PageReq::unbounded())
+            .await
+            .unwrap()),
+        [ds("ontology", "Customer")]
+            .into_iter()
+            .collect::<HashSet<_>>()
     );
 
     // --- the headline cross-concern atomicity test: emit + enqueue in one Tx ---
@@ -1051,7 +1077,10 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         tx.rollback().await.expect("rollback");
     }
     assert!(
-        cp.events_for(&rolled).await.unwrap().is_empty(),
+        cp.events_for(&rolled, PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
         "rolled-back emit is not visible"
     );
     assert!(
@@ -1084,7 +1113,10 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         tx.commit().await.expect("commit");
     }
     assert_eq!(
-        cp.events_for(&committed).await.unwrap().len(),
+        cp.events_for(&committed, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         1,
         "committed emit is visible"
     );
@@ -1133,7 +1165,10 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         "uncommitted enqueue is invisible while the tx is open"
     );
     assert!(
-        cp.events_for(&run).await.unwrap().is_empty(),
+        cp.events_for(&run, PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
         "uncommitted emit is invisible while the tx is open"
     );
 
@@ -1147,7 +1182,10 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         .expect("committed enqueue is visible");
     cp.complete(job.id).await.unwrap();
     assert_eq!(
-        cp.events_for(&run).await.unwrap().len(),
+        cp.events_for(&run, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
         1,
         "committed emit is visible"
     );
@@ -1172,7 +1210,10 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         "rolled-back enqueue never becomes visible"
     );
     assert!(
-        cp.events_for(&run_rb).await.unwrap().is_empty(),
+        cp.events_for(&run_rb, PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
         "rolled-back emit never becomes visible"
     );
 }

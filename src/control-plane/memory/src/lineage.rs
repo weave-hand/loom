@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
-use control_plane_core::{DatasetRef, Lineage, LineageEvent, Result, RunId};
+use control_plane_core::{DatasetRef, Lineage, LineageEvent, Page, PageReq, Result, RunId};
 
 use crate::MemoryControlPlane;
 
@@ -18,19 +18,20 @@ impl Lineage for MemoryControlPlane {
         Ok(())
     }
 
-    async fn events_for(&self, run: &RunId) -> Result<Vec<LineageEvent>> {
-        Ok(self
-            .lineage
-            .lock()
-            .unwrap()
-            .events
-            .iter()
-            .filter(|e| e.run_id == *run)
-            .cloned()
-            .collect())
+    async fn events_for(&self, run: &RunId, _page: PageReq) -> Result<Page<LineageEvent>> {
+        Ok(Page::from_full(
+            self.lineage
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|e| e.run_id == *run)
+                .cloned()
+                .collect(),
+        ))
     }
 
-    async fn upstream(&self, dataset: &DatasetRef) -> Result<Vec<DatasetRef>> {
+    async fn upstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
         let lin = self.lineage.lock().unwrap();
         let mut seen = HashSet::new();
         let mut out = Vec::new();
@@ -41,10 +42,10 @@ impl Lineage for MemoryControlPlane {
                 }
             }
         }
-        Ok(out)
+        Ok(Page::from_full(out))
     }
 
-    async fn downstream(&self, dataset: &DatasetRef) -> Result<Vec<DatasetRef>> {
+    async fn downstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
         let lin = self.lineage.lock().unwrap();
         let mut seen = HashSet::new();
         let mut out = Vec::new();
@@ -55,6 +56,6 @@ impl Lineage for MemoryControlPlane {
                 }
             }
         }
-        Ok(out)
+        Ok(Page::from_full(out))
     }
 }
