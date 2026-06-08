@@ -4,16 +4,17 @@
 //! transaction. The [`fixture`] module boots an ephemeral, hermetic Postgres for
 //! tests.
 //!
-//! SQL is issued through sqlx's runtime query API (no compile-time `query!`
-//! macros / `.sqlx` offline metadata yet).
+//! The `queue` concern uses compile-time `query!` macros validated against the
+//! committed `.sqlx/` offline cache (regenerate with `tools/sqlx-prepare.sh`);
+//! the remaining concerns still use sqlx's runtime query API.
 
 use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Action, Cardinality, ControlPlane, ControlPlaneError, EventType, Job, JobId, PolicyTarget,
-    Result, Snapshot, SnapshotId, Tx,
+    Action, Cardinality, ControlPlane, ControlPlaneError, EventType, PolicyTarget, Result,
+    Snapshot, SnapshotId, Tx,
 };
 use sqlx::{PgPool, Row as _};
 
@@ -53,16 +54,6 @@ pub async fn run_migrations(pool: &PgPool, migrations_dir: &Path) -> Result<()> 
         .await
         .map_err(|e| ControlPlaneError::Backend(Box::new(e)))?;
     Ok(())
-}
-
-fn row_to_job(row: &sqlx::postgres::PgRow) -> Job {
-    Job {
-        id: JobId(row.get("id")),
-        kind: row.get("kind"),
-        payload: row.get("payload"),
-        attempts: row.get("attempts"),
-        run_at: row.get("run_at"),
-    }
 }
 
 #[async_trait]

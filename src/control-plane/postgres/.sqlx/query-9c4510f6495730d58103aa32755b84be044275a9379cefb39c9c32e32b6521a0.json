@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with ins as ( insert into queue.jobs (id, kind, payload, state, run_at, priority) values ($1, $2, $3, 'available', coalesce($4, now()), $5) returning kind) select pg_notify('loom_queue:' || kind, '') from ins",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pg_notify",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Timestamptz",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9c4510f6495730d58103aa32755b84be044275a9379cefb39c9c32e32b6521a0"
+}

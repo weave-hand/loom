@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update queue.jobs set state='failed', locked_at=null, locked_by=null, last_error=$2, updated_at=now() where id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cc8a984132e609c8b46b98460b9b3605db0ef6560db8cf8afa6446dda91222ea"
+}

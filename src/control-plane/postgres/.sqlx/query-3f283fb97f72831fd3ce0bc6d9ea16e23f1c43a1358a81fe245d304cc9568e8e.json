@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from queue.jobs where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3f283fb97f72831fd3ce0bc6d9ea16e23f1c43a1358a81fe245d304cc9568e8e"
+}
