@@ -12,6 +12,7 @@ pub(crate) struct LineageState {
 
 #[async_trait]
 impl Lineage for MemoryControlPlane {
+    #[tracing::instrument(skip(self, event), fields(run_id = ?event.run_id, event_type = ?event.event_type), level = "debug")]
     async fn emit(&self, event: LineageEvent) -> Result<()> {
         self.lineage.lock().unwrap().events.push(event);
         Ok(())

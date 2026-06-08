@@ -15,6 +15,7 @@ pub(crate) struct OntologyState {
 
 #[async_trait]
 impl Ontology for MemoryControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn define_type(&self, ty: ObjectType) -> Result<()> {
         self.ontology
             .lock()
@@ -24,6 +25,7 @@ impl Ontology for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn define_link(&self, link: LinkDef) -> Result<()> {
         let mut ont = self.ontology.lock().unwrap();
         for endpoint in [&link.from, &link.to] {

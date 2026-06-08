@@ -18,6 +18,7 @@ pub(crate) struct MemoryTx {
 
 #[async_trait]
 impl Tx for MemoryTx {
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn commit(self: Box<Self>) -> Result<()> {
         let staged_any = !self.staged.is_empty();
         {
@@ -38,14 +39,17 @@ impl Tx for MemoryTx {
         }
         Ok(())
     }
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn rollback(self: Box<Self>) -> Result<()> {
         Ok(())
     }
+    #[tracing::instrument(skip(self, job), level = "debug")]
     async fn enqueue(&mut self, job: NewJob) -> Result<JobId> {
         let id = Uuid::new_v4();
         self.staged.push((id, job));
         Ok(JobId(id))
     }
+    #[tracing::instrument(skip(self, event), fields(run_id = ?event.run_id, event_type = ?event.event_type), level = "debug")]
     async fn emit(&mut self, event: LineageEvent) -> Result<()> {
         self.staged_events.push(event);
         Ok(())
