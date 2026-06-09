@@ -51,7 +51,8 @@ Derive each `key` from WHAT IT IS, never its position. Lowercase, no spaces.
 
 ## JSON schema (write to /tmp/stpa.json; arrays in ANY order — the renderer sorts)
 {
-  "repo": "string", "commit": "short-sha", "scope": "1-3 sentences: built vs designed, what you read, any code-vs-docs conflict.",
+  "repo": "string", "commit": "short-sha",
+  "scope": {"summary":"1 sentence headline: the built-vs-designed framing.","built":"what is actually built (comma list)","designed":"what is designed-only (comma list)","note":"OPTIONAL: code-vs-docs conflict or key caveat — OMIT the field entirely if none"},
   "losses": [ {"key":"L.unauthorized-access","title":"..."}, ...all five... ],
   "nodes": [ {"key":"acl","label":"Acl trait","layer":"control-plane","maturity":"built"}, ... ],   // layer: enforcement|control-plane|store
   "control_actions": [ {"key":"acl.check","label":"...","from":"query-api","to":"acl","maturity":"built","evidence":"acl.rs:126"}, ... ],
@@ -67,35 +68,69 @@ Derive each `key` from WHAT IT IS, never its position. Lowercase, no spaces.
 set -euo pipefail
 mkdir -p docs/stpa
 cat > /tmp/stpa-render.jq <<'JQ'
+# Deterministic STPA.md renderer.
+#   input : stpa.json  (semantic-keyed findings, ANY array order)
+#   output: STPA.md    (sorted + templated; a pure function of content)
+# Identical findings render to identical bytes regardless of input order, so a
+# regenerated doc diffs only where the findings actually changed.
+
 def esc: (. // "") | gsub("\\|"; "\\|") | gsub("\n"; " ");
+# Sanitize a string for a (quoted) mermaid label: drop the chars that break the
+# parser or get read as HTML. Parens are fine once the label is quoted.
 def mlabel: (. // "") | gsub("\n"; " ") | gsub("\""; "'") | gsub("<"; "(") | gsub(">"; ")");
 def layer_idx: {"enforcement":0,"control-plane":1,"store":2};
 def layer_title: {"enforcement":"Enforcement layer","control-plane":"Control plane (built)","store":"Stateful processes"};
+
 "# STPA Control Analysis — \(.repo) @ \(.commit)\n\n"
-+ "_Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there. Semantic IDs keep regenerations diff-stable._\n\n"
+
++ "_Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._\n\n"
+
 + "<details>\n<summary><b>How to read this</b> — STPA primer and diagram legend</summary>\n\n"
 + "**STPA** (System-Theoretic Process Analysis) treats the system as *controllers* issuing *control actions* to *controlled processes*, with *feedback* flowing back up. Instead of \"what component can fail,\" it asks \"what control action, given or withheld at the wrong time, drives the system into an unsafe state?\" \"Unsafe\" here means a violation of the platform's reason to exist — governed correctness of data access and provenance — not merely a crash.\n\n"
 + "Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagram** shows who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.\n</details>\n\n"
-+ "**Scope & maturity:** \(.scope)\n\n"
-+ "## Control structure\n\n```mermaid\nflowchart TD\n"
-+ ( .nodes | map(. + {i:(layer_idx[.layer]//9)}) | sort_by(.i,.key) | group_by(.i)
-    | map( (.[0].layer) as $L | "  subgraph \($L)[\"\(layer_title[$L]//$L)\"]\n"
-        + (map("    \(.key)[\"\(.label|mlabel)\(if .maturity=="designed" then " (designed)" else "" end)\"]")|join("\n")) + "\n  end\n")
+
++ "**Scope.** \(.scope.summary|esc)\n\n"
++ "<details>\n<summary>Maturity detail</summary>\n\n"
++ "- **Built:** \(.scope.built|esc)\n"
++ "- **Designed-only:** \(.scope.designed|esc)\n"
++ (if (.scope.note // null) then "- **Note:** \(.scope.note|esc)\n" else "" end)
++ "</details>\n\n"
+
++ "## Control structure\n\n"
++ "```mermaid\nflowchart TD\n"
++ ( .nodes | map(. + {i: (layer_idx[.layer] // 9)}) | sort_by(.i, .key)
+    | group_by(.i)
+    | map( (.[0].layer) as $L
+        | "  subgraph \($L)[\"\(layer_title[$L] // $L)\"]\n"
+        + ( map("    \(.key)[\"\(.label|mlabel)\(if .maturity=="designed" then " (designed)" else "" end)\"]") | join("\n") )
+        + "\n  end\n" )
     | join("") )
-+ ( .control_actions | sort_by(.key) | map("  \(.from) -- \"\(.key)\" --> \(.to)")|join("\n") ) + "\n"
-+ ( (.feedback//[]) | sort_by("\(.from)|\(.to)|\(.signal)") | map("  \(.from) -. \"\(.signal|mlabel)\" .-> \(.to)")|join("\n") )
++ ( .control_actions | sort_by(.key) | map("  \(.from) -- \"\(.key)\" --> \(.to)") | join("\n") )
++ "\n"
++ ( (.feedback // []) | sort_by("\(.from)|\(.to)|\(.signal)") | map("  \(.from) -. \"\(.signal|mlabel)\" .-> \(.to)") | join("\n") )
 + "\n```\n\n"
+
 + "## Losses\n\n| ID | Loss |\n|----|------|\n"
-+ ( .losses | sort_by(.key) | map("| `\(.key)` | \(.title|esc) |")|join("\n") ) + "\n\n"
++ ( .losses | sort_by(.key) | map("| `\(.key)` | \(.title|esc) |") | join("\n") ) + "\n\n"
+
 + "## Hazards\n\n| ID | Hazard (unsafe state) | → Losses | Maturity |\n|----|----|----|----|\n"
-+ ( .hazards | sort_by(.key) | map("| `\(.key)` | \(.statement|esc) | \((.losses//[])|join(", ")) | \(.maturity|esc) |")|join("\n") ) + "\n\n"
++ ( .hazards | sort_by(.key) | map("| `\(.key)` | \(.statement|esc) | \((.losses // [])|join(", ")) | \(.maturity|esc) |") | join("\n") ) + "\n\n"
+
 + "## Control actions\n\n| ID | Control action | Controller → Process | Maturity | Evidence |\n|----|----|----|----|----|\n"
-+ ( .control_actions | sort_by(.key) | map("| `\(.key)` | \(.label|esc) | `\(.from)` → `\(.to)` | \(.maturity|esc) | \(.evidence|esc) |")|join("\n") ) + "\n\n"
-+ "## Unsafe control actions\n\n*Each row: a control action made unsafe via one guideword, the hazard/loss it causes, and where in the code it lives.*\n\n"
++ ( .control_actions | sort_by(.key) | map("| `\(.key)` | \(.label|esc) | `\(.from)` → `\(.to)` | \(.maturity|esc) | \(.evidence|esc) |") | join("\n") ) + "\n\n"
+
++ "## Unsafe control actions\n\n*The core of the analysis. Each row: a control action made unsafe via one guideword, the hazard/loss it causes, and where in the code it lives.*\n\n"
 + "| ID | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |\n|----|----|----|----|----|----|----|\n"
-+ ( .ucas | sort_by(.key) | map("| `\(.key)` | `\(.control_action)` | \(.guideword|esc) | \(.condition|esc) | \(.severity|esc) | \((.hazards//[])|join(", ")) | \(.evidence|esc) |")|join("\n") ) + "\n\n"
-+ ( if (.non_ucas//[])|length>0 then "**Not UCAs (examined and rejected):** " + (.non_ucas|sort_by("\(.item)|\(.reason)")|map("\(.item|esc) — \(.reason|esc)")|join("; ")) + "\n\n" else "" end )
-+ "## Open questions\n\n" + ((.open_questions//[])|sort|map("- \(esc)")|join("\n")) + "\n"
++ ( .ucas | sort_by(.key) | map("| `\(.key)` | `\(.control_action)` | \(.guideword|esc) | \(.condition|esc) | \(.severity|esc) | \((.hazards // [])|join(", ")) | \(.evidence|esc) |") | join("\n") ) + "\n\n"
+
++ ( if (.non_ucas // []) | length > 0
+    then "<details>\n<summary><b>Not UCAs</b> — \(.non_ucas|length) examined and rejected</summary>\n\n"
+       + ( .non_ucas | sort_by("\(.item)|\(.reason)") | map("- **\(.item|esc)** — \(.reason|esc)") | join("\n") )
+       + "\n</details>\n\n"
+    else "" end )
+
++ "## Open questions\n\n"
++ ( (.open_questions // []) | sort | map("- \(esc)") | join("\n") ) + "\n"
 JQ
 LC_ALL=C jq -rf /tmp/stpa-render.jq /tmp/stpa.json > /tmp/STPA.candidate.md
 if [ -f docs/stpa/STPA.md ] && diff -q docs/stpa/STPA.md /tmp/STPA.candidate.md >/dev/null; then
@@ -118,7 +153,11 @@ git add docs/stpa/STPA.md
 # stall the routine); conventional style is carried by the PR title -> squash commit.
 git commit --no-verify -m "$(cat /tmp/stpa-title.txt)" -m "$(cat /tmp/stpa-body.md)"
 git push --no-verify -f -u origin "$BRANCH"
-if ! gh pr view "$BRANCH" >/dev/null 2>&1; then
+# Create a PR only when there isn't already an OPEN one for this branch. A
+# closed/merged PR on the branch must NOT be treated as "exists" — otherwise the
+# create is skipped and the later `gh pr merge` targets a dead PR and wedges.
+PR_STATE="$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || echo NONE)"
+if [ "$PR_STATE" != "OPEN" ]; then
   gh pr create --base main --head "$BRANCH" --title "$(cat /tmp/stpa-title.txt)" --body-file /tmp/stpa-body.md
 fi
 URL="$(gh pr view "$BRANCH" --json url -q .url)"
