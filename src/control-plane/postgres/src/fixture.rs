@@ -268,6 +268,34 @@ impl DuckLakeWriter {
         .expect("read back data-file snapshots")
     }
 
+    /// ATTACH the DuckLake catalog WITHOUT creating any table. A bare ATTACH
+    /// against an empty database runs `InitializeDuckLake`, creating the 27
+    /// `ducklake_*` tables, seeding snapshot 0, the `main` schema, and the
+    /// `ducklake_metadata` rows — i.e. the same starting point a fresh DuckLake
+    /// catalog has, with no `CREATE TABLE`/`INSERT`. loom's native `create_table`
+    /// writer then operates against this bootstrap-only catalog.
+    pub async fn bootstrap(&self) {
+        let mut sql = String::new();
+        sql.push_str(&format!(
+            "SET extension_directory='{}';\n",
+            self.extension_dir
+        ));
+        sql.push_str("LOAD ducklake;\nLOAD postgres_scanner;\n");
+        sql.push_str(&format!(
+            "ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\n",
+            self.db,
+            self.socket.display(),
+            self._data_dir.path().display(),
+        ));
+
+        let status = Command::new(&self.duckdb_bin)
+            .arg("-c")
+            .arg(&sql)
+            .status()
+            .expect("run duckdb");
+        assert!(status.success(), "duckdb bootstrap (bare ATTACH) failed");
+    }
+
     /// Drop `schema.table` via the DuckDB CLI (DuckLake records the drop, setting
     /// `end_snapshot` on the table and its files/columns). Returns that drop snapshot.
     pub async fn drop_table(&self, schema: &str, table: &str) -> i64 {

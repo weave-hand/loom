@@ -38,15 +38,45 @@ pub(crate) async fn commit_snapshot(
     lock_catalog(tx).await?;
     let head = read_head(tx).await?;
 
-    // create_table rows: Task 3. For now we only support appends; staged_tables
-    // being non-empty is not an error (Task 3 fills this branch in), but with no
-    // table-create support yet there is nothing to emit here.
-    let _ = staged_tables;
-
     let new_snapshot_id = head.snapshot_id + 1;
-    // DML only (append): schema_version unchanged, next_catalog_id unchanged.
+    // Counters advanced in memory during the commit (recipe §5): the table
+    // create-loop consumes `next_catalog_id` (one per table) and bumps
+    // `schema_version` (DDL); the append loop advances `next_file_id`. The single
+    // new `ducklake_snapshot` row carries the post-commit values.
+    let mut schema_version = head.schema_version;
+    let mut next_catalog_id = head.next_catalog_id;
     let mut next_file_id = head.next_file_id;
 
+    // Created-table change segments lead the snapshot_changes string (recipe §4).
+    let mut create_segments: Vec<String> = Vec::new();
+
+    // (2) create_table rows BEFORE the append loop resolves table_id, so a table
+    //     created and appended-to in the same tx resolves correctly (recipe §2
+    //     steps 2/3/6; §3 Op A tuples; §5 id rules).
+    for (table, columns) in staged_tables {
+        // Skip tables already live in the catalog (created by DuckDB earlier).
+        if table_exists(tx, table).await? {
+            continue;
+        }
+        let table_id = next_catalog_id;
+        next_catalog_id += 1; // table consumes a catalog id; columns do NOT (§5)
+        schema_version += 1; // DDL bumps schema_version (§5)
+        write_table(
+            tx,
+            table,
+            table_id,
+            new_snapshot_id,
+            schema_version,
+            columns,
+        )
+        .await?;
+        create_segments.push(format!(
+            "created_table:\"{}\".\"{}\"",
+            table.schema, table.name
+        ));
+    }
+
+    // (3) append loop: resolve table_id (now present), write data-file/stats rows.
     for (table, files) in staged_files {
         let table_id = resolve_table_id(tx, table).await?;
         for file in files {
@@ -56,24 +86,24 @@ pub(crate) async fn commit_snapshot(
         }
     }
 
-    // 1. new snapshot row (recipe §2 step 1, §3 Op B): id+1, schema_version
-    //    unchanged, next_catalog_id unchanged, next_file_id advanced.
+    // (4) the single new snapshot row (recipe §2 step 1): id+1, with the
+    //     post-commit schema_version, next_catalog_id, next_file_id.
     sqlx::query!(
         "insert into ducklake_snapshot \
            (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id) \
          values ($1, now(), $2, $3, $4)",
         new_snapshot_id,
-        head.schema_version,
-        head.next_catalog_id,
+        schema_version,
+        next_catalog_id,
         next_file_id,
     )
     .execute(&mut **tx)
     .await
     .map_err(backend)?;
 
-    // 7. snapshot_changes, one segment per table inserted-into (recipe §2 step 7,
-    //    §4 grammar `inserted_into_table:<table_id>`).
-    let mut segments: Vec<String> = Vec::new();
+    // (5) the single snapshot_changes row: created_table segments first, then
+    //     inserted_into_table segments (recipe §4 ordering).
+    let mut segments: Vec<String> = create_segments;
     for (table, files) in staged_files {
         if files.is_empty() {
             continue;
@@ -145,6 +175,108 @@ async fn resolve_table_id(tx: &mut Transaction<'_, Postgres>, table: &TableRef) 
     .await
     .map_err(backend)?
     .ok_or_else(|| ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name)))
+}
+
+/// True if `table` is already live in the catalog (created by DuckDB or an
+/// earlier commit). Used to make `create_table` idempotent within a commit.
+async fn table_exists(tx: &mut Transaction<'_, Postgres>, table: &TableRef) -> Result<bool> {
+    let row = sqlx::query_scalar!(
+        "select 1 as \"one!\" \
+         from ducklake_table t join ducklake_schema s on t.schema_id = s.schema_id \
+         where s.schema_name = $1 and t.table_name = $2 \
+           and t.end_snapshot is null and s.end_snapshot is null",
+        table.schema,
+        table.name,
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(backend)?;
+    Ok(row.is_some())
+}
+
+/// Resolve the live `schema_id` for `schema_name` (the `main` schema exists from
+/// bootstrap). Creating a brand-new schema is out of scope; `NotFound` otherwise.
+async fn resolve_schema_id(tx: &mut Transaction<'_, Postgres>, schema_name: &str) -> Result<i64> {
+    sqlx::query_scalar!(
+        "select schema_id as \"schema_id!\" from ducklake_schema \
+         where schema_name = $1 and end_snapshot is null",
+        schema_name,
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(backend)?
+    .ok_or_else(|| ControlPlaneError::NotFound(format!("schema {schema_name}")))
+}
+
+/// Emit the §3 Op A create-table rows for one new table: the `ducklake_table`
+/// row, one `ducklake_column` per column (per-table 1-based dense `column_id`,
+/// `column_order == column_id`), and the 3-column `ducklake_schema_versions` row.
+async fn write_table(
+    tx: &mut Transaction<'_, Postgres>,
+    table: &TableRef,
+    table_id: i64,
+    snapshot_id: i64,
+    schema_version: i64,
+    columns: &[ColumnSpec],
+) -> Result<()> {
+    let schema_id = resolve_schema_id(tx, &table.schema).await?;
+
+    // ducklake_table: (table_id, table_uuid, begin_snapshot, end_snapshot=NULL,
+    // schema_id, table_name, path='<name>/', path_is_relative=true).
+    let table_uuid = uuid::Uuid::new_v4();
+    let path = format!("{}/", table.name);
+    sqlx::query!(
+        "insert into ducklake_table \
+           (table_id, table_uuid, begin_snapshot, end_snapshot, schema_id, table_name, path, path_is_relative) \
+         values ($1, $2, $3, NULL, $4, $5, $6, true)",
+        table_id,
+        table_uuid,
+        snapshot_id,
+        schema_id,
+        table.name,
+        path,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(backend)?;
+
+    // ducklake_column rows: column_id is a per-table 1-based dense counter,
+    // column_order == column_id; default_value='NULL' literal, default_value_type
+    // 'literal', default_value_dialect 'duckdb', initial_default NULL, parent NULL.
+    for (i, col) in columns.iter().enumerate() {
+        let column_id = (i + 1) as i64;
+        sqlx::query!(
+            "insert into ducklake_column \
+               (column_id, begin_snapshot, end_snapshot, table_id, column_order, column_name, \
+                column_type, initial_default, default_value, nulls_allowed, parent_column, \
+                default_value_type, default_value_dialect) \
+             values ($1, $2, NULL, $3, $4, $5, $6, NULL, 'NULL', $7, NULL, 'literal', 'duckdb')",
+            column_id,
+            snapshot_id,
+            table_id,
+            column_id,
+            col.name,
+            col.ty,
+            col.nullable,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(backend)?;
+    }
+
+    // ducklake_schema_versions: 3-column (begin_snapshot, schema_version, table_id).
+    sqlx::query!(
+        "insert into ducklake_schema_versions (begin_snapshot, schema_version, table_id) \
+         values ($1, $2, $3)",
+        snapshot_id,
+        schema_version,
+        table_id,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(backend)?;
+
+    Ok(())
 }
 
 /// Resolve the live `column_id` for `(table_id, column_name)` (recipe §3 Op C:

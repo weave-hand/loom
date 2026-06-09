@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ducklake_schema_versions (begin_snapshot, schema_version, table_id) values ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bde051b7f76c24281908cc4d5a95f4d8c4e3b449ceb8fbd4aa6baf754eff55be"
+}
