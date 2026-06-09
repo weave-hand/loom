@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select snapshot_id as \"snapshot_id!\", schema_version as \"schema_version!\", next_catalog_id as \"next_catalog_id!\", next_file_id as \"next_file_id!\" from ducklake_snapshot where snapshot_id = (select max(snapshot_id) from ducklake_snapshot)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "snapshot_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ducklake_snapshot",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "schema_version!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ducklake_snapshot",
+            "name": "schema_version"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "next_catalog_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ducklake_snapshot",
+            "name": "next_catalog_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "next_file_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ducklake_snapshot",
+            "name": "next_file_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "5126cc93b594d9ebdbad20bc47b8f017771786a6cdd9a41c489a67d7b04afa60"
+}

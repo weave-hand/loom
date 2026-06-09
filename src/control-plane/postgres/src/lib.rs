@@ -24,6 +24,7 @@ mod catalog;
 mod lineage;
 mod ontology;
 mod queue;
+mod snapshot;
 mod transaction;
 
 use transaction::PgTx;

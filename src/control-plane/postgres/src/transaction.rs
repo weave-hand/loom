@@ -17,13 +17,16 @@ pub(crate) struct PgTx {
 #[async_trait]
 impl Tx for PgTx {
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn commit(self: Box<Self>) -> Result<Option<SnapshotId>> {
+    async fn commit(mut self: Box<Self>) -> Result<Option<SnapshotId>> {
         if !self.staged_tables.is_empty() || !self.staged_files.is_empty() {
-            return Err(control_plane_core::ControlPlaneError::Backend(Box::<
-                dyn std::error::Error + Send + Sync,
-            >::from(
-                "snapshot commit not yet implemented",
-            )));
+            let id = crate::snapshot::commit_snapshot(
+                &mut self.tx,
+                &self.staged_tables,
+                &self.staged_files,
+            )
+            .await?;
+            self.tx.commit().await.map_err(backend)?;
+            return Ok(Some(id));
         }
         self.tx.commit().await.map_err(backend)?;
         Ok(None)

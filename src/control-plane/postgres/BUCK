@@ -254,6 +254,26 @@ rust_test(
 )
 
 rust_test(
+    name = "snapshot-append",
+    crate = "snapshot_append",
+    srcs = ["tests/snapshot_append.rs"],
+    crate_root = "tests/snapshot_append.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
+        "DUCKDB_BIN": "$(location :duckdb-cli)",
+        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
+    },
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "lineage-roundtrip",
     crate = "lineage_roundtrip",
     srcs = ["tests/lineage_roundtrip.rs"],
