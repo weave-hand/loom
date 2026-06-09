@@ -59,7 +59,11 @@ pub async fn run_migrations(pool: &PgPool, migrations_dir: &Path) -> Result<()> 
 impl ControlPlane for PgControlPlane {
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         let tx = self.pool.begin().await.map_err(backend)?;
-        Ok(Box::new(PgTx { tx }))
+        Ok(Box::new(PgTx {
+            tx,
+            staged_tables: Vec::new(),
+            staged_files: Vec::new(),
+        }))
     }
 }
 

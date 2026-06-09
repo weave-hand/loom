@@ -142,7 +142,7 @@ pub async fn queue_contract<CP: ControlPlane + Queue>(cp: &CP, lock_timeout: Dur
 
     let mut tx = cp.begin().await.unwrap();
     let enqueued = tx.enqueue(job("tx")).await.unwrap();
-    tx.commit().await.unwrap();
+    let _ = tx.commit().await.unwrap();
     let committed = cp
         .dequeue(&["tx".into()], w)
         .await
@@ -1110,7 +1110,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         })
         .await
         .unwrap();
-        tx.commit().await.expect("commit");
+        let _ = tx.commit().await.expect("commit");
     }
     assert_eq!(
         cp.events_for(&committed, PageReq::unbounded())
@@ -1172,7 +1172,7 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         "uncommitted emit is invisible while the tx is open"
     );
 
-    tx.commit().await.expect("commit");
+    let _ = tx.commit().await.expect("commit");
 
     // After commit: the whole unit is visible.
     let job = cp
@@ -1273,5 +1273,81 @@ where
         all.iter().collect::<HashSet<_>>().len(),
         m,
         "no job claimed by two workers"
+    );
+}
+
+/// Contract for the snapshot-commit primitive (`create_table` + `append_files`).
+/// `cp` must be freshly empty.
+pub async fn snapshot_commit_contract<C>(cp: &C)
+where
+    C: control_plane_core::ControlPlane
+        + control_plane_core::Catalog
+        + control_plane_core::Lineage
+        + control_plane_core::Queue,
+{
+    use control_plane_core::{ColumnSpec, DataFile, PageReq, TableRef};
+    let t = TableRef {
+        schema: "main".into(),
+        name: "events".into(),
+    };
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(
+        &t,
+        &[ColumnSpec {
+            name: "id".into(),
+            ty: "int64".into(),
+            nullable: false,
+        }],
+    )
+    .await
+    .unwrap();
+    tx.append_files(
+        &t,
+        &[DataFile {
+            path: "a.parquet".into(),
+            path_is_relative: true,
+            record_count: 3,
+            file_size_bytes: 48,
+            footer_size: 10,
+            column_stats: vec![],
+        }],
+    )
+    .await
+    .unwrap();
+    let snap = tx.commit().await.unwrap();
+    assert!(snap.is_some(), "catalog op produces a snapshot id");
+
+    let snaps = cp.snapshots(&t, PageReq::unbounded()).await.unwrap();
+    assert!(!snaps.is_empty(), "snapshot recorded");
+    let latest = cp.current_snapshot(&t).await.unwrap();
+    assert_eq!(
+        cp.files(&t, latest.id, PageReq::unbounded())
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "one file live"
+    );
+
+    // rollback leaves nothing
+    let t2 = TableRef {
+        schema: "main".into(),
+        name: "rolled".into(),
+    };
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(
+        &t2,
+        &[ColumnSpec {
+            name: "x".into(),
+            ty: "int64".into(),
+            nullable: true,
+        }],
+    )
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    assert!(
+        cp.current_snapshot(&t2).await.is_err(),
+        "rolled-back table absent"
     );
 }

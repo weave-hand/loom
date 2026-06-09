@@ -185,8 +185,11 @@ impl ControlPlane for MemoryControlPlane {
             rows: self.rows.clone(),
             notify: self.notify.clone(),
             lineage: self.lineage.clone(),
+            catalog: self.catalog.clone(),
             staged: Vec::new(),
             staged_events: Vec::new(),
+            staged_tables: Vec::new(),
+            staged_files: Vec::new(),
         }))
     }
 }
