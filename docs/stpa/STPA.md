@@ -139,4 +139,3 @@ flowchart TD
 - Does the Query API AND together multiple per-role policies, and what is the semantics when one matching role has no row_filter (None = unrestricted)? acl-design.md says ANDed but enforcement is unbuilt.
 - How are concurrent ingest writers and DuckLake snapshot ordering reconciled (multi-writer is an open question), given catalog writes are not yet wired into Tx?
 - Is there a stuck-job reaper distinct from lock-expiry reclaim, or does a job whose worker crashes after lock expiry but is never re-eligible (e.g. wrong kind set) stall indefinitely? FUTURE/ARCHITECTURE list it as TBD.
-
