@@ -156,8 +156,12 @@ happen **inside `commit()`** so ids are allocated as late as possible:
 4. **Write staged lineage + queue rows** (the existing `emit`/`enqueue` logic).
 5. **COMMIT** — snapshot, lineage, and enqueue become visible together or not at all.
 
-The exact column lists for each `ducklake_*` table (DuckDB 1.5.3 / catalog spec v1.0) are
-recorded in the spike's empirical findings; the implementer works from those. All SQL uses
+The exact per-operation write sequence — target columns, positional value tuples, counter
+rules, `changes_made` strings, and stats encoding — is documented in
+`2026-06-09-ducklake-single-catalog-write-recipe.md`, **grounded in the pinned extension
+source** (`duckdb/ducklake@e6a3bd0a` = DuckDB 1.5.3, spec v1.0) with `file:line` citations
+and cross-checked against an empirical transcript. The implementer works from that recipe.
+All SQL uses
 compile-time `query!` against the committed `.sqlx` cache (the `sqlx-prepare.sh` harness
 already attaches a real DuckLake catalog, so the new write queries validate; the cache and
 the `sqlx-cache-check` test extend naturally).
@@ -243,7 +247,11 @@ This interop test is what catches catalog drift on a DuckDB version bump.
 - **Commit-fidelity drift** on a DuckDB bump — mitigated by the interop guardrail + the
   pinned spec-version constant.
 - **Reproducing DuckLake semantics** (counter advances, `begin/end_snapshot` row
-  versioning, `changes_made` strings, stats rows) is exacting — the plan must lean on the
-  probe's exact column/row facts and the interop test.
+  versioning, `changes_made` strings, stats rows) is exacting — **mitigated** by the
+  source-grounded recipe (`2026-06-09-ducklake-single-catalog-write-recipe.md`, citing
+  `ducklake@e6a3bd0a`) plus the DuckDB-engine interop test as the executable oracle. The
+  source read already corrected several details a black-box capture got wrong (3-column
+  `ducklake_schema_versions`, per-table `column_id`, `value_count` = non-null count), so the
+  plan follows the recipe rather than re-deriving.
 - **Read-path layout reconciliation** (single- vs multi-catalog) is deferred but real — it
   shapes the later read-path spec; flagged so it is not a surprise.
