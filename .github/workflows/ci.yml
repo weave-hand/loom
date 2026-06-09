@@ -158,3 +158,20 @@ jobs:
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: buck2 run //tools:prek -- run --all-files --show-diff-on-failure
+
+  # Post the overall CI outcome to Discord via sarisia/actions-status-discord.
+  # Runs after the real jobs (always(), so it fires even when one fails) and
+  # collapses their results into a single status: any failure ⇒ failure, any
+  # cancellation ⇒ cancelled, otherwise success. build-test/affected are
+  # event-conditional, so one of them is always 'skipped' — that's ignored.
+  # The webhook URL comes from the DISCORD_WEBHOOK repo secret.
+  notify-discord:
+    if: always()
+    needs: [build-test, affected, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Discord
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          status: ${{ contains(needs.*.result, 'failure') && 'failure' || contains(needs.*.result, 'cancelled') && 'cancelled' || 'success' }}
