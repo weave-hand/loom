@@ -1276,7 +1276,8 @@ where
     );
 }
 
-/// Contract for the snapshot-commit primitive (`create_table` + `append_files`).
+/// Contract for the snapshot-commit primitive (`create_table` + `append_files` +
+/// `emit` + `enqueue` all in one transaction). Proves the four-leg atomic unit.
 /// `cp` must be freshly empty.
 pub async fn snapshot_commit_contract<C>(cp: &C)
 where
@@ -1290,6 +1291,10 @@ where
         schema: "main".into(),
         name: "events".into(),
     };
+    // A fixed whole-second timestamp so the pg `timestamptz` round-trip is exact.
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let run = RunId(uuid::Uuid::new_v4());
+
     let mut tx = cp.begin().await.unwrap();
     tx.create_table(
         &t,
@@ -1314,9 +1319,34 @@ where
     )
     .await
     .unwrap();
+    // Stage lineage emit in the same tx.
+    tx.emit(LineageEvent {
+        run_id: run,
+        event_type: EventType::Complete,
+        event_time: ts,
+        inputs: vec![],
+        outputs: vec![DatasetRef {
+            namespace: "ducklake".into(),
+            name: "main.events".into(),
+        }],
+        payload: serde_json::json!({"eventType": "COMPLETE"}),
+    })
+    .await
+    .unwrap();
+    // Stage a job enqueue in the same tx.
+    let job_id = tx
+        .enqueue(NewJob {
+            kind: "downstream".into(),
+            payload: serde_json::json!({}),
+            run_at: None,
+            priority: 0,
+        })
+        .await
+        .unwrap();
     let snap = tx.commit().await.unwrap();
     assert!(snap.is_some(), "catalog op produces a snapshot id");
 
+    // All four legs visible together after commit.
     let snaps = cp.snapshots(&t, PageReq::unbounded()).await.unwrap();
     assert!(!snaps.is_empty(), "snapshot recorded");
     let latest = cp.current_snapshot(&t).await.unwrap();
@@ -1327,6 +1357,23 @@ where
             .len(),
         1,
         "one file live"
+    );
+    assert!(
+        !cp.events_for(&run, PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
+        "lineage event committed in same tx"
+    );
+    let dequeued = cp.dequeue(&["downstream".to_string()], "w1").await.unwrap();
+    assert!(
+        dequeued.is_some(),
+        "enqueued job committed in same tx (dequeue-able)"
+    );
+    assert_eq!(
+        dequeued.unwrap().id,
+        job_id,
+        "dequeued job has the id returned by Tx::enqueue"
     );
 
     // rollback leaves nothing
