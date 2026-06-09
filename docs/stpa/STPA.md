@@ -1,6 +1,6 @@
-# STPA Control Analysis — weave-hand/loom @ 5d3199e
+# STPA Control Analysis — weave-hand/loom @ ccaf9ee
 
-_Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there. Semantic IDs keep regenerations diff-stable._
+_Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._
 
 <details>
 <summary><b>How to read this</b> — STPA primer and diagram legend</summary>
@@ -10,7 +10,14 @@ _Auto-generated STPA safety model: the unsafe states this system can reach and t
 Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagram** shows who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.
 </details>
 
-**Scope & maturity:** Built: core traits (acl/ontology/lineage/catalog/queue/tx), Postgres + in-memory adapters (now split into per-concern files), and a generic queue Worker loop with automatic heartbeating at lease/3. Designed-only: Ingest/Transform/Query API services, DataFusion ACL enforcement, Quack wire protocol, DuckLake writer. The ACL store serves policy but never enforces it (core/src/acl.rs:6-9).
+**Scope.** Built: core traits (acl/ontology/lineage/catalog/queue/tx), Postgres + in-memory adapters (now split into per-concern files), and a generic queue Worker loop with automatic heartbeating at lease/3. Designed-only: Ingest/Transform/Query API services, DataFusion ACL enforcement, Quack wire protocol, DuckLake writer. The ACL store serves policy but never enforces it (core/src/acl.rs:6-9).
+
+<details>
+<summary>Maturity detail</summary>
+
+- **Built:** core traits (acl, ontology, lineage, catalog, queue, tx), Postgres adapter (per-concern files), in-memory adapter, Worker loop with auto-heartbeat
+- **Designed-only:** Ingest service, Transform service, Query API service, DataFusion ACL enforcement, Quack wire protocol, DuckLake writer
+</details>
 
 ## Control structure
 
@@ -99,7 +106,7 @@ flowchart TD
 
 ## Unsafe control actions
 
-*Each row: a control action made unsafe via one guideword, the hazard/loss it causes, and where in the code it lives.*
+*The core of the analysis. Each row: a control action made unsafe via one guideword, the hazard/loss it causes, and where in the code it lives.*
 
 | ID | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|
@@ -116,7 +123,15 @@ flowchart TD
 | `queue.dequeue.wrong-timing` | `queue.dequeue` | wrong-timing | if heartbeat writes fail (best-effort, fire-and-forget) during a network partition while the original worker still processes the job, locked_at ages past lock_timeout and a second worker reclaims it, duplicating a snapshot-producing transform | high | premature-reclaim | src/control-plane/postgres/src/queue.rs:49 |
 | `tx.commit.not-providing` | `tx.commit` | not-providing | Tx carries only enqueue+emit; the snapshot/catalog write is not part of the unit so commit lands lineage+job without the data write (or vice versa) | high | partial-atomic-unit | docs/FUTURE.md:25 |
 
-**Not UCAs (examined and rejected):** await_jobs missed NOTIFY / spurious early return — bounded by 5s poll fallback that re-checks via dequeue (src/control-plane/worker/src/lib.rs:19,131); crashed-worker job left running — recovered by lock-expiry reclaim in dequeue; only a UCA when heartbeat fails for a live worker (premature-reclaim); handler never calls heartbeat — worker loop now heartbeats automatically at lease/3 intervals (src/control-plane/worker/src/lib.rs:97); memory adapter notify_waiters race losing a wakeup — same poll-timeout fallback bounds latency by design (src/control-plane/memory/src/queue.rs:92); pg_notify fired inside rolled-back transaction — NOTIFY is buffered until commit so a rolled-back enqueue is silent, not a spurious wakeup (src/control-plane/postgres/src/queue.rs:13)
+<details>
+<summary><b>Not UCAs</b> — 5 examined and rejected</summary>
+
+- **await_jobs missed NOTIFY / spurious early return** — bounded by 5s poll fallback that re-checks via dequeue (src/control-plane/worker/src/lib.rs:19,131)
+- **crashed-worker job left running** — recovered by lock-expiry reclaim in dequeue; only a UCA when heartbeat fails for a live worker (premature-reclaim)
+- **handler never calls heartbeat** — worker loop now heartbeats automatically at lease/3 intervals (src/control-plane/worker/src/lib.rs:97)
+- **memory adapter notify_waiters race losing a wakeup** — same poll-timeout fallback bounds latency by design (src/control-plane/memory/src/queue.rs:92)
+- **pg_notify fired inside rolled-back transaction** — NOTIFY is buffered until commit so a rolled-back enqueue is silent, not a spurious wakeup (src/control-plane/postgres/src/queue.rs:13)
+</details>
 
 ## Open questions
 
