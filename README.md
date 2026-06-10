@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/weave-hand/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/weave-hand/loom/actions/workflows/ci.yml)
 
-**An open-source take on Palantir Foundry — a typed-object data platform with built-in lineage and governance, running on a Rust + DataFusion + DuckLake core.**
+**An open-source take on Palantir Foundry — a typed-object data platform with built-in lineage and governance: a Rust governance chokepoint over a DuckDB serving layer, with DataFusion for ingestion, all on a DuckLake + Postgres core.**
 
-> ⚠️ **Status: pre-alpha.** The **control-plane library is built** — five concerns (queue, catalog, ontology, ACL, lineage) as ports-and-adapters, each with an in-memory fake and a real Postgres adapter, run against a shared backend-agnostic contract. The three **services** that consume it (Ingest, Transform, Query API) and the Quack wire shim are **not built yet**. The architecture is still framed as *exploratory*: the shape is sketched, several load-bearing decisions are flagged for hardening. If you're here to use loom, the answer is "not yet." If you're here to help design or build it, keep reading.
+> ⚠️ **Status: pre-alpha.** The **control-plane library is built** — five concerns (queue, catalog, ontology, ACL, lineage) as ports-and-adapters, each with an in-memory fake and a real Postgres adapter, run against a shared backend-agnostic contract. The **services** that consume it (Ingest, Transform, HTTP query API) and the DuckDB serving layer are **not built yet**. The architecture is still framed as *exploratory*: the shape is sketched, several load-bearing decisions are flagged for hardening. If you're here to use loom, the answer is "not yet." If you're here to help design or build it, keep reading.
 
 ---
 
@@ -20,7 +20,7 @@ The catch: Foundry is closed, expensive, and an all-or-nothing commitment. Loom 
 
 ## What loom is
 
-Loom is three Rust services and a Postgres database. The services (Ingest, Transform workers, Query API) all embed [Apache DataFusion](https://datafusion.apache.org/) as their compute engine. They read and write tabular data through [DuckLake](https://ducklake.select/) — an open lakehouse format whose catalog lives *in Postgres* rather than in a separate metastore. The same Postgres also holds the typed object/link ontology, ACL policy, the job queue, and lineage events, in separate schemas. Data files live as Parquet on S3 or MinIO. External clients talk to loom via [Quack](https://duckdb.org/docs/current/quack/overview), DuckDB's remote protocol — so any DuckDB client can `ATTACH` a loom service and use it like a remote catalog, even though DataFusion is doing the work underneath.
+Loom is a set of Rust services in front of a DuckDB serving layer and a Postgres database. Reads enter through the **HTTP query API** — the governance chokepoint that resolves the typed ontology to physical tables, applies ACL policy, and generates SQL — which it hands to **[DuckDB](https://duckdb.org/)** running as the serving layer. DuckDB `ATTACH`es the [DuckLake](https://ducklake.select/) catalog (an open lakehouse format whose catalog lives *in Postgres* rather than a separate metastore) and speaks [Quack](https://duckdb.org/docs/current/quack/overview), DuckDB's remote protocol, natively — so any DuckDB client can `ATTACH` loom and use it like a remote catalog. **[Apache DataFusion](https://datafusion.apache.org/)** is the ingestion and transform engine: bulk writes and queue-driven jobs land new DuckLake snapshots. The same Postgres holds the object/link ontology, ACL policy, the job queue, and lineage events in separate schemas; data files live as Parquet on S3 or MinIO.
 
 For the full design rationale and open questions, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
@@ -29,13 +29,13 @@ For the full design rationale and open questions, see [`ARCHITECTURE.md`](./ARCH
 | Foundry concept                  | Loom equivalent                                                                                                  | Status         |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------- |
 | **Ontology** (objects, links, properties) | `ontology` schema in Postgres; resolved to physical DuckLake tables at plan time                          | Library built; resolution-at-plan-time pending services |
-| **Actions** (typed write-backs)  | Named actions defined alongside object types; executed as transactional ontology + catalog mutations             | Designed, not built |
+| **Actions** (typed write-backs)  | Named actions defined alongside object types; governed at the HTTP query API and executed through the DuckDB serving layer, with loom owning the catalog commit so snapshot + lineage + enqueue stay atomic | Designed, not built |
 | **Pipelines / Code Repositories** | Transform workers pulling jobs from the `queue` schema; DataFusion plans against DuckLake snapshots             | Queue + worker library built; transform service not built |
-| **Data Connection** (sources)    | Ingest service — accepts incoming data, writes Parquet, commits a new DuckLake snapshot                          | Designed, not built |
-| **Foundry SQL / Contour**        | Query API exposing a Quack endpoint; clients use any DuckDB-compatible SQL surface                               | Designed, not built |
-| **Markings + project permissions** | `acl` schema — subjects, roles, row- and column-level policy pushed into DataFusion plans                      | Library built; plan pushdown pending Query API |
+| **Data Connection** (sources)    | Ingest service — DataFusion writes Parquet in bulk, commits a new DuckLake snapshot                              | Designed, not built |
+| **Foundry SQL / Contour**        | HTTP query API (governance chokepoint) in front of a DuckDB serving layer that speaks Quack; clients use any DuckDB-compatible SQL surface | Designed, not built |
+| **Markings + project permissions** | `acl` schema — subjects, roles, row- and column-level policy compiled into the SQL the query API emits          | Library built; SQL-generation enforcement pending Query API |
 | **Data Lineage**                 | `lineage` schema with [OpenLineage](https://openlineage.io/) events; lineage commits atomically with snapshots   | Library built (one-hop, `emit`+`enqueue` atomic); transitive + catalog leg pending |
-| **Compute backend** (Spark)      | DataFusion single-node by default; optional [Ballista](https://datafusion.apache.org/ballista/) for scale-out    | Designed, not built |
+| **Compute backend** (Spark)      | DuckDB for serving; DataFusion (single-node, optional [Ballista](https://datafusion.apache.org/ballista/)) for ingestion & transforms | Designed, not built |
 | **Foundry Branching**            | DuckLake snapshots provide time-travel; named branches TBD                                                        | Open question  |
 
 ### What's deliberately *not* in scope (for now)
@@ -52,35 +52,38 @@ The principle: loom is the **data + governance + compute** core. The application
 ## How it works (60-second tour)
 
 ```
-        Clients (BI tools, notebooks, app code)
+        Consumers / clients (BI tools, notebooks, app code)
                        │
-                  Quack / HTTP
+                  HTTP / Quack
                        │
-       ┌───────────────┼───────────────┐
-       │               │               │
-  Ingest service  Transform workers  Query API
-       │               │               │
-       └───────────────┼───────────────┘
-                       │
-        Postgres (DuckLake catalog,
-        ontology, ACL, queue, lineage)
-                       │
-              S3 / MinIO  (Parquet)
+        HTTP query API  ── ontology + governance (Rust)
+                       │   resolves to SQL
+                       ▼
+        DuckDB — serving  ── ATTACH ducklake · Quack
+                       │   reads + governed action-writes
+                       ▼
+        DuckLake — storage
+        Catalog: Postgres (ducklake.* + ontology, ACL, queue, lineage)
+        Data files: Parquet on S3 / MinIO
+                       ▲
+              writes (bulk) │ + new snapshots
+        DataFusion — ingestion   ·   Transform workers (queue-driven)
 ```
 
-- **Postgres is the only stateful coordinator.** Catalog, ontology, ACL, queue, and lineage all live there in separate schemas, so a single transaction can mutate a snapshot, record lineage, and enqueue downstream work.
-- **DataFusion is the compute engine everywhere.** ACL rewriting and ontology resolution are implemented once, against a single logical-plan API.
-- **Quack is the wire protocol.** External clients and inter-service calls speak the same protocol — one set of client libs, one auth surface.
+- **One governed front door.** Every read enters the HTTP query API, which resolves the ontology, applies ACL, and compiles a request into SQL — so policy is never bypassable.
+- **DuckDB is the serving engine.** It `ATTACH`es DuckLake and speaks Quack natively, so loom reimplements neither a query engine nor the wire protocol for reads. DataFusion is the *ingestion & transform* engine, not the read path.
+- **Postgres is the only stateful coordinator.** Catalog, ontology, ACL, queue, and lineage live there in separate schemas, so a single transaction can mutate a snapshot, record lineage, and enqueue downstream work.
 - **DuckLake is the table format.** Snapshots + Parquet, with the catalog co-located in Postgres so it can share transactions with everything else.
 
 For per-component detail, tradeoffs, and the list of decisions still up for debate, read [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## Tech choices at a glance
 
-- **Language:** Rust across all services
-- **Compute:** [Apache DataFusion](https://datafusion.apache.org/) (single-node), [Ballista](https://datafusion.apache.org/ballista/) (optional distributed)
-- **Table format:** [DuckLake](https://ducklake.select/), via [`datafusion-ducklake`](https://github.com/hotdata-dev/datafusion-ducklake)
-- **Wire protocol:** [Quack](https://duckdb.org/docs/current/quack/overview) — DuckDB-compatible remote access
+- **Language:** Rust for the query API, ingest, and transform services
+- **Serving engine:** [DuckDB](https://duckdb.org/) — native DuckLake reader/writer, speaks Quack
+- **Ingestion / transform compute:** [Apache DataFusion](https://datafusion.apache.org/) (single-node), [Ballista](https://datafusion.apache.org/ballista/) (optional distributed)
+- **Table format:** [DuckLake](https://ducklake.select/) — via DuckDB on the serving path, [`datafusion-ducklake`](https://github.com/hotdata-dev/datafusion-ducklake) on the DataFusion path
+- **Wire protocol:** [Quack](https://duckdb.org/docs/current/quack/overview) — DuckDB-compatible remote access, spoken natively by the serving layer
 - **Control plane:** PostgreSQL (single database, schema-separated)
 - **Job queue:** [graphile_worker_rs](https://github.com/leo91000/graphile_worker_rs)–style queue using `SKIP LOCKED` + `LISTEN/NOTIFY`
 - **Lineage:** [OpenLineage](https://openlineage.io/) events
@@ -93,7 +96,7 @@ Three steps, tracked in [`docs/superpowers/specs/2026-06-06-loom-roadmap.md`](./
 
 1. **Control-plane library — ✅ delivered.** Five concerns as ports-and-adapters under `src/control-plane/` (`core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`): **queue** (with a worker and `await_jobs`), **catalog** (DuckLake read surface), **ontology**, **acl**, and **lineage**. Each runs against one backend-agnostic contract on both the in-memory fake and real Postgres. A cross-concern `Tx` seam makes `emit` + `enqueue` atomic.
 2. **Harden the control plane.** Correctness and contract gaps catalogued in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) — worker heartbeat, Tx isolation contract, catalog MVCC delete/evolve coverage, typed cross-concern identity, and deciding the `Tx` seam's future before any service depends on the library. Deferred features are parked in [`docs/FUTURE.md`](./docs/FUTURE.md).
-3. **The services on top.** Quack-over-DataFusion shim, then Query API (ontology resolve + ACL pushdown), Ingest (Parquet writes, snapshot commits, lineage), and Transform workers (built on `control-plane-worker`). Optional Ballista escalation, ontology actions, branching beyond that.
+3. **The services on top.** Stand up the DuckDB serving layer (`ATTACH` ducklake, Quack), the HTTP query API (ontology resolve + ACL compiled into generated SQL), Ingest (DataFusion bulk Parquet writes, snapshot commits, lineage), and Transform workers (built on `control-plane-worker`). Ontology actions routed through the serving layer, optional Ballista escalation, and branching beyond that.
 
 When something gets built, this section moves it from "planned" into a concrete pointer.
 
