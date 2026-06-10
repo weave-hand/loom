@@ -8,11 +8,42 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:async-trait",
+        "//third-party:axum",
         "//third-party:duckdb",
+        "//third-party:serde_json",
         "//third-party:thiserror",
         "//third-party:tokio",
     ],
     visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "query-api-bin",
+    crate = "query_api_bin",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [":query-api", "//third-party:tokio"],
+    env = {"CARGO_PKG_VERSION": "0.1.0"},
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "http-smoke",
+    crate = "http_smoke",
+    srcs = ["tests/http_smoke.rs"],
+    crate_root = "tests/http_smoke.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
 )
 
 rust_test(

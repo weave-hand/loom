@@ -22,8 +22,8 @@ pub struct ObjectQuery {
 
 /// Borrowed dependencies for one read.
 pub struct QueryDeps<'a> {
-    pub ontology: &'a (dyn Ontology + Sync),
-    pub acl: &'a (dyn Acl + Sync),
+    pub ontology: &'a (dyn Ontology + Send + Sync),
+    pub acl: &'a (dyn Acl + Send + Sync),
     pub serving: &'a dyn ServingEngine,
 }
 
