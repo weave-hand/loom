@@ -36,6 +36,14 @@ fn op_sql(op: CompareOp) -> &'static str {
     }
 }
 
+// NOTE: the `panic!`/`unreachable!` arms below encode a CompareOp<->ScalarValue
+// invariant the type system does not enforce (e.g. `In` requires a `List` value, a
+// scalar op requires a non-list value). For this slice that invariant holds by
+// construction. Once row filters become real persisted policy data deserialized from
+// the `acl` schema's jsonb, a malformed-but-type-valid filter could reach these arms;
+// at that point `compile_select` should become fallible (a typed MalformedPolicy
+// error) rather than panic inside a read request. Tracked for the deferred full-ACL
+// spec — see the slice design doc's "What this slice is NOT".
 fn filter_sql(f: &RowFilter, params: &mut Vec<SqlValue>) -> String {
     match f {
         RowFilter::Compare {

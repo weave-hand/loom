@@ -102,3 +102,53 @@ fn ands_acl_filter_with_request_equality_filter() {
         vec![SqlValue::Text("acme".into()), SqlValue::Text("open".into())]
     );
 }
+
+#[test]
+fn expands_not_in_list_into_placeholders() {
+    let f = RowFilter::Compare {
+        property: "region".into(),
+        op: CompareOp::NotIn,
+        value: ScalarValue::List(vec![
+            ScalarValue::Text("EU".into()),
+            ScalarValue::Text("UK".into()),
+        ]),
+    };
+    let (sql, params) = compile_select(&t(), &["id".into()], std::slice::from_ref(&f), &[], 10);
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("region" NOT IN (?, ?)) LIMIT 10"#
+    );
+    assert_eq!(
+        params,
+        vec![SqlValue::Text("EU".into()), SqlValue::Text("UK".into())]
+    );
+}
+
+#[test]
+fn compiles_is_not_null_without_a_param() {
+    // value is ignored for IS [NOT] NULL ops.
+    let f = RowFilter::Compare {
+        property: "closed_at".into(),
+        op: CompareOp::IsNotNull,
+        value: ScalarValue::Bool(true),
+    };
+    let (sql, params) = compile_select(&t(), &["id".into()], std::slice::from_ref(&f), &[], 10);
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn eq_filters_only_form_the_where_clause() {
+    // No ACL row filter, only a request equality filter: the WHERE prefix and
+    // conjunct-joining must still be correct (no leading/trailing AND).
+    let eq = vec![("status".to_string(), SqlValue::Text("open".into()))];
+    let (sql, params) = compile_select(&t(), &["id".into()], &[], &eq, 10);
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 10"#
+    );
+    assert_eq!(params, vec![SqlValue::Text("open".into())]);
+}
