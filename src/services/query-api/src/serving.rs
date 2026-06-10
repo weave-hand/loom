@@ -88,16 +88,15 @@ fn run_sync(attach: &str, sql: &str, params: &[SqlValue]) -> Result<Rows, Servin
     let mut q = stmt
         .query(pref.as_slice())
         .map_err(|e| ServingError::Engine(e.to_string()))?;
+    // Capture the result schema from the executed query BEFORE stepping, so a
+    // zero-row result still reports its columns (an empty `Rows.columns` would be
+    // wrong for a governed read that legitimately matched no rows). Column metadata
+    // is only populated after `query()` executes the statement — reading it off the
+    // freshly-prepared statement panics.
+    let columns: Vec<String> = q.as_ref().map(|s| s.column_names()).unwrap_or_default();
 
-    let mut columns: Vec<String> = Vec::new();
     let mut rows: Vec<Vec<SqlValue>> = Vec::new();
     while let Some(row) = q.next().map_err(|e| ServingError::Engine(e.to_string()))? {
-        if columns.is_empty() {
-            // `column_names` lives on the statement; `AsRef<Statement>` for Row hands
-            // it back, and the query has been stepped, so the schema is available.
-            let stmt: &duckdb::Statement = row.as_ref();
-            columns = stmt.column_names();
-        }
         let mut cells = Vec::with_capacity(columns.len());
         for i in 0..columns.len() {
             let v: Value = row

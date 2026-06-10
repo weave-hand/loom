@@ -32,6 +32,24 @@ async fn fetch_rows_returns_typed_cells() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn zero_rows_still_reports_columns() {
+    // A governed read can legitimately match no rows; the result must still carry
+    // the schema. Columns are captured from the prepared statement, not lazily.
+    let fx = PgFixture::start();
+    let (eng, _writer) = engine(&fx).await;
+    let rows = eng
+        .fetch_rows("SELECT 42 AS n, 'hi' AS s WHERE 1 = 0", &[])
+        .await
+        .unwrap();
+    assert!(rows.rows.is_empty(), "no rows matched");
+    assert_eq!(
+        rows.columns,
+        vec!["n".to_string(), "s".to_string()],
+        "schema reported even with zero rows"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn params_are_bound_not_interpolated() {
     let fx = PgFixture::start();
     let (eng, _writer) = engine(&fx).await;
