@@ -415,6 +415,21 @@ impl DuckLakeWriter {
         .expect("ducklake_snapshot has at least one row")
     }
 
+    /// Count rows in a `ducklake_*` catalog table, read directly from Postgres.
+    /// `table` must be a trusted literal (test-only). Used to assert that a
+    /// rolled-back snapshot commit leaks zero catalog rows.
+    pub async fn count_rows(&self, table: &str) -> i64 {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(self.opts())
+            .await
+            .expect("connect to count rows");
+        sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!("select count(*) from {table}")))
+            .fetch_one(&pool)
+            .await
+            .expect("count rows")
+    }
+
     /// Positional row expressions matching `columns`: integer columns count up from
     /// `i`, everything else is a constant cast to the column type.
     fn row_exprs(columns: &[(String, String, bool)]) -> String {
