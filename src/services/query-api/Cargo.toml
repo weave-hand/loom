@@ -1,0 +1,17 @@
+[package]
+name = "query-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+control-plane-core = { path = "../../control-plane/core" }
+control-plane-postgres = { path = "../../control-plane/postgres" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+# Embedded DuckDB serving engine. `bundled` compiles DuckDB from source so no system
+# lib is needed; this task verifies the bundled version loads loom's 1.5.3 ducklake extension.
+duckdb = { version = "1", features = ["bundled"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tempfile = "3"
