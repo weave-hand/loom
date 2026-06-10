@@ -7,6 +7,7 @@ edition = "2024"
 control-plane-core = { path = "../../control-plane/core" }
 control-plane-postgres = { path = "../../control-plane/postgres" }
 async-trait = "0.1"
+thiserror = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Embedded DuckDB serving engine. `bundled` compiles DuckDB from source so no system
 # lib is needed; this task verifies the bundled version loads loom's 1.5.3 ducklake extension.

@@ -1,3 +1,40 @@
+rust_library(
+    name = "query-api",
+    crate = "query_api",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:async-trait",
+        "//third-party:duckdb",
+        "//third-party:thiserror",
+        "//third-party:tokio",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "serving-engine",
+    crate = "serving_engine",
+    srcs = ["tests/serving_engine.rs"],
+    crate_root = "tests/serving_engine.rs",
+    edition = "2024",
+    env = {
+        "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
+        "LOOM_MIGRATIONS_DIR": "$(location //src/control-plane/postgres:migrations)/migrations",
+        "DUCKDB_BIN": "$(location //src/control-plane/postgres:duckdb-cli)",
+        "DUCKDB_EXTENSION_DIR": "$(location //src/control-plane/postgres:duckdb-extensions)",
+    },
+    deps = [
+        ":query-api",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "spike-duckdb",
     crate = "spike_duckdb",

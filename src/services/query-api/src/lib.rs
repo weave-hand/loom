@@ -7,3 +7,5 @@
 //! is ABI-locked to — and the spike (tests/spike_duckdb.rs) proves it loads the
 //! vendored 1.5.3 ducklake + postgres_scanner extensions and ATTACHes/reads
 //! loom's DuckLake-on-Postgres catalog. The serving engine is embedded duckdb-rs.
+
+pub mod serving;
