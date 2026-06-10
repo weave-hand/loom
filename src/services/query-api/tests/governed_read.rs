@@ -4,9 +4,9 @@
 //! Parquet (mirrors postgres/tests/ducklake_interop.rs::duckdb_scans_loom_appended_file).
 
 use control_plane_core::{
-    Acl, Action, ColumnSpec, ColumnStat, CompareOp, ControlPlane, DataFile, ObjectType, Ontology,
-    Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef,
-    TypeName,
+    Acl, Action, ColumnSpec, ColumnStat, CompareOp, ControlPlane, DataFile, Effect, ObjectType,
+    Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use query_api::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
@@ -144,6 +144,7 @@ async fn governed_object_read() {
         &role,
         Action::Read,
         PolicyTarget::Type(TypeName("Order".into())),
+        Effect::Allow,
     )
     .await
     .unwrap();

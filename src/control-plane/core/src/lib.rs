@@ -12,7 +12,7 @@ mod snapshot;
 mod transaction;
 
 pub use acl::{
-    Acl, Action, CompareOp, Decision, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
+    Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
     SubjectId,
 };
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};

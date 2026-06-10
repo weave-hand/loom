@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, Decision, LinkDef, ObjectType, Page, PageReq, Policy, PolicyTarget, PropertyDef,
-    Result, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, Decision, Effect, LinkDef, ObjectType, Page, PageReq, Policy, PolicyTarget,
+    PropertyDef, Result, RoleId, SubjectId, TableRef, TypeName,
 };
 use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
@@ -67,7 +67,13 @@ impl Acl for StubAcl {
     async fn unassign_role(&self, _subject: &SubjectId, _role: &RoleId) -> Result<()> {
         unimplemented!()
     }
-    async fn grant(&self, _role: &RoleId, _action: Action, _target: PolicyTarget) -> Result<()> {
+    async fn grant(
+        &self,
+        _role: &RoleId,
+        _action: Action,
+        _target: PolicyTarget,
+        _effect: Effect,
+    ) -> Result<()> {
         unimplemented!()
     }
     async fn revoke(&self, _role: &RoleId, _action: Action, _target: &PolicyTarget) -> Result<()> {

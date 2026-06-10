@@ -7,8 +7,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef,
-    Decision, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology, Page,
-    PageReq, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
+    Decision, Effect, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology,
+    Page, PageReq, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
     ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
@@ -676,9 +676,14 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     a.define_subject(&sid("alice")).await.unwrap();
     a.define_role(&rid("reader")).await.unwrap();
     a.assign_role(&sid("alice"), &rid("reader")).await.unwrap();
-    a.grant(&rid("reader"), Action::Read, ttype("Customer"))
-        .await
-        .unwrap();
+    a.grant(
+        &rid("reader"),
+        Action::Read,
+        ttype("Customer"),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         a.check(&sid("alice"), Action::Read, &ttype("Customer"))
@@ -709,9 +714,14 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     );
 
     // grant idempotent; one revoke clears it
-    a.grant(&rid("reader"), Action::Read, ttype("Customer"))
-        .await
-        .unwrap();
+    a.grant(
+        &rid("reader"),
+        Action::Read,
+        ttype("Customer"),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
     a.revoke(&rid("reader"), Action::Read, &ttype("Customer"))
         .await
         .unwrap();
@@ -726,12 +736,22 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     // --- role union over two roles, with a Table target ---
     a.define_role(&rid("writer")).await.unwrap();
     a.assign_role(&sid("alice"), &rid("writer")).await.unwrap();
-    a.grant(&rid("reader"), Action::Read, ttable("main", "raw"))
-        .await
-        .unwrap();
-    a.grant(&rid("writer"), Action::Write, ttable("main", "raw"))
-        .await
-        .unwrap();
+    a.grant(
+        &rid("reader"),
+        Action::Read,
+        ttable("main", "raw"),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+    a.grant(
+        &rid("writer"),
+        Action::Write,
+        ttable("main", "raw"),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         a.check(&sid("alice"), Action::Read, &ttable("main", "raw"))
             .await
@@ -880,7 +900,8 @@ pub async fn acl_contract<A: Acl>(a: &A) {
 
     // --- grant / set_policy on a missing role -> NotFound ---
     assert!(matches!(
-        a.grant(&rid("ghost"), Action::Read, ttype("X")).await,
+        a.grant(&rid("ghost"), Action::Read, ttype("X"), Effect::Allow)
+            .await,
         Err(ControlPlaneError::NotFound(_))
     ));
     assert!(matches!(

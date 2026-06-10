@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b, effect) values ($1, $2, $3, $4, $5, $6) on conflict (role_id, action, target_kind, target_a, target_b) do update set effect = excluded.effect",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c56ed237aa6bd5c9432ac4f98ebc5d810a654e6eed3150722ac0bc6a1072efc2"
+}

@@ -1,10 +1,17 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Page, PageReq, Policy, PolicyTarget, Result, RoleId,
-    SubjectId,
+    Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
+    RoleId, SubjectId,
 };
 
 use crate::{PgControlPlane, action_to_str, backend, target_cols};
+
+fn effect_to_str(effect: Effect) -> &'static str {
+    match effect {
+        Effect::Allow => "allow",
+        Effect::Deny => "deny",
+    }
+}
 
 #[async_trait]
 impl Acl for PgControlPlane {
@@ -85,7 +92,13 @@ impl Acl for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn grant(&self, role: &RoleId, action: Action, target: PolicyTarget) -> Result<()> {
+    async fn grant(
+        &self,
+        role: &RoleId,
+        action: Action,
+        target: PolicyTarget,
+        effect: Effect,
+    ) -> Result<()> {
         let r_exists = sqlx::query_scalar!(
             "select exists (select 1 from acl.role where id = $1)",
             &role.0,
@@ -99,13 +112,16 @@ impl Acl for PgControlPlane {
         }
         let (kind, a, b) = target_cols(&target);
         sqlx::query!(
-            "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b) \
-             values ($1, $2, $3, $4, $5) on conflict do nothing",
+            "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b, effect) \
+             values ($1, $2, $3, $4, $5, $6) \
+             on conflict (role_id, action, target_kind, target_a, target_b) \
+             do update set effect = excluded.effect",
             &role.0,
             action_to_str(action),
             kind,
             &a,
             &b,
+            effect_to_str(effect),
         )
         .execute(&self.pool)
         .await
