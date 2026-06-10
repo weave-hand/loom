@@ -3,7 +3,8 @@
 //! SQL with bound params; execute on the serving engine.
 
 use control_plane_core::{
-    Acl, ControlPlaneError, Ontology, PageReq, PolicyTarget, RowFilter, SubjectId, TypeName,
+    Acl, Action, ControlPlaneError, Decision, Ontology, PageReq, PolicyTarget, RowFilter,
+    SubjectId, TypeName,
 };
 
 use crate::serving::{Rows, ServingEngine, SqlValue};
@@ -47,6 +48,15 @@ pub async fn read_object(
     deps: &QueryDeps<'_>,
 ) -> Result<Rows, QueryError> {
     let type_name = TypeName(q.type_name.clone());
+    let target = PolicyTarget::Type(type_name.clone());
+
+    // Coarse gate, deny-by-default: the subject must hold a Read grant on this type.
+    // No grant — including an unknown/anonymous subject — is Forbidden, returned BEFORE
+    // we reveal whether the type exists. Fine-grained row/column policy below only
+    // narrows what an already-permitted subject sees.
+    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
+        return Err(QueryError::Forbidden);
+    }
 
     // resolve: type -> ObjectType (table + ordered properties). A genuine miss is a
     // client 404 (UnknownType); a backend fault must propagate as itself (-> 500),
@@ -59,7 +69,6 @@ pub async fn read_object(
             ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
             other => QueryError::ControlPlane(other),
         })?;
-    let target = PolicyTarget::Type(type_name.clone());
 
     // policy: gather row filters + denied columns across the subject's matching policies.
     // Minimal ACL for this slice: restrictions are cumulative — row filters are ANDed

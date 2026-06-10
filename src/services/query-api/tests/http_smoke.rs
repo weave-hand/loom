@@ -85,7 +85,8 @@ impl Acl for StubAcl {
         _action: Action,
         _target: &PolicyTarget,
     ) -> Result<Decision> {
-        unimplemented!()
+        // Grant read access so the route reaches read_object's body in this smoke test.
+        Ok(Decision::Allow)
     }
     async fn policies_for(
         &self,

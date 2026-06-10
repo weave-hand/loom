@@ -9,7 +9,7 @@ use control_plane_core::{
     TypeName,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
+use query_api::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
 use query_api::serving::{EmbeddedDuckDb, SqlValue};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -202,4 +202,21 @@ async fn governed_object_read() {
     .unwrap();
     assert_eq!(rows2.rows.len(), 1);
     assert_eq!(rows2.rows[0][0], SqlValue::Int(1));
+
+    // 7. Deny-by-default: a subject with no Read grant is Forbidden (no open default).
+    let stranger = SubjectId("stranger".into());
+    let err = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            eq_filters: vec![],
+        },
+        &Subject(stranger),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, QueryError::Forbidden),
+        "ungranted subject must be denied, got {err:?}"
+    );
 }
