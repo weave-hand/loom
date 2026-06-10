@@ -49,6 +49,10 @@ impl EmbeddedDuckDb {
     ) -> Result<Self, ServingError> {
         let ext_dir = std::env::var("DUCKDB_EXTENSION_DIR")
             .map_err(|_| ServingError::Engine("DUCKDB_EXTENSION_DIR unset".into()))?;
+        // `USE lake;` makes the single attached DuckLake catalog the default, so the
+        // unqualified table names compile_select emits (e.g. "main"."orders") resolve
+        // against it and not DuckDB's default in-memory `memory` catalog (where the data
+        // does not live). `lake` is the fixed ATTACH alias on the line above.
         let attach_sql = format!(
             "SET extension_directory='{}';\nLOAD ducklake;\nLOAD postgres_scanner;\n\
              ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake \

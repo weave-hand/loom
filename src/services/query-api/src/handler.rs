@@ -2,7 +2,9 @@
 //! load ACL policy -> row filter + denied columns; project allowed columns; compile
 //! SQL with bound params; execute on the serving engine.
 
-use control_plane_core::{Acl, Ontology, PageReq, PolicyTarget, RowFilter, SubjectId, TypeName};
+use control_plane_core::{
+    Acl, ControlPlaneError, Ontology, PageReq, PolicyTarget, RowFilter, SubjectId, TypeName,
+};
 
 use crate::serving::{Rows, ServingEngine, SqlValue};
 use crate::sql::compile_select;
@@ -46,15 +48,23 @@ pub async fn read_object(
 ) -> Result<Rows, QueryError> {
     let type_name = TypeName(q.type_name.clone());
 
-    // resolve: type -> ObjectType (table + ordered properties).
+    // resolve: type -> ObjectType (table + ordered properties). A genuine miss is a
+    // client 404 (UnknownType); a backend fault must propagate as itself (-> 500),
+    // not masquerade as an unknown type.
     let object_type = deps
         .ontology
         .get_type(&type_name)
         .await
-        .map_err(|_| QueryError::UnknownType(q.type_name.clone()))?;
+        .map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
+            other => QueryError::ControlPlane(other),
+        })?;
     let target = PolicyTarget::Type(type_name.clone());
 
     // policy: gather row filters + denied columns across the subject's matching policies.
+    // Minimal ACL for this slice: restrictions are cumulative — row filters are ANDed
+    // (via compile_select) and denied columns unioned. No deny-override / allow-widening
+    // across policies; that refinement is the deferred full-ACL spec.
     let policies = deps
         .acl
         .policies_for(&subject.0, &target, PageReq::unbounded())
