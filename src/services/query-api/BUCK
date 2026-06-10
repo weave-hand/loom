@@ -36,6 +36,15 @@ rust_test(
 )
 
 rust_test(
+    name = "sql-compile",
+    crate = "sql_compile",
+    srcs = ["tests/sql_compile.rs"],
+    crate_root = "tests/sql_compile.rs",
+    edition = "2024",
+    deps = [":query-api", "//src/control-plane/core:core"],
+)
+
+rust_test(
     name = "spike-duckdb",
     crate = "spike_duckdb",
     srcs = ["tests/spike_duckdb.rs"],
