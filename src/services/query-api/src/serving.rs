@@ -52,7 +52,7 @@ impl EmbeddedDuckDb {
         let attach_sql = format!(
             "SET extension_directory='{}';\nLOAD ducklake;\nLOAD postgres_scanner;\n\
              ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake \
-             (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);",
+             (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\nUSE lake;",
             ext_dir,
             db,
             socket.display(),
