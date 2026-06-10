@@ -87,16 +87,33 @@ Pull forward only when a consumer needs it:
 
 ## Step 3 — The layers above (consume the library)
 
-Per `ARCHITECTURE.md`. Each is its own brainstorm → spec → plan cycle; they sit *on
-top of* the control-plane library and should not start until Step 2a is in.
+Per `ARCHITECTURE.md` (**revised**: DuckDB is the serving engine and speaks Quack
+natively; a Rust HTTP API is the governance chokepoint that compiles ontology + ACL into
+SQL; DataFusion is scoped to ingestion/transforms — there is **no** Quack-over-DataFusion
+shim). Each piece is its own brainstorm → spec → plan cycle, sits *on top of* the
+control-plane library, and should not start until Step 2a is in. Each large service is
+decomposed into a load-bearing **part 1** primitive first, mirroring how ingest was done.
 
-- **Quack-over-DataFusion server shim** — the wire protocol every service exposes;
-  translate inbound Quack queries into DataFusion plans. (Quack is beta — pin a
-  DuckDB version; treat protocol bumps as breaking.)
-- **Query API service** — ontology `resolve` → physical table, ACL `policies_for` →
-  DataFusion plan rewrite (row filter pushdown + column projection), plan + serve.
-- **Ingest service** — write Parquet, commit a DuckLake snapshot, emit lineage; wants
-  the transactional catalog write (2c).
+- **Ingest** —
+  - *Part 1 — snapshot-commit primitive* ✅ DELIVERED (PR #32;
+    `2026-06-09-ingest-snapshot-commit-primitive-design.md`). loom is a native DuckLake
+    single-catalog writer: snapshot + lineage + enqueue commit in one Postgres
+    transaction, proven against the pinned DuckDB engine.
+  - *Later:* the ingest service shell (binary, object store, DataFusion → Parquet);
+    schema evolution; delete/compaction; orphaned-Parquet GC.
+- **Query / read path** —
+  - *Part 1 — governed object-read slice* (specced, in progress;
+    `2026-06-10-query-governed-object-read-slice-design.md`). `GET /objects/{type}` →
+    resolve the ontology type to a physical DuckLake table → inject a minimal ACL row
+    predicate + column projection → execute on an embedded DuckDB (`duckdb-rs`) behind a
+    `ServingEngine` seam → JSON rows. Plain-HTTP client surface; the Quack wire deferred.
+  - *Later:* the serving *tier* over Quack (separate `quack_serve`'d DuckDB; the seam's
+    Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
+    masking, roles); rich ontology (links, derived properties); multi-type queries/joins;
+    authentication.
+- **Actions** — the ontology's typed write-backs, governed at the HTTP API and executed
+  *through* the serving layer, with loom owning the catalog-commit transaction (the
+  snapshot-commit primitive) so snapshot + lineage + enqueue stay atomic. Own spec.
 - **Transform workers** — built on `control-plane-worker`: consume the queue, run
   DataFusion, write snapshots, emit lineage + enqueue downstream atomically; optional
   Ballista escalation.
@@ -106,10 +123,14 @@ top of* the control-plane library and should not start until Step 2a is in.
 ## Where we are
 
 Step 1 complete; **Step 2a complete** (all five items — PRs #13–#16 + the #5 decision
-record); `main` green. The library is now safe for a consumer to depend on (the
-correctness/contract gaps are closed and the seam direction is settled).
+record); **Step 2b** partially landed (pagination convention, proptest round-trips, and
+the dead-variant cleanup via PR #22; `.sqlx` compile-time queries done). `main` green.
 
-Recommended next move: either pick up **Step 2b** trailing hardening opportunistically
-(the per-concern adapter split and `tracing` are the highest-leverage), or — since 2a
-unblocked it — **start Step 3 with a brainstorm of the ingest worker**, which is where the
-deferred catalog write leg (the snapshot + lineage + enqueue atomic unit) gets designed.
+**Step 3 is underway.** Ingest **part 1** (the snapshot-commit primitive) is delivered
+(PR #32). Query **part 1** (the governed object-read slice) is specced
+(`2026-06-10-query-governed-object-read-slice-design.md`) and in implementation.
+
+Recommended next move: implement the query read slice (its plan's first task is a
+`duckdb-rs`/extension-version spike), then pick up the remaining Step 2b trailing
+hardening opportunistically (per-concern adapter split and `tracing` are the
+highest-leverage).

@@ -10,7 +10,7 @@
 
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, Lineage, LineageEvent,
-    NewJob, PageReq, Queue, RunId, TableRef, Tx,
+    NewJob, PageReq, Queue, RunId, TableRef,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use time::OffsetDateTime;

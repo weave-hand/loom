@@ -6,9 +6,7 @@
 //! Direction matters: the conformance test proves loom reads its own writes;
 //! THIS proves DuckDB (the foreign engine) reads loom's writes.
 
-use control_plane_core::{
-    Catalog, ColumnSpec, ColumnStat, ControlPlane, DataFile, PageReq, TableRef, Tx,
-};
+use control_plane_core::{ColumnSpec, ColumnStat, ControlPlane, DataFile, TableRef};
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 
 // REQUIRED guardrail: loom creates a table (DDL only), then DuckDB inserts into
