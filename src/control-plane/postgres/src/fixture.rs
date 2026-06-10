@@ -345,6 +345,76 @@ impl DuckLakeWriter {
             .database(&self.db)
     }
 
+    /// The `DATA_PATH` root used in the ATTACH (the Parquet data dir). DuckLake
+    /// resolves a relative file path as `DATA_PATH + schema.path + table.path +
+    /// file.path`; loom registers relative paths, so for table `main.t` a file
+    /// `"f.parquet"` lives at `<data_path>/main/t/f.parquet`.
+    pub fn data_path(&self) -> &std::path::Path {
+        self._data_dir.path()
+    }
+
+    /// The ATTACH preamble (SET extension_directory + LOAD + ATTACH lake) shared
+    /// by every duckdb-cli invocation against this catalog + data dir.
+    fn preamble(&self) -> String {
+        format!(
+            "SET extension_directory='{}';\nLOAD ducklake;\nLOAD postgres_scanner;\n\
+             ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake \
+             (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\n",
+            self.extension_dir,
+            self.db,
+            self.socket.display(),
+            self._data_dir.path().display(),
+        )
+    }
+
+    /// Run arbitrary DuckDB SQL against the attached catalog (preamble prepended).
+    /// Panics on a non-zero exit (test-only).
+    pub async fn exec(&self, sql: &str) {
+        let full = format!("{}{sql}", self.preamble());
+        let status = Command::new(&self.duckdb_bin)
+            .arg("-c")
+            .arg(&full)
+            .status()
+            .expect("run duckdb");
+        assert!(status.success(), "duckdb exec failed for SQL:\n{sql}");
+    }
+
+    /// Run a SQL statement that produces a single scalar and return its stdout,
+    /// trimmed. Uses `-noheader -list` so stdout is just the value. Panics on a
+    /// non-zero exit, surfacing duckdb's stderr (test-only).
+    pub async fn query_scalar(&self, sql: &str) -> String {
+        let full = format!("{}{sql}", self.preamble());
+        let out = Command::new(&self.duckdb_bin)
+            .args(["-noheader", "-list", "-c"])
+            .arg(&full)
+            .output()
+            .expect("run duckdb");
+        assert!(
+            out.status.success(),
+            "duckdb query failed for SQL:\n{sql}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The current max `snapshot_id` in the DuckLake catalog, read directly from
+    /// Postgres (the `ducklake_*` tables live in the pg backend, not as plain
+    /// DuckDB-visible names). Used to assert snapshot-counter continuity.
+    pub async fn max_snapshot_id(&self) -> i64 {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(self.opts())
+            .await
+            .expect("connect to read max snapshot id");
+        sqlx::query_scalar::<_, Option<i64>>(AssertSqlSafe(
+            "select max(snapshot_id) from ducklake_snapshot",
+        ))
+        .fetch_one(&pool)
+        .await
+        .expect("read max snapshot id")
+        .expect("ducklake_snapshot has at least one row")
+    }
+
     /// Positional row expressions matching `columns`: integer columns count up from
     /// `i`, everything else is a constant cast to the column type.
     fn row_exprs(columns: &[(String, String, bool)]) -> String {
