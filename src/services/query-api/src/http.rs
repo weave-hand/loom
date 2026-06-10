@@ -40,6 +40,9 @@ async fn get_object(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
+    // Slice limitation: every query-param filter binds as Text; typed (int/bool)
+    // filters are a later spec. A text param against a typed column may simply match
+    // no rows rather than error.
     let eq_filters = params
         .into_iter()
         .map(|(k, v)| (k, SqlValue::Text(v)))
@@ -63,7 +66,11 @@ async fn get_object(
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        // Return an opaque body for backend/serving faults: a governance-fronted
+        // service must not echo internal error detail (SQL fragments, table/column
+        // names) to the client. TODO(serving-tier): log `e` server-side once a
+        // tracing subscriber is wired in the binary.
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     }
 }
 
