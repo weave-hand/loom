@@ -8,6 +8,7 @@ mod lineage;
 mod ontology;
 mod page;
 mod queue;
+mod snapshot;
 mod transaction;
 
 pub use acl::{
@@ -20,4 +21,5 @@ pub use lineage::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
 pub use ontology::{Cardinality, LinkDef, ObjectType, Ontology, PropertyDef, TypeName};
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
+pub use snapshot::{ColumnSpec, ColumnStat, DataFile};
 pub use transaction::{ControlPlane, Tx};

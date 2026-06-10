@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ducklake_table_stats set record_count = $2, file_size_bytes = $3, next_row_id = $4 where table_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "91cd1bdbbb3a53b429868152e627eafc1e635237e618432222db27e135a0e969"
+}

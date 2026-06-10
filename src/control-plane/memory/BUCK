@@ -91,3 +91,12 @@ rust_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "snapshot",
+    crate = "snapshot",
+    srcs = ["tests/snapshot.rs"],
+    crate_root = "tests/snapshot.rs",
+    edition = "2024",
+    deps = [":memory", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
