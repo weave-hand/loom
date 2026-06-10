@@ -1,5 +1,5 @@
 use control_plane_core::{
-    Catalog, ColumnSpec, ColumnStat, ControlPlane, DataFile, PageReq, TableRef, Tx,
+    Catalog, ColumnSpec, ColumnStat, ControlPlane, DataFile, PageReq, TableRef,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 

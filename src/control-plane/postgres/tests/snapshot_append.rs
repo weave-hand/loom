@@ -1,4 +1,4 @@
-use control_plane_core::{Catalog, ColumnStat, ControlPlane, DataFile, PageReq, TableRef, Tx};
+use control_plane_core::{Catalog, ColumnStat, ControlPlane, DataFile, PageReq, TableRef};
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 
 // Bootstrap a DuckLake catalog + a DuckDB-created table (no loom-written files
