@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use query_api::serving::{QuackServingEngine, ServingEngine, SqlValue};
+use query_api::serving::{EmbeddedDuckDb, QuackServingEngine, ServingEngine, SqlValue};
 
 const TOKEN: &str = "loom-test-quack-token";
 
@@ -110,4 +110,73 @@ async fn quack_engine_executes_a_trivial_query_over_the_wire() {
     assert_eq!(rows.rows.len(), 1);
     assert_eq!(rows.rows[0][0], SqlValue::Int(42));
     assert_eq!(rows.rows[0][1], SqlValue::Text("hi".into()));
+}
+
+/// Build an EmbeddedDuckDb against the same catalog the QuackServer serves.
+async fn embedded(fx: &PgFixture, db: &str, data_path: &Path) -> EmbeddedDuckDb {
+    EmbeddedDuckDb::attach(fx.socket_path(), db, data_path)
+        .await
+        .expect("attach embedded")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn parity_with_embedded_on_a_seeded_read() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    // Seed lake.main.orders with two batches (3 rows total).
+    writer
+        .seed(
+            "main",
+            "orders",
+            &[
+                ("id".into(), "INTEGER".into(), false),
+                ("region".into(), "VARCHAR".into(), false),
+            ],
+            &[2, 1],
+        )
+        .await;
+    let server = QuackServer::start(fx.socket_path(), &db, writer.data_path());
+    let emb = embedded(&fx, &db, writer.data_path()).await;
+    let quack = QuackServingEngine::new(server.uri(), TOKEN).expect("engine");
+
+    // A governed-style read with a bound filter value and a stable order.
+    let sql = "SELECT \"id\" FROM \"main\".\"orders\" WHERE \"region\" = ? ORDER BY \"id\"";
+    let params = [SqlValue::Text("x".into())]; // DuckLakeWriter seeds VARCHAR cols as 'x'
+
+    let e = emb.fetch_rows(sql, &params).await.unwrap();
+    let q = quack.fetch_rows(sql, &params).await.unwrap();
+    assert_eq!(e, q, "QuackServingEngine must match EmbeddedDuckDb");
+    assert_eq!(q.rows.len(), 3, "all three seeded rows match region 'x'");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn zero_rows_still_reports_columns_over_quack() {
+    let (_fx, _writer, _server, uri) = harness().await;
+    let eng = QuackServingEngine::new(uri, TOKEN).expect("engine");
+    let rows = eng
+        .fetch_rows("SELECT 42 AS n, 'hi' AS s WHERE 1 = 0", &[])
+        .await
+        .unwrap();
+    assert!(rows.rows.is_empty());
+    assert_eq!(rows.columns, vec!["n".to_string(), "s".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn evil_text_param_is_inlined_safely() {
+    // The inline path's analog of EmbeddedDuckDb's params_are_bound_not_interpolated:
+    // a value carrying a quote + statement terminator must round-trip as DATA and
+    // not execute. (Two escaping layers — inner literal + outer quack_query literal.)
+    let (_fx, _writer, _server, uri) = harness().await;
+    let eng = QuackServingEngine::new(uri, TOKEN).expect("engine");
+    let evil = SqlValue::Text("x'; DROP TABLE lake.t; --".into());
+    let rows = eng
+        .fetch_rows("SELECT ? AS v", std::slice::from_ref(&evil))
+        .await
+        .unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(
+        rows.rows[0][0],
+        SqlValue::Text("x'; DROP TABLE lake.t; --".into())
+    );
 }
