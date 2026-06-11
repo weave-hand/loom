@@ -67,6 +67,12 @@ impl Acl for StubAcl {
     async fn unassign_role(&self, _subject: &SubjectId, _role: &RoleId) -> Result<()> {
         unimplemented!()
     }
+    async fn add_role_inheritance(&self, _role: &RoleId, _inherits: &RoleId) -> Result<()> {
+        unimplemented!()
+    }
+    async fn remove_role_inheritance(&self, _role: &RoleId, _inherits: &RoleId) -> Result<()> {
+        unimplemented!()
+    }
     async fn grant(
         &self,
         _role: &RoleId,

@@ -1023,6 +1023,41 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         Decision::Deny,
         "re-granting the same key with Deny upserts the effect",
     );
+
+    // --- role inheritance: edge invariants ---
+    a.define_role(&rid("h_parent"))
+        .await
+        .expect("define h_parent");
+    a.define_role(&rid("h_child"))
+        .await
+        .expect("define h_child");
+    assert!(matches!(
+        a.add_role_inheritance(&rid("h_parent"), &rid("h_nonexistent"))
+            .await,
+        Err(ControlPlaneError::NotFound(_)),
+    ));
+    assert!(matches!(
+        a.add_role_inheritance(&rid("h_parent"), &rid("h_parent"))
+            .await,
+        Err(ControlPlaneError::Conflict(_)),
+    ));
+    a.add_role_inheritance(&rid("h_parent"), &rid("h_child"))
+        .await
+        .expect("add edge");
+    a.add_role_inheritance(&rid("h_parent"), &rid("h_child"))
+        .await
+        .expect("add edge idempotent");
+    assert!(matches!(
+        a.add_role_inheritance(&rid("h_child"), &rid("h_parent"))
+            .await,
+        Err(ControlPlaneError::Conflict(_)),
+    ));
+    a.remove_role_inheritance(&rid("h_parent"), &rid("h_child"))
+        .await
+        .expect("remove edge");
+    a.remove_role_inheritance(&rid("h_parent"), &rid("h_child"))
+        .await
+        .expect("remove idempotent");
 }
 
 /// Contract for the `Lineage` ops, including the first cross-concern atomic unit

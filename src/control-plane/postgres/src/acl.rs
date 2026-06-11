@@ -85,6 +85,67 @@ impl Acl for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn add_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
+        for id in [&role.0, &inherits.0] {
+            let exists =
+                sqlx::query_scalar!("select exists (select 1 from acl.role where id = $1)", id,)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .unwrap_or(false);
+            if !exists {
+                return Err(ControlPlaneError::NotFound(format!("role {id}")));
+            }
+        }
+        // role -> inherits creates a cycle iff `role` is already reachable from
+        // `inherits` (closure of `inherits` includes itself -> catches self-edge).
+        let creates_cycle = sqlx::query_scalar!(
+            "with recursive clo(role_id) as ( \
+                 select $1::text \
+                 union \
+                 select ri.inherits_id from acl.role_inherits ri \
+                   join clo on ri.role_id = clo.role_id \
+             ) \
+             select exists (select 1 from clo where role_id = $2)",
+            &inherits.0,
+            &role.0,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?
+        .unwrap_or(false);
+        if creates_cycle {
+            return Err(ControlPlaneError::Conflict(format!(
+                "role inheritance {} -> {} would create a cycle",
+                role.0, inherits.0
+            )));
+        }
+        sqlx::query!(
+            "insert into acl.role_inherits (role_id, inherits_id) values ($1, $2) \
+             on conflict do nothing",
+            &role.0,
+            &inherits.0,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn remove_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
+        sqlx::query!(
+            "delete from acl.role_inherits where role_id = $1 and inherits_id = $2",
+            &role.0,
+            &inherits.0,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn grant(
         &self,
         role: &RoleId,

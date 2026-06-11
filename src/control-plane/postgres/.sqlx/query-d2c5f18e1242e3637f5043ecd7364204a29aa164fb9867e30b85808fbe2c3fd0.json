@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from acl.role_inherits where role_id = $1 and inherits_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d2c5f18e1242e3637f5043ecd7364204a29aa164fb9867e30b85808fbe2c3fd0"
+}
