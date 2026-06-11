@@ -1,5 +1,6 @@
 //! The serving-engine seam: run read-only SQL against loom's DuckLake catalog.
-//! One impl now (EmbeddedDuckDb); a Quack-client impl drops in later unchanged.
+//! `EmbeddedDuckDb` runs in-process; `QuackServingEngine` forwards to a remote
+//! `quack_serve`'d DuckDB via the `quack_query` table function.
 
 use async_trait::async_trait;
 
@@ -73,6 +74,53 @@ impl ServingEngine for EmbeddedDuckDb {
         let sql = sql.to_string();
         let params = params.to_vec();
         tokio::task::spawn_blocking(move || run_sync(&attach, &sql, &params))
+            .await
+            .map_err(|e| ServingError::Engine(format!("join: {e}")))?
+    }
+}
+
+/// A Quack-protocol client `ServingEngine`: forwards SQL to a separate
+/// `quack_serve`'d DuckDB (which owns the DuckLake `ATTACH`) via the `quack_query`
+/// table function. The local duckdb-rs connection only `LOAD quack`s — no catalog
+/// is attached client-side; execution happens on the serving tier.
+pub struct QuackServingEngine {
+    /// e.g. "quack:127.0.0.1:9494" — the server's listen URI (client form).
+    uri: String,
+    /// Auth token agreed with the server.
+    token: String,
+    /// Offline extension dir to `LOAD quack` from (DUCKDB_EXTENSION_DIR).
+    ext_dir: String,
+}
+
+impl QuackServingEngine {
+    pub fn new(uri: impl Into<String>, token: impl Into<String>) -> Result<Self, ServingError> {
+        let ext_dir = std::env::var("DUCKDB_EXTENSION_DIR")
+            .map_err(|_| ServingError::Engine("DUCKDB_EXTENSION_DIR unset".into()))?;
+        Ok(Self {
+            uri: uri.into(),
+            token: token.into(),
+            ext_dir,
+        })
+    }
+}
+
+#[async_trait]
+impl ServingEngine for QuackServingEngine {
+    async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
+        // 1. Inline params (quack_query has no bind slot). 2. Prefix `USE lake;` —
+        // a quack-forwarded session does NOT inherit the server's USE lake.
+        let forwarded = format!("USE lake; {}", inline_params(sql, params));
+        // 3. Wrap in quack_query, embedding `forwarded` as a string literal (escaped
+        // once more for THIS literal — table-function args must be constant, so no
+        // bind). uri/token are loom-internal constants. Escaping composes.
+        let wrapper = format!(
+            "SELECT * FROM quack_query('{}', '{}', token := '{}', disable_ssl := true)",
+            self.uri,
+            sql_escape(&forwarded),
+            self.token,
+        );
+        let preamble = format!("SET extension_directory='{}';\nLOAD quack;", self.ext_dir);
+        tokio::task::spawn_blocking(move || run_sync(&preamble, &wrapper, &[]))
             .await
             .map_err(|e| ServingError::Engine(format!("join: {e}")))?
     }

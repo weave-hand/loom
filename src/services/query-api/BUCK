@@ -75,6 +75,19 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "quack-serving",
+    crate = "quack_serving",
+    srcs = ["tests/quack_serving.rs"],
+    crate_root = "tests/quack_serving.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "quack-inline",
     crate = "quack_inline",
