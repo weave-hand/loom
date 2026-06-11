@@ -1,5 +1,6 @@
 //! The serving-engine seam: run read-only SQL against loom's DuckLake catalog.
-//! One impl now (EmbeddedDuckDb); a Quack-client impl drops in later unchanged.
+//! `EmbeddedDuckDb` runs in-process; `QuackServingEngine` forwards to a remote
+//! `quack_serve`'d DuckDB via the `quack_query` table function.
 
 use async_trait::async_trait;
 
@@ -78,6 +79,55 @@ impl ServingEngine for EmbeddedDuckDb {
     }
 }
 
+/// A Quack-protocol client `ServingEngine`: forwards SQL to a separate
+/// `quack_serve`'d DuckDB (which owns the DuckLake `ATTACH`) via the `quack_query`
+/// table function. The local duckdb-rs connection only `LOAD quack`s — no catalog
+/// is attached client-side; execution happens on the serving tier.
+pub struct QuackServingEngine {
+    /// e.g. "quack:127.0.0.1:9494" — the server's listen URI (client form).
+    uri: String,
+    /// Auth token agreed with the server.
+    token: String,
+    /// Offline extension dir to `LOAD quack` from (DUCKDB_EXTENSION_DIR).
+    ext_dir: String,
+}
+
+impl QuackServingEngine {
+    pub fn new(uri: impl Into<String>, token: impl Into<String>) -> Result<Self, ServingError> {
+        let ext_dir = std::env::var("DUCKDB_EXTENSION_DIR")
+            .map_err(|_| ServingError::Engine("DUCKDB_EXTENSION_DIR unset".into()))?;
+        Ok(Self {
+            uri: uri.into(),
+            token: token.into(),
+            ext_dir,
+        })
+    }
+}
+
+#[async_trait]
+impl ServingEngine for QuackServingEngine {
+    async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
+        // 1. Inline params (quack_query has no bind slot). 2. Prefix `USE lake;` —
+        // a quack-forwarded session does NOT inherit the server's USE lake.
+        let forwarded = format!("USE lake; {}", inline_params(sql, params));
+        // All three values are wrapped in sql_escape: `forwarded` carries
+        // user-derived param values, and uri/token are escaped defensively so a
+        // stray quote can never break out of the quack_query call. disable_ssl is
+        // hardcoded for now — this engine is test/local-scope; making TLS
+        // configurable is part of the later HTTP-wiring slice.
+        let wrapper = format!(
+            "SELECT * FROM quack_query('{}', '{}', token := '{}', disable_ssl := true)",
+            sql_escape(&self.uri),
+            sql_escape(&forwarded),
+            sql_escape(&self.token),
+        );
+        let preamble = format!("SET extension_directory='{}';\nLOAD quack;", self.ext_dir);
+        tokio::task::spawn_blocking(move || run_sync(&preamble, &wrapper, &[]))
+            .await
+            .map_err(|e| ServingError::Engine(format!("join: {e}")))?
+    }
+}
+
 fn run_sync(attach: &str, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
     use duckdb::types::Value;
     let conn =
@@ -111,6 +161,45 @@ fn run_sync(attach: &str, sql: &str, params: &[SqlValue]) -> Result<Rows, Servin
         rows.push(cells);
     }
     Ok(Rows { columns, rows })
+}
+
+/// Escape a string for embedding in a DuckDB single-quoted literal: double every
+/// `'`. This is the complete escape for DuckDB standard string literals (no
+/// backslash escapes by default).
+fn sql_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Render a typed scalar as a DuckDB SQL literal.
+fn render_literal(v: &SqlValue) -> String {
+    match v {
+        SqlValue::Int(n) => n.to_string(),
+        SqlValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+        SqlValue::Null => "NULL".to_string(),
+        SqlValue::Text(s) => format!("'{}'", sql_escape(s)),
+    }
+}
+
+/// Substitute each `?` placeholder in `sql` with the next rendered param, copying
+/// every other character verbatim. The Quack path uses this because `quack_query`
+/// takes SQL as a string with no bind slot. Relies on the `compile_select`
+/// contract that `?` appears ONLY as a bind placeholder (never a literal `?`
+/// inside a string), so a single left-to-right pass over the ORIGINAL `sql` is
+/// correct — it never re-scans substituted text (a rendered value may contain `?`).
+pub fn inline_params(sql: &str, params: &[SqlValue]) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut it = params.iter();
+    for ch in sql.chars() {
+        if ch == '?' {
+            match it.next() {
+                Some(p) => out.push_str(&render_literal(p)),
+                None => out.push('?'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn to_duck(v: &SqlValue) -> duckdb::types::Value {

@@ -83,6 +83,12 @@ http_file(
     sha256 = "42e9ba5c2a9f9f77f1415e4cd320295f9623d4c20e09b20687d384a06681e54c",
 )
 
+http_file(
+    name = "quack-ext.gz",
+    urls = ["http://extensions.duckdb.org/{}/linux_amd64/quack.duckdb_extension.gz".format(DUCKDB_VERSION)],
+    sha256 = "609be01482fde0bc1d99a64c7ae87134a134638c9c45e39285c64cd57d953f0c",
+)
+
 # DuckDB loads extensions offline from <dir>/<version>/<platform>/<name>.duckdb_extension.
 # Build exactly that layout so the fixture can `SET extension_directory=` + `LOAD` with no network.
 genrule(
@@ -92,6 +98,7 @@ genrule(
         "mkdir -p $OUT/{}/linux_amd64".format(DUCKDB_VERSION),
         "gzip -dc $(location :ducklake-ext.gz) > $OUT/{}/linux_amd64/ducklake.duckdb_extension".format(DUCKDB_VERSION),
         "gzip -dc $(location :postgres-scanner-ext.gz) > $OUT/{}/linux_amd64/postgres_scanner.duckdb_extension".format(DUCKDB_VERSION),
+        "gzip -dc $(location :quack-ext.gz) > $OUT/{}/linux_amd64/quack.duckdb_extension".format(DUCKDB_VERSION),
     ]),
     labels = ["uses_xz"],
     visibility = ["PUBLIC"],
