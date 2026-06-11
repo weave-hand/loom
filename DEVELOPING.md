@@ -150,4 +150,6 @@ adding crates or dependencies.
 
 GitHub Actions (`.github/workflows/ci.yml`): `build-test` (full, on `main`
 pushes), `affected` (btd-scoped build/test on PRs), and `lint` (the prek hooks).
-See the *Continuous integration* section of `CLAUDE.md` for details.
+See the *Continuous integration* section of `CLAUDE.md` for the job details, and
+`docs/build-execution.md` for the execution model (RE-vs-local placement,
+fixture-test routing, and the materialization cost model).
