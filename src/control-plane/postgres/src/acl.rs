@@ -269,13 +269,17 @@ impl Acl for PgControlPlane {
     ) -> Result<Decision> {
         let (kind, a, b) = target_cols(target);
         let row = sqlx::query!(
-            "select \
-                 bool_or(g.effect = 'deny') as has_deny, \
-                 bool_or(g.effect = 'allow') as has_allow \
-             from acl.role_member m \
-             join acl.role_grant g on g.role_id = m.role_id \
-             where m.subject_id = $1 and g.action = $2 \
-               and g.target_kind = $3 and g.target_a = $4 and g.target_b = $5",
+            "with recursive eff(role_id) as ( \
+                 select role_id from acl.role_member where subject_id = $1 \
+                 union \
+                 select ri.inherits_id from acl.role_inherits ri \
+                   join eff on ri.role_id = eff.role_id \
+             ) \
+             select bool_or(g.effect = 'deny') as has_deny, \
+                    bool_or(g.effect = 'allow') as has_allow \
+             from eff join acl.role_grant g on g.role_id = eff.role_id \
+             where g.action = $2 and g.target_kind = $3 \
+               and g.target_a = $4 and g.target_b = $5",
             &subject.0,
             action_to_str(action),
             kind,
@@ -302,10 +306,15 @@ impl Acl for PgControlPlane {
     ) -> Result<Page<Policy>> {
         let (kind, a, b) = target_cols(target);
         let rows = sqlx::query!(
-            "select p.row_filter, p.deny_columns, p.mask_columns from acl.role_member m \
-             join acl.policy p on p.role_id = m.role_id \
-             where m.subject_id = $1 and p.target_kind = $2 \
-               and p.target_a = $3 and p.target_b = $4",
+            "with recursive eff(role_id) as ( \
+                 select role_id from acl.role_member where subject_id = $1 \
+                 union \
+                 select ri.inherits_id from acl.role_inherits ri \
+                   join eff on ri.role_id = eff.role_id \
+             ) \
+             select p.row_filter, p.deny_columns, p.mask_columns \
+             from eff join acl.policy p on p.role_id = eff.role_id \
+             where p.target_kind = $2 and p.target_a = $3 and p.target_b = $4",
             &subject.0,
             kind,
             &a,

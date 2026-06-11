@@ -46,6 +46,25 @@ fn reaches(edges: &HashSet<(String, String)>, start: &str, target: &str) -> bool
     false
 }
 
+/// The transitive closure of `direct` over role->inherits edges (includes `direct`).
+fn effective_roles(
+    edges: &HashSet<(String, String)>,
+    direct: impl IntoIterator<Item = String>,
+) -> HashSet<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut stack: Vec<String> = direct.into_iter().collect();
+    while let Some(r) = stack.pop() {
+        if seen.insert(r.clone()) {
+            for (_, b) in edges.iter().filter(|(a, _)| a == &r) {
+                if !seen.contains(b) {
+                    stack.push(b.clone());
+                }
+            }
+        }
+    }
+    seen
+}
+
 #[async_trait]
 impl Acl for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -171,13 +190,14 @@ impl Acl for MemoryControlPlane {
     ) -> Result<Decision> {
         let acl = self.acl.lock().unwrap();
         let tk = target_key(target);
-        let mut saw_allow = false;
-        for role in acl
+        let direct = acl
             .members
             .iter()
             .filter(|(s, _)| s == &subject.0)
-            .map(|(_, r)| r)
-        {
+            .map(|(_, r)| r.clone());
+        let effective = effective_roles(&acl.inherits, direct);
+        let mut saw_allow = false;
+        for role in &effective {
             match acl.grants.get(&(role.clone(), action, tk.clone())) {
                 Some(Effect::Deny) => return Ok(Decision::Deny),
                 Some(Effect::Allow) => saw_allow = true,
@@ -199,11 +219,16 @@ impl Acl for MemoryControlPlane {
     ) -> Result<Page<Policy>> {
         let acl = self.acl.lock().unwrap();
         let tk = target_key(target);
+        let direct = acl
+            .members
+            .iter()
+            .filter(|(s, _)| s == &subject.0)
+            .map(|(_, r)| r.clone());
+        let effective = effective_roles(&acl.inherits, direct);
         Ok(Page::from_full(
-            acl.members
+            effective
                 .iter()
-                .filter(|(s, _)| s == &subject.0)
-                .filter_map(|(_, role)| acl.policies.get(&(role.clone(), tk.clone())).cloned())
+                .filter_map(|role| acl.policies.get(&(role.clone(), tk.clone())).cloned())
                 .collect(),
         ))
     }

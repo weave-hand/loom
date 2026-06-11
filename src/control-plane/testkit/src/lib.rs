@@ -1058,6 +1058,86 @@ pub async fn acl_contract<A: Acl>(a: &A) {
     a.remove_role_inheritance(&rid("h_parent"), &rid("h_child"))
         .await
         .expect("remove idempotent");
+
+    // --- role inheritance: resolution through check/policies_for ---
+    a.define_subject(&sid("h_user"))
+        .await
+        .expect("define h_user");
+    a.define_role(&rid("senior")).await.expect("define senior");
+    a.define_role(&rid("junior")).await.expect("define junior");
+    a.define_role(&rid("base")).await.expect("define base");
+    a.assign_role(&sid("h_user"), &rid("senior"))
+        .await
+        .expect("assign senior");
+    a.add_role_inheritance(&rid("senior"), &rid("junior"))
+        .await
+        .expect("senior inherits junior");
+    a.add_role_inheritance(&rid("junior"), &rid("base"))
+        .await
+        .expect("junior inherits base");
+
+    a.grant(&rid("junior"), Action::Read, ttype("Widget"), Effect::Allow)
+        .await
+        .expect("junior allow");
+    assert_eq!(
+        a.check(&sid("h_user"), Action::Read, &ttype("Widget"))
+            .await
+            .expect("check inherited allow"),
+        Decision::Allow,
+        "senior inherits junior's allow grant",
+    );
+    a.grant(&rid("base"), Action::Read, ttype("Gadget"), Effect::Allow)
+        .await
+        .expect("base allow");
+    assert_eq!(
+        a.check(&sid("h_user"), Action::Read, &ttype("Gadget"))
+            .await
+            .expect("check transitive allow"),
+        Decision::Allow,
+        "inheritance is transitive (senior -> junior -> base)",
+    );
+    a.grant(&rid("base"), Action::Read, ttype("Widget"), Effect::Deny)
+        .await
+        .expect("base deny");
+    assert_eq!(
+        a.check(&sid("h_user"), Action::Read, &ttype("Widget"))
+            .await
+            .expect("check inherited deny"),
+        Decision::Deny,
+        "an inherited Deny wins over an inherited Allow",
+    );
+    a.set_policy(
+        &rid("junior"),
+        Policy {
+            target: ttype("Widget"),
+            row_filter: None,
+            deny_columns: vec!["cost".into()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .expect("junior policy");
+    let inh_pols = a
+        .policies_for(&sid("h_user"), &ttype("Widget"), PageReq::unbounded())
+        .await
+        .expect("inherited policies_for");
+    assert!(
+        inh_pols
+            .items
+            .iter()
+            .any(|p| p.deny_columns == vec!["cost".to_string()]),
+        "policies_for returns an inherited policy",
+    );
+    a.remove_role_inheritance(&rid("senior"), &rid("junior"))
+        .await
+        .expect("remove senior->junior");
+    assert_eq!(
+        a.check(&sid("h_user"), Action::Read, &ttype("Gadget"))
+            .await
+            .expect("check after remove"),
+        Decision::Deny,
+        "removing the edge drops transitively-inherited grants",
+    );
 }
 
 /// Contract for the `Lineage` ops, including the first cross-concern atomic unit
