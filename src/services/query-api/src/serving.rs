@@ -110,14 +110,16 @@ impl ServingEngine for QuackServingEngine {
         // 1. Inline params (quack_query has no bind slot). 2. Prefix `USE lake;` —
         // a quack-forwarded session does NOT inherit the server's USE lake.
         let forwarded = format!("USE lake; {}", inline_params(sql, params));
-        // 3. Wrap in quack_query, embedding `forwarded` as a string literal (escaped
-        // once more for THIS literal — table-function args must be constant, so no
-        // bind). uri/token are loom-internal constants. Escaping composes.
+        // All three values are wrapped in sql_escape: `forwarded` carries
+        // user-derived param values, and uri/token are escaped defensively so a
+        // stray quote can never break out of the quack_query call. disable_ssl is
+        // hardcoded for now — this engine is test/local-scope; making TLS
+        // configurable is part of the later HTTP-wiring slice.
         let wrapper = format!(
             "SELECT * FROM quack_query('{}', '{}', token := '{}', disable_ssl := true)",
-            self.uri,
+            sql_escape(&self.uri),
             sql_escape(&forwarded),
-            self.token,
+            sql_escape(&self.token),
         );
         let preamble = format!("SET extension_directory='{}';\nLOAD quack;", self.ext_dir);
         tokio::task::spawn_blocking(move || run_sync(&preamble, &wrapper, &[]))

@@ -27,6 +27,10 @@ impl QuackServer {
     fn start(socket: &Path, db: &str, data_path: &Path) -> Self {
         let bin = PathBuf::from(std::env::var("DUCKDB_BIN").expect("DUCKDB_BIN"));
         let ext = std::env::var("DUCKDB_EXTENSION_DIR").expect("DUCKDB_EXTENSION_DIR");
+        // Pick a free localhost port by binding :0 and reading it back. There is a
+        // tiny TOCTOU window between dropping this listener and quack_serve binding
+        // the port; acceptable for hermetic tests (the quack extension offers no
+        // bind-to-0 mode that would let us avoid it).
         let port = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
             l.local_addr().expect("addr").port()
