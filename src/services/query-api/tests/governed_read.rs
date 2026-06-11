@@ -196,7 +196,7 @@ async fn governed_object_read() {
             type_name: "Order".into(),
             eq_filters: vec![("id".into(), SqlValue::Int(1))],
         },
-        &Subject(subj),
+        &Subject(subj.clone()),
         &deps,
     )
     .await
@@ -219,5 +219,33 @@ async fn governed_object_read() {
     assert!(
         matches!(err, QueryError::Forbidden),
         "ungranted subject must be denied, got {err:?}"
+    );
+
+    // Deny-override: analyst keeps the Allow grant via `analysts`, but a second role
+    // with a Deny grant on Order must override it -> Forbidden (deny wins).
+    let blocked = RoleId("blocked".into());
+    cp.define_role(&blocked).await.unwrap();
+    cp.assign_role(&subj, &blocked).await.unwrap();
+    cp.grant(
+        &blocked,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Order".into())),
+        Effect::Deny,
+    )
+    .await
+    .unwrap();
+    let denied = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            eq_filters: vec![],
+        },
+        &Subject(subj.clone()),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(denied, QueryError::Forbidden),
+        "deny grant overrides allow at the read gate, got {denied:?}"
     );
 }
