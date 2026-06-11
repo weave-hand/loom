@@ -122,6 +122,13 @@ pub trait Acl {
     async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()>;
     /// Remove a role assignment. Idempotent (no-op if absent).
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()>;
+    /// `role` gains all grants + policies of `inherits` (transitively, via the
+    /// effective-role closure used by `check`/`policies_for`). Both roles must exist,
+    /// else `NotFound`. Rejected with `Conflict` if the edge would form a cycle
+    /// (including the self-edge `role == inherits`). Idempotent for an existing edge.
+    async fn add_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()>;
+    /// Remove a role-inheritance edge. Idempotent (no-op if absent).
+    async fn remove_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()>;
     /// Grant or deny a coarse `(action, target)` to a role. Upserts by
     /// `(role, action, target)`: re-granting the same key replaces its effect. Role
     /// must exist, else `NotFound`. Idempotent for a fixed effect.

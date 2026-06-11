@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.row_filter, p.deny_columns, p.mask_columns from acl.role_member m join acl.policy p on p.role_id = m.role_id where m.subject_id = $1 and p.target_kind = $2 and p.target_a = $3 and p.target_b = $4",
+  "query": "with recursive eff(role_id) as ( select role_id from acl.role_member where subject_id = $1 union select ri.inherits_id from acl.role_inherits ri join eff on ri.role_id = eff.role_id ) select p.row_filter, p.deny_columns, p.mask_columns from eff join acl.policy p on p.role_id = eff.role_id where p.target_kind = $2 and p.target_a = $3 and p.target_b = $4",
   "describe": {
     "columns": [
       {
@@ -51,5 +51,5 @@
       false
     ]
   },
-  "hash": "482aef422b2de45335ef4d88c8ba7423cc1a21744b45fe88ad5f7a40ffc92a9e"
+  "hash": "1402e208766bba7777ae57eb5239e225cd9e49be46dc8567dc1514260c56f6e1"
 }

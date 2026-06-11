@@ -85,6 +85,73 @@ impl Acl for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn add_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
+        for id in [&role.0, &inherits.0] {
+            let exists =
+                sqlx::query_scalar!("select exists (select 1 from acl.role where id = $1)", id,)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .unwrap_or(false);
+            if !exists {
+                return Err(ControlPlaneError::NotFound(format!("role {id}")));
+            }
+        }
+        // role -> inherits creates a cycle iff `role` is already reachable from
+        // `inherits` (closure of `inherits` includes itself -> catches self-edge).
+        // NOTE: this check + the insert below are separate round-trips, not one
+        // transaction, so two concurrent add_role_inheritance calls inserting opposite
+        // edges of a cycle could both pass. Safe under today's single-writer usage, and
+        // harmless regardless: the check/policies_for closure walks dedup (SQL UNION /
+        // the memory visited-set), so a cycle merely terminates rather than looping.
+        // TODO: wrap in a SERIALIZABLE tx (or lock) if concurrent edge writes ever land.
+        let creates_cycle = sqlx::query_scalar!(
+            "with recursive clo(role_id) as ( \
+                 select $1::text \
+                 union \
+                 select ri.inherits_id from acl.role_inherits ri \
+                   join clo on ri.role_id = clo.role_id \
+             ) \
+             select exists (select 1 from clo where role_id = $2)",
+            &inherits.0,
+            &role.0,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?
+        .unwrap_or(false);
+        if creates_cycle {
+            return Err(ControlPlaneError::Conflict(format!(
+                "role inheritance {} -> {} would create a cycle",
+                role.0, inherits.0
+            )));
+        }
+        sqlx::query!(
+            "insert into acl.role_inherits (role_id, inherits_id) values ($1, $2) \
+             on conflict do nothing",
+            &role.0,
+            &inherits.0,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn remove_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
+        sqlx::query!(
+            "delete from acl.role_inherits where role_id = $1 and inherits_id = $2",
+            &role.0,
+            &inherits.0,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn grant(
         &self,
         role: &RoleId,
@@ -208,13 +275,17 @@ impl Acl for PgControlPlane {
     ) -> Result<Decision> {
         let (kind, a, b) = target_cols(target);
         let row = sqlx::query!(
-            "select \
-                 bool_or(g.effect = 'deny') as has_deny, \
-                 bool_or(g.effect = 'allow') as has_allow \
-             from acl.role_member m \
-             join acl.role_grant g on g.role_id = m.role_id \
-             where m.subject_id = $1 and g.action = $2 \
-               and g.target_kind = $3 and g.target_a = $4 and g.target_b = $5",
+            "with recursive eff(role_id) as ( \
+                 select role_id from acl.role_member where subject_id = $1 \
+                 union \
+                 select ri.inherits_id from acl.role_inherits ri \
+                   join eff on ri.role_id = eff.role_id \
+             ) \
+             select bool_or(g.effect = 'deny') as has_deny, \
+                    bool_or(g.effect = 'allow') as has_allow \
+             from eff join acl.role_grant g on g.role_id = eff.role_id \
+             where g.action = $2 and g.target_kind = $3 \
+               and g.target_a = $4 and g.target_b = $5",
             &subject.0,
             action_to_str(action),
             kind,
@@ -241,10 +312,15 @@ impl Acl for PgControlPlane {
     ) -> Result<Page<Policy>> {
         let (kind, a, b) = target_cols(target);
         let rows = sqlx::query!(
-            "select p.row_filter, p.deny_columns, p.mask_columns from acl.role_member m \
-             join acl.policy p on p.role_id = m.role_id \
-             where m.subject_id = $1 and p.target_kind = $2 \
-               and p.target_a = $3 and p.target_b = $4",
+            "with recursive eff(role_id) as ( \
+                 select role_id from acl.role_member where subject_id = $1 \
+                 union \
+                 select ri.inherits_id from acl.role_inherits ri \
+                   join eff on ri.role_id = eff.role_id \
+             ) \
+             select p.row_filter, p.deny_columns, p.mask_columns \
+             from eff join acl.policy p on p.role_id = eff.role_id \
+             where p.target_kind = $2 and p.target_a = $3 and p.target_b = $4",
             &subject.0,
             kind,
             &a,

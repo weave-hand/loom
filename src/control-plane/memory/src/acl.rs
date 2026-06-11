@@ -25,6 +25,44 @@ pub(crate) struct AclState {
     members: HashSet<(String, String)>, // (subject, role)
     grants: HashMap<(String, Action, TargetKey), Effect>, // (role, action, target) -> effect
     policies: HashMap<(String, TargetKey), Policy>, // (role, target) -> policy
+    inherits: HashSet<(String, String)>, // (role, inherits): role gains inherits's perms
+}
+
+/// True if `target` is reachable from `start` following role->inherits edges
+/// (i.e. `start` transitively inherits `target`). Visited-set guards cycles.
+fn reaches(edges: &HashSet<(String, String)>, start: &str, target: &str) -> bool {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut stack = vec![start];
+    while let Some(r) = stack.pop() {
+        if r == target {
+            return true;
+        }
+        if seen.insert(r) {
+            for (_, b) in edges.iter().filter(|(a, _)| a == r) {
+                stack.push(b);
+            }
+        }
+    }
+    false
+}
+
+/// The transitive closure of `direct` over role->inherits edges (includes `direct`).
+fn effective_roles(
+    edges: &HashSet<(String, String)>,
+    direct: impl IntoIterator<Item = String>,
+) -> HashSet<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut stack: Vec<String> = direct.into_iter().collect();
+    while let Some(r) = stack.pop() {
+        if seen.insert(r.clone()) {
+            for (_, b) in edges.iter().filter(|(a, _)| a == &r) {
+                if !seen.contains(b) {
+                    stack.push(b.clone());
+                }
+            }
+        }
+    }
+    seen
 }
 
 #[async_trait]
@@ -64,6 +102,35 @@ impl Acl for MemoryControlPlane {
             .unwrap()
             .members
             .remove(&(subject.0.clone(), role.0.clone()));
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn add_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
+        let mut acl = self.acl.lock().unwrap();
+        if !acl.roles.contains(&role.0) {
+            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        if !acl.roles.contains(&inherits.0) {
+            return Err(ControlPlaneError::NotFound(format!("role {}", inherits.0)));
+        }
+        if role.0 == inherits.0 || reaches(&acl.inherits, &inherits.0, &role.0) {
+            return Err(ControlPlaneError::Conflict(format!(
+                "role inheritance {} -> {} would create a cycle",
+                role.0, inherits.0
+            )));
+        }
+        acl.inherits.insert((role.0.clone(), inherits.0.clone()));
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn remove_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
+        self.acl
+            .lock()
+            .unwrap()
+            .inherits
+            .remove(&(role.0.clone(), inherits.0.clone()));
         Ok(())
     }
 
@@ -123,13 +190,14 @@ impl Acl for MemoryControlPlane {
     ) -> Result<Decision> {
         let acl = self.acl.lock().unwrap();
         let tk = target_key(target);
-        let mut saw_allow = false;
-        for role in acl
+        let direct = acl
             .members
             .iter()
             .filter(|(s, _)| s == &subject.0)
-            .map(|(_, r)| r)
-        {
+            .map(|(_, r)| r.clone());
+        let effective = effective_roles(&acl.inherits, direct);
+        let mut saw_allow = false;
+        for role in &effective {
             match acl.grants.get(&(role.clone(), action, tk.clone())) {
                 Some(Effect::Deny) => return Ok(Decision::Deny),
                 Some(Effect::Allow) => saw_allow = true,
@@ -151,11 +219,16 @@ impl Acl for MemoryControlPlane {
     ) -> Result<Page<Policy>> {
         let acl = self.acl.lock().unwrap();
         let tk = target_key(target);
+        let direct = acl
+            .members
+            .iter()
+            .filter(|(s, _)| s == &subject.0)
+            .map(|(_, r)| r.clone());
+        let effective = effective_roles(&acl.inherits, direct);
         Ok(Page::from_full(
-            acl.members
+            effective
                 .iter()
-                .filter(|(s, _)| s == &subject.0)
-                .filter_map(|(_, role)| acl.policies.get(&(role.clone(), tk.clone())).cloned())
+                .filter_map(|role| acl.policies.get(&(role.clone(), tk.clone())).cloned())
                 .collect(),
         ))
     }
