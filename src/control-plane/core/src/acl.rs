@@ -107,6 +107,9 @@ pub struct Policy {
     pub row_filter: Option<RowFilter>,
     /// Columns projected out (deny). Order unspecified.
     pub deny_columns: Vec<String>,
+    /// Columns shown but value-masked (redacted to a marker). Distinct from
+    /// `deny_columns`, which removes the column. Order unspecified.
+    pub mask_columns: Vec<String>,
 }
 
 #[async_trait]

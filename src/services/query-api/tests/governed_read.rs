@@ -158,6 +158,7 @@ async fn governed_object_read() {
                 value: ScalarValue::Text("open".into()),
             }),
             deny_columns: vec!["secret".into()],
+            mask_columns: vec![],
         },
     )
     .await

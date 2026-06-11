@@ -824,6 +824,7 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         target: ttype("Customer"),
         row_filter: Some(filter),
         deny_columns: vec!["ssn".into(), "dob".into()],
+        mask_columns: vec![],
     };
     a.set_policy(&rid("reader"), pol.clone()).await.unwrap();
 
@@ -842,6 +843,7 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         target: ttype("Customer"),
         row_filter: None,
         deny_columns: vec![],
+        mask_columns: vec![],
     };
     a.set_policy(&rid("reader"), pol2.clone()).await.unwrap();
     let got = a
@@ -864,6 +866,7 @@ pub async fn acl_contract<A: Acl>(a: &A) {
             value: ScalarValue::Bool(true),
         }),
         deny_columns: vec![],
+        mask_columns: vec![],
     };
     a.set_policy(&rid("writer"), pol_w.clone()).await.unwrap();
     let got = a
@@ -898,6 +901,28 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         .unwrap();
     assert_eq!(got.items, vec![pol_w], "only the writer policy remains");
 
+    // mask_columns round-trips (stored + returned, distinct from deny_columns).
+    // Uses a fresh target (Invoice) no other assertion touches, via `reader`
+    // (still assigned to alice), so the returned vec is exactly this one policy.
+    let pol_mask = Policy {
+        target: ttype("Invoice"),
+        row_filter: None,
+        deny_columns: vec!["ssn".into()],
+        mask_columns: vec!["email".into(), "phone".into()],
+    };
+    a.set_policy(&rid("reader"), pol_mask.clone())
+        .await
+        .expect("set_policy with mask_columns");
+    let got_mask = a
+        .policies_for(&sid("alice"), &ttype("Invoice"), PageReq::unbounded())
+        .await
+        .expect("policies_for after mask set");
+    assert_eq!(
+        got_mask.items,
+        vec![pol_mask],
+        "mask_columns must round-trip alongside deny_columns",
+    );
+
     // --- grant / set_policy on a missing role -> NotFound ---
     assert!(matches!(
         a.grant(&rid("ghost"), Action::Read, ttype("X"), Effect::Allow)
@@ -911,6 +936,7 @@ pub async fn acl_contract<A: Acl>(a: &A) {
                 target: ttype("X"),
                 row_filter: None,
                 deny_columns: vec![],
+                mask_columns: vec![],
             },
         )
         .await,

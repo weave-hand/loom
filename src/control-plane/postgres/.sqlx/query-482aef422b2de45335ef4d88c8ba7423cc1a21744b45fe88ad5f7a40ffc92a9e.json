@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.row_filter, p.deny_columns from acl.role_member m join acl.policy p on p.role_id = m.role_id where m.subject_id = $1 and p.target_kind = $2 and p.target_a = $3 and p.target_b = $4",
+  "query": "select p.row_filter, p.deny_columns, p.mask_columns from acl.role_member m join acl.policy p on p.role_id = m.role_id where m.subject_id = $1 and p.target_kind = $2 and p.target_a = $3 and p.target_b = $4",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "deny_columns"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "mask_columns",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "mask_columns"
+          }
+        }
       }
     ],
     "parameters": {
@@ -36,8 +47,9 @@
     },
     "nullable": [
       true,
+      false,
       false
     ]
   },
-  "hash": "52c04bb0d2ee1babd16f7a520b63d69ce1e647e394773ae55b3efafa6f707752"
+  "hash": "482aef422b2de45335ef4d88c8ba7423cc1a21744b45fe88ad5f7a40ffc92a9e"
 }

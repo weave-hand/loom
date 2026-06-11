@@ -163,16 +163,19 @@ impl Acl for PgControlPlane {
         };
         sqlx::query!(
             "insert into acl.policy \
-                 (role_id, target_kind, target_a, target_b, row_filter, deny_columns) \
-             values ($1, $2, $3, $4, $5, $6) \
+                 (role_id, target_kind, target_a, target_b, row_filter, deny_columns, mask_columns) \
+             values ($1, $2, $3, $4, $5, $6, $7) \
              on conflict (role_id, target_kind, target_a, target_b) do update set \
-                 row_filter = excluded.row_filter, deny_columns = excluded.deny_columns",
+                 row_filter = excluded.row_filter, \
+                 deny_columns = excluded.deny_columns, \
+                 mask_columns = excluded.mask_columns",
             &role.0,
             kind,
             &a,
             &b,
             row_filter,
             &policy.deny_columns,
+            &policy.mask_columns,
         )
         .execute(&self.pool)
         .await
@@ -238,7 +241,7 @@ impl Acl for PgControlPlane {
     ) -> Result<Page<Policy>> {
         let (kind, a, b) = target_cols(target);
         let rows = sqlx::query!(
-            "select p.row_filter, p.deny_columns from acl.role_member m \
+            "select p.row_filter, p.deny_columns, p.mask_columns from acl.role_member m \
              join acl.policy p on p.role_id = m.role_id \
              where m.subject_id = $1 and p.target_kind = $2 \
                and p.target_a = $3 and p.target_b = $4",
@@ -263,6 +266,7 @@ impl Acl for PgControlPlane {
                 target: target.clone(),
                 row_filter,
                 deny_columns: r.deny_columns,
+                mask_columns: r.mask_columns,
             });
         }
         Ok(Page::from_full(out))
