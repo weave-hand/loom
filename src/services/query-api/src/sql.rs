@@ -48,6 +48,10 @@ fn op_sql(op: CompareOp) -> &'static str {
     }
 }
 
+/// PRECONDITION: `f` has passed `control_plane_core::validate_row_filter` (the sole
+/// caller, `compile_select`, enforces this up front). The `unreachable!` arms below —
+/// and those in `scalar`/`op_sql` — rely on that CompareOp<->ScalarValue invariant; a
+/// caller that skips validation could turn them into a panic.
 fn filter_sql(f: &RowFilter, params: &mut Vec<SqlValue>) -> String {
     match f {
         RowFilter::Compare {

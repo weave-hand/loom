@@ -229,7 +229,7 @@ fn malformed_filter_is_an_error_not_a_panic() {
         10,
     );
     assert!(
-        res.is_err(),
-        "malformed filter -> Err(CompileError), no panic"
+        matches!(res, Err(query_api::sql::CompileError::MalformedFilter(_))),
+        "malformed filter -> Err(MalformedFilter), no panic; got {res:?}"
     );
 }
