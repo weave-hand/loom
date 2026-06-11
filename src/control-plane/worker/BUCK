@@ -1,3 +1,5 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
 rust_library(
     name = "worker",
     crate = "control_plane_worker",
@@ -32,17 +34,11 @@ rust_test(
     ],
 )
 
-rust_test(
+loom_fixture_test(
     name = "postgres-integration",
     crate = "worker_postgres_integration",
     srcs = ["tests/postgres.rs"],
     crate_root = "tests/postgres.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location //src/control-plane/postgres:migrations)/migrations",
-    },
     deps = [
         ":worker",
         "//src/control-plane/core:core",

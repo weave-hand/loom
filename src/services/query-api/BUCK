@@ -1,3 +1,5 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
 rust_library(
     name = "query-api",
     crate = "query_api",
@@ -46,19 +48,12 @@ rust_test(
     ],
 )
 
-rust_test(
+loom_fixture_test(
     name = "serving-engine",
     crate = "serving_engine",
     srcs = ["tests/serving_engine.rs"],
     crate_root = "tests/serving_engine.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location //src/control-plane/postgres:migrations)/migrations",
-        "DUCKDB_BIN": "$(location //src/control-plane/postgres:duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location //src/control-plane/postgres:duckdb-extensions)",
-    },
+    duckdb = True,
     deps = [
         ":query-api",
         "//src/control-plane/postgres:postgres",
@@ -66,19 +61,12 @@ rust_test(
     ],
 )
 
-rust_test(
+loom_fixture_test(
     name = "governed-read",
     crate = "governed_read",
     srcs = ["tests/governed_read.rs"],
     crate_root = "tests/governed_read.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location //src/control-plane/postgres:migrations)/migrations",
-        "DUCKDB_BIN": "$(location //src/control-plane/postgres:duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location //src/control-plane/postgres:duckdb-extensions)",
-    },
+    duckdb = True,
     deps = [
         ":query-api",
         "//src/control-plane/core:core",
@@ -96,19 +84,12 @@ rust_test(
     deps = [":query-api", "//src/control-plane/core:core"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "spike-duckdb",
     crate = "spike_duckdb",
     srcs = ["tests/spike_duckdb.rs"],
     crate_root = "tests/spike_duckdb.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location //src/control-plane/postgres:migrations)/migrations",
-        "DUCKDB_BIN": "$(location //src/control-plane/postgres:duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location //src/control-plane/postgres:duckdb-extensions)",
-    },
+    duckdb = True,
     deps = [
         "//src/control-plane/postgres:postgres",
         "//third-party:duckdb",

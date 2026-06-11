@@ -29,7 +29,7 @@ Remote execution runs through BuildBuddy (configured under `[buck2_re_client]` i
 ## Testing
 
 - **Tests are `rust_test` integration targets only — NOT inline `#[cfg(test)]` modules.** buck2 builds a `rust_library`/`rust_binary`'s inline `#[cfg(test)] mod tests` but **never runs it** (there's no inline test runner in the build); such tests silently never execute. Put unit tests in a sibling `tests/<name>.rs` file wired as its own `rust_test` target in the crate's `BUCK` (mirror an existing one, e.g. `//src/control-plane/core:page`). The **`no-inline-tests` prek hook** (`tools/check-inline-tests.sh`) enforces this — it fails if any first-party `src/**.rs` file (outside a `tests/` dir) contains a `#[test]`/`#[tokio::test]`.
-- **Run the suite:** `env -u BUCK_PREFER_REMOTE buck2 test --local-only //src/...`. The `--local-only` (and unsetting `BUCK_PREFER_REMOTE`) is mandatory for the hermetic Postgres/DuckDB fixtures — they refuse to run as root on remote execution. Pure-logic tests (no fixture) pass without it, but the flag is harmless, so use it uniformly.
+- **Run the suite:** `buck2 test //src/...`. Fixture-backed tests (hermetic Postgres/DuckDB) pin their own run to local execution via the **`loom_fixture_test`** macro (`src/control-plane/postgres/defs.bzl`, which sets `remote_execution = "disabled"`) — they boot `initdb`/`postgres`/`duckdb`, which refuse to run as root on RE, so only the *test command* runs local while the build stays on RE. Pure-logic tests run on RE. `--local-only` still works as a manual override but is no longer required. **New fixture tests must use `loom_fixture_test`, not a bare `rust_test`**, or they will route to RE and fail as root.
 - **Don't pipe `buck2 test` through `tail`** — its test runner can stall when stdout is an unconsumed pipe. Redirect to a file and grep it: `buck2 test … > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`. (`buck2 build … | tail` is fine.)
 
 ## Dev tools
@@ -66,7 +66,7 @@ The postgres adapter (`src/control-plane/postgres`) uses sqlx **compile-time** `
 
 ## Continuous integration
 
-GitHub Actions, at `.github/workflows/ci.yml` (repo: `weave-hand/loom`). All jobs install the pinned buck2 release and check out the prelude submodule recursively:
+GitHub Actions, at `.github/workflows/ci.yml` (repo: `weave-hand/loom`). For the *execution model* behind these jobs — RE-vs-local placement, fixture-test local routing, and the materialization cost model (incl. why we don't cache buck-out) — see **`docs/build-execution.md`**. All jobs install the pinned buck2 release and check out the prelude submodule recursively:
 - **`build-test`** (pushes to `main` only) — full `buck2 build //src/...` + `buck2 test //src/...`; `main` must always be fully green.
 - **`affected`** (PRs only) — builds/tests just the first-party targets the diff impacts, via btd. It does a second checkout at the PR base SHA, snapshots that graph with `//tools:supertd`, then runs `//tools:btd` (`--base` + `--universe`, `--json-lines`) and feeds the impacted `root//src/...` targets into `buck2 build`/`test`. Empty impact ⇒ nothing built.
 - **`lint`** (all events) — `buck2 run //tools:prek -- run --all-files`, so CI enforces exactly the pre-commit hooks defined in `prek.toml` (rustfmt, clippy, file checks, reindeer-in-sync) with no duplicated config. Fully hermetic via buck2 — no host Rust install (the `reindeer-check` hook's `cargo metadata` uses loom's own toolchain cargo; see `tools/buckify.sh`).
