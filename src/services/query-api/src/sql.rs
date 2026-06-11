@@ -7,6 +7,10 @@ use control_plane_core::{CompareOp, RowFilter, ScalarValue, TableRef};
 
 use crate::serving::SqlValue;
 
+/// The value substituted for a masked column. A compile-time constant (never caller
+/// data), so inlining it as a SQL literal is not an injection vector.
+const MASK_MARKER: &str = "***";
+
 fn quote_ident(id: &str) -> String {
     assert!(
         !id.contains('"'),
@@ -103,6 +107,7 @@ fn filter_sql(f: &RowFilter, params: &mut Vec<SqlValue>) -> String {
 pub fn compile_select(
     table: &TableRef,
     allowed_cols: &[String],
+    mask_cols: &[String],
     row_filters: &[RowFilter],
     eq_filters: &[(String, SqlValue)],
     limit: u32,
@@ -110,7 +115,14 @@ pub fn compile_select(
     let mut params = Vec::new();
     let cols = allowed_cols
         .iter()
-        .map(|c| quote_ident(c))
+        .map(|c| {
+            if mask_cols.iter().any(|m| m == c) {
+                // Masked: emit the constant marker, never the column's value.
+                format!("'{MASK_MARKER}' AS {}", quote_ident(c))
+            } else {
+                quote_ident(c)
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let from = format!(

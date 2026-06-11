@@ -108,6 +108,8 @@ pub async fn read_object(
     let (sql, params) = compile_select(
         &object_type.table,
         &allowed,
+        // No column masking wired through the handler yet (Task 3).
+        &[],
         &row_filters,
         &q.eq_filters,
         DEFAULT_LIMIT,
