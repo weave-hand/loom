@@ -80,11 +80,13 @@ pub async fn read_object(
         .await?;
     let mut row_filters: Vec<RowFilter> = Vec::new();
     let mut denied: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut masked: std::collections::HashSet<String> = std::collections::HashSet::new();
     for p in policies.items {
         if let Some(f) = p.row_filter {
             row_filters.push(f);
         }
         denied.extend(p.deny_columns);
+        masked.extend(p.mask_columns);
     }
 
     // projection: type properties minus denied columns, preserving property order.
@@ -97,10 +99,16 @@ pub async fn read_object(
     if allowed.is_empty() {
         return Err(QueryError::Forbidden);
     }
+    // masked columns to actually apply: those still visible (deny wins over mask).
+    let mask_cols: Vec<String> = allowed
+        .iter()
+        .filter(|c| masked.contains(*c))
+        .cloned()
+        .collect();
 
-    // request equality filters must target an allowed (visible) column.
+    // request equality filters must target a visible, non-masked column.
     for (col, _) in &q.eq_filters {
-        if !allowed.contains(col) {
+        if !allowed.contains(col) || masked.contains(col) {
             return Err(QueryError::BadFilter(col.clone()));
         }
     }
@@ -108,6 +116,7 @@ pub async fn read_object(
     let (sql, params) = compile_select(
         &object_type.table,
         &allowed,
+        &mask_cols,
         &row_filters,
         &q.eq_filters,
         DEFAULT_LIMIT,

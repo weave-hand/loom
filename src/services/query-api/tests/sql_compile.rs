@@ -11,7 +11,7 @@ fn t() -> TableRef {
 
 #[test]
 fn projects_allowed_columns_and_quotes_identifiers() {
-    let (sql, params) = compile_select(&t(), &["id".into(), "status".into()], &[], &[], 100);
+    let (sql, params) = compile_select(&t(), &["id".into(), "status".into()], &[], &[], &[], 100);
     assert_eq!(
         sql,
         r#"SELECT "id", "status" FROM "main"."orders" LIMIT 100"#
@@ -26,7 +26,14 @@ fn compiles_acl_compare_leaf_as_bound_param() {
         op: CompareOp::Eq,
         value: ScalarValue::Text("open".into()),
     };
-    let (sql, params) = compile_select(&t(), &["id".into()], std::slice::from_ref(&f), &[], 100);
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        std::slice::from_ref(&f),
+        &[],
+        100,
+    );
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 100"#
@@ -55,7 +62,7 @@ fn compiles_and_or_not_tree() {
             })),
         ]),
     ]);
-    let (sql, params) = compile_select(&t(), &["a".into()], std::slice::from_ref(&f), &[], 10);
+    let (sql, params) = compile_select(&t(), &["a".into()], &[], std::slice::from_ref(&f), &[], 10);
     assert_eq!(
         sql,
         r#"SELECT "a" FROM "main"."orders" WHERE (("a" = ?) AND (("b" > ?) OR (NOT ("c" IS NULL)))) LIMIT 10"#
@@ -73,7 +80,8 @@ fn expands_in_list_into_placeholders() {
             ScalarValue::Text("UK".into()),
         ]),
     };
-    let (sql, params) = compile_select(&t(), &["id".into()], std::slice::from_ref(&f), &[], 10);
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], std::slice::from_ref(&f), &[], 10);
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("region" IN (?, ?)) LIMIT 10"#
@@ -92,7 +100,14 @@ fn ands_acl_filter_with_request_equality_filter() {
         value: ScalarValue::Text("acme".into()),
     };
     let eq = vec![("status".to_string(), SqlValue::Text("open".into()))];
-    let (sql, params) = compile_select(&t(), &["id".into()], std::slice::from_ref(&acl), &eq, 10);
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        std::slice::from_ref(&acl),
+        &eq,
+        10,
+    );
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("tenant" = ?) AND ("status" = ?) LIMIT 10"#
@@ -113,7 +128,8 @@ fn expands_not_in_list_into_placeholders() {
             ScalarValue::Text("UK".into()),
         ]),
     };
-    let (sql, params) = compile_select(&t(), &["id".into()], std::slice::from_ref(&f), &[], 10);
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], std::slice::from_ref(&f), &[], 10);
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("region" NOT IN (?, ?)) LIMIT 10"#
@@ -132,7 +148,8 @@ fn compiles_is_not_null_without_a_param() {
         op: CompareOp::IsNotNull,
         value: ScalarValue::Bool(true),
     };
-    let (sql, params) = compile_select(&t(), &["id".into()], std::slice::from_ref(&f), &[], 10);
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], std::slice::from_ref(&f), &[], 10);
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
@@ -145,10 +162,46 @@ fn eq_filters_only_form_the_where_clause() {
     // No ACL row filter, only a request equality filter: the WHERE prefix and
     // conjunct-joining must still be correct (no leading/trailing AND).
     let eq = vec![("status".to_string(), SqlValue::Text("open".into()))];
-    let (sql, params) = compile_select(&t(), &["id".into()], &[], &eq, 10);
+    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &eq, 10);
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Text("open".into())]);
+}
+
+#[test]
+fn masks_a_column_with_marker() {
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into(), "secret".into()],
+        &["secret".into()],
+        &[],
+        &[],
+        100,
+    );
+    assert_eq!(
+        sql,
+        r#"SELECT "id", '***' AS "secret" FROM "main"."orders" LIMIT 100"#
+    );
+    assert!(
+        params.is_empty(),
+        "the marker is a constant, not a bound param"
+    );
+}
+
+#[test]
+fn masking_preserves_projection_order_and_other_columns() {
+    let (sql, _params) = compile_select(
+        &t(),
+        &["a".into(), "b".into(), "c".into()],
+        &["b".into()],
+        &[],
+        &[],
+        10,
+    );
+    assert_eq!(
+        sql,
+        r#"SELECT "a", '***' AS "b", "c" FROM "main"."orders" LIMIT 10"#
+    );
 }

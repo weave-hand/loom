@@ -158,6 +158,7 @@ async fn governed_object_read() {
                 value: ScalarValue::Text("open".into()),
             }),
             deny_columns: vec!["secret".into()],
+            mask_columns: vec![],
         },
     )
     .await
@@ -247,5 +248,75 @@ async fn governed_object_read() {
     assert!(
         matches!(denied, QueryError::Forbidden),
         "deny grant overrides allow at the read gate, got {denied:?}"
+    );
+
+    // Masking: a policy that MASKS `secret` (vs denying it) -> the column is present
+    // but every value is the marker, and it cannot be filtered on.
+    let masker = SubjectId("masker".into());
+    let mrole = RoleId("mask_role".into());
+    cp.define_subject(&masker).await.unwrap();
+    cp.define_role(&mrole).await.unwrap();
+    cp.assign_role(&masker, &mrole).await.unwrap();
+    cp.grant(
+        &mrole,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Order".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+    cp.set_policy(
+        &mrole,
+        Policy {
+            target: PolicyTarget::Type(TypeName("Order".into())),
+            row_filter: None,
+            deny_columns: vec![],
+            mask_columns: vec!["secret".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let masked_rows = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            eq_filters: vec![],
+        },
+        &Subject(masker.clone()),
+        &deps,
+    )
+    .await
+    .unwrap();
+    let secret_idx = masked_rows
+        .columns
+        .iter()
+        .position(|c| c == "secret")
+        .expect("secret column present (masked, not dropped)");
+    assert!(
+        masked_rows
+            .rows
+            .iter()
+            .all(|r| r[secret_idx] == SqlValue::Text("***".into())),
+        "every secret value is the redaction marker",
+    );
+    assert!(
+        masked_rows
+            .rows
+            .iter()
+            .all(|r| r[secret_idx] != SqlValue::Text("s1".into())),
+        "no real secret value leaks",
+    );
+    let bad = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            eq_filters: vec![("secret".into(), SqlValue::Text("s1".into()))],
+        },
+        &Subject(masker),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(bad, QueryError::BadFilter(ref c) if c == "secret"),
+        "a filter on a masked column is rejected, got {bad:?}",
     );
 }
