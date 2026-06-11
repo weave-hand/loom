@@ -4,14 +4,7 @@ use control_plane_core::{
     RoleId, SubjectId,
 };
 
-use crate::{PgControlPlane, action_to_str, backend, target_cols};
-
-fn effect_to_str(effect: Effect) -> &'static str {
-    match effect {
-        Effect::Allow => "allow",
-        Effect::Deny => "deny",
-    }
-}
+use crate::{PgControlPlane, action_to_str, backend, effect_to_str, target_cols};
 
 #[async_trait]
 impl Acl for PgControlPlane {

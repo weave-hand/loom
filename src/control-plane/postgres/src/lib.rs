@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Action, Cardinality, ControlPlane, ControlPlaneError, EventType, PolicyTarget, Result, Tx,
+    Action, Cardinality, ControlPlane, ControlPlaneError, Effect, EventType, PolicyTarget, Result,
+    Tx,
 };
 use sqlx::PgPool;
 
@@ -110,6 +111,13 @@ fn action_to_str(a: Action) -> &'static str {
     match a {
         Action::Read => "read",
         Action::Write => "write",
+    }
+}
+
+fn effect_to_str(effect: Effect) -> &'static str {
+    match effect {
+        Effect::Allow => "allow",
+        Effect::Deny => "deny",
     }
 }
 
