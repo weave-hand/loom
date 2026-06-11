@@ -45,6 +45,14 @@ pub enum Decision {
     Deny,
 }
 
+/// Whether a grant permits or forbids its `(action, target)`. Deny wins over Allow
+/// in [`Acl::check`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    Allow,
+    Deny,
+}
+
 /// A comparison operator in a [`RowFilter::Compare`] leaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompareOp {
@@ -111,9 +119,16 @@ pub trait Acl {
     async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()>;
     /// Remove a role assignment. Idempotent (no-op if absent).
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()>;
-    /// Grant a coarse `(action, target)` allow to a role. Role must exist, else
-    /// `NotFound`. Idempotent.
-    async fn grant(&self, role: &RoleId, action: Action, target: PolicyTarget) -> Result<()>;
+    /// Grant or deny a coarse `(action, target)` to a role. Upserts by
+    /// `(role, action, target)`: re-granting the same key replaces its effect. Role
+    /// must exist, else `NotFound`. Idempotent for a fixed effect.
+    async fn grant(
+        &self,
+        role: &RoleId,
+        action: Action,
+        target: PolicyTarget,
+        effect: Effect,
+    ) -> Result<()>;
     /// Remove a grant. Idempotent (no-op if absent).
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()>;
     /// Create or replace the row/column policy for `(role, policy.target)`. Role

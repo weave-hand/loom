@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Page, PageReq, Policy, PolicyTarget, Result, RoleId,
-    SubjectId,
+    Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
+    RoleId, SubjectId,
 };
 
 use crate::MemoryControlPlane;
@@ -23,7 +23,7 @@ pub(crate) struct AclState {
     subjects: HashSet<String>,
     roles: HashSet<String>,
     members: HashSet<(String, String)>, // (subject, role)
-    grants: HashSet<(String, Action, TargetKey)>, // (role, action, target)
+    grants: HashMap<(String, Action, TargetKey), Effect>, // (role, action, target) -> effect
     policies: HashMap<(String, TargetKey), Policy>, // (role, target) -> policy
 }
 
@@ -68,13 +68,19 @@ impl Acl for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn grant(&self, role: &RoleId, action: Action, target: PolicyTarget) -> Result<()> {
+    async fn grant(
+        &self,
+        role: &RoleId,
+        action: Action,
+        target: PolicyTarget,
+        effect: Effect,
+    ) -> Result<()> {
         let mut acl = self.acl.lock().unwrap();
         if !acl.roles.contains(&role.0) {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
         acl.grants
-            .insert((role.0.clone(), action, target_key(&target)));
+            .insert((role.0.clone(), action, target_key(&target)), effect);
         Ok(())
     }
 
@@ -117,12 +123,20 @@ impl Acl for MemoryControlPlane {
     ) -> Result<Decision> {
         let acl = self.acl.lock().unwrap();
         let tk = target_key(target);
-        let allow = acl
+        let mut saw_allow = false;
+        for role in acl
             .members
             .iter()
             .filter(|(s, _)| s == &subject.0)
-            .any(|(_, role)| acl.grants.contains(&(role.clone(), action, tk.clone())));
-        Ok(if allow {
+            .map(|(_, r)| r)
+        {
+            match acl.grants.get(&(role.clone(), action, tk.clone())) {
+                Some(Effect::Deny) => return Ok(Decision::Deny),
+                Some(Effect::Allow) => saw_allow = true,
+                None => {}
+            }
+        }
+        Ok(if saw_allow {
             Decision::Allow
         } else {
             Decision::Deny

@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Page, PageReq, Policy, PolicyTarget, Result, RoleId,
-    SubjectId,
+    Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
+    RoleId, SubjectId,
 };
 
-use crate::{PgControlPlane, action_to_str, backend, target_cols};
+use crate::{PgControlPlane, action_to_str, backend, effect_to_str, target_cols};
 
 #[async_trait]
 impl Acl for PgControlPlane {
@@ -85,7 +85,13 @@ impl Acl for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn grant(&self, role: &RoleId, action: Action, target: PolicyTarget) -> Result<()> {
+    async fn grant(
+        &self,
+        role: &RoleId,
+        action: Action,
+        target: PolicyTarget,
+        effect: Effect,
+    ) -> Result<()> {
         let r_exists = sqlx::query_scalar!(
             "select exists (select 1 from acl.role where id = $1)",
             &role.0,
@@ -99,13 +105,16 @@ impl Acl for PgControlPlane {
         }
         let (kind, a, b) = target_cols(&target);
         sqlx::query!(
-            "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b) \
-             values ($1, $2, $3, $4, $5) on conflict do nothing",
+            "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b, effect) \
+             values ($1, $2, $3, $4, $5, $6) \
+             on conflict (role_id, action, target_kind, target_a, target_b) \
+             do update set effect = excluded.effect",
             &role.0,
             action_to_str(action),
             kind,
             &a,
             &b,
+            effect_to_str(effect),
         )
         .execute(&self.pool)
         .await
@@ -195,12 +204,14 @@ impl Acl for PgControlPlane {
         target: &PolicyTarget,
     ) -> Result<Decision> {
         let (kind, a, b) = target_cols(target);
-        let allow = sqlx::query_scalar!(
-            "select exists ( \
-                 select 1 from acl.role_member m \
-                 join acl.role_grant g on g.role_id = m.role_id \
-                 where m.subject_id = $1 and g.action = $2 \
-                   and g.target_kind = $3 and g.target_a = $4 and g.target_b = $5)",
+        let row = sqlx::query!(
+            "select \
+                 bool_or(g.effect = 'deny') as has_deny, \
+                 bool_or(g.effect = 'allow') as has_allow \
+             from acl.role_member m \
+             join acl.role_grant g on g.role_id = m.role_id \
+             where m.subject_id = $1 and g.action = $2 \
+               and g.target_kind = $3 and g.target_a = $4 and g.target_b = $5",
             &subject.0,
             action_to_str(action),
             kind,
@@ -209,9 +220,10 @@ impl Acl for PgControlPlane {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(backend)?
-        .unwrap_or(false);
-        Ok(if allow {
+        .map_err(backend)?;
+        Ok(if row.has_deny == Some(true) {
+            Decision::Deny
+        } else if row.has_allow == Some(true) {
             Decision::Allow
         } else {
             Decision::Deny
