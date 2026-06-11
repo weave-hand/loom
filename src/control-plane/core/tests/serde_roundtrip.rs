@@ -1,6 +1,6 @@
-//! Property-based JSON round-trips for the ACL filter types. Complements the
-//! hand-built example in `acl.rs`'s inline tests with deep nesting, empty vecs, and
-//! unicode property names.
+//! Property-based JSON round-trips for the ACL filter types: deep nesting, empty
+//! vecs, and unicode property names. This is the sole `RowFilter` round-trip cover
+//! (the earlier hand-built inline example in `acl.rs` was subsumed by it).
 
 use control_plane_core::{CompareOp, RowFilter, ScalarValue};
 use proptest::prelude::*;

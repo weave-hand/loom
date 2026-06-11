@@ -17,7 +17,7 @@ An **open-source take on Palantir Foundry** — a typed-object data platform wit
 - Build everything: `buck2 build //...`
 - Build a specific target: `buck2 build //:hello_world`
 - Run a target's output: `buck2 run //:<target>`
-- Test: `buck2 test //...` (no tests defined yet)
+- Test: `buck2 test //src/...` (see **Testing** below).
 - Build outputs land under `/buck-out` (gitignored).
 
 The repo vendors the **buck2 prelude as a git submodule** at `prelude/` (see `.gitmodules`), pinned to a commit dated alongside the local `buck2` binary's build. Fresh clones need `git submodule update --init --recursive`. To bump the prelude: `cd prelude && git fetch && git checkout <commit>`, then commit the submodule pointer change in the parent repo. Pick a commit at or near the date of the `buck2` binary you're using; mismatched prelude/binary versions can break the build in obscure ways.
@@ -25,6 +25,12 @@ The repo vendors the **buck2 prelude as a git submodule** at `prelude/` (see `.g
 `toolchains/BUCK` uses `system_demo_toolchains()` from the prelude — fine for prototyping, but real projects are expected to copy/paste and configure those toolchains explicitly.
 
 Remote execution runs through BuildBuddy (configured under `[buck2_re_client]` in `.buckconfig`); requires `BUILDBUDDY_API_KEY` in the env. Execution platforms come from `root//platforms:default` (see `platforms/BUCK`), which currently wires linux x86_64 and aarch64.
+
+## Testing
+
+- **Tests are `rust_test` integration targets only — NOT inline `#[cfg(test)]` modules.** buck2 builds a `rust_library`/`rust_binary`'s inline `#[cfg(test)] mod tests` but **never runs it** (there's no inline test runner in the build); such tests silently never execute. Put unit tests in a sibling `tests/<name>.rs` file wired as its own `rust_test` target in the crate's `BUCK` (mirror an existing one, e.g. `//src/control-plane/core:page`). The **`no-inline-tests` prek hook** (`tools/check-inline-tests.sh`) enforces this — it fails if any first-party `src/**.rs` file (outside a `tests/` dir) contains a `#[test]`/`#[tokio::test]`.
+- **Run the suite:** `env -u BUCK_PREFER_REMOTE buck2 test --local-only //src/...`. The `--local-only` (and unsetting `BUCK_PREFER_REMOTE`) is mandatory for the hermetic Postgres/DuckDB fixtures — they refuse to run as root on remote execution. Pure-logic tests (no fixture) pass without it, but the flag is harmless, so use it uniformly.
+- **Don't pipe `buck2 test` through `tail`** — its test runner can stall when stdout is an unconsumed pipe. Redirect to a file and grep it: `buck2 test … > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`. (`buck2 build … | tail` is fine.)
 
 ## Dev tools
 
