@@ -32,24 +32,3 @@ pub enum ControlPlaneError {
     #[error(transparent)]
     Backend(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn _assert_send_sync<T: Send + Sync>() {}
-
-    #[test]
-    fn variants_display_and_are_send_sync() {
-        _assert_send_sync::<ControlPlaneError>();
-        assert_eq!(
-            ControlPlaneError::NotFound("job 7".into()).to_string(),
-            "not found: job 7"
-        );
-        assert_eq!(ControlPlaneError::Unauthorized.to_string(), "unauthorized");
-        assert_eq!(
-            ControlPlaneError::Conflict("dup key".into()).to_string(),
-            "conflict: dup key"
-        );
-    }
-}

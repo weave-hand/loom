@@ -38,6 +38,18 @@ language = "system"
 types = ["rust"]
 pass_filenames = false
 
+# buck2 only runs `rust_test` integration targets — an inline `#[cfg(test)]` unit
+# test in a `rust_library`/`rust_binary` src compiles but is silently never run.
+# Fail if a first-party src file (outside a `tests/` dir) has an inline #[test], so
+# unit tests live in `tests/<name>.rs` + a rust_test target. See tools/check-inline-tests.sh.
+[[repos.hooks]]
+id = "no-inline-tests"
+name = "no inline #[test] in src"
+entry = "tools/check-inline-tests.sh"
+language = "system"
+types = ["rust"]
+pass_filenames = true
+
 # When a Cargo manifest/lock changes, regenerate third-party/BUCK and fail if it
 # drifted — keeps reindeer's output in sync with the dependency graph.
 [[repos.hooks]]
