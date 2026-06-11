@@ -28,6 +28,15 @@ rust_test(
 )
 
 rust_test(
+    name = "error-display",
+    crate = "error_display",
+    srcs = ["tests/error_display.rs"],
+    crate_root = "tests/error_display.rs",
+    edition = "2024",
+    deps = [":core"],
+)
+
+rust_test(
     name = "serde-roundtrip",
     crate = "serde_roundtrip",
     srcs = ["tests/serde_roundtrip.rs"],
