@@ -220,6 +220,9 @@ impl Acl for PgControlPlane {
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
+        // Best-effort, non-transactional validation (separate round-trips from the
+        // insert below, like the role-exists check above): a concurrent type deletion
+        // between this check and the insert is tolerated. Fine for current usage.
         if let Some(f) = &policy.row_filter {
             match &policy.target {
                 PolicyTarget::Type(name) => {
