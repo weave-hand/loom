@@ -19,9 +19,12 @@ if [ ! -x .loom/bin/sqlx ]; then
 fi
 export PATH="$PWD/.loom/bin:$PATH"
 
-# 2. Materialize the pinned postgres + libxml2.
-BIN="$PWD/$(env -u BUCK_PREFER_REMOTE buck2 build //src/control-plane/postgres:postgres-bin --show-output 2>/dev/null | awk '{print $2}')"
-XML="$PWD/$(env -u BUCK_PREFER_REMOTE buck2 build //src/control-plane/postgres:libxml2 --show-output 2>/dev/null | awk '{print $2}')"
+# 2. Materialize the pinned postgres + libxml2. (`buck2 build` materializes its
+# outputs locally regardless of BUCK_PREFER_REMOTE — only `-M none` would skip
+# that — and the libxml2/duckdb genrules are `uses_xz`-forced local anyway; so no
+# `env -u` is needed to get runnable binaries on disk.)
+BIN="$PWD/$(buck2 build //src/control-plane/postgres:postgres-bin --show-output 2>/dev/null | awk '{print $2}')"
+XML="$PWD/$(buck2 build //src/control-plane/postgres:libxml2 --show-output 2>/dev/null | awk '{print $2}')"
 export LD_LIBRARY_PATH="$BIN/lib:$XML"
 
 # 3. initdb + start a private cluster; trap cleanup.
@@ -46,8 +49,8 @@ done
 # 4b. ATTACH a DuckLake catalog (backed by this postgres) via the pinned duckdb-cli,
 # so the ducklake_* metadata tables the catalog concern reads exist for query!
 # validation. The bare ATTACH creates them empty — that's all prepare needs.
-DUCKDB="$PWD/$(env -u BUCK_PREFER_REMOTE buck2 build //src/control-plane/postgres:duckdb-cli --show-output 2>/dev/null | awk '{print $2}')"
-EXTDIR="$PWD/$(env -u BUCK_PREFER_REMOTE buck2 build //src/control-plane/postgres:duckdb-extensions --show-output 2>/dev/null | awk '{print $2}')"
+DUCKDB="$PWD/$(buck2 build //src/control-plane/postgres:duckdb-cli --show-output 2>/dev/null | awk '{print $2}')"
+EXTDIR="$PWD/$(buck2 build //src/control-plane/postgres:duckdb-extensions --show-output 2>/dev/null | awk '{print $2}')"
 "$DUCKDB" -c "SET extension_directory='$EXTDIR';
 LOAD ducklake; LOAD postgres_scanner;
 ATTACH 'ducklake:postgres:dbname=loom host=$SOCK port=$PORT user=postgres' AS lake (DATA_PATH '$DLDATA/', DATA_INLINING_ROW_LIMIT 0);"
