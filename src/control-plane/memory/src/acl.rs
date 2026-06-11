@@ -123,12 +123,20 @@ impl Acl for MemoryControlPlane {
     ) -> Result<Decision> {
         let acl = self.acl.lock().unwrap();
         let tk = target_key(target);
-        let allow = acl
+        let mut saw_allow = false;
+        for role in acl
             .members
             .iter()
             .filter(|(s, _)| s == &subject.0)
-            .any(|(_, role)| acl.grants.contains_key(&(role.clone(), action, tk.clone())));
-        Ok(if allow {
+            .map(|(_, r)| r)
+        {
+            match acl.grants.get(&(role.clone(), action, tk.clone())) {
+                Some(Effect::Deny) => return Ok(Decision::Deny),
+                Some(Effect::Allow) => saw_allow = true,
+                None => {}
+            }
+        }
+        Ok(if saw_allow {
             Decision::Allow
         } else {
             Decision::Deny

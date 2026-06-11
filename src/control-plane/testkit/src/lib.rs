@@ -939,6 +939,64 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         Decision::Deny,
         "unassigned role's grants no longer apply"
     );
+
+    // --- deny-override (deny wins over allow) ---
+    a.define_role(&rid("blocked"))
+        .await
+        .expect("define blocked");
+    a.assign_role(&sid("alice"), &rid("blocked"))
+        .await
+        .expect("assign blocked");
+    a.grant(
+        &rid("reader"),
+        Action::Read,
+        ttype("Customer"),
+        Effect::Allow,
+    )
+    .await
+    .expect("re-allow reader");
+    a.grant(
+        &rid("blocked"),
+        Action::Read,
+        ttype("Customer"),
+        Effect::Deny,
+    )
+    .await
+    .expect("deny via blocked");
+    assert_eq!(
+        a.check(&sid("alice"), Action::Read, &ttype("Customer"))
+            .await
+            .expect("check deny-override"),
+        Decision::Deny,
+        "a Deny grant in any of the subject's roles overrides Allow",
+    );
+    // Remove the deny -> Allow is restored.
+    a.revoke(&rid("blocked"), Action::Read, &ttype("Customer"))
+        .await
+        .expect("revoke deny");
+    assert_eq!(
+        a.check(&sid("alice"), Action::Read, &ttype("Customer"))
+            .await
+            .expect("check after revoke"),
+        Decision::Allow,
+        "revoking the deny restores Allow",
+    );
+    // Upsert flips effect: granting Deny on the existing Allow key denies.
+    a.grant(
+        &rid("reader"),
+        Action::Read,
+        ttype("Customer"),
+        Effect::Deny,
+    )
+    .await
+    .expect("flip reader to deny");
+    assert_eq!(
+        a.check(&sid("alice"), Action::Read, &ttype("Customer"))
+            .await
+            .expect("check after flip"),
+        Decision::Deny,
+        "re-granting the same key with Deny upserts the effect",
+    );
 }
 
 /// Contract for the `Lineage` ops, including the first cross-concern atomic unit

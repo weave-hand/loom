@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bool_or(g.effect = 'deny') as has_deny, bool_or(g.effect = 'allow') as has_allow from acl.role_member m join acl.role_grant g on g.role_id = m.role_id where m.subject_id = $1 and g.action = $2 and g.target_kind = $3 and g.target_a = $4 and g.target_b = $5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "has_deny",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "has_allow",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "3cfbb56813e2b216101aab87672490d63da9d1eaae200187c15529d363c97702"
+}

@@ -204,12 +204,14 @@ impl Acl for PgControlPlane {
         target: &PolicyTarget,
     ) -> Result<Decision> {
         let (kind, a, b) = target_cols(target);
-        let allow = sqlx::query_scalar!(
-            "select exists ( \
-                 select 1 from acl.role_member m \
-                 join acl.role_grant g on g.role_id = m.role_id \
-                 where m.subject_id = $1 and g.action = $2 \
-                   and g.target_kind = $3 and g.target_a = $4 and g.target_b = $5)",
+        let row = sqlx::query!(
+            "select \
+                 bool_or(g.effect = 'deny') as has_deny, \
+                 bool_or(g.effect = 'allow') as has_allow \
+             from acl.role_member m \
+             join acl.role_grant g on g.role_id = m.role_id \
+             where m.subject_id = $1 and g.action = $2 \
+               and g.target_kind = $3 and g.target_a = $4 and g.target_b = $5",
             &subject.0,
             action_to_str(action),
             kind,
@@ -218,9 +220,10 @@ impl Acl for PgControlPlane {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(backend)?
-        .unwrap_or(false);
-        Ok(if allow {
+        .map_err(backend)?;
+        Ok(if row.has_deny == Some(true) {
+            Decision::Deny
+        } else if row.has_allow == Some(true) {
             Decision::Allow
         } else {
             Decision::Deny
