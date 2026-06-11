@@ -39,3 +39,12 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "row-filter-validation",
+    crate = "row_filter_validation",
+    srcs = ["tests/row_filter_validation.rs"],
+    crate_root = "tests/row_filter_validation.rs",
+    edition = "2024",
+    deps = [":core"],
+)

@@ -8,6 +8,8 @@
 //! control plane never interprets a filter. Targets reuse [`crate::TypeName`]
 //! (ontology) and [`crate::TableRef`] (catalog).
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -110,6 +112,62 @@ pub struct Policy {
     /// Columns shown but value-masked (redacted to a marker). Distinct from
     /// `deny_columns`, which removes the column. Order unspecified.
     pub mask_columns: Vec<String>,
+}
+
+/// Validate a [`RowFilter`]'s well-formedness. Structural rules are always enforced;
+/// when `properties` is `Some`, every `Compare` leaf's `property` must be a member.
+/// Returns a human-readable reason on the first failure.
+///
+/// Structural (the CompareOp <-> ScalarValue invariant):
+/// - `In` / `NotIn`         => value MUST be `ScalarValue::List`
+/// - `Eq/Ne/Lt/Le/Gt/Ge`    => value must NOT be a `ScalarValue::List`
+/// - `IsNull` / `IsNotNull`  => value ignored
+pub fn validate_row_filter(
+    f: &RowFilter,
+    properties: Option<&HashSet<String>>,
+) -> std::result::Result<(), String> {
+    match f {
+        RowFilter::Compare {
+            property,
+            op,
+            value,
+        } => {
+            if let Some(props) = properties
+                && !props.contains(property)
+            {
+                return Err(format!("unknown property: {property}"));
+            }
+            match op {
+                CompareOp::In | CompareOp::NotIn => {
+                    if !matches!(value, ScalarValue::List(_)) {
+                        return Err(format!("{op:?} requires a list value"));
+                    }
+                }
+                CompareOp::IsNull | CompareOp::IsNotNull => {}
+                // Listed exhaustively (no `_`) so a future CompareOp variant is a
+                // compile error here, forcing a deliberate structural-rule decision
+                // rather than silently getting scalar treatment.
+                CompareOp::Eq
+                | CompareOp::Ne
+                | CompareOp::Lt
+                | CompareOp::Le
+                | CompareOp::Gt
+                | CompareOp::Ge => {
+                    if matches!(value, ScalarValue::List(_)) {
+                        return Err(format!("{op:?} requires a non-list value"));
+                    }
+                }
+            }
+            Ok(())
+        }
+        RowFilter::And(xs) | RowFilter::Or(xs) => {
+            for x in xs {
+                validate_row_filter(x, properties)?;
+            }
+            Ok(())
+        }
+        RowFilter::Not(x) => validate_row_filter(x, properties),
+    }
 }
 
 #[async_trait]

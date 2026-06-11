@@ -661,7 +661,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
 }
 
 /// Contract for the `Acl` ops. `a` must be freshly empty.
-pub async fn acl_contract<A: Acl>(a: &A) {
+pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     let sid = |s: &str| SubjectId(s.to_string());
     let rid = |s: &str| RoleId(s.to_string());
     let ttype = |s: &str| PolicyTarget::Type(TypeName(s.to_string()));
@@ -791,6 +791,25 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         a.assign_role(&sid("alice"), &rid("ghost")).await,
         Err(ControlPlaneError::NotFound(_))
     ));
+
+    // Define the Customer type so the strict Type-target policy validation passes.
+    a.define_type(ObjectType {
+        name: TypeName("Customer".into()),
+        properties: ["tenant", "is_public", "owner", "region", "active"]
+            .iter()
+            .map(|n| PropertyDef {
+                name: (*n).into(),
+                ty: "String".into(),
+                required: false,
+            })
+            .collect(),
+        table: TableRef {
+            schema: "main".into(),
+            name: "customer".into(),
+        },
+    })
+    .await
+    .expect("define Customer type");
 
     // --- policies: nested filter + deny columns round-trip ---
     let filter = RowFilter::And(vec![
@@ -1138,6 +1157,63 @@ pub async fn acl_contract<A: Acl>(a: &A) {
         Decision::Deny,
         "removing the edge drops transitively-inherited grants",
     );
+
+    // --- set_policy write-time validation ---
+    let malformed = Policy {
+        target: ttype("Customer"),
+        row_filter: Some(RowFilter::Compare {
+            property: "region".into(),
+            op: CompareOp::In,
+            value: ScalarValue::Text("EU".into()), // In needs a list -> malformed
+        }),
+        deny_columns: vec![],
+        mask_columns: vec![],
+    };
+    assert!(matches!(
+        a.set_policy(&rid("reader"), malformed).await,
+        Err(ControlPlaneError::Validation(_)),
+    ));
+    let unknown_prop = Policy {
+        target: ttype("Customer"),
+        row_filter: Some(RowFilter::Compare {
+            property: "not_a_property".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Int(1),
+        }),
+        deny_columns: vec![],
+        mask_columns: vec![],
+    };
+    assert!(matches!(
+        a.set_policy(&rid("reader"), unknown_prop).await,
+        Err(ControlPlaneError::Validation(_)),
+    ));
+    let undefined_type = Policy {
+        target: ttype("NoSuchType"),
+        row_filter: Some(RowFilter::Compare {
+            property: "x".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Int(1),
+        }),
+        deny_columns: vec![],
+        mask_columns: vec![],
+    };
+    assert!(matches!(
+        a.set_policy(&rid("reader"), undefined_type).await,
+        Err(ControlPlaneError::Validation(_)),
+    ));
+    let table_ok = Policy {
+        target: ttable("main", "raw"),
+        row_filter: Some(RowFilter::Compare {
+            property: "anything".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Int(1),
+        }),
+        deny_columns: vec![],
+        mask_columns: vec![],
+    };
+    a.set_policy(&rid("reader"), table_ok)
+        .await
+        .expect("table-target structural ok");
 }
 
 /// Contract for the `Lineage` ops, including the first cross-concern atomic unit

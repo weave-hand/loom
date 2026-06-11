@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
-    RoleId, SubjectId,
+    RoleId, SubjectId, validate_row_filter,
 };
 
 use crate::{PgControlPlane, action_to_str, backend, effect_to_str, target_cols};
@@ -219,6 +219,41 @@ impl Acl for PgControlPlane {
         .unwrap_or(false);
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        // Best-effort, non-transactional validation (separate round-trips from the
+        // insert below, like the role-exists check above): a concurrent type deletion
+        // between this check and the insert is tolerated. Fine for current usage.
+        if let Some(f) = &policy.row_filter {
+            match &policy.target {
+                PolicyTarget::Type(name) => {
+                    let type_exists = sqlx::query_scalar!(
+                        "select exists (select 1 from ontology.object_type where name = $1)",
+                        &name.0,
+                    )
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .unwrap_or(false);
+                    if !type_exists {
+                        return Err(ControlPlaneError::Validation(format!(
+                            "policy references unknown type {}",
+                            name.0
+                        )));
+                    }
+                    let names = sqlx::query_scalar!(
+                        "select name from ontology.property where type_name = $1",
+                        &name.0,
+                    )
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                    let set: std::collections::HashSet<String> = names.into_iter().collect();
+                    validate_row_filter(f, Some(&set)).map_err(ControlPlaneError::Validation)?;
+                }
+                PolicyTarget::Table(_) => {
+                    validate_row_filter(f, None).map_err(ControlPlaneError::Validation)?;
+                }
+            }
         }
         let (kind, a, b) = target_cols(&policy.target);
         let row_filter = match &policy.row_filter {

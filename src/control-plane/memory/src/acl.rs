@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
-    RoleId, SubjectId,
+    RoleId, SubjectId, validate_row_filter,
 };
 
 use crate::MemoryControlPlane;
@@ -63,6 +63,16 @@ fn effective_roles(
         }
     }
     seen
+}
+
+impl MemoryControlPlane {
+    /// Property names of a defined ontology type, or `None` if undefined.
+    fn type_properties(&self, name: &str) -> Option<Vec<String>> {
+        let ont = self.ontology.lock().unwrap();
+        ont.types
+            .get(name)
+            .map(|t| t.properties.iter().map(|p| p.name.clone()).collect())
+    }
 }
 
 #[async_trait]
@@ -163,12 +173,35 @@ impl Acl for MemoryControlPlane {
 
     #[tracing::instrument(skip(self, policy), level = "debug")]
     async fn set_policy(&self, role: &RoleId, policy: Policy) -> Result<()> {
-        let mut acl = self.acl.lock().unwrap();
-        if !acl.roles.contains(&role.0) {
-            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        // role-exists check (short acl lock)
+        {
+            let acl = self.acl.lock().unwrap();
+            if !acl.roles.contains(&role.0) {
+                return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+            }
         }
+        // validation (may lock ontology) — no acl lock held here, to avoid a
+        // lock-ordering deadlock between the acl and ontology mutexes.
+        if let Some(f) = &policy.row_filter {
+            match &policy.target {
+                PolicyTarget::Type(name) => {
+                    let props = self.type_properties(&name.0).ok_or_else(|| {
+                        ControlPlaneError::Validation(format!(
+                            "policy references unknown type {}",
+                            name.0
+                        ))
+                    })?;
+                    let set: HashSet<String> = props.into_iter().collect();
+                    validate_row_filter(f, Some(&set)).map_err(ControlPlaneError::Validation)?;
+                }
+                PolicyTarget::Table(_) => {
+                    validate_row_filter(f, None).map_err(ControlPlaneError::Validation)?;
+                }
+            }
+        }
+        // insert (short acl lock)
         let key = (role.0.clone(), target_key(&policy.target));
-        acl.policies.insert(key, policy);
+        self.acl.lock().unwrap().policies.insert(key, policy);
         Ok(())
     }
 

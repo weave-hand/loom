@@ -3,13 +3,21 @@
 //! trusted ontology/ACL metadata and are double-quoted; every caller VALUE is a
 //! bound `?` parameter (never interpolated) — this is the injection boundary.
 
-use control_plane_core::{CompareOp, RowFilter, ScalarValue, TableRef};
+use control_plane_core::{CompareOp, RowFilter, ScalarValue, TableRef, validate_row_filter};
 
 use crate::serving::SqlValue;
 
 /// The value substituted for a masked column. A compile-time constant (never caller
 /// data), so inlining it as a SQL literal is not an injection vector.
 const MASK_MARKER: &str = "***";
+
+/// A row filter that violated the CompareOp<->ScalarValue invariant (e.g. malformed
+/// persisted policy data). Surfaced by the query API as an opaque 500, never a panic.
+#[derive(Debug, thiserror::Error)]
+pub enum CompileError {
+    #[error("malformed row filter: {0}")]
+    MalformedFilter(String),
+}
 
 fn quote_ident(id: &str) -> String {
     assert!(
@@ -24,7 +32,7 @@ fn scalar(v: &ScalarValue, out: &mut Vec<SqlValue>) {
         ScalarValue::Text(s) => out.push(SqlValue::Text(s.clone())),
         ScalarValue::Int(i) => out.push(SqlValue::Int(*i)),
         ScalarValue::Bool(b) => out.push(SqlValue::Bool(*b)),
-        ScalarValue::List(_) => unreachable!("lists handled by In/NotIn arm"),
+        ScalarValue::List(_) => unreachable!("validated by validate_row_filter"),
     }
 }
 
@@ -36,18 +44,14 @@ fn op_sql(op: CompareOp) -> &'static str {
         CompareOp::Le => "<=",
         CompareOp::Gt => ">",
         CompareOp::Ge => ">=",
-        _ => unreachable!("In/NotIn/IsNull/IsNotNull handled separately"),
+        _ => unreachable!("validated by validate_row_filter"),
     }
 }
 
-// NOTE: the `panic!`/`unreachable!` arms below encode a CompareOp<->ScalarValue
-// invariant the type system does not enforce (e.g. `In` requires a `List` value, a
-// scalar op requires a non-list value). For this slice that invariant holds by
-// construction. Once row filters become real persisted policy data deserialized from
-// the `acl` schema's jsonb, a malformed-but-type-valid filter could reach these arms;
-// at that point `compile_select` should become fallible (a typed MalformedPolicy
-// error) rather than panic inside a read request. Tracked for the deferred full-ACL
-// spec — see the slice design doc's "What this slice is NOT".
+/// PRECONDITION: `f` has passed `control_plane_core::validate_row_filter` (the sole
+/// caller, `compile_select`, enforces this up front). The `unreachable!` arms below —
+/// and those in `scalar`/`op_sql` — rely on that CompareOp<->ScalarValue invariant; a
+/// caller that skips validation could turn them into a panic.
 fn filter_sql(f: &RowFilter, params: &mut Vec<SqlValue>) -> String {
     match f {
         RowFilter::Compare {
@@ -58,7 +62,7 @@ fn filter_sql(f: &RowFilter, params: &mut Vec<SqlValue>) -> String {
             CompareOp::In | CompareOp::NotIn => {
                 let items = match value {
                     ScalarValue::List(xs) => xs,
-                    _ => panic!("In/NotIn requires a list value"),
+                    _ => unreachable!("validated by validate_row_filter"),
                 };
                 let mut placeholders = Vec::with_capacity(items.len());
                 for it in items {
@@ -111,7 +115,12 @@ pub fn compile_select(
     row_filters: &[RowFilter],
     eq_filters: &[(String, SqlValue)],
     limit: u32,
-) -> (String, Vec<SqlValue>) {
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    // Validate each ACL filter's shape up front; afterwards the SQL-building arms
+    // below cannot hit a CompareOp<->ScalarValue mismatch.
+    for f in row_filters {
+        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+    }
     let mut params = Vec::new();
     let cols = allowed_cols
         .iter()
@@ -146,5 +155,5 @@ pub fn compile_select(
         sql.push_str(&conjuncts.join(" AND "));
     }
     sql.push_str(&format!(" LIMIT {limit}"));
-    (sql, params)
+    Ok((sql, params))
 }
