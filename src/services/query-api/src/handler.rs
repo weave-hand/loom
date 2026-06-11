@@ -40,6 +40,8 @@ pub enum QueryError {
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error(transparent)]
     Serving(#[from] crate::serving::ServingError),
+    #[error(transparent)]
+    Malformed(#[from] crate::sql::CompileError),
 }
 
 pub async fn read_object(
@@ -120,6 +122,6 @@ pub async fn read_object(
         &row_filters,
         &q.eq_filters,
         DEFAULT_LIMIT,
-    );
+    )?;
     Ok(deps.serving.fetch_rows(&sql, &params).await?)
 }
