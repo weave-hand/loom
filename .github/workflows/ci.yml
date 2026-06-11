@@ -53,12 +53,10 @@ jobs:
       - name: Test //src/...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        # --local-only: run tests on the (non-root) runner. The control-plane-postgres
-        # fixture boots a real postgres, which refuses to run as root — and RE workers
-        # run as root. Builds still come from the RE cache; only execution is local.
-        # `env -u` drops BUCK_PREFER_REMOTE for this call (it injects --prefer-remote,
-        # which conflicts with --local-only).
-        run: env -u BUCK_PREFER_REMOTE buck2 test --local-only //src/...
+        # Fixture-backed tests pin their own run local via loom_fixture_test
+        # (remote_execution = "disabled"); pure-logic tests run on RE. No
+        # --local-only needed.
+        run: buck2 test //src/...
 
   # On PRs, build & test only the first-party targets the diff impacts, computed
   # by btd (//tools:btd). btd diffs the target graph before vs after the change,
@@ -129,10 +127,8 @@ jobs:
           mapfile -t targets < impacted.txt
           echo "Building/testing: ${targets[*]}"
           buck2 build -M none "${targets[@]}"
-          # --local-only: tests run on the non-root runner (the control-plane-postgres
-          # fixture boots postgres, which won't run as root like the RE workers do).
-          # `env -u` drops BUCK_PREFER_REMOTE here (it conflicts with --local-only).
-          env -u BUCK_PREFER_REMOTE buck2 test --local-only "${targets[@]}"
+          # Fixture tests self-pin local via loom_fixture_test; no --local-only.
+          buck2 test "${targets[@]}"
 
       - name: No impacted targets
         if: steps.btd.outputs.targets == ''
