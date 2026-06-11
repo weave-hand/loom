@@ -13,7 +13,7 @@ mod transaction;
 
 pub use acl::{
     Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
-    SubjectId,
+    SubjectId, validate_row_filter,
 };
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
 pub use error::{ControlPlaneError, Result};

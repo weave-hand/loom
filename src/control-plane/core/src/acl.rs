@@ -8,6 +8,8 @@
 //! control plane never interprets a filter. Targets reuse [`crate::TypeName`]
 //! (ontology) and [`crate::TableRef`] (catalog).
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +114,54 @@ pub struct Policy {
     pub mask_columns: Vec<String>,
 }
 
+/// Validate a [`RowFilter`]'s well-formedness. Structural rules are always enforced;
+/// when `properties` is `Some`, every `Compare` leaf's `property` must be a member.
+/// Returns a human-readable reason on the first failure.
+///
+/// Structural (the CompareOp <-> ScalarValue invariant):
+/// - `In` / `NotIn`         => value MUST be `ScalarValue::List`
+/// - `Eq/Ne/Lt/Le/Gt/Ge`    => value must NOT be a `ScalarValue::List`
+/// - `IsNull` / `IsNotNull`  => value ignored
+pub fn validate_row_filter(
+    f: &RowFilter,
+    properties: Option<&HashSet<String>>,
+) -> std::result::Result<(), String> {
+    match f {
+        RowFilter::Compare {
+            property,
+            op,
+            value,
+        } => {
+            if let Some(props) = properties
+                && !props.contains(property)
+            {
+                return Err(format!("unknown property: {property}"));
+            }
+            match op {
+                CompareOp::In | CompareOp::NotIn => {
+                    if !matches!(value, ScalarValue::List(_)) {
+                        return Err(format!("{op:?} requires a list value"));
+                    }
+                }
+                CompareOp::IsNull | CompareOp::IsNotNull => {}
+                _ => {
+                    if matches!(value, ScalarValue::List(_)) {
+                        return Err(format!("{op:?} requires a non-list value"));
+                    }
+                }
+            }
+            Ok(())
+        }
+        RowFilter::And(xs) | RowFilter::Or(xs) => {
+            for x in xs {
+                validate_row_filter(x, properties)?;
+            }
+            Ok(())
+        }
+        RowFilter::Not(x) => validate_row_filter(x, properties),
+    }
+}
+
 #[async_trait]
 pub trait Acl {
     /// Create a subject. Idempotent.
@@ -202,5 +252,79 @@ mod tests {
         let json = serde_json::to_string(&f).unwrap();
         let back: RowFilter = serde_json::from_str(&json).unwrap();
         assert_eq!(f, back);
+    }
+
+    use std::collections::HashSet;
+
+    fn props(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn validate_structural_ok_and_err() {
+        let in_list = RowFilter::Compare {
+            property: "r".into(),
+            op: CompareOp::In,
+            value: ScalarValue::List(vec![ScalarValue::Text("EU".into())]),
+        };
+        assert!(validate_row_filter(&in_list, None).is_ok());
+
+        let in_scalar = RowFilter::Compare {
+            property: "r".into(),
+            op: CompareOp::In,
+            value: ScalarValue::Text("EU".into()),
+        };
+        assert!(validate_row_filter(&in_scalar, None).is_err());
+
+        let eq_list = RowFilter::Compare {
+            property: "r".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::List(vec![]),
+        };
+        assert!(validate_row_filter(&eq_list, None).is_err());
+
+        let eq_scalar = RowFilter::Compare {
+            property: "r".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Int(1),
+        };
+        assert!(validate_row_filter(&eq_scalar, None).is_ok());
+
+        let is_null = RowFilter::Compare {
+            property: "r".into(),
+            op: CompareOp::IsNull,
+            value: ScalarValue::List(vec![]),
+        };
+        assert!(validate_row_filter(&is_null, None).is_ok());
+    }
+
+    #[test]
+    fn validate_property_existence() {
+        let f = RowFilter::Compare {
+            property: "known".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Int(1),
+        };
+        assert!(validate_row_filter(&f, Some(&props(&["known", "other"]))).is_ok());
+        assert!(validate_row_filter(&f, Some(&props(&["other"]))).is_err());
+        assert!(validate_row_filter(&f, None).is_ok());
+    }
+
+    #[test]
+    fn validate_recurses_into_and_or_not() {
+        let bad = RowFilter::And(vec![
+            RowFilter::Compare {
+                property: "a".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Int(1),
+            },
+            RowFilter::Or(vec![RowFilter::Not(Box::new(RowFilter::Compare {
+                property: "b".into(),
+                op: CompareOp::In,
+                value: ScalarValue::Int(2),
+            }))]),
+        ]);
+        assert!(validate_row_filter(&bad, None).is_err());
+        assert!(validate_row_filter(&bad, Some(&props(&["a", "b"]))).is_err());
     }
 }

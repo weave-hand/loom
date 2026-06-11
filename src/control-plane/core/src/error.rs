@@ -24,6 +24,11 @@ pub enum ControlPlaneError {
     Unauthorized,
     #[error("serialization: {0}")]
     Serialization(String),
+    /// A request or stored value failed validation (e.g. a malformed or
+    /// invalid-property RowFilter at `set_policy`). Distinct from `NotFound`
+    /// (missing entity) and `Conflict` (uniqueness/concurrency).
+    #[error("validation error: {0}")]
+    Validation(String),
     #[error(transparent)]
     Backend(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
