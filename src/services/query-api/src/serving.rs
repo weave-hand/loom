@@ -113,6 +113,45 @@ fn run_sync(attach: &str, sql: &str, params: &[SqlValue]) -> Result<Rows, Servin
     Ok(Rows { columns, rows })
 }
 
+/// Escape a string for embedding in a DuckDB single-quoted literal: double every
+/// `'`. This is the complete escape for DuckDB standard string literals (no
+/// backslash escapes by default).
+fn sql_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Render a typed scalar as a DuckDB SQL literal.
+fn render_literal(v: &SqlValue) -> String {
+    match v {
+        SqlValue::Int(n) => n.to_string(),
+        SqlValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+        SqlValue::Null => "NULL".to_string(),
+        SqlValue::Text(s) => format!("'{}'", sql_escape(s)),
+    }
+}
+
+/// Substitute each `?` placeholder in `sql` with the next rendered param, copying
+/// every other character verbatim. The Quack path uses this because `quack_query`
+/// takes SQL as a string with no bind slot. Relies on the `compile_select`
+/// contract that `?` appears ONLY as a bind placeholder (never a literal `?`
+/// inside a string), so a single left-to-right pass over the ORIGINAL `sql` is
+/// correct — it never re-scans substituted text (a rendered value may contain `?`).
+pub fn inline_params(sql: &str, params: &[SqlValue]) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut it = params.iter();
+    for ch in sql.chars() {
+        if ch == '?' {
+            match it.next() {
+                Some(p) => out.push_str(&render_literal(p)),
+                None => out.push('?'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn to_duck(v: &SqlValue) -> duckdb::types::Value {
     use duckdb::types::Value;
     match v {
