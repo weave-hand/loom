@@ -183,19 +183,12 @@ loom_fixture_test(
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "ducklake-smoke",
     crate = "ducklake_smoke",
     srcs = ["tests/ducklake_smoke.rs"],
     crate_root = "tests/ducklake_smoke.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-        "DUCKDB_BIN": "$(location :duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
-    },
+    duckdb = True,
     deps = [":postgres", "//third-party:tokio"],
 )
 
@@ -203,20 +196,13 @@ rust_test(
 # against the live (migrated + DuckLake-attached) schema and compares to each
 # committed .sqlx/query-*.json. Declaring :sqlx-cache as $(location ...) makes the
 # cache a buck input, so this re-runs only when the cache or schema changes.
-rust_test(
+loom_fixture_test(
     name = "sqlx-cache-check",
     crate = "sqlx_cache",
     srcs = ["tests/sqlx_cache.rs"],
     crate_root = "tests/sqlx_cache.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-        "DUCKDB_BIN": "$(location :duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
-        "LOOM_SQLX_DIR": "$(location :sqlx-cache)/.sqlx",
-    },
+    duckdb = True,
+    env = {"LOOM_SQLX_DIR": "$(location :sqlx-cache)/.sqlx"},
     deps = [
         ":postgres",
         "//third-party:serde_json",
@@ -225,79 +211,39 @@ rust_test(
     ],
 )
 
-rust_test(
+loom_fixture_test(
     name = "snapshot-append",
     crate = "snapshot_append",
     srcs = ["tests/snapshot_append.rs"],
     crate_root = "tests/snapshot_append.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-        "DUCKDB_BIN": "$(location :duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
-    },
-    deps = [
-        ":postgres",
-        "//src/control-plane/core:core",
-        "//third-party:tokio",
-    ],
+    duckdb = True,
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "snapshot-create",
     crate = "snapshot_create",
     srcs = ["tests/snapshot_create.rs"],
     crate_root = "tests/snapshot_create.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-        "DUCKDB_BIN": "$(location :duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
-    },
-    deps = [
-        ":postgres",
-        "//src/control-plane/core:core",
-        "//third-party:tokio",
-    ],
+    duckdb = True,
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "ducklake-interop",
     crate = "ducklake_interop",
     srcs = ["tests/ducklake_interop.rs"],
     crate_root = "tests/ducklake_interop.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-        "DUCKDB_BIN": "$(location :duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
-    },
-    deps = [
-        ":postgres",
-        "//src/control-plane/core:core",
-        "//third-party:tokio",
-    ],
+    duckdb = True,
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "snapshot-rollback",
     crate = "snapshot_rollback",
     srcs = ["tests/snapshot_rollback.rs"],
     crate_root = "tests/snapshot_rollback.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-        "DUCKDB_BIN": "$(location :duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
-    },
+    duckdb = True,
     deps = [
         ":postgres",
         "//src/control-plane/core:core",
@@ -308,19 +254,12 @@ rust_test(
     ],
 )
 
-rust_test(
+loom_fixture_test(
     name = "snapshot-conformance",
     crate = "snapshot_conformance",
     srcs = ["tests/snapshot_conformance.rs"],
     crate_root = "tests/snapshot_conformance.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-        "DUCKDB_BIN": "$(location :duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
-    },
+    duckdb = True,
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
@@ -340,19 +279,12 @@ loom_fixture_test(
     ],
 )
 
-rust_test(
+loom_fixture_test(
     name = "catalog",
     crate = "catalog",
     srcs = ["tests/catalog.rs"],
     crate_root = "tests/catalog.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-        "DUCKDB_BIN": "$(location :duckdb-cli)",
-        "DUCKDB_EXTENSION_DIR": "$(location :duckdb-extensions)",
-    },
+    duckdb = True,
     deps = [
         ":postgres",
         "//src/control-plane/core:core",
