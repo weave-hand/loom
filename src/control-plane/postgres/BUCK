@@ -151,59 +151,35 @@ loom_fixture_test(
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "ontology",
     crate = "ontology",
     srcs = ["tests/ontology.rs"],
     crate_root = "tests/ontology.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-    },
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "acl",
     crate = "acl",
     srcs = ["tests/acl.rs"],
     crate_root = "tests/acl.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-    },
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "lineage",
     crate = "lineage",
     srcs = ["tests/lineage.rs"],
     crate_root = "tests/lineage.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-    },
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "tx",
     crate = "tx",
     srcs = ["tests/tx.rs"],
     crate_root = "tests/tx.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-    },
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
@@ -348,17 +324,11 @@ rust_test(
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
-rust_test(
+loom_fixture_test(
     name = "lineage-roundtrip",
     crate = "lineage_roundtrip",
     srcs = ["tests/lineage_roundtrip.rs"],
     crate_root = "tests/lineage_roundtrip.rs",
-    edition = "2024",
-    env = {
-        "POSTGRES_BIN_DIR": "$(location :postgres-bin)/bin",
-        "POSTGRES_LD_LIBRARY_PATH": "$(location :postgres-bin)/lib:$(location :libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location :migrations)/migrations",
-    },
     deps = [
         ":postgres",
         "//src/control-plane/core:core",
