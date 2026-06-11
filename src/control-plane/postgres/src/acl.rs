@@ -99,6 +99,12 @@ impl Acl for PgControlPlane {
         }
         // role -> inherits creates a cycle iff `role` is already reachable from
         // `inherits` (closure of `inherits` includes itself -> catches self-edge).
+        // NOTE: this check + the insert below are separate round-trips, not one
+        // transaction, so two concurrent add_role_inheritance calls inserting opposite
+        // edges of a cycle could both pass. Safe under today's single-writer usage, and
+        // harmless regardless: the check/policies_for closure walks dedup (SQL UNION /
+        // the memory visited-set), so a cycle merely terminates rather than looping.
+        // TODO: wrap in a SERIALIZABLE tx (or lock) if concurrent edge writes ever land.
         let creates_cycle = sqlx::query_scalar!(
             "with recursive clo(role_id) as ( \
                  select $1::text \
