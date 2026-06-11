@@ -48,6 +48,45 @@ fn validate_structural_ok_and_err() {
         value: ScalarValue::List(vec![]), // ignored for IsNull
     };
     assert!(validate_row_filter(&is_null, None).is_ok());
+
+    // NotIn mirrors In (list required); IsNotNull mirrors IsNull (value ignored).
+    let not_in_scalar = RowFilter::Compare {
+        property: "r".into(),
+        op: CompareOp::NotIn,
+        value: ScalarValue::Int(1),
+    };
+    assert!(validate_row_filter(&not_in_scalar, None).is_err());
+    let is_not_null = RowFilter::Compare {
+        property: "r".into(),
+        op: CompareOp::IsNotNull,
+        value: ScalarValue::List(vec![]),
+    };
+    assert!(validate_row_filter(&is_not_null, None).is_ok());
+}
+
+#[test]
+fn error_messages_name_the_problem() {
+    // The reason string is part of the contract (surfaced via Validation/CompileError).
+    let in_scalar = RowFilter::Compare {
+        property: "r".into(),
+        op: CompareOp::In,
+        value: ScalarValue::Text("x".into()),
+    };
+    assert!(
+        validate_row_filter(&in_scalar, None)
+            .unwrap_err()
+            .contains("list")
+    );
+    let f = RowFilter::Compare {
+        property: "ghost".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Int(1),
+    };
+    assert!(
+        validate_row_filter(&f, Some(&props(&["real"])))
+            .unwrap_err()
+            .contains("ghost")
+    );
 }
 
 #[test]

@@ -144,7 +144,15 @@ pub fn validate_row_filter(
                     }
                 }
                 CompareOp::IsNull | CompareOp::IsNotNull => {}
-                _ => {
+                // Listed exhaustively (no `_`) so a future CompareOp variant is a
+                // compile error here, forcing a deliberate structural-rule decision
+                // rather than silently getting scalar treatment.
+                CompareOp::Eq
+                | CompareOp::Ne
+                | CompareOp::Lt
+                | CompareOp::Le
+                | CompareOp::Gt
+                | CompareOp::Ge => {
                     if matches!(value, ScalarValue::List(_)) {
                         return Err(format!("{op:?} requires a non-list value"));
                     }
