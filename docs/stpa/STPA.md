@@ -1,4 +1,4 @@
-# STPA Control Analysis — weave-hand/loom @ 89ef484
+# STPA Control Analysis — weave-hand/loom @ b9a63b8
 
 _Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._
 
@@ -10,13 +10,13 @@ _Auto-generated STPA safety model: the unsafe states this system can reach and t
 Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagram** shows who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.
 </details>
 
-**Scope.** Built: core traits (acl/ontology/lineage/catalog/queue/tx), Postgres + in-memory adapters (now split into per-concern files), and a generic queue Worker loop with automatic heartbeating at lease/3. Designed-only: Ingest/Transform/Query API services, DataFusion ACL enforcement, Quack wire protocol, DuckLake writer. The ACL store serves policy but never enforces it (core/src/acl.rs:6-9).
+**Scope.** Built: control-plane library (5 concerns + Tx with DuckLake snapshot writer) AND query-api governed-read handler (ontology resolve, ACL check + SQL policy compilation, embedded DuckDB + Quack serving engines). Designed-only: ingest/transform services, query-api binary wiring, Quack wire protocol to external clients.
 
 <details>
 <summary>Maturity detail</summary>
 
-- **Built:** core traits (acl, ontology, lineage, catalog, queue, tx), Postgres adapter (per-concern files), in-memory adapter, Worker loop with auto-heartbeat
-- **Designed-only:** Ingest service, Transform service, Query API service, DataFusion ACL enforcement, Quack wire protocol, DuckLake writer
+- **Built:** core traits (acl, ontology, lineage, catalog, queue, tx with create_table/append_files/snapshot), Postgres adapter, in-memory adapter, Worker loop, query-api handler (handler.rs, sql.rs, serving.rs, http.rs)
+- **Designed-only:** Ingest service, Transform service, query-api binary (main.rs stub), Quack wire protocol (external clients), full DuckLake writer (ingest path)
 </details>
 
 ## Control structure
@@ -25,16 +25,17 @@ Read top-down: **Losses** are outcomes we must never cause; **Hazards** are syst
 flowchart TD
   subgraph enforcement["Enforcement layer"]
     ingest["Ingest service (writes Parquet, commits snapshot, emits lineage) (designed)"]
-    query-api["Query API service (enforces ACL, resolves ontology) (designed)"]
+    query-api["Query API (governed read: ontology resolve, ACL check + SQL policy compilation, HTTP surface)"]
+    serving-engine["Serving engine (embedded DuckDB + Quack, executes compiled SQL against DuckLake)"]
     transform["Transform service (queue consumer of business jobs) (designed)"]
   end
   subgraph control-plane["Control plane (built)"]
     acl["Acl trait + Pg adapter (policy store + check)"]
     catalog["Catalog trait (read-only DuckLake view)"]
     lineage["Lineage trait + Pg adapter (OpenLineage events)"]
-    ontology["Ontology trait + Pg adapter (type→table resolve)"]
+    ontology["Ontology trait + Pg adapter (type-)table resolve)"]
     queue["Queue trait + Pg adapter (SKIP LOCKED + NOTIFY)"]
-    tx["ControlPlane.begin / Tx (cross-concern transaction)"]
+    tx["ControlPlane.begin / Tx (cross-concern transaction with snapshot writer)"]
     worker["Generic queue Worker loop"]
   end
   subgraph store["Stateful processes"]
@@ -53,6 +54,7 @@ flowchart TD
   ingest -- "queue.enqueue" --> queue
   worker -- "queue.fail" --> queue
   worker -- "queue.heartbeat" --> queue
+  query-api -- "serving.fetch-rows" --> serving-engine
   ingest -- "tx.commit" --> tx
   ingest -- "tx.enqueue" --> tx
   acl -. "Decision Allow/Deny (no reason/obligations)" .-> query-api
@@ -60,6 +62,7 @@ flowchart TD
   postgres -. "pg_notify('loom_queue:'||kind) wakeup hint" .-> worker
   queue -. "await_jobs returns on NOTIFY or poll timeout" .-> worker
   queue -. "dequeued Job carries attempts count for backoff" .-> worker
+  serving-engine -. "Rows (column names + typed cell values)" .-> query-api
 ```
 
 ## Losses
@@ -78,21 +81,21 @@ flowchart TD
 |----|----|----|----|
 | `dangling-target` | A grant/policy/lineage edge/ontology type references a target that does not exist or no longer maps to the intended table | L.unauthorized-access, L.silent-incorrectness | built |
 | `lost-wakeup` | A NOTIFY wakeup is missed and eligible work waits up to the poll interval | L.liveness-loss | built |
-| `partial-atomic-unit` | Snapshot commit, lineage emit, and enqueue do not all land in one transaction, so provenance/work diverges from data | L.provenance-loss, L.integrity-loss | designed |
+| `partial-atomic-unit` | Standalone Lineage::emit and Queue::enqueue (outside Tx) run as their own transactions; a consumer that uses these instead of the Tx seam creates partial atomicity between snapshot, lineage, and job enqueue | L.provenance-loss, L.integrity-loss | built |
 | `premature-reclaim` | A still-running job's lock is treated as expired and the job is re-dequeued and run concurrently/again | L.integrity-loss, L.provenance-loss | built |
-| `stale-policy` | Query API enforces a cached/old ACL grant or policy after it was revoked or tightened | L.unauthorized-access, L.silent-incorrectness | designed |
+| `stale-policy` | A policy is tightened or revoked between the handler's ACL fetch and the serving engine's query execution; the in-flight query runs under the prior, more-permissive policy | L.unauthorized-access, L.silent-incorrectness | built |
 | `stuck-job` | A crashed worker leaves a job running with no reaper beyond lock-expiry reclaim, stalling that work | L.liveness-loss | built |
 | `type-rebind` | An ontology type is upserted to point at a different physical table, silently redirecting reads under the old policy | L.unauthorized-access, L.silent-incorrectness | built |
-| `unenforced-policy` | Policy is stored and served but no service folds the RowFilter / deny_columns into the scan, so all rows/columns are returned | L.unauthorized-access, L.silent-incorrectness | designed |
+| `unenforced-policy` | Read-path SQL compilation of row/column policy is built (handler + sql.rs) but the binary is a stub; write paths (ingest, transform) have no ACL enforcement | L.unauthorized-access, L.silent-incorrectness | built |
 
 ## Control actions
 
 | ID | Control action | Controller → Process | Maturity | Evidence |
 |----|----|----|----|----|
-| `acl.check` | coarse allow/deny decision for (subject,action,target) | `query-api` → `acl` | built | src/control-plane/postgres/src/acl.rs:191 |
-| `acl.grant` | grant coarse (action,target) to role | `query-api` → `acl` | built | src/control-plane/postgres/src/acl.rs:88 |
-| `acl.policies-for` | fetch row/column policy for subject+target | `query-api` → `acl` | built | src/control-plane/postgres/src/acl.rs:221 |
-| `acl.set-policy` | create/replace row/column policy for role | `query-api` → `acl` | built | src/control-plane/postgres/src/acl.rs:135 |
+| `acl.check` | coarse allow/deny decision for (subject,action,target) | `query-api` → `acl` | built | src/control-plane/postgres/src/acl.rs:305 |
+| `acl.grant` | grant coarse (action,target) to role | `query-api` → `acl` | built | src/control-plane/postgres/src/acl.rs:155 |
+| `acl.policies-for` | fetch row/column policy for subject+target | `query-api` → `acl` | built | src/control-plane/postgres/src/acl.rs:342 |
+| `acl.set-policy` | create/replace row/column policy for role | `query-api` → `acl` | built | src/control-plane/postgres/src/acl.rs:211 |
 | `lineage.emit` | append OpenLineage event with inputs/outputs | `ingest` → `lineage` | built | src/control-plane/postgres/src/lineage.rs:59 |
 | `ontology.define-type` | upsert object type + ordered properties | `query-api` → `ontology` | built | src/control-plane/postgres/src/ontology.rs:12 |
 | `ontology.resolve` | resolve ontology type to physical TableRef | `query-api` → `ontology` | built | src/control-plane/postgres/src/ontology.rs:159 |
@@ -101,8 +104,9 @@ flowchart TD
 | `queue.enqueue` | enqueue job (autocommit) + NOTIFY | `ingest` → `queue` | built | src/control-plane/postgres/src/queue.rs:10 |
 | `queue.fail` | record failure, retry or abandon | `worker` → `queue` | built | src/control-plane/postgres/src/queue.rs:79 |
 | `queue.heartbeat` | refresh lock so long job not reclaimed | `worker` → `queue` | built | src/control-plane/postgres/src/queue.rs:110 |
-| `tx.commit` | commit cross-concern unit of work | `ingest` → `tx` | built | src/control-plane/postgres/src/transaction.rs:16 |
-| `tx.enqueue` | enqueue within transaction (visible only on commit) | `ingest` → `tx` | built | src/control-plane/postgres/src/transaction.rs:24 |
+| `serving.fetch-rows` | execute compiled read-only SQL against DuckLake catalog | `query-api` → `serving-engine` | built | src/services/query-api/src/serving.rs:33 |
+| `tx.commit` | commit cross-concern unit of work (snapshot + lineage + queue) | `ingest` → `tx` | built | src/control-plane/postgres/src/transaction.rs:20 |
+| `tx.enqueue` | enqueue within transaction (visible only on commit) | `ingest` → `tx` | built | src/control-plane/postgres/src/transaction.rs:41 |
 
 ## Unsafe control actions
 
@@ -110,32 +114,33 @@ flowchart TD
 
 | ID | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|
-| `acl.check.not-providing` | `acl.check` | not-providing | Query API service is unbuilt, so no check is issued in the read path and reads are ungoverned | high | unenforced-policy | src/control-plane/core/src/acl.rs:6 |
-| `acl.check.providing` | `acl.check` | providing | check returns Allow against a target that was matched only by exact (kind,a,b) string equality, never resolving Type→Table, so a Type grant misses the backing Table (or vice versa) and grants access on the wrong surface | high | dangling-target, unenforced-policy | src/control-plane/postgres/src/lib.rs:112 |
-| `acl.grant.providing` | `acl.grant` | providing | grant stored against a target that does not exist or is later rebound, since grant never validates target existence | medium | dangling-target | docs/FUTURE.md:49 |
-| `acl.policies-for.not-providing` | `acl.policies-for` | not-providing | row_filter/deny_columns fetched but never folded into the DataFusion plan, returning restricted rows/columns | high | unenforced-policy | src/control-plane/core/src/acl.rs:8 |
-| `acl.policies-for.wrong-duration` | `acl.policies-for` | wrong-duration | multiple roles each yield a Policy and the control plane does no merging; an over-permissive role's (absent) filter widens access unless the Query API ANDs correctly | medium | unenforced-policy | src/control-plane/core/src/acl.rs:134 |
-| `acl.set-policy.wrong-timing` | `acl.set-policy` | wrong-timing | policy is tightened but in-flight queries already planned against the prior policy continue, reading rows now denied | medium | stale-policy | src/control-plane/postgres/src/acl.rs:135 |
+| `acl.check.providing` | `acl.check` | providing | check returns Allow against a target matched by exact (kind,a,b) string equality, never resolving Type to Table; the handler always passes PolicyTarget::Type so a Table grant does not match and a Type grant misses the backing Table | high | dangling-target, unenforced-policy | src/services/query-api/src/handler.rs:53 |
+| `acl.grant.providing` | `acl.grant` | providing | grant stored against a target that does not exist or is later rebound, since grant never validates target existence | medium | dangling-target | docs/FUTURE.md:50 |
+| `acl.set-policy.wrong-timing` | `acl.set-policy` | wrong-timing | policy is tightened but in-flight queries already planned against the prior policy continue, reading rows now denied | medium | stale-policy | src/control-plane/postgres/src/acl.rs:211 |
 | `lineage.emit.not-providing` | `lineage.emit` | not-providing | standalone Lineage.emit is its own transaction, so a snapshot can commit while the lineage event is never emitted (no atomic third leg) | medium | partial-atomic-unit | src/control-plane/postgres/src/lineage.rs:59 |
 | `lineage.emit.providing` | `lineage.emit` | providing | emit stores inputs/outputs and opaque payload with no validation that referenced datasets exist or that envelope matches payload, recording false provenance | medium | dangling-target | docs/FUTURE.md:21 |
 | `ontology.define-type.providing` | `ontology.define-type` | providing | upsert silently replaces a type's table binding with no validation that the new table exists or matches existing policy targets | medium | type-rebind, dangling-target | src/control-plane/postgres/src/ontology.rs:12 |
-| `ontology.resolve.providing` | `ontology.resolve` | providing | resolve returns the current table mapping even after define-type rebound the type to a different physical table, so a query reads a table the caller's policy was not written for | high | type-rebind, unenforced-policy | src/control-plane/postgres/src/ontology.rs:159 |
+| `ontology.resolve.providing` | `ontology.resolve` | providing | the handler's get_type returns the current table mapping even after define-type rebound the type to a different physical table, so a query reads a table the caller's policy was not written for | high | type-rebind, unenforced-policy | src/services/query-api/src/handler.rs:67 |
 | `queue.dequeue.wrong-timing` | `queue.dequeue` | wrong-timing | if heartbeat writes fail (best-effort, fire-and-forget) during a network partition while the original worker still processes the job, locked_at ages past lock_timeout and a second worker reclaims it, duplicating a snapshot-producing transform | high | premature-reclaim | src/control-plane/postgres/src/queue.rs:49 |
-| `tx.commit.not-providing` | `tx.commit` | not-providing | Tx carries only enqueue+emit; the snapshot/catalog write is not part of the unit so commit lands lineage+job without the data write (or vice versa) | high | partial-atomic-unit | docs/FUTURE.md:25 |
 
 <details>
-<summary><b>Not UCAs</b> — 5 examined and rejected</summary>
+<summary><b>Not UCAs</b> — 9 examined and rejected</summary>
 
+- **Tx lacks catalog write (partial atomic unit)** — Tx now includes create_table + append_files; commit_snapshot lands all three legs atomically (src/control-plane/postgres/src/transaction.rs:20)
+- **acl.check not issued (unbuilt query API)** — handler now provides deny-by-default check before any type resolution (src/services/query-api/src/handler.rs:59)
 - **await_jobs missed NOTIFY / spurious early return** — bounded by 5s poll fallback that re-checks via dequeue (src/control-plane/worker/src/lib.rs:19,131)
 - **crashed-worker job left running** — recovered by lock-expiry reclaim in dequeue; only a UCA when heartbeat fails for a live worker (premature-reclaim)
 - **handler never calls heartbeat** — worker loop now heartbeats automatically at lease/3 intervals (src/control-plane/worker/src/lib.rs:97)
 - **memory adapter notify_waiters race losing a wakeup** — same poll-timeout fallback bounds latency by design (src/control-plane/memory/src/queue.rs:92)
+- **multiple-role policy merging absent** — handler ANDs row_filters and unions deny/mask columns across all matching policies (src/services/query-api/src/handler.rs:83)
 - **pg_notify fired inside rolled-back transaction** — NOTIFY is buffered until commit so a rolled-back enqueue is silent, not a spurious wakeup (src/control-plane/postgres/src/queue.rs:13)
+- **policies fetched but never folded into query** — handler compiles row_filter trees and deny/mask columns into the SELECT via sql::compile_select (src/services/query-api/src/handler.rs:118)
 </details>
 
 ## Open questions
 
 - ACL targets are matched by exact (kind,a,b) string equality and Type is never resolved to Table for checks — is a Type grant intended to also cover the backing Table at enforcement time, and where does that resolution happen safely?
-- Does the Query API AND together multiple per-role policies, and what is the semantics when one matching role has no row_filter (None = unrestricted)? acl-design.md says ANDed but enforcement is unbuilt.
-- How are concurrent ingest writers and DuckLake snapshot ordering reconciled (multi-writer is an open question), given catalog writes are not yet wired into Tx?
-- Is there a stuck-job reaper distinct from lock-expiry reclaim, or does a job whose worker crashes after lock expiry but is never re-eligible (e.g. wrong kind set) stall indefinitely? FUTURE/ARCHITECTURE list it as TBD.
+- How are concurrent ingest writers and DuckLake snapshot ordering reconciled (multi-writer is an open question), given the advisory-lock serialization in snapshot.rs serializes within one Postgres database?
+- Is there a stuck-job reaper distinct from lock-expiry reclaim, or does a job whose worker crashes after lock expiry but is never re-eligible (e.g. wrong kind set) stall indefinitely?
+- Subject identity comes from an unverified X-Loom-Subject header (authn is a later spec) — until wired, any HTTP client can impersonate any subject and bypass ACL.
+- The sql.rs quote_ident function panics (assert!) if an ontology property name contains a double quote; should this be an error return to prevent a handler panic?
