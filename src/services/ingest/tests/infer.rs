@@ -7,7 +7,7 @@ fn maps_supported_arrow_types_to_ducklake_strings() {
     assert_eq!(duck_type(&DataType::Utf8), Some("varchar"));
     assert_eq!(duck_type(&DataType::LargeUtf8), Some("varchar"));
     assert_eq!(duck_type(&DataType::Boolean), Some("boolean"));
-    assert_eq!(duck_type(&DataType::Float64), Some("double"));
+    assert_eq!(duck_type(&DataType::Float64), Some("float64"));
     assert_eq!(duck_type(&DataType::Int32), Some("int32"));
 }
 

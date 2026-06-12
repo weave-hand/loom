@@ -4,16 +4,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
+use crate::serving::{ServingEngine, SqlValue};
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
 use control_plane_core::{Acl, Ontology, SubjectId};
-use serde_json::json;
-
-use crate::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
-use crate::serving::{ServingEngine, SqlValue};
 
 /// Shared, owned dependencies (the 'static analog of handler::QueryDeps).
 #[derive(Clone)]
@@ -62,7 +60,7 @@ async fn get_object(
     )
     .await
     {
-        Ok(rows) => Json(rows_to_json(&rows)).into_response(),
+        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
@@ -72,24 +70,4 @@ async fn get_object(
         // tracing subscriber is wired in the binary.
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     }
-}
-
-fn rows_to_json(rows: &crate::handler::ObjectRows) -> serde_json::Value {
-    let cells = |r: &Vec<SqlValue>| -> Vec<serde_json::Value> {
-        r.iter()
-            .map(|c| match c {
-                SqlValue::Text(s) => json!(s),
-                SqlValue::Int(i) => json!(i),
-                SqlValue::Bool(b) => json!(b),
-                SqlValue::Double(f) => json!(f),
-                SqlValue::Date(d) => json!(crate::serving::iso_date(d)),
-                SqlValue::Timestamp(ts) => json!(crate::serving::iso_timestamp(ts)),
-                SqlValue::Null => serde_json::Value::Null,
-            })
-            .collect()
-    };
-    json!({
-        "columns": rows.columns,
-        "rows": rows.rows.iter().map(cells).collect::<Vec<_>>(),
-    })
 }

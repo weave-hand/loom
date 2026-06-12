@@ -52,7 +52,7 @@ impl BaseType {
         match self {
             BaseType::Integer => &["int32"],
             BaseType::Long => &["int64"],
-            BaseType::Double => &["double"],
+            BaseType::Double => &["float64"],
             BaseType::Boolean => &["boolean"],
             BaseType::String => &["varchar"],
             BaseType::Date => &["date"],

@@ -124,6 +124,19 @@ loom_fixture_test(
 )
 
 rust_test(
+    name = "render",
+    crate = "render",
+    srcs = ["tests/render.rs"],
+    crate_root = "tests/render.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:serde_json",
+        "//third-party:time",
+    ],
+)
+
+rust_test(
     name = "quack-inline",
     crate = "quack_inline",
     srcs = ["tests/quack_inline.rs"],

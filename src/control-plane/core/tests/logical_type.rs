@@ -26,7 +26,7 @@ fn unknown_logical_type_does_not_resolve() {
 fn satisfies_matches_physical_affinity() {
     assert_eq!(satisfies("Long", "int64"), Ok(true));
     assert_eq!(satisfies("Integer", "int32"), Ok(true));
-    assert_eq!(satisfies("Double", "double"), Ok(true));
+    assert_eq!(satisfies("Double", "float64"), Ok(true));
     assert_eq!(satisfies("Boolean", "boolean"), Ok(true));
     assert_eq!(satisfies("String", "varchar"), Ok(true));
     assert_eq!(satisfies("EmailAddress", "varchar"), Ok(true));
