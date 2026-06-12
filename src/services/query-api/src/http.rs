@@ -81,6 +81,9 @@ fn rows_to_json(rows: &Rows) -> serde_json::Value {
                 SqlValue::Text(s) => json!(s),
                 SqlValue::Int(i) => json!(i),
                 SqlValue::Bool(b) => json!(b),
+                SqlValue::Double(f) => json!(f),
+                SqlValue::Date(d) => json!(crate::serving::iso_date(d)),
+                SqlValue::Timestamp(ts) => json!(crate::serving::iso_timestamp(ts)),
                 SqlValue::Null => serde_json::Value::Null,
             })
             .collect()
