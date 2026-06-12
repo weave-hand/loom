@@ -11,13 +11,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
-use control_plane_core::{Acl, Ontology, SubjectId};
+use control_plane_core::{ControlPlane, SubjectId};
 
-/// Shared, owned dependencies (the 'static analog of handler::QueryDeps).
+/// Shared, owned dependencies. Holds the control plane as one object-safe facade
+/// (`Arc<dyn ControlPlane>`) and hands its narrow concern objects to the read path.
 #[derive(Clone)]
 pub struct AppState {
-    pub ontology: Arc<dyn Ontology + Send + Sync>,
-    pub acl: Arc<dyn Acl + Send + Sync>,
+    pub cp: Arc<dyn ControlPlane>,
     pub serving: Arc<dyn ServingEngine>,
 }
 
@@ -46,8 +46,8 @@ async fn get_object(
         .map(|(k, v)| (k, SqlValue::Text(v)))
         .collect();
     let deps = QueryDeps {
-        ontology: st.ontology.as_ref(),
-        acl: st.acl.as_ref(),
+        ontology: st.cp.ontology(),
+        acl: st.cp.acl(),
         serving: st.serving.as_ref(),
     };
     match read_object(

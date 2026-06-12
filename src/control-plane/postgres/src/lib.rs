@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Action, Cardinality, ControlPlane, ControlPlaneError, Effect, EventType, PolicyTarget, Result,
-    Tx,
+    Acl, Action, Cardinality, Catalog, ControlPlane, ControlPlaneError, Effect, EventType, Lineage,
+    Ontology, PolicyTarget, Queue, Result, Tx,
 };
 use sqlx::PgPool;
 
@@ -59,6 +59,21 @@ pub async fn run_migrations(pool: &PgPool, migrations_dir: &Path) -> Result<()> 
 
 #[async_trait]
 impl ControlPlane for PgControlPlane {
+    fn catalog(&self) -> &(dyn Catalog + Send + Sync) {
+        self
+    }
+    fn ontology(&self) -> &(dyn Ontology + Send + Sync) {
+        self
+    }
+    fn acl(&self) -> &(dyn Acl + Send + Sync) {
+        self
+    }
+    fn lineage(&self) -> &(dyn Lineage + Send + Sync) {
+        self
+    }
+    fn queue(&self) -> &(dyn Queue + Send + Sync) {
+        self
+    }
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         let tx = self.pool.begin().await.map_err(backend)?;
         Ok(Box::new(PgTx {
