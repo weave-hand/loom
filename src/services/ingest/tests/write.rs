@@ -36,9 +36,13 @@ fn writes_parquet_and_extracts_load_bearing_stats() {
     assert_eq!(id.null_count, 0);
     assert_eq!(id.value_count, 3);
     assert!(id.column_size_bytes > 0);
+    assert_eq!(id.min.as_deref(), Some("1"));
+    assert_eq!(id.max.as_deref(), Some("3"));
 
     let name = &w.column_stats[1];
     assert_eq!(name.column_name, "name");
     assert_eq!(name.null_count, 1);
     assert_eq!(name.value_count, 2);
+    assert_eq!(name.min.as_deref(), Some("a"));
+    assert_eq!(name.max.as_deref(), Some("c"));
 }

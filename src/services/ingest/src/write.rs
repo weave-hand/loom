@@ -51,6 +51,8 @@ pub fn write_parquet(
     let reader = SerializedFileReader::new(Bytes::from(buf.clone()))?;
     let meta = reader.metadata();
     let record_count: i64 = meta.file_metadata().num_rows();
+    // best-effort: min/max are only emitted for single-row-group files (merging typed
+    // ranges across row groups is not worth it here; absent min/max just disables pruning).
     let single_rg = meta.num_row_groups() == 1;
 
     let mut column_stats = Vec::with_capacity(schema.fields().len());
@@ -61,6 +63,14 @@ pub fn write_parquet(
         let mut max: Option<String> = None;
         for rg in meta.row_groups() {
             let col = rg.column(i);
+            // ArrowWriter always emits column statistics, so null_count/value_count below are
+            // faithful. If a column chunk ever lacked stats, null_count would default to 0 and
+            // value_count to record_count (asserting "no nulls"), which could mislead DuckDB
+            // pruning — guard the assumption rather than silently understate nulls.
+            debug_assert!(
+                col.statistics().is_some(),
+                "expected ArrowWriter to emit column statistics"
+            );
             column_size_bytes += col.compressed_size();
             if let Some(stats) = col.statistics() {
                 null_count += stats.null_count_opt().unwrap_or(0) as i64;
@@ -92,7 +102,11 @@ pub fn write_parquet(
 /// The 4 bytes before the trailing `PAR1` magic are the little-endian footer
 /// length DuckLake records as `footer_size`.
 fn parquet_footer_size(bytes: &[u8]) -> i64 {
-    debug_assert!(bytes.len() >= 8 && &bytes[bytes.len() - 4..] == b"PAR1");
+    assert!(
+        bytes.len() >= 8 && &bytes[bytes.len() - 4..] == b"PAR1",
+        "not a well-formed parquet buffer (len {}, missing PAR1 magic)",
+        bytes.len()
+    );
     let len = &bytes[bytes.len() - 8..bytes.len() - 4];
     u32::from_le_bytes(len.try_into().unwrap()) as i64
 }
