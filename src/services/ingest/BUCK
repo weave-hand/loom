@@ -1,0 +1,15 @@
+rust_library(
+    name = "ingest",
+    crate = "ingest",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:arrow",
+        "//third-party:parquet",
+        "//third-party:object_store",
+        "//third-party:thiserror",
+    ],
+    visibility = ["PUBLIC"],
+)
