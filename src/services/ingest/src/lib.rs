@@ -4,3 +4,4 @@
 
 pub mod gate;
 pub mod infer;
+pub mod write;

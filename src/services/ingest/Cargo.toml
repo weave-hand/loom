@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 control-plane-core = { path = "../../control-plane/core" }
 arrow = "58"
+bytes = "1"
 parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
 object_store = "0.11"
 thiserror = "1"

@@ -1636,6 +1636,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "bytes",
+    actual = ":bytes-1",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "bytes-1.11.1.crate",
     sha256 = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33",
@@ -2965,12 +2971,8 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "8",
         "CARGO_PKG_VERSION_PRE": "",
     },
-    features = [
-        "default",
-        "powerfmt",
-    ],
+    features = ["default"],
     visibility = [],
-    deps = [":powerfmt-0.2"],
 )
 
 http_archive(
@@ -7105,23 +7107,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "memchr-2.8.1.crate",
-    sha256 = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8",
-    strip_prefix = "memchr-2.8.1",
-    urls = ["https://static.crates.io/crates/memchr/2.8.1/download"],
+    name = "memchr-2.8.2.crate",
+    sha256 = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4",
+    strip_prefix = "memchr-2.8.2",
+    urls = ["https://static.crates.io/crates/memchr/2.8.2/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "memchr-2",
-    srcs = [":memchr-2.8.1.crate"],
+    srcs = [":memchr-2.8.2.crate"],
     crate = "memchr",
-    crate_root = "memchr-2.8.1.crate/src/lib.rs",
+    crate_root = "memchr-2.8.2.crate/src/lib.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "memchr",
         "CARGO_CRATE_NAME": "memchr",
-        "CARGO_MANIFEST_DIR": "memchr-2.8.1.crate",
+        "CARGO_MANIFEST_DIR": "memchr-2.8.2.crate",
         "CARGO_PKG_AUTHORS": "Andrew Gallant <jamslam@gmail.com>:bluss",
         "CARGO_PKG_DESCRIPTION": "Provides extremely fast (uses SIMD on x86_64, aarch64 and wasm32) routines for\n1, 2 or 3 byte search and single substring search.\n",
         "CARGO_PKG_HOMEPAGE": "https://github.com/BurntSushi/memchr",
@@ -7129,10 +7131,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/BurntSushi/memchr",
         "CARGO_PKG_RUST_VERSION": "1.61",
-        "CARGO_PKG_VERSION": "2.8.1",
+        "CARGO_PKG_VERSION": "2.8.2",
         "CARGO_PKG_VERSION_MAJOR": "2",
         "CARGO_PKG_VERSION_MINOR": "8",
-        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PATCH": "2",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
@@ -9064,23 +9066,23 @@ buildscript_run(
 )
 
 http_archive(
-    name = "rust_decimal-1.42.0.crate",
-    sha256 = "0c5108e3d4d903e21aac27f12ba5377b6b34f9f44b325e4894c7924169d06995",
-    strip_prefix = "rust_decimal-1.42.0",
-    urls = ["https://static.crates.io/crates/rust_decimal/1.42.0/download"],
+    name = "rust_decimal-1.42.1.crate",
+    sha256 = "be2a24f50780bc85f09cc6ac299bdf1424302742d77221106859c9d8b102126a",
+    strip_prefix = "rust_decimal-1.42.1",
+    urls = ["https://static.crates.io/crates/rust_decimal/1.42.1/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "rust_decimal-1",
-    srcs = [":rust_decimal-1.42.0.crate"],
+    srcs = [":rust_decimal-1.42.1.crate"],
     crate = "rust_decimal",
-    crate_root = "rust_decimal-1.42.0.crate/src/lib.rs",
+    crate_root = "rust_decimal-1.42.1.crate/src/lib.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "rust_decimal",
         "CARGO_CRATE_NAME": "rust_decimal",
-        "CARGO_MANIFEST_DIR": "rust_decimal-1.42.0.crate",
+        "CARGO_MANIFEST_DIR": "rust_decimal-1.42.1.crate",
         "CARGO_PKG_AUTHORS": "Paul Mason <paul@form1.co.nz>",
         "CARGO_PKG_DESCRIPTION": "Decimal number implementation written in pure Rust suitable for financial and fixed-precision calculations.",
         "CARGO_PKG_HOMEPAGE": "",
@@ -9088,10 +9090,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/paupino/rust-decimal",
         "CARGO_PKG_RUST_VERSION": "1.67.1",
-        "CARGO_PKG_VERSION": "1.42.0",
+        "CARGO_PKG_VERSION": "1.42.1",
         "CARGO_PKG_VERSION_MAJOR": "1",
         "CARGO_PKG_VERSION_MINOR": "42",
-        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PATCH": "1",
         "CARGO_PKG_VERSION_PRE": "",
         "OUT_DIR": "$(location :rust_decimal-1-build-script-run[out_dir])",
     },
@@ -9111,14 +9113,14 @@ cargo.rust_library(
 
 cargo.rust_binary(
     name = "rust_decimal-1-build-script-build",
-    srcs = [":rust_decimal-1.42.0.crate"],
+    srcs = [":rust_decimal-1.42.1.crate"],
     crate = "build_script_build",
-    crate_root = "rust_decimal-1.42.0.crate/build.rs",
+    crate_root = "rust_decimal-1.42.1.crate/build.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "build-script-build",
         "CARGO_CRATE_NAME": "build_script_build",
-        "CARGO_MANIFEST_DIR": "rust_decimal-1.42.0.crate",
+        "CARGO_MANIFEST_DIR": "rust_decimal-1.42.1.crate",
         "CARGO_PKG_AUTHORS": "Paul Mason <paul@form1.co.nz>",
         "CARGO_PKG_DESCRIPTION": "Decimal number implementation written in pure Rust suitable for financial and fixed-precision calculations.",
         "CARGO_PKG_HOMEPAGE": "",
@@ -9126,10 +9128,10 @@ cargo.rust_binary(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/paupino/rust-decimal",
         "CARGO_PKG_RUST_VERSION": "1.67.1",
-        "CARGO_PKG_VERSION": "1.42.0",
+        "CARGO_PKG_VERSION": "1.42.1",
         "CARGO_PKG_VERSION_MAJOR": "1",
         "CARGO_PKG_VERSION_MINOR": "42",
-        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PATCH": "1",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
@@ -9153,7 +9155,7 @@ buildscript_run(
         "CARGO_PKG_RUST_VERSION": "1.67.1",
         "CARGO_PKG_VERSION_MAJOR": "1",
         "CARGO_PKG_VERSION_MINOR": "42",
-        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PATCH": "1",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
@@ -9161,7 +9163,7 @@ buildscript_run(
         "serde",
         "std",
     ],
-    version = "1.42.0",
+    version = "1.42.1",
 )
 
 http_archive(
@@ -11936,23 +11938,23 @@ alias(
 )
 
 http_archive(
-    name = "time-0.3.47.crate",
-    sha256 = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c",
-    strip_prefix = "time-0.3.47",
-    urls = ["https://static.crates.io/crates/time/0.3.47/download"],
+    name = "time-0.3.48.crate",
+    sha256 = "fc1aa89044e7786ffb2ec017acb22cb7de5b0be46d0f21aea2b224b8561e5db2",
+    strip_prefix = "time-0.3.48",
+    urls = ["https://static.crates.io/crates/time/0.3.48/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "time-0.3",
-    srcs = [":time-0.3.47.crate"],
+    srcs = [":time-0.3.48.crate"],
     crate = "time",
-    crate_root = "time-0.3.47.crate/src/lib.rs",
+    crate_root = "time-0.3.48.crate/src/lib.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "time",
         "CARGO_CRATE_NAME": "time",
-        "CARGO_MANIFEST_DIR": "time-0.3.47.crate",
+        "CARGO_MANIFEST_DIR": "time-0.3.48.crate",
         "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
         "CARGO_PKG_DESCRIPTION": "Date and time library. Fully interoperable with the standard library. Mostly compatible with #![no_std].",
         "CARGO_PKG_HOMEPAGE": "https://time-rs.github.io",
@@ -11960,10 +11962,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
         "CARGO_PKG_RUST_VERSION": "1.88.0",
-        "CARGO_PKG_VERSION": "0.3.47",
+        "CARGO_PKG_VERSION": "0.3.48",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "3",
-        "CARGO_PKG_VERSION_PATCH": "47",
+        "CARGO_PKG_VERSION_PATCH": "48",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
@@ -11977,7 +11979,6 @@ cargo.rust_library(
     visibility = [],
     deps = [
         ":deranged-0.5",
-        ":itoa-1",
         ":num-conv-0.2",
         ":powerfmt-0.2",
         ":time-core-0.1",
@@ -11986,23 +11987,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "time-core-0.1.8.crate",
-    sha256 = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca",
-    strip_prefix = "time-core-0.1.8",
-    urls = ["https://static.crates.io/crates/time-core/0.1.8/download"],
+    name = "time-core-0.1.9.crate",
+    sha256 = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109",
+    strip_prefix = "time-core-0.1.9",
+    urls = ["https://static.crates.io/crates/time-core/0.1.9/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "time-core-0.1",
-    srcs = [":time-core-0.1.8.crate"],
+    srcs = [":time-core-0.1.9.crate"],
     crate = "time_core",
-    crate_root = "time-core-0.1.8.crate/src/lib.rs",
+    crate_root = "time-core-0.1.9.crate/src/lib.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "time_core",
         "CARGO_CRATE_NAME": "time_core",
-        "CARGO_MANIFEST_DIR": "time-core-0.1.8.crate",
+        "CARGO_MANIFEST_DIR": "time-core-0.1.9.crate",
         "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
         "CARGO_PKG_DESCRIPTION": "This crate is an implementation detail and should not be relied upon directly.",
         "CARGO_PKG_HOMEPAGE": "",
@@ -12010,33 +12011,33 @@ cargo.rust_library(
         "CARGO_PKG_README": "",
         "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
         "CARGO_PKG_RUST_VERSION": "1.88.0",
-        "CARGO_PKG_VERSION": "0.1.8",
+        "CARGO_PKG_VERSION": "0.1.9",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "1",
-        "CARGO_PKG_VERSION_PATCH": "8",
+        "CARGO_PKG_VERSION_PATCH": "9",
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
 )
 
 http_archive(
-    name = "time-macros-0.2.27.crate",
-    sha256 = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215",
-    strip_prefix = "time-macros-0.2.27",
-    urls = ["https://static.crates.io/crates/time-macros/0.2.27/download"],
+    name = "time-macros-0.2.28.crate",
+    sha256 = "9d3bfe86347f0cc659f586f01e26303ccd32418f26f30c7b0309b3ca3a07d695",
+    strip_prefix = "time-macros-0.2.28",
+    urls = ["https://static.crates.io/crates/time-macros/0.2.28/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "time-macros-0.2",
-    srcs = [":time-macros-0.2.27.crate"],
+    srcs = [":time-macros-0.2.28.crate"],
     crate = "time_macros",
-    crate_root = "time-macros-0.2.27.crate/src/lib.rs",
+    crate_root = "time-macros-0.2.28.crate/src/lib.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "time_macros",
         "CARGO_CRATE_NAME": "time_macros",
-        "CARGO_MANIFEST_DIR": "time-macros-0.2.27.crate",
+        "CARGO_MANIFEST_DIR": "time-macros-0.2.28.crate",
         "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
         "CARGO_PKG_DESCRIPTION": "    Procedural macros for the time crate.\n    This crate is an implementation detail and should not be relied upon directly.\n",
         "CARGO_PKG_HOMEPAGE": "",
@@ -12044,10 +12045,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "",
         "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
         "CARGO_PKG_RUST_VERSION": "1.88.0",
-        "CARGO_PKG_VERSION": "0.2.27",
+        "CARGO_PKG_VERSION": "0.2.28",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "2",
-        "CARGO_PKG_VERSION_PATCH": "27",
+        "CARGO_PKG_VERSION_PATCH": "28",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [

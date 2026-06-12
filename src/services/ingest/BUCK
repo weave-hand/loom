@@ -7,6 +7,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//third-party:arrow",
+        "//third-party:bytes",
         "//third-party:parquet",
         "//third-party:object_store",
         "//third-party:thiserror",
@@ -28,6 +29,15 @@ rust_test(
     crate = "gate",
     srcs = ["tests/gate.rs"],
     crate_root = "tests/gate.rs",
+    edition = "2024",
+    deps = [":ingest", "//third-party:arrow"],
+)
+
+rust_test(
+    name = "write",
+    crate = "write",
+    srcs = ["tests/write.rs"],
+    crate_root = "tests/write.rs",
     edition = "2024",
     deps = [":ingest", "//third-party:arrow"],
 )
