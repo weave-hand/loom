@@ -1572,6 +1572,69 @@ where
     );
 }
 
+/// Contract for the object-safe `ControlPlane` facade: every concern is reachable
+/// through a `&dyn ControlPlane` accessor and dispatches to the live adapter impl.
+/// `cp` must be freshly empty.
+pub async fn control_plane_facade_contract<CP: ControlPlane>(cp: &CP) {
+    // Erase to the trait object: everything below goes through the facade, not the
+    // concrete adapter — that is the whole point of the accessors.
+    let cp: &dyn ControlPlane = cp;
+
+    // queue: a job enqueued through the facade is dequeued through the facade.
+    let id = cp
+        .queue()
+        .enqueue(job("facade"))
+        .await
+        .expect("enqueue via facade");
+    let j = cp
+        .queue()
+        .dequeue(&["facade".to_string()], "facade-worker")
+        .await
+        .expect("dequeue via facade")
+        .expect("the enqueued job");
+    assert_eq!(j.id, id, "facade queue() dispatches to the live queue");
+
+    // ontology: empty on a fresh control plane, reached through the facade.
+    let types = cp
+        .ontology()
+        .list_types(PageReq::unbounded())
+        .await
+        .expect("list_types via facade");
+    assert!(
+        types.is_empty(),
+        "fresh ontology() is empty through the facade"
+    );
+
+    // acl: deny-by-default for an unknown subject, reached through the facade.
+    let decision = cp
+        .acl()
+        .check(
+            &SubjectId("nobody".into()),
+            Action::Read,
+            &PolicyTarget::Type(TypeName("Whatever".into())),
+        )
+        .await
+        .expect("check via facade");
+    assert_eq!(decision, Decision::Deny, "facade acl() denies by default");
+
+    // lineage: no events for an unknown run, reached through the facade.
+    let events = cp
+        .lineage()
+        .events_for(&RunId(uuid::Uuid::new_v4()), PageReq::unbounded())
+        .await
+        .expect("events_for via facade");
+    assert!(
+        events.is_empty(),
+        "fresh lineage() has no events through the facade"
+    );
+
+    // catalog: the accessor is object-safe and returns a live trait object. Behavioral
+    // catalog reads hit ducklake_* tables that need an attached catalog (covered by
+    // catalog_contract); binding the ref here keeps this contract DuckLake-free so the
+    // postgres facade test runs postgres-only.
+    let _catalog: &(dyn Catalog + Send + Sync) = cp.catalog();
+}
+
 /// Contract for the snapshot-commit primitive (`create_table` + `append_files` +
 /// `emit` + `enqueue` all in one transaction). Proves the four-leg atomic unit.
 /// `cp` must be freshly empty.

@@ -100,3 +100,16 @@ rust_test(
     edition = "2024",
     deps = [":memory", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
+
+rust_test(
+    name = "facade",
+    crate = "facade",
+    srcs = ["tests/facade.rs"],
+    crate_root = "tests/facade.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tokio",
+    ],
+)

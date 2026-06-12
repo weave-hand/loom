@@ -271,6 +271,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "facade",
+    crate = "facade",
+    srcs = ["tests/facade.rs"],
+    crate_root = "tests/facade.rs",
+    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "lineage-roundtrip",
     crate = "lineage_roundtrip",
     srcs = ["tests/lineage_roundtrip.rs"],

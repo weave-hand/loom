@@ -3,14 +3,27 @@
 
 use async_trait::async_trait;
 
-use crate::catalog::{SnapshotId, TableRef};
+use crate::acl::Acl;
+use crate::catalog::{Catalog, SnapshotId, TableRef};
 use crate::error::Result;
-use crate::lineage::LineageEvent;
-use crate::queue::{JobId, NewJob};
+use crate::lineage::{Lineage, LineageEvent};
+use crate::ontology::Ontology;
+use crate::queue::{JobId, NewJob, Queue};
 use crate::snapshot::{ColumnSpec, DataFile};
 
 #[async_trait]
 pub trait ControlPlane: Send + Sync {
+    /// The DuckLake catalog read surface.
+    fn catalog(&self) -> &(dyn Catalog + Send + Sync);
+    /// The object/link ontology.
+    fn ontology(&self) -> &(dyn Ontology + Send + Sync);
+    /// The access-control policy surface.
+    fn acl(&self) -> &(dyn Acl + Send + Sync);
+    /// The lineage event log.
+    fn lineage(&self) -> &(dyn Lineage + Send + Sync);
+    /// The job queue.
+    fn queue(&self) -> &(dyn Queue + Send + Sync);
+
     /// Open a unit of work. Issue operations on the returned `Tx`, then `commit`
     /// or `rollback`.
     async fn begin(&self) -> Result<Box<dyn Tx + Send>>;

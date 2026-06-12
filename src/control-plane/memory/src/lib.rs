@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    ColumnDef, ControlPlane, FileRef, NewJob, Result, SnapshotId, TableRef, Tx,
+    Acl, Catalog, ColumnDef, ControlPlane, FileRef, Lineage, NewJob, Ontology, Queue, Result,
+    SnapshotId, TableRef, Tx,
 };
 use time::OffsetDateTime;
 use tokio::sync::Notify;
@@ -180,6 +181,21 @@ impl MemoryControlPlane {
 
 #[async_trait]
 impl ControlPlane for MemoryControlPlane {
+    fn catalog(&self) -> &(dyn Catalog + Send + Sync) {
+        self
+    }
+    fn ontology(&self) -> &(dyn Ontology + Send + Sync) {
+        self
+    }
+    fn acl(&self) -> &(dyn Acl + Send + Sync) {
+        self
+    }
+    fn lineage(&self) -> &(dyn Lineage + Send + Sync) {
+        self
+    }
+    fn queue(&self) -> &(dyn Queue + Send + Sync) {
+        self
+    }
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         Ok(Box::new(MemoryTx {
             rows: self.rows.clone(),
