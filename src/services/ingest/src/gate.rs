@@ -3,6 +3,10 @@
 //! later slice derives a `ModelShape` from an `ObjectType`. This slice ships the
 //! seam plus a minimal check (required columns present, types match). Richer
 //! constraints (ranges, regex, coercion) extend `ViolationReason`.
+//!
+//! Note: this validates schema STRUCTURE (column presence + type), not runtime
+//! values — a column declared non-nullable can still carry nulls in the batch;
+//! value/null-constraint enforcement is a later slice.
 
 use arrow::datatypes::Schema;
 

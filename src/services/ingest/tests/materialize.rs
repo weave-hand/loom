@@ -71,12 +71,61 @@ async fn unmodeled_landing_returns_a_snapshot() {
     .await
     .unwrap();
 
-    assert!(snap.0 >= 0);
+    assert_eq!(snap.0, 1, "first snapshot in a fresh control plane");
     assert!(
         dir.path()
             .join("main")
             .join("customer")
             .join("part-0.parquet")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn modeled_landing_passes_gate_and_returns_a_snapshot() {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalFileSystem::new_with_prefix(dir.path()).unwrap();
+    let (schema, b) = batch();
+    let t = table();
+
+    // A model the batch satisfies (id int64 required, email varchar optional).
+    let shape = ModelShape {
+        columns: vec![
+            ColumnShape {
+                name: "id".into(),
+                ty: "int64".into(),
+                required: true,
+            },
+            ColumnShape {
+                name: "email".into(),
+                ty: "varchar".into(),
+                required: false,
+            },
+        ],
+    };
+
+    let snap = materialize(
+        &cp,
+        &store,
+        MaterializeRequest {
+            table: &t,
+            schema,
+            batches: &[b],
+            file_name: "modeled.parquet",
+            gate: Some(&shape),
+            lineage: lineage(&t),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(snap.0, 1, "first snapshot in a fresh control plane");
+    assert!(
+        dir.path()
+            .join("main")
+            .join("customer")
+            .join("modeled.parquet")
             .exists()
     );
 }

@@ -11,8 +11,14 @@ pub mod write;
 pub use gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 pub use materialize::{MaterializeRequest, materialize};
 
-/// Everything that can go wrong landing data. Fail-fast: a failure before
-/// `commit` leaves no catalog rows (commit is never reached).
+/// Everything that can go wrong landing data. No partial catalog state is ever
+/// committed:
+/// - Failures before `cp.begin()` (gate / write / put) leave no open transaction
+///   and no catalog rows.
+/// - Failures after `begin()` but before `commit()` drop the `Tx`, which rolls
+///   back (the postgres adapter auto-rolls back on drop; the memory adapter only
+///   staged in memory). A put-then-commit failure may orphan the Parquet file
+///   (documented in `materialize`); GC is a deferred concern.
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
     /// The batch did not satisfy the supplied model (rejected before any write).
