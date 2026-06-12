@@ -19,7 +19,9 @@ pub use acl::{
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
 pub use error::{ControlPlaneError, Result};
 pub use lineage::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
-pub use logical_type::{BaseType, UnknownLogicalType, resolve_logical, satisfies};
+pub use logical_type::{
+    BaseType, JsonRepr, UnknownLogicalType, json_repr_of, resolve_logical, satisfies,
+};
 pub use ontology::{Cardinality, LinkDef, ObjectType, Ontology, PropertyDef, TypeName};
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};

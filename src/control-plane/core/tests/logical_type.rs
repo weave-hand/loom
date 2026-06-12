@@ -1,4 +1,6 @@
-use control_plane_core::{BaseType, UnknownLogicalType, resolve_logical, satisfies};
+use control_plane_core::{
+    BaseType, JsonRepr, UnknownLogicalType, json_repr_of, resolve_logical, satisfies,
+};
 
 #[test]
 fn resolves_base_names_case_insensitively() {
@@ -49,6 +51,33 @@ fn satisfies_normalizes_physical_casing_and_whitespace() {
 fn satisfies_errors_on_unknown_logical_type() {
     assert_eq!(
         satisfies("Money", "double"),
+        Err(UnknownLogicalType("Money".into()))
+    );
+}
+
+#[test]
+fn base_types_classify_to_json_repr() {
+    assert_eq!(BaseType::Integer.json_repr(), JsonRepr::Number);
+    assert_eq!(BaseType::Double.json_repr(), JsonRepr::Number);
+    assert_eq!(BaseType::Long.json_repr(), JsonRepr::NumericString);
+    assert_eq!(BaseType::Boolean.json_repr(), JsonRepr::Bool);
+    assert_eq!(BaseType::String.json_repr(), JsonRepr::PlainString);
+    assert_eq!(BaseType::Date.json_repr(), JsonRepr::IsoDate);
+    assert_eq!(BaseType::Timestamp.json_repr(), JsonRepr::IsoTimestamp);
+}
+
+#[test]
+fn json_repr_of_resolves_names_and_aliases() {
+    assert_eq!(json_repr_of("Long"), Ok(JsonRepr::NumericString));
+    assert_eq!(json_repr_of("integer"), Ok(JsonRepr::Number));
+    assert_eq!(json_repr_of("EmailAddress"), Ok(JsonRepr::PlainString));
+    assert_eq!(json_repr_of("  timestamp "), Ok(JsonRepr::IsoTimestamp));
+}
+
+#[test]
+fn json_repr_of_errors_on_unknown_type() {
+    assert_eq!(
+        json_repr_of("Money"),
         Err(UnknownLogicalType("Money".into()))
     );
 }

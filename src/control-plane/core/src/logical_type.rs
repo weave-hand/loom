@@ -4,9 +4,11 @@
 //! no I/O. The vocabulary is CLOSED: an unrecognized logical type is an error, never
 //! a silent pass — that keeps the ontology authoritative.
 //!
-//! NOTE: this vocabulary is the natural anchor for a later query-path typed JSON
-//! serialization (Date/Timestamp -> ISO-8601 strings, Long -> JSON string to keep
-//! int64 precision past 2^53). That wire-encoding axis is intentionally NOT here.
+//! NOTE: this vocabulary also classifies how each type renders on the JSON wire
+//! (see `JsonRepr` / `json_repr_of`): Date/Timestamp -> ISO-8601 strings, Long ->
+//! JSON string to keep int64 precision past 2^53. That is a classification only;
+//! the actual serde_json construction lives at the query-api boundary where the
+//! scalar values are, so core stays JSON-free.
 
 /// A loom base scalar logical type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +26,25 @@ pub enum BaseType {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnknownLogicalType(pub String);
 
+/// How a logical type renders on the JSON wire. A classification only — the actual
+/// `serde_json` construction happens where the scalar values live (query-api), so
+/// `core` needs no JSON dependency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsonRepr {
+    /// Integer, Double -> JSON number.
+    Number,
+    /// Long -> JSON string (int64 exceeds JSON's 2^53 safe-integer range).
+    NumericString,
+    /// Boolean -> JSON bool.
+    Bool,
+    /// String (+ aliases) -> JSON string.
+    PlainString,
+    /// Date -> ISO-8601 date string (YYYY-MM-DD).
+    IsoDate,
+    /// Timestamp -> ISO-8601 datetime string (YYYY-MM-DDThh:mm:ss).
+    IsoTimestamp,
+}
+
 impl BaseType {
     /// The DuckLake physical type strings (canonical lowercase) that satisfy this
     /// base type. Exact-match, no implicit widening (Integer is 32-bit, Long 64-bit).
@@ -36,6 +57,18 @@ impl BaseType {
             BaseType::String => &["varchar"],
             BaseType::Date => &["date"],
             BaseType::Timestamp => &["timestamp"],
+        }
+    }
+
+    /// How a value of this base type renders on the JSON wire.
+    pub fn json_repr(self) -> JsonRepr {
+        match self {
+            BaseType::Integer | BaseType::Double => JsonRepr::Number,
+            BaseType::Long => JsonRepr::NumericString,
+            BaseType::Boolean => JsonRepr::Bool,
+            BaseType::String => JsonRepr::PlainString,
+            BaseType::Date => JsonRepr::IsoDate,
+            BaseType::Timestamp => JsonRepr::IsoTimestamp,
         }
     }
 }
@@ -67,4 +100,13 @@ pub fn satisfies(logical_ty: &str, physical_ty: &str) -> Result<bool, UnknownLog
         .ok_or_else(|| UnknownLogicalType(logical_ty.trim().to_string()))?;
     let phys = physical_ty.trim().to_ascii_lowercase();
     Ok(base.physical_affinity().contains(&phys.as_str()))
+}
+
+/// The JSON wire rendering for a logical type name (base or alias, case-insensitively).
+/// `Err(UnknownLogicalType)` if loom does not recognize the type — callers fall back
+/// to a best-effort natural rendering rather than failing a permitted read.
+pub fn json_repr_of(logical_ty: &str) -> Result<JsonRepr, UnknownLogicalType> {
+    resolve_logical(logical_ty)
+        .map(BaseType::json_repr)
+        .ok_or_else(|| UnknownLogicalType(logical_ty.trim().to_string()))
 }
