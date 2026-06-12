@@ -11,7 +11,22 @@ pub enum SqlValue {
     Text(String),
     Int(i64),
     Bool(bool),
+    Double(f64),
+    Date(time::Date),
+    Timestamp(time::PrimitiveDateTime),
     Null,
+}
+
+/// ISO-8601 date `YYYY-MM-DD`. Shared by the JSON renderer and the Quack literal path.
+pub(crate) fn iso_date(d: &time::Date) -> String {
+    let fmt = time::macros::format_description!("[year]-[month]-[day]");
+    d.format(&fmt).unwrap_or_else(|_| d.to_string())
+}
+
+/// ISO-8601 datetime `YYYY-MM-DDThh:mm:ss` (no subseconds, no offset — bare timestamp).
+pub(crate) fn iso_timestamp(ts: &time::PrimitiveDateTime) -> String {
+    let fmt = time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
+    ts.format(&fmt).unwrap_or_else(|_| ts.to_string())
 }
 
 /// A result set: column names plus rows of cells (row-major, aligned to `columns`).
@@ -174,9 +189,12 @@ fn sql_escape(s: &str) -> String {
 fn render_literal(v: &SqlValue) -> String {
     match v {
         SqlValue::Int(n) => n.to_string(),
+        SqlValue::Double(f) => f.to_string(),
         SqlValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
         SqlValue::Null => "NULL".to_string(),
         SqlValue::Text(s) => format!("'{}'", sql_escape(s)),
+        SqlValue::Date(d) => format!("DATE '{}'", iso_date(d)),
+        SqlValue::Timestamp(ts) => format!("TIMESTAMP '{}'", iso_timestamp(ts)),
     }
 }
 
@@ -203,11 +221,24 @@ pub fn inline_params(sql: &str, params: &[SqlValue]) -> String {
 }
 
 fn to_duck(v: &SqlValue) -> duckdb::types::Value {
-    use duckdb::types::Value;
+    use duckdb::types::{TimeUnit, Value};
     match v {
         SqlValue::Text(s) => Value::Text(s.clone()),
         SqlValue::Int(i) => Value::BigInt(*i),
         SqlValue::Bool(b) => Value::Boolean(*b),
+        SqlValue::Double(f) => Value::Double(*f),
+        SqlValue::Date(d) => {
+            Value::Date32((*d - time::macros::date!(1970 - 01 - 01)).whole_days() as i32)
+        }
+        SqlValue::Timestamp(ts) => {
+            // whole_microseconds() is i128; saturate rather than silently wrap on the
+            // (implausible, far-from-epoch) overflow case.
+            let micros = (ts.assume_utc() - time::OffsetDateTime::UNIX_EPOCH)
+                .whole_microseconds()
+                .try_into()
+                .unwrap_or(i64::MAX);
+            Value::Timestamp(TimeUnit::Microsecond, micros)
+        }
         SqlValue::Null => Value::Null,
     }
 }
@@ -221,7 +252,32 @@ fn from_duck(v: duckdb::types::Value) -> SqlValue {
         Value::SmallInt(i) => SqlValue::Int(i as i64),
         Value::Int(i) => SqlValue::Int(i as i64),
         Value::BigInt(i) => SqlValue::Int(i),
+        Value::Float(f) => SqlValue::Double(f as f64),
+        Value::Double(f) => SqlValue::Double(f),
+        Value::Date32(days) => SqlValue::Date(date_from_epoch_days(days)),
+        Value::Timestamp(unit, n) => SqlValue::Timestamp(timestamp_from_unit(unit, n)),
         Value::Text(s) => SqlValue::Text(s),
+        // Decimal, Time64, HugeInt, lists/structs, etc. are not yet first-class; keep
+        // the defensive debug fallback so an unmapped variant never panics a read.
         other => SqlValue::Text(format!("{other:?}")),
     }
+}
+
+/// Days since the Unix epoch -> a calendar date.
+fn date_from_epoch_days(days: i32) -> time::Date {
+    time::macros::date!(1970 - 01 - 01) + time::Duration::days(days as i64)
+}
+
+/// A DuckDB timestamp (unit + count since epoch) -> a wall-clock datetime.
+fn timestamp_from_unit(unit: duckdb::types::TimeUnit, n: i64) -> time::PrimitiveDateTime {
+    use duckdb::types::TimeUnit;
+    let nanos: i128 = match unit {
+        TimeUnit::Second => n as i128 * 1_000_000_000,
+        TimeUnit::Millisecond => n as i128 * 1_000_000,
+        TimeUnit::Microsecond => n as i128 * 1_000,
+        TimeUnit::Nanosecond => n as i128,
+    };
+    let odt = time::OffsetDateTime::from_unix_timestamp_nanos(nanos)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    time::PrimitiveDateTime::new(odt.date(), odt.time())
 }

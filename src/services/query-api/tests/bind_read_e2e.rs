@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Int64Array, RecordBatch, StringArray};
+use arrow::array::{Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
     Acl, Action, DatasetRef, Effect, EventType, LineageEvent, ObjectType, PolicyTarget,
@@ -14,7 +14,9 @@ use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use ingest::{MaterializeRequest, bind, materialize};
 use object_store::local::LocalFileSystem;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
-use query_api::serving::{EmbeddedDuckDb, SqlValue};
+use query_api::render::objects_to_json;
+use query_api::serving::EmbeddedDuckDb;
+use serde_json::json;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -30,16 +32,18 @@ async fn landed_then_bound_dataset_is_queryable() {
         name: "customer".into(),
     };
 
-    // 1. LAND: materialize a dataset (id int64, email varchar).
+    // 1. LAND: materialize a dataset (id int64, email varchar, amount float64).
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("email", DataType::Utf8, true),
+        Field::new("amount", DataType::Float64, true),
     ]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
             Arc::new(Int64Array::from(vec![1, 2])),
             Arc::new(StringArray::from(vec![Some("a@x"), Some("b@x")])),
+            Arc::new(Float64Array::from(vec![Some(1.5), Some(2.5)])),
         ],
     )
     .unwrap();
@@ -87,6 +91,11 @@ async fn landed_then_bound_dataset_is_queryable() {
                     ty: "EmailAddress".into(),
                     required: false,
                 },
+                PropertyDef {
+                    name: "amount".into(),
+                    ty: "Double".into(),
+                    required: false,
+                },
             ],
             table: table.clone(),
         },
@@ -129,11 +138,23 @@ async fn landed_then_bound_dataset_is_queryable() {
     .await
     .unwrap();
 
-    assert_eq!(rows.columns, vec!["id".to_string(), "email".to_string()]);
+    assert_eq!(
+        rows.columns,
+        vec!["id".to_string(), "email".to_string(), "amount".to_string()]
+    );
     assert_eq!(rows.rows.len(), 2, "both landed rows are retrievable");
-    let ids: Vec<&SqlValue> = rows.rows.iter().map(|r| &r[0]).collect();
-    assert!(
-        ids.contains(&&SqlValue::Int(1)) && ids.contains(&&SqlValue::Int(2)),
-        "both row ids (1 and 2) must be present"
+
+    // The typed wire contract end-to-end: id (Long) renders as a STRING, amount
+    // (Double) as a number, through the real materialize -> bind -> read path.
+    let body = objects_to_json(&rows);
+    let mut objs: Vec<serde_json::Value> = body["objects"].as_array().unwrap().clone();
+    objs.sort_by_key(|o| o["id"].as_str().unwrap().to_string());
+    assert_eq!(
+        objs,
+        vec![
+            json!({ "id": "1", "email": "a@x", "amount": 1.5 }),
+            json!({ "id": "2", "email": "b@x", "amount": 2.5 }),
+        ],
+        "Long id serializes as a string; Double amount as a number"
     );
 }

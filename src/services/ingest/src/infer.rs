@@ -17,7 +17,7 @@ pub fn duck_type(dt: &DataType) -> Option<&'static str> {
         DataType::Boolean => Some("boolean"),
         DataType::Int32 => Some("int32"),
         DataType::Int64 => Some("int64"),
-        DataType::Float64 => Some("double"),
+        DataType::Float64 => Some("float64"),
         DataType::Utf8 | DataType::LargeUtf8 => Some("varchar"),
         _ => None,
     }

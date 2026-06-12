@@ -1,4 +1,4 @@
-//! HTTP wiring smoke test: a GET maps into read_object and Rows serialize to JSON.
+//! HTTP wiring smoke test: a GET maps into read_object and ObjectRows serialize to a typed-object JSON envelope.
 //! No socket is bound (tower oneshot); canned stubs exercise the route, not DuckDB.
 
 use std::sync::Arc;
@@ -146,6 +146,5 @@ async fn get_objects_returns_json_rows() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["columns"][0], "id");
-    assert_eq!(json["rows"][0][0], 1);
+    assert_eq!(json["objects"][0]["id"], "1"); // Long -> JSON string
 }
