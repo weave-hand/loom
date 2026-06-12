@@ -4,7 +4,7 @@
 
 **An open-source take on Palantir Foundry — a typed-object data platform with built-in lineage and governance: a Rust governance chokepoint over a DuckDB serving layer, with DataFusion for ingestion, all on a DuckLake + Postgres core.**
 
-> ⚠️ **Status: pre-alpha.** The **control-plane library is built** — five concerns (queue, catalog, ontology, ACL, lineage) as ports-and-adapters, each with an in-memory fake and a real Postgres adapter, run against a shared backend-agnostic contract. The **services** that consume it (Ingest, Transform, HTTP query API) and the DuckDB serving layer are **not built yet**. The architecture is still framed as *exploratory*: the shape is sketched, several load-bearing decisions are flagged for hardening. If you're here to use loom, the answer is "not yet." If you're here to help design or build it, keep reading.
+> ⚠️ **Status: pre-alpha.** The **control-plane library is built** — five concerns (queue, catalog, ontology, ACL, lineage) as ports-and-adapters, each with an in-memory fake and a real Postgres adapter against one backend-agnostic contract. The **first services on top are underway:** the governed **read path** resolves an ontology type, applies ACL, and serves **typed-object JSON** over an embedded **DuckDB serving layer**; **ingest** has its load-bearing primitives — the transactional snapshot-commit, the landing materializer, and dataset→model binding — so data can be landed, bound to an ontology type, and read back through governance end-to-end (in-process). **Still missing:** Transform workers, the networked service shells (binaries + Quack/HTTP endpoints), and the DataFusion/distributed compute path. The architecture is still framed as *exploratory*: the shape is sketched, several load-bearing decisions are flagged for hardening. If you're here to *use* loom as a running system, the answer is "not yet." If you're here to help design or build it, keep reading.
 
 ---
 
@@ -28,14 +28,14 @@ For the full design rationale and open questions, see [`ARCHITECTURE.md`](./ARCH
 
 | Foundry concept                  | Loom equivalent                                                                                                  | Status         |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------- |
-| **Ontology** (objects, links, properties) | `ontology` schema in Postgres; resolved to physical DuckLake tables at plan time                          | Library built; resolution-at-plan-time pending services |
+| **Ontology** (objects, links, properties) | `ontology` schema in Postgres; resolved to physical DuckLake tables at plan time                          | Library built; **resolved to SQL on the read path** by the query API (objects + properties; links pending) |
 | **Actions** (typed write-backs)  | Named actions defined alongside object types; governed at the HTTP query API and executed through the DuckDB serving layer, with loom owning the catalog commit so snapshot + lineage + enqueue stay atomic | Designed, not built |
 | **Pipelines / Code Repositories** | Transform workers pulling jobs from the `queue` schema; DataFusion plans against DuckLake snapshots             | Queue + worker library built; transform service not built |
-| **Data Connection** (sources)    | Ingest service — DataFusion writes Parquet in bulk, commits a new DuckLake snapshot                              | Designed, not built |
-| **Foundry SQL / Contour**        | HTTP query API (governance chokepoint) in front of a DuckDB serving layer that speaks Quack; clients use any DuckDB-compatible SQL surface | Designed, not built |
-| **Markings + project permissions** | `acl` schema — subjects, roles, row- and column-level policy compiled into the SQL the query API emits          | Library built; SQL-generation enforcement pending Query API |
-| **Data Lineage**                 | `lineage` schema with [OpenLineage](https://openlineage.io/) events; lineage commits atomically with snapshots   | Library built (one-hop, `emit`+`enqueue` atomic); transitive + catalog leg pending |
-| **Compute backend** (Spark)      | DuckDB for serving; DataFusion (single-node, optional [Ballista](https://datafusion.apache.org/ballista/)) for ingestion & transforms | Designed, not built |
+| **Data Connection** (sources)    | Ingest service — DataFusion writes Parquet in bulk, commits a new DuckLake snapshot                              | **Core primitives built** (snapshot-commit, landing materializer, dataset→model binding); networked shell + DataFusion compute pending |
+| **Foundry SQL / Contour**        | HTTP query API (governance chokepoint) in front of a DuckDB serving layer that speaks Quack; clients use any DuckDB-compatible SQL surface | **Read path built** (governed object reads, typed-object JSON, embedded DuckDB); Quack wire + networked endpoint pending |
+| **Markings + project permissions** | `acl` schema — subjects, roles, row- and column-level policy compiled into the SQL the query API emits          | Library built; **enforced in generated SQL** (deny-by-default, row filters, column deny/mask) |
+| **Data Lineage**                 | `lineage` schema with [OpenLineage](https://openlineage.io/) events; lineage commits atomically with snapshots   | Library built; **emitted on snapshot commit** (materializer, atomic with the catalog write); transitive lineage pending |
+| **Compute backend** (Spark)      | DuckDB for serving; DataFusion (single-node, optional [Ballista](https://datafusion.apache.org/ballista/)) for ingestion & transforms | **Serving = embedded DuckDB, built** (`duckdb-rs`, pinned 1.5.3); DataFusion ingestion/transform compute pending |
 | **Foundry Branching**            | DuckLake snapshots provide time-travel; named branches TBD                                                        | Open question  |
 
 ### What's deliberately *not* in scope (for now)
@@ -96,14 +96,14 @@ Three steps, tracked in [`docs/superpowers/specs/2026-06-06-loom-roadmap.md`](./
 
 1. **Control-plane library — ✅ delivered.** Five concerns as ports-and-adapters under `src/control-plane/` (`core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`): **queue** (with a worker and `await_jobs`), **catalog** (DuckLake read surface), **ontology**, **acl**, and **lineage**. Each runs against one backend-agnostic contract on both the in-memory fake and real Postgres. A cross-concern `Tx` seam makes `emit` + `enqueue` atomic.
 2. **Harden the control plane.** Correctness and contract gaps catalogued in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) — worker heartbeat, Tx isolation contract, catalog MVCC delete/evolve coverage, typed cross-concern identity, and deciding the `Tx` seam's future before any service depends on the library. Deferred features are parked in [`docs/FUTURE.md`](./docs/FUTURE.md).
-3. **The services on top.** Stand up the DuckDB serving layer (`ATTACH` ducklake, Quack), the HTTP query API (ontology resolve + ACL compiled into generated SQL), Ingest (DataFusion bulk Parquet writes, snapshot commits, lineage), and Transform workers (built on `control-plane-worker`). Ontology actions routed through the serving layer, optional Ballista escalation, and branching beyond that.
+3. **The services on top — 🚧 underway.** Built so far: the **embedded DuckDB serving layer** (`ATTACH` ducklake behind a `ServingEngine` seam) and the **governed query read path** (ontology resolve + ACL compiled into generated SQL, returning typed-object JSON); and **Ingest's** load-bearing primitives — the transactional **snapshot-commit** (loom is a native single-catalog DuckLake writer), the **landing materializer** (Arrow → inferred schema → Parquet → snapshot+lineage), and **dataset→model binding** (validated promotion of a landed dataset to an ontology type). Still to come: the networked service shells (binaries + Quack endpoint), the DataFusion ingestion/transform compute path, **Transform workers** (on `control-plane-worker`), ontology actions routed through the serving layer, optional Ballista escalation, and branching.
 
-When something gets built, this section moves it from "planned" into a concrete pointer.
+The slice-by-slice status of record is the roadmap spec linked above; this section tracks the headline shape.
 
 ## Building & running
 
 ```sh
-buck2 build //src/...   # build the control-plane crates (+ the hello_world sample)
+buck2 build //src/...   # build all first-party code — control plane, ingest, query-api (+ hello sample)
 buck2 test  //src/...   # run the contract suites (in-memory + hermetic Postgres)
 buck2 run   //:<tgt>    # run a target
 ```
@@ -112,10 +112,11 @@ See [`CLAUDE.md`](./CLAUDE.md) for build-system details (cells, bundled prelude,
 
 ## Contributing
 
-Two high-value tracks right now:
+High-value tracks right now:
 
+- **Build out the services** — the next slices are the networked ingest/query shells (binaries + endpoints) over the in-process pipeline that already lands, binds, and serves data, plus Transform workers on `control-plane-worker`. The roadmap spec calls the current front of work.
 - **Design pushback** on [`ARCHITECTURE.md`](./ARCHITECTURE.md) — especially the "Open questions" section. Several load-bearing choices haven't been settled; if you see a tradeoff we've gotten wrong, open an issue or a PR against that doc before writing code.
-- **Hardening the control-plane library** — the gaps in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) (Step 2) are concrete, scoped, and need to land before the services consume the library.
+- **Hardening the control-plane library** — the gaps in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) (Step 2) are concrete, scoped, and worth landing as the services lean harder on the library.
 
 Each change goes through the same spec → plan → implement → PR cycle the control plane was built with.
 

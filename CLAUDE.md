@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This is a freshly scaffolded [buck2](https://buck2.build) project. There is no application code yet, only the build-system skeleton and design docs. Update this file as real code lands.
+loom is past the scaffold stage — there is real application code. The **control plane** (`src/control-plane/`: `core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`) implements all five concerns: queue, catalog, ontology, ACL, lineage. The first **services** on top are underway: `src/services/ingest/` has the transactional snapshot-commit primitive, the landing materializer (Arrow → inferred DuckLake schema → Parquet → snapshot+lineage commit), and dataset→model binding (validated promotion of a landed dataset to an ontology type); `src/services/query-api/` has the governed object-read path with typed-object JSON serialization over an embedded DuckDB serving engine. **Not built yet:** Transform workers and the networked service shells (binaries + Quack/HTTP endpoints + the distributed DataFusion compute path). The slice-by-slice status of record is [`docs/superpowers/specs/2026-06-06-loom-roadmap.md`](docs/superpowers/specs/2026-06-06-loom-roadmap.md) — consult and update it as capabilities land. The rest of this file documents the build system, which is the part most likely to bite you.
 
 ## What loom is
 
