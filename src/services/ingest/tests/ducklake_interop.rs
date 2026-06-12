@@ -44,10 +44,7 @@ async fn duckdb_reads_loom_materialized_data_and_appends() {
         event_type: EventType::Complete,
         event_time: OffsetDateTime::now_utc(),
         inputs: vec![],
-        outputs: vec![DatasetRef {
-            namespace: "loom-ingest".into(),
-            name: "main.customer".into(),
-        }],
+        outputs: vec![DatasetRef::from(&t)],
         payload: serde_json::json!({}),
     };
 

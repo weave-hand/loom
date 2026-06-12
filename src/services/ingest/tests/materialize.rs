@@ -24,12 +24,20 @@ fn lineage(t: &TableRef) -> LineageEvent {
         event_type: EventType::Complete,
         event_time: OffsetDateTime::now_utc(),
         inputs: vec![],
-        outputs: vec![DatasetRef {
-            namespace: "loom-ingest".into(),
-            name: format!("{}.{}", t.schema, t.name),
-        }],
+        outputs: vec![DatasetRef::from(t)],
         payload: serde_json::json!({}),
     }
+}
+
+#[test]
+fn output_dataset_ref_is_the_canonical_loom_identity() {
+    assert_eq!(
+        DatasetRef::from(&table()),
+        DatasetRef {
+            namespace: "loom".into(),
+            name: "main.customer".into(),
+        }
+    );
 }
 
 fn batch() -> (Arc<Schema>, RecordBatch) {

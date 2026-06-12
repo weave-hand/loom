@@ -53,10 +53,7 @@ async fn landed_then_bound_dataset_is_queryable() {
         event_type: EventType::Complete,
         event_time: OffsetDateTime::now_utc(),
         inputs: vec![],
-        outputs: vec![DatasetRef {
-            namespace: "loom-ingest".into(),
-            name: "main.customer".into(),
-        }],
+        outputs: vec![DatasetRef::from(&table)],
         payload: serde_json::json!({}),
     };
     materialize(
