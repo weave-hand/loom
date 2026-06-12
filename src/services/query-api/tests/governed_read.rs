@@ -186,6 +186,11 @@ async fn governed_object_read() {
 
     // secret projected out; only status='open' rows (ids 1 and 3) returned.
     assert_eq!(rows.columns, vec!["id".to_string(), "status".to_string()]);
+    // logical types travel with the projection, aligned to columns.
+    assert_eq!(
+        rows.logical_types,
+        vec!["Long".to_string(), "String".to_string()]
+    );
     let ids: Vec<&SqlValue> = rows.rows.iter().map(|r| &r[0]).collect();
     assert_eq!(rows.rows.len(), 2, "ACL row filter kept only status=open");
     assert!(ids.contains(&&SqlValue::Int(1)) && ids.contains(&&SqlValue::Int(3)));

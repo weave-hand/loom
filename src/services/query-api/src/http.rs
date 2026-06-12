@@ -13,7 +13,7 @@ use control_plane_core::{Acl, Ontology, SubjectId};
 use serde_json::json;
 
 use crate::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
-use crate::serving::{Rows, ServingEngine, SqlValue};
+use crate::serving::{ServingEngine, SqlValue};
 
 /// Shared, owned dependencies (the 'static analog of handler::QueryDeps).
 #[derive(Clone)]
@@ -74,7 +74,7 @@ async fn get_object(
     }
 }
 
-fn rows_to_json(rows: &Rows) -> serde_json::Value {
+fn rows_to_json(rows: &crate::handler::ObjectRows) -> serde_json::Value {
     let cells = |r: &Vec<SqlValue>| -> Vec<serde_json::Value> {
         r.iter()
             .map(|c| match c {

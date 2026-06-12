@@ -7,8 +7,18 @@ use control_plane_core::{
     SubjectId, TypeName,
 };
 
-use crate::serving::{Rows, ServingEngine, SqlValue};
+use crate::serving::{ServingEngine, SqlValue};
 use crate::sql::compile_select;
+
+/// A governed read result: rows plus, for each projected column, the ontology
+/// property's logical type — the input the wire renderer needs to type each value.
+/// `columns`, `logical_types`, and every row's cells are positionally aligned.
+#[derive(Debug)]
+pub struct ObjectRows {
+    pub columns: Vec<String>,
+    pub logical_types: Vec<String>,
+    pub rows: Vec<Vec<SqlValue>>,
+}
 
 const DEFAULT_LIMIT: u32 = 1000;
 
@@ -48,7 +58,7 @@ pub async fn read_object(
     q: &ObjectQuery,
     subject: &Subject,
     deps: &QueryDeps<'_>,
-) -> Result<Rows, QueryError> {
+) -> Result<ObjectRows, QueryError> {
     let type_name = TypeName(q.type_name.clone());
     let target = PolicyTarget::Type(type_name.clone());
 
@@ -123,5 +133,25 @@ pub async fn read_object(
         &q.eq_filters,
         DEFAULT_LIMIT,
     )?;
-    Ok(deps.serving.fetch_rows(&sql, &params).await?)
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    // Logical type per projected column, in `allowed` order — which is the SELECT
+    // order compile_select emits, hence the order of `served.rows`' cells. A column
+    // with no matching property (cannot happen post-projection) maps to "" -> the
+    // renderer's natural fallback.
+    let logical_types: Vec<String> = allowed
+        .iter()
+        .map(|name| {
+            object_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    Ok(ObjectRows {
+        columns: allowed,
+        logical_types,
+        rows: served.rows,
+    })
 }
