@@ -51,7 +51,7 @@ async fn duckdb_reads_loom_materialized_data_and_appends() {
         payload: serde_json::json!({}),
     };
 
-    let loom_snap = materialize(
+    let loom_snap: i64 = materialize(
         &cp,
         &store,
         MaterializeRequest {
@@ -89,6 +89,6 @@ async fn duckdb_reads_loom_materialized_data_and_appends() {
     assert_eq!(
         max_snap,
         loom_snap + 1,
-        "DuckDB's snapshot must sit atop loom's"
+        "DuckDB's snapshot must sit atop loom's (loom_snap={loom_snap})"
     );
 }
