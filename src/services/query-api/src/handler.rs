@@ -149,6 +149,15 @@ pub async fn read_object(
                 .unwrap_or_default()
         })
         .collect();
+    // compile_select SELECTs `allowed` verbatim, in order, so the serving engine must
+    // echo those exact column names — that is the contract that lets us zip
+    // `logical_types`/`columns` onto each row's cells by position. Guard it in debug so
+    // any future SQL-rewrite that reorders columns is caught by the test suite rather
+    // than silently mis-typing the output.
+    debug_assert_eq!(
+        served.columns, allowed,
+        "serving engine returned columns out of the projected order"
+    );
     Ok(ObjectRows {
         columns: allowed,
         logical_types,

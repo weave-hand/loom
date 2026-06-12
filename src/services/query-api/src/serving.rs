@@ -231,8 +231,12 @@ fn to_duck(v: &SqlValue) -> duckdb::types::Value {
             Value::Date32((*d - time::macros::date!(1970 - 01 - 01)).whole_days() as i32)
         }
         SqlValue::Timestamp(ts) => {
-            let micros =
-                (ts.assume_utc() - time::OffsetDateTime::UNIX_EPOCH).whole_microseconds() as i64;
+            // whole_microseconds() is i128; saturate rather than silently wrap on the
+            // (implausible, far-from-epoch) overflow case.
+            let micros = (ts.assume_utc() - time::OffsetDateTime::UNIX_EPOCH)
+                .whole_microseconds()
+                .try_into()
+                .unwrap_or(i64::MAX);
             Value::Timestamp(TimeUnit::Microsecond, micros)
         }
         SqlValue::Null => Value::Null,

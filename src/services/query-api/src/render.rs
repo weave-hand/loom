@@ -20,7 +20,11 @@ pub fn objects_to_json(rows: &ObjectRows) -> Value {
             let mut obj = serde_json::Map::with_capacity(rows.columns.len());
             for (i, col) in rows.columns.iter().enumerate() {
                 let logical_ty = rows.logical_types.get(i).map(String::as_str).unwrap_or("");
-                obj.insert(col.clone(), render_cell(logical_ty, &row[i]));
+                // Bounds-safe: a short row (fewer cells than declared columns) renders
+                // the missing cell as null rather than panicking — a permitted read must
+                // never 500 on a serving-engine surprise.
+                let cell = row.get(i).unwrap_or(&SqlValue::Null);
+                obj.insert(col.clone(), render_cell(logical_ty, cell));
             }
             Value::Object(obj)
         })
