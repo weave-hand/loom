@@ -1,3 +1,5 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
 rust_library(
     name = "ingest",
     crate = "ingest",
@@ -13,6 +15,25 @@ rust_library(
         "//third-party:thiserror",
     ],
     visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "ducklake-interop",
+    crate = "ducklake_interop",
+    srcs = ["tests/ducklake_interop.rs"],
+    crate_root = "tests/ducklake_interop.rs",
+    duckdb = True,
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
 )
 
 rust_test(

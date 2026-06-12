@@ -2971,8 +2971,12 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "8",
         "CARGO_PKG_VERSION_PRE": "",
     },
-    features = ["default"],
+    features = [
+        "default",
+        "powerfmt",
+    ],
     visibility = [],
+    deps = [":powerfmt-0.2"],
 )
 
 http_archive(
@@ -11938,23 +11942,23 @@ alias(
 )
 
 http_archive(
-    name = "time-0.3.48.crate",
-    sha256 = "fc1aa89044e7786ffb2ec017acb22cb7de5b0be46d0f21aea2b224b8561e5db2",
-    strip_prefix = "time-0.3.48",
-    urls = ["https://static.crates.io/crates/time/0.3.48/download"],
+    name = "time-0.3.47.crate",
+    sha256 = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c",
+    strip_prefix = "time-0.3.47",
+    urls = ["https://static.crates.io/crates/time/0.3.47/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "time-0.3",
-    srcs = [":time-0.3.48.crate"],
+    srcs = [":time-0.3.47.crate"],
     crate = "time",
-    crate_root = "time-0.3.48.crate/src/lib.rs",
+    crate_root = "time-0.3.47.crate/src/lib.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "time",
         "CARGO_CRATE_NAME": "time",
-        "CARGO_MANIFEST_DIR": "time-0.3.48.crate",
+        "CARGO_MANIFEST_DIR": "time-0.3.47.crate",
         "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
         "CARGO_PKG_DESCRIPTION": "Date and time library. Fully interoperable with the standard library. Mostly compatible with #![no_std].",
         "CARGO_PKG_HOMEPAGE": "https://time-rs.github.io",
@@ -11962,10 +11966,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
         "CARGO_PKG_RUST_VERSION": "1.88.0",
-        "CARGO_PKG_VERSION": "0.3.48",
+        "CARGO_PKG_VERSION": "0.3.47",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "3",
-        "CARGO_PKG_VERSION_PATCH": "48",
+        "CARGO_PKG_VERSION_PATCH": "47",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
@@ -11979,6 +11983,7 @@ cargo.rust_library(
     visibility = [],
     deps = [
         ":deranged-0.5",
+        ":itoa-1",
         ":num-conv-0.2",
         ":powerfmt-0.2",
         ":time-core-0.1",
@@ -11987,23 +11992,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "time-core-0.1.9.crate",
-    sha256 = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109",
-    strip_prefix = "time-core-0.1.9",
-    urls = ["https://static.crates.io/crates/time-core/0.1.9/download"],
+    name = "time-core-0.1.8.crate",
+    sha256 = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca",
+    strip_prefix = "time-core-0.1.8",
+    urls = ["https://static.crates.io/crates/time-core/0.1.8/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "time-core-0.1",
-    srcs = [":time-core-0.1.9.crate"],
+    srcs = [":time-core-0.1.8.crate"],
     crate = "time_core",
-    crate_root = "time-core-0.1.9.crate/src/lib.rs",
+    crate_root = "time-core-0.1.8.crate/src/lib.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "time_core",
         "CARGO_CRATE_NAME": "time_core",
-        "CARGO_MANIFEST_DIR": "time-core-0.1.9.crate",
+        "CARGO_MANIFEST_DIR": "time-core-0.1.8.crate",
         "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
         "CARGO_PKG_DESCRIPTION": "This crate is an implementation detail and should not be relied upon directly.",
         "CARGO_PKG_HOMEPAGE": "",
@@ -12011,33 +12016,33 @@ cargo.rust_library(
         "CARGO_PKG_README": "",
         "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
         "CARGO_PKG_RUST_VERSION": "1.88.0",
-        "CARGO_PKG_VERSION": "0.1.9",
+        "CARGO_PKG_VERSION": "0.1.8",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "1",
-        "CARGO_PKG_VERSION_PATCH": "9",
+        "CARGO_PKG_VERSION_PATCH": "8",
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
 )
 
 http_archive(
-    name = "time-macros-0.2.28.crate",
-    sha256 = "9d3bfe86347f0cc659f586f01e26303ccd32418f26f30c7b0309b3ca3a07d695",
-    strip_prefix = "time-macros-0.2.28",
-    urls = ["https://static.crates.io/crates/time-macros/0.2.28/download"],
+    name = "time-macros-0.2.27.crate",
+    sha256 = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215",
+    strip_prefix = "time-macros-0.2.27",
+    urls = ["https://static.crates.io/crates/time-macros/0.2.27/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "time-macros-0.2",
-    srcs = [":time-macros-0.2.28.crate"],
+    srcs = [":time-macros-0.2.27.crate"],
     crate = "time_macros",
-    crate_root = "time-macros-0.2.28.crate/src/lib.rs",
+    crate_root = "time-macros-0.2.27.crate/src/lib.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "time_macros",
         "CARGO_CRATE_NAME": "time_macros",
-        "CARGO_MANIFEST_DIR": "time-macros-0.2.28.crate",
+        "CARGO_MANIFEST_DIR": "time-macros-0.2.27.crate",
         "CARGO_PKG_AUTHORS": "Jacob Pratt <open-source@jhpratt.dev>:Time contributors",
         "CARGO_PKG_DESCRIPTION": "    Procedural macros for the time crate.\n    This crate is an implementation detail and should not be relied upon directly.\n",
         "CARGO_PKG_HOMEPAGE": "",
@@ -12045,10 +12050,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "",
         "CARGO_PKG_REPOSITORY": "https://github.com/time-rs/time",
         "CARGO_PKG_RUST_VERSION": "1.88.0",
-        "CARGO_PKG_VERSION": "0.2.28",
+        "CARGO_PKG_VERSION": "0.2.27",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "2",
-        "CARGO_PKG_VERSION_PATCH": "28",
+        "CARGO_PKG_VERSION_PATCH": "27",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
