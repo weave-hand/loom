@@ -118,6 +118,14 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     resolve the ontology type to a physical DuckLake table → inject a minimal ACL row
     predicate + column projection → execute on an embedded DuckDB (`duckdb-rs`) behind a
     `ServingEngine` seam → JSON rows. Plain-HTTP client surface; the Quack wire deferred.
+  - *Part 2 — typed JSON serialization* ✅ DELIVERED
+    (`2026-06-12-query-typed-json-serialization-design.md`). The read path now returns
+    typed objects (`{ "objects": [...] }`) rendered by each property's logical type: the
+    core vocabulary gains a `JsonRepr` classification (logical↔JSON axis), the serving
+    layer stops collapsing Double/Date/Timestamp to debug strings, and `Long` renders as a
+    JSON string to keep int64 precision past 2⁵³. Proven by a render matrix and the
+    strengthened materialize→bind→read e2e. (Surfaced + fixed a latent affinity bug: the
+    DuckLake physical name for a 64-bit float is `float64`, not `double`.)
   - *Later:* the serving *tier* over Quack (separate `quack_serve`'d DuckDB; the seam's
     Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
     masking, roles); rich ontology (links, derived properties); multi-type queries/joins;
@@ -139,10 +147,13 @@ the dead-variant cleanup via PR #22; `.sqlx` compile-time queries done). `main` 
 
 **Step 3 is underway.** Ingest **part 1** (the snapshot-commit primitive), **part 2a**
 (the landing materializer), and **part 2b** (dataset→model binding) are all delivered.
-Query **part 1** (the governed object-read slice) is specced
-(`2026-06-10-query-governed-object-read-slice-design.md`) and in implementation.
+Query **part 1** (the governed object-read slice) and **part 2** (typed JSON
+serialization, `2026-06-12-query-typed-json-serialization-design.md`) are delivered —
+landed data now binds to an ontology type and serves as typed objects through the
+governed front door.
 
-Recommended next move: implement the query read slice (its plan's first task is a
-`duckdb-rs`/extension-version spike), then pick up the remaining Step 2b trailing
-hardening opportunistically (per-concern adapter split and `tracing` are the
-highest-leverage).
+Recommended next move: the ingest service shell (binary + network endpoint +
+DataFusion compute) to make the now-complete land→bind→serve pipeline reachable over
+the wire, then pick up the remaining Step 2b trailing hardening opportunistically
+(per-concern adapter split and `tracing` are the highest-leverage). Smaller query
+follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
