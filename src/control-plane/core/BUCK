@@ -57,3 +57,12 @@ rust_test(
     edition = "2024",
     deps = [":core"],
 )
+
+rust_test(
+    name = "logical-type",
+    crate = "logical_type",
+    srcs = ["tests/logical_type.rs"],
+    crate_root = "tests/logical_type.rs",
+    edition = "2024",
+    deps = [":core"],
+)
