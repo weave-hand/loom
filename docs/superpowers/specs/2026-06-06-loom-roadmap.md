@@ -99,8 +99,13 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     `2026-06-09-ingest-snapshot-commit-primitive-design.md`). loom is a native DuckLake
     single-catalog writer: snapshot + lineage + enqueue commit in one Postgres
     transaction, proven against the pinned DuckDB engine.
-  - *Later:* the ingest service shell (binary, object store, DataFusion → Parquet);
-    schema evolution; delete/compaction; orphaned-Parquet GC.
+  - *Part 2a — landing materializer* ✅ DELIVERED
+    (`2026-06-11-ingest-materializer-primitive-design.md`). Arrow batches → inferred
+    DuckLake schema → Snappy Parquet in object storage → the part-1 snapshot+lineage
+    commit, with an optional model-conformance gate. Proven by a DuckDB read-back
+    interop guardrail. Library-only (no DataFusion/endpoint).
+  - *Later:* dataset→model binding; the ingest service shell (binary, object store,
+    DataFusion endpoint); schema evolution; delete/compaction; orphaned-Parquet GC.
 - **Query / read path** —
   - *Part 1 — governed object-read slice* (specced, in progress;
     `2026-06-10-query-governed-object-read-slice-design.md`). `GET /objects/{type}` →
@@ -126,9 +131,10 @@ Step 1 complete; **Step 2a complete** (all five items — PRs #13–#16 + the #5
 record); **Step 2b** partially landed (pagination convention, proptest round-trips, and
 the dead-variant cleanup via PR #22; `.sqlx` compile-time queries done). `main` green.
 
-**Step 3 is underway.** Ingest **part 1** (the snapshot-commit primitive) is delivered
-(PR #32). Query **part 1** (the governed object-read slice) is specced
-(`2026-06-10-query-governed-object-read-slice-design.md`) and in implementation.
+**Step 3 is underway.** Ingest **part 1** (the snapshot-commit primitive) and **part 2a**
+(the landing materializer) are both delivered. Query **part 1** (the governed
+object-read slice) is specced (`2026-06-10-query-governed-object-read-slice-design.md`)
+and in implementation.
 
 Recommended next move: implement the query read slice (its plan's first task is a
 `duckdb-rs`/extension-version spike), then pick up the remaining Step 2b trailing

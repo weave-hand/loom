@@ -1,0 +1,93 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
+rust_library(
+    name = "ingest",
+    crate = "ingest",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:arrow",
+        "//third-party:bytes",
+        "//third-party:parquet",
+        "//third-party:object_store",
+        "//third-party:thiserror",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "ducklake-interop",
+    crate = "ducklake_interop",
+    srcs = ["tests/ducklake_interop.rs"],
+    crate_root = "tests/ducklake_interop.rs",
+    duckdb = True,
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+rust_test(
+    name = "infer",
+    crate = "infer",
+    srcs = ["tests/infer.rs"],
+    crate_root = "tests/infer.rs",
+    edition = "2024",
+    deps = [":ingest", "//third-party:arrow"],
+)
+
+rust_test(
+    name = "gate",
+    crate = "gate",
+    srcs = ["tests/gate.rs"],
+    crate_root = "tests/gate.rs",
+    edition = "2024",
+    deps = [":ingest", "//third-party:arrow"],
+)
+
+rust_test(
+    name = "write",
+    crate = "write",
+    srcs = ["tests/write.rs"],
+    crate_root = "tests/write.rs",
+    edition = "2024",
+    deps = [":ingest", "//third-party:arrow"],
+)
+
+rust_test(
+    name = "store",
+    crate = "store",
+    srcs = ["tests/store.rs"],
+    crate_root = "tests/store.rs",
+    edition = "2024",
+    deps = [":ingest", "//third-party:object_store", "//third-party:tokio", "//third-party:tempfile"],
+)
+
+rust_test(
+    name = "materialize",
+    crate = "materialize",
+    srcs = ["tests/materialize.rs"],
+    crate_root = "tests/materialize.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)

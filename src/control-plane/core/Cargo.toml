@@ -8,7 +8,10 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
-time = "0.3"
+# Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
+# blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
+# Keep exact-pinned until sqlx-core ships a fix. See the ingest materializer PR.
+time = "=0.3.47"
 serde_json = "1"
 # Test-only (used under tests/), declared as a normal dep so reindeer emits the
 # //third-party:proptest target in non-vendored mode (same pattern as worker's tracing-test).

@@ -10,7 +10,10 @@ async-trait = "0.1"
 # macros validate SQL against the committed .sqlx offline cache (see CLAUDE.md).
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "time", "json", "migrate", "macros"] }
 uuid = { version = "1", features = ["v4"] }
-time = "0.3"
+# Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
+# blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
+# Keep exact-pinned until sqlx-core ships a fix. See the ingest materializer PR.
+time = "=0.3.47"
 serde_json = "1"
 # Used by the test fixture (src/fixture.rs) for ephemeral data/socket dirs.
 tempfile = "3"

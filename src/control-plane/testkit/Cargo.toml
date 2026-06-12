@@ -7,6 +7,9 @@ edition = "2024"
 async-trait = "0.1"
 control-plane-core = { path = "../core" }
 serde_json = "1"
-time = "0.3"
+# Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
+# blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
+# Keep exact-pinned until sqlx-core ships a fix. See the ingest materializer PR.
+time = "=0.3.47"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }

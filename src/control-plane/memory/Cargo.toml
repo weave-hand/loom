@@ -13,7 +13,10 @@ async-trait = "0.1"
 # rust_library now depends on it too.
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
-time = "0.3"
+# Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
+# blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
+# Keep exact-pinned until sqlx-core ships a fix. See the ingest materializer PR.
+time = "=0.3.47"
 serde_json = "1"
 # Tracing facade: libraries emit spans/events; the Step 3 service binaries install
 # the subscriber. No subscriber/metrics here.

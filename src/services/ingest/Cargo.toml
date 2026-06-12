@@ -1,0 +1,24 @@
+[package]
+name = "ingest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+control-plane-core = { path = "../../control-plane/core" }
+arrow = "58"
+bytes = "1"
+parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
+object_store = "0.11"
+thiserror = "1"
+
+[dev-dependencies]
+control-plane-memory = { path = "../../control-plane/memory" }
+control-plane-postgres = { path = "../../control-plane/postgres" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+# Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
+# blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
+# Keep exact-pinned until sqlx-core ships a fix. See the ingest materializer PR.
+time = "=0.3.47"
+serde_json = "1"
