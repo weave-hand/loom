@@ -14,8 +14,9 @@
 > split, ACL hardening). As of this update **all five "things next" are done** — the
 > typed qualified-identity newtype (Coupling [H] #1 / five-things #4) landed as
 > `core::DatasetId`, so no high-severity findings remain open. The remaining open set
-> is feature debt: transitive lineage, ontology/retention deletion + Parquet GC, batch
-> ops, and the `dyn ControlPlane` facade.
+> is feature debt: transitive lineage, ontology/retention deletion + Parquet GC, and
+> batch ops. (The `dyn ControlPlane` facade since landed — object-safe concern
+> accessors adopted at `query-api::AppState`.)
 
 The library is in good shape for its age: clean ports-and-adapters, one
 backend-agnostic contract per concern run against both a fake and real Postgres,
@@ -167,10 +168,12 @@ accessor methods. So a consumer must depend on the concrete `PgControlPlane` /
 sketch was dropped; reconsider it (or a single object-safe facade) before three
 services each invent their own bound soup.
 
-> **Update 2026-06-12 — ❌ Open (sidestepped).** `ControlPlane` still exposes only
-> `begin()`. In practice consumers take individual `&dyn Ontology` / `&dyn Acl`
-> trait objects (e.g. `query-api::QueryDeps`, `ingest::bind`) rather than a facade —
-> workable so far, but no object-safe `ControlPlane` accessor was added.
+> **Update 2026-06-12 — ✅ Done.** `ControlPlane` now exposes object-safe accessors
+> — `catalog()`/`ontology()`/`acl()`/`lineage()`/`queue()` returning borrowed concern
+> trait objects — so `&dyn ControlPlane` / `Arc<dyn ControlPlane>` reaches every
+> concern. `query-api::AppState` holds a single `Arc<dyn ControlPlane>` and hands its
+> narrow concern objects to the read path; a testkit facade contract verifies dispatch
+> on both adapters. Per-concern function signatures stay narrow (interface segregation).
 
 **[M] Stringly-typed everything blocks the "real type system" evolution.** ontology
 `PropertyDef.ty`, acl property names, lineage `DatasetRef` are all bare strings.
@@ -301,9 +304,10 @@ module `use`s `queue` and `lineage`. A concern-agnostic staged-op enum would cut
    allowed). See Coupling [H] #1 above.
 5. **Decide the `Tx` seam's future** before service work: either a concern-agnostic
    staged-op model or accept the flat seam and add the catalog write leg — but stop
-   pretending `dyn ControlPlane` is useful. **[H, medium]** — ✅ **Decided:** flat seam
-   kept + catalog write leg added; `dyn ControlPlane` left as-is and sidestepped by
-   per-concern trait objects (no facade added).
+   pretending `dyn ControlPlane` is useful. **[H, medium]** — ✅ **Done:** flat seam
+   kept + catalog write leg added; and `dyn ControlPlane` is now genuinely useful —
+   object-safe `catalog()/ontology()/acl()/lineage()/queue()` accessors landed, adopted
+   at `query-api::AppState`.
 
 Everything else (adapter file-splitting, pagination convention, `tracing`, `.sqlx`
 offline metadata, proptest round-trips) is worthwhile but can trail the five above.
@@ -311,6 +315,7 @@ offline metadata, proptest round-trips) is worthwhile but can trail the five abo
 > **Update 2026-06-12.** Of the "everything else": adapter file-splitting ✅,
 > pagination convention ✅, `tracing` ✅, `.sqlx` offline metadata ✅, proptest
 > round-trips ✅ — all landed. The qualified-identity newtype (#4) since landed too
-> (`core::DatasetId`). Remaining open from the whole review: transitive lineage,
-> ontology/retention deletion + Parquet GC, batch ops, the `dyn ControlPlane` facade,
-> lineage fan-in test, and multi-tenancy.
+> (`core::DatasetId`), and the `dyn ControlPlane` facade since landed (object-safe
+> concern accessors). Remaining open from the whole review: transitive lineage,
+> ontology/retention deletion + Parquet GC, batch ops, lineage fan-in test, and
+> multi-tenancy.
