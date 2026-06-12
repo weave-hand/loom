@@ -104,7 +104,13 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     DuckLake schema → Snappy Parquet in object storage → the part-1 snapshot+lineage
     commit, with an optional model-conformance gate. Proven by a DuckDB read-back
     interop guardrail. Library-only (no DataFusion/endpoint).
-  - *Later:* dataset→model binding; the ingest service shell (binary, object store,
+  - *Part 2b — dataset→model binding* ✅ DELIVERED
+    (`2026-06-12-ingest-dataset-model-binding-design.md`). A validated promotion: bind a
+    landed dataset to an ontology type, checking the physical schema satisfies the declared
+    type (new core logical-type vocabulary: base scalars + affinities + semantic aliases)
+    before define_type — so a bound type is guaranteed-serveable. Proven by an accept/reject
+    matrix and a materialize→bind→read e2e.
+  - *Later:* the ingest service shell (binary, object store,
     DataFusion endpoint); schema evolution; delete/compaction; orphaned-Parquet GC.
 - **Query / read path** —
   - *Part 1 — governed object-read slice* (specced, in progress;
@@ -131,10 +137,10 @@ Step 1 complete; **Step 2a complete** (all five items — PRs #13–#16 + the #5
 record); **Step 2b** partially landed (pagination convention, proptest round-trips, and
 the dead-variant cleanup via PR #22; `.sqlx` compile-time queries done). `main` green.
 
-**Step 3 is underway.** Ingest **part 1** (the snapshot-commit primitive) and **part 2a**
-(the landing materializer) are both delivered. Query **part 1** (the governed
-object-read slice) is specced (`2026-06-10-query-governed-object-read-slice-design.md`)
-and in implementation.
+**Step 3 is underway.** Ingest **part 1** (the snapshot-commit primitive), **part 2a**
+(the landing materializer), and **part 2b** (dataset→model binding) are all delivered.
+Query **part 1** (the governed object-read slice) is specced
+(`2026-06-10-query-governed-object-read-slice-design.md`) and in implementation.
 
 Recommended next move: implement the query read slice (its plan's first task is a
 `duckdb-rs`/extension-version spike), then pick up the remaining Step 2b trailing

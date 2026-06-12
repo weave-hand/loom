@@ -2,12 +2,14 @@
 //! DuckLake snapshot + lineage via the part-1 snapshot-commit primitive, with an
 //! optional model-conformance gate. See the spec under docs/superpowers/specs/.
 
+pub mod bind;
 pub mod gate;
 pub mod infer;
 pub mod materialize;
 pub mod store;
 pub mod write;
 
+pub use bind::{BindError, BindViolation, BindViolationReason, bind};
 pub use gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 pub use materialize::{MaterializeRequest, materialize};
 
