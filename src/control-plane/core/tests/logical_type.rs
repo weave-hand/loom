@@ -42,6 +42,7 @@ fn satisfies_rejects_width_mismatch() {
 fn satisfies_normalizes_physical_casing_and_whitespace() {
     assert_eq!(satisfies("String", "VARCHAR"), Ok(true));
     assert_eq!(satisfies("Long", " int64 "), Ok(true));
+    assert_eq!(satisfies(" Long ", "int64"), Ok(true));
 }
 
 #[test]
