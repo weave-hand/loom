@@ -36,6 +36,20 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "bind",
+    crate = "bind",
+    srcs = ["tests/bind.rs"],
+    crate_root = "tests/bind.rs",
+    duckdb = True,
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "infer",
     crate = "infer",
