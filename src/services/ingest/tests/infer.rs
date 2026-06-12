@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use arrow::datatypes::{DataType, Field, Schema};
 use ingest::infer::{InferError, duck_type, infer_columns};
 
@@ -27,7 +25,6 @@ fn infer_columns_carries_name_and_nullability_in_order() {
     assert_eq!(cols[1].name, "name");
     assert_eq!(cols[1].ty, "varchar");
     assert!(cols[1].nullable);
-    let _ = Arc::new(schema);
 }
 
 #[test]
