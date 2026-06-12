@@ -1,7 +1,9 @@
 //! bind validation against the real catalog: a conforming type binds and persists;
 //! a non-conforming type is rejected with ALL violations and nothing is persisted.
 
-use control_plane_core::{ObjectType, Ontology, PropertyDef, TableRef, TypeName};
+use control_plane_core::{
+    ControlPlaneError, ObjectType, Ontology, PropertyDef, TableRef, TypeName,
+};
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use ingest::{BindError, BindViolationReason, bind};
 
@@ -31,6 +33,7 @@ async fn seed_customer(writer: &DuckLakeWriter) {
                 ("id".into(), "BIGINT".into(), false),
                 ("email".into(), "VARCHAR".into(), true),
                 ("amount".into(), "INTEGER".into(), true),
+                ("score".into(), "INTEGER".into(), true),
             ],
             &[2],
         )
@@ -69,6 +72,7 @@ async fn bind_collects_all_violations_and_persists_nothing() {
     // id: Integer over int64 column (TypeMismatch)
     // amount: Money is unknown (UnknownLogicalType)
     // email: String required over a nullable column (NullabilityViolation)
+    // score: required Long (int64) over a nullable int32 column (TypeMismatch + NullabilityViolation)
     let type_def = ObjectType {
         name: TypeName("Bad".into()),
         properties: vec![
@@ -76,6 +80,7 @@ async fn bind_collects_all_violations_and_persists_nothing() {
             prop("id", "Integer", false),
             prop("amount", "Money", false),
             prop("email", "String", true),
+            prop("score", "Long", true),
         ],
         table: customer(),
     };
@@ -98,9 +103,22 @@ async fn bind_collects_all_violations_and_persists_nothing() {
         v.iter().any(|x| x.property == "email"
             && matches!(x.reason, BindViolationReason::NullabilityViolation))
     );
+    // score: required `Long` over a nullable int32 column -> BOTH a type mismatch
+    // and a nullability violation (independent checks).
+    assert!(
+        v.iter().any(|x| x.property == "score"
+            && matches!(x.reason, BindViolationReason::TypeMismatch { .. }))
+    );
+    assert!(
+        v.iter().any(|x| x.property == "score"
+            && matches!(x.reason, BindViolationReason::NullabilityViolation))
+    );
 
     let missing = cp.get_type(&TypeName("Bad".into())).await;
-    assert!(missing.is_err(), "a rejected type must not be persisted");
+    assert!(
+        matches!(missing, Err(ControlPlaneError::NotFound(_))),
+        "a rejected type must not be persisted; got {missing:?}"
+    );
 }
 
 #[tokio::test]

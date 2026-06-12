@@ -51,6 +51,11 @@ pub async fn bind(
 
     // 3. Validate every declared property against its same-named physical column.
     //    Extra physical columns are fine — a type is a view over the table.
+    // The type check and the nullability check are INDEPENDENT: a single property
+    // may yield up to two violations (e.g. a type mismatch AND a required-but-nullable
+    // column). We report both so the caller fixes everything in one pass rather than
+    // discovering problems one round-trip at a time. (A MissingColumn short-circuits —
+    // there's nothing to type/nullability-check.)
     let mut violations = Vec::new();
     for p in &type_def.properties {
         let Some(col) = schema.columns.iter().find(|c| c.name == p.name) else {
