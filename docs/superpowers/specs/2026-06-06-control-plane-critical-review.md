@@ -11,11 +11,11 @@
 > `Update` callout (✅ done · 🟡 partial · ❌ open) reconciled against `main`.
 > **Headline:** every high-severity *test gap* is closed and the *Tx/catalog atomic
 > leg* is built, plus most "can-trail" items (tracing, pagination, `.sqlx`, adapter
-> split, ACL hardening). Of the "five things next," **4 of 5 are done** — the lone
-> open high-severity item is the **typed qualified-identity newtype** (Coupling [H]
-> #1 / five-things #4). The remaining open set is feature debt: transitive lineage,
-> ontology/retention deletion + Parquet GC, batch ops, and the `dyn ControlPlane`
-> facade.
+> split, ACL hardening). As of this update **all five "things next" are done** — the
+> typed qualified-identity newtype (Coupling [H] #1 / five-things #4) landed as
+> `core::DatasetId`, so no high-severity findings remain open. The remaining open set
+> is feature debt: transitive lineage, ontology/retention deletion + Parquet GC, batch
+> ops, and the `dyn ControlPlane` facade.
 
 The library is in good shape for its age: clean ports-and-adapters, one
 backend-agnostic contract per concern run against both a fake and real Postgres,
@@ -207,12 +207,16 @@ independent; the data says they're joined by hand. Even without full validation,
 shared newtype for "qualified dataset/type identity" + a documented namespacing
 convention would make the coupling visible.
 
-> **Update 2026-06-12 — ❌ Open. *This is the standout remaining high-severity item.***
-> `DatasetRef` is still a bare `{namespace, name}`; no shared qualified-identity
-> newtype links it to `TypeName`/`TableRef`/`ColumnDef`. Binding does now validate a
-> type's properties against the live physical schema at bind time (narrowing the
-> ontology↔catalog gap for *that* operation), but the general renaming-invalidates-
-> silently coupling across acl/lineage is unaddressed. Candidate next slice.
+> **Update 2026-06-12 — ✅ Done (typed + centralized) · 🟡 validation deferred.** Added
+> `core::DatasetId` (`identity.rs`) + a `LOOM_DATASET_NAMESPACE` constant + typed
+> `TableRef ↔ DatasetRef` conversions (`From<&TableRef> for DatasetRef`,
+> `from_dataset_ref`), centralizing the catalog↔lineage join that three call sites
+> hand-built with a copy-pasted namespace. The coupling is now a single typed,
+> tested mapping (loom-internal datasets are deployment-independently namespaced;
+> external `s3://`/`postgres://` refs stay free-form). *Still deferred per the review:*
+> referential validation (rejecting a ref to a nonexistent table/type), and
+> property/column identity (`RowFilter.property` ↔ `PropertyDef.name` ↔
+> `ColumnDef.name` are still bare strings — a weaker, follow-up coupling).
 
 **[M] The adapters are single-file monoliths.** `postgres/src/lib.rs` implements all
 five concern traits + `Tx` + `pg_insert`/`pg_emit` + codecs in one file; `memory`
@@ -292,7 +296,9 @@ module `use`s `queue` and `lineage`. A concern-agnostic staged-op enum would cut
    schema-evolution assertions still thin).
 4. **A typed qualified-identity newtype + namespacing convention** shared by ontology
    / acl / lineage, to make the string coupling visible (validation can stay
-   deferred). **[H, medium]** — ❌ **Open. The lone unaddressed high-severity item.**
+   deferred). **[H, medium]** — ✅ **Done:** `core::DatasetId` + `LOOM_DATASET_NAMESPACE`
+   centralize the typed `TableRef ↔ DatasetRef` mapping (validation still deferred, as
+   allowed). See Coupling [H] #1 above.
 5. **Decide the `Tx` seam's future** before service work: either a concern-agnostic
    staged-op model or accept the flat seam and add the catalog write leg — but stop
    pretending `dyn ControlPlane` is useful. **[H, medium]** — ✅ **Decided:** flat seam
@@ -304,7 +310,7 @@ offline metadata, proptest round-trips) is worthwhile but can trail the five abo
 
 > **Update 2026-06-12.** Of the "everything else": adapter file-splitting ✅,
 > pagination convention ✅, `tracing` ✅, `.sqlx` offline metadata ✅, proptest
-> round-trips ✅ — all landed. Remaining open from the whole review: the
-> qualified-identity newtype (#4), transitive lineage, ontology/retention deletion +
-> Parquet GC, batch ops, the `dyn ControlPlane` facade, lineage fan-in test, and
-> multi-tenancy.
+> round-trips ✅ — all landed. The qualified-identity newtype (#4) since landed too
+> (`core::DatasetId`). Remaining open from the whole review: transitive lineage,
+> ontology/retention deletion + Parquet GC, batch ops, the `dyn ControlPlane` facade,
+> lineage fan-in test, and multi-tenancy.
