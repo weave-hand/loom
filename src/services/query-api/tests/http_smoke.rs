@@ -1,114 +1,21 @@
 //! HTTP wiring smoke test: a GET maps into read_object and ObjectRows serialize to a typed-object JSON envelope.
-//! No socket is bound (tower oneshot); canned stubs exercise the route, not DuckDB.
+//! No socket is bound (tower oneshot); a seeded in-memory control plane + a canned serving stub exercise the route, not DuckDB.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, Decision, Effect, LinkDef, ObjectType, Page, PageReq, Policy, PolicyTarget,
-    PropertyDef, Result, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId,
+    TableRef, TypeName,
 };
+use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
 use query_api::serving::{Rows, ServingEngine, ServingError, SqlValue};
 use tower::ServiceExt;
-
-struct StubOntology;
-
-#[async_trait]
-impl control_plane_core::Ontology for StubOntology {
-    async fn define_type(&self, _ty: ObjectType) -> Result<()> {
-        unimplemented!()
-    }
-    async fn define_link(&self, _link: LinkDef) -> Result<()> {
-        unimplemented!()
-    }
-    async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
-        assert_eq!(name.0, "Order");
-        Ok(ObjectType {
-            name: TypeName("Order".into()),
-            properties: vec![PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-            }],
-            table: TableRef {
-                schema: "main".into(),
-                name: "orders".into(),
-            },
-        })
-    }
-    async fn list_types(&self, _page: PageReq) -> Result<Page<ObjectType>> {
-        unimplemented!()
-    }
-    async fn links(&self, _name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
-        unimplemented!()
-    }
-    async fn resolve(&self, _name: &TypeName) -> Result<TableRef> {
-        unimplemented!()
-    }
-}
-
-struct StubAcl;
-
-#[async_trait]
-impl Acl for StubAcl {
-    async fn define_subject(&self, _id: &SubjectId) -> Result<()> {
-        unimplemented!()
-    }
-    async fn define_role(&self, _id: &RoleId) -> Result<()> {
-        unimplemented!()
-    }
-    async fn assign_role(&self, _subject: &SubjectId, _role: &RoleId) -> Result<()> {
-        unimplemented!()
-    }
-    async fn unassign_role(&self, _subject: &SubjectId, _role: &RoleId) -> Result<()> {
-        unimplemented!()
-    }
-    async fn add_role_inheritance(&self, _role: &RoleId, _inherits: &RoleId) -> Result<()> {
-        unimplemented!()
-    }
-    async fn remove_role_inheritance(&self, _role: &RoleId, _inherits: &RoleId) -> Result<()> {
-        unimplemented!()
-    }
-    async fn grant(
-        &self,
-        _role: &RoleId,
-        _action: Action,
-        _target: PolicyTarget,
-        _effect: Effect,
-    ) -> Result<()> {
-        unimplemented!()
-    }
-    async fn revoke(&self, _role: &RoleId, _action: Action, _target: &PolicyTarget) -> Result<()> {
-        unimplemented!()
-    }
-    async fn set_policy(&self, _role: &RoleId, _policy: Policy) -> Result<()> {
-        unimplemented!()
-    }
-    async fn clear_policy(&self, _role: &RoleId, _target: &PolicyTarget) -> Result<()> {
-        unimplemented!()
-    }
-    async fn check(
-        &self,
-        _subject: &SubjectId,
-        _action: Action,
-        _target: &PolicyTarget,
-    ) -> Result<Decision> {
-        // Grant read access so the route reaches read_object's body in this smoke test.
-        Ok(Decision::Allow)
-    }
-    async fn policies_for(
-        &self,
-        _subject: &SubjectId,
-        _target: &PolicyTarget,
-        _page: PageReq,
-    ) -> Result<Page<Policy>> {
-        Ok(Page::from_full(vec![]))
-    }
-}
 
 struct StubServing;
 
@@ -126,11 +33,43 @@ impl ServingEngine for StubServing {
     }
 }
 
+/// A control plane with the `Order` type and an analyst granted `Read` on it.
+async fn seeded_control_plane() -> MemoryControlPlane {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    cp.define_type(ObjectType {
+        name: TypeName("Order".into()),
+        properties: vec![PropertyDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+        }],
+        table: TableRef {
+            schema: "main".into(),
+            name: "orders".into(),
+        },
+    })
+    .await
+    .unwrap();
+    let analyst = SubjectId("analyst".into());
+    let reader = RoleId("reader".into());
+    cp.define_subject(&analyst).await.unwrap();
+    cp.define_role(&reader).await.unwrap();
+    cp.assign_role(&analyst, &reader).await.unwrap();
+    cp.grant(
+        &reader,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Order".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+    cp
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn get_objects_returns_json_rows() {
     let app = router(AppState {
-        ontology: Arc::new(StubOntology),
-        acl: Arc::new(StubAcl),
+        cp: Arc::new(seeded_control_plane().await),
         serving: Arc::new(StubServing),
     });
     let res = app
