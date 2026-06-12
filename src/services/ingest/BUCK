@@ -13,3 +13,12 @@ rust_library(
     ],
     visibility = ["PUBLIC"],
 )
+
+rust_test(
+    name = "infer",
+    crate = "infer",
+    srcs = ["tests/infer.rs"],
+    crate_root = "tests/infer.rs",
+    edition = "2024",
+    deps = [":ingest", "//third-party:arrow"],
+)
