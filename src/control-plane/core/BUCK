@@ -66,3 +66,12 @@ rust_test(
     edition = "2024",
     deps = [":core"],
 )
+
+rust_test(
+    name = "identity",
+    crate = "identity",
+    srcs = ["tests/identity.rs"],
+    crate_root = "tests/identity.rs",
+    edition = "2024",
+    deps = [":core"],
+)
