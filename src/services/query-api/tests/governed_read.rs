@@ -165,9 +165,16 @@ async fn governed_object_read() {
     .unwrap();
 
     // 5. Read it.
-    let eng = EmbeddedDuckDb::attach(fx.socket_path(), &db, writer.data_path())
-        .await
-        .unwrap();
+    let eng = EmbeddedDuckDb::attach(
+        &format!(
+            "dbname={} host={} user=postgres",
+            db,
+            fx.socket_path().display()
+        ),
+        writer.data_path(),
+    )
+    .await
+    .unwrap();
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,

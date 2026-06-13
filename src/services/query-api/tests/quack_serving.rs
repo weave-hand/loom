@@ -118,9 +118,16 @@ async fn quack_engine_executes_a_trivial_query_over_the_wire() {
 
 /// Build an EmbeddedDuckDb against the same catalog the QuackServer serves.
 async fn embedded(fx: &PgFixture, db: &str, data_path: &Path) -> EmbeddedDuckDb {
-    EmbeddedDuckDb::attach(fx.socket_path(), db, data_path)
-        .await
-        .expect("attach embedded")
+    EmbeddedDuckDb::attach(
+        &format!(
+            "dbname={} host={} user=postgres",
+            db,
+            fx.socket_path().display()
+        ),
+        data_path,
+    )
+    .await
+    .expect("attach embedded")
 }
 
 #[tokio::test(flavor = "multi_thread")]

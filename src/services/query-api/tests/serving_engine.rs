@@ -11,9 +11,16 @@ async fn engine(fx: &PgFixture) -> (EmbeddedDuckDb, DuckLakeWriter) {
     // No catalog data needed for these mechanics tests, but DuckLake records the
     // writer's DATA_PATH in the catalog on bootstrap and rejects a mismatched one
     // on re-ATTACH, so reuse it. Keep the writer alive (it owns the temp dir).
-    let eng = EmbeddedDuckDb::attach(fx.socket_path(), &db, writer.data_path())
-        .await
-        .expect("attach");
+    let eng = EmbeddedDuckDb::attach(
+        &format!(
+            "dbname={} host={} user=postgres",
+            db,
+            fx.socket_path().display()
+        ),
+        writer.data_path(),
+    )
+    .await
+    .expect("attach");
     (eng, writer)
 }
 
