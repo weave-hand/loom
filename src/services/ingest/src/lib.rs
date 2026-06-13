@@ -4,6 +4,7 @@
 
 pub mod bind;
 pub mod gate;
+pub mod http;
 pub mod infer;
 pub mod materialize;
 pub mod store;
