@@ -93,3 +93,101 @@ async fn unmodeled_land_succeeds_end_to_end() {
         "returned snapshot id matches the catalog"
     );
 }
+
+fn model_header(json: &str) -> (axum::http::HeaderName, axum::http::HeaderValue) {
+    (
+        axum::http::HeaderName::from_static("x-loom-model"),
+        axum::http::HeaderValue::from_str(json).unwrap(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn modeled_land_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_cp, state) = app_state(dir.path());
+    let model = r#"{"columns":[{"name":"id","ty":"int64","required":true},{"name":"name","ty":"varchar","required":false}]}"#;
+    let (hn, hv) = model_header(model);
+    let res = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/datasets/main/customer")
+                .header(hn, hv)
+                .body(Body::from(ipc_bytes(&sample_batch())))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nonconforming_model_is_422_with_violations() {
+    let dir = tempfile::tempdir().unwrap();
+    let (cp, state) = app_state(dir.path());
+    // Requires a column the batch does not have.
+    let model = r#"{"columns":[{"name":"missing","ty":"int64","required":true}]}"#;
+    let (hn, hv) = model_header(model);
+    let res = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/datasets/main/customer")
+                .header(hn, hv)
+                .body(Body::from(ipc_bytes(&sample_batch())))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["violations"][0]["column"], "missing");
+    assert_eq!(json["violations"][0]["reason"], "missing_required");
+
+    // Nothing was written.
+    let table = TableRef {
+        schema: "main".into(),
+        name: "customer".into(),
+    };
+    assert!(
+        cp.catalog().current_snapshot(&table).await.is_err(),
+        "a rejected land writes no catalog rows"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn garbage_body_is_400() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_cp, state) = app_state(dir.path());
+    let res = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/datasets/main/customer")
+                .body(Body::from(b"not arrow ipc".to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bad_model_header_is_400() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_cp, state) = app_state(dir.path());
+    let (hn, hv) = model_header("not json");
+    let res = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/datasets/main/customer")
+                .header(hn, hv)
+                .body(Body::from(ipc_bytes(&sample_batch())))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
