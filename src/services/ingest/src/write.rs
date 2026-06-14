@@ -14,6 +14,37 @@ use parquet::file::properties::WriterProperties;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::file::statistics::Statistics;
 
+/// Tunables for the DataFusion ingest write. Defaults target ~128 MiB Snappy files.
+#[derive(Clone, Debug)]
+pub struct IngestWriteConfig {
+    /// Desired size of each output Parquet file, in bytes.
+    pub target_file_size_bytes: u64,
+    /// Hard upper bound on the number of output files (= partitions).
+    pub max_files: usize,
+    /// In-memory Arrow bytes are larger than compressed Parquet; this factor maps
+    /// estimated in-memory size to estimated on-disk size.
+    pub compression_factor: f64,
+}
+
+impl Default for IngestWriteConfig {
+    fn default() -> Self {
+        Self {
+            target_file_size_bytes: 128 * 1024 * 1024,
+            max_files: 64,
+            compression_factor: 0.3,
+        }
+    }
+}
+
+/// Map total in-memory Arrow size to a partition (file) count: estimate compressed
+/// size, divide by the target file size, clamp to `[1, max_files]`. Pure — no I/O.
+pub fn estimate_partitions(in_memory_bytes: u64, cfg: &IngestWriteConfig) -> usize {
+    let est_compressed = (in_memory_bytes as f64 * cfg.compression_factor).ceil() as u64;
+    let target = cfg.target_file_size_bytes.max(1);
+    let n = est_compressed.div_ceil(target) as usize;
+    n.clamp(1, cfg.max_files.max(1))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
     #[error("parquet write failed: {0}")]

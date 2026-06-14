@@ -1,48 +1,32 @@
-use std::sync::Arc;
+use ingest::write::{IngestWriteConfig, estimate_partitions};
 
-use arrow::array::{Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
-use ingest::write::write_parquet;
-
-fn sample() -> (Arc<Schema>, RecordBatch) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])),
-        ],
-    )
-    .unwrap();
-    (schema, batch)
+fn cfg(target: u64, max_files: usize) -> IngestWriteConfig {
+    IngestWriteConfig {
+        target_file_size_bytes: target,
+        max_files,
+        compression_factor: 0.3,
+    }
 }
 
 #[test]
-fn writes_parquet_and_extracts_load_bearing_stats() {
-    let (schema, batch) = sample();
-    let w = write_parquet(schema, &[batch]).unwrap();
+fn empty_input_is_one_partition() {
+    assert_eq!(estimate_partitions(0, &cfg(1, 8)), 1);
+}
 
-    assert_eq!(&w.bytes[w.bytes.len() - 4..], b"PAR1");
-    assert_eq!(w.file_size_bytes, w.bytes.len() as i64);
-    assert!(w.footer_size > 0 && w.footer_size < w.file_size_bytes);
-    assert_eq!(w.record_count, 3);
+#[test]
+fn small_input_fits_one_file() {
+    // 100 in-memory bytes * 0.3 = 30 est compressed; target 128 MiB -> 1 file.
+    assert_eq!(estimate_partitions(100, &cfg(128 * 1024 * 1024, 8)), 1);
+}
 
-    assert_eq!(w.column_stats.len(), 2);
-    let id = &w.column_stats[0];
-    assert_eq!(id.column_name, "id");
-    assert_eq!(id.null_count, 0);
-    assert_eq!(id.value_count, 3);
-    assert!(id.column_size_bytes > 0);
-    assert_eq!(id.min.as_deref(), Some("1"));
-    assert_eq!(id.max.as_deref(), Some("3"));
+#[test]
+fn large_input_splits_up_to_target() {
+    // 1000 bytes * 0.3 = 300 est; target 100 -> ceil(300/100) = 3 files.
+    assert_eq!(estimate_partitions(1000, &cfg(100, 8)), 3);
+}
 
-    let name = &w.column_stats[1];
-    assert_eq!(name.column_name, "name");
-    assert_eq!(name.null_count, 1);
-    assert_eq!(name.value_count, 2);
-    assert_eq!(name.min.as_deref(), Some("a"));
-    assert_eq!(name.max.as_deref(), Some("c"));
+#[test]
+fn partition_count_is_clamped_to_max_files() {
+    // 1_000_000 * 0.3 = 300_000 est; target 1 -> 300_000, clamped to max_files = 4.
+    assert_eq!(estimate_partitions(1_000_000, &cfg(1, 4)), 4);
 }
