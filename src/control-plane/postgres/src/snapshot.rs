@@ -30,6 +30,11 @@ struct Head {
 /// from the latest snapshot and emit the ordered `ducklake_*` rows for the new
 /// snapshot. Returns the new [`SnapshotId`]. Assumes all referenced tables exist
 /// in the catalog (created by DuckDB or, in Task 3, by loom's `create_table`).
+#[tracing::instrument(
+    skip(tx, staged_tables, staged_files),
+    fields(tables = staged_tables.len(), files = staged_files.len()),
+    level = "debug"
+)]
 pub(crate) async fn commit_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     staged_tables: &[(TableRef, Vec<ColumnSpec>)],

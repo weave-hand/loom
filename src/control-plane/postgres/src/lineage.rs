@@ -60,6 +60,7 @@ impl Lineage for PgControlPlane {
         pg_emit(&self.pool, &event).await
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn events_for(&self, run: &RunId, _page: PageReq) -> Result<Page<LineageEvent>> {
         let rows = sqlx::query!(
             "select event_id, event_type, event_time, payload from lineage.event \
@@ -83,10 +84,12 @@ impl Lineage for PgControlPlane {
         Ok(Page::from_full(out))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn upstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
         self.graph_step(dataset, "output", "input").await
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn downstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
         self.graph_step(dataset, "input", "output").await
     }
@@ -94,6 +97,7 @@ impl Lineage for PgControlPlane {
 
 impl PgControlPlane {
     /// The datasets of one event in one direction, ordered by ordinal.
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn event_datasets(&self, event_id: i64, direction: &str) -> Result<Vec<DatasetRef>> {
         let rows = sqlx::query!(
             "select namespace, name from lineage.event_dataset \
@@ -116,6 +120,7 @@ impl PgControlPlane {
     /// One-hop graph: distinct datasets on `to_dir` of any event that has
     /// `dataset` on `from_dir`. `upstream` = (output -> input); `downstream` =
     /// (input -> output).
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn graph_step(
         &self,
         dataset: &DatasetRef,

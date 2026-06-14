@@ -62,16 +62,20 @@ a Step 3 consumer needs it.
 
 ### 2b — Trailing hardening
 
-- `SKIP LOCKED` concurrency test (N workers / M jobs, each claimed once).
-- Handler-panic policy in `Worker` (`catch_unwind` → Abandon/Retry) + test.
-- Split the adapter monoliths per concern (`postgres/src/{queue,catalog,ontology,
-  acl,lineage}.rs`; same for `memory`) to mirror `core`.
-- Pagination/cursor convention on list reads (`list_types`, `events_for`,
-  `policies_for`, `snapshots`, `files`, graph) — decide it now so it's additive.
-- `tracing` spans + basic metrics around the adapter SQL.
-- `.sqlx` offline metadata so pg queries are compile-time-checked.
-- proptest/arbitrary round-trips for `RowFilter` and the lineage envelope.
-- Wire or drop the unused `ControlPlaneError::{Conflict, Unauthorized}` variants.
+- ✅ `SKIP LOCKED` concurrency test (N workers / M jobs, each claimed once) —
+  `queue_concurrency_contract`, run by both adapters.
+- ✅ Handler-panic policy in `Worker` (`catch_unwind` → `fail(.., Abandon)`) + test.
+- ✅ Split the adapter monoliths per concern — `postgres/src/{queue,catalog,ontology,acl,
+  lineage,snapshot,transaction}.rs` and the `memory` equivalents already mirror `core`.
+- ✅ Pagination/cursor convention on list reads (PR #22).
+- ✅ `tracing` spans around the adapter SQL — every concern's trait methods now carry a
+  `#[tracing::instrument]` span (`acl`/`queue` from the start; `catalog`/`snapshot`/`lineage`
+  via `2026-06-14-control-plane-tracing-pass-design.md`).
+- ✅ `.sqlx` offline metadata so pg queries are compile-time-checked.
+- ✅ proptest/arbitrary round-trips for `RowFilter` and the lineage envelope (PR #22).
+- ✅ `ControlPlaneError::{Conflict, Unauthorized}` resolved: `Conflict` is **wired** (both ACL
+  adapters raise it on a uniqueness race, asserted in the contract); `Unauthorized` is **kept
+  as a documented reservation** for the Step-3 service auth layer.
 
 ### 2c — Deferred features (from `docs/FUTURE.md`)
 
@@ -154,8 +158,12 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
 ## Where we are
 
 Step 1 complete; **Step 2a complete** (all five items — PRs #13–#16 + the #5 decision
-record); **Step 2b** partially landed (pagination convention, proptest round-trips, and
-the dead-variant cleanup via PR #22; `.sqlx` compile-time queries done). `main` green.
+record); **Step 2b now closed** — the `tracing` instrumentation pass over the
+catalog/snapshot/lineage adapter methods
+(`2026-06-14-control-plane-tracing-pass-design.md`) was its last open item; the
+concurrency/panic-policy/per-concern-split work and the pagination, proptest, `.sqlx`,
+and dead-variant items had already shipped. **Step 2 is complete**, leaving **Step 3
+(services) as the sole active track.** `main` green.
 
 **Step 3 is underway.** Ingest **part 1** (the snapshot-commit primitive), **part 2a**
 (the landing materializer), and **part 2b** (dataset→model binding) are all delivered.
@@ -168,10 +176,10 @@ relational read.
 
 The external SQL wire (Quack / Postgres-wire / Flight SQL) is deliberately deferred as
 a distribution/ergonomics concern, gated on a real external consumer *and* a design for
-governance over arbitrary SQL — neither of which is in hand. The active track is richer
-read capability (links → derived properties → multi-hop), with governed link traversal
-just delivered as its part-1; the remaining Step 2b trailing hardening (per-concern
-adapter split and `tracing` are the highest-leverage) is picked up opportunistically.
+governance over arbitrary SQL — neither of which is in hand. With Step 2b closed, the
+candidate next slices are the queue-driven **Transform worker** (the one remaining
+unbuilt service pillar) and continuing richer reads (links → derived properties →
+multi-hop), with governed link traversal just delivered as that track's part-1.
 Smaller query follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as

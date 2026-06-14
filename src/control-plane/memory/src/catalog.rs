@@ -42,6 +42,7 @@ impl CatalogState {
 
 #[async_trait]
 impl Catalog for MemoryControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn current_snapshot(&self, table: &TableRef) -> Result<Snapshot> {
         let cat = self.catalog.lock().unwrap();
         let key = (table.schema.clone(), table.name.clone());
@@ -56,6 +57,7 @@ impl Catalog for MemoryControlPlane {
             .unwrap())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
         let cat = self.catalog.lock().unwrap();
         let key = (table.schema.clone(), table.name.clone());
@@ -71,6 +73,7 @@ impl Catalog for MemoryControlPlane {
         ))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn files(
         &self,
         table: &TableRef,
@@ -97,6 +100,7 @@ impl Catalog for MemoryControlPlane {
         ))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
         let cat = self.catalog.lock().unwrap();
         let key = (table.schema.clone(), table.name.clone());

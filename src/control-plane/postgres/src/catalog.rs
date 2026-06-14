@@ -8,6 +8,7 @@ use crate::{PgControlPlane, backend};
 
 #[async_trait]
 impl Catalog for PgControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn current_snapshot(&self, table: &TableRef) -> Result<Snapshot> {
         let row = sqlx::query!(
             "select sn.snapshot_id as \"snapshot_id!\", sn.snapshot_time as \"snapshot_time!\", sn.schema_version as \"schema_version!\" \
@@ -31,6 +32,7 @@ impl Catalog for PgControlPlane {
         })
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
         let rows = sqlx::query!(
             "select sn.snapshot_id as \"snapshot_id!\", sn.snapshot_time as \"snapshot_time!\", sn.schema_version as \"schema_version!\" \
@@ -63,6 +65,7 @@ impl Catalog for PgControlPlane {
         ))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn files(
         &self,
         table: &TableRef,
@@ -91,6 +94,7 @@ impl Catalog for PgControlPlane {
         ))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
         let tid = self.resolve_table(table, at).await?;
         let rows = sqlx::query!(
@@ -119,6 +123,7 @@ impl Catalog for PgControlPlane {
 
 impl PgControlPlane {
     /// Resolve the `table_id` of `table` live at snapshot `at`, or `NotFound`.
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn resolve_table(&self, table: &TableRef, at: SnapshotId) -> Result<i64> {
         sqlx::query_scalar!(
             "select t.table_id as \"table_id!\" from ducklake_table t join ducklake_schema s on t.schema_id = s.schema_id \
