@@ -5,9 +5,7 @@
 pub mod bind;
 pub mod gate;
 pub mod http;
-pub mod infer;
 pub mod materialize;
-pub mod write;
 
 pub use bind::{BindError, BindViolation, BindViolationReason, bind};
 pub use gate::{ColumnShape, ModelShape, Violation, ViolationReason};
@@ -27,9 +25,9 @@ pub enum IngestError {
     #[error("data does not conform to model: {} violation(s)", .0.len())]
     DoesNotConform(Vec<Violation>),
     #[error(transparent)]
-    Infer(#[from] infer::InferError),
+    Infer(#[from] datafusion_io::InferError),
     #[error(transparent)]
-    Write(#[from] write::WriteError),
+    Write(#[from] datafusion_io::WriteError),
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     /// commit() returned None — a catalog op was staged yet no snapshot was
