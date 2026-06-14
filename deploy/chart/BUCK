@@ -1,17 +1,16 @@
 # loom Helm chart. Packages chart/** into a versioned .tgz, digest-pinning the
 # two service images into values.yaml (ingest.image / queryApi.image) from their
-# oci_image `.info` providers. `deps` makes building the chart build the images.
-# Kept under //deploy so it stays off the normal CI build sweep; the release
-# workflow builds/pushes it explicitly.
+# oci_image `.info` providers. Kept under //deploy so it stays off the normal CI
+# build sweep; the release workflow builds/pushes it explicitly.
 load("@homelab//buck2/helm:defs.bzl", "helm_chart")
 
 helm_chart(
     name = "chart",
     srcs = glob(["chart/**"]),
-    deps = [
-        "//images/ingest:image",
-        "//images/query-api:image",
-    ],
+    # No `deps`: the homelab helm_chart rule stages deps into the genrule's srcs,
+    # and both images output `image.tar` -> a duplicative-name collision. They're
+    # redundant anyway — `images` pulls in each `:image.info`, which transitively
+    # builds the images.
     images = {
         "ingest.image": "//images/ingest:image.info",
         "queryApi.image": "//images/query-api:image.info",
