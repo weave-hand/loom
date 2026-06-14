@@ -56,26 +56,18 @@ pub struct EmbeddedDuckDb {
 }
 
 impl EmbeddedDuckDb {
-    /// `data_path` must match the dir the writer used (relative file paths resolve
-    /// under it). For data-free reads (e.g. SELECT 42) any existing dir works.
-    pub async fn attach(
-        socket: &std::path::Path,
-        db: &str,
-        data_path: &std::path::Path,
-    ) -> Result<Self, ServingError> {
+    /// `pg_conn` is a libpq connection string (e.g. "dbname=loom host=/sock user=postgres"
+    /// or "dbname=loom host=db.internal port=5432 user=loom password=secret").
+    /// `data_path` must match the dir the writer used (relative file paths resolve under it).
+    pub async fn attach(pg_conn: &str, data_path: &std::path::Path) -> Result<Self, ServingError> {
         let ext_dir = std::env::var("DUCKDB_EXTENSION_DIR")
             .map_err(|_| ServingError::Engine("DUCKDB_EXTENSION_DIR unset".into()))?;
-        // `USE lake;` makes the single attached DuckLake catalog the default, so the
-        // unqualified table names compile_select emits (e.g. "main"."orders") resolve
-        // against it and not DuckDB's default in-memory `memory` catalog (where the data
-        // does not live). `lake` is the fixed ATTACH alias on the line above.
         let attach_sql = format!(
             "SET extension_directory='{}';\nLOAD ducklake;\nLOAD postgres_scanner;\n\
-             ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake \
+             ATTACH 'ducklake:postgres:{}' AS lake \
              (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\nUSE lake;",
             ext_dir,
-            db,
-            socket.display(),
+            pg_conn,
             data_path.display(),
         );
         Ok(Self { attach_sql })

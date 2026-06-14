@@ -1,0 +1,26 @@
+rust_library(
+    name = "runtime",
+    crate = "service_runtime",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:object_store",
+        "//third-party:sqlx",
+        "//third-party:thiserror",
+        "//third-party:tokio",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "config",
+    crate = "config",
+    srcs = ["tests/config.rs"],
+    crate_root = "tests/config.rs",
+    edition = "2024",
+    deps = [":runtime"],
+)

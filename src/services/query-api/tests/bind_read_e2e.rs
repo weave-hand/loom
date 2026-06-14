@@ -116,9 +116,16 @@ async fn landed_then_bound_dataset_is_queryable() {
     .unwrap();
 
     // 4. READ through the governed front door.
-    let eng = EmbeddedDuckDb::attach(fx.socket_path(), &db, writer.data_path())
-        .await
-        .unwrap();
+    let eng = EmbeddedDuckDb::attach(
+        &format!(
+            "dbname={} host={} user=postgres",
+            db,
+            fx.socket_path().display()
+        ),
+        writer.data_path(),
+    )
+    .await
+    .unwrap();
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,

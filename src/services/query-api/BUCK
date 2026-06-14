@@ -26,7 +26,12 @@ rust_binary(
     srcs = ["src/main.rs"],
     crate_root = "src/main.rs",
     edition = "2024",
-    deps = [":query-api", "//third-party:tokio"],
+    deps = [
+        ":query-api",
+        "//src/services/runtime:runtime",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+    ],
     env = {"CARGO_PKG_VERSION": "0.1.0"},
     visibility = ["PUBLIC"],
 )
