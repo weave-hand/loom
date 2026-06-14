@@ -1,19 +1,20 @@
 name: release
 
-# Auto-release on merge to main. Reads the latest published image version from
-# ghcr, derives the next semver from the Conventional Commits since that version
-# (feat -> minor, fix/perf -> patch, `!`/BREAKING CHANGE -> major), then builds &
-# pushes both service images and the digest-pinned Helm chart to ghcr, and cuts a
-# matching `vX.Y.Z` git tag + GitHub Release. If no release-worthy commits landed,
-# the run is a no-op. `workflow_dispatch` can force an explicit version.
+# Image + Helm chart publishing for loom. The deploy// buck2 targets build local
+# (apko fetches packages over the network) with the Rust binaries on BuildBuddy
+# RE; they're off the normal CI sweep, so they only run here.
 #
-# On pull requests (same-repo branches only), the `dev-image` job instead pushes
-# dev-tagged preview images + chart (0.0.0-pr<N>.<sha>) so changes can be pulled
-# before merge; those prerelease tags never affect the release auto-increment.
+# Three independent flows by event:
 #
-# The image/chart buck2 targets live in the `deploy//` cell (excluded from root//...):
-# apko fetches packages over the network and builds local-only, so they only run
-# here. The Rust binaries still compile on BuildBuddy RE.
+# - push to main      -> `edge`: push `bleeding-edge` (moving) + `sha-<short>`
+#                        (immutable) images for both services, and publish the
+#                        Helm chart IF its committed Chart.yaml `version` isn't
+#                        already in ghcr (bump that version to cut a chart release).
+# - workflow_dispatch -> `release`: tag the images `X.Y.Z` + `latest` and cut a
+#                        `vX.Y.Z` git tag + GitHub Release. Versioned releases are
+#                        intentional — there is no auto-increment.
+# - pull_request       -> `dev-image`: push dev preview images + chart for same-repo
+#                        PRs (0.0.0-pr<N>.sha<short> + pr-<N>).
 
 on:
   push:
@@ -22,48 +23,47 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Explicit version to release (X.Y.Z), bypassing commit analysis."
-        required: false
-        default: ""
+        description: "Release version X.Y.Z (tags images + cuts a GitHub Release)."
+        required: true
 
-# Per-ref concurrency: main releases and each PR's dev-image build are independent
-# groups. PR builds cancel superseded runs; main releases never cancel mid-push.
+# Per-ref concurrency so main, each PR, and dispatches are independent groups.
+# PR builds cancel superseded runs; main/release runs never cancel mid-push.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BUCK2_RELEASE: "2026-05-18"
   BUCK_PREFER_REMOTE: "true"
   REGISTRY: ghcr.io
-  OWNER: weave-hand
   INGEST_IMAGE: ghcr.io/weave-hand/loom-ingest
   QUERY_API_IMAGE: ghcr.io/weave-hand/loom-query-api
   CHART_REPO: oci://ghcr.io/weave-hand/charts
+  CHART_OCI: ghcr.io/weave-hand/charts/loom
 
 permissions:
-  contents: write   # create the vX.Y.Z tag + GitHub Release
+  contents: write   # create the vX.Y.Z tag + GitHub Release (release job)
   packages: write   # push images + chart to ghcr
 
 jobs:
-  release:
-    # Real release only on merge to main / manual dispatch — never on PRs.
-    if: github.event_name != 'pull_request'
+  # Bleeding edge: every merge to main republishes the moving `bleeding-edge` tag
+  # and an immutable `sha-<short>` tag, and publishes the chart when its version
+  # is bumped. No git tag / GitHub Release — that's the manual `release` job.
+  edge:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0   # full history + tags for the conventional-commit range
 
       - name: Set up buck2
         uses: ./.github/actions/setup-buck2
         with:
           release: ${{ env.BUCK2_RELEASE }}
 
-      # Registry auth: crane (image push) reads ~/.docker/config.json; helm
-      # (chart push) keeps its own registry config. Log both in via the pinned
-      # CLIs so the buck2 push rules pick the creds up.
+      # crane (image push) reads ~/.docker/config.json; helm (chart push) keeps
+      # its own registry config. Log both in via the pinned CLIs.
       - name: Log in to ghcr
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
@@ -73,107 +73,87 @@ jobs:
           echo "$TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
           echo "$TOKEN" | buck2 run homelab//buck2/bin:helm  -- registry login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
 
-      - name: Determine version
-        id: ver
+      - name: Push bleeding-edge images
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-          FORCE: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
+          short="${GITHUB_SHA:0:7}"
+          buck2 run deploy//images/ingest:image.push    -- bleeding-edge "sha-$short"
+          buck2 run deploy//images/query-api:image.push -- bleeding-edge "sha-$short"
 
-          # Previous published version: highest semver tag on the ingest image in
-          # ghcr (authoritative for "what's released"). Default 0.0.0 if none.
-          prev="0.0.0"
-          if tags="$(buck2 run homelab//buck2/bin:crane -- ls "$INGEST_IMAGE" 2>/dev/null)"; then
-            latest="$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
-            [ -n "$latest" ] && prev="$latest"
-          fi
-          echo "previous version: $prev"
-
-          if [ -n "$FORCE" ]; then
-            next="$FORCE"; release=true
-          else
-            # Commit range since the previous release tag (full history if absent).
-            range="HEAD"
-            if git rev-parse -q --verify "refs/tags/v$prev" >/dev/null; then
-              range="v$prev..HEAD"
-            fi
-            major=0; minor=0; patch=0
-            subs="$(git log $range --format='%s')"
-            bodies="$(git log $range --format='%B')"
-            printf '%s\n' "$subs"   | grep -qE '^[a-z]+(\(.+\))?!:' && major=1 || true
-            printf '%s\n' "$bodies" | grep -qE 'BREAKING[ -]CHANGE'  && major=1 || true
-            printf '%s\n' "$subs"   | grep -qE '^feat(\(.+\))?!?:'   && minor=1 || true
-            printf '%s\n' "$subs"   | grep -qE '^(fix|perf)(\(.+\))?!?:' && patch=1 || true
-
-            IFS=. read -r pj pn pp <<<"$prev"
-            if   [ "$major" = 1 ]; then next="$((pj+1)).0.0"; release=true
-            elif [ "$minor" = 1 ]; then next="$pj.$((pn+1)).0"; release=true
-            elif [ "$patch" = 1 ]; then next="$pj.$pn.$((pp+1))"; release=true
-            else next="$prev"; release=false; fi
-          fi
-
-          # Never clobber an already-published release. If the computed tag
-          # already exists (e.g. `crane ls` blipped and prev fell back to 0.0.0,
-          # or a partial prior run), skip rather than overwrite images/tag/release.
-          if [ "$release" = true ] && git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then
-            echo "v$next already tagged — skipping to avoid clobbering a release."
-            release=false
-          fi
-
-          echo "next version: $next (release=$release)"
-          {
-            echo "version=$next"
-            echo "release=$release"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Push images
-        if: steps.ver.outputs.release == 'true'
+      - name: Publish chart if version bumped
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA:0:7}"
+          cv="$(awk '/^version:/{print $2; exit}' deploy/chart/chart/Chart.yaml)"
+          if buck2 run homelab//buck2/bin:crane -- manifest "$CHART_OCI:$cv" >/dev/null 2>&1; then
+            echo "chart $cv already published — bump deploy/chart/chart/Chart.yaml 'version' to release a new chart."
+          else
+            # Stamp appVersion to the exact main snapshot the chart deploys; images
+            # are digest-pinned into values.yaml by helm_chart at package time.
+            sed -i -E "s/^appVersion:.*/appVersion: \"sha-$short\"/" deploy/chart/chart/Chart.yaml
+            buck2 run deploy//chart:chart.push
+            echo "published chart $cv (appVersion sha-$short) to $CHART_OCI"
+          fi
+
+  # Intentional versioned release. Run from the Actions tab with a version; tags
+  # the current main images X.Y.Z + latest and cuts a vX.Y.Z git tag + Release.
+  release:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0   # tags, for the clobber guard
+
+      - name: Validate version
+        id: v
+        env:
+          V: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "version must be X.Y.Z, got '$V'"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
+            echo "tag v$V already exists — refusing to clobber a release."; exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
+
+      - name: Log in to ghcr
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+
+      - name: Push release images
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          V: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
           buck2 run deploy//images/ingest:image.push    -- "$V" latest
           buck2 run deploy//images/query-api:image.push -- "$V" latest
 
-      - name: Package & push chart
-        if: steps.ver.outputs.release == 'true'
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-          V: ${{ steps.ver.outputs.version }}
-        run: |
-          set -euo pipefail
-          # Stamp the chart version + appVersion (in-tree, not committed) so the
-          # packaged .tgz carries this release. Image refs are digest-pinned into
-          # values.yaml by helm_chart(images=...) at package time.
-          sed -i -E "s/^version:.*/version: $V/; s/^appVersion:.*/appVersion: \"$V\"/" \
-            deploy/chart/chart/Chart.yaml
-          buck2 run deploy//chart:chart.push
-          # Stage the packaged chart as a release asset.
-          out="$(buck2 build deploy//chart:chart --show-simple-output 2>/dev/null | tail -1)"
-          mkdir -p dist && cp "$out" "dist/loom-$V.tgz"
-
       - name: Tag & GitHub Release
-        if: steps.ver.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: v${{ steps.ver.outputs.version }}
+          tag_name: v${{ steps.v.outputs.version }}
+          name: v${{ steps.v.outputs.version }}
           generate_release_notes: true
-          files: dist/loom-${{ steps.ver.outputs.version }}.tgz
 
-      - name: No release
-        if: steps.ver.outputs.release != 'true'
-        run: echo "No release-worthy commits since v${{ steps.ver.outputs.version }} — skipping."
-
-  # Dev-image preview on every PR commit. Builds + pushes dev-tagged images and a
-  # matching chart to ghcr so a PR's changes can be pulled/deployed before merge.
-  # Same-repo PRs only — fork PRs get a read-only token and no secrets, so they
-  # can't push (and are skipped rather than failing). Dev tags are SemVer
-  # prereleases (0.0.0-pr<N>.<sha>), which sort below real releases and are
-  # ignored by the release job's version detection, so they never affect the
-  # auto-increment on main.
+  # Dev-image preview on every PR commit (same-repo branches only — fork PRs get a
+  # read-only token + no secrets, so they're skipped). Dev tags are SemVer
+  # prereleases that sort below releases and never collide with bleeding-edge.
   dev-image:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest

@@ -164,8 +164,9 @@ image/Helm rules consumed from the `jomcgi/homelab` repo as a buck2 git external
 cell). Chart: CNPG-bundled Postgres control plane, a
 deployer-chosen StorageClass for the shared object-store PVC, default-deny
 NetworkPolicy with no ingress, and an optional Gateway API `HTTPRoute`. A
-`release` workflow auto-versions from Conventional Commits on merge to main and
-publishes digest-pinned images + chart to ghcr. See `docs/deploy.md`. Open
+`release` workflow pushes `bleeding-edge` + `sha-<short>` images on every merge,
+cuts versioned `vX.Y.Z` releases on manual dispatch, and publishes the
+digest-pinned chart when its `Chart.yaml` version is bumped. See `docs/deploy.md`. Open
 follow-ups: a schema-migration Job (the chart provisions PG but doesn't migrate),
 and replacing the `LocalFileSystem` PVC with a real S3/MinIO object store (which
 removes the RWX-for-multi-pod constraint).

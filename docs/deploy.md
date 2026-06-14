@@ -109,28 +109,31 @@ the full set; the notable knobs:
 
 ## Release pipeline (`.github/workflows/release.yml`)
 
-On every merge to `main` the `release` job:
+Three independent flows, by event — there is **no** auto-increment; versioned
+releases are intentional.
 
-1. Reads the previous published version (highest semver tag of the ingest image
-   in ghcr).
-2. Derives the next version from the Conventional Commits since that release's
-   `vX.Y.Z` git tag: `feat` → minor, `fix`/`perf` → patch, `!`/`BREAKING CHANGE`
-   → major. No release-worthy commits ⇒ no-op.
-3. Builds and pushes both images to ghcr at `X.Y.Z` + `latest`.
-4. Stamps the chart `version`/`appVersion`, digest-pins the freshly built images
-   into the chart's `values.yaml`, and pushes the chart to ghcr.
-5. Cuts a `vX.Y.Z` git tag and a GitHub Release with the packaged chart attached.
+**Merge to `main` → `edge`.** Builds both images and pushes a moving
+`bleeding-edge` tag plus an immutable `sha-<short>` tag (so any main commit is
+reproducibly pinnable). It also publishes the Helm chart **iff** the committed
+`Chart.yaml` `version` isn't already in ghcr — i.e. bump that `version` in a PR
+when you want to cut a chart release. The chart digest-pins the images it was
+built against and stamps `appVersion` to `sha-<short>` (the snapshot it deploys).
 
-`workflow_dispatch` accepts an explicit `version` to bypass commit analysis (use
-it to cut the first release before any `vX.Y.Z` tag exists).
+**`workflow_dispatch` (version `X.Y.Z`) → `release`.** Run it from the Actions
+tab with a version: it validates the format, refuses if `vX.Y.Z` already exists
+(no clobber), tags the current main images `X.Y.Z` + `latest`, and cuts a
+`vX.Y.Z` git tag + GitHub Release.
 
-On **pull requests** (same-repo branches; fork PRs are skipped for lack of push
-creds), the `dev-image` job builds and pushes dev-tagged preview images + chart
-to ghcr on every commit: `…/loom-ingest:0.0.0-pr<N>.sha<short>` (plus a moving
-`pr-<N>` tag) and `charts/loom:0.0.0-pr<N>.sha<short>`. These SemVer prereleases sort
-below real releases and are ignored by the version detection, so they never
-affect the auto-increment on `main`. The pushed refs are written to the job
-summary.
+**Pull request → `dev-image`** (same-repo branches; fork PRs are skipped for
+lack of push creds). On every commit it pushes dev preview images + chart:
+`…/loom-ingest:0.0.0-pr<N>.sha<short>` (plus a moving `pr-<N>` tag) and
+`charts/loom:0.0.0-pr<N>.sha<short>`. These SemVer prereleases sort below real
+releases. The pushed refs are written to the job summary.
+
+Image tags at a glance: `bleeding-edge` (latest main), `sha-<short>` (immutable
+per-commit), `X.Y.Z` + `latest` (releases), `pr-<N>` / `0.0.0-pr<N>.sha<short>`
+(PR previews). Chart versions are the deployer's own (`Chart.yaml` `version`),
+with `appVersion` recording the app snapshot.
 
 > The `deploy//` cell is kept off the `//src` CI sweep on purpose: apko
 > fetches packages over the network and builds local-only, so building it on
