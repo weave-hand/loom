@@ -3,7 +3,9 @@
 //! trusted ontology/ACL metadata and are double-quoted; every caller VALUE is a
 //! bound `?` parameter (never interpolated) — this is the injection boundary.
 
-use control_plane_core::{CompareOp, RowFilter, ScalarValue, TableRef, validate_row_filter};
+use control_plane_core::{
+    CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef, validate_row_filter,
+};
 
 use crate::serving::SqlValue;
 
@@ -25,6 +27,15 @@ fn quote_ident(id: &str) -> String {
         "identifier must not contain a double quote: {id}"
     );
     format!("\"{id}\"")
+}
+
+/// A column reference, optionally table-qualified. `alias` empty -> unqualified.
+fn col_ref(alias: &str, id: &str) -> String {
+    if alias.is_empty() {
+        quote_ident(id)
+    } else {
+        format!("{alias}.{}", quote_ident(id))
+    }
 }
 
 fn scalar(v: &ScalarValue, out: &mut Vec<SqlValue>) {
@@ -52,7 +63,7 @@ fn op_sql(op: CompareOp) -> &'static str {
 /// caller, `compile_select`, enforces this up front). The `unreachable!` arms below —
 /// and those in `scalar`/`op_sql` — rely on that CompareOp<->ScalarValue invariant; a
 /// caller that skips validation could turn them into a panic.
-fn filter_sql(f: &RowFilter, params: &mut Vec<SqlValue>) -> String {
+fn filter_sql(f: &RowFilter, alias: &str, params: &mut Vec<SqlValue>) -> String {
     match f {
         RowFilter::Compare {
             property,
@@ -76,33 +87,33 @@ fn filter_sql(f: &RowFilter, params: &mut Vec<SqlValue>) -> String {
                 };
                 format!(
                     "({} {} ({}))",
-                    quote_ident(property),
+                    col_ref(alias, property),
                     kw,
                     placeholders.join(", ")
                 )
             }
-            CompareOp::IsNull => format!("({} IS NULL)", quote_ident(property)),
-            CompareOp::IsNotNull => format!("({} IS NOT NULL)", quote_ident(property)),
+            CompareOp::IsNull => format!("({} IS NULL)", col_ref(alias, property)),
+            CompareOp::IsNotNull => format!("({} IS NOT NULL)", col_ref(alias, property)),
             _ => {
                 scalar(value, params);
-                format!("({} {} ?)", quote_ident(property), op_sql(*op))
+                format!("({} {} ?)", col_ref(alias, property), op_sql(*op))
             }
         },
         RowFilter::And(xs) => format!(
             "({})",
             xs.iter()
-                .map(|x| filter_sql(x, params))
+                .map(|x| filter_sql(x, alias, params))
                 .collect::<Vec<_>>()
                 .join(" AND ")
         ),
         RowFilter::Or(xs) => format!(
             "({})",
             xs.iter()
-                .map(|x| filter_sql(x, params))
+                .map(|x| filter_sql(x, alias, params))
                 .collect::<Vec<_>>()
                 .join(" OR ")
         ),
-        RowFilter::Not(x) => format!("(NOT {})", filter_sql(x, params)),
+        RowFilter::Not(x) => format!("(NOT {})", filter_sql(x, alias, params)),
     }
 }
 
@@ -142,7 +153,7 @@ pub fn compile_select(
 
     let mut conjuncts: Vec<String> = Vec::new();
     for f in row_filters {
-        conjuncts.push(filter_sql(f, &mut params));
+        conjuncts.push(filter_sql(f, "", &mut params));
     }
     for (col, val) in eq_filters {
         conjuncts.push(format!("({} = ?)", quote_ident(col)));
@@ -150,6 +161,104 @@ pub fn compile_select(
     }
 
     let mut sql = format!("SELECT {cols} FROM {from}");
+    if !conjuncts.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conjuncts.join(" AND "));
+    }
+    sql.push_str(&format!(" LIMIT {limit}"));
+    Ok((sql, params))
+}
+
+/// Compile a governed link traversal into a single read-only SELECT DISTINCT.
+/// `f` aliases the source table, `t` the target; for a join-table backing, `j` is
+/// the mapping table. Target columns are projected (masked ones emit the marker);
+/// source eq-filters and both types' row filters are ANDed; every VALUE is bound.
+///
+/// PRECONDITION mirrors `compile_select`: row filters are validated up front so the
+/// `filter_sql` invariant arms cannot panic.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_traversal(
+    from_table: &TableRef,
+    to_table: &TableRef,
+    backing: &LinkBacking,
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    source_filters: &[RowFilter],
+    target_filters: &[RowFilter],
+    source_eq_filters: &[(String, SqlValue)],
+    limit: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    for f in source_filters.iter().chain(target_filters) {
+        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+    }
+    let mut params = Vec::new();
+
+    let cols = allowed_cols
+        .iter()
+        .map(|c| {
+            if mask_cols.iter().any(|m| m == c) {
+                format!("'{MASK_MARKER}' AS {}", quote_ident(c))
+            } else {
+                format!("t.{}", quote_ident(c))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let to_from = format!(
+        "{}.{}",
+        quote_ident(&to_table.schema),
+        quote_ident(&to_table.name)
+    );
+    let from_from = format!(
+        "{}.{}",
+        quote_ident(&from_table.schema),
+        quote_ident(&from_table.name)
+    );
+    let join = match backing {
+        LinkBacking::ForeignKey {
+            from_column,
+            to_column,
+        } => format!(
+            "JOIN {from_from} f ON f.{} = t.{}",
+            quote_ident(from_column),
+            quote_ident(to_column),
+        ),
+        LinkBacking::JoinTable {
+            table,
+            from_key,
+            from_column,
+            to_column,
+            to_key,
+        } => {
+            let jt = format!(
+                "{}.{}",
+                quote_ident(&table.schema),
+                quote_ident(&table.name)
+            );
+            format!(
+                "JOIN {jt} j ON j.{} = t.{} JOIN {from_from} f ON f.{} = j.{}",
+                quote_ident(to_column),
+                quote_ident(to_key),
+                quote_ident(from_key),
+                quote_ident(from_column),
+            )
+        }
+    };
+
+    let mut conjuncts: Vec<String> = Vec::new();
+    for (col, val) in source_eq_filters {
+        conjuncts.push(format!("(f.{} = ?)", quote_ident(col)));
+        params.push(val.clone());
+    }
+    for f in source_filters {
+        conjuncts.push(filter_sql(f, "f", &mut params));
+    }
+    for f in target_filters {
+        conjuncts.push(filter_sql(f, "t", &mut params));
+    }
+
+    let mut sql = format!("SELECT DISTINCT {cols} FROM {to_from} t {join}");
     if !conjuncts.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));

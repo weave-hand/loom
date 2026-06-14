@@ -160,6 +160,15 @@ rust_test(
     deps = [":query-api", "//src/control-plane/core:core"],
 )
 
+rust_test(
+    name = "link-traversal-compile",
+    crate = "link_traversal_compile",
+    srcs = ["tests/link_traversal_compile.rs"],
+    crate_root = "tests/link_traversal_compile.rs",
+    edition = "2024",
+    deps = [":query-api", "//src/control-plane/core:core"],
+)
+
 loom_fixture_test(
     name = "spike-duckdb",
     crate = "spike_duckdb",
