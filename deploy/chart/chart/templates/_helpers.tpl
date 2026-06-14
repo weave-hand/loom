@@ -51,7 +51,9 @@ app.kubernetes.io/part-of: loom
 CNPG cluster name and the app-secret it generates (<cluster>-app).
 */}}
 {{- define "loom.pgClusterName" -}}
-{{- printf "%s-pg" (include "loom.fullname" .) -}}
+{{- /* trunc the base to 60 so "<base>-pg" stays <=63 — it is used as the
+       cnpg.io/cluster label VALUE (63-char max) in the NetworkPolicy and by CNPG. */ -}}
+{{- printf "%s-pg" (include "loom.fullname" . | trunc 60 | trimSuffix "-") -}}
 {{- end -}}
 
 {{/*

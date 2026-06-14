@@ -23,7 +23,9 @@ spec:
       containers:
         - name: ingest
           image: {{ include "loom.image" .Values.ingest.image | quote }}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ .Values.ingest.image.pullPolicy | default "IfNotPresent" }}
+          # CWD on the writable /tmp emptyDir (read-only rootfs otherwise).
+          workingDir: /tmp
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:

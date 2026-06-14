@@ -8,6 +8,11 @@ metadata:
   labels:
     {{- include "loom.labels" . | nindent 4 }}
     app.kubernetes.io/component: object-store
+  {{- if .Values.objectStore.retain }}
+  annotations:
+    # Keep the PVC (and its landed Parquet data) on `helm uninstall`.
+    "helm.sh/resource-policy": keep
+  {{- end }}
 spec:
   accessModes:
     {{- toYaml .Values.objectStore.accessModes | nindent 4 }}

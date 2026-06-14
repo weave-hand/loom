@@ -15,6 +15,9 @@ ingest:
     repository: ghcr.io/weave-hand/loom-ingest
     tag: latest
     digest: ""
+    # IfNotPresent is safe on the release path (digest-pinned, immutable). Set to
+    # Always if you deploy by a mutable tag (e.g. latest) and want re-pulls.
+    pullPolicy: IfNotPresent
   replicas: 1
   port: 8080
   resources: {}
@@ -27,11 +30,15 @@ queryApi:
     repository: ghcr.io/weave-hand/loom-query-api
     tag: latest
     digest: ""
+    pullPolicy: IfNotPresent
   replicas: 1
   port: 8080
   resources: {}
   nodeSelector: {}
   tolerations: []
+  # By default query-api is co-scheduled onto the same node as ingest (see
+  # templates/query-api.yaml) so both can mount the shared ReadWriteOnce
+  # object-store PVC. Setting this overrides that default (use with RWX).
   affinity: {}
 
 # Service lock-timeout (ms) -> LOOM_LOCK_TIMEOUT_MS.
@@ -42,15 +49,19 @@ lockTimeoutMs: 5000
 # references). The storage *class* is deliberately the deployer's choice — loom
 # does not pick one ("" = the cluster's default StorageClass).
 #
-# ingest writes and query-api reads the SAME data, so a multi-pod deployment
-# needs ReadWriteMany. With the default ReadWriteOnce, keep one replica each and
-# co-schedule them (or supply an RWX storageClassName).
+# ingest writes and query-api reads the SAME data. With the default
+# ReadWriteOnce, query-api is co-scheduled onto ingest's node (see
+# templates/query-api.yaml) so both can mount the volume; for multi-node spread
+# supply an RWX storageClassName and override queryApi.affinity.
 objectStore:
   storageClassName: ""
   accessModes:
     - ReadWriteOnce
   size: 10Gi
   mountPath: /var/lib/loom/data
+  # Keep the PVC (and its landed Parquet data) on `helm uninstall` instead of
+  # letting Helm delete it. Set false to allow deletion.
+  retain: true
 
 # --- Postgres control plane (CloudNativePG) -----------------------------------
 # Requires the CloudNativePG operator + CRDs installed in the cluster. The

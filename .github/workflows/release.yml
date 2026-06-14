@@ -113,6 +113,14 @@ jobs:
             else next="$prev"; release=false; fi
           fi
 
+          # Never clobber an already-published release. If the computed tag
+          # already exists (e.g. `crane ls` blipped and prev fell back to 0.0.0,
+          # or a partial prior run), skip rather than overwrite images/tag/release.
+          if [ "$release" = true ] && git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then
+            echo "v$next already tagged — skipping to avoid clobbering a release."
+            release=false
+          fi
+
           echo "next version: $next (release=$release)"
           {
             echo "version=$next"
@@ -199,8 +207,10 @@ jobs:
         run: |
           set -euo pipefail
           short="${SHA:0:7}"
-          dev="0.0.0-pr${PR}.${short}"   # SemVer prerelease: sorts below releases
-          moving="pr-${PR}"               # updated each push for this PR
+          # `sha` prefix keeps the identifier alphanumeric — an all-digit short
+          # SHA with a leading zero would be an invalid SemVer numeric identifier.
+          dev="0.0.0-pr${PR}.sha${short}"   # SemVer prerelease: sorts below releases
+          moving="pr-${PR}"                  # updated each push for this PR
 
           buck2 run deploy//images/ingest:image.push    -- "$dev" "$moving"
           buck2 run deploy//images/query-api:image.push -- "$dev" "$moving"

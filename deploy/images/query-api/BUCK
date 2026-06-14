@@ -20,10 +20,30 @@ tar_layer(
     path = "/usr/local/bin/query-api",
 )
 
+# Vendored DuckDB extensions (ducklake + postgres_scanner) the binary LOADs at
+# attach time from DUCKDB_EXTENSION_DIR. The :duckdb-extensions target lays them
+# out as <version>/linux_amd64/<name>.duckdb_extension, which is exactly what
+# DuckDB resolves under extension_directory; stage that tree at
+# /opt/duckdb/extensions and point the Deployment's DUCKDB_EXTENSION_DIR there
+# (deploy/chart/chart/templates/query-api.yaml). Without this the container fails
+# at startup ("DUCKDB_EXTENSION_DIR unset" / LOAD ducklake not found).
+genrule(
+    name = "ext_layer",
+    out = "ext_layer.tar",
+    cmd = " && ".join([
+        "mkdir -p \"$TMP/root/opt/duckdb/extensions\"",
+        "cp -R $(location root//src/control-plane/postgres:duckdb-extensions)/. \"$TMP/root/opt/duckdb/extensions/\"",
+        "tar -C \"$TMP/root\" -cf $OUT .",
+    ]),
+)
+
 # Deployable image + `.info` (digest pin) + `.push` (crane push to ghcr).
 oci_image(
     name = "image",
     base = ":base",
-    layers = [":bin_layer"],
+    layers = [
+        ":bin_layer",
+        ":ext_layer",
+    ],
     repository = "ghcr.io/weave-hand/loom-query-api",
 )

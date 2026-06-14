@@ -19,9 +19,12 @@ below). The deployable targets live in their own `deploy//` buck2 cell
 Each image is the buck2-built Rust binary (`x86_64-unknown-linux-gnu`, glibc)
 layered onto a minimal apko/Wolfi base. The base carries `glibc` + `libgcc` +
 CA certs; query-api additionally carries `libstdc++` for its embedded DuckDB
-(the `duckdb` crate compiles bundled C++). Both run as non-root (uid 65532) with
-the binary at the image entrypoint. Package versions are pinned in the committed
-`apko.lock.json`; refresh with `apko lock apko.yaml` when an `apko.yaml` changes.
+(the `duckdb` crate compiles bundled C++) **and** layers the vendored
+`ducklake`/`postgres_scanner` DuckDB extensions at `/opt/duckdb/extensions`
+(`DUCKDB_EXTENSION_DIR`), which the binary `LOAD`s at attach time. Both run as
+non-root (uid 65532) with the binary at the image entrypoint. Package versions
+are pinned in the committed `apko.lock.json`; refresh with `apko lock apko.yaml`
+when an `apko.yaml` changes.
 
 ## Images: build & push manually
 
@@ -71,10 +74,11 @@ buck2 run deploy//chart:chart.push
   out of band before the services can serve. A migration Job is future work.
 - **Shared local object store.** The services currently use a `LocalFileSystem`
   object store at `LOOM_DATA_PATH`, backed by one PVC that ingest writes and
-  query-api reads. Across pods this requires `ReadWriteMany`; with the default
-  `ReadWriteOnce`, keep one replica each and co-schedule them, or supply an RWX
-  `objectStore.storageClassName`. (A real S3/MinIO object store is on the
-  roadmap and will remove this constraint.)
+  query-api reads. With the default `ReadWriteOnce` the chart co-schedules
+  query-api onto ingest's node (a default `podAffinity`) so both can mount it;
+  for multi-node spread, supply an RWX `objectStore.storageClassName` and
+  override `queryApi.affinity`. (A real S3/MinIO object store is on the roadmap
+  and will remove this constraint.)
 
 ### Security posture (defaults)
 
@@ -122,8 +126,8 @@ it to cut the first release before any `vX.Y.Z` tag exists).
 
 On **pull requests** (same-repo branches; fork PRs are skipped for lack of push
 creds), the `dev-image` job builds and pushes dev-tagged preview images + chart
-to ghcr on every commit: `…/loom-ingest:0.0.0-pr<N>.<sha>` (plus a moving
-`pr-<N>` tag) and `charts/loom:0.0.0-pr<N>.<sha>`. These SemVer prereleases sort
+to ghcr on every commit: `…/loom-ingest:0.0.0-pr<N>.sha<short>` (plus a moving
+`pr-<N>` tag) and `charts/loom:0.0.0-pr<N>.sha<short>`. These SemVer prereleases sort
 below real releases and are ignored by the version detection, so they never
 affect the auto-increment on `main`. The pushed refs are written to the job
 summary.
