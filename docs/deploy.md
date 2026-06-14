@@ -120,6 +120,14 @@ On every merge to `main` the `release` job:
 `workflow_dispatch` accepts an explicit `version` to bypass commit analysis (use
 it to cut the first release before any `vX.Y.Z` tag exists).
 
+On **pull requests** (same-repo branches; fork PRs are skipped for lack of push
+creds), the `dev-image` job builds and pushes dev-tagged preview images + chart
+to ghcr on every commit: `…/loom-ingest:0.0.0-pr<N>.<sha>` (plus a moving
+`pr-<N>` tag) and `charts/loom:0.0.0-pr<N>.<sha>`. These SemVer prereleases sort
+below real releases and are ignored by the version detection, so they never
+affect the auto-increment on `main`. The pushed refs are written to the job
+summary.
+
 > The `deploy//` cell is kept off the `//src` CI sweep on purpose: apko
 > fetches packages over the network and builds local-only, so building it on
 > every PR would force local materialization. It is exercised only by this

@@ -7,6 +7,10 @@ name: release
 # matching `vX.Y.Z` git tag + GitHub Release. If no release-worthy commits landed,
 # the run is a no-op. `workflow_dispatch` can force an explicit version.
 #
+# On pull requests (same-repo branches only), the `dev-image` job instead pushes
+# dev-tagged preview images + chart (0.0.0-pr<N>.<sha>) so changes can be pulled
+# before merge; those prerelease tags never affect the release auto-increment.
+#
 # The image/chart buck2 targets live in the `deploy//` cell (excluded from root//...):
 # apko fetches packages over the network and builds local-only, so they only run
 # here. The Rust binaries still compile on BuildBuddy RE.
@@ -14,6 +18,7 @@ name: release
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
     inputs:
       version:
@@ -21,9 +26,11 @@ on:
         required: false
         default: ""
 
+# Per-ref concurrency: main releases and each PR's dev-image build are independent
+# groups. PR builds cancel superseded runs; main releases never cancel mid-push.
 concurrency:
-  group: release
-  cancel-in-progress: false
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BUCK2_RELEASE: "2026-05-18"
@@ -40,6 +47,8 @@ permissions:
 
 jobs:
   release:
+    # Real release only on merge to main / manual dispatch — never on PRs.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,3 +160,62 @@ EOF
       - name: No release
         if: steps.ver.outputs.release != 'true'
         run: echo "No release-worthy commits since v${{ steps.ver.outputs.version }} — skipping."
+
+  # Dev-image preview on every PR commit. Builds + pushes dev-tagged images and a
+  # matching chart to ghcr so a PR's changes can be pulled/deployed before merge.
+  # Same-repo PRs only — fork PRs get a read-only token and no secrets, so they
+  # can't push (and are skipped rather than failing). Dev tags are SemVer
+  # prereleases (0.0.0-pr<N>.<sha>), which sort below real releases and are
+  # ignored by the release job's version detection, so they never affect the
+  # auto-increment on main.
+  dev-image:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
+
+      - name: Log in to ghcr
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:helm  -- registry login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+
+      - name: Build & push dev images + chart
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          short="${SHA:0:7}"
+          dev="0.0.0-pr${PR}.${short}"   # SemVer prerelease: sorts below releases
+          moving="pr-${PR}"               # updated each push for this PR
+
+          buck2 run deploy//images/ingest:image.push    -- "$dev" "$moving"
+          buck2 run deploy//images/query-api:image.push -- "$dev" "$moving"
+
+          # Chart stamped to the dev version, digest-pinned to the dev images.
+          sed -i -E "s/^version:.*/version: $dev/; s/^appVersion:.*/appVersion: \"$dev\"/" \
+            deploy/chart/chart/Chart.yaml
+          buck2 run deploy//chart:chart.push
+
+          {
+            echo "### loom dev images (PR #${PR})"
+            echo ""
+            echo "- \`${INGEST_IMAGE}:${dev}\` (also \`:${moving}\`)"
+            echo "- \`${QUERY_API_IMAGE}:${dev}\` (also \`:${moving}\`)"
+            echo "- chart \`${CHART_REPO}/loom:${dev}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
