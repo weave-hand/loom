@@ -159,7 +159,7 @@ the wire, then pick up the remaining Step 2b trailing hardening opportunisticall
 follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
-reproducible apko/Wolfi OCI images and a Helm chart (under `//deploy`,
+reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,
 image/Helm rules consumed from the `jomcgi/homelab` repo as a buck2 git external
 cell). Chart: CNPG-bundled Postgres control plane, a
 deployer-chosen StorageClass for the shared object-store PVC, default-deny
