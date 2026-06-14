@@ -46,7 +46,12 @@ pub async fn scan_table(
         })
         .collect::<Result<_, _>>()?;
 
-    let opts = ListingOptions::new(Arc::new(ParquetFormat::default()));
+    // Keep string/binary columns as canonical Arrow types (Utf8/Binary) rather than
+    // the `*View` variants ParquetFormat defaults to. The landing path's
+    // `infer_columns` only maps the canonical types to DuckLake types, so a scanned
+    // column that flows into a transform output must stay canonical to commit.
+    let format = ParquetFormat::default().with_force_view_types(false);
+    let opts = ListingOptions::new(Arc::new(format));
     let cfg = ListingTableConfig::new_with_multi_paths(paths)
         .with_listing_options(opts)
         .infer_schema(&ctx.state())
