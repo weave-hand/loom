@@ -115,7 +115,13 @@ rust_test(
     srcs = ["tests/write.rs"],
     crate_root = "tests/write.rs",
     edition = "2024",
-    deps = [":ingest", "//third-party:arrow", "//third-party:parquet"],
+    deps = [
+        ":ingest",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:parquet",
+        "//third-party:tokio",
+    ],
 )
 
 rust_test(

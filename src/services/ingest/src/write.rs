@@ -8,6 +8,18 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use bytes::Bytes;
 use control_plane_core::ColumnStat;
+use datafusion::common::config::TableParquetOptions;
+use datafusion::dataframe::DataFrameWriteOptions;
+use datafusion::datasource::MemTable;
+use datafusion::execution::context::SessionContext;
+use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::logical_expr::Partitioning;
+// Use DataFusion's re-exported object_store (0.13) so the store we register and the
+// list/get calls below all agree on one version; the top-level `//third-party:object_store`
+// alias is 0.11, which DataFusion's `register_object_store` would reject.
+use datafusion::object_store::path::Path as ObjectPath;
+use datafusion::object_store::{ObjectStore, ObjectStoreExt};
+use futures::TryStreamExt;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -49,6 +61,10 @@ pub fn estimate_partitions(in_memory_bytes: u64, cfg: &IngestWriteConfig) -> usi
 pub enum WriteError {
     #[error("parquet write failed: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
+    #[error("datafusion error: {0}")]
+    DataFusion(#[from] datafusion::error::DataFusionError),
+    #[error("object store error: {0}")]
+    ObjectStore(#[from] datafusion::object_store::Error),
 }
 
 /// A written Parquet file plus the metadata `append_files` registers.
@@ -128,6 +144,79 @@ pub fn write_parquet(
         footer_size,
         column_stats,
     })
+}
+
+/// The loom object-store URL DataFusion writes through. The authority is arbitrary;
+/// it only keys the registered store.
+const LOOM_STORE_URL: &str = "loom://data";
+
+/// Write `batches` as N size-targeted Snappy Parquet files directly into `store`,
+/// under `dir_prefix` (e.g. "main/customer/<file_prefix>"). Returns one `WrittenFile`
+/// per output file, with paths relative to the table directory.
+///
+/// Note: DataFusion's RoundRobinBatch distributes whole batches, so the file count is
+/// bounded by min(estimated partitions, batch count). A single huge batch yields one file.
+pub async fn write_dataset(
+    store: Arc<dyn ObjectStore>,
+    dir_prefix: &str,
+    schema: Arc<Schema>,
+    batches: &[RecordBatch],
+    cfg: &IngestWriteConfig,
+) -> Result<Vec<WrittenFile>, WriteError> {
+    let in_memory: u64 = batches
+        .iter()
+        .map(|b| b.get_array_memory_size() as u64)
+        .sum();
+    let partitions = estimate_partitions(in_memory, cfg);
+
+    let ctx = SessionContext::new();
+    let url = ObjectStoreUrl::parse(LOOM_STORE_URL)?;
+    ctx.register_object_store(url.as_ref(), store.clone());
+
+    let provider = MemTable::try_new(schema.clone(), vec![batches.to_vec()])?;
+    let df = ctx
+        .read_table(Arc::new(provider))?
+        .repartition(Partitioning::RoundRobinBatch(partitions))?;
+
+    let mut parquet_opts = TableParquetOptions::default();
+    parquet_opts.global.compression = Some("snappy".to_string());
+
+    let write_path = format!("{LOOM_STORE_URL}/{dir_prefix}/");
+    df.write_parquet(
+        &write_path,
+        DataFrameWriteOptions::new(),
+        Some(parquet_opts),
+    )
+    .await?;
+
+    // Discover the written files by listing the prefix in the store.
+    let list_prefix = ObjectPath::from(dir_prefix);
+    let mut objects: Vec<_> = store
+        .list(Some(&list_prefix))
+        .try_collect::<Vec<_>>()
+        .await?;
+    objects.sort_by(|a, b| a.location.cmp(&b.location));
+
+    // Strip the "<schema>/<table>/" prefix so the recorded path is relative to the
+    // table dir. dir_prefix is "<schema>/<table>/<file_prefix>"; keep "<file_prefix>/...".
+    let table_dir = dir_prefix.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+    let strip = if table_dir.is_empty() {
+        String::new()
+    } else {
+        format!("{table_dir}/")
+    };
+
+    let mut files = Vec::with_capacity(objects.len());
+    for obj in objects {
+        let key = obj.location.as_ref();
+        if !key.ends_with(".parquet") {
+            continue;
+        }
+        let rel = key.strip_prefix(&strip).unwrap_or(key).to_string();
+        let bytes = store.get(&obj.location).await?.bytes().await?;
+        files.push(file_stats_from_bytes(rel, &bytes, &schema)?);
+    }
+    Ok(files)
 }
 
 /// A written Parquet file plus the metadata `append_files` registers. One per output file.

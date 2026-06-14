@@ -100,3 +100,65 @@ fn stats_merge_min_max_across_row_groups() {
     assert_eq!(name.min.as_deref(), Some("a"));
     assert_eq!(name.max.as_deref(), Some("z"));
 }
+
+use datafusion::object_store::memory::InMemory;
+use datafusion::object_store::{ObjectStore, ObjectStoreExt};
+use ingest::write::write_dataset;
+
+fn four_batches() -> (Arc<Schema>, Vec<RecordBatch>) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let mk = |a: i64, b: i64, x: &'static str, y: &'static str| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![a, b])),
+                Arc::new(StringArray::from(vec![Some(x), Some(y)])),
+            ],
+        )
+        .unwrap()
+    };
+    let batches = vec![
+        mk(1, 2, "a", "b"),
+        mk(3, 4, "c", "d"),
+        mk(5, 6, "e", "f"),
+        mk(7, 8, "g", "h"),
+    ];
+    (schema, batches)
+}
+
+#[tokio::test]
+async fn write_dataset_splits_into_multiple_files() {
+    let (schema, batches) = four_batches();
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    // target = 1 byte forces the partition count to the cap; max_files = 4 + 4 batches
+    // (RoundRobinBatch distributes whole batches) => up to 4 files.
+    let cfg = IngestWriteConfig {
+        target_file_size_bytes: 1,
+        max_files: 4,
+        compression_factor: 0.3,
+    };
+
+    let files = write_dataset(store.clone(), "main/customer/run-1", schema, &batches, &cfg)
+        .await
+        .unwrap();
+
+    assert!(
+        files.len() >= 2,
+        "expected a multi-file split, got {}",
+        files.len()
+    );
+    let total: i64 = files.iter().map(|f| f.record_count).sum();
+    assert_eq!(total, 8, "all rows accounted for across files");
+
+    for f in &files {
+        // Paths are relative to the table dir: "run-1/<name>.parquet".
+        assert!(f.path.starts_with("run-1/"), "unexpected path {}", f.path);
+        assert!(f.file_size_bytes > 0);
+        // Each file actually exists in the store under "main/customer/<path>".
+        let key = datafusion::object_store::path::Path::from(format!("main/customer/{}", f.path));
+        assert!(store.head(&key).await.is_ok(), "missing object {}", f.path);
+    }
+}
