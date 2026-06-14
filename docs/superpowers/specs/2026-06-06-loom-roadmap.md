@@ -187,4 +187,3 @@ chart publishes when its `Chart.yaml` version is bumped. See `docs/deploy.md`. O
 follow-ups: a schema-migration Job (the chart provisions PG but doesn't migrate),
 and replacing the `LocalFileSystem` PVC with a real S3/MinIO object store (which
 removes the RWX-for-multi-pod constraint).
->>>>>>> origin/main
