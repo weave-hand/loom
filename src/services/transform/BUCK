@@ -1,7 +1,7 @@
 rust_library(
     name = "transform",
     crate = "transform",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
     deps = [
@@ -13,6 +13,26 @@ rust_library(
         "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:thiserror",
+        "//third-party:time",
+        "//third-party:uuid",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "transform-bin",
+    crate = "transform_bin",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//src/control-plane/core:core",
+        "//src/control-plane/worker:worker",
+        "//src/services/runtime:runtime",
+        "//third-party:object_store",
+        "//third-party:tokio",
+        "//third-party:tokio-util",
     ],
     visibility = ["PUBLIC"],
 )
