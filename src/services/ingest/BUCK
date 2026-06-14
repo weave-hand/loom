@@ -11,6 +11,8 @@ rust_library(
         "//third-party:arrow",
         "//third-party:axum",
         "//third-party:bytes",
+        "//third-party:datafusion",
+        "//third-party:futures",
         "//third-party:parquet",
         "//third-party:object_store",
         "//third-party:serde",
