@@ -130,6 +130,150 @@ pub fn write_parquet(
     })
 }
 
+/// A written Parquet file plus the metadata `append_files` registers. One per output file.
+#[derive(Clone, Debug)]
+pub struct WrittenFile {
+    /// Path to register in `append_files`, relative to the table directory
+    /// (e.g. "<file_prefix>/part-0.parquet"). DuckLake resolves it under data_path.
+    pub path: String,
+    pub record_count: i64,
+    pub file_size_bytes: i64,
+    pub footer_size: i64,
+    pub column_stats: Vec<ColumnStat>,
+}
+
+/// A typed min/max bound, so we compare numerically (not lexically) when folding
+/// across row groups, then stringify once at the end.
+#[derive(Clone)]
+enum Bound {
+    Bool(bool),
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Str(String),
+}
+
+impl Bound {
+    fn to_stat_string(&self) -> String {
+        match self {
+            Bound::Bool(v) => v.to_string(),
+            Bound::I32(v) => v.to_string(),
+            Bound::I64(v) => v.to_string(),
+            Bound::F32(v) => v.to_string(),
+            Bound::F64(v) => v.to_string(),
+            Bound::Str(v) => v.clone(),
+        }
+    }
+    fn partial_cmp(&self, other: &Bound) -> Option<std::cmp::Ordering> {
+        use Bound::*;
+        match (self, other) {
+            (Bool(a), Bool(b)) => a.partial_cmp(b),
+            (I32(a), I32(b)) => a.partial_cmp(b),
+            (I64(a), I64(b)) => a.partial_cmp(b),
+            (F32(a), F32(b)) => a.partial_cmp(b),
+            (F64(a), F64(b)) => a.partial_cmp(b),
+            (Str(a), Str(b)) => a.partial_cmp(b),
+            _ => None,
+        }
+    }
+}
+
+fn min_bound(stats: &Statistics) -> Option<Bound> {
+    match stats {
+        Statistics::Boolean(s) => s.min_opt().map(|v| Bound::Bool(*v)),
+        Statistics::Int32(s) => s.min_opt().map(|v| Bound::I32(*v)),
+        Statistics::Int64(s) => s.min_opt().map(|v| Bound::I64(*v)),
+        Statistics::Float(s) => s.min_opt().map(|v| Bound::F32(*v)),
+        Statistics::Double(s) => s.min_opt().map(|v| Bound::F64(*v)),
+        Statistics::ByteArray(s) => s
+            .min_opt()
+            .and_then(|v| v.as_utf8().ok().map(|s| Bound::Str(s.to_string()))),
+        _ => None,
+    }
+}
+
+fn max_bound(stats: &Statistics) -> Option<Bound> {
+    match stats {
+        Statistics::Boolean(s) => s.max_opt().map(|v| Bound::Bool(*v)),
+        Statistics::Int32(s) => s.max_opt().map(|v| Bound::I32(*v)),
+        Statistics::Int64(s) => s.max_opt().map(|v| Bound::I64(*v)),
+        Statistics::Float(s) => s.max_opt().map(|v| Bound::F32(*v)),
+        Statistics::Double(s) => s.max_opt().map(|v| Bound::F64(*v)),
+        Statistics::ByteArray(s) => s
+            .max_opt()
+            .and_then(|v| v.as_utf8().ok().map(|s| Bound::Str(s.to_string()))),
+        _ => None,
+    }
+}
+
+/// Extract the DuckLake `DataFile` stats from a complete Parquet byte buffer,
+/// merging typed min/max across ALL row groups (preserves pruning on multi-row-group
+/// files). `path` is the relative DataFile path to record.
+pub fn file_stats_from_bytes(
+    path: String,
+    bytes: &[u8],
+    schema: &Schema,
+) -> Result<WrittenFile, WriteError> {
+    let file_size_bytes = bytes.len() as i64;
+    let footer_size = parquet_footer_size(bytes);
+
+    let reader = SerializedFileReader::new(Bytes::from(bytes.to_vec()))?;
+    let meta = reader.metadata();
+    let record_count: i64 = meta.file_metadata().num_rows();
+
+    let mut column_stats = Vec::with_capacity(schema.fields().len());
+    for (i, field) in schema.fields().iter().enumerate() {
+        let mut null_count: i64 = 0;
+        let mut column_size_bytes: i64 = 0;
+        let mut min: Option<Bound> = None;
+        let mut max: Option<Bound> = None;
+        for rg in meta.row_groups() {
+            let col = rg.column(i);
+            debug_assert!(
+                col.statistics().is_some(),
+                "expected ArrowWriter to emit column statistics"
+            );
+            column_size_bytes += col.compressed_size();
+            if let Some(stats) = col.statistics() {
+                null_count += stats.null_count_opt().unwrap_or(0) as i64;
+                if let Some(b) = min_bound(stats) {
+                    min = match min {
+                        Some(cur) if cur.partial_cmp(&b) != Some(std::cmp::Ordering::Greater) => {
+                            Some(cur)
+                        }
+                        _ => Some(b),
+                    };
+                }
+                if let Some(b) = max_bound(stats) {
+                    max = match max {
+                        Some(cur) if cur.partial_cmp(&b) != Some(std::cmp::Ordering::Less) => {
+                            Some(cur)
+                        }
+                        _ => Some(b),
+                    };
+                }
+            }
+        }
+        column_stats.push(ColumnStat {
+            column_name: field.name().clone(),
+            min: min.map(|b| b.to_stat_string()),
+            max: max.map(|b| b.to_stat_string()),
+            null_count,
+            value_count: record_count - null_count,
+            column_size_bytes,
+        });
+    }
+
+    Ok(WrittenFile {
+        path,
+        record_count,
+        file_size_bytes,
+        footer_size,
+        column_stats,
+    })
+}
+
 /// The 4 bytes before the trailing `PAR1` magic are the little-endian footer
 /// length DuckLake records as `footer_size`.
 fn parquet_footer_size(bytes: &[u8]) -> i64 {
