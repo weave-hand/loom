@@ -149,9 +149,17 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
 - **Actions** — the ontology's typed write-backs, governed at the HTTP API and executed
   *through* the serving layer, with loom owning the catalog-commit transaction (the
   snapshot-commit primitive) so snapshot + lineage + enqueue stay atomic. Own spec.
-- **Transform workers** — built on `control-plane-worker`: consume the queue, run
-  DataFusion, write snapshots, emit lineage + enqueue downstream atomically; optional
-  Ballista escalation.
+- **Transform workers** —
+  - *Part 1 — queue-driven SQL transform* ✅ DELIVERED
+    (`2026-06-14-transform-workers-part1-design.md`). A worker (on `control-plane-worker`)
+    reads input DuckLake table(s) with DataFusion (the new shared `datafusion-io` `scan_table`),
+    runs a SQL query, and commits the result as a new snapshot + lineage (inputs → output),
+    atomically. Physical `TableRef` in/out, multi-input, append semantics. Proven by an e2e
+    that joins two landed tables off the queue and reads the output back through DuckDB.
+  - *Later:* object-model-typed transforms (`Type → Type`, via `resolve` + `bind`); programmatic
+    (registered-plan) transforms; overwrite/incremental output (with compaction); a wider
+    output type set (the write/infer path is canonical scalars only today); DAG / transactional
+    enqueue-downstream; optional Ballista escalation.
 
 ---
 
@@ -172,7 +180,10 @@ serialization, `2026-06-12-query-typed-json-serialization-design.md`), and **par
 (governed link traversal, `2026-06-14-query-governed-link-traversal-design.md`) are
 delivered — landed data now binds to an ontology type, serves as typed objects through
 the governed front door, and resolves links between types as a both-ends-governed
-relational read.
+relational read. The **Transform worker (part 1)** — the queue-driven SQL transform that
+reads DuckLake table(s) with DataFusion and commits the result as a new snapshot + lineage
+atomically — is now delivered too, so all three service pillars have a load-bearing
+primitive: ingest land, query serve, transform derive.
 
 The external SQL wire (Quack / Postgres-wire / Flight SQL) is deliberately deferred as
 a distribution/ergonomics concern, gated on a real external consumer *and* a design for

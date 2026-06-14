@@ -79,6 +79,13 @@ which delivered part-1 of richer read capability.
 
 ## Cross-cutting
 
+- **Wider DataFusion <-> DuckLake type coverage.** `datafusion-io`'s `infer_columns` /
+  `write_dataset` support only a canonical scalar set (Boolean, Int32/64, Float64, Utf8/LargeUtf8).
+  A transform (or ingest) whose data carries other Arrow types — timestamps, dates, decimals,
+  unsigned/8/16-bit ints, the `Int32`/`Int64` a SQL aggregate may produce — currently errors
+  (`InferError::Unsupported`) and the transform job Abandons. Extend the type map (and the
+  DuckLake column-type strings) as real pipelines need it. (`scan_table` already pins
+  `ParquetFormat::with_force_view_types(false)` so scanned strings stay canonical `Utf8`.)
 - **Dataset/target existence validation.** Lineage `emit`, ACL `grant`/`set_policy`, and
   ontology `resolve` all **store without validating** that the referenced dataset / table /
   type exists in the catalog or ontology. Cross-concern referential validation is deferred
