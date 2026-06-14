@@ -135,7 +135,7 @@ summary.
 
 ## Build rules (the `homelab` external cell)
 
-The apko/oci/helm rules `//deploy` loads (`homelab//buck2/...`) are **not**
+The apko/oci/helm rules `//deploy` loads (`@homelab//buck2/...`) are **not**
 vendored or submoduled. They are consumed as a buck2 **git external cell**: the
 `.buckconfig` declares
 
@@ -150,8 +150,10 @@ vendored or submoduled. They are consumed as a buck2 **git external cell**: the
 ```
 
 External cells resolve only from the **root** cell, so `//deploy` lives in the
-root cell (not its own cell) — that's how `load("homelab//buck2/...")` resolves
-under `buck2 run`.
+root cell (not its own cell) — that's how `load("@homelab//buck2/...")` resolves
+under `buck2 run`. Cross-cell `load()` needs the `@` prefix (like loom's
+`@prelude//...` loads); target patterns such as `buck2 run homelab//buck2/bin:crane`
+do not.
 
 and buck2 fetches that commit's tree into `buck-out` on demand. There is no
 checkout to manage; `git_origin`'s repo just has to be reachable and the rules

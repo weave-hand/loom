@@ -2,8 +2,8 @@
 # onto an apko/Wolfi base. Kept under //deploy (not //src) so it stays off the
 # normal CI build sweep — apko fetches packages over the network and builds
 # local-only; the release workflow builds/pushes it explicitly.
-load("homelab//buck2/apko:defs.bzl", "apko_image")
-load("homelab//buck2/oci:defs.bzl", "oci_image", "tar_layer")
+load("@homelab//buck2/apko:defs.bzl", "apko_image")
+load("@homelab//buck2/oci:defs.bzl", "oci_image", "tar_layer")
 
 # Wolfi base (glibc + libgcc + CA certs, nonroot, entrypoint = /usr/local/bin/ingest).
 apko_image(
