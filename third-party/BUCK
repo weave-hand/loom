@@ -1238,6 +1238,106 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "bigdecimal-0.4.10.crate",
+    sha256 = "4d6867f1565b3aad85681f1015055b087fcfd840d6aeee6eee7f2da317603695",
+    strip_prefix = "bigdecimal-0.4.10",
+    urls = ["https://static.crates.io/crates/bigdecimal/0.4.10/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "bigdecimal-0.4",
+    srcs = [":bigdecimal-0.4.10.crate"],
+    crate = "bigdecimal",
+    crate_root = "bigdecimal-0.4.10.crate/src/lib.rs",
+    edition = "2015",
+    env = {
+        "CARGO_BIN_NAME": "bigdecimal",
+        "CARGO_CRATE_NAME": "bigdecimal",
+        "CARGO_MANIFEST_DIR": "bigdecimal-0.4.10.crate",
+        "CARGO_PKG_AUTHORS": "Andrew Kubera",
+        "CARGO_PKG_DESCRIPTION": "Arbitrary precision decimal numbers",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/akubera/bigdecimal-rs",
+        "CARGO_PKG_NAME": "bigdecimal",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/akubera/bigdecimal-rs",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.4.10",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "4",
+        "CARGO_PKG_VERSION_PATCH": "10",
+        "CARGO_PKG_VERSION_PRE": "",
+        "OUT_DIR": "$(location :bigdecimal-0.4-build-script-run[out_dir])",
+    },
+    features = [
+        "default",
+        "std",
+    ],
+    rustc_flags = ["@$(location :bigdecimal-0.4-build-script-run[rustc_flags])"],
+    visibility = [],
+    deps = [
+        ":libm-0.2",
+        ":num-bigint-0.4",
+        ":num-integer-0.1",
+        ":num-traits-0.2",
+    ],
+)
+
+cargo.rust_binary(
+    name = "bigdecimal-0.4-build-script-build",
+    srcs = [":bigdecimal-0.4.10.crate"],
+    crate = "build_script_build",
+    crate_root = "bigdecimal-0.4.10.crate/build.rs",
+    edition = "2015",
+    env = {
+        "CARGO_BIN_NAME": "build-script-build",
+        "CARGO_CRATE_NAME": "build_script_build",
+        "CARGO_MANIFEST_DIR": "bigdecimal-0.4.10.crate",
+        "CARGO_PKG_AUTHORS": "Andrew Kubera",
+        "CARGO_PKG_DESCRIPTION": "Arbitrary precision decimal numbers",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/akubera/bigdecimal-rs",
+        "CARGO_PKG_NAME": "bigdecimal",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/akubera/bigdecimal-rs",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.4.10",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "4",
+        "CARGO_PKG_VERSION_PATCH": "10",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "std",
+    ],
+    visibility = [],
+    deps = [":autocfg-1"],
+)
+
+buildscript_run(
+    name = "bigdecimal-0.4-build-script-run",
+    package_name = "bigdecimal",
+    buildscript_rule = ":bigdecimal-0.4-build-script-build",
+    env = {
+        "CARGO_PKG_AUTHORS": "Andrew Kubera",
+        "CARGO_PKG_DESCRIPTION": "Arbitrary precision decimal numbers",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/akubera/bigdecimal-rs",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/akubera/bigdecimal-rs",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "4",
+        "CARGO_PKG_VERSION_PATCH": "10",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "std",
+    ],
+    version = "0.4.10",
+)
+
+http_archive(
     name = "bit-set-0.8.0.crate",
     sha256 = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3",
     strip_prefix = "bit-set-0.8.0",
@@ -2874,7 +2974,10 @@ cargo.rust_library(
     },
     features = [
         "datafusion-datasource-parquet",
+        "datafusion-sql",
         "parquet",
+        "sql",
+        "sqlparser",
     ],
     visibility = [],
     deps = [
@@ -2905,6 +3008,7 @@ cargo.rust_library(
         ":datafusion-physical-optimizer-54",
         ":datafusion-physical-plan-54",
         ":datafusion-session-54",
+        ":datafusion-sql-54",
         ":futures-0.3",
         ":indexmap-2",
         ":itertools-0.14",
@@ -2912,6 +3016,7 @@ cargo.rust_library(
         ":object_store-0.13",
         ":parking_lot-0.12",
         ":parquet-58",
+        ":sqlparser-0.62",
         ":tempfile-3",
         ":tokio-1",
         ":url-2",
@@ -3057,6 +3162,8 @@ cargo.rust_library(
     features = [
         "object_store",
         "parquet",
+        "sql",
+        "sqlparser",
     ],
     visibility = [],
     deps = [
@@ -3073,6 +3180,7 @@ cargo.rust_library(
         ":log-0.4",
         ":object_store-0.13",
         ":parquet-58",
+        ":sqlparser-0.62",
         ":tokio-1",
         ":uuid-1",
     ],
@@ -3503,6 +3611,10 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "0",
         "CARGO_PKG_VERSION_PRE": "",
     },
+    features = [
+        "sql",
+        "sqlparser",
+    ],
     visibility = [],
     deps = [
         ":arrow-58",
@@ -3518,6 +3630,7 @@ cargo.rust_library(
         ":indexmap-2",
         ":itertools-0.14",
         ":serde_json-1",
+        ":sqlparser-0.62",
     ],
 )
 
@@ -3717,6 +3830,60 @@ cargo.rust_library(
         ":datafusion-common-54",
         ":datafusion-expr-common-54",
         ":datafusion-physical-expr-common-54",
+    ],
+)
+
+http_archive(
+    name = "datafusion-functions-nested-54.0.0.crate",
+    sha256 = "3f3e3f9ee8ca59bf70518802107de6f1b88a9509efdc629fadc5de9d6b2d5ef5",
+    strip_prefix = "datafusion-functions-nested-54.0.0",
+    urls = ["https://static.crates.io/crates/datafusion-functions-nested/54.0.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "datafusion-functions-nested-54",
+    srcs = [":datafusion-functions-nested-54.0.0.crate"],
+    crate = "datafusion_functions_nested",
+    crate_root = "datafusion-functions-nested-54.0.0.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "datafusion_functions_nested",
+        "CARGO_CRATE_NAME": "datafusion_functions_nested",
+        "CARGO_MANIFEST_DIR": "datafusion-functions-nested-54.0.0.crate",
+        "CARGO_PKG_AUTHORS": "Apache DataFusion <dev@datafusion.apache.org>",
+        "CARGO_PKG_DESCRIPTION": "Nested Type Function packages for the DataFusion query engine",
+        "CARGO_PKG_HOMEPAGE": "https://datafusion.apache.org",
+        "CARGO_PKG_NAME": "datafusion-functions-nested",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/apache/datafusion",
+        "CARGO_PKG_RUST_VERSION": "1.88.0",
+        "CARGO_PKG_VERSION": "54.0.0",
+        "CARGO_PKG_VERSION_MAJOR": "54",
+        "CARGO_PKG_VERSION_MINOR": "0",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["sql"],
+    visibility = [],
+    deps = [
+        ":arrow-58",
+        ":arrow-ord-58",
+        ":datafusion-common-54",
+        ":datafusion-doc-54",
+        ":datafusion-execution-54",
+        ":datafusion-expr-54",
+        ":datafusion-expr-common-54",
+        ":datafusion-functions-54",
+        ":datafusion-functions-aggregate-54",
+        ":datafusion-functions-aggregate-common-54",
+        ":datafusion-macros-54",
+        ":datafusion-physical-expr-common-54",
+        ":hashbrown-0.17",
+        ":itertools-0.14",
+        ":itoa-1",
+        ":log-0.4",
+        ":memchr-2",
     ],
 )
 
@@ -4261,6 +4428,57 @@ cargo.rust_library(
         ":datafusion-expr-54",
         ":datafusion-physical-plan-54",
         ":parking_lot-0.12",
+    ],
+)
+
+http_archive(
+    name = "datafusion-sql-54.0.0.crate",
+    sha256 = "6094ad36a3ed6d7ac87b20b479b2d0b118250f66cf997603829fdc65b44a7099",
+    strip_prefix = "datafusion-sql-54.0.0",
+    urls = ["https://static.crates.io/crates/datafusion-sql/54.0.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "datafusion-sql-54",
+    srcs = [":datafusion-sql-54.0.0.crate"],
+    crate = "datafusion_sql",
+    crate_root = "datafusion-sql-54.0.0.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "datafusion_sql",
+        "CARGO_CRATE_NAME": "datafusion_sql",
+        "CARGO_MANIFEST_DIR": "datafusion-sql-54.0.0.crate",
+        "CARGO_PKG_AUTHORS": "Apache DataFusion <dev@datafusion.apache.org>",
+        "CARGO_PKG_DESCRIPTION": "DataFusion SQL Query Planner",
+        "CARGO_PKG_HOMEPAGE": "https://datafusion.apache.org",
+        "CARGO_PKG_NAME": "datafusion-sql",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/apache/datafusion",
+        "CARGO_PKG_RUST_VERSION": "1.88.0",
+        "CARGO_PKG_VERSION": "54.0.0",
+        "CARGO_PKG_VERSION_MAJOR": "54",
+        "CARGO_PKG_VERSION_MINOR": "0",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "unicode_expressions",
+        "unparser",
+    ],
+    visibility = [],
+    deps = [
+        ":arrow-58",
+        ":bigdecimal-0.4",
+        ":chrono-0.4",
+        ":datafusion-common-54",
+        ":datafusion-expr-54",
+        ":datafusion-functions-nested-54",
+        ":indexmap-2",
+        ":log-0.4",
+        ":regex-1",
+        ":sqlparser-0.62",
     ],
 )
 
@@ -8778,12 +8996,12 @@ cargo.rust_library(
     platform = {
         "windows-gnu": dict(
             named_deps = {
-                "windows": ":windows-sys-0.61",
+                "windows": ":windows-sys-0.60",
             },
         ),
         "windows-msvc": dict(
             named_deps = {
-                "windows": ":windows-sys-0.61",
+                "windows": ":windows-sys-0.60",
             },
         ),
     },
@@ -12378,13 +12596,96 @@ cargo.rust_library(
             deps = [":libc-0.2"],
         ),
         "windows-gnu": dict(
-            deps = [":windows-sys-0.61"],
+            deps = [":windows-sys-0.60"],
         ),
         "windows-msvc": dict(
-            deps = [":windows-sys-0.61"],
+            deps = [":windows-sys-0.60"],
         ),
     },
     visibility = [],
+)
+
+http_archive(
+    name = "sqlparser-0.62.0.crate",
+    sha256 = "13c6d1b651dc4edf07eead2a0c6c78016ce971bc2c10da5266861b13f25e7cec",
+    strip_prefix = "sqlparser-0.62.0",
+    urls = ["https://static.crates.io/crates/sqlparser/0.62.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "sqlparser-0.62",
+    srcs = [":sqlparser-0.62.0.crate"],
+    crate = "sqlparser",
+    crate_root = "sqlparser-0.62.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "sqlparser",
+        "CARGO_CRATE_NAME": "sqlparser",
+        "CARGO_MANIFEST_DIR": "sqlparser-0.62.0.crate",
+        "CARGO_PKG_AUTHORS": "Apache DataFusion <dev@datafusion.apache.org>",
+        "CARGO_PKG_DESCRIPTION": "Extensible SQL Lexer and Parser with support for ANSI SQL:2011",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/apache/datafusion-sqlparser-rs",
+        "CARGO_PKG_NAME": "sqlparser",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/apache/datafusion-sqlparser-rs",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.62.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "62",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "sqlparser_derive",
+        "std",
+        "visitor",
+    ],
+    visibility = [],
+    deps = [
+        ":log-0.4",
+        ":sqlparser_derive-0.5",
+    ],
+)
+
+http_archive(
+    name = "sqlparser_derive-0.5.0.crate",
+    sha256 = "a6dd45d8fc1c79299bfbb7190e42ccbbdf6a5f52e4a6ad98d92357ea965bd289",
+    strip_prefix = "sqlparser_derive-0.5.0",
+    urls = ["https://static.crates.io/crates/sqlparser_derive/0.5.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "sqlparser_derive-0.5",
+    srcs = [":sqlparser_derive-0.5.0.crate"],
+    crate = "sqlparser_derive",
+    crate_root = "sqlparser_derive-0.5.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "sqlparser_derive",
+        "CARGO_CRATE_NAME": "sqlparser_derive",
+        "CARGO_MANIFEST_DIR": "sqlparser_derive-0.5.0.crate",
+        "CARGO_PKG_AUTHORS": "sqlparser-rs authors",
+        "CARGO_PKG_DESCRIPTION": "Procedural (proc) macros for sqlparser",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/sqlparser-rs/sqlparser-rs",
+        "CARGO_PKG_NAME": "sqlparser_derive",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/sqlparser-rs/sqlparser-rs",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":proc-macro2-1",
+        ":quote-1",
+        ":syn-2",
+    ],
 )
 
 alias(
@@ -13166,10 +13467,10 @@ cargo.rust_library(
             deps = [":rustix-1"],
         ),
         "windows-gnu": dict(
-            deps = [":windows-sys-0.61"],
+            deps = [":windows-sys-0.52"],
         ),
         "windows-msvc": dict(
-            deps = [":windows-sys-0.61"],
+            deps = [":windows-sys-0.52"],
         ),
     },
     visibility = [],
@@ -15400,7 +15701,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
-    deps = [":windows-sys-0.61"],
+    deps = [":windows-sys-0.52"],
 )
 
 http_archive(
@@ -15472,6 +15773,101 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "windows-sys-0.52.0.crate",
+    sha256 = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d",
+    strip_prefix = "windows-sys-0.52.0",
+    urls = ["https://static.crates.io/crates/windows-sys/0.52.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "windows-sys-0.52",
+    srcs = [":windows-sys-0.52.0.crate"],
+    crate = "windows_sys",
+    crate_root = "windows-sys-0.52.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "windows_sys",
+        "CARGO_CRATE_NAME": "windows_sys",
+        "CARGO_MANIFEST_DIR": "windows-sys-0.52.0.crate",
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Rust for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows-sys",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION": "0.52.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "52",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_System",
+        "Win32_System_Console",
+        "Win32_System_SystemInformation",
+        "default",
+    ],
+    visibility = [],
+    deps = [":windows-targets-0.52"],
+)
+
+http_archive(
+    name = "windows-sys-0.60.2.crate",
+    sha256 = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb",
+    strip_prefix = "windows-sys-0.60.2",
+    urls = ["https://static.crates.io/crates/windows-sys/0.60.2/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "windows-sys-0.60",
+    srcs = [":windows-sys-0.60.2.crate"],
+    crate = "windows_sys",
+    crate_root = "windows-sys-0.60.2.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "windows_sys",
+        "CARGO_CRATE_NAME": "windows_sys",
+        "CARGO_MANIFEST_DIR": "windows-sys-0.60.2.crate",
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Rust for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows-sys",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION": "0.60.2",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "60",
+        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Networking",
+        "Win32_Networking_WinSock",
+        "Win32_Security",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_System",
+        "Win32_System_Console",
+        "Win32_System_IO",
+        "Win32_System_Threading",
+        "Win32_System_WindowsProgramming",
+        "default",
+    ],
+    visibility = [],
+    deps = [":windows-targets-0.53"],
+)
+
+http_archive(
     name = "windows-sys-0.61.2.crate",
     sha256 = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
     strip_prefix = "windows-sys-0.61.2",
@@ -15518,12 +15914,9 @@ cargo.rust_library(
         "Win32_Storage_FileSystem",
         "Win32_System",
         "Win32_System_Com",
-        "Win32_System_Console",
         "Win32_System_IO",
         "Win32_System_Pipes",
-        "Win32_System_SystemInformation",
         "Win32_System_SystemServices",
-        "Win32_System_Threading",
         "Win32_System_WindowsProgramming",
         "Win32_UI",
         "Win32_UI_Shell",
@@ -15531,6 +15924,414 @@ cargo.rust_library(
     ],
     visibility = [],
     deps = [":windows-link-0.2"],
+)
+
+http_archive(
+    name = "windows-targets-0.52.6.crate",
+    sha256 = "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973",
+    strip_prefix = "windows-targets-0.52.6",
+    urls = ["https://static.crates.io/crates/windows-targets/0.52.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "windows-targets-0.52",
+    srcs = [":windows-targets-0.52.6.crate"],
+    crate = "windows_targets",
+    crate_root = "windows-targets-0.52.6.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "windows_targets",
+        "CARGO_CRATE_NAME": "windows_targets",
+        "CARGO_MANIFEST_DIR": "windows-targets-0.52.6.crate",
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Import libs for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows-targets",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION": "0.52.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "52",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    platform = {
+        "windows-gnu": dict(
+            deps = [":windows_x86_64_gnu-0.52"],
+        ),
+        "windows-msvc": dict(
+            deps = [":windows_x86_64_msvc-0.52"],
+        ),
+    },
+    visibility = [],
+)
+
+http_archive(
+    name = "windows-targets-0.53.5.crate",
+    sha256 = "4945f9f551b88e0d65f3db0bc25c33b8acea4d9e41163edf90dcd0b19f9069f3",
+    strip_prefix = "windows-targets-0.53.5",
+    urls = ["https://static.crates.io/crates/windows-targets/0.53.5/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "windows-targets-0.53",
+    srcs = [":windows-targets-0.53.5.crate"],
+    crate = "windows_targets",
+    crate_root = "windows-targets-0.53.5.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "windows_targets",
+        "CARGO_CRATE_NAME": "windows_targets",
+        "CARGO_MANIFEST_DIR": "windows-targets-0.53.5.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Import libs for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows-targets",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION": "0.53.5",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "53",
+        "CARGO_PKG_VERSION_PATCH": "5",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    platform = {
+        "windows-gnu": dict(
+            deps = [":windows_x86_64_gnu-0.53"],
+        ),
+        "windows-msvc": dict(
+            deps = [":windows_x86_64_msvc-0.53"],
+        ),
+    },
+    visibility = [],
+)
+
+http_archive(
+    name = "windows_x86_64_gnu-0.52.6.crate",
+    sha256 = "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78",
+    strip_prefix = "windows_x86_64_gnu-0.52.6",
+    urls = ["https://static.crates.io/crates/windows_x86_64_gnu/0.52.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "windows_x86_64_gnu-0.52",
+    srcs = [":windows_x86_64_gnu-0.52.6.crate"],
+    crate = "windows_x86_64_gnu",
+    crate_root = "windows_x86_64_gnu-0.52.6.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "windows_x86_64_gnu",
+        "CARGO_CRATE_NAME": "windows_x86_64_gnu",
+        "CARGO_MANIFEST_DIR": "windows_x86_64_gnu-0.52.6.crate",
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows_x86_64_gnu",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION": "0.52.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "52",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+        "OUT_DIR": "$(location :windows_x86_64_gnu-0.52-build-script-run[out_dir])",
+    },
+    rustc_flags = ["@$(location :windows_x86_64_gnu-0.52-build-script-run[rustc_flags])"],
+    visibility = [],
+)
+
+cargo.rust_binary(
+    name = "windows_x86_64_gnu-0.52-build-script-build",
+    srcs = [":windows_x86_64_gnu-0.52.6.crate"],
+    crate = "build_script_build",
+    crate_root = "windows_x86_64_gnu-0.52.6.crate/build.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "build-script-build",
+        "CARGO_CRATE_NAME": "build_script_build",
+        "CARGO_MANIFEST_DIR": "windows_x86_64_gnu-0.52.6.crate",
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows_x86_64_gnu",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION": "0.52.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "52",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+buildscript_run(
+    name = "windows_x86_64_gnu-0.52-build-script-run",
+    package_name = "windows_x86_64_gnu",
+    buildscript_rule = ":windows_x86_64_gnu-0.52-build-script-build",
+    env = {
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "52",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    version = "0.52.6",
+)
+
+http_archive(
+    name = "windows_x86_64_gnu-0.53.1.crate",
+    sha256 = "9c3842cdd74a865a8066ab39c8a7a473c0778a3f29370b5fd6b4b9aa7df4a499",
+    strip_prefix = "windows_x86_64_gnu-0.53.1",
+    urls = ["https://static.crates.io/crates/windows_x86_64_gnu/0.53.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "windows_x86_64_gnu-0.53",
+    srcs = [":windows_x86_64_gnu-0.53.1.crate"],
+    crate = "windows_x86_64_gnu",
+    crate_root = "windows_x86_64_gnu-0.53.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "windows_x86_64_gnu",
+        "CARGO_CRATE_NAME": "windows_x86_64_gnu",
+        "CARGO_MANIFEST_DIR": "windows_x86_64_gnu-0.53.1.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows_x86_64_gnu",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION": "0.53.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "53",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+        "OUT_DIR": "$(location :windows_x86_64_gnu-0.53-build-script-run[out_dir])",
+    },
+    rustc_flags = ["@$(location :windows_x86_64_gnu-0.53-build-script-run[rustc_flags])"],
+    visibility = [],
+)
+
+cargo.rust_binary(
+    name = "windows_x86_64_gnu-0.53-build-script-build",
+    srcs = [":windows_x86_64_gnu-0.53.1.crate"],
+    crate = "build_script_build",
+    crate_root = "windows_x86_64_gnu-0.53.1.crate/build.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "build-script-build",
+        "CARGO_CRATE_NAME": "build_script_build",
+        "CARGO_MANIFEST_DIR": "windows_x86_64_gnu-0.53.1.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows_x86_64_gnu",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION": "0.53.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "53",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+buildscript_run(
+    name = "windows_x86_64_gnu-0.53-build-script-run",
+    package_name = "windows_x86_64_gnu",
+    buildscript_rule = ":windows_x86_64_gnu-0.53-build-script-build",
+    env = {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "53",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    version = "0.53.1",
+)
+
+http_archive(
+    name = "windows_x86_64_msvc-0.52.6.crate",
+    sha256 = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec",
+    strip_prefix = "windows_x86_64_msvc-0.52.6",
+    urls = ["https://static.crates.io/crates/windows_x86_64_msvc/0.52.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "windows_x86_64_msvc-0.52",
+    srcs = [":windows_x86_64_msvc-0.52.6.crate"],
+    crate = "windows_x86_64_msvc",
+    crate_root = "windows_x86_64_msvc-0.52.6.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "windows_x86_64_msvc",
+        "CARGO_CRATE_NAME": "windows_x86_64_msvc",
+        "CARGO_MANIFEST_DIR": "windows_x86_64_msvc-0.52.6.crate",
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows_x86_64_msvc",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION": "0.52.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "52",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+        "OUT_DIR": "$(location :windows_x86_64_msvc-0.52-build-script-run[out_dir])",
+    },
+    rustc_flags = ["@$(location :windows_x86_64_msvc-0.52-build-script-run[rustc_flags])"],
+    visibility = [],
+)
+
+cargo.rust_binary(
+    name = "windows_x86_64_msvc-0.52-build-script-build",
+    srcs = [":windows_x86_64_msvc-0.52.6.crate"],
+    crate = "build_script_build",
+    crate_root = "windows_x86_64_msvc-0.52.6.crate/build.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "build-script-build",
+        "CARGO_CRATE_NAME": "build_script_build",
+        "CARGO_MANIFEST_DIR": "windows_x86_64_msvc-0.52.6.crate",
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows_x86_64_msvc",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION": "0.52.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "52",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+buildscript_run(
+    name = "windows_x86_64_msvc-0.52-build-script-run",
+    package_name = "windows_x86_64_msvc",
+    buildscript_rule = ":windows_x86_64_msvc-0.52-build-script-build",
+    env = {
+        "CARGO_PKG_AUTHORS": "Microsoft",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "52",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    version = "0.52.6",
+)
+
+http_archive(
+    name = "windows_x86_64_msvc-0.53.1.crate",
+    sha256 = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650",
+    strip_prefix = "windows_x86_64_msvc-0.53.1",
+    urls = ["https://static.crates.io/crates/windows_x86_64_msvc/0.53.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "windows_x86_64_msvc-0.53",
+    srcs = [":windows_x86_64_msvc-0.53.1.crate"],
+    crate = "windows_x86_64_msvc",
+    crate_root = "windows_x86_64_msvc-0.53.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "windows_x86_64_msvc",
+        "CARGO_CRATE_NAME": "windows_x86_64_msvc",
+        "CARGO_MANIFEST_DIR": "windows_x86_64_msvc-0.53.1.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows_x86_64_msvc",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION": "0.53.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "53",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+        "OUT_DIR": "$(location :windows_x86_64_msvc-0.53-build-script-run[out_dir])",
+    },
+    rustc_flags = ["@$(location :windows_x86_64_msvc-0.53-build-script-run[rustc_flags])"],
+    visibility = [],
+)
+
+cargo.rust_binary(
+    name = "windows_x86_64_msvc-0.53-build-script-build",
+    srcs = [":windows_x86_64_msvc-0.53.1.crate"],
+    crate = "build_script_build",
+    crate_root = "windows_x86_64_msvc-0.53.1.crate/build.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "build-script-build",
+        "CARGO_CRATE_NAME": "build_script_build",
+        "CARGO_MANIFEST_DIR": "windows_x86_64_msvc-0.53.1.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "windows_x86_64_msvc",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION": "0.53.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "53",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+buildscript_run(
+    name = "windows_x86_64_msvc-0.53-build-script-run",
+    package_name = "windows_x86_64_msvc",
+    buildscript_rule = ":windows_x86_64_msvc-0.53-build-script-build",
+    env = {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Import lib for Windows",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_README": "readme.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/microsoft/windows-rs",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "53",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    version = "0.53.1",
 )
 
 http_archive(

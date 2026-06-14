@@ -41,3 +41,19 @@ rust_test(
     edition = "2024",
     deps = [":datafusion-io", "//third-party:arrow"],
 )
+
+rust_test(
+    name = "scan",
+    crate = "scan",
+    srcs = ["tests/scan.rs"],
+    crate_root = "tests/scan.rs",
+    edition = "2024",
+    deps = [
+        ":datafusion-io",
+        "//src/control-plane/core:core",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:object_store",
+        "//third-party:tokio",
+    ],
+)
