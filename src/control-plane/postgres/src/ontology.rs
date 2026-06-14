@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ControlPlaneError, LinkDef, ObjectType, Ontology, Page, PageReq, PropertyDef, Result, TableRef,
-    TypeName,
+    ControlPlaneError, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, PropertyDef,
+    Result, TableRef, TypeName,
 };
 
 use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
@@ -63,15 +63,29 @@ impl Ontology for PgControlPlane {
                 return Err(ControlPlaneError::NotFound(format!("type {}", endpoint.0)));
             }
         }
+        let bc = backing_cols(&link.backing);
         sqlx::query!(
-            "insert into ontology.link (name, from_type, to_type, cardinality) \
-             values ($1, $2, $3, $4) \
-             on conflict (name, from_type) do update set to_type = excluded.to_type, \
-                 cardinality = excluded.cardinality",
+            "insert into ontology.link \
+               (name, from_type, to_type, cardinality, backing_kind, from_column, \
+                to_column, from_key, to_key, join_table_schema, join_table_name) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             on conflict (name, from_type) do update set \
+               to_type = excluded.to_type, cardinality = excluded.cardinality, \
+               backing_kind = excluded.backing_kind, from_column = excluded.from_column, \
+               to_column = excluded.to_column, from_key = excluded.from_key, \
+               to_key = excluded.to_key, join_table_schema = excluded.join_table_schema, \
+               join_table_name = excluded.join_table_name",
             link.name,
             link.from.0,
             link.to.0,
             cardinality_to_str(link.cardinality),
+            bc.kind,
+            bc.from_column,
+            bc.to_column,
+            bc.from_key,
+            bc.to_key,
+            bc.join_schema,
+            bc.join_name,
         )
         .execute(&self.pool)
         .await
@@ -138,7 +152,9 @@ impl Ontology for PgControlPlane {
             return Err(ControlPlaneError::NotFound(name.0.clone()));
         }
         let rows = sqlx::query!(
-            "select name, from_type, to_type, cardinality from ontology.link where from_type = $1",
+            "select name, from_type, to_type, cardinality, backing_kind, from_column, \
+                    to_column, from_key, to_key, join_table_schema, join_table_name \
+             from ontology.link where from_type = $1",
             name.0,
         )
         .fetch_all(&self.pool)
@@ -151,6 +167,15 @@ impl Ontology for PgControlPlane {
                     from: TypeName(r.from_type),
                     to: TypeName(r.to_type),
                     cardinality: cardinality_from_str(r.cardinality.as_str()),
+                    backing: backing_from_row(
+                        &r.backing_kind,
+                        r.from_column,
+                        r.to_column,
+                        r.from_key,
+                        r.to_key,
+                        r.join_table_schema,
+                        r.join_table_name,
+                    ),
                 })
                 .collect(),
         ))
@@ -169,5 +194,76 @@ impl Ontology for PgControlPlane {
             schema: row.table_schema,
             name: row.table_name,
         })
+    }
+}
+
+/// The persisted column values for a link's physical backing.
+struct BackingCols<'a> {
+    kind: &'a str,
+    from_column: &'a str,
+    to_column: &'a str,
+    from_key: Option<&'a str>,
+    to_key: Option<&'a str>,
+    join_schema: Option<&'a str>,
+    join_name: Option<&'a str>,
+}
+
+fn backing_cols(b: &LinkBacking) -> BackingCols<'_> {
+    match b {
+        LinkBacking::ForeignKey {
+            from_column,
+            to_column,
+        } => BackingCols {
+            kind: "fk",
+            from_column,
+            to_column,
+            from_key: None,
+            to_key: None,
+            join_schema: None,
+            join_name: None,
+        },
+        LinkBacking::JoinTable {
+            table,
+            from_key,
+            from_column,
+            to_column,
+            to_key,
+        } => BackingCols {
+            kind: "join_table",
+            from_column,
+            to_column,
+            from_key: Some(from_key),
+            to_key: Some(to_key),
+            join_schema: Some(&table.schema),
+            join_name: Some(&table.name),
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn backing_from_row(
+    kind: &str,
+    from_column: String,
+    to_column: String,
+    from_key: Option<String>,
+    to_key: Option<String>,
+    join_schema: Option<String>,
+    join_name: Option<String>,
+) -> LinkBacking {
+    match kind {
+        "join_table" => LinkBacking::JoinTable {
+            table: TableRef {
+                schema: join_schema.unwrap_or_default(),
+                name: join_name.unwrap_or_default(),
+            },
+            from_key: from_key.unwrap_or_default(),
+            from_column,
+            to_column,
+            to_key: to_key.unwrap_or_default(),
+        },
+        _ => LinkBacking::ForeignKey {
+            from_column,
+            to_column,
+        },
     }
 }
