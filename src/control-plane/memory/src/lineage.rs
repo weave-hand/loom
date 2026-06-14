@@ -18,6 +18,7 @@ impl Lineage for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn events_for(&self, run: &RunId, _page: PageReq) -> Result<Page<LineageEvent>> {
         Ok(Page::from_full(
             self.lineage
@@ -31,6 +32,7 @@ impl Lineage for MemoryControlPlane {
         ))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn upstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
         let lin = self.lineage.lock().unwrap();
         let mut seen = HashSet::new();
@@ -45,6 +47,7 @@ impl Lineage for MemoryControlPlane {
         Ok(Page::from_full(out))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn downstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
         let lin = self.lineage.lock().unwrap();
         let mut seen = HashSet::new();
