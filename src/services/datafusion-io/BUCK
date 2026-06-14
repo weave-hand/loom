@@ -1,0 +1,43 @@
+rust_library(
+    name = "datafusion-io",
+    crate = "datafusion_io",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:arrow",
+        "//third-party:bytes",
+        "//third-party:datafusion",
+        "//third-party:futures",
+        "//third-party:object_store",
+        "//third-party:parquet",
+        "//third-party:thiserror",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "write",
+    crate = "write",
+    srcs = ["tests/write.rs"],
+    crate_root = "tests/write.rs",
+    edition = "2024",
+    deps = [
+        ":datafusion-io",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:object_store",
+        "//third-party:parquet",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "infer",
+    crate = "infer",
+    srcs = ["tests/infer.rs"],
+    crate_root = "tests/infer.rs",
+    edition = "2024",
+    deps = [":datafusion-io", "//third-party:arrow"],
+)
