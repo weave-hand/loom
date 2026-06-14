@@ -24,6 +24,13 @@ TOOLCHAIN="$REPO_ROOT/$(buck2 build root//tools:rust-host-toolchain --show-outpu
 export PATH="$TOOLCHAIN/bin:$PATH"
 export LD_LIBRARY_PATH="$TOOLCHAIN/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# The PYFIX step below runs `python3`. Put loom's hermetic interpreter
+# (python-build-standalone, via toolchains//:cpython_archive) ahead of PATH so
+# buckify needs no system python — locally or in CI's reindeer-check hook. The
+# install_only dist is relocatable, so bin/python3 finds its sibling lib/.
+PY_ARCHIVE="$REPO_ROOT/$(buck2 build toolchains//:cpython_archive --show-output 2>/dev/null | awk 'NR==1{print $2}')"
+export PATH="$PY_ARCHIVE/bin:$PATH"
+
 buck2 run root//tools:reindeer -- buckify "$@"
 
 # Two post-processing fixes to reindeer's output:
