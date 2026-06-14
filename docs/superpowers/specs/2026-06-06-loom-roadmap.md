@@ -132,6 +132,12 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     JSON string to keep int64 precision past 2⁵³. Proven by a render matrix and the
     strengthened materialize→bind→read e2e. (Surfaced + fixed a latent affinity bug: the
     DuckLake physical name for a 64-bit float is `float64`, not `double`.)
+  - *Part 3 — governed link traversal* ✅ DELIVERED
+    (`2026-06-14-query-governed-link-traversal-design.md`). Links are now resolvable
+    (`LinkBacking`: foreign-key + join-table) and a governed traversal read
+    (`read_linked_objects`, `GET /objects/:from/links/:link`) joins source → target with
+    both-ends governance (Read on both types, source + target row filters, target projection)
+    and `DISTINCT` dedup. The first relational read; part-1 of richer read capability.
   - *Later:* the serving *tier* over Quack (separate `quack_serve`'d DuckDB; the seam's
     Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
     masking, roles); rich ontology (links, derived properties); multi-type queries/joins;
@@ -153,13 +159,16 @@ the dead-variant cleanup via PR #22; `.sqlx` compile-time queries done). `main` 
 
 **Step 3 is underway.** Ingest **part 1** (the snapshot-commit primitive), **part 2a**
 (the landing materializer), and **part 2b** (dataset→model binding) are all delivered.
-Query **part 1** (the governed object-read slice) and **part 2** (typed JSON
-serialization, `2026-06-12-query-typed-json-serialization-design.md`) are delivered —
-landed data now binds to an ontology type and serves as typed objects through the
-governed front door.
+Query **part 1** (the governed object-read slice), **part 2** (typed JSON
+serialization, `2026-06-12-query-typed-json-serialization-design.md`), and **part 3**
+(governed link traversal, `2026-06-14-query-governed-link-traversal-design.md`) are
+delivered — landed data now binds to an ontology type, serves as typed objects through
+the governed front door, and resolves links between types as a both-ends-governed
+relational read.
 
-Recommended next move: the ingest service shell (binary + network endpoint +
-DataFusion compute) to make the now-complete land→bind→serve pipeline reachable over
-the wire, then pick up the remaining Step 2b trailing hardening opportunistically
-(per-concern adapter split and `tracing` are the highest-leverage). Smaller query
-follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
+The external SQL wire (Quack / Postgres-wire / Flight SQL) is deliberately deferred as
+a distribution/ergonomics concern, gated on a real external consumer *and* a design for
+governance over arbitrary SQL — neither of which is in hand. The active track is richer
+read capability (links → derived properties → multi-hop), with governed link traversal
+just delivered as its part-1; the remaining Step 2b trailing hardening (per-concern
+adapter split and `tracing` are the highest-leverage) is picked up opportunistically.

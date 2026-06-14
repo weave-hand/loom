@@ -48,7 +48,10 @@ pub enum Cardinality {
 pub enum LinkBacking {
     /// Direct equijoin `from_table.from_column = to_table.to_column`.
     /// Covers one-to-many and many-to-one.
-    ForeignKey { from_column: String, to_column: String },
+    ForeignKey {
+        from_column: String,
+        to_column: String,
+    },
     /// Many-to-many through a mapping table:
     ///   `from_table.from_key = table.from_column AND table.to_column = to_table.to_key`.
     JoinTable {
