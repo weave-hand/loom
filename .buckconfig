@@ -3,19 +3,14 @@
   prelude = prelude
   toolchains = toolchains
   none = none
-  # The deployment targets (container images + Helm chart) live in their OWN cell,
-  # not under root//. This keeps them out of `root//...`, so the btd-based
-  # `affected` CI job (which parses the whole root//... graph itself and cannot
-  # read external cells) never has to resolve the homelab external cell below.
-  # Only buck2 proper (the release workflow) builds `deploy//...`.
-  deploy = deploy
   # Container-image / Helm build rules (apko/oci/helm) live in the homelab repo
   # and are consumed as a git EXTERNAL CELL (see [external_cells] below) — buck2
   # fetches the pinned commit into buck-out automatically, so there's no
-  # submodule and no vendored copy. deploy//... targets load them as
-  # `homelab//buck2/...`; the rules use only cell-relative //buck2/... and
-  # prelude//... refs, so they resolve identically in homelab or here. The path
-  # `homelab` is the cell's nominal location / `buck2 expand-external-cell`
+  # submodule and no vendored copy. The //deploy targets (in the ROOT cell) load
+  # them as `homelab//buck2/...`; the rules use only cell-relative //buck2/... and
+  # prelude//... refs, so they resolve identically in homelab or here. External
+  # cells resolve only from the ROOT cell, which is why //deploy stays under root.
+  # The path `homelab` is the cell's nominal location / `buck2 expand-external-cell`
   # target (gitignored, never checked in) — it must NOT reuse the `none` path
   # above, or buck2's path->cell mapping collides and misroutes the `none` cell.
   homelab = homelab
@@ -44,7 +39,6 @@
   target_platform_detector_spec = target:root//...->prelude//platforms:default \
     target:prelude//...->prelude//platforms:default \
     target:toolchains//...->prelude//platforms:default \
-    target:deploy//...->prelude//platforms:default \
     target:homelab//...->prelude//platforms:default
 
 [build]
@@ -56,7 +50,9 @@
   # checks the PR base out into _base/) from `root//...`. A .buckconfig change
   # otherwise makes btd validate the whole universe, which descends into that
   # nested copy of the prelude and trips latent errors in its android toolchain
-  # test BUCKs. Harmless when _base/ doesn't exist (normal builds).
+  # test BUCKs. Harmless when _base/ doesn't exist (normal builds). The affected
+  # job additionally appends `deploy` here at runtime so btd (which can't read the
+  # homelab external cell) skips //deploy; buck2 proper builds //deploy normally.
   ignore = _base
 
 [buck2]

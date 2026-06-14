@@ -5,16 +5,16 @@ binaries and a Helm chart that runs them on Kubernetes. The image/Helm build
 rules come from [`jomcgi/homelab`](https://github.com/jomcgi/homelab/tree/main/buck2),
 consumed as a **git external cell** (`homelab`) rather than vendored or
 submoduled — buck2 fetches the pinned commit automatically (see *Build rules*
-below). The deployable targets live in their own `deploy//` buck2 cell
+below). The deployable targets live under `//deploy` in the root cell
 (deliberately off the normal `//src` CI sweep — see below).
 
 ## What ships
 
 | Component | buck2 target | Image / artifact |
 | --- | --- | --- |
-| ingest service | `deploy//images/ingest:image` | `ghcr.io/weave-hand/loom-ingest` |
-| query-api service | `deploy//images/query-api:image` | `ghcr.io/weave-hand/loom-query-api` |
-| Helm chart | `deploy//chart:chart` | `oci://ghcr.io/weave-hand/charts/loom` |
+| ingest service | `//deploy/images/ingest:image` | `ghcr.io/weave-hand/loom-ingest` |
+| query-api service | `//deploy/images/query-api:image` | `ghcr.io/weave-hand/loom-query-api` |
+| Helm chart | `//deploy/chart:chart` | `oci://ghcr.io/weave-hand/charts/loom` |
 
 Each image is the buck2-built Rust binary (`x86_64-unknown-linux-gnu`, glibc)
 layered onto a minimal apko/Wolfi base. The base carries `glibc` + `libgcc` +
@@ -27,10 +27,10 @@ the binary at the image entrypoint. Package versions are pinned in the committed
 
 ```sh
 # Build an image tar locally (no registry):
-buck2 build deploy//images/ingest:image
+buck2 build //deploy/images/ingest:image
 
 # Push to ghcr at one or more runtime tags (crane must be authed: see below):
-buck2 run deploy//images/ingest:image.push -- 0.1.0 latest
+buck2 run //deploy/images/ingest:image.push -- 0.1.0 latest
 ```
 
 `:image.info` exposes the content digest (`OciImageInfo`) so the chart can
@@ -47,11 +47,11 @@ echo "$GHCR_TOKEN" | buck2 run homelab//buck2/bin:helm  -- registry login ghcr.i
 
 ```sh
 # Lint / render with the standalone helm (or via buck2):
-buck2 build deploy//chart:chart.lint
+buck2 build //deploy/chart:chart.lint
 helm template loom deploy/chart/chart
 
 # Package + push (version comes from Chart.yaml; images digest-pinned in values):
-buck2 run deploy//chart:chart.push
+buck2 run //deploy/chart:chart.push
 ```
 
 ### Prerequisites in the target cluster
@@ -128,20 +128,19 @@ below real releases and are ignored by the version detection, so they never
 affect the auto-increment on `main`. The pushed refs are written to the job
 summary.
 
-> The `deploy//` cell is kept off the `//src` CI sweep on purpose: apko
-> fetches packages over the network and builds local-only, so building it on
-> every PR would force local materialization. It is exercised only by this
+> The `//deploy` targets are kept off the `//src` CI sweep on purpose: apko
+> fetches packages over the network and builds local-only, so building them on
+> every PR would force local materialization. They are exercised only by this
 > release workflow (Rust binaries still compile on BuildBuddy RE).
 
 ## Build rules (the `homelab` external cell)
 
-The apko/oci/helm rules the `deploy//` cell loads (`homelab//buck2/...`) are
-**not** vendored or submoduled. They are consumed as a buck2 **git external
-cell**: the `.buckconfig` declares
+The apko/oci/helm rules `//deploy` loads (`homelab//buck2/...`) are **not**
+vendored or submoduled. They are consumed as a buck2 **git external cell**: the
+`.buckconfig` declares
 
 ```ini
 [cells]
-  deploy = deploy
   homelab = homelab
 [external_cells]
   homelab = git
@@ -149,6 +148,10 @@ cell**: the `.buckconfig` declares
   git_origin = https://github.com/jomcgi/homelab.git
   commit_hash = <sha1>
 ```
+
+External cells resolve only from the **root** cell, so `//deploy` lives in the
+root cell (not its own cell) — that's how `load("homelab//buck2/...")` resolves
+under `buck2 run`.
 
 and buck2 fetches that commit's tree into `buck-out` on demand. There is no
 checkout to manage; `git_origin`'s repo just has to be reachable and the rules
@@ -173,9 +176,10 @@ Notes / alternatives:
 - `buck2 expand-external-cell homelab` materializes an editable local copy if you
   need to hack on the rules.
 - **CI note:** the PR `affected` job uses `btd`/`supertd`, which parse the
-  `root//...` graph themselves and cannot read external cells. Putting the
-  deploy targets in their own `deploy//` cell keeps them (and the `homelab//`
-  loads) out of `root//...`, so btd never has to resolve the external cell — only
-  buck2 proper (the release job) builds `deploy//...`. (`.buckconfig` also sets
-  `[project] ignore = _base` so a config change doesn't make btd descend into the
-  job's base-commit checkout, whose nested prelude has latent errors.)
+  `root//...` graph themselves and cannot read external cells. Since `//deploy`
+  loads `homelab//...`, that job appends `deploy` to `[project] ignore` at
+  runtime (supertd honors it, just like `_base`) so btd skips `//deploy`
+  entirely. buck2 proper (the dev-image and release jobs) uses the committed
+  config and builds `//deploy` normally — it resolves the external cell from the
+  root cell. (`[project] ignore = _base` likewise keeps btd out of the job's
+  base-commit checkout, whose nested prelude has latent errors.)

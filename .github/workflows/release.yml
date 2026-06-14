@@ -11,7 +11,7 @@ name: release
 # dev-tagged preview images + chart (0.0.0-pr<N>.<sha>) so changes can be pulled
 # before merge; those prerelease tags never affect the release auto-increment.
 #
-# The image/chart buck2 targets live in the `deploy//` cell (excluded from root//...):
+# The image/chart buck2 targets live under //deploy (excluded from the affected CI sweep):
 # apko fetches packages over the network and builds local-only, so they only run
 # here. The Rust binaries still compile on BuildBuddy RE.
 
@@ -126,8 +126,8 @@ jobs:
           V: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          buck2 run deploy//images/ingest:image.push    -- "$V" latest
-          buck2 run deploy//images/query-api:image.push -- "$V" latest
+          buck2 run //deploy/images/ingest:image.push    -- "$V" latest
+          buck2 run //deploy/images/query-api:image.push -- "$V" latest
 
       - name: Package & push chart
         if: steps.ver.outputs.release == 'true'
@@ -141,9 +141,9 @@ jobs:
           # values.yaml by helm_chart(images=...) at package time.
           sed -i -E "s/^version:.*/version: $V/; s/^appVersion:.*/appVersion: \"$V\"/" \
             deploy/chart/chart/Chart.yaml
-          buck2 run deploy//chart:chart.push
+          buck2 run //deploy/chart:chart.push
           # Stage the packaged chart as a release asset.
-          out="$(buck2 build deploy//chart:chart --show-simple-output 2>/dev/null | tail -1)"
+          out="$(buck2 build //deploy/chart:chart --show-simple-output 2>/dev/null | tail -1)"
           mkdir -p dist && cp "$out" "dist/loom-$V.tgz"
 
       - name: Tag & GitHub Release
@@ -202,13 +202,13 @@ jobs:
           dev="0.0.0-pr${PR}.${short}"   # SemVer prerelease: sorts below releases
           moving="pr-${PR}"               # updated each push for this PR
 
-          buck2 run deploy//images/ingest:image.push    -- "$dev" "$moving"
-          buck2 run deploy//images/query-api:image.push -- "$dev" "$moving"
+          buck2 run //deploy/images/ingest:image.push    -- "$dev" "$moving"
+          buck2 run //deploy/images/query-api:image.push -- "$dev" "$moving"
 
           # Chart stamped to the dev version, digest-pinned to the dev images.
           sed -i -E "s/^version:.*/version: $dev/; s/^appVersion:.*/appVersion: \"$dev\"/" \
             deploy/chart/chart/Chart.yaml
-          buck2 run deploy//chart:chart.push
+          buck2 run //deploy/chart:chart.push
 
           {
             echo "### loom dev images (PR #${PR})"

@@ -9,12 +9,12 @@ helm_chart(
     name = "chart",
     srcs = glob(["chart/**"]),
     deps = [
-        "//images/ingest:image",
-        "//images/query-api:image",
+        "//deploy/images/ingest:image",
+        "//deploy/images/query-api:image",
     ],
     images = {
-        "ingest.image": "//images/ingest:image.info",
-        "queryApi.image": "//images/query-api:image.info",
+        "ingest.image": "//deploy/images/ingest:image.info",
+        "queryApi.image": "//deploy/images/query-api:image.info",
     },
     lint = True,
     publish = True,

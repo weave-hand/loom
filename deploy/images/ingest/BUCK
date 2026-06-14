@@ -15,7 +15,7 @@ apko_image(
 # Stage the ingest binary at the base's entrypoint path.
 tar_layer(
     name = "bin_layer",
-    binary = "root//src/services/ingest:ingest-bin",
+    binary = "//src/services/ingest:ingest-bin",
     path = "/usr/local/bin/ingest",
 )
 

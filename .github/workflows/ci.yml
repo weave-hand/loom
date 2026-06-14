@@ -103,6 +103,16 @@ jobs:
             | awk 'NF >= 2 { print substr($1, 1, 1) " " $2 }' > changes.txt
           echo "::group::Changed files"; cat changes.txt; echo "::endgroup::"
 
+          # btd/supertd parse the target graph themselves and can't read buck2
+          # external cells. The //deploy targets load the `homelab` external cell
+          # (resolvable only by buck2 proper from the root cell), so hide //deploy
+          # from btd here by adding it to `[project] ignore` (supertd honors it —
+          # that's what excludes _base). This is CI-only: the release/dev-image
+          # jobs use the committed config and build //deploy with buck2 proper.
+          for cfg in .buckconfig _base/.buckconfig; do
+            [ -f "$cfg" ] && sed -i -E 's/^([[:space:]]*ignore = _base)$/\1, deploy/' "$cfg" || true
+          done
+
           # Base-state target graph (before the change), from the second checkout.
           ( cd _base && buck2 run //tools:supertd -- \
               targets root//... --output "$GITHUB_WORKSPACE/base.jsonl" )
