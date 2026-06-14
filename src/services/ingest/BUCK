@@ -119,6 +119,7 @@ rust_test(
         ":ingest",
         "//third-party:arrow",
         "//third-party:datafusion",
+        "//third-party:object_store",
         "//third-party:parquet",
         "//third-party:tokio",
     ],

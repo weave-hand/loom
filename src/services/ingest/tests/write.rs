@@ -101,9 +101,9 @@ fn stats_merge_min_max_across_row_groups() {
     assert_eq!(name.max.as_deref(), Some("z"));
 }
 
-use datafusion::object_store::memory::InMemory;
-use datafusion::object_store::{ObjectStore, ObjectStoreExt};
 use ingest::write::write_dataset;
+use object_store::memory::InMemory;
+use object_store::{ObjectStore, ObjectStoreExt};
 
 fn four_batches() -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![
@@ -158,7 +158,7 @@ async fn write_dataset_splits_into_multiple_files() {
         assert!(f.path.starts_with("run-1/"), "unexpected path {}", f.path);
         assert!(f.file_size_bytes > 0);
         // Each file actually exists in the store under "main/customer/<path>".
-        let key = datafusion::object_store::path::Path::from(format!("main/customer/{}", f.path));
+        let key = object_store::path::Path::from(format!("main/customer/{}", f.path));
         assert!(store.head(&key).await.is_ok(), "missing object {}", f.path);
     }
 }

@@ -7893,46 +7893,6 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "itertools-0.13.0.crate",
-    sha256 = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186",
-    strip_prefix = "itertools-0.13.0",
-    urls = ["https://static.crates.io/crates/itertools/0.13.0/download"],
-    visibility = [],
-)
-
-cargo.rust_library(
-    name = "itertools-0.13",
-    srcs = [":itertools-0.13.0.crate"],
-    crate = "itertools",
-    crate_root = "itertools-0.13.0.crate/src/lib.rs",
-    edition = "2018",
-    env = {
-        "CARGO_BIN_NAME": "itertools",
-        "CARGO_CRATE_NAME": "itertools",
-        "CARGO_MANIFEST_DIR": "itertools-0.13.0.crate",
-        "CARGO_PKG_AUTHORS": "bluss",
-        "CARGO_PKG_DESCRIPTION": "Extra iterator adaptors, iterator methods, free functions, and macros.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "itertools",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/rust-itertools/itertools",
-        "CARGO_PKG_RUST_VERSION": "1.43.1",
-        "CARGO_PKG_VERSION": "0.13.0",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "13",
-        "CARGO_PKG_VERSION_PATCH": "0",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "default",
-        "use_alloc",
-        "use_std",
-    ],
-    visibility = [],
-    deps = [":either-1"],
-)
-
-http_archive(
     name = "itertools-0.14.0.crate",
     sha256 = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285",
     strip_prefix = "itertools-0.14.0",
@@ -9349,57 +9309,8 @@ buildscript_run(
 
 alias(
     name = "object_store",
-    actual = ":object_store-0.11",
+    actual = ":object_store-0.13",
     visibility = ["PUBLIC"],
-)
-
-http_archive(
-    name = "object_store-0.11.2.crate",
-    sha256 = "3cfccb68961a56facde1163f9319e0d15743352344e7808a11795fb99698dcaf",
-    strip_prefix = "object_store-0.11.2",
-    urls = ["https://static.crates.io/crates/object_store/0.11.2/download"],
-    visibility = [],
-)
-
-cargo.rust_library(
-    name = "object_store-0.11",
-    srcs = [":object_store-0.11.2.crate"],
-    crate = "object_store",
-    crate_root = "object_store-0.11.2.crate/src/lib.rs",
-    edition = "2021",
-    env = {
-        "CARGO_BIN_NAME": "object_store",
-        "CARGO_CRATE_NAME": "object_store",
-        "CARGO_MANIFEST_DIR": "object_store-0.11.2.crate",
-        "CARGO_PKG_AUTHORS": "",
-        "CARGO_PKG_DESCRIPTION": "A generic object store interface for uniformly interacting with AWS S3, Google Cloud Storage, Azure Blob Storage and local files.",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "object_store",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/apache/arrow-rs/tree/main/object_store",
-        "CARGO_PKG_RUST_VERSION": "1.64.0",
-        "CARGO_PKG_VERSION": "0.11.2",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "11",
-        "CARGO_PKG_VERSION_PATCH": "2",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    visibility = [],
-    deps = [
-        ":async-trait-0.1",
-        ":bytes-1",
-        ":chrono-0.4",
-        ":futures-0.3",
-        ":humantime-2",
-        ":itertools-0.13",
-        ":parking_lot-0.12",
-        ":percent-encoding-2",
-        ":snafu-0.8",
-        ":tokio-1",
-        ":tracing-0.1",
-        ":url-2",
-        ":walkdir-2",
-    ],
 )
 
 http_archive(
@@ -9434,6 +9345,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "default",
         "fs",
         "tokio",
         "walkdir",
@@ -12516,88 +12428,6 @@ cargo.rust_library(
     ],
     visibility = [],
     deps = [":serde-1"],
-)
-
-http_archive(
-    name = "snafu-0.8.9.crate",
-    sha256 = "6e84b3f4eacbf3a1ce05eac6763b4d629d60cbc94d632e4092c54ade71f1e1a2",
-    strip_prefix = "snafu-0.8.9",
-    urls = ["https://static.crates.io/crates/snafu/0.8.9/download"],
-    visibility = [],
-)
-
-cargo.rust_library(
-    name = "snafu-0.8",
-    srcs = [":snafu-0.8.9.crate"],
-    crate = "snafu",
-    crate_root = "snafu-0.8.9.crate/src/lib.rs",
-    edition = "2018",
-    env = {
-        "CARGO_BIN_NAME": "snafu",
-        "CARGO_CRATE_NAME": "snafu",
-        "CARGO_MANIFEST_DIR": "snafu-0.8.9.crate",
-        "CARGO_PKG_AUTHORS": "Jake Goulding <jake.goulding@gmail.com>",
-        "CARGO_PKG_DESCRIPTION": "An ergonomic error handling library",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "snafu",
-        "CARGO_PKG_README": "README.md",
-        "CARGO_PKG_REPOSITORY": "https://github.com/shepmaster/snafu",
-        "CARGO_PKG_RUST_VERSION": "1.56",
-        "CARGO_PKG_VERSION": "0.8.9",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "8",
-        "CARGO_PKG_VERSION_PATCH": "9",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = [
-        "alloc",
-        "rust_1_61",
-        "std",
-    ],
-    visibility = [],
-    deps = [":snafu-derive-0.8"],
-)
-
-http_archive(
-    name = "snafu-derive-0.8.9.crate",
-    sha256 = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451",
-    strip_prefix = "snafu-derive-0.8.9",
-    urls = ["https://static.crates.io/crates/snafu-derive/0.8.9/download"],
-    visibility = [],
-)
-
-cargo.rust_library(
-    name = "snafu-derive-0.8",
-    srcs = [":snafu-derive-0.8.9.crate"],
-    crate = "snafu_derive",
-    crate_root = "snafu-derive-0.8.9.crate/src/lib.rs",
-    edition = "2018",
-    env = {
-        "CARGO_BIN_NAME": "snafu_derive",
-        "CARGO_CRATE_NAME": "snafu_derive",
-        "CARGO_MANIFEST_DIR": "snafu-derive-0.8.9.crate",
-        "CARGO_PKG_AUTHORS": "Jake Goulding <jake.goulding@gmail.com>",
-        "CARGO_PKG_DESCRIPTION": "An ergonomic error handling library",
-        "CARGO_PKG_HOMEPAGE": "",
-        "CARGO_PKG_NAME": "snafu-derive",
-        "CARGO_PKG_README": "",
-        "CARGO_PKG_REPOSITORY": "https://github.com/shepmaster/snafu",
-        "CARGO_PKG_RUST_VERSION": "1.56",
-        "CARGO_PKG_VERSION": "0.8.9",
-        "CARGO_PKG_VERSION_MAJOR": "0",
-        "CARGO_PKG_VERSION_MINOR": "8",
-        "CARGO_PKG_VERSION_PATCH": "9",
-        "CARGO_PKG_VERSION_PRE": "",
-    },
-    features = ["rust_1_61"],
-    proc_macro = True,
-    visibility = [],
-    deps = [
-        ":heck-0.5",
-        ":proc-macro2-1",
-        ":quote-1",
-        ":syn-2",
-    ],
 )
 
 http_archive(

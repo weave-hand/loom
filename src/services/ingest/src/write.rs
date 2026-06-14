@@ -14,11 +14,10 @@ use datafusion::datasource::MemTable;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::Partitioning;
-// Use DataFusion's re-exported object_store (0.13) so the store we register and the
-// list/get calls below all agree on one version; the top-level `//third-party:object_store`
-// alias is 0.11, which DataFusion's `register_object_store` would reject.
-use datafusion::object_store::path::Path as ObjectPath;
-use datafusion::object_store::{ObjectStore, ObjectStoreExt};
+// object_store is unified to DataFusion's bundled 0.13, so the top-level crate and
+// DataFusion's re-export are the same types; register/list/get all agree on one version.
+use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, ObjectStoreExt};
 use futures::TryStreamExt;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
@@ -64,7 +63,7 @@ pub enum WriteError {
     #[error("datafusion error: {0}")]
     DataFusion(#[from] datafusion::error::DataFusionError),
     #[error("object store error: {0}")]
-    ObjectStore(#[from] datafusion::object_store::Error),
+    ObjectStore(#[from] object_store::Error),
 }
 
 /// A written Parquet file plus the metadata `append_files` registers.

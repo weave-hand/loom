@@ -4,8 +4,8 @@
 //! relative-path resolution (data_path + schema.path + table.path + file.path)
 //! finds the file. The registered DataFile.path is the file_name alone.
 
-use object_store::ObjectStore;
 use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, ObjectStoreExt};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
