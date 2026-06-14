@@ -1,6 +1,6 @@
-//! The orchestrator: gate -> schema-selection -> write -> put -> one atomic Tx
-//! (create_table + append_files + emit + commit). Ordering is put-then-commit;
-//! a commit failure after put orphans the Parquet (documented; GC is deferred).
+//! The orchestrator: gate -> schema-selection -> datafusion write -> one atomic Tx
+//! (create_table + append_files + emit + commit). Ordering is write-then-commit;
+//! a commit failure after the write orphans the Parquet files (documented; GC deferred).
 
 use std::sync::Arc;
 
@@ -12,16 +12,16 @@ use object_store::ObjectStore;
 use crate::IngestError;
 use crate::gate::{ModelShape, validate};
 use crate::infer::infer_columns;
-use crate::store::put;
-use crate::write::write_parquet;
+use crate::write::{IngestWriteConfig, write_dataset};
 
 /// One materialize call: land `batches` for `table`, optionally gated by a model.
 pub struct MaterializeRequest<'a> {
     pub table: &'a TableRef,
     pub schema: Arc<Schema>,
     pub batches: &'a [RecordBatch],
-    /// Caller-unique file name, e.g. "part-0.parquet".
-    pub file_name: &'a str,
+    /// Caller-unique prefix (subdirectory) for this call's files, e.g. a run id.
+    /// Files land at "<schema>/<table>/<file_prefix>/part-*.parquet".
+    pub file_prefix: &'a str,
     pub gate: Option<&'a ModelShape>,
     /// The lineage event to emit in the same transaction (output dataset = the
     /// landed table). Built by the caller, which knows the datasource namespace.
@@ -31,7 +31,7 @@ pub struct MaterializeRequest<'a> {
 /// Land data as a registered DuckLake snapshot + lineage, atomically.
 pub async fn materialize(
     cp: &dyn ControlPlane,
-    object_store: &dyn ObjectStore,
+    object_store: Arc<dyn ObjectStore>,
     req: MaterializeRequest<'_>,
 ) -> Result<SnapshotId, IngestError> {
     // 1. Optional model gate — the front edge; reject before any write.
@@ -53,28 +53,36 @@ pub async fn materialize(
         None => infer_columns(&req.schema)?,
     };
 
-    // 3. Write Parquet + extract stats.
-    let written = write_parquet(req.schema.clone(), req.batches)?;
-
-    // 4. Put to object storage (key = schema/table/file).
-    let key = format!("{}/{}/{}", req.table.schema, req.table.name, req.file_name);
-    let stored = put(object_store, &key, written.bytes).await?;
-
-    // 5. One atomic transaction: create_table (idempotent) + append_files + emit.
-    let mut tx = cp.begin().await?;
-    tx.create_table(req.table, &columns).await?;
-    tx.append_files(
-        req.table,
-        &[DataFile {
-            path: stored.path,
-            path_is_relative: stored.path_is_relative,
-            record_count: written.record_count,
-            file_size_bytes: written.file_size_bytes,
-            footer_size: written.footer_size,
-            column_stats: written.column_stats,
-        }],
+    // 3. DataFusion write: N Snappy Parquet files straight to object storage.
+    let dir_prefix = format!(
+        "{}/{}/{}",
+        req.table.schema, req.table.name, req.file_prefix
+    );
+    let files = write_dataset(
+        object_store,
+        &dir_prefix,
+        req.schema.clone(),
+        req.batches,
+        &IngestWriteConfig::default(),
     )
     .await?;
+
+    // 4. One atomic transaction: create_table (idempotent) + append_files + emit.
+    let data_files: Vec<DataFile> = files
+        .into_iter()
+        .map(|f| DataFile {
+            path: f.path,
+            path_is_relative: true,
+            record_count: f.record_count,
+            file_size_bytes: f.file_size_bytes,
+            footer_size: f.footer_size,
+            column_stats: f.column_stats,
+        })
+        .collect();
+
+    let mut tx = cp.begin().await?;
+    tx.create_table(req.table, &columns).await?;
+    tx.append_files(req.table, &data_files).await?;
     tx.emit(req.lineage).await?;
     tx.commit().await?.ok_or(IngestError::NoSnapshot)
 }
