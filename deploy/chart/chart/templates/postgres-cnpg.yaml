@@ -1,0 +1,34 @@
+{{- if .Values.postgres.enabled -}}
+# Postgres control plane via CloudNativePG. Requires the CNPG operator + CRDs
+# (postgresql.cnpg.io/v1) installed in the cluster. CNPG generates the
+# `<cluster>-app` secret the services read (host/port/username/password/dbname).
+#
+# NOTE: this provisions Postgres but does NOT apply loom's schema migrations
+# (src/control-plane/postgres/migrations) — run those out of band before the
+# services can serve. See docs/deploy.md.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "loom.pgClusterName" . }}
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  instances: {{ .Values.postgres.instances }}
+  {{- with .Values.postgres.imageName }}
+  imageName: {{ . | quote }}
+  {{- end }}
+  storage:
+    size: {{ .Values.postgres.storage.size }}
+    {{- with .Values.postgres.storage.storageClassName }}
+    storageClass: {{ . | quote }}
+    {{- end }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.postgres.database }}
+      owner: {{ .Values.postgres.owner }}
+  {{- with .Values.postgres.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

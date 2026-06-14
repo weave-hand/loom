@@ -1,0 +1,224 @@
+name: release
+
+# Image + Helm chart publishing for loom. The deploy// buck2 targets build local
+# (apko fetches packages over the network) with the Rust binaries on BuildBuddy
+# RE; they're off the normal CI sweep, so they only run here.
+#
+# Three independent flows by event:
+#
+# - push to main      -> `edge`: push immutable `sha-<short>` images for both
+#                        services, then publish the Helm chart as the moving
+#                        `bleeding-edge` channel (digest-pinned to those images).
+#                        Also publishes a versioned chart when the committed
+#                        Chart.yaml `version` is new (bump it to cut one).
+# - workflow_dispatch -> `release`: tag the images `X.Y.Z` + `latest` and cut a
+#                        `vX.Y.Z` git tag + GitHub Release. Versioned releases are
+#                        intentional — there is no auto-increment.
+# - pull_request       -> `dev-image`: push dev preview images + chart for same-repo
+#                        PRs (0.0.0-pr<N>.sha<short> + pr-<N>).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version X.Y.Z (tags images + cuts a GitHub Release)."
+        required: true
+
+# Per-ref concurrency so main, each PR, and dispatches are independent groups.
+# PR builds cancel superseded runs; main/release runs never cancel mid-push.
+concurrency:
+  group: release-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  BUCK2_RELEASE: "2026-05-18"
+  BUCK_PREFER_REMOTE: "true"
+  REGISTRY: ghcr.io
+  INGEST_IMAGE: ghcr.io/weave-hand/loom-ingest
+  QUERY_API_IMAGE: ghcr.io/weave-hand/loom-query-api
+  CHART_REPO: oci://ghcr.io/weave-hand/charts
+  CHART_OCI: ghcr.io/weave-hand/charts/loom
+
+permissions:
+  contents: write   # create the vX.Y.Z tag + GitHub Release (release job)
+  packages: write   # push images + chart to ghcr
+
+jobs:
+  # Bleeding edge: every merge to main pushes immutable `sha-<short>` images and
+  # (re)publishes the chart as the moving `bleeding-edge` channel, plus a versioned
+  # chart when Chart.yaml is bumped. No git tag / Release — that's `release`.
+  edge:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
+
+      # crane (image push) reads ~/.docker/config.json; helm (chart push) keeps
+      # its own registry config. Log both in via the pinned CLIs.
+      - name: Log in to ghcr
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:helm  -- registry login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+
+      - name: Push sha-tagged images
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA:0:7}"
+          # Immutable per-commit tags only — the moving channel is the chart
+          # (bleeding-edge), which digest-pins these exact images.
+          buck2 run deploy//images/ingest:image.push    -- "sha-$short"
+          buck2 run deploy//images/query-api:image.push -- "sha-$short"
+
+      - name: Publish charts (bleeding-edge always; released version when bumped)
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA:0:7}"
+          cv="$(awk '/^version:/{print $2; exit}' deploy/chart/chart/Chart.yaml)"
+
+          # Bleeding-edge chart: a moving SemVer `0.0.0-edge` (helm-pullable via
+          # --version 0.0.0-edge), then crane-tagged `bleeding-edge` to mirror the
+          # image tag (helm push can't emit a non-SemVer tag itself). appVersion is
+          # the main snapshot; the images it deploys are digest-pinned at build time.
+          sed -i -E "s/^version:.*/version: 0.0.0-edge/; s/^appVersion:.*/appVersion: \"sha-$short\"/" \
+            deploy/chart/chart/Chart.yaml
+          buck2 run deploy//chart:chart.push
+          buck2 run homelab//buck2/bin:crane -- tag "$CHART_OCI:0.0.0-edge" bleeding-edge
+          echo "published bleeding-edge chart (0.0.0-edge, appVersion sha-$short)"
+
+          # Released chart: publish at the committed Chart.yaml version, but only
+          # when that version isn't already in ghcr (bump it to cut a chart release).
+          git checkout -- deploy/chart/chart/Chart.yaml
+          if buck2 run homelab//buck2/bin:crane -- manifest "$CHART_OCI:$cv" >/dev/null 2>&1; then
+            echo "chart $cv already published — bump deploy/chart/chart/Chart.yaml 'version' to release a new chart."
+          else
+            sed -i -E "s/^appVersion:.*/appVersion: \"sha-$short\"/" deploy/chart/chart/Chart.yaml
+            buck2 run deploy//chart:chart.push
+            echo "published chart $cv (appVersion sha-$short) to $CHART_OCI"
+          fi
+
+  # Intentional versioned release. Run from the Actions tab with a version; tags
+  # the current main images X.Y.Z + latest and cuts a vX.Y.Z git tag + Release.
+  release:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0   # tags, for the clobber guard
+
+      - name: Validate version
+        id: v
+        env:
+          V: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "version must be X.Y.Z, got '$V'"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
+            echo "tag v$V already exists — refusing to clobber a release."; exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
+
+      - name: Log in to ghcr
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+
+      - name: Push release images
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          buck2 run deploy//images/ingest:image.push    -- "$V" latest
+          buck2 run deploy//images/query-api:image.push -- "$V" latest
+
+      - name: Tag & GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: v${{ steps.v.outputs.version }}
+          generate_release_notes: true
+
+  # Dev-image preview on every PR commit (same-repo branches only — fork PRs get a
+  # read-only token + no secrets, so they're skipped). Dev tags are SemVer
+  # prereleases that sort below releases and never collide with bleeding-edge.
+  dev-image:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
+
+      - name: Log in to ghcr
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:helm  -- registry login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+
+      - name: Build & push dev images + chart
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          short="${SHA:0:7}"
+          # `sha` prefix keeps the identifier alphanumeric — an all-digit short
+          # SHA with a leading zero would be an invalid SemVer numeric identifier.
+          dev="0.0.0-pr${PR}.sha${short}"   # SemVer prerelease: sorts below releases
+          moving="pr-${PR}"                  # updated each push for this PR
+
+          buck2 run deploy//images/ingest:image.push    -- "$dev" "$moving"
+          buck2 run deploy//images/query-api:image.push -- "$dev" "$moving"
+
+          # Chart stamped to the dev version, digest-pinned to the dev images.
+          sed -i -E "s/^version:.*/version: $dev/; s/^appVersion:.*/appVersion: \"$dev\"/" \
+            deploy/chart/chart/Chart.yaml
+          buck2 run deploy//chart:chart.push
+
+          {
+            echo "### loom dev images (PR #${PR})"
+            echo ""
+            echo "- \`${INGEST_IMAGE}:${dev}\` (also \`:${moving}\`)"
+            echo "- \`${QUERY_API_IMAGE}:${dev}\` (also \`:${moving}\`)"
+            echo "- chart \`${CHART_REPO}/loom:${dev}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

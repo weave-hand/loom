@@ -1,0 +1,23 @@
+# Shim for the homelab image/Helm rules.
+#
+# Those rules reference their pinned CLIs as `//buck2/bin:<tool>`. Because a
+# macro-emitted target label resolves in the *consuming* cell, that becomes
+# `deploy//buck2/bin:<tool>` when the rules are instantiated from this cell — not
+# `homelab//buck2/bin:<tool>`. Re-export the real tools from the homelab external
+# cell here so those references resolve. (If the homelab rules are updated to
+# reference `@homelab//buck2/bin:<tool>` explicitly, this shim can be deleted.)
+[
+    alias(
+        name = tool,
+        actual = "@homelab//buck2/bin:" + tool,
+        visibility = ["PUBLIC"],
+    )
+    for tool in [
+        "apko",
+        "crane",
+        "regctl",
+        "helm",
+        "yq",
+        "kubeconform",
+    ]
+]

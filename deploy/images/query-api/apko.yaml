@@ -1,0 +1,29 @@
+# apko/Wolfi base for the loom query-api image. Like ingest it's a glibc
+# (x86_64-unknown-linux-gnu) binary, but query-api embeds DuckDB (the `duckdb`
+# crate compiles bundled C++), which links libstdc++ at runtime — so the base
+# adds libstdc++ on top of glibc/libgcc/CA certs. The query-api binary is layered
+# on at /usr/local/bin/query-api by oci_image. Runs as a non-root user. Refresh
+# the lockfile with `apko lock apko.yaml` when this changes.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - glibc
+    - libgcc
+    - libstdc++
+accounts:
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  run-as: 65532
+entrypoint:
+  command: /usr/local/bin/query-api
+archs:
+  - x86_64

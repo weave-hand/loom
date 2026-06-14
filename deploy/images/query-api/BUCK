@@ -1,0 +1,49 @@
+# loom query-api service image: the buck2-built `query-api-bin` (x86_64 glibc,
+# embeds DuckDB) layered onto an apko/Wolfi base that adds libstdc++. Kept under
+# //deploy (not //src) so it stays off the normal CI build sweep — the release
+# workflow builds/pushes it explicitly.
+load("@homelab//buck2/apko:defs.bzl", "apko_image")
+load("@homelab//buck2/oci:defs.bzl", "oci_image", "tar_layer")
+
+# Wolfi base (glibc + libgcc + libstdc++ + CA certs, nonroot,
+# entrypoint = /usr/local/bin/query-api).
+apko_image(
+    name = "base",
+    config = "apko.yaml",
+    lock = "apko.lock.json",
+)
+
+# Stage the query-api binary at the base's entrypoint path.
+tar_layer(
+    name = "bin_layer",
+    binary = "root//src/services/query-api:query-api-bin",
+    path = "/usr/local/bin/query-api",
+)
+
+# Vendored DuckDB extensions (ducklake + postgres_scanner) the binary LOADs at
+# attach time from DUCKDB_EXTENSION_DIR. The :duckdb-extensions target lays them
+# out as <version>/linux_amd64/<name>.duckdb_extension, which is exactly what
+# DuckDB resolves under extension_directory; stage that tree at
+# /opt/duckdb/extensions and point the Deployment's DUCKDB_EXTENSION_DIR there
+# (deploy/chart/chart/templates/query-api.yaml). Without this the container fails
+# at startup ("DUCKDB_EXTENSION_DIR unset" / LOAD ducklake not found).
+genrule(
+    name = "ext_layer",
+    out = "ext_layer.tar",
+    cmd = " && ".join([
+        "mkdir -p \"$TMP/root/opt/duckdb/extensions\"",
+        "cp -R $(location root//src/control-plane/postgres:duckdb-extensions)/. \"$TMP/root/opt/duckdb/extensions/\"",
+        "tar -C \"$TMP/root\" -cf $OUT .",
+    ]),
+)
+
+# Deployable image + `.info` (digest pin) + `.push` (crane push to ghcr).
+oci_image(
+    name = "image",
+    base = ":base",
+    layers = [
+        ":bin_layer",
+        ":ext_layer",
+    ],
+    repository = "ghcr.io/weave-hand/loom-query-api",
+)

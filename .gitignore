@@ -6,5 +6,8 @@ cspell.json
 rust-project.json
 /.loom/
 /.direnv/
+# `homelab` git external cell expansion target (buck2 fetches into buck-out;
+# `buck2 expand-external-cell homelab` writes here). Never checked in.
+/homelab/
 **/.cargo/**
 !**/.cargo/config.toml

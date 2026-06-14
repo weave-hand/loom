@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "loom.fullname" . }}-query-api
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: query-api
+spec:
+  replicas: {{ .Values.queryApi.replicas }}
+  selector:
+    matchLabels:
+      {{- include "loom.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: query-api
+  template:
+    metadata:
+      labels:
+        {{- include "loom.labels" . | nindent 8 }}
+        app.kubernetes.io/component: query-api
+    spec:
+      serviceAccountName: {{ include "loom.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: query-api
+          image: {{ include "loom.image" .Values.queryApi.image | quote }}
+          imagePullPolicy: {{ .Values.queryApi.image.pullPolicy | default "IfNotPresent" }}
+          # CWD on the writable /tmp emptyDir: the embedded in-memory DuckDB
+          # defaults its temp/spill dir to the CWD, which is otherwise the
+          # read-only rootfs.
+          workingDir: /tmp
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.queryApi.port }}
+          env:
+            - name: LOOM_BIND_ADDR
+              value: "0.0.0.0:{{ .Values.queryApi.port }}"
+            - name: LOOM_DATA_PATH
+              value: {{ .Values.objectStore.mountPath | quote }}
+            - name: LOOM_LOCK_TIMEOUT_MS
+              value: {{ .Values.lockTimeoutMs | quote }}
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+            # Where the query-api image stages the vendored ducklake +
+            # postgres_scanner DuckDB extensions (LOADed at attach time). Must
+            # match the path used by deploy/images/query-api:ext_layer.
+            - name: DUCKDB_EXTENSION_DIR
+              value: /opt/duckdb/extensions
+            {{- include "loom.dbEnv" . | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.objectStore.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.queryApi.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "loom.fullname" . }}-data
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.queryApi.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.queryApi.affinity }}
+      affinity:
+        {{- toYaml .Values.queryApi.affinity | nindent 8 }}
+      {{- else }}
+      # Default: co-schedule onto the same node as ingest so both pods can mount
+      # the shared ReadWriteOnce object-store PVC. Override queryApi.affinity (and
+      # use an RWX storageClassName) to spread across nodes.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "loom.selectorLabels" . | nindent 18 }}
+                  app.kubernetes.io/component: ingest
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- with .Values.queryApi.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "loom.fullname" . }}-query-api
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: query-api
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "loom.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: query-api
+  ports:
+    - name: http
+      port: {{ .Values.queryApi.port }}
+      targetPort: http
