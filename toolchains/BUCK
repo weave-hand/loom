@@ -107,7 +107,9 @@ system_genrule_toolchain(
 # and LLVM dists above). To bump: pick a release from
 # github.com/astral-sh/python-build-standalone, update CPYTHON_VERSION,
 # CPYTHON_RELEASE, and the two sha256s from that release's
-# `*-install_only_stripped.tar.gz` assets.
+# `*-install_only_stripped.tar.gz` assets. This covers 3.13.x patch bumps; a
+# major bump (e.g. 3.14) also needs the prelude's python toolchain, which
+# hardcodes `include/python3.13`.
 CPYTHON_VERSION = "3.13.6"
 CPYTHON_RELEASE = "20250807"
 _CPYTHON_BASE = "https://github.com/astral-sh/python-build-standalone/releases/download"

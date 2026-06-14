@@ -77,20 +77,26 @@ system_python_bootstrap_toolchain(name = "python_bootstrap", visibility = ["PUBL
 # now:
 load("@prelude//toolchains:python.bzl", "remote_python_toolchain")
 
-# -- CPython 3.13.6 (python-build-standalone, install_only_stripped) ----------
-# To bump: pick a release from github.com/astral-sh/python-build-standalone,
-# update CPYTHON_VERSION and each sha256 from that release's assets.
-CPYTHON_VERSION = "3.13.6+20250807"
+# -- CPython (python-build-standalone, install_only_stripped) -----------------
+# Version + release are the single source of truth, interpolated into the URLs
+# (like RUST_NIGHTLY / LLVM_VERSION). To bump: update CPYTHON_VERSION /
+# CPYTHON_RELEASE and the two sha256s from a python-build-standalone release.
+# Covers 3.13.x patch bumps; a major bump also needs the prelude's python
+# toolchain, which hardcodes `include/python3.13`.
+CPYTHON_VERSION = "3.13.6"
+CPYTHON_RELEASE = "20250807"
 _CPYTHON_BASE = "https://github.com/astral-sh/python-build-standalone/releases/download"
 CPYTHON_URLS = {
     "linux": {
         "x86_64": {
             "sha256": "e3e280d4b1ead63de6ebc9816de71792fc8c71b7a6a999ea82f937047beba037",
-            "url": "{}/20250807/cpython-3.13.6+20250807-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz".format(_CPYTHON_BASE),
+            "url": "{}/{}/cpython-{}+{}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz".format(
+                _CPYTHON_BASE, CPYTHON_RELEASE, CPYTHON_VERSION, CPYTHON_RELEASE),
         },
         "arm64": {
             "sha256": "829d615905b5ae8c50353f2ceb3d6665793442d4cbc64503bc9b27b5b9f6fb8a",
-            "url": "{}/20250807/cpython-3.13.6+20250807-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz".format(_CPYTHON_BASE),
+            "url": "{}/{}/cpython-{}+{}-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz".format(
+                _CPYTHON_BASE, CPYTHON_RELEASE, CPYTHON_VERSION, CPYTHON_RELEASE),
         },
     },
 }
