@@ -73,6 +73,8 @@ const LOOM_STORE_URL: &str = "loom://data";
 ///
 /// Note: DataFusion's RoundRobinBatch distributes whole batches, so the file count is
 /// bounded by min(estimated partitions, batch count). A single huge batch yields one file.
+/// Empty input (no batches, or batches with no rows) yields zero files — the caller's
+/// `append_files(&[])` then registers an empty, row-less snapshot rather than an empty file.
 pub async fn write_dataset(
     store: Arc<dyn ObjectStore>,
     dir_prefix: &str,
