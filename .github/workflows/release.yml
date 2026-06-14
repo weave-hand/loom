@@ -7,7 +7,7 @@ name: release
 # matching `vX.Y.Z` git tag + GitHub Release. If no release-worthy commits landed,
 # the run is a no-op. `workflow_dispatch` can force an explicit version.
 #
-# The image/chart buck2 targets live under //deploy (off the normal CI sweep):
+# The image/chart buck2 targets live in the `deploy//` cell (excluded from root//...):
 # apko fetches packages over the network and builds local-only, so they only run
 # here. The Rust binaries still compile on BuildBuddy RE.
 
@@ -119,8 +119,8 @@ EOF
           V: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          buck2 run //deploy/images/ingest:image.push    -- "$V" latest
-          buck2 run //deploy/images/query-api:image.push -- "$V" latest
+          buck2 run deploy//images/ingest:image.push    -- "$V" latest
+          buck2 run deploy//images/query-api:image.push -- "$V" latest
 
       - name: Package & push chart
         if: steps.ver.outputs.release == 'true'
@@ -134,9 +134,9 @@ EOF
           # values.yaml by helm_chart(images=...) at package time.
           sed -i -E "s/^version:.*/version: $V/; s/^appVersion:.*/appVersion: \"$V\"/" \
             deploy/chart/chart/Chart.yaml
-          buck2 run //deploy/chart:chart.push
+          buck2 run deploy//chart:chart.push
           # Stage the packaged chart as a release asset.
-          out="$(buck2 build //deploy/chart:chart --show-simple-output 2>/dev/null | tail -1)"
+          out="$(buck2 build deploy//chart:chart --show-simple-output 2>/dev/null | tail -1)"
           mkdir -p dist && cp "$out" "dist/loom-$V.tgz"
 
       - name: Tag & GitHub Release

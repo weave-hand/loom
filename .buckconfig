@@ -3,10 +3,16 @@
   prelude = prelude
   toolchains = toolchains
   none = none
+  # The deployment targets (container images + Helm chart) live in their OWN cell,
+  # not under root//. This keeps them out of `root//...`, so the btd-based
+  # `affected` CI job (which parses the whole root//... graph itself and cannot
+  # read external cells) never has to resolve the homelab external cell below.
+  # Only buck2 proper (the release workflow) builds `deploy//...`.
+  deploy = deploy
   # Container-image / Helm build rules (apko/oci/helm) live in the homelab repo
   # and are consumed as a git EXTERNAL CELL (see [external_cells] below) — buck2
   # fetches the pinned commit into buck-out automatically, so there's no
-  # submodule and no vendored copy. loom's //deploy targets load them as
+  # submodule and no vendored copy. deploy//... targets load them as
   # `homelab//buck2/...`; the rules use only cell-relative //buck2/... and
   # prelude//... refs, so they resolve identically in homelab or here. The path
   # `homelab` is the cell's nominal location / `buck2 expand-external-cell`
@@ -38,6 +44,7 @@
   target_platform_detector_spec = target:root//...->prelude//platforms:default \
     target:prelude//...->prelude//platforms:default \
     target:toolchains//...->prelude//platforms:default \
+    target:deploy//...->prelude//platforms:default \
     target:homelab//...->prelude//platforms:default
 
 [build]

@@ -107,13 +107,6 @@ jobs:
           ( cd _base && buck2 run //tools:supertd -- \
               targets root//... --output "$GITHUB_WORKSPACE/base.jsonl" )
 
-          # btd/supertd parses BUCK files itself and does NOT fetch buck2 external
-          # cells, so materialize the `homelab` image/Helm rules cell on disk first
-          # (buck2 proper fetches the pinned commit). Without this, btd can't
-          # resolve the `homelab//buck2/...` loads in //deploy. buck2 build/test and
-          # the release job use buck2 proper, which fetches the cell natively.
-          buck2 expand-external-cell homelab
-
           # Impacted targets. btd runs buck2 in this (head) checkout via --universe
           # to get the after-state. Scope to first-party //src targets — that's
           # what we build/test; their third-party deps come along transitively.
