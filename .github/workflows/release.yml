@@ -6,10 +6,11 @@ name: release
 #
 # Three independent flows by event:
 #
-# - push to main      -> `edge`: push `bleeding-edge` (moving) + `sha-<short>`
-#                        (immutable) images for both services, and publish the
-#                        Helm chart IF its committed Chart.yaml `version` isn't
-#                        already in ghcr (bump that version to cut a chart release).
+# - push to main      -> `edge`: push immutable `sha-<short>` images for both
+#                        services, then publish the Helm chart as the moving
+#                        `bleeding-edge` channel (digest-pinned to those images).
+#                        Also publishes a versioned chart when the committed
+#                        Chart.yaml `version` is new (bump it to cut one).
 # - workflow_dispatch -> `release`: tag the images `X.Y.Z` + `latest` and cut a
 #                        `vX.Y.Z` git tag + GitHub Release. Versioned releases are
 #                        intentional — there is no auto-increment.
@@ -46,9 +47,9 @@ permissions:
   packages: write   # push images + chart to ghcr
 
 jobs:
-  # Bleeding edge: every merge to main republishes the moving `bleeding-edge` tag
-  # and an immutable `sha-<short>` tag, and publishes the chart when its version
-  # is bumped. No git tag / GitHub Release — that's the manual `release` job.
+  # Bleeding edge: every merge to main pushes immutable `sha-<short>` images and
+  # (re)publishes the chart as the moving `bleeding-edge` channel, plus a versioned
+  # chart when Chart.yaml is bumped. No git tag / Release — that's `release`.
   edge:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -73,27 +74,41 @@ jobs:
           echo "$TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
           echo "$TOKEN" | buck2 run homelab//buck2/bin:helm  -- registry login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
 
-      - name: Push bleeding-edge images
+      - name: Push sha-tagged images
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           set -euo pipefail
           short="${GITHUB_SHA:0:7}"
-          buck2 run deploy//images/ingest:image.push    -- bleeding-edge "sha-$short"
-          buck2 run deploy//images/query-api:image.push -- bleeding-edge "sha-$short"
+          # Immutable per-commit tags only — the moving channel is the chart
+          # (bleeding-edge), which digest-pins these exact images.
+          buck2 run deploy//images/ingest:image.push    -- "sha-$short"
+          buck2 run deploy//images/query-api:image.push -- "sha-$short"
 
-      - name: Publish chart if version bumped
+      - name: Publish charts (bleeding-edge always; released version when bumped)
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           set -euo pipefail
           short="${GITHUB_SHA:0:7}"
           cv="$(awk '/^version:/{print $2; exit}' deploy/chart/chart/Chart.yaml)"
+
+          # Bleeding-edge chart: a moving SemVer `0.0.0-edge` (helm-pullable via
+          # --version 0.0.0-edge), then crane-tagged `bleeding-edge` to mirror the
+          # image tag (helm push can't emit a non-SemVer tag itself). appVersion is
+          # the main snapshot; the images it deploys are digest-pinned at build time.
+          sed -i -E "s/^version:.*/version: 0.0.0-edge/; s/^appVersion:.*/appVersion: \"sha-$short\"/" \
+            deploy/chart/chart/Chart.yaml
+          buck2 run deploy//chart:chart.push
+          buck2 run homelab//buck2/bin:crane -- tag "$CHART_OCI:0.0.0-edge" bleeding-edge
+          echo "published bleeding-edge chart (0.0.0-edge, appVersion sha-$short)"
+
+          # Released chart: publish at the committed Chart.yaml version, but only
+          # when that version isn't already in ghcr (bump it to cut a chart release).
+          git checkout -- deploy/chart/chart/Chart.yaml
           if buck2 run homelab//buck2/bin:crane -- manifest "$CHART_OCI:$cv" >/dev/null 2>&1; then
             echo "chart $cv already published — bump deploy/chart/chart/Chart.yaml 'version' to release a new chart."
           else
-            # Stamp appVersion to the exact main snapshot the chart deploys; images
-            # are digest-pinned into values.yaml by helm_chart at package time.
             sed -i -E "s/^appVersion:.*/appVersion: \"sha-$short\"/" deploy/chart/chart/Chart.yaml
             buck2 run deploy//chart:chart.push
             echo "published chart $cv (appVersion sha-$short) to $CHART_OCI"

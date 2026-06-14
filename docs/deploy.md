@@ -112,12 +112,14 @@ the full set; the notable knobs:
 Three independent flows, by event — there is **no** auto-increment; versioned
 releases are intentional.
 
-**Merge to `main` → `edge`.** Builds both images and pushes a moving
-`bleeding-edge` tag plus an immutable `sha-<short>` tag (so any main commit is
-reproducibly pinnable). It also publishes the Helm chart **iff** the committed
-`Chart.yaml` `version` isn't already in ghcr — i.e. bump that `version` in a PR
-when you want to cut a chart release. The chart digest-pins the images it was
-built against and stamps `appVersion` to `sha-<short>` (the snapshot it deploys).
+**Merge to `main` → `edge`.** Builds both images and pushes **immutable
+`sha-<short>` tags only** — there is no moving image tag. The moving channel is
+the **chart**: it's published as `bleeding-edge` (a SemVer `0.0.0-edge` that
+`crane` also tags `bleeding-edge`), digest-pinned to those `sha-<short>` images,
+with `appVersion: sha-<short>`. So "deploy latest main" = pull the
+`bleeding-edge` chart, which references exact, immutable image digests. The job
+**also** publishes a versioned chart at the committed `Chart.yaml` `version` when
+that version isn't already in ghcr — bump it in a PR to cut a chart release.
 
 **`workflow_dispatch` (version `X.Y.Z`) → `release`.** Run it from the Actions
 tab with a version: it validates the format, refuses if `vX.Y.Z` already exists
@@ -130,10 +132,11 @@ lack of push creds). On every commit it pushes dev preview images + chart:
 `charts/loom:0.0.0-pr<N>.sha<short>`. These SemVer prereleases sort below real
 releases. The pushed refs are written to the job summary.
 
-Image tags at a glance: `bleeding-edge` (latest main), `sha-<short>` (immutable
-per-commit), `X.Y.Z` + `latest` (releases), `pr-<N>` / `0.0.0-pr<N>.sha<short>`
-(PR previews). Chart versions are the deployer's own (`Chart.yaml` `version`),
-with `appVersion` recording the app snapshot.
+At a glance — **images** are immutable: `sha-<short>` (every main commit),
+`X.Y.Z` + `latest` (releases), `0.0.0-pr<N>.sha<short>` / `pr-<N>` (PR previews).
+The **chart** is the moving deployable: `bleeding-edge` (latest main), `X.Y.Z`
+(`Chart.yaml`-versioned releases), `0.0.0-pr<N>.sha<short>` (PR previews); its
+`appVersion` records the app snapshot it pins.
 
 > The `deploy//` cell is kept off the `//src` CI sweep on purpose: apko
 > fetches packages over the network and builds local-only, so building it on
