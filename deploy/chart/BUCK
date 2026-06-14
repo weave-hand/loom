@@ -1,0 +1,22 @@
+# loom Helm chart. Packages chart/** into a versioned .tgz, digest-pinning the
+# two service images into values.yaml (ingest.image / queryApi.image) from their
+# oci_image `.info` providers. `deps` makes building the chart build the images.
+# Kept under //deploy so it stays off the normal CI build sweep; the release
+# workflow builds/pushes it explicitly.
+load("//buck2/helm:defs.bzl", "helm_chart")
+
+helm_chart(
+    name = "chart",
+    srcs = glob(["chart/**"]),
+    deps = [
+        "//deploy/images/ingest:image",
+        "//deploy/images/query-api:image",
+    ],
+    images = {
+        "ingest.image": "//deploy/images/ingest:image.info",
+        "queryApi.image": "//deploy/images/query-api:image.info",
+    },
+    lint = True,
+    publish = True,
+    repository = "oci://ghcr.io/weave-hand/charts",
+)

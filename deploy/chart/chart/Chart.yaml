@@ -1,0 +1,20 @@
+apiVersion: v2
+name: loom
+description: >-
+  loom — a typed-object data platform (ingest + query-api services) on a
+  CloudNativePG control plane. Default-deny networking, no ingress by default,
+  optional Gateway API HTTPRoute.
+type: application
+# version (chart) and appVersion (images) are stamped by the release workflow
+# from the conventional-commit-derived semver. These defaults are for local
+# `helm template` / manual use.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - data-platform
+  - ducklake
+  - datafusion
+home: https://github.com/weave-hand/loom
+sources:
+  - https://github.com/weave-hand/loom

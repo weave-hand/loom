@@ -1,0 +1,35 @@
+{{- if .Values.gateway.enabled -}}
+# Optional Gateway API HTTPRoute. Off by default ("no ingress to begin with").
+# The gatewayClassName is set on the parent Gateway object (managed outside this
+# chart); here we only attach a route to that Gateway. Requires the Gateway API
+# CRDs (gateway.networking.k8s.io/v1) installed in the cluster.
+{{- $svc := eq .Values.gateway.service "ingest" | ternary "ingest" "query-api" }}
+{{- $port := ternary .Values.ingest.port .Values.queryApi.port (eq .Values.gateway.service "ingest") }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "loom.fullname" . }}
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ required "gateway.parentRef.name is required when gateway.enabled=true" .Values.gateway.parentRef.name }}
+      {{- with .Values.gateway.parentRef.namespace }}
+      namespace: {{ . }}
+      {{- end }}
+      {{- with .Values.gateway.parentRef.sectionName }}
+      sectionName: {{ . }}
+      {{- end }}
+  {{- with .Values.gateway.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.gateway.matchPath | quote }}
+      backendRefs:
+        - name: {{ include "loom.fullname" . }}-{{ $svc }}
+          port: {{ $port }}
+{{- end }}

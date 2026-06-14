@@ -1,0 +1,153 @@
+name: release
+
+# Auto-release on merge to main. Reads the latest published image version from
+# ghcr, derives the next semver from the Conventional Commits since that version
+# (feat -> minor, fix/perf -> patch, `!`/BREAKING CHANGE -> major), then builds &
+# pushes both service images and the digest-pinned Helm chart to ghcr, and cuts a
+# matching `vX.Y.Z` git tag + GitHub Release. If no release-worthy commits landed,
+# the run is a no-op. `workflow_dispatch` can force an explicit version.
+#
+# The image/chart buck2 targets live under //deploy (off the normal CI sweep):
+# apko fetches packages over the network and builds local-only, so they only run
+# here. The Rust binaries still compile on BuildBuddy RE.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Explicit version to release (X.Y.Z), bypassing commit analysis."
+        required: false
+        default: ""
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  BUCK2_RELEASE: "2026-05-18"
+  BUCK_PREFER_REMOTE: "true"
+  REGISTRY: ghcr.io
+  OWNER: weave-hand
+  INGEST_IMAGE: ghcr.io/weave-hand/loom-ingest
+  QUERY_API_IMAGE: ghcr.io/weave-hand/loom-query-api
+  CHART_REPO: oci://ghcr.io/weave-hand/charts
+
+permissions:
+  contents: write   # create the vX.Y.Z tag + GitHub Release
+  packages: write   # push images + chart to ghcr
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0   # full history + tags for the conventional-commit range
+
+      - name: Set up buck2
+        uses: ./.github/actions/setup-buck2
+        with:
+          release: ${{ env.BUCK2_RELEASE }}
+
+      # Registry auth: crane (image push) reads ~/.docker/config.json; helm
+      # (chart push) keeps its own registry config. Log both in via the pinned
+      # CLIs so the buck2 push rules pick the creds up.
+      - name: Log in to ghcr
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | buck2 run //buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+          echo "$TOKEN" | buck2 run //buck2/bin:helm  -- registry login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+
+      - name: Determine version
+        id: ver
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          FORCE: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Previous published version: highest semver tag on the ingest image in
+          # ghcr (authoritative for "what's released"). Default 0.0.0 if none.
+          prev="0.0.0"
+          if tags="$(buck2 run //buck2/bin:crane -- ls "$INGEST_IMAGE" 2>/dev/null)"; then
+            latest="$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+            [ -n "$latest" ] && prev="$latest"
+          fi
+          echo "previous version: $prev"
+
+          if [ -n "$FORCE" ]; then
+            next="$FORCE"; release=true
+          else
+            # Commit range since the previous release tag (full history if absent).
+            range="HEAD"
+            if git rev-parse -q --verify "refs/tags/v$prev" >/dev/null; then
+              range="v$prev..HEAD"
+            fi
+            major=0; minor=0; patch=0
+            subs="$(git log $range --format='%s')"
+            bodies="$(git log $range --format='%B')"
+            printf '%s\n' "$subs"   | grep -qE '^[a-z]+(\(.+\))?!:' && major=1 || true
+            printf '%s\n' "$bodies" | grep -qE 'BREAKING[ -]CHANGE'  && major=1 || true
+            printf '%s\n' "$subs"   | grep -qE '^feat(\(.+\))?!?:'   && minor=1 || true
+            printf '%s\n' "$subs"   | grep -qE '^(fix|perf)(\(.+\))?!?:' && patch=1 || true
+
+            IFS=. read -r pj pn pp <<EOF
+$prev
+EOF
+            if   [ "$major" = 1 ]; then next="$((pj+1)).0.0"; release=true
+            elif [ "$minor" = 1 ]; then next="$pj.$((pn+1)).0"; release=true
+            elif [ "$patch" = 1 ]; then next="$pj.$pn.$((pp+1))"; release=true
+            else next="$prev"; release=false; fi
+          fi
+
+          echo "next version: $next (release=$release)"
+          {
+            echo "version=$next"
+            echo "release=$release"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push images
+        if: steps.ver.outputs.release == 'true'
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          buck2 run //deploy/images/ingest:image.push    -- "$V" latest
+          buck2 run //deploy/images/query-api:image.push -- "$V" latest
+
+      - name: Package & push chart
+        if: steps.ver.outputs.release == 'true'
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Stamp the chart version + appVersion (in-tree, not committed) so the
+          # packaged .tgz carries this release. Image refs are digest-pinned into
+          # values.yaml by helm_chart(images=...) at package time.
+          sed -i -E "s/^version:.*/version: $V/; s/^appVersion:.*/appVersion: \"$V\"/" \
+            deploy/chart/chart/Chart.yaml
+          buck2 run //deploy/chart:chart.push
+          # Stage the packaged chart as a release asset.
+          out="$(buck2 build //deploy/chart:chart --show-simple-output 2>/dev/null | tail -1)"
+          mkdir -p dist && cp "$out" "dist/loom-$V.tgz"
+
+      - name: Tag & GitHub Release
+        if: steps.ver.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: dist/loom-${{ steps.ver.outputs.version }}.tgz
+
+      - name: No release
+        if: steps.ver.outputs.release != 'true'
+        run: echo "No release-worthy commits since v${{ steps.ver.outputs.version }} — skipping."
