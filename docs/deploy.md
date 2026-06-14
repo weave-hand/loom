@@ -163,3 +163,9 @@ Notes / alternatives:
   buck2-native path.
 - `buck2 expand-external-cell homelab` materializes an editable local copy if you
   need to hack on the rules.
+- **CI note:** the PR `affected` job uses `btd`/`supertd`, which parse BUCK files
+  directly and do *not* fetch external cells, so that job runs
+  `buck2 expand-external-cell homelab` first to put the cell on disk. The
+  base-commit checkout it makes (`_base/`) is excluded from `root//...` via
+  `[project] ignore` in `.buckconfig`. `buck2 build`/`test` and the release job
+  use buck2 proper, which resolves the external cell natively.

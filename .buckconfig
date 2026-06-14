@@ -45,6 +45,12 @@
 
 [project]
   remote_enabled = true
+  # Exclude the affected-CI job's base-commit checkout (.github/workflows/ci.yml
+  # checks the PR base out into _base/) from `root//...`. A .buckconfig change
+  # otherwise makes btd validate the whole universe, which descends into that
+  # nested copy of the prelude and trips latent errors in its android toolchain
+  # test BUCKs. Harmless when _base/ doesn't exist (normal builds).
+  ignore = _base
 
 [buck2]
 digest_algorithms = SHA256
