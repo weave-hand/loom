@@ -116,6 +116,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "link-traversal",
+    crate = "link_traversal",
+    srcs = ["tests/link_traversal.rs"],
+    crate_root = "tests/link_traversal.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "serving-types",
     crate = "serving_types",
     srcs = ["tests/serving_types.rs"],
@@ -156,6 +176,15 @@ rust_test(
     crate = "sql_compile",
     srcs = ["tests/sql_compile.rs"],
     crate_root = "tests/sql_compile.rs",
+    edition = "2024",
+    deps = [":query-api", "//src/control-plane/core:core"],
+)
+
+rust_test(
+    name = "link-traversal-compile",
+    crate = "link_traversal_compile",
+    srcs = ["tests/link_traversal_compile.rs"],
+    crate_root = "tests/link_traversal_compile.rs",
     edition = "2024",
     deps = [":query-api", "//src/control-plane/core:core"],
 )

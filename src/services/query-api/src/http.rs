@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
+use crate::handler::{
+    LinkQuery, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_objects, read_object,
+};
 use crate::serving::{ServingEngine, SqlValue};
 use axum::Router;
 use axum::extract::{Path, Query, State};
@@ -24,6 +26,7 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/objects/:type_name", get(get_object))
+        .route("/objects/:from_type/links/:link_name", get(get_linked))
         .with_state(state)
 }
 
@@ -68,6 +71,47 @@ async fn get_object(
         // service must not echo internal error detail (SQL fragments, table/column
         // names) to the client. TODO(serving-tier): log `e` server-side once a
         // tracing subscriber is wired in the binary.
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    }
+}
+
+async fn get_linked(
+    State(st): State<AppState>,
+    Path((from_type, link_name)): Path<(String, String)>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let subject = headers
+        .get("X-Loom-Subject")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_string();
+    // Slice limitation: every query-param filter binds as Text (typed filters later).
+    let source_filters = params
+        .into_iter()
+        .map(|(k, v)| (k, SqlValue::Text(v)))
+        .collect();
+    let deps = QueryDeps {
+        ontology: st.cp.ontology(),
+        acl: st.cp.acl(),
+        serving: st.serving.as_ref(),
+    };
+    match read_linked_objects(
+        &LinkQuery {
+            from_type,
+            link: link_name,
+            source_filters,
+        },
+        &Subject(SubjectId(subject)),
+        &deps,
+    )
+    .await
+    {
+        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
+        Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
+        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     }
 }

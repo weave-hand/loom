@@ -3,12 +3,12 @@
 //! SQL with bound params; execute on the serving engine.
 
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Ontology, PageReq, PolicyTarget, RowFilter,
-    SubjectId, TypeName,
+    Acl, Action, ControlPlaneError, Decision, Ontology, PageReq, PolicyTarget, PropertyDef,
+    RowFilter, SubjectId, TypeName,
 };
 
 use crate::serving::{ServingEngine, SqlValue};
-use crate::sql::compile_select;
+use crate::sql::{compile_select, compile_traversal};
 
 /// A governed read result: rows plus, for each projected column, the ontology
 /// property's logical type — the input the wire renderer needs to type each value.
@@ -42,6 +42,8 @@ pub struct QueryDeps<'a> {
 pub enum QueryError {
     #[error("unknown object type: {0}")]
     UnknownType(String),
+    #[error("unknown link: {0}")]
+    UnknownLink(String),
     #[error("forbidden")]
     Forbidden,
     #[error("filter column not permitted: {0}")]
@@ -52,6 +54,48 @@ pub enum QueryError {
     Serving(#[from] crate::serving::ServingError),
     #[error(transparent)]
     Malformed(#[from] crate::sql::CompileError),
+}
+
+/// Load the subject's cumulative policy for `target`: row filters (ANDed by the
+/// caller via the SQL compiler), unioned denied + masked columns. Minimal ACL.
+async fn load_policy(
+    acl: &(dyn Acl + Send + Sync),
+    subject: &SubjectId,
+    target: &PolicyTarget,
+) -> Result<
+    (
+        Vec<RowFilter>,
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    ),
+    QueryError,
+> {
+    let policies = acl
+        .policies_for(subject, target, PageReq::unbounded())
+        .await?;
+    let mut row_filters = Vec::new();
+    let mut denied = std::collections::HashSet::new();
+    let mut masked = std::collections::HashSet::new();
+    for p in policies.items {
+        if let Some(f) = p.row_filter {
+            row_filters.push(f);
+        }
+        denied.extend(p.deny_columns);
+        masked.extend(p.mask_columns);
+    }
+    Ok((row_filters, denied, masked))
+}
+
+/// An object type's properties (in order) minus denied columns.
+fn project_allowed(
+    properties: &[PropertyDef],
+    denied: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    properties
+        .iter()
+        .map(|p| p.name.clone())
+        .filter(|n| !denied.contains(n))
+        .collect()
 }
 
 pub async fn read_object(
@@ -82,32 +126,10 @@ pub async fn read_object(
             other => QueryError::ControlPlane(other),
         })?;
 
-    // policy: gather row filters + denied columns across the subject's matching policies.
-    // Minimal ACL for this slice: restrictions are cumulative — row filters are ANDed
-    // (via compile_select) and denied columns unioned. No deny-override / allow-widening
-    // across policies; that refinement is the deferred full-ACL spec.
-    let policies = deps
-        .acl
-        .policies_for(&subject.0, &target, PageReq::unbounded())
-        .await?;
-    let mut row_filters: Vec<RowFilter> = Vec::new();
-    let mut denied: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut masked: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for p in policies.items {
-        if let Some(f) = p.row_filter {
-            row_filters.push(f);
-        }
-        denied.extend(p.deny_columns);
-        masked.extend(p.mask_columns);
-    }
+    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
 
     // projection: type properties minus denied columns, preserving property order.
-    let allowed: Vec<String> = object_type
-        .properties
-        .iter()
-        .map(|p| p.name.clone())
-        .filter(|n| !denied.contains(n))
-        .collect();
+    let allowed: Vec<String> = project_allowed(&object_type.properties, &denied);
     if allowed.is_empty() {
         return Err(QueryError::Forbidden);
     }
@@ -160,6 +182,122 @@ pub async fn read_object(
     );
     Ok(ObjectRows {
         columns: allowed,
+        logical_types,
+        rows: served.rows,
+    })
+}
+
+/// A governed traversal: from source objects matching `source_filters`, follow
+/// `link`, return the linked target objects.
+pub struct LinkQuery {
+    pub from_type: String,
+    pub link: String,
+    pub source_filters: Vec<(String, SqlValue)>,
+}
+
+pub async fn read_linked_objects(
+    q: &LinkQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    let from_name = TypeName(q.from_type.clone());
+    let from_target = PolicyTarget::Type(from_name.clone());
+
+    // Read on the source (deny-by-default, before existence is revealed).
+    if deps
+        .acl
+        .check(&subject.0, Action::Read, &from_target)
+        .await?
+        == Decision::Deny
+    {
+        return Err(QueryError::Forbidden);
+    }
+    let from_type = deps
+        .ontology
+        .get_type(&from_name)
+        .await
+        .map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.from_type.clone()),
+            other => QueryError::ControlPlane(other),
+        })?;
+
+    // Resolve the link by name among the source's links.
+    let links = deps
+        .ontology
+        .links(&from_name, PageReq::unbounded())
+        .await
+        .map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.from_type.clone()),
+            other => QueryError::ControlPlane(other),
+        })?;
+    let link = links
+        .items
+        .into_iter()
+        .find(|l| l.name == q.link)
+        .ok_or_else(|| QueryError::UnknownLink(q.link.clone()))?;
+    let to_name = link.to.clone();
+    let to_target = PolicyTarget::Type(to_name.clone());
+
+    // Read on the target.
+    if deps.acl.check(&subject.0, Action::Read, &to_target).await? == Decision::Deny {
+        return Err(QueryError::Forbidden);
+    }
+    // A link pointing at a missing type is an internal inconsistency, not a client 404.
+    let to_type = deps.ontology.get_type(&to_name).await?;
+
+    let (from_row_filters, from_denied, from_masked) =
+        load_policy(deps.acl, &subject.0, &from_target).await?;
+    let (to_row_filters, to_denied, to_masked) =
+        load_policy(deps.acl, &subject.0, &to_target).await?;
+
+    // Source filter columns must be visible (allowed, non-masked) on the source.
+    let from_allowed = project_allowed(&from_type.properties, &from_denied);
+    for (col, _) in &q.source_filters {
+        if !from_allowed.contains(col) || from_masked.contains(col) {
+            return Err(QueryError::BadFilter(col.clone()));
+        }
+    }
+
+    // Target projection.
+    let to_allowed = project_allowed(&to_type.properties, &to_denied);
+    if to_allowed.is_empty() {
+        return Err(QueryError::Forbidden);
+    }
+    let to_mask_cols: Vec<String> = to_allowed
+        .iter()
+        .filter(|c| to_masked.contains(*c))
+        .cloned()
+        .collect();
+
+    let (sql, params) = compile_traversal(
+        &from_type.table,
+        &to_type.table,
+        &link.backing,
+        &to_allowed,
+        &to_mask_cols,
+        &from_row_filters,
+        &to_row_filters,
+        &q.source_filters,
+        DEFAULT_LIMIT,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let logical_types: Vec<String> = to_allowed
+        .iter()
+        .map(|name| {
+            to_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    debug_assert_eq!(
+        served.columns, to_allowed,
+        "serving engine returned columns out of the projected order"
+    );
+    Ok(ObjectRows {
+        columns: to_allowed,
         logical_types,
         rows: served.rows,
     })

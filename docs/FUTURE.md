@@ -44,6 +44,39 @@ items — they're the "later, if a consumer needs it" pile.
   files being *replaced* (compaction) — superseded data files gaining an `end_snapshot`
   while the table stays live. Not deterministically CLI-drivable today; deferred.
 
+## Ontology & read path (Step 3)
+
+From the governed link-traversal slice (`2026-06-14-query-governed-link-traversal-design.md`),
+which delivered part-1 of richer read capability.
+
+- **Object-identity dedup for traversal.** Many-to-many traversal dedups with
+  `SELECT DISTINCT` over the **visible projection**, not a raw key — deliberately, because the
+  target key column may itself be ACL-denied and deduping on a key would expose it (and a
+  subject can't distinguish two targets with identical visible columns anyway). True
+  object-identity dedup (two distinct targets sharing a visible projection kept separate) needs
+  a **visible primary key** on the type. That promotes a per-type primary-key concept, which
+  ties into the **derived/aggregate-properties slice (B)** — fold it in there.
+- **Authoring-time physical-column validation at `define_link`.** A link's backing names
+  physical columns (`from_column`/`to_column`, plus the mapping-table columns for join-table
+  backings) but `define_link` stores them **without** checking they exist in the backing tables
+  — keeping the ontology write path decoupled from a catalog-schema read. A bad column surfaces
+  as an error at traversal time, not at authoring. Validating against `Catalog::schema` at
+  authoring time is deferred (it's the same class as the cross-cutting "dataset/target existence
+  validation" item below, and would layer onto whatever lands there).
+- **`quote_ident` panics on a `"` in an identifier.** `sql.rs::quote_ident` `assert!`s that an
+  identifier contains no double-quote (pre-existing for `compile_select`; the join-table backing
+  widens the trusted-metadata surface to five identifiers per link). Today these come only from
+  governed ontology authoring (trusted), so it's not an injection hole — but combined with the
+  deferred column validation above, a maliciously/accidentally-authored backing column with a
+  `"` would panic the request thread rather than erroring cleanly. Harden `quote_ident` to
+  return a `CompileError` (or escape `"`→`""`) when authoring validation lands.
+- **The remaining relational-read slices.** Part-1 (this slice) is single-link,
+  source-filter→target traversal. Still to come: **(B) derived / aggregate properties**
+  (`Customer.order_count` — aggregates over a traversed link); **(C) multi-hop / object-set
+  traversal** (chaining links, starting from a saved object set, inverse-direction traversal,
+  target-side filtering, and returning the source→target association). Both build on the
+  resolvable-link + governed-join primitive delivered here.
+
 ## Cross-cutting
 
 - **Dataset/target existence validation.** Lineage `emit`, ACL `grant`/`set_policy`, and

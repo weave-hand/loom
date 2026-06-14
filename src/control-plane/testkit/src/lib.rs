@@ -7,9 +7,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef,
-    Decision, Effect, EventType, Lineage, LineageEvent, LinkDef, NewJob, ObjectType, Ontology,
-    Page, PageReq, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
-    ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
+    Decision, Effect, EventType, Lineage, LineageEvent, LinkBacking, LinkDef, NewJob, ObjectType,
+    Ontology, Page, PageReq, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId,
+    RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -604,6 +604,10 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         from: tn("Order"),
         to: tn("Customer"),
         cardinality: Cardinality::One,
+        backing: LinkBacking::ForeignKey {
+            from_column: "customer_id".into(),
+            to_column: "id".into(),
+        },
     };
     o.define_link(link.clone()).await.expect("define link");
     assert_eq!(
@@ -629,6 +633,30 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     assert_eq!(ls.len(), 1, "link upsert, not duplicate");
     assert_eq!(ls[0].cardinality, Cardinality::Many, "cardinality updated");
 
+    // many-to-many link with a join-table backing round-trips intact.
+    let m2m = LinkDef {
+        name: "items".into(),
+        from: tn("Customer"),
+        to: tn("Order"),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::JoinTable {
+            table: tref("main", "customer_order"),
+            from_key: "id".into(),
+            from_column: "customer_id".into(),
+            to_column: "order_id".into(),
+            to_key: "id".into(),
+        },
+    };
+    o.define_link(m2m.clone()).await.expect("define m2m link");
+    assert_eq!(
+        o.links(&tn("Customer"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .items,
+        vec![m2m.clone()],
+        "join-table backing round-trips"
+    );
+
     // link to an undefined endpoint -> NotFound.
     assert!(
         matches!(
@@ -637,6 +665,10 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 from: tn("Order"),
                 to: tn("Ghost"),
                 cardinality: Cardinality::One,
+                backing: LinkBacking::ForeignKey {
+                    from_column: "ghost_id".into(),
+                    to_column: "id".into(),
+                },
             })
             .await,
             Err(control_plane_core::ControlPlaneError::NotFound(_))
