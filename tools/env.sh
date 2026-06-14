@@ -49,6 +49,14 @@ for name in "${!TOOLS[@]}"; do
     if p="$(resolve "${TOOLS[$name]}")"; then ln -sfn "$p" "$BIN/$name"; fi
 done
 
+# Hermetic python (python-build-standalone) for buckify + ad-hoc dev use. The
+# http_archive output is the extracted dist dir; its relocatable bin/python3
+# finds its sibling lib/. Symlink both python3 and python so either name works.
+if py="$(resolve toolchains//:cpython_archive)"; then
+    ln -sfn "$py/bin/python3" "$BIN/python3"
+    ln -sfn "$py/bin/python3" "$BIN/python"
+fi
+
 # loom-refresh helper (manages first-party binary symlinks).
 ln -sfn "$REPO_ROOT/tools/loom-refresh" "$BIN/loom-refresh"
 
