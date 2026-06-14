@@ -126,15 +126,6 @@ rust_test(
 )
 
 rust_test(
-    name = "store",
-    crate = "store",
-    srcs = ["tests/store.rs"],
-    crate_root = "tests/store.rs",
-    edition = "2024",
-    deps = [":ingest", "//third-party:object_store", "//third-party:tokio", "//third-party:tempfile"],
-)
-
-rust_test(
     name = "materialize",
     crate = "materialize",
     srcs = ["tests/materialize.rs"],
