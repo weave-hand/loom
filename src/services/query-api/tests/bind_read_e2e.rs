@@ -12,6 +12,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use ingest::{MaterializeRequest, bind, materialize};
+use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
@@ -47,7 +48,8 @@ async fn landed_then_bound_dataset_is_queryable() {
         ],
     )
     .unwrap();
-    let store = LocalFileSystem::new_with_prefix(writer.data_path()).unwrap();
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
     let lineage = LineageEvent {
         run_id: RunId(Uuid::new_v4()),
         event_type: EventType::Complete,
@@ -58,12 +60,12 @@ async fn landed_then_bound_dataset_is_queryable() {
     };
     materialize(
         &cp,
-        &store,
+        store.clone(),
         MaterializeRequest {
             table: &table,
             schema,
             batches: &[batch],
-            file_name: "loom.parquet",
+            file_prefix: "run-1",
             gate: None,
             lineage,
         },
