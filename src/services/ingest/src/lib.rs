@@ -7,7 +7,6 @@ pub mod gate;
 pub mod http;
 pub mod infer;
 pub mod materialize;
-pub mod store;
 pub mod write;
 
 pub use bind::{BindError, BindViolation, BindViolationReason, bind};
@@ -16,11 +15,11 @@ pub use materialize::{MaterializeRequest, materialize};
 
 /// Everything that can go wrong landing data. No partial catalog state is ever
 /// committed:
-/// - Failures before `cp.begin()` (gate / write / put) leave no open transaction
+/// - Failures before `cp.begin()` (gate / write) leave no open transaction
 ///   and no catalog rows.
 /// - Failures after `begin()` but before `commit()` drop the `Tx`, which rolls
 ///   back (the postgres adapter auto-rolls back on drop; the memory adapter only
-///   staged in memory). A put-then-commit failure may orphan the Parquet file
+///   staged in memory). A write-then-commit failure may orphan the Parquet files
 ///   (documented in `materialize`); GC is a deferred concern.
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
@@ -31,8 +30,6 @@ pub enum IngestError {
     Infer(#[from] infer::InferError),
     #[error(transparent)]
     Write(#[from] write::WriteError),
-    #[error(transparent)]
-    Store(#[from] store::StoreError),
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     /// commit() returned None — a catalog op was staged yet no snapshot was

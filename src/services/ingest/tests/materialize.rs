@@ -7,6 +7,7 @@ use control_plane_core::{DatasetRef, EventType, LineageEvent, RunId, TableRef};
 use control_plane_memory::MemoryControlPlane;
 use ingest::gate::{ColumnShape, ModelShape};
 use ingest::{IngestError, MaterializeRequest, materialize};
+use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -60,18 +61,19 @@ fn batch() -> (Arc<Schema>, RecordBatch) {
 async fn unmodeled_landing_returns_a_snapshot() {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
     let dir = tempfile::tempdir().unwrap();
-    let store = LocalFileSystem::new_with_prefix(dir.path()).unwrap();
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(dir.path()).unwrap());
     let (schema, b) = batch();
     let t = table();
 
     let snap = materialize(
         &cp,
-        &store,
+        store.clone(),
         MaterializeRequest {
             table: &t,
             schema,
             batches: &[b],
-            file_name: "part-0.parquet",
+            file_prefix: "run-1",
             gate: None,
             lineage: lineage(&t),
         },
@@ -80,12 +82,17 @@ async fn unmodeled_landing_returns_a_snapshot() {
     .unwrap();
 
     assert_eq!(snap.0, 1, "first snapshot in a fresh control plane");
+    let dir_path = dir.path().join("main").join("customer").join("run-1");
+    let count = std::fs::read_dir(&dir_path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("parquet"))
+                .count()
+        })
+        .unwrap_or(0);
     assert!(
-        dir.path()
-            .join("main")
-            .join("customer")
-            .join("part-0.parquet")
-            .exists()
+        count >= 1,
+        "expected at least one parquet file under run-1/"
     );
 }
 
@@ -93,7 +100,8 @@ async fn unmodeled_landing_returns_a_snapshot() {
 async fn modeled_landing_passes_gate_and_returns_a_snapshot() {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
     let dir = tempfile::tempdir().unwrap();
-    let store = LocalFileSystem::new_with_prefix(dir.path()).unwrap();
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(dir.path()).unwrap());
     let (schema, b) = batch();
     let t = table();
 
@@ -115,12 +123,12 @@ async fn modeled_landing_passes_gate_and_returns_a_snapshot() {
 
     let snap = materialize(
         &cp,
-        &store,
+        store.clone(),
         MaterializeRequest {
             table: &t,
             schema,
             batches: &[b],
-            file_name: "modeled.parquet",
+            file_prefix: "run-1",
             gate: Some(&shape),
             lineage: lineage(&t),
         },
@@ -129,12 +137,17 @@ async fn modeled_landing_passes_gate_and_returns_a_snapshot() {
     .unwrap();
 
     assert_eq!(snap.0, 1, "first snapshot in a fresh control plane");
+    let dir_path = dir.path().join("main").join("customer").join("run-1");
+    let count = std::fs::read_dir(&dir_path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("parquet"))
+                .count()
+        })
+        .unwrap_or(0);
     assert!(
-        dir.path()
-            .join("main")
-            .join("customer")
-            .join("modeled.parquet")
-            .exists()
+        count >= 1,
+        "expected at least one parquet file under run-1/"
     );
 }
 
@@ -142,7 +155,8 @@ async fn modeled_landing_passes_gate_and_returns_a_snapshot() {
 async fn gate_rejection_happens_before_any_write() {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
     let dir = tempfile::tempdir().unwrap();
-    let store = LocalFileSystem::new_with_prefix(dir.path()).unwrap();
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(dir.path()).unwrap());
     let (schema, b) = batch();
     let t = table();
 
@@ -163,12 +177,12 @@ async fn gate_rejection_happens_before_any_write() {
 
     let err = materialize(
         &cp,
-        &store,
+        store.clone(),
         MaterializeRequest {
             table: &t,
             schema,
             batches: &[b],
-            file_name: "part-0.parquet",
+            file_prefix: "run-1",
             gate: Some(&shape),
             lineage: lineage(&t),
         },
@@ -178,10 +192,7 @@ async fn gate_rejection_happens_before_any_write() {
 
     assert!(matches!(err, IngestError::DoesNotConform(_)));
     assert!(
-        !dir.path()
-            .join("main")
-            .join("customer")
-            .join("part-0.parquet")
-            .exists()
+        !dir.path().join("main").join("customer").exists(),
+        "gate rejection must not write any file"
     );
 }

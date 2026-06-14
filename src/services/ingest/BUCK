@@ -11,6 +11,8 @@ rust_library(
         "//third-party:arrow",
         "//third-party:axum",
         "//third-party:bytes",
+        "//third-party:datafusion",
+        "//third-party:futures",
         "//third-party:parquet",
         "//third-party:object_store",
         "//third-party:serde",
@@ -113,16 +115,14 @@ rust_test(
     srcs = ["tests/write.rs"],
     crate_root = "tests/write.rs",
     edition = "2024",
-    deps = [":ingest", "//third-party:arrow"],
-)
-
-rust_test(
-    name = "store",
-    crate = "store",
-    srcs = ["tests/store.rs"],
-    crate_root = "tests/store.rs",
-    edition = "2024",
-    deps = [":ingest", "//third-party:object_store", "//third-party:tokio", "//third-party:tempfile"],
+    deps = [
+        ":ingest",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:object_store",
+        "//third-party:parquet",
+        "//third-party:tokio",
+    ],
 )
 
 rust_test(

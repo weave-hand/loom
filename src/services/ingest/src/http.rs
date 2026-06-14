@@ -134,7 +134,7 @@ async fn land(
         schema: schema_name,
         name: table_name,
     };
-    let file_name = format!("part-{}.parquet", Uuid::new_v4());
+    let file_prefix = Uuid::new_v4().to_string();
     let lineage = LineageEvent {
         run_id,
         event_type: EventType::Complete,
@@ -148,12 +148,12 @@ async fn land(
         table: &table,
         schema,
         batches: &batches,
-        file_name: &file_name,
+        file_prefix: &file_prefix,
         gate: gate.as_ref(),
         lineage,
     };
 
-    match materialize(st.cp.as_ref(), st.store.as_ref(), req).await {
+    match materialize(st.cp.as_ref(), st.store.clone(), req).await {
         Ok(snap) => Json(serde_json::json!({
             "snapshot_id": snap.0,
             "dataset": format!("{}.{}", table.schema, table.name),

@@ -1,0 +1,9 @@
+# brotli 8.0.3 directly pins `alloc-no-stdlib = "=2.0.4"` while its own
+# `alloc-stdlib 0.2.3` dep moved to `alloc-no-stdlib 3.0.0`. Cargo papers over
+# this with feature/version unification, but reindeer emits the literal v2 edge,
+# so brotli's `impl BrotliAlloc for StandardAlloc` (where StandardAlloc comes
+# from alloc-stdlib → v3) fails to satisfy brotli's v2 `Allocator` trait bound
+# — 36 E0277 errors. brotli-decompressor 5.0.2 already uses v3, so remap brotli
+# onto v3 too to make the whole subtree consistent.
+omit_deps = ["alloc-no-stdlib"]
+extra_deps = ["//third-party:alloc-no-stdlib-3"]

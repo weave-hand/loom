@@ -110,8 +110,14 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     type (new core logical-type vocabulary: base scalars + affinities + semantic aliases)
     before define_type — so a bound type is guaranteed-serveable. Proven by an accept/reject
     matrix and a materialize→bind→read e2e.
-  - *Later:* the ingest service shell (binary, object store,
-    DataFusion endpoint); schema evolution; delete/compaction; orphaned-Parquet GC.
+  - *Part 3 — DataFusion ingestion compute path* ✅ DELIVERED
+    (`2026-06-14-ingest-datafusion-compute-path-design.md`). The write path now runs on
+    DataFusion (SessionContext -> size-estimated repartition -> ParquetSink), writing N
+    size-targeted Snappy files directly to object storage with per-file DuckLake stats
+    (min/max merged across row groups). Proven by the DuckDB multi-file interop oracle.
+  - *Later:* the networked DataFusion endpoint; footer-only stats reads; in-batch
+    splitting (RoundRobinBatch is per-batch today); schema evolution; delete/compaction;
+    orphaned-Parquet GC.
 - **Query / read path** —
   - *Part 1 — governed object-read slice* (specced, in progress;
     `2026-06-10-query-governed-object-read-slice-design.md`). `GET /objects/{type}` →
