@@ -1,10 +1,12 @@
 # Deploying loom (images + Helm chart)
 
 This is loom's MVP packaging: reproducible OCI images for the two service
-binaries and a Helm chart that runs them on Kubernetes. Build rules are vendored
-from [`jomcgi/homelab`](https://github.com/jomcgi/homelab/tree/main/buck2) under
-[`//buck2`](../buck2/README.md); the deployable targets live under `//deploy`
-(deliberately off the normal `//src` CI sweep — see below).
+binaries and a Helm chart that runs them on Kubernetes. The image/Helm build
+rules come from [`jomcgi/homelab`](https://github.com/jomcgi/homelab/tree/main/buck2),
+consumed as a **git external cell** (`homelab`) rather than vendored or
+submoduled — buck2 fetches the pinned commit automatically (see *Build rules*
+below). The deployable targets live under `//deploy` (deliberately off the normal
+`//src` CI sweep — see below).
 
 ## What ships
 
@@ -37,8 +39,8 @@ digest-pin the deployed image rather than chase a mutable tag.
 Auth for `crane`/`helm` push (CI does this automatically):
 
 ```sh
-echo "$GHCR_TOKEN" | buck2 run //buck2/bin:crane -- auth login ghcr.io -u <user> --password-stdin
-echo "$GHCR_TOKEN" | buck2 run //buck2/bin:helm  -- registry login ghcr.io -u <user> --password-stdin
+echo "$GHCR_TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login ghcr.io -u <user> --password-stdin
+echo "$GHCR_TOKEN" | buck2 run homelab//buck2/bin:helm  -- registry login ghcr.io -u <user> --password-stdin
 ```
 
 ## Helm chart
@@ -123,12 +125,41 @@ it to cut the first release before any `vX.Y.Z` tag exists).
 > every PR would force local materialization. They are exercised only by this
 > release workflow (Rust binaries still compile on BuildBuddy RE).
 
-## Vendored rules / future external cell
+## Build rules (the `homelab` external cell)
 
-The image/Helm rules under `//buck2` are vendored from homelab. The upstream
-intent is to consume them as an external buck2 *cell* instead. The recommended
-way for homelab to publish them is a small, public, semver-tagged repository that
-keeps the top-level `buck2/` directory layout (so the rules' internal
-`//buck2/…` references keep resolving). loom would then add it as a git
-submodule + cell and switch `//deploy/**` loads to `homelab//buck2/…`. See
-[`buck2/README.md`](../buck2/README.md) for the migration steps.
+The apko/oci/helm rules `//deploy` loads (`homelab//buck2/...`) are **not**
+vendored or submoduled. They are consumed as a buck2 **git external cell**: the
+`.buckconfig` declares
+
+```ini
+[cells]
+  homelab = none
+[external_cells]
+  homelab = git
+[external_cell_homelab]
+  git_origin = https://github.com/jomcgi/homelab.git
+  commit_hash = <sha1>
+```
+
+and buck2 fetches that commit's tree into `buck-out` on demand. There is no
+checkout to manage; `git_origin`'s repo just has to be reachable and the rules
+keep using only cell-relative `//buck2/...` + `prelude//...` refs (so they
+resolve the same in homelab or here).
+
+**Publishing a new rules version** is just pointing `commit_hash` at a newer
+homelab commit (ideally a tagged release sha1 — buck2 requires a sha1, not a
+branch/tag name). homelab needs no special packaging step.
+
+Notes / alternatives:
+
+- A git external cell fetches the whole `git_origin` repo tree at that commit.
+  To keep that small, homelab can split the `buck2/` rules into a dedicated,
+  public repo (keeping the top-level `buck2/` layout so the `//buck2/...` refs
+  still resolve) and point `git_origin` there.
+- **OCI is not an option here**: buck2 external cells are only `git` or
+  `bundled` — there is no OCI-registry cell provider, so an "publish the rules to
+  ghcr as an OCI artifact" flow would require an out-of-band `oras pull`/extract
+  before every build, which is non-hermetic; the git external cell is the
+  buck2-native path.
+- `buck2 expand-external-cell homelab` materializes an editable local copy if you
+  need to hack on the rules.

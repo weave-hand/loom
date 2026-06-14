@@ -61,8 +61,8 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "$TOKEN" | buck2 run //buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
-          echo "$TOKEN" | buck2 run //buck2/bin:helm  -- registry login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:crane -- auth login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
+          echo "$TOKEN" | buck2 run homelab//buck2/bin:helm  -- registry login "$REGISTRY" -u '${{ github.actor }}' --password-stdin
 
       - name: Determine version
         id: ver
@@ -75,7 +75,7 @@ jobs:
           # Previous published version: highest semver tag on the ingest image in
           # ghcr (authoritative for "what's released"). Default 0.0.0 if none.
           prev="0.0.0"
-          if tags="$(buck2 run //buck2/bin:crane -- ls "$INGEST_IMAGE" 2>/dev/null)"; then
+          if tags="$(buck2 run homelab//buck2/bin:crane -- ls "$INGEST_IMAGE" 2>/dev/null)"; then
             latest="$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
             [ -n "$latest" ] && prev="$latest"
           fi

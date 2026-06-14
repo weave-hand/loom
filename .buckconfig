@@ -3,6 +3,24 @@
   prelude = prelude
   toolchains = toolchains
   none = none
+  # Container-image / Helm build rules (apko/oci/helm) live in the homelab repo
+  # and are consumed as a git EXTERNAL CELL (see [external_cells] below) — buck2
+  # fetches the pinned commit into buck-out automatically, so there's no
+  # submodule and no vendored copy. loom's //deploy targets load them as
+  # `homelab//buck2/...`; the rules use only cell-relative //buck2/... and
+  # prelude//... refs, so they resolve identically in homelab or here. `none`
+  # means "no in-repo path" — the external cell supplies the tree. Materialize
+  # an editable copy with `buck2 expand-external-cell homelab`.
+  homelab = none
+
+[external_cells]
+  homelab = git
+
+[external_cell_homelab]
+  git_origin = https://github.com/jomcgi/homelab.git
+  # Pinned commit (sha1 required — not a branch/tag). Bump to "publish" a new
+  # rules version: point at a newer homelab commit (ideally a tagged release).
+  commit_hash = ee8669c3245229eeaf813fff98c271b3345c4e26
 
 [cell_aliases]
   config = prelude
@@ -18,7 +36,8 @@
 [parser]
   target_platform_detector_spec = target:root//...->prelude//platforms:default \
     target:prelude//...->prelude//platforms:default \
-    target:toolchains//...->prelude//platforms:default
+    target:toolchains//...->prelude//platforms:default \
+    target:homelab//...->prelude//platforms:default
 
 [build]
   execution_platforms = root//platforms:default

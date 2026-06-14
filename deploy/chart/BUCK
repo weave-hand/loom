@@ -3,7 +3,7 @@
 # oci_image `.info` providers. `deps` makes building the chart build the images.
 # Kept under //deploy so it stays off the normal CI build sweep; the release
 # workflow builds/pushes it explicitly.
-load("//buck2/helm:defs.bzl", "helm_chart")
+load("homelab//buck2/helm:defs.bzl", "helm_chart")
 
 helm_chart(
     name = "chart",

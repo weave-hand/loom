@@ -2,8 +2,8 @@
 # embeds DuckDB) layered onto an apko/Wolfi base that adds libstdc++. Kept under
 # //deploy (not //src) so it stays off the normal CI build sweep — the release
 # workflow builds/pushes it explicitly.
-load("//buck2/apko:defs.bzl", "apko_image")
-load("//buck2/oci:defs.bzl", "oci_image", "tar_layer")
+load("homelab//buck2/apko:defs.bzl", "apko_image")
+load("homelab//buck2/oci:defs.bzl", "oci_image", "tar_layer")
 
 # Wolfi base (glibc + libgcc + libstdc++ + CA certs, nonroot,
 # entrypoint = /usr/local/bin/query-api).
