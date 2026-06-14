@@ -9,6 +9,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{DatasetRef, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use ingest::{MaterializeRequest, materialize};
+use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -37,7 +38,8 @@ async fn duckdb_reads_loom_materialized_data_and_appends() {
     )
     .unwrap();
 
-    let store = LocalFileSystem::new_with_prefix(writer.data_path()).unwrap();
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
 
     let lineage = LineageEvent {
         run_id: RunId(Uuid::new_v4()),
@@ -50,12 +52,12 @@ async fn duckdb_reads_loom_materialized_data_and_appends() {
 
     let loom_snap: i64 = materialize(
         &cp,
-        &store,
+        store.clone(),
         MaterializeRequest {
             table: &t,
             schema,
             batches: &[batch],
-            file_name: "loom.parquet",
+            file_prefix: "run-1",
             gate: None,
             lineage,
         },
