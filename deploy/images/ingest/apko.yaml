@@ -1,0 +1,29 @@
+# apko/Wolfi base for the loom ingest image. loom's hermetic Rust toolchain
+# builds an x86_64-unknown-linux-gnu (glibc, dynamically linked) binary, so the
+# base ships glibc + libgcc, plus CA certs for outbound TLS (object store / PG).
+# The ingest binary is layered on at /usr/local/bin/ingest by oci_image; the
+# entrypoint points there so no separate mutate step is needed. Runs as a
+# non-root user. Refresh the lockfile with `apko lock apko.yaml` when this
+# changes.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - ca-certificates-bundle
+    - glibc
+    - libgcc
+accounts:
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  run-as: 65532
+entrypoint:
+  command: /usr/local/bin/ingest
+archs:
+  - x86_64

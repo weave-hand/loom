@@ -1,0 +1,135 @@
+# loom umbrella chart values. The chart deploys the two loom services (ingest +
+# query-api) against a Postgres control plane (CloudNativePG by default) and a
+# shared object-store volume. Security posture is locked down by default:
+# default-deny NetworkPolicy, no ingress, non-root + read-only rootfs containers.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Services -----------------------------------------------------------------
+# image.repository/digest are digest-pinned by the buck2 release build
+# (helm_images_values overlays them). image.tag is the fallback used by
+# `helm template` and manual installs when no digest is injected.
+ingest:
+  image:
+    repository: ghcr.io/weave-hand/loom-ingest
+    tag: latest
+    digest: ""
+    # IfNotPresent is safe on the release path (digest-pinned, immutable). Set to
+    # Always if you deploy by a mutable tag (e.g. latest) and want re-pulls.
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8080
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+queryApi:
+  image:
+    repository: ghcr.io/weave-hand/loom-query-api
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8080
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  # By default query-api is co-scheduled onto the same node as ingest (see
+  # templates/query-api.yaml) so both can mount the shared ReadWriteOnce
+  # object-store PVC. Setting this overrides that default (use with RWX).
+  affinity: {}
+
+# Service lock-timeout (ms) -> LOOM_LOCK_TIMEOUT_MS.
+lockTimeoutMs: 5000
+
+# --- Object store -------------------------------------------------------------
+# Shared volume backing LOOM_DATA_PATH (the Parquet files the catalog
+# references). The storage *class* is deliberately the deployer's choice — loom
+# does not pick one ("" = the cluster's default StorageClass).
+#
+# ingest writes and query-api reads the SAME data. With the default
+# ReadWriteOnce, query-api is co-scheduled onto ingest's node (see
+# templates/query-api.yaml) so both can mount the volume; for multi-node spread
+# supply an RWX storageClassName and override queryApi.affinity.
+objectStore:
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  mountPath: /var/lib/loom/data
+  # Keep the PVC (and its landed Parquet data) on `helm uninstall` instead of
+  # letting Helm delete it. Set false to allow deletion.
+  retain: true
+
+# --- Postgres control plane (CloudNativePG) -----------------------------------
+# Requires the CloudNativePG operator + CRDs installed in the cluster. The
+# operator generates a `<cluster>-app` secret with the connection fields the
+# services consume. Set enabled=false to use an external Postgres via
+# external.existingSecret.
+postgres:
+  enabled: true
+  instances: 1
+  imageName: ""              # "" -> CNPG operator default
+  database: loom
+  owner: loom
+  storage:
+    size: 8Gi
+    storageClassName: ""
+  resources: {}
+  # Used only when enabled=false. Point at an existing secret and map its keys.
+  external:
+    existingSecret: ""
+    keys:
+      host: host
+      port: port
+      user: username
+      password: password
+      dbname: dbname
+
+# --- Networking (locked down by default) --------------------------------------
+# Default-deny NetworkPolicy for loom's pods: all ingress denied, egress denied
+# except DNS and the in-cluster Postgres. Append your own rules via extra*.
+networkPolicy:
+  enabled: true
+  # Allow egress to DNS (kube-dns) on 53. Disable only if your CNI handles it.
+  allowDNS: true
+  extraIngress: []
+  extraEgress: []
+
+# Optional Gateway API HTTPRoute. Off by default — "no ingress to begin with".
+# The gatewayClassName lives on the Gateway object (cluster-managed), so this
+# references an existing parent Gateway by name/namespace; when enabled, a
+# matching NetworkPolicy ingress rule is opened to the target service.
+gateway:
+  enabled: false
+  service: queryApi          # queryApi | ingest
+  parentRef:
+    name: ""
+    namespace: ""
+    sectionName: ""
+  hostnames: []
+  matchPath: /
+
+# --- Security contexts --------------------------------------------------------
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

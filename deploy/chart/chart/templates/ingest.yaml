@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "loom.fullname" . }}-ingest
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  replicas: {{ .Values.ingest.replicas }}
+  selector:
+    matchLabels:
+      {{- include "loom.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ingest
+  template:
+    metadata:
+      labels:
+        {{- include "loom.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ingest
+    spec:
+      serviceAccountName: {{ include "loom.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: ingest
+          image: {{ include "loom.image" .Values.ingest.image | quote }}
+          imagePullPolicy: {{ .Values.ingest.image.pullPolicy | default "IfNotPresent" }}
+          # CWD on the writable /tmp emptyDir (read-only rootfs otherwise).
+          workingDir: /tmp
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ingest.port }}
+          env:
+            - name: LOOM_BIND_ADDR
+              value: "0.0.0.0:{{ .Values.ingest.port }}"
+            - name: LOOM_DATA_PATH
+              value: {{ .Values.objectStore.mountPath | quote }}
+            - name: LOOM_LOCK_TIMEOUT_MS
+              value: {{ .Values.lockTimeoutMs | quote }}
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+            {{- include "loom.dbEnv" . | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.objectStore.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.ingest.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "loom.fullname" . }}-data
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.ingest.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ingest.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ingest.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "loom.fullname" . }}-ingest
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "loom.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+  ports:
+    - name: http
+      port: {{ .Values.ingest.port }}
+      targetPort: http

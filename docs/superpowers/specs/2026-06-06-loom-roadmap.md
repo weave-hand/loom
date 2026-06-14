@@ -163,3 +163,17 @@ DataFusion compute) to make the now-complete land→bind→serve pipeline reacha
 the wire, then pick up the remaining Step 2b trailing hardening opportunistically
 (per-concern adapter split and `tracing` are the highest-leverage). Smaller query
 follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
+
+**Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
+reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,
+image/Helm rules consumed from the `jomcgi/homelab` repo as a buck2 git external
+cell). Chart: CNPG-bundled Postgres control plane, a
+deployer-chosen StorageClass for the shared object-store PVC, default-deny
+NetworkPolicy with no ingress, and an optional Gateway API `HTTPRoute`. A
+`release` workflow pushes immutable `sha-<short>` images on every merge and
+republishes the chart as the moving `bleeding-edge` channel (digest-pinned to
+them); versioned `vX.Y.Z` image releases are manual dispatch, and a versioned
+chart publishes when its `Chart.yaml` version is bumped. See `docs/deploy.md`. Open
+follow-ups: a schema-migration Job (the chart provisions PG but doesn't migrate),
+and replacing the `LocalFileSystem` PVC with a real S3/MinIO object store (which
+removes the RWX-for-multi-pod constraint).

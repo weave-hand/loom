@@ -1,0 +1,17 @@
+loom {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Services (ClusterIP, no external ingress by default):
+  ingest     {{ include "loom.fullname" . }}-ingest:{{ .Values.ingest.port }}
+  query-api  {{ include "loom.fullname" . }}-query-api:{{ .Values.queryApi.port }}
+
+{{ if .Values.postgres.enabled -}}
+Postgres (CloudNativePG): cluster "{{ include "loom.pgClusterName" . }}", app secret "{{ include "loom.pgClusterName" . }}-app".
+  ! Apply loom's schema migrations before the services can serve (see docs/deploy.md).
+{{- else -}}
+Postgres: external, via secret "{{ .Values.postgres.external.existingSecret }}".
+{{- end }}
+
+Networking: default-deny is {{ if .Values.networkPolicy.enabled }}ENABLED{{ else }}DISABLED{{ end }}; ingress is {{ if .Values.gateway.enabled }}exposed via Gateway "{{ .Values.gateway.parentRef.name }}" to {{ .Values.gateway.service }}{{ else }}NOT exposed (no HTTPRoute){{ end }}.
+
+To reach a service locally:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "loom.fullname" . }}-query-api {{ .Values.queryApi.port }}:{{ .Values.queryApi.port }}
