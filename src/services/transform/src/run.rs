@@ -22,6 +22,8 @@ pub struct TransformRequest<'a> {
 pub enum TransformError {
     #[error("unknown input table {0}.{1}")]
     UnknownInput(String, String),
+    #[error("ambiguous input table name {0}: two inputs would register under it")]
+    AmbiguousInput(String),
     #[error("sql/datafusion error: {0}")]
     DataFusion(#[from] datafusion::error::DataFusionError),
     #[error(transparent)]
@@ -44,6 +46,16 @@ pub async fn run_transform(
     req: TransformRequest<'_>,
 ) -> Result<SnapshotId, TransformError> {
     let ctx = SessionContext::new();
+
+    // Inputs register under their unqualified `name`; DataFusion silently overwrites a
+    // same-named table, so two inputs sharing a name (even across schemas) would shadow
+    // and the SQL would compute against the wrong one. Reject that up front.
+    let mut seen = std::collections::HashSet::new();
+    for input in req.inputs {
+        if !seen.insert(input.name.as_str()) {
+            return Err(TransformError::AmbiguousInput(input.name.clone()));
+        }
+    }
 
     // 1. Resolve + register each input as a DataFusion table named by its table name.
     for input in req.inputs {

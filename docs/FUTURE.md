@@ -86,6 +86,11 @@ which delivered part-1 of richer read capability.
   (`InferError::Unsupported`) and the transform job Abandons. Extend the type map (and the
   DuckLake column-type strings) as real pipelines need it. (`scan_table` already pins
   `ParquetFormat::with_force_view_types(false)` so scanned strings stay canonical `Utf8`.)
+- **Transform read-path robustness (minor).** Two `run_transform` edge cases noted in the
+  part-1 review, outside its exercised scope: a missing input surfacing at `Catalog::files`
+  (rather than `current_snapshot`) is classified transient (Retry) instead of `UnknownInput`
+  (Abandon); and `scan_table` over an *empty* file list errors inside DataFusion (Retry) rather
+  than yielding an empty input. Tidy when the typed-transform slice builds on the primitive.
 - **Dataset/target existence validation.** Lineage `emit`, ACL `grant`/`set_policy`, and
   ontology `resolve` all **store without validating** that the referenced dataset / table /
   type exists in the catalog or ontology. Cross-concern referential validation is deferred

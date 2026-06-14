@@ -88,6 +88,7 @@ pub async fn transform_handler(
 fn retry_policy(err: &TransformError, attempts: i32) -> RetryPolicy {
     match err {
         TransformError::UnknownInput(..)
+        | TransformError::AmbiguousInput(_)
         | TransformError::DataFusion(_)
         | TransformError::Infer(_)
         | TransformError::NoSnapshot => RetryPolicy::Abandon,
