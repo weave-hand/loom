@@ -8,10 +8,11 @@
   # fetches the pinned commit into buck-out automatically, so there's no
   # submodule and no vendored copy. loom's //deploy targets load them as
   # `homelab//buck2/...`; the rules use only cell-relative //buck2/... and
-  # prelude//... refs, so they resolve identically in homelab or here. `none`
-  # means "no in-repo path" — the external cell supplies the tree. Materialize
-  # an editable copy with `buck2 expand-external-cell homelab`.
-  homelab = none
+  # prelude//... refs, so they resolve identically in homelab or here. The path
+  # `homelab` is the cell's nominal location / `buck2 expand-external-cell`
+  # target (gitignored, never checked in) — it must NOT reuse the `none` path
+  # above, or buck2's path->cell mapping collides and misroutes the `none` cell.
+  homelab = homelab
 
 [external_cells]
   homelab = git
