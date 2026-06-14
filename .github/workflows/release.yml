@@ -106,9 +106,7 @@ jobs:
             printf '%s\n' "$subs"   | grep -qE '^feat(\(.+\))?!?:'   && minor=1 || true
             printf '%s\n' "$subs"   | grep -qE '^(fix|perf)(\(.+\))?!?:' && patch=1 || true
 
-            IFS=. read -r pj pn pp <<EOF
-$prev
-EOF
+            IFS=. read -r pj pn pp <<<"$prev"
             if   [ "$major" = 1 ]; then next="$((pj+1)).0.0"; release=true
             elif [ "$minor" = 1 ]; then next="$pj.$((pn+1)).0"; release=true
             elif [ "$patch" = 1 ]; then next="$pj.$pn.$((pp+1))"; release=true
