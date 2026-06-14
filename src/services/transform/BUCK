@@ -1,0 +1,18 @@
+rust_library(
+    name = "transform",
+    crate = "transform",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/services/datafusion-io:datafusion-io",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:object_store",
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:thiserror",
+    ],
+    visibility = ["PUBLIC"],
+)
