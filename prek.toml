@@ -73,7 +73,7 @@ stages = ["commit-msg"]
 [[repos.hooks]]
 id = "buck2-build"
 name = "buck2 build"
-entry = "buck2 build root//..."
+entry = "buck2 build root//src/..."
 language = "system"
 pass_filenames = false
 stages = ["pre-push"]
