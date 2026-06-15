@@ -21,6 +21,7 @@ rust_test(
     srcs = ["tests/page.rs"],
     crate_root = "tests/page.rs",
     edition = "2024",
+    visibility = ["PUBLIC"],
     deps = [
         ":core",
         "//third-party:serde_json",
@@ -33,6 +34,7 @@ rust_test(
     srcs = ["tests/error_display.rs"],
     crate_root = "tests/error_display.rs",
     edition = "2024",
+    visibility = ["PUBLIC"],
     deps = [":core"],
 )
 
@@ -42,6 +44,7 @@ rust_test(
     srcs = ["tests/serde_roundtrip.rs"],
     crate_root = "tests/serde_roundtrip.rs",
     edition = "2024",
+    visibility = ["PUBLIC"],
     deps = [
         ":core",
         "//third-party:proptest",
@@ -55,6 +58,7 @@ rust_test(
     srcs = ["tests/row_filter_validation.rs"],
     crate_root = "tests/row_filter_validation.rs",
     edition = "2024",
+    visibility = ["PUBLIC"],
     deps = [":core"],
 )
 
@@ -64,6 +68,7 @@ rust_test(
     srcs = ["tests/logical_type.rs"],
     crate_root = "tests/logical_type.rs",
     edition = "2024",
+    visibility = ["PUBLIC"],
     deps = [":core"],
 )
 
@@ -73,5 +78,6 @@ rust_test(
     srcs = ["tests/identity.rs"],
     crate_root = "tests/identity.rs",
     edition = "2024",
+    visibility = ["PUBLIC"],
     deps = [":core"],
 )

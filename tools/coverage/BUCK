@@ -1,0 +1,34 @@
+# Dev-only coverage targets. Live here (NOT under //src/...) so CI's
+# `buck2 build/test //src/...` never builds them and normal builds are
+# unaffected (CLAUDE.md: //tools is dev-only, not built in CI). Build with
+# --config loom.coverage=true so the referenced rust_test deps compile
+# instrumented; tools/coverage.sh is the convenience driver.
+
+export_file(
+    name = "cover-sh",
+    src = "cover.sh",
+)
+
+_CORE_TESTS = [
+    "//src/control-plane/core:page",
+    "//src/control-plane/core:error-display",
+    "//src/control-plane/core:identity",
+    "//src/control-plane/core:logical-type",
+    "//src/control-plane/core:row-filter-validation",
+    "//src/control-plane/core:serde-roundtrip",
+]
+
+genrule(
+    name = "core",
+    outs = {
+        "lcov": ["lcov.info"],
+        "report": ["report.txt"],
+    },
+    cmd = " ".join([
+        "bash",
+        "$(location :cover-sh)",
+        "$(location toolchains//:llvm-x86_64-linux)",
+        "$OUT",
+        "'^third-party/|/tests/'",
+    ] + ["$(location {})".format(t) for t in _CORE_TESTS]),
+)
