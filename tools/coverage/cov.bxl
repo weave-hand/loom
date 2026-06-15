@@ -1,0 +1,79 @@
+# BXL coverage spike — discover + run + report for control-plane/core.
+#
+# Run:  buck2 bxl -j 6 --config loom.coverage=true //tools/coverage:cov.bxl:cov
+# Prints the path to a `core` output dir holding lcov.info + report.txt.
+#
+# WORKING BXL API (verified against the pinned buck2; reuse in later tasks):
+#   - Entry point:        cov = bxl_main(impl = _cov_impl, cli_args = {})
+#   - Action handle:      ba = ctx.bxl_actions(); actions = ba.actions
+#   - String label -> configured target (ctx.analysis won't take a string):
+#         ct = ctx.configured_targets("toolchains//:llvm-x86_64-linux")
+#         out = ctx.analysis(ct).providers()[DefaultInfo].default_outputs[0]
+#   - Discover targets:   ctx.cquery().kind("rust_test", ctx.cquery().eval("//path/..."))
+#         (returns configured nodes; cquery order is alphabetical — see below)
+#   - Node -> label/name: node.label ; node.label.name
+#   - Node -> output:     ctx.analysis(node.label).providers()[DefaultInfo].default_outputs[0]
+#   - Declare outputs:    actions.declare_output("name")  /  declare_output("dir", dir = True)
+#   - Run an action:      actions.run(cmd_args([...]), category=, identifier=, local_only=True)
+#         (use out.as_output() to write to a declared output; nest cmd_args(artifact)
+#          to interpolate an artifact's path as a string arg)
+#   - Materialize+print:  ctx.output.print(ctx.output.ensure(out_dir))
+#         (a declared *dir* output is fine for a script writing multiple files)
+#
+# A declared dir output works for the multi-file report script (lcov.info +
+# report.txt land inside it). No need to split into two file outputs.
+
+IGNORE = "^/|^third-party/|/tests/"
+
+def _cov_impl(ctx):
+    bxl_actions = ctx.bxl_actions()
+    actions = bxl_actions.actions
+
+    llvm = ctx.analysis(ctx.configured_targets("toolchains//:llvm-x86_64-linux")).providers()[DefaultInfo].default_outputs[0]
+    run_one = ctx.analysis(ctx.configured_targets("//tools/coverage:run-one")).providers()[DefaultInfo].default_outputs[0]
+    report_sh = ctx.analysis(ctx.configured_targets("//tools/coverage:report-sh")).providers()[DefaultInfo].default_outputs[0]
+
+    tests = ctx.cquery().kind("rust_test", ctx.cquery().eval("//src/control-plane/core/..."))
+
+    # OBJECT ORDERING MATTERS. Each rust_test binary statically links the whole
+    # library, so the same source (e.g. page.rs) is instrumented into several
+    # test objects. The merged profile carries every counter, but `llvm-cov`
+    # attributes each function to the FIRST object on its command line that
+    # defines it ("N functions have mismatched data" is this dedup speaking). A
+    # binary that links a source but never exercises it therefore MASKS a sibling
+    # that does: with plain alphabetical order `error-display` leads and page.rs
+    # reads 75% / TOTAL 93.75%; with the source-owning `page` test leading,
+    # page.rs reads 100% / TOTAL 97.50% (the reference genrule's number).
+    #
+    # So order the source-owning test first. We sort by label name but pull
+    # `page` to the front to reproduce the reference exactly; later tasks that
+    # generalize this should list each crate's primary test ahead of helpers.
+    nodes = sorted(tests, key = lambda n: (n.label.name != "page", n.label.name))
+
+    bins = []
+    profraws = []
+    for node in nodes:
+        label = node.label
+        bin = ctx.analysis(label).providers()[DefaultInfo].default_outputs[0]
+        bins.append(bin)
+        pr = actions.declare_output("prof/{}.profraw".format(label.name))
+        actions.run(
+            cmd_args(["bash", run_one, pr.as_output(), bin]),
+            category = "coverage_run",
+            identifier = label.name,
+            local_only = True,
+        )
+        profraws.append(pr)
+
+    out_dir = actions.declare_output("core", dir = True)
+    profdata = actions.declare_output("core.profdata")
+    args = cmd_args(["bash", report_sh, cmd_args(llvm), out_dir.as_output(), profdata.as_output(), IGNORE])
+    args.add(profraws)
+    args.add("--")
+    args.add(bins)
+    actions.run(args, category = "coverage_report", identifier = "core", local_only = True)
+
+    ensured = ctx.output.ensure(out_dir)
+    ctx.output.print(ensured)
+
+cov = bxl_main(impl = _cov_impl, cli_args = {})

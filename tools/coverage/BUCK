@@ -9,6 +9,10 @@ export_file(
     src = "cover.sh",
 )
 
+export_file(name = "run-one", src = "run_one.sh")
+
+export_file(name = "report-sh", src = "report.sh")
+
 _CORE_TESTS = [
     "//src/control-plane/core:page",
     "//src/control-plane/core:error-display",
