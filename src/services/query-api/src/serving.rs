@@ -96,6 +96,13 @@ impl ActionEngine for EmbeddedDuckDbWriter {
         columns: &[String],
         values: &[SqlValue],
     ) -> Result<(), ServingError> {
+        if columns.is_empty() || columns.len() != values.len() {
+            return Err(ServingError::Engine(format!(
+                "insert_row: {} columns vs {} values (need >= 1, equal counts)",
+                columns.len(),
+                values.len()
+            )));
+        }
         // Identifiers come from the ontology (validated table/columns), not user input;
         // values bind as positional params. Quote identifiers to preserve case.
         let cols = columns
