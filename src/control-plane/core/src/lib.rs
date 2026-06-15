@@ -19,7 +19,7 @@ pub use acl::{
 };
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
 pub use error::{ControlPlaneError, Result};
-pub use identity::{DatasetId, LOOM_DATASET_NAMESPACE};
+pub use identity::{DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TypeId};
 pub use lineage::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
 pub use logical_type::{
     BaseType, JsonRepr, UnknownLogicalType, json_repr_of, resolve_logical, satisfies,
