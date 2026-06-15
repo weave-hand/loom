@@ -12,7 +12,7 @@ use object_store::ObjectStore;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::run::{TransformError, TransformRequest, run_transform};
+use crate::run::{TransformError, TransformInput, TransformRequest, run_transform};
 
 /// Wire form of a transform job payload. `{schema, name}` per table.
 #[derive(Deserialize)]
@@ -52,15 +52,24 @@ pub async fn transform_handler(
             });
         }
     };
-    let inputs: Vec<TableRef> = payload.inputs.iter().map(TableRef::from).collect();
+    let input_tables: Vec<TableRef> = payload.inputs.iter().map(TableRef::from).collect();
     let output = TableRef::from(&payload.output);
     let run_id = Uuid::new_v4().to_string();
+
+    // Physical inputs register under their own table name.
+    let inputs: Vec<TransformInput> = input_tables
+        .iter()
+        .map(|t| TransformInput {
+            table: t,
+            register_as: &t.name,
+        })
+        .collect();
 
     let lineage = LineageEvent {
         run_id: RunId(Uuid::new_v4()),
         event_type: EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
-        inputs: inputs.iter().map(DatasetRef::from).collect(),
+        inputs: input_tables.iter().map(DatasetRef::from).collect(),
         outputs: vec![DatasetRef::from(&output)],
         payload: serde_json::json!({ "sql": payload.sql }),
     };
@@ -73,6 +82,7 @@ pub async fn transform_handler(
             inputs: &inputs,
             output: &output,
             sql: &payload.sql,
+            conform: None,
             lineage,
         },
     )
@@ -89,6 +99,7 @@ fn retry_policy(err: &TransformError, attempts: i32) -> RetryPolicy {
     match err {
         TransformError::UnknownInput(..)
         | TransformError::AmbiguousInput(_)
+        | TransformError::DoesNotConform(_)
         | TransformError::DataFusion(_)
         | TransformError::Infer(_)
         | TransformError::NoSnapshot => RetryPolicy::Abandon,
