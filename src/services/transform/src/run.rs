@@ -41,7 +41,7 @@ pub enum TransformError {
     UnknownInput(String, String),
     #[error("ambiguous input table name {0}: two inputs would register under it")]
     AmbiguousInput(String),
-    #[error("output does not conform to the declared type: {} violation(s)", .0.len())]
+    #[error("output does not conform to the declared type ({} violation(s)): {0:?}", .0.len())]
     DoesNotConform(Vec<Violation>),
     #[error("sql/datafusion error: {0}")]
     DataFusion(#[from] datafusion::error::DataFusionError),
@@ -109,19 +109,22 @@ pub async fn run_transform(
         .await?;
     }
 
-    // 2. Run the SQL; collect the result + its Arrow schema.
+    // 2. Run the SQL; resolve its result schema (no rows pulled yet).
     let df = ctx.sql(req.sql).await?;
     let schema: Arc<arrow::datatypes::Schema> = Arc::new(df.schema().as_arrow().clone());
-    let batches = df.collect().await?;
 
     // 3. Output physical columns inferred from the result schema.
     let columns: Vec<ColumnSpec> = infer_columns(&schema)?;
 
-    // 3a. Typed transforms: the result must EXACTLY conform to the declared type before
-    //     anything is written or committed.
+    // 3a. Typed transforms: the result must EXACTLY conform to the declared type. Checked
+    //     on the schema BEFORE collecting rows, so a non-conforming transform pulls no
+    //     data and writes/commits nothing.
     if let Some(properties) = req.conform {
         check_conformance(&columns, properties).map_err(TransformError::DoesNotConform)?;
     }
+
+    // 4. Collect the result rows now that the output is known to conform.
+    let batches = df.collect().await?;
 
     // 4. Write the result as N Snappy Parquet files under the output table dir.
     let dir_prefix = format!("{}/{}/{}", req.output.schema, req.output.name, run_id);
