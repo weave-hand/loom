@@ -11,3 +11,6 @@ rust-project.json
 /homelab/
 **/.cargo/**
 !**/.cargo/config.toml
+# LLVM coverage profiling data emitted by instrumented binaries at runtime
+*.profraw
+*.profdata

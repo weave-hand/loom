@@ -1,0 +1,20 @@
+# Dev-only coverage targets. Live here (NOT under //src/...) so CI's
+# `buck2 build/test //src/...` never builds them and normal builds are
+# unaffected (CLAUDE.md: //tools is dev-only, not built in CI).
+#
+# Coverage instrumentation is gated on the `:coverage_enabled` constraint_value
+# below: the rust toolchain select()s on it (toolchains/BUCK), and cov.bxl
+# applies it as a configuration modifier when building the rust_test targets.
+# No global config flag — normal builds and `buck2 test` can't trip it.
+
+constraint_setting(name = "coverage")
+
+constraint_value(
+    name = "coverage_enabled",
+    constraint_setting = ":coverage",
+    visibility = ["PUBLIC"],
+)
+
+export_file(name = "run-one", src = "run_one.sh")
+
+export_file(name = "report-sh", src = "report.sh")
