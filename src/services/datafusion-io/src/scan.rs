@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use control_plane_core::{FileRef, TableRef};
+use datafusion::common::TableReference;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
@@ -57,6 +58,10 @@ pub async fn scan_table(
         .infer_schema(&ctx.state())
         .await?;
     let provider = ListingTable::try_new(cfg)?;
-    ctx.register_table(name, Arc::new(provider))?;
+    // Register under the EXACT `name` (e.g. an ontology type name like `Order`). The
+    // `&str -> TableReference` conversion parses + lowercase-normalizes, which would
+    // register `Order` as `order` and leave a case-quoted `FROM "Order"` unresolvable.
+    // `TableReference::bare` preserves the name verbatim.
+    ctx.register_table(TableReference::bare(name), Arc::new(provider))?;
     Ok(())
 }

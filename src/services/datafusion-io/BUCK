@@ -57,3 +57,19 @@ rust_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "single-file-write",
+    crate = "single_file_write",
+    srcs = ["tests/single_file_write.rs"],
+    crate_root = "tests/single_file_write.rs",
+    edition = "2024",
+    deps = [
+        ":datafusion-io",
+        "//src/control-plane/core:core",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:object_store",
+        "//third-party:tokio",
+    ],
+)

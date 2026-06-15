@@ -39,6 +39,18 @@ rust_binary(
     visibility = ["PUBLIC"],
 )
 
+rust_test(
+    name = "conform",
+    crate = "conform",
+    srcs = ["tests/conform.rs"],
+    crate_root = "tests/conform.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//src/control-plane/core:core",
+    ],
+)
+
 loom_fixture_test(
     name = "transform-e2e",
     crate = "transform_e2e",
@@ -48,6 +60,29 @@ loom_fixture_test(
     deps = [
         ":transform",
         "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/worker:worker",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-util",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "typed-transform-e2e",
+    crate = "typed_transform_e2e",
+    srcs = ["tests/typed_transform_e2e.rs"],
+    crate_root = "tests/typed_transform_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":transform",
+        "//src/services/ingest:ingest",
+        "//src/services/query-api:query-api",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/control-plane/worker:worker",

@@ -11,9 +11,8 @@ use control_plane_core::ColumnStat;
 use datafusion::common::config::TableParquetOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::datasource::MemTable;
-use datafusion::execution::context::SessionContext;
+use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::logical_expr::Partitioning;
 // object_store is unified to DataFusion's bundled 0.13, so the top-level crate and
 // DataFusion's re-export are the same types; register/list/get all agree on one version.
 use futures::TryStreamExt;
@@ -71,10 +70,11 @@ pub(crate) const LOOM_STORE_URL: &str = "loom://data";
 /// under `dir_prefix` (e.g. "main/customer/<file_prefix>"). Returns one `WrittenFile`
 /// per output file, with paths relative to the table directory.
 ///
-/// Note: DataFusion's RoundRobinBatch distributes whole batches, so the file count is
-/// bounded by min(estimated partitions, batch count). A single huge batch yields one file.
-/// Empty input (no batches, or batches with no rows) yields zero files — the caller's
-/// `append_files(&[])` then registers an empty, row-less snapshot rather than an empty file.
+/// File count is governed by `minimum_parallel_output_files = estimate_partitions`: small
+/// data lands as a single file, while large data splits toward the size target across that
+/// many writers (see the in-body comment). Empty input (no batches, or batches with no rows)
+/// yields zero files — the caller's `append_files(&[])` then registers an empty, row-less
+/// snapshot rather than an empty file.
 pub async fn write_dataset(
     store: Arc<dyn ObjectStore>,
     dir_prefix: &str,
@@ -88,14 +88,29 @@ pub async fn write_dataset(
         .sum();
     let partitions = estimate_partitions(in_memory, cfg);
 
-    let ctx = SessionContext::new();
+    // Produce EXACTLY `partitions` files.
+    //
+    // File count here is NOT controlled by the DataFrame's partitioning: DataFusion's
+    // `DataSinkExec` declares `required_input_distribution = SinglePartition`, so the
+    // optimizer coalesces every partition into one stream and the parquet sink then
+    // *dynamically* re-splits it at write time. That dynamic split is governed solely by
+    // `minimum_parallel_output_files` (the sink opens up to this many files, round-robining
+    // batches across them) and `soft_max_rows_per_output_file`. The old code left this at
+    // its default of 4, so the output file count tracked the upstream batch count — a join
+    // that emitted 2 batches silently produced 2 files even though `estimate_partitions`
+    // asked for 1. A multi-file DuckLake table is then mis-read by DuckDB under a pushed-down
+    // `LIMIT` (the scan reconstructs `id` values incorrectly, e.g. 10 -> 266), corrupting
+    // reads — so a stray split is not cosmetic. Pinning the sink's file count to exactly
+    // `partitions` (and leaving the high soft row cap) makes small results a single file
+    // while still letting size-targeted large results split. See tests/single_file_write.rs.
+    let mut config = SessionConfig::new();
+    config.options_mut().execution.minimum_parallel_output_files = partitions;
+    let ctx = SessionContext::new_with_config(config);
     let url = ObjectStoreUrl::parse(LOOM_STORE_URL)?;
     ctx.register_object_store(url.as_ref(), store.clone());
 
     let provider = MemTable::try_new(schema.clone(), vec![batches.to_vec()])?;
-    let df = ctx
-        .read_table(Arc::new(provider))?
-        .repartition(Partitioning::RoundRobinBatch(partitions))?;
+    let df = ctx.read_table(Arc::new(provider))?;
 
     let mut parquet_opts = TableParquetOptions::default();
     parquet_opts.global.compression = Some("snappy".to_string());

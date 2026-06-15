@@ -91,6 +91,15 @@ which delivered part-1 of richer read capability.
   (rather than `current_snapshot`) is classified transient (Retry) instead of `UnknownInput`
   (Abandon); and `scan_table` over an *empty* file list errors inside DataFusion (Retry) rather
   than yielding an empty input. Tidy when the typed-transform slice builds on the primitive.
+- **Multi-file DuckLake `LIMIT` mis-read (upstream DuckDB/DuckLake).** When a DuckLake table
+  is backed by more than one Parquet data file, a read with a pushed-down `LIMIT` (as query-api
+  issues) can reconstruct column values incorrectly (observed: int64 `id` values corrupted by a
+  `+ (other_id << 8)` pattern). loom currently sidesteps this for small transform outputs by
+  writing a single Parquet file (`datafusion-io::write_dataset` pins small results to one file
+  via `minimum_parallel_output_files = estimate_partitions`), but legitimately large
+  transform/ingest outputs still write multiple files and remain exposed. Follow-up: build a
+  minimal upstream repro and file it against DuckDB/DuckLake; consider a loom-side guard (e.g.
+  avoid `LIMIT` pushdown over multi-file tables, or compaction) until fixed.
 - **Dataset/target existence validation.** Lineage `emit`, ACL `grant`/`set_policy`, and
   ontology `resolve` all **store without validating** that the referenced dataset / table /
   type exists in the catalog or ontology. Cross-concern referential validation is deferred
