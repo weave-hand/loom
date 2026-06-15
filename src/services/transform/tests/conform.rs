@@ -114,3 +114,31 @@ fn all_violations_are_collected() {
         "exactly three violations, none short-circuited"
     );
 }
+
+#[test]
+fn empty_inputs_conform() {
+    // Degenerate case: no properties, no columns -> trivially conforms.
+    assert_eq!(check_conformance(&[], &[]), Ok(()));
+}
+
+#[test]
+fn unknown_logical_type_and_nullability_co_occur() {
+    // A required property with an unknown logical type backed by a nullable column
+    // yields BOTH violations — the nullability check is independent of the type check
+    // (mirrors ingest::bind's collect-everything behavior).
+    let props = vec![prop("id", "Wibble", true)];
+    let cols = vec![col("id", "int64", true)];
+    let err = check_conformance(&cols, &props).unwrap_err();
+    assert!(err.contains(&Violation::UnknownLogicalType {
+        property: "id".into(),
+        logical: "Wibble".into(),
+    }));
+    assert!(err.contains(&Violation::NullabilityViolation {
+        property: "id".into(),
+    }));
+    assert_eq!(
+        err.len(),
+        2,
+        "both the unknown-type and nullability violations are reported"
+    );
+}
