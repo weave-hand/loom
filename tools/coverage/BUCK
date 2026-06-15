@@ -1,42 +1,20 @@
 # Dev-only coverage targets. Live here (NOT under //src/...) so CI's
 # `buck2 build/test //src/...` never builds them and normal builds are
-# unaffected (CLAUDE.md: //tools is dev-only, not built in CI). Build with
-# --config loom.coverage=true so the referenced rust_test deps compile
-# instrumented; tools/coverage.sh is the convenience driver.
+# unaffected (CLAUDE.md: //tools is dev-only, not built in CI).
+#
+# Coverage instrumentation is gated on the `:coverage_enabled` constraint_value
+# below: the rust toolchain select()s on it (toolchains/BUCK), and cov.bxl
+# applies it as a configuration modifier when building the rust_test targets.
+# No global config flag — normal builds and `buck2 test` can't trip it.
 
-export_file(
-    name = "cover-sh",
-    src = "cover.sh",
+constraint_setting(name = "coverage")
+
+constraint_value(
+    name = "coverage_enabled",
+    constraint_setting = ":coverage",
+    visibility = ["PUBLIC"],
 )
 
 export_file(name = "run-one", src = "run_one.sh")
 
 export_file(name = "report-sh", src = "report.sh")
-
-_CORE_TESTS = [
-    "//src/control-plane/core:page",
-    "//src/control-plane/core:error-display",
-    "//src/control-plane/core:identity",
-    "//src/control-plane/core:logical-type",
-    "//src/control-plane/core:row-filter-validation",
-    "//src/control-plane/core:serde-roundtrip",
-]
-
-genrule(
-    name = "core",
-    outs = {
-        "lcov": ["lcov.info"],
-        "report": ["report.txt"],
-        "profdata": ["coverage.profdata"],
-    },
-    cmd = " ".join([
-        "bash",
-        "$(location :cover-sh)",
-        "$(location toolchains//:llvm-x86_64-linux)",
-        "$OUT",
-        # Drop absolute paths (rust stdlib at /rustc/…, cargo registry),
-        # third-party crates, and the integration-test files — leaving only the
-        # library's own repo-relative src/control-plane/core/src/**.
-        "'^/|^third-party/|/tests/'",
-    ] + ["$(location {})".format(t) for t in _CORE_TESTS]),
-)

@@ -1,7 +1,13 @@
 # BXL coverage spike — discover + run + report for control-plane/core.
 #
-# Run:  buck2 bxl -j 6 --config loom.coverage=true //tools/coverage:cov.bxl:cov
+# Run:  buck2 bxl -j 6 //tools/coverage:cov.bxl:cov
 # Prints the path to a `core` output dir holding lcov.info + report.txt.
+#
+# No --config flag: instrumentation is turned on by applying the
+# `//tools/coverage:coverage_enabled` constraint_value as a CONFIGURATION
+# MODIFIER when configuring the rust_test targets (the toolchain select()s on
+# it). So only this build path is instrumented; normal builds / `buck2 test`
+# are byte-for-byte unchanged.
 #
 # WORKING BXL API (verified against the pinned buck2; reuse in later tasks):
 #   - Entry point:        cov = bxl_main(impl = _cov_impl, cli_args = {})
@@ -9,10 +15,13 @@
 #   - String label -> configured target (ctx.analysis won't take a string):
 #         ct = ctx.configured_targets("toolchains//:llvm-x86_64-linux")
 #         out = ctx.analysis(ct).providers()[DefaultInfo].default_outputs[0]
-#   - Discover targets:   ctx.cquery().kind("rust_test", ctx.cquery().eval("//path/..."))
-#         (returns configured nodes; cquery order is alphabetical — see below)
+#   - Discover targets:   ctx.uquery().kind("rust_test", ctx.uquery().eval("//path/..."))
+#         (returns UNCONFIGURED nodes; node.label passes straight to
+#          configured_targets — see modifier use below. uquery order is alphabetical.)
+#   - Apply a modifier:   ctx.configured_targets(node.label, modifiers = [<constraint_value>])
+#         (prelude/python/sourcedb/query.bxl + prelude/haskell/ide/ide.bxl)
 #   - Node -> label/name: node.label ; node.label.name
-#   - Node -> output:     ctx.analysis(node.label).providers()[DefaultInfo].default_outputs[0]
+#   - Configured -> out:  ctx.analysis(ct).providers()[DefaultInfo].default_outputs[0]
 #   - Declare outputs:    actions.declare_output("name")  /  declare_output("dir", dir = True)
 #   - Run an action:      actions.run(cmd_args([...]), category=, identifier=, local_only=True)
 #         (use out.as_output() to write to a declared output; nest cmd_args(artifact)
@@ -25,6 +34,10 @@
 
 IGNORE = "^/|^third-party/|/tests/"
 
+# Applied as a configuration modifier so the test binaries (and the lib deps
+# they statically link) compile with -Cinstrument-coverage — no global config.
+COVERAGE_MODIFIERS = ["root//tools/coverage:coverage_enabled"]
+
 def _cov_impl(ctx):
     bxl_actions = ctx.bxl_actions()
     actions = bxl_actions.actions
@@ -33,7 +46,7 @@ def _cov_impl(ctx):
     run_one = ctx.analysis(ctx.configured_targets("//tools/coverage:run-one")).providers()[DefaultInfo].default_outputs[0]
     report_sh = ctx.analysis(ctx.configured_targets("//tools/coverage:report-sh")).providers()[DefaultInfo].default_outputs[0]
 
-    tests = ctx.cquery().kind("rust_test", ctx.cquery().eval("//src/control-plane/core/..."))
+    tests = ctx.uquery().kind("rust_test", ctx.uquery().eval("//src/control-plane/core/..."))
 
     # OBJECT ORDERING MATTERS. Each rust_test binary statically links the whole
     # library, so the same source (e.g. page.rs) is instrumented into several
@@ -54,7 +67,9 @@ def _cov_impl(ctx):
     profraws = []
     for node in nodes:
         label = node.label
-        bin = ctx.analysis(label).providers()[DefaultInfo].default_outputs[0]
+        ct = ctx.configured_targets(label, modifiers = COVERAGE_MODIFIERS)
+        ctx.output.print("CONFIG {} -> {}".format(label.name, ct.label.config()))
+        bin = ctx.analysis(ct).providers()[DefaultInfo].default_outputs[0]
         bins.append(bin)
         pr = actions.declare_output("prof/{}.profraw".format(label.name))
         actions.run(

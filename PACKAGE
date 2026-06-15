@@ -1,0 +1,16 @@
+load("@prelude//cfg/modifier/cfg_constructor.bzl", "cfg_constructor_pre_constraint_analysis", "cfg_constructor_post_constraint_analysis")
+load("@prelude//cfg/modifier/common.bzl", "MODIFIER_METADATA_KEY")
+
+# Register the prelude's configuration-modifier cfg constructor so BXL/CLI
+# `modifiers = [...]` arguments actually re-configure targets. loom uses this to
+# turn on Rust coverage instrumentation for exactly the build path
+# tools/coverage/cov.bxl drives (the `//tools/coverage:coverage_enabled`
+# constraint_value), with no global config flag. Without a registered cfg
+# constructor, `modifiers=` is silently a no-op.
+set_cfg_constructor(
+    stage0 = cfg_constructor_pre_constraint_analysis,
+    stage1 = cfg_constructor_post_constraint_analysis,
+    key = MODIFIER_METADATA_KEY,
+    aliases = struct(),
+    extra_data = struct(),
+)
