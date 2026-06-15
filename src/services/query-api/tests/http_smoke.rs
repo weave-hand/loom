@@ -57,6 +57,7 @@ async fn seeded_control_plane() -> MemoryControlPlane {
             ty: "Long".into(),
             required: true,
         }],
+        derived: vec![],
         table: TableRef {
             schema: "main".into(),
             name: "orders".into(),

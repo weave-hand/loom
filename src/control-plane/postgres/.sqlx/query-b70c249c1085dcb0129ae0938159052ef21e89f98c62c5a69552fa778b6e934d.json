@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ontology.derived_property (type_name, ordinal, name, ty, link_name, agg_kind, agg_column) values ($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b70c249c1085dcb0129ae0938159052ef21e89f98c62c5a69552fa778b6e934d"
+}

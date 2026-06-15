@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ActionDef, ActionName, ControlPlaneError, LinkBacking, LinkDef, ObjectType, Ontology, Page,
-    PageReq, ParamDef, PropertyDef, Result, TableRef, TypeName,
+    ActionDef, ActionName, Aggregation, ControlPlaneError, DerivedPropertyDef, LinkBacking,
+    LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef, Result, TableRef,
+    TypeName,
 };
 
 use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
@@ -39,6 +40,31 @@ impl Ontology for PgControlPlane {
                 p.name,
                 p.ty,
                 p.required,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
+        sqlx::query!(
+            "delete from ontology.derived_property where type_name = $1",
+            ty.name.0,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        for (i, d) in ty.derived.iter().enumerate() {
+            let (kind, column) = agg_parts(&d.agg);
+            sqlx::query!(
+                "insert into ontology.derived_property \
+                 (type_name, ordinal, name, ty, link_name, agg_kind, agg_column) \
+                 values ($1, $2, $3, $4, $5, $6, $7)",
+                ty.name.0,
+                i as i32,
+                d.name,
+                d.ty,
+                d.link,
+                kind,
+                column,
             )
             .execute(&mut *tx)
             .await
@@ -110,6 +136,23 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
+        let derived_rows = sqlx::query!(
+            "select name, ty, link_name, agg_kind, agg_column from ontology.derived_property \
+             where type_name = $1 order by ordinal",
+            name.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let mut derived = Vec::with_capacity(derived_rows.len());
+        for r in derived_rows {
+            derived.push(DerivedPropertyDef {
+                name: r.name,
+                ty: r.ty,
+                link: r.link_name,
+                agg: rebuild_agg(&r.agg_kind, r.agg_column)?,
+            });
+        }
         Ok(ObjectType {
             name: name.clone(),
             table: TableRef {
@@ -124,6 +167,7 @@ impl Ontology for PgControlPlane {
                     required: r.required,
                 })
                 .collect(),
+            derived,
         })
     }
 
@@ -263,6 +307,38 @@ impl Ontology for PgControlPlane {
                 .collect(),
         })
     }
+}
+
+/// Split an aggregation into its persisted `(agg_kind, agg_column)` pair.
+fn agg_parts(a: &Aggregation) -> (&'static str, Option<&str>) {
+    match a {
+        Aggregation::Count => ("count", None),
+        Aggregation::Sum(c) => ("sum", Some(c.as_str())),
+        Aggregation::Avg(c) => ("avg", Some(c.as_str())),
+        Aggregation::Min(c) => ("min", Some(c.as_str())),
+        Aggregation::Max(c) => ("max", Some(c.as_str())),
+    }
+}
+
+/// Reconstruct an [`Aggregation`] from its persisted `(agg_kind, agg_column)` pair.
+fn rebuild_agg(kind: &str, column: Option<String>) -> Result<Aggregation> {
+    let col = || {
+        column.clone().ok_or_else(|| {
+            ControlPlaneError::Backend(format!("derived agg '{kind}' missing column").into())
+        })
+    };
+    Ok(match kind {
+        "count" => Aggregation::Count,
+        "sum" => Aggregation::Sum(col()?),
+        "avg" => Aggregation::Avg(col()?),
+        "min" => Aggregation::Min(col()?),
+        "max" => Aggregation::Max(col()?),
+        other => {
+            return Err(ControlPlaneError::Backend(
+                format!("unknown derived agg kind '{other}'").into(),
+            ));
+        }
+    })
 }
 
 /// The persisted column values for a link's physical backing.

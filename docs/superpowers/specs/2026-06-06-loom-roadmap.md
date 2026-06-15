@@ -142,6 +142,14 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     (`read_linked_objects`, `GET /objects/:from/links/:link`) joins source → target with
     both-ends governance (Read on both types, source + target row filters, target projection)
     and `DISTINCT` dedup. The first relational read; part-1 of richer read capability.
+  - *Part 4 — derived properties (slice B)* ✅ DELIVERED
+    (`2026-06-15-derived-properties-design.md`). An object type can declare
+    aggregate-over-link derived properties (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`), served through
+    `read_object` next to physical properties as governed correlated subqueries over a link.
+    Both-ends governed: the subject needs Read on the linked type, the linked type's row-filters
+    apply inside the subquery, and a derived prop is omitted (like a denied column) when the
+    linked type or aggregated column is unreadable — never an error. Read-time only. Proven by
+    an e2e.
   - *Later:* the serving *tier* over Quack (separate `quack_serve`'d DuckDB; the seam's
     Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
     masking, roles); rich ontology (links, derived properties); multi-type queries/joins;

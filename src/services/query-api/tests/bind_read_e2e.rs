@@ -96,6 +96,7 @@ async fn landed_then_bound_dataset_is_queryable() {
                     required: false,
                 },
             ],
+            derived: vec![],
             table: table.clone(),
         },
     )

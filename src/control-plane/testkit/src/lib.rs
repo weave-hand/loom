@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, Cardinality, Catalog, CompareOp, ControlPlane,
-    ControlPlaneError, DatasetRef, Decision, Effect, EventType, Lineage, LineageEvent, LinkBacking,
-    LinkDef, NewJob, ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget,
-    PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ActionDef, ActionName, Aggregation, Cardinality, Catalog, CompareOp, ControlPlane,
+    ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect, EventType, Lineage,
+    LineageEvent, LinkBacking, LinkDef, NewJob, ObjectType, Ontology, Page, PageReq, ParamDef,
+    Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
+    SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -521,6 +521,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             ty: "EmailAddress".into(),
             required: true,
         }],
+        derived: vec![],
     };
     o.define_type(customer.clone())
         .await
@@ -540,6 +541,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 required: false,
             },
         ],
+        derived: vec![],
     };
     o.define_type(order.clone()).await.expect("define Order");
 
@@ -591,6 +593,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             ty: "Currency".into(),
             required: true,
         }],
+        derived: vec![],
     };
     o.define_type(order_v2).await.unwrap();
     assert_eq!(
@@ -709,6 +712,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 required: false,
             },
         ],
+        derived: vec![],
     })
     .await
     .expect("define Widget");
@@ -776,6 +780,61 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.get_action(&ActionName("nope".into())).await,
         Err(ControlPlaneError::NotFound(_))
     ));
+
+    // --- Derived properties ---
+    o.define_type(ObjectType {
+        name: tn("Account"),
+        properties: vec![PropertyDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+        }],
+        derived: vec![
+            DerivedPropertyDef {
+                name: "txnCount".into(),
+                ty: "Long".into(),
+                link: "transactions".into(),
+                agg: Aggregation::Count,
+            },
+            DerivedPropertyDef {
+                name: "balance".into(),
+                ty: "Double".into(),
+                link: "transactions".into(),
+                agg: Aggregation::Sum("amount".into()),
+            },
+        ],
+        table: tref("main", "account"),
+    })
+    .await
+    .expect("define Account with derived");
+    let got = o.get_type(&tn("Account")).await.unwrap();
+    assert_eq!(
+        got.derived
+            .iter()
+            .map(|d| d.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["txnCount".to_string(), "balance".to_string()],
+        "derived order preserved"
+    );
+    assert_eq!(got.derived[0].agg, Aggregation::Count);
+    assert_eq!(got.derived[1].agg, Aggregation::Sum("amount".into()));
+    // Redefine with fewer derived -> replaced.
+    o.define_type(ObjectType {
+        name: tn("Account"),
+        properties: vec![PropertyDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+        }],
+        derived: vec![],
+        table: tref("main", "account"),
+    })
+    .await
+    .unwrap();
+    assert!(
+        o.get_type(&tn("Account")).await.unwrap().derived.is_empty(),
+        "redefine replaces derived"
+    );
 }
 
 /// Contract for the `Acl` ops. `a` must be freshly empty.
@@ -921,6 +980,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
                 required: false,
             })
             .collect(),
+        derived: vec![],
         table: TableRef {
             schema: "main".into(),
             name: "customer".into(),

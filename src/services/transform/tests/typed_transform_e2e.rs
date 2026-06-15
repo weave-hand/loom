@@ -179,6 +179,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
         .define_type(ObjectType {
             name: TypeName("Customer".into()),
             properties: vec![prop("id", "Long", true), prop("region", "String", false)],
+            derived: vec![],
             table: customers.clone(),
         })
         .await
@@ -191,6 +192,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
                 prop("customer_id", "Long", true),
                 prop("amount", "Double", true),
             ],
+            derived: vec![],
             table: orders.clone(),
         })
         .await
@@ -206,6 +208,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
                 prop("region", "String", false),
                 prop("amount", "Double", false),
             ],
+            derived: vec![],
             table: enriched.clone(),
         })
         .await
@@ -368,6 +371,7 @@ async fn non_conforming_typed_transform_commits_nothing() {
         .define_type(ObjectType {
             name: TypeName("Customer".into()),
             properties: vec![prop("id", "Long", true), prop("region", "String", false)],
+            derived: vec![],
             table: customers.clone(),
         })
         .await
@@ -380,6 +384,7 @@ async fn non_conforming_typed_transform_commits_nothing() {
         .define_type(ObjectType {
             name: TypeName("CustomerBad".into()),
             properties: vec![prop("id", "Long", true), prop("region", "String", false)],
+            derived: vec![],
             table: bad.clone(),
         })
         .await
