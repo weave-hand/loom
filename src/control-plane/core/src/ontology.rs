@@ -73,6 +73,28 @@ pub struct LinkDef {
     pub backing: LinkBacking,
 }
 
+/// A named ontology action (e.g. "createCustomer").
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ActionName(pub String);
+
+/// A typed input to an action. `ty` is the ontology's logical vocabulary (like `PropertyDef.ty`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamDef {
+    pub name: String,
+    pub ty: String,
+    pub required: bool,
+}
+
+/// A named ontology operation. Part-1 semantics: insert one new instance of `target`,
+/// taking a value for each parameter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionDef {
+    pub name: ActionName,
+    pub target: TypeName,
+    /// Ordered.
+    pub parameters: Vec<ParamDef>,
+}
+
 #[async_trait]
 pub trait Ontology {
     /// Create or replace an object type and its full (ordered) property list. Upsert.
@@ -90,4 +112,8 @@ pub trait Ontology {
     async fn links(&self, name: &TypeName, page: PageReq) -> Result<Page<LinkDef>>;
     /// The physical DuckLake table backing `name`. `NotFound` if the type is absent.
     async fn resolve(&self, name: &TypeName) -> Result<TableRef>;
+    /// Create or replace a named action and its ordered parameter list. Upsert.
+    async fn define_action(&self, action: ActionDef) -> Result<()>;
+    /// Fetch an action by name. `NotFound` if absent.
+    async fn get_action(&self, name: &ActionName) -> Result<ActionDef>;
 }

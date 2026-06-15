@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ControlPlaneError, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, PropertyDef,
-    Result, TableRef, TypeName,
+    ActionDef, ActionName, ControlPlaneError, LinkBacking, LinkDef, ObjectType, Ontology, Page,
+    PageReq, ParamDef, PropertyDef, Result, TableRef, TypeName,
 };
 
 use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
@@ -193,6 +193,74 @@ impl Ontology for PgControlPlane {
         Ok(TableRef {
             schema: row.table_schema,
             name: row.table_name,
+        })
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn define_action(&self, action: ActionDef) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        sqlx::query!(
+            "insert into ontology.action (name, target_type) values ($1, $2) \
+             on conflict (name) do update set target_type = excluded.target_type",
+            action.name.0,
+            action.target.0,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query!(
+            "delete from ontology.action_param where action_name = $1",
+            action.name.0,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        for (i, p) in action.parameters.iter().enumerate() {
+            sqlx::query!(
+                "insert into ontology.action_param (action_name, ordinal, name, ty, required) \
+                 values ($1, $2, $3, $4, $5)",
+                action.name.0,
+                i as i32,
+                p.name,
+                p.ty,
+                p.required,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(())
+    }
+
+    async fn get_action(&self, name: &ActionName) -> Result<ActionDef> {
+        let row = sqlx::query!(
+            "select target_type from ontology.action where name = $1",
+            name.0,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))?;
+        let params = sqlx::query!(
+            "select name, ty, required from ontology.action_param \
+             where action_name = $1 order by ordinal",
+            name.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(ActionDef {
+            name: name.clone(),
+            target: TypeName(row.target_type),
+            parameters: params
+                .into_iter()
+                .map(|r| ParamDef {
+                    name: r.name,
+                    ty: r.ty,
+                    required: r.required,
+                })
+                .collect(),
         })
     }
 }

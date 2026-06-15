@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, ty, required from ontology.action_param where action_name = $1 order by ordinal",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_param",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ty",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_param",
+            "name": "ty"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "required",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_param",
+            "name": "required"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7ec73e98c5979e401bbe33edabdbb7708737ba08ee6ca56933e97d19c9145285"
+}
