@@ -291,6 +291,117 @@ pub fn compile_select(
     Ok((sql, params))
 }
 
+/// One type in a traversal chain: its physical table and the ACL row-filters that
+/// govern it. Every hop's row-filters are ANDed into the join — the chain is governed
+/// at every type, not just its endpoints.
+pub struct ChainType {
+    pub table: TableRef,
+    pub row_filters: Vec<RowFilter>,
+}
+
+/// Compile a governed multi-hop traversal. `types` is the chain `[t_0 .. t_k]`
+/// (`t_0` = source, `t_k` = final target); `hops[i]` is the link backing connecting
+/// `types[i]` (from) to `types[i+1]` (to). Only the final target is projected
+/// (`allowed_cols`, `mask_cols` rendered as the marker). `source_eq_filters` bind to
+/// the source `t_0`. Every type's row-filters are ANDed into the WHERE.
+///
+/// Precondition: `types.len() == hops.len() + 1` and `hops` is non-empty (`k >= 1`).
+/// Mirrors `compile_traversal`: row filters are validated up front so the `filter_sql`
+/// invariant arms cannot panic.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_chain(
+    types: &[ChainType],
+    hops: &[LinkBacking],
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    source_eq_filters: &[(String, SqlValue)],
+    limit: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    debug_assert_eq!(types.len(), hops.len() + 1, "chain types must be hops + 1");
+    for t in types {
+        for f in &t.row_filters {
+            validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+        }
+    }
+    let k = hops.len();
+    let alias = |i: usize| format!("t_{i}");
+    let tbl = |t: &TableRef| format!("{}.{}", quote_ident(&t.schema), quote_ident(&t.name));
+
+    // Projection: final target `t_k` only.
+    let final_alias = alias(k);
+    let cols = allowed_cols
+        .iter()
+        .map(|c| {
+            if mask_cols.iter().any(|m| m == c) {
+                format!("'{MASK_MARKER}' AS {}", quote_ident(c))
+            } else {
+                format!("{final_alias}.{}", quote_ident(c))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // FROM final target, then JOIN each predecessor down to the source.
+    let mut from = format!("{} {}", tbl(&types[k].table), final_alias);
+    for i in (1..=k).rev() {
+        let to_alias = alias(i);
+        let from_alias = alias(i - 1);
+        let from_tbl = tbl(&types[i - 1].table);
+        match &hops[i - 1] {
+            LinkBacking::ForeignKey {
+                from_column,
+                to_column,
+            } => {
+                from.push_str(&format!(
+                    " JOIN {from_tbl} {from_alias} ON {from_alias}.{} = {to_alias}.{}",
+                    quote_ident(from_column),
+                    quote_ident(to_column),
+                ));
+            }
+            LinkBacking::JoinTable {
+                table,
+                from_key,
+                from_column,
+                to_column,
+                to_key,
+            } => {
+                let jt = tbl(table);
+                let j = format!("j{i}");
+                from.push_str(&format!(
+                    " JOIN {jt} {j} ON {j}.{} = {to_alias}.{} JOIN {from_tbl} {from_alias} ON {from_alias}.{} = {j}.{}",
+                    quote_ident(to_column),
+                    quote_ident(to_key),
+                    quote_ident(from_key),
+                    quote_ident(from_column),
+                ));
+            }
+        }
+    }
+
+    // WHERE: source eq-filters (`t_0`), then every type's row-filters in chain order.
+    let mut params = Vec::new();
+    let mut conjuncts: Vec<String> = Vec::new();
+    let src_alias = alias(0);
+    for (col, val) in source_eq_filters {
+        conjuncts.push(format!("({src_alias}.{} = ?)", quote_ident(col)));
+        params.push(val.clone());
+    }
+    for (i, t) in types.iter().enumerate() {
+        let a = alias(i);
+        for f in &t.row_filters {
+            conjuncts.push(filter_sql(f, &a, &mut params));
+        }
+    }
+
+    let mut sql = format!("SELECT DISTINCT {cols} FROM {from}");
+    if !conjuncts.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conjuncts.join(" AND "));
+    }
+    sql.push_str(&format!(" LIMIT {limit}"));
+    Ok((sql, params))
+}
+
 /// Compile a governed link traversal into a single read-only SELECT DISTINCT.
 /// `f` aliases the source table, `t` the target; for a join-table backing, `j` is
 /// the mapping table. Target columns are projected (masked ones emit the marker);

@@ -1,6 +1,6 @@
 use control_plane_core::{Aggregation, CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::serving::SqlValue;
-use query_api::sql::{DerivedAggregate, DerivedSelect, compile_select};
+use query_api::sql::{ChainType, DerivedAggregate, DerivedSelect, compile_chain, compile_select};
 
 fn t() -> TableRef {
     TableRef {
@@ -391,4 +391,189 @@ fn masked_derived_emits_marker_no_subquery_no_alias() {
         "SELECT \"id\", '***' AS \"orderCount\" FROM \"main\".\"customer\" LIMIT 100"
     );
     assert!(params.is_empty());
+}
+
+fn tr(schema: &str, name: &str) -> TableRef {
+    TableRef {
+        schema: schema.into(),
+        name: name.into(),
+    }
+}
+
+#[test]
+fn chain_two_hop_fk_compiles_to_nested_joins() {
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![],
+        },
+        ChainType {
+            table: tr("main", "line_items"),
+            row_filters: vec![],
+        },
+    ];
+    let hops = vec![
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "order_id".into(),
+        },
+    ];
+    let (sql, params) = compile_chain(
+        &types,
+        &hops,
+        &["id".to_string(), "sku".to_string()],
+        &[],
+        &[("region".to_string(), SqlValue::Text("CA".into()))],
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_2.\"id\", t_2.\"sku\" FROM \"main\".\"line_items\" t_2 \
+         JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
+         WHERE (t_0.\"region\" = ?) LIMIT 100"
+    );
+    assert_eq!(params, vec![SqlValue::Text("CA".into())]);
+}
+
+#[test]
+fn chain_fk_then_jointable_adds_mapping_join_for_that_hop_only() {
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![],
+        },
+        ChainType {
+            table: tr("main", "tags"),
+            row_filters: vec![],
+        },
+    ];
+    let hops = vec![
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+        LinkBacking::JoinTable {
+            table: tr("main", "order_tag"),
+            from_key: "id".into(),
+            from_column: "order_id".into(),
+            to_column: "tag_id".into(),
+            to_key: "id".into(),
+        },
+    ];
+    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], &[], 100).unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_2.\"name\" FROM \"main\".\"tags\" t_2 \
+         JOIN \"main\".\"order_tag\" j2 ON j2.\"tag_id\" = t_2.\"id\" \
+         JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = j2.\"order_id\" \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" LIMIT 100"
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![RowFilter::Compare {
+                property: "status".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Text("shipped".into()),
+            }],
+        },
+        ChainType {
+            table: tr("main", "line_items"),
+            row_filters: vec![],
+        },
+    ];
+    let hops = vec![
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "order_id".into(),
+        },
+    ];
+    let (sql, params) = compile_chain(
+        &types,
+        &hops,
+        &["id".to_string()],
+        &[],
+        &[("region".to_string(), SqlValue::Text("CA".into()))],
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
+         JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
+         WHERE (t_0.\"region\" = ?) AND (t_1.\"status\" = ?) LIMIT 100"
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("CA".into()),
+            SqlValue::Text("shipped".into())
+        ]
+    );
+}
+
+#[test]
+fn chain_single_hop_reproduces_traversal_semantics() {
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![RowFilter::Compare {
+                property: "region".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Text("CA".into()),
+            }],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![],
+        },
+    ];
+    let hops = vec![LinkBacking::ForeignKey {
+        from_column: "id".into(),
+        to_column: "customer_id".into(),
+    }];
+    let (sql, params) = compile_chain(
+        &types,
+        &hops,
+        &["id".to_string(), "secret".to_string()],
+        &["secret".to_string()],
+        &[],
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_1.\"id\", '***' AS \"secret\" FROM \"main\".\"orders\" t_1 \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
+         WHERE (t_0.\"region\" = ?) LIMIT 100"
+    );
+    assert_eq!(params, vec![SqlValue::Text("CA".into())]);
 }
