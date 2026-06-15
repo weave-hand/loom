@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use control_plane_core::{ControlPlane, Job};
+use control_plane_core::{ControlPlane, Job, JobFailure, RetryPolicy};
 use control_plane_worker::Worker;
 use object_store::ObjectStore;
 use tokio_util::sync::CancellationToken;
@@ -31,7 +31,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 async move {
                     match job.kind.as_str() {
                         "typed-transform" => typed_transform_handler(cp.as_ref(), store, job).await,
-                        _ => transform_handler(cp.as_ref(), store, job).await,
+                        "transform" => transform_handler(cp.as_ref(), store, job).await,
+                        other => Err(JobFailure {
+                            error: format!("unknown job kind: {other}"),
+                            policy: RetryPolicy::Abandon,
+                        }),
                     }
                 }
             },

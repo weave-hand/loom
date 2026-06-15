@@ -103,7 +103,7 @@ struct TypedTransformPayload {
     sql: String,
 }
 
-/// Run one TYPED transform job. Inputs/output are ontology type names; the SQL
+/// Run one typed transform job. Inputs/output are ontology type names; the SQL
 /// references inputs by type name; the result must conform to the output type.
 pub async fn typed_transform_handler(
     cp: &dyn ControlPlane,
@@ -119,8 +119,8 @@ pub async fn typed_transform_handler(
             });
         }
     };
-    let inputs: Vec<TypeName> = payload.inputs.iter().map(|s| TypeName(s.clone())).collect();
-    let output = TypeName(payload.output.clone());
+    let inputs: Vec<TypeName> = payload.inputs.into_iter().map(TypeName).collect();
+    let output = TypeName(payload.output);
     let run_id = Uuid::new_v4().to_string();
 
     let res = run_typed_transform(cp, store, &run_id, &inputs, &output, &payload.sql).await;
