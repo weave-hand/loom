@@ -1,7 +1,7 @@
-# BXL coverage — discover + run + report for all PURE-LOGIC crates under //src.
+# BXL coverage — discover + run + report for ALL crates under //src.
 #
 # Run:  buck2 bxl -j 6 //tools/coverage:cov.bxl:cov
-#       buck2 bxl -j 6 //tools/coverage:cov.bxl:cov -- --crate control-plane/memory
+#       buck2 bxl -j 6 //tools/coverage:cov.bxl:cov -- --crate control-plane/postgres
 # Prints the path to the `combined` output dir (lcov.info + report.txt) on the
 # last line. A per-crate dir is also materialized for each crate covered.
 #
@@ -11,16 +11,18 @@
 # it). So only this build path is instrumented; normal builds / `buck2 test`
 # are byte-for-byte unchanged.
 #
-# SCOPE: pure-logic crates only. Fixture crates (postgres, worker, ingest,
-# query-api) boot initdb/postgres/duckdb and can't run instrumented under this
-# path; Task 3 adds them with local_only. Fixtures are identified by PACKAGE:
-# any rust_test whose package is one of FIXTURE_PACKAGES is skipped. We tried
-# classifying by the `remote_execution` attr (the `loom_fixture_test` macro sets
-# it to "disabled"), but that is UNRELIABLE: not every fixture test goes through
-# the macro — e.g. //src/services/ingest:materialize is a bare rust_test with no
-# such attr, yet it boots a DB and fails on RE. Package membership is the robust
-# signal, so that is what we use. Pure-logic actions are NOT pinned local_only,
-# so they are RE-eligible.
+# SCOPE: all crates, pure-logic AND fixture. Fixture crates (postgres, worker,
+# ingest, query-api) boot initdb/postgres/duckdb and refuse to run as root, so
+# their test *run* actions are pinned local_only and handed the postgres/duckdb
+# env (built once from the same source targets `loom_fixture_test` uses — see
+# FIXTURE_ENV below, mirrored from src/control-plane/postgres/defs.bzl). Their
+# build stays RE-eligible; only the `run_one` action is local. Pure-logic crates
+# run RE-eligible with no env, exactly as before. Fixtures are identified by
+# PACKAGE (FIXTURE_PACKAGES): robust, because not every fixture test goes through
+# the `loom_fixture_test` macro (e.g. //src/services/ingest:materialize is a bare
+# rust_test that still boots a DB), so the `remote_execution` attr is unreliable.
+# The report.sh / combined-merge actions stay RE-eligible — they only run
+# llvm-profdata/llvm-cov, no DB.
 #
 # DETERMINISTIC OBJECT ORDERING (critical for a reproducible %):
 #   Each rust_test binary statically links the whole crate library, so the same
@@ -33,35 +35,34 @@
 #   sorting each group's binaries with a single stable key: the test label name
 #   (lexicographic). Same inputs -> same object order -> same %, every run.
 #
-#   Linked-but-not-fixture deps still surface: a pure-logic test that links
-#   another pure-logic lib (e.g. memory's tests link :core) reports that lib's
-#   sources too, at whatever % those tests happen to drive. That's a legitimate
-#   coverage signal (not fixture noise), so we keep it — only the fixture/testkit
-#   library objects are stripped, by IGNORE below. Consequence: a single-crate
-#   run (`--crate control-plane/memory`) shows core/* rows; the full run folds
-#   them into core's own (higher) numbers via the combined merge.
-#
-# WORKING BXL API (verified against the pinned buck2):
-#   - Entry:              cov = bxl_main(impl=_cov_impl, cli_args={"crate": ...})
-#   - Optional CLI arg:   cli_args.option(cli_args.string()) ; read ctx.cli_args.crate
-#   - Action handle:      ba = ctx.bxl_actions(); actions = ba.actions
-#   - String label->ct:   ctx.configured_targets("toolchains//:llvm-x86_64-linux")
-#   - Discover:           ctx.uquery().kind("rust_test", ctx.uquery().eval("//path/..."))
-#                         (UNCONFIGURED nodes, alphabetical; node.label is usable)
-#   - Package of a node:  str(node.label.package) (used to skip fixtures)
-#   - Apply a modifier:   ctx.configured_targets(node.label, modifiers = [...])
-#   - Configured -> out:  ctx.analysis(ct).providers()[DefaultInfo].default_outputs[0]
-#   - Declare outputs:    actions.declare_output("name") / declare_output("d", dir=True)
-#   - Run an action:      actions.run(cmd_args([...]), category=, identifier=)
-#   - Materialize+print:  ctx.output.print(ctx.output.ensure(out_dir))
+# PER-CRATE-SCOPED FILTERING (replaces the old single global IGNORE):
+#   Every rust_test statically links its crate lib AND that lib's first-party
+#   deps, so one binary's profile carries counters for OTHER crates' sources too
+#   (e.g. memory's tests link :core; runtime links postgres/testkit). The old
+#   approach used ONE global -ignore-filename-regex that stripped the fixture
+#   packages + testkit — fine while fixtures were unmeasured, but now that we run
+#   the fixture crates that global strip would HIDE their real coverage. So we
+#   scope per crate instead:
+#     - A per-crate report for crate X uses `_ignore_for(X)`: a regex that
+#       excludes EVERY other first-party package's `src/<pkg>/`, plus third-party,
+#       absolute/stdlib paths, and any `/tests/`. Result: crate X's report shows
+#       ONLY `src/<X>/src/**` rows (including the fixture crates' own coverage),
+#       never linked-but-unexercised siblings at 0%.
+#     - The COMBINED report uses `_combined_ignore()`: keep ALL 7 crates' own
+#       src, exclude only third-party, absolute/stdlib, `/tests/`, and testkit
+#       (the shared contract harness, not a measured crate).
+#   The regex matches the EMBEDDED source path (the lcov `SF:` path), which keeps
+#   its leading `src/` (e.g. `src/control-plane/postgres/src/acl.rs`) — even
+#   though the llvm-cov *report* display strips a common prefix. So anchor on the
+#   full `src/<package>/` form.
 
 # Applied as a configuration modifier so the test binaries (and the lib deps
 # they statically link) compile with -Cinstrument-coverage — no global config.
 COVERAGE_MODIFIERS = ["root//tools/coverage:coverage_enabled"]
 
-# Fixture crates: boot initdb/postgres/duckdb, can't run instrumented on RE.
-# Classified by PACKAGE (robust) rather than by the remote_execution attr — see
-# the SCOPE note above for why the attr is unreliable.
+# Fixture crates: boot initdb/postgres/duckdb, can't run as root on RE. Run their
+# test actions local_only with FIXTURE_ENV. Classified by PACKAGE (robust) rather
+# than by the remote_execution attr — see the SCOPE note above for why.
 FIXTURE_PACKAGES = [
     "src/control-plane/postgres",
     "src/control-plane/worker",
@@ -69,31 +70,52 @@ FIXTURE_PACKAGES = [
     "src/services/query-api",
 ]
 
-# Crates we never want to attribute coverage to, even though a pure-logic test
-# binary STATICALLY LINKS them as library deps (so their objects carry counters).
-# llvm-cov would otherwise emit 0% rows for every linked-but-unexercised source —
-# e.g. //src/services/runtime:config links :runtime -> postgres -> testkit, so
-# control-plane/postgres/src/* and control-plane/testkit/* would leak into the
-# report at 0%. We drop those source paths by -ignore-filename-regex. NOTE the
-# regex matches the EMBEDDED source path (the lcov `SF:` path), which keeps its
-# leading `src/` (e.g. `src/control-plane/postgres/src/acl.rs`) — even though the
-# llvm-cov *report* display strips a common prefix. So anchor on the full
-# `src/<package>/` form. (`testkit` is the shared contract harness, not a
-# pure-logic crate under test.)
-_IGNORE_PACKAGES = FIXTURE_PACKAGES + ["src/control-plane/testkit"]
+# All first-party packages: the 7 measured crate packages + testkit (the shared
+# contract harness, NOT a measured crate). Used to build the per-crate and
+# combined ignore regexes.
+FIRST_PARTY_PACKAGES = [
+    "src/control-plane/core",
+    "src/control-plane/memory",
+    "src/control-plane/postgres",
+    "src/control-plane/worker",
+    "src/control-plane/testkit",
+    "src/services/runtime",
+    "src/services/ingest",
+    "src/services/query-api",
+]
 
-def _ignore_regex():
-    parts = ["^/", "^third-party/", "/tests/"]
-    for pkg in _IGNORE_PACKAGES:
-        parts.append("^" + pkg + "/")
+# Common exclusions for every report: stdlib/absolute paths, third-party crates,
+# and test sources.
+_COMMON_IGNORE = ["^/", "^third-party/", "/tests/"]
+
+def _ignore_for(keep_pkg):
+    # Per-crate scope: exclude every first-party package EXCEPT keep_pkg, so the
+    # report shows only `src/<keep_pkg>/src/**`.
+    parts = list(_COMMON_IGNORE)
+    for pkg in FIRST_PARTY_PACKAGES:
+        if pkg != keep_pkg:
+            parts.append("^" + pkg + "/")
     return "|".join(parts)
 
-IGNORE = _ignore_regex()
+def _combined_ignore():
+    # Combined scope: keep all 7 measured crates' src; drop only testkit among
+    # the first-party packages (plus the common exclusions).
+    parts = list(_COMMON_IGNORE)
+    parts.append("^src/control-plane/testkit/")
+    return "|".join(parts)
+
+COMBINED_IGNORE = _combined_ignore()
 
 def _is_fixture(node):
     return str(node.label.package) in FIXTURE_PACKAGES
 
-def _emit(ctx, actions, llvm, run_one, report_sh, name, nodes):
+def _out0(ctx, lbl):
+    # Default output[0] of an UNMODIFIED configured target (env tools — built
+    # normally, not instrumented).
+    return ctx.analysis(ctx.configured_targets(lbl)).providers()[DefaultInfo].default_outputs[0]
+
+def _emit(ctx, actions, llvm, run_one, report_sh, pkg, nodes, fixture, fixture_env):
+    name = pkg.replace("/", "_")
     # Sort by label name: single stable deterministic key -> reproducible object
     # order -> reproducible coverage %. See the ordering note at the top.
     bins = []
@@ -102,17 +124,26 @@ def _emit(ctx, actions, llvm, run_one, report_sh, name, nodes):
         ct = ctx.configured_targets(node.label, modifiers = COVERAGE_MODIFIERS)
         bin = ctx.analysis(ct).providers()[DefaultInfo].default_outputs[0]
         pr = actions.declare_output("prof/{}/{}.profraw".format(name, node.label.name))
+        run_kwargs = {}
+        if fixture:
+            # Fixtures boot postgres/duckdb: run local with the DB env. Build is
+            # still RE-eligible; only this run action is pinned local.
+            run_kwargs["local_only"] = True
+            run_kwargs["env"] = fixture_env
         actions.run(
             cmd_args(["bash", run_one, pr.as_output(), bin]),
             category = "coverage_run",
             identifier = "{}:{}".format(name, node.label.name),
+            **run_kwargs
         )
         bins.append(bin)
         profraws.append(pr)
 
+    # Per-crate report keeps ONLY this crate's own src (see filtering note).
+    ignore = _ignore_for(pkg)
     out_dir = actions.declare_output(name, dir = True)
     profdata = actions.declare_output("{}.profdata".format(name))
-    args = cmd_args(["bash", report_sh, cmd_args(llvm), out_dir.as_output(), profdata.as_output(), IGNORE])
+    args = cmd_args(["bash", report_sh, cmd_args(llvm), out_dir.as_output(), profdata.as_output(), ignore])
     args.add(profraws)
     args.add("--")
     args.add(bins)
@@ -127,16 +158,39 @@ def _cov_impl(ctx):
     run_one = ctx.analysis(ctx.configured_targets("//tools/coverage:run-one")).providers()[DefaultInfo].default_outputs[0]
     report_sh = ctx.analysis(ctx.configured_targets("//tools/coverage:report-sh")).providers()[DefaultInfo].default_outputs[0]
 
+    # Fixture env, built ONCE from the same source targets `loom_fixture_test`
+    # uses (mirrored from src/control-plane/postgres/defs.bzl). The full
+    # postgres+duckdb env is harmless on non-duckdb fixture tests.
+    pg = _out0(ctx, "//src/control-plane/postgres:postgres-bin")
+    xml = _out0(ctx, "//src/control-plane/postgres:libxml2")
+    migr = _out0(ctx, "//src/control-plane/postgres:migrations")
+    duck = _out0(ctx, "//src/control-plane/postgres:duckdb-cli")
+    duckext = _out0(ctx, "//src/control-plane/postgres:duckdb-extensions")
+    fixture_env = {
+        "POSTGRES_BIN_DIR": cmd_args(pg, format = "{}/bin"),
+        "POSTGRES_LD_LIBRARY_PATH": cmd_args(cmd_args(pg, format = "{}/lib"), xml, delimiter = ":"),
+        "LOOM_MIGRATIONS_DIR": cmd_args(migr, format = "{}/migrations"),
+        "DUCKDB_BIN": cmd_args(duck),
+        "DUCKDB_EXTENSION_DIR": cmd_args(duckext),
+        # The fixture creates its postgres unix socket under TMPDIR
+        # (tempfile::tempdir -> std::env::temp_dir). buck sets TMPDIR for an
+        # action to a DEEP buck-out path, which overflows the ~107-char
+        # sockaddr_un limit ("could not create any Unix-domain sockets") and the
+        # fixture panics before exercising any production code (only fixture.rs
+        # gets partial coverage). buck2's own test runner gives these tests a
+        # short TMPDIR, which is why `loom_fixture_test` doesn't need this; under
+        # a BXL action we must pin a short TMPDIR ourselves.
+        "TMPDIR": "/tmp",
+    }
+
     crate = ctx.cli_args.crate
     universe = "//src/{}/...".format(crate) if crate else "//src/..."
 
     tests = ctx.uquery().kind("rust_test", ctx.uquery().eval(universe))
 
-    # Group pure-logic tests by crate package; skip fixtures.
+    # Group ALL tests by crate package (fixtures included now).
     groups = {}
     for node in tests:
-        if _is_fixture(node):
-            continue
         pkg = str(node.label.package)
         groups.setdefault(pkg, []).append(node)
 
@@ -144,18 +198,29 @@ def _cov_impl(ctx):
     all_profraws = []
     # Iterate packages in sorted order for determinism.
     for pkg in sorted(groups.keys()):
-        name = pkg.replace("/", "_")
-        out_dir, bins, profraws = _emit(ctx, actions, llvm, run_one, report_sh, name, groups[pkg])
+        fixture = pkg in FIXTURE_PACKAGES
+        out_dir, bins, profraws = _emit(
+            ctx,
+            actions,
+            llvm,
+            run_one,
+            report_sh,
+            pkg,
+            groups[pkg],
+            fixture,
+            fixture_env,
+        )
         ctx.output.print("CRATE {} -> {}".format(pkg, ctx.output.ensure(out_dir)))
         all_bins.extend(bins)
         all_profraws.extend(profraws)
 
-    # One combined report across ALL pure-logic bins/profraws. Bins are appended
-    # in sorted-package then sorted-label order, so the combined object order is
-    # deterministic too.
+    # One combined report across ALL bins/profraws. Bins are appended in
+    # sorted-package then sorted-label order, so the combined object order is
+    # deterministic too. Uses COMBINED_IGNORE (keep all 7 crates' src, drop
+    # testkit) — a DIFFERENT regex than the per-crate reports.
     combined_dir = actions.declare_output("combined", dir = True)
     combined_profdata = actions.declare_output("combined.profdata")
-    args = cmd_args(["bash", report_sh, cmd_args(llvm), combined_dir.as_output(), combined_profdata.as_output(), IGNORE])
+    args = cmd_args(["bash", report_sh, cmd_args(llvm), combined_dir.as_output(), combined_profdata.as_output(), COMBINED_IGNORE])
     args.add(all_profraws)
     args.add("--")
     args.add(all_bins)
