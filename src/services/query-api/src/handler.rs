@@ -98,6 +98,15 @@ fn project_allowed(
         .collect()
 }
 
+/// The target column a derived aggregate reads, if any (COUNT reads none).
+fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
+    use control_plane_core::Aggregation::*;
+    match a {
+        Count => None,
+        Sum(c) | Avg(c) | Min(c) | Max(c) => Some(c.as_str()),
+    }
+}
+
 pub async fn read_object(
     q: &ObjectQuery,
     subject: &Subject,
@@ -147,21 +156,82 @@ pub async fn read_object(
         }
     }
 
+    // Derived properties (aggregate-over-link), governed both-ends. Resolved + appended
+    // after the physical projection, in declaration order; omitted (like a denied column)
+    // when the subject can't read the linked type, the link/target is missing, or the
+    // aggregated column is denied on the target — never an error, just absent.
+    let mut derived_names: Vec<String> = Vec::new();
+    let mut derived_types: Vec<String> = Vec::new();
+    let mut derived_selects: Vec<crate::sql::DerivedSelect> = Vec::new();
+    if !object_type.derived.is_empty() {
+        let links = deps
+            .ontology
+            .links(&type_name, PageReq::unbounded())
+            .await?;
+        for d in &object_type.derived {
+            if denied.contains(&d.name) {
+                continue;
+            }
+            if masked.contains(&d.name) {
+                derived_names.push(d.name.clone());
+                derived_types.push(d.ty.clone());
+                derived_selects.push(crate::sql::DerivedSelect::Masked(d.name.clone()));
+                continue;
+            }
+            let Some(link) = links.items.iter().find(|l| l.name == d.link) else {
+                continue; // missing link -> omit (no define-time validation in part-1)
+            };
+            let target_pt = PolicyTarget::Type(link.to.clone());
+            // Both-ends: the subject must be permitted to read the linked type.
+            if deps.acl.check(&subject.0, Action::Read, &target_pt).await? == Decision::Deny {
+                continue;
+            }
+            let target_type = match deps.ontology.get_type(&link.to).await {
+                Ok(t) => t,
+                Err(ControlPlaneError::NotFound(_)) => continue, // target type gone -> omit
+                Err(other) => return Err(QueryError::ControlPlane(other)),
+            };
+            let (t_filters, t_denied, _t_masked) =
+                load_policy(deps.acl, &subject.0, &target_pt).await?;
+            // Don't leak a target column the subject may not see, via an aggregate over it.
+            if let Some(col) = agg_column(&d.agg)
+                && t_denied.contains(col)
+            {
+                continue;
+            }
+            derived_names.push(d.name.clone());
+            derived_types.push(d.ty.clone());
+            derived_selects.push(crate::sql::DerivedSelect::Aggregate(Box::new(
+                crate::sql::DerivedAggregate {
+                    name: d.name.clone(),
+                    agg: d.agg.clone(),
+                    backing: link.backing.clone(),
+                    target_table: target_type.table.clone(),
+                    target_filters: t_filters,
+                },
+            )));
+        }
+    }
+
     let (sql, params) = compile_select(
         &object_type.table,
         &allowed,
         &mask_cols,
         &row_filters,
         &q.eq_filters,
-        &[],
+        &derived_selects,
         DEFAULT_LIMIT,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
-    // Logical type per projected column, in `allowed` order — which is the SELECT
-    // order compile_select emits, hence the order of `served.rows`' cells. A column
-    // with no matching property (cannot happen post-projection) maps to "" -> the
-    // renderer's natural fallback.
-    let logical_types: Vec<String> = allowed
+    // Output columns = physical `allowed` (in order) ++ surviving derived (in order).
+    let mut columns = allowed.clone();
+    columns.extend(derived_names.iter().cloned());
+    // Logical type per projected column, in output order — which is the SELECT order
+    // compile_select emits, hence the order of `served.rows`' cells. Physical columns map
+    // from the type's properties (a column with no matching property — cannot happen
+    // post-projection — maps to "" -> the renderer's natural fallback); derived columns
+    // carry their declared `ty`.
+    let mut logical_types: Vec<String> = allowed
         .iter()
         .map(|name| {
             object_type
@@ -172,17 +242,18 @@ pub async fn read_object(
                 .unwrap_or_default()
         })
         .collect();
-    // compile_select SELECTs `allowed` verbatim, in order, so the serving engine must
-    // echo those exact column names — that is the contract that lets us zip
-    // `logical_types`/`columns` onto each row's cells by position. Guard it in debug so
-    // any future SQL-rewrite that reorders columns is caught by the test suite rather
-    // than silently mis-typing the output.
+    logical_types.extend(derived_types.iter().cloned());
+    // compile_select SELECTs `allowed` then the surviving derived columns, in order, so
+    // the serving engine must echo those exact column names — that is the contract that
+    // lets us zip `logical_types`/`columns` onto each row's cells by position. Guard it in
+    // debug so any future SQL-rewrite that reorders columns is caught by the test suite
+    // rather than silently mis-typing the output.
     debug_assert_eq!(
-        served.columns, allowed,
+        served.columns, columns,
         "serving engine returned columns out of the projected order"
     );
     Ok(ObjectRows {
-        columns: allowed,
+        columns,
         logical_types,
         rows: served.rows,
     })
