@@ -202,3 +202,18 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "inline-write-spike",
+    crate = "inline_write_spike",
+    srcs = ["tests/inline_write_spike.rs"],
+    crate_root = "tests/inline_write_spike.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:duckdb",
+        "//third-party:tokio",
+    ],
+)
