@@ -2,6 +2,7 @@
 //! DuckLake table(s) with DataFusion, runs a SQL query, and commits the result as a
 //! new snapshot + lineage. See docs/superpowers/specs/.
 
+pub mod conform;
 pub mod handler;
 pub mod run;
 

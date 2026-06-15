@@ -39,6 +39,18 @@ rust_binary(
     visibility = ["PUBLIC"],
 )
 
+rust_test(
+    name = "conform",
+    crate = "conform",
+    srcs = ["tests/conform.rs"],
+    crate_root = "tests/conform.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//src/control-plane/core:core",
+    ],
+)
+
 loom_fixture_test(
     name = "transform-e2e",
     crate = "transform_e2e",
