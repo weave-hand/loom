@@ -1079,7 +1079,6 @@ async fn post_action(
             (StatusCode::CREATED, Json(one)).into_response()
         }
         Err(crate::action::ActionError::UnknownAction(a)) => (StatusCode::NOT_FOUND, a).into_response(),
-        Err(crate::action::ActionError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(crate::action::ActionError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(crate::action::ActionError::BadParams(e)) => {
             (StatusCode::BAD_REQUEST, e.to_string()).into_response()
