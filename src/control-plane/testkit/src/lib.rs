@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef,
-    Decision, Effect, EventType, Lineage, LineageEvent, LinkBacking, LinkDef, NewJob, ObjectType,
-    Ontology, Page, PageReq, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId,
-    RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionName, Cardinality, Catalog, CompareOp, ControlPlane,
+    ControlPlaneError, DatasetRef, Decision, Effect, EventType, Lineage, LineageEvent, LinkBacking,
+    LinkDef, NewJob, ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget,
+    PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId,
+    TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -689,6 +690,91 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     assert!(matches!(
         o.links(&nope, PageReq::unbounded()).await,
         Err(control_plane_core::ControlPlaneError::NotFound(_))
+    ));
+
+    // --- Actions ---
+    // The target type must exist (FK in the pg adapter).
+    o.define_type(ObjectType {
+        name: tn("Widget"),
+        table: tref("main", "widget"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "name".into(),
+                ty: "String".into(),
+                required: false,
+            },
+        ],
+    })
+    .await
+    .expect("define Widget");
+
+    let create_widget = ActionDef {
+        name: ActionName("createWidget".into()),
+        target: tn("Widget"),
+        parameters: vec![
+            ParamDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            ParamDef {
+                name: "name".into(),
+                ty: "String".into(),
+                required: false,
+            },
+        ],
+    };
+    o.define_action(create_widget.clone())
+        .await
+        .expect("define action");
+    assert_eq!(
+        o.get_action(&ActionName("createWidget".into()))
+            .await
+            .unwrap(),
+        create_widget,
+        "action round-trips"
+    );
+    assert_eq!(
+        o.get_action(&ActionName("createWidget".into()))
+            .await
+            .unwrap()
+            .parameters
+            .iter()
+            .map(|p| p.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["id".to_string(), "name".to_string()],
+        "parameter order preserved"
+    );
+    // Upsert replaces the parameter list.
+    o.define_action(ActionDef {
+        name: ActionName("createWidget".into()),
+        target: tn("Widget"),
+        parameters: vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+        }],
+    })
+    .await
+    .expect("redefine action");
+    assert_eq!(
+        o.get_action(&ActionName("createWidget".into()))
+            .await
+            .unwrap()
+            .parameters
+            .len(),
+        1,
+        "redefine replaces parameters"
+    );
+    // Unknown action -> NotFound.
+    assert!(matches!(
+        o.get_action(&ActionName("nope".into())).await,
+        Err(ControlPlaneError::NotFound(_))
     ));
 }
 

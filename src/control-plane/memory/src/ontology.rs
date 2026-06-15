@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    ControlPlaneError, LinkDef, ObjectType, Ontology, Page, PageReq, Result, TableRef, TypeName,
+    ActionDef, ActionName, ControlPlaneError, LinkDef, ObjectType, Ontology, Page, PageReq, Result,
+    TableRef, TypeName,
 };
 
 use crate::MemoryControlPlane;
@@ -11,6 +12,7 @@ use crate::MemoryControlPlane;
 pub(crate) struct OntologyState {
     pub(crate) types: HashMap<String, ObjectType>,
     pub(crate) links: Vec<LinkDef>,
+    pub(crate) actions: HashMap<String, ActionDef>,
 }
 
 #[async_trait]
@@ -77,5 +79,25 @@ impl Ontology for MemoryControlPlane {
 
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {
         Ok(self.get_type(name).await?.table)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn define_action(&self, action: ActionDef) -> Result<()> {
+        self.ontology
+            .lock()
+            .unwrap()
+            .actions
+            .insert(action.name.0.clone(), action);
+        Ok(())
+    }
+
+    async fn get_action(&self, name: &ActionName) -> Result<ActionDef> {
+        self.ontology
+            .lock()
+            .unwrap()
+            .actions
+            .get(&name.0)
+            .cloned()
+            .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))
     }
 }

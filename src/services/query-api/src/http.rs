@@ -7,12 +7,12 @@ use std::sync::Arc;
 use crate::handler::{
     LinkQuery, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_objects, read_object,
 };
-use crate::serving::{ServingEngine, SqlValue};
+use crate::serving::{ActionEngine, ServingEngine, SqlValue};
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
-use axum::routing::get;
+use axum::routing::{get, post};
 use control_plane_core::{ControlPlane, SubjectId};
 
 /// Shared, owned dependencies. Holds the control plane as one object-safe facade
@@ -21,12 +21,14 @@ use control_plane_core::{ControlPlane, SubjectId};
 pub struct AppState {
     pub cp: Arc<dyn ControlPlane>,
     pub serving: Arc<dyn ServingEngine>,
+    pub action_engine: Arc<dyn ActionEngine>,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/objects/:type_name", get(get_object))
         .route("/objects/:from_type/links/:link_name", get(get_linked))
+        .route("/actions/:action_name", post(post_action))
         .with_state(state)
 }
 
@@ -112,6 +114,49 @@ async fn get_linked(
         Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    }
+}
+
+async fn post_action(
+    State(st): State<AppState>,
+    Path(action_name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let subject = headers
+        .get("X-Loom-Subject")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_string();
+    let obj = match body.as_object() {
+        Some(m) => m.clone(),
+        None => return (StatusCode::BAD_REQUEST, "body must be a JSON object").into_response(),
+    };
+    let deps = crate::action::ActionDeps {
+        cp: st.cp.as_ref(),
+        action_engine: st.action_engine.as_ref(),
+    };
+    match crate::action::run_action(&action_name, &obj, &SubjectId(subject), &deps).await {
+        Ok(rows) => {
+            let body = crate::render::objects_to_json(&rows);
+            // objects_to_json yields {"objects":[{...}]}; return the single created object.
+            let one = body
+                .get("objects")
+                .and_then(|a| a.as_array())
+                .and_then(|a| a.first())
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            (StatusCode::CREATED, Json(one)).into_response()
+        }
+        Err(crate::action::ActionError::UnknownAction(a)) => {
+            (StatusCode::NOT_FOUND, a).into_response()
+        }
+        Err(crate::action::ActionError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        Err(crate::action::ActionError::BadParams(e)) => {
+            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+        }
+        // Opaque body for backend/serving faults (no internal detail leaked).
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     }
 }

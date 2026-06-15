@@ -77,6 +77,38 @@ which delivered part-1 of richer read capability.
   target-side filtering, and returning the source→target association). Both build on the
   resolvable-link + governed-join primitive delivered here.
 
+## Actions (Step 3)
+
+From the actions part-1 slice (`2026-06-15-actions-part1-design.md`), which delivered
+governed typed insert (`POST /actions/{name}`, `Action::Write` enforcement, inline DuckLake
+write behind an `ActionEngine` trait).
+
+- **Action lineage atomicity (dangling slice).** Action writes emit lineage best-effort on a
+  separate connection *after* the DuckDB inline write (which owns its own transaction and
+  creates the DuckLake snapshot); a crash in the gap leaves a snapshot without its lineage
+  event. Close via a loom-owned DuckLake write or a compaction/reconciliation pass. Also:
+  the action's lineage event currently carries no inputs and `run_action` doesn't surface its
+  `run_id`, so the event isn't easily queryable — a correlatable action-lineage handle is part
+  of this follow-up.
+- **Action parameter ↔ property conformance.** Part-1 validates the request body against the
+  `ActionDef`'s declared parameters (`parse_params`), but does NOT cross-check at invoke time that
+  those parameters mirror the target type's properties (same names, `satisfies` logical types, all
+  required properties covered). So a misconfigured `ActionDef` (a param naming a column the type
+  lacks, or omitting a required property) surfaces as an opaque insert-time 500 rather than a clear
+  error. `define_action` trusts the author to mirror the type (consistent with the design's choice
+  to keep params/properties independent at define time). Follow-up: enforce conformance — at
+  `define_action` time (fail fast) or in `run_action` before the insert.
+- **Update/delete actions.** Part-1 is insert-only; mutating existing objects is gated on the
+  deferred row-supersession/compaction work.
+- **Custom-logic / multi-step actions.** Part-1's only action kind is "typed insert" (params
+  map to the target type's properties); actions whose params differ from properties or that
+  run bespoke logic or enqueue downstream are a follow-on.
+- **Fine-grained write governance.** Part-1 enforces coarse `Write`-on-type only; row-filter /
+  deny-write-column policy on `Write` is unbuilt (the ACL surface already models row/column
+  policy for reads).
+- **Iceberg `ActionEngine` impl.** The trait's reason for being — a second write backend behind
+  the inline-write seam, for deployments that prefer Iceberg over DuckLake inline writes.
+
 ## Cross-cutting
 
 - **Wider DataFusion <-> DuckLake type coverage.** `datafusion-io`'s `infer_columns` /

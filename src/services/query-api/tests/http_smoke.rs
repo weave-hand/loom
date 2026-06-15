@@ -14,7 +14,7 @@ use control_plane_core::{
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
-use query_api::serving::{Rows, ServingEngine, ServingError, SqlValue};
+use query_api::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue};
 use tower::ServiceExt;
 
 struct StubServing;
@@ -30,6 +30,20 @@ impl ServingEngine for StubServing {
             columns: vec!["id".into()],
             rows: vec![vec![SqlValue::Int(1)]],
         })
+    }
+}
+
+struct StubAction;
+
+#[async_trait]
+impl ActionEngine for StubAction {
+    async fn insert_row(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _values: &[SqlValue],
+    ) -> std::result::Result<(), ServingError> {
+        Ok(())
     }
 }
 
@@ -71,6 +85,7 @@ async fn get_objects_returns_json_rows() {
     let app = router(AppState {
         cp: Arc::new(seeded_control_plane().await),
         serving: Arc::new(StubServing),
+        action_engine: Arc::new(StubAction),
     });
     let res = app
         .oneshot(
