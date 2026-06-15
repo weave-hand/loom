@@ -5,9 +5,13 @@
 **Supersedes (on completion):** the per-crate genrule prototype
 (`2026-06-15-rust-coverage-prototype-design.md`) — its `//tools/coverage:core`
 genrule, `tools/coverage/cover.sh`, and the build logic in `tools/coverage.sh`
-are retired once the BXL path proves out. The config gate in `toolchains/BUCK`
-(`--config loom.coverage=true` → `-Cinstrument-coverage`) is **kept** — BXL
-builds the instrumented binaries under that same config.
+are retired once the BXL path proves out. The prototype's `read_config` flag gate in `toolchains/BUCK` is
+**replaced** by a config-free constraint-modifier mechanism: a
+`constraint_value` `//tools/coverage:coverage_enabled`, a root `PACKAGE` file
+that registers the prelude's cfg-constructor (making `modifiers=` effective),
+and `cov.bxl` applying the constraint via `modifiers = ["root//tools/coverage:coverage_enabled"]`
+in `ctx.configured_targets(...)`. What is kept from the prototype is the
+llvm-cov mechanics, not the config flag.
 
 ## Goal
 
@@ -52,7 +56,8 @@ discovery dynamic — dissolving wall #1.
 ## What the prototype keeps
 
 Not wasted — the BXL reuses the prototype's hard-won mechanics verbatim: the
-`-Cinstrument-coverage` config gate, the `-ignore-filename-regex='^/|^third-party/|/tests/'`
+`-Cinstrument-coverage` instrumentation (now triggered via the constraint
+modifier, not a config flag), the `-ignore-filename-regex='^/|^third-party/|/tests/'`
 filter (LLVM 22 ignores positional source filters), `llvm-profdata merge` +
 `llvm-cov export/report/show` invocation shapes, the `LLVM_PROFILE_FILE`
 discipline (so no `default_*.profraw` leaks into the tree), and the proof that
@@ -65,7 +70,7 @@ instrumentation links against the pinned nightly `rust-std`.
 Invoked:
 
 ```
-buck2 bxl --config loom.coverage=true //tools/coverage:cov.bxl:cov -- [--crate <name>]
+buck2 bxl //tools/coverage:cov.bxl:cov -- [--crate <name>]
 ```
 
 - No `--crate` → whole codebase (all `rust_test` under `//src/...`).
@@ -80,7 +85,9 @@ buck2 bxl --config loom.coverage=true //tools/coverage:cov.bxl:cov -- [--crate <
    resolves to `"disabled"`. (`loom_fixture_test` sets exactly that; pure-logic
    `rust_test`s leave it unset.) No hand-maintained fixture table.
 3. **Build:** `bin = ctx.analysis(node).providers()[DefaultInfo].default_outputs` —
-   instrumented because the `bxl` invocation carries `--config loom.coverage=true`.
+   instrumented because `cov.bxl` configures the test targets with the
+   `//tools/coverage:coverage_enabled` modifier (the root `PACKAGE` registers the
+   cfg-constructor that makes `modifiers=` effective).
 4. **Run as actions:** for each test, declare a `profraw` output and
    `actions.run(cmd_args(bin), env = run_env(node), local_only = is_fixture,
    category = "coverage_run", identifier = <label>)`, where `run_env` is
@@ -181,5 +188,3 @@ discipline.
 
 - No CI job / coverage gate / threshold — local dev signal only.
 - No codecov/upload.
-- The config-free **configuration-transition** pivot (instrument only the
-  coverage subtree, no `--config` needed) remains deferred.

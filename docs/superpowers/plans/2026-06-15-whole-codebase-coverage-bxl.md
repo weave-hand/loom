@@ -6,7 +6,7 @@
 
 **Architecture:** BXL is buck2's scripting layer — it can `cquery` for targets, read their attrs, `analysis()` them to get built artifacts, and register `actions.run(...)` with per-action `local_only`/`env`. The BXL discovers tests, classifies fixtures from the `remote_execution` attr, and orchestrates two tiny checked-in shell tools (`run_one.sh` per test → a `.profraw`; `report.sh` per crate → merge + `llvm-cov`). Execution heterogeneity is per-action, so pure-logic runs on RE and fixtures local in one script.
 
-**Tech Stack:** buck2 BXL (`buck2 bxl`), the pinned LLVM 22.1.2 dist (`toolchains//:llvm-x86_64-linux`), the existing `--config loom.coverage=true` gate (from the prototype), bash worker tools.
+**Tech Stack:** buck2 BXL (`buck2 bxl`), the pinned LLVM 22.1.2 dist (`toolchains//:llvm-x86_64-linux`), the config-free coverage gate (`//tools/coverage:coverage_enabled` constraint_value + root `PACKAGE` cfg-constructor; `cov.bxl` applies it via `modifiers=`), bash worker tools.
 
 **Spec:** `docs/superpowers/specs/2026-06-15-whole-codebase-coverage-bxl-design.md`
 **Prototype it builds on / will retire:** `docs/superpowers/plans/2026-06-15-rust-coverage-prototype.md`
@@ -28,6 +28,28 @@
 - `ctx.analysis(label).providers()[DefaultInfo].default_outputs[0]` → a target's built artifact (the test binary, or the llvm dist dir, or an `export_file`'d script).
 - `ctx.bxl_actions().actions` → `.declare_output(name)`, `.run(cmd_args(...), category=, identifier=, local_only=, env=)`.
 - `ctx.output.ensure(artifact)` / `ensure_multiple(...)` / `ctx.output.print(...)`.
+
+---
+
+## Task 1.5: Config-free gate — DONE
+
+**Status: already implemented and committed.**
+
+The prototype's `read_config`-based flag gate has been replaced by a
+constraint-modifier mechanism:
+
+- `tools/coverage/BUCK` defines `constraint_setting(name = "coverage")` and
+  `constraint_value(name = "coverage_enabled", ...)`.
+- The root `PACKAGE` file registers the prelude's cfg-constructor
+  (`set_cfg_constructor(...)`) so that `modifiers = [...]` / `-m` actually
+  re-configure targets (without it, modifiers are a silent no-op).
+- `toolchains/BUCK` selects the flag:
+  `rustc_flags = ["-Copt-level=2"] + select({"root//tools/coverage:coverage_enabled": ["-Cinstrument-coverage"], "DEFAULT": []})`.
+- `cov.bxl` sets `COVERAGE_MODIFIERS = ["root//tools/coverage:coverage_enabled"]`
+  and calls `ctx.configured_targets(label, modifiers = COVERAGE_MODIFIERS)`.
+- Invocation: `buck2 bxl //tools/coverage:cov.bxl:cov` — **no `--config`**.
+- For a direct instrumented `buck2 build` (e.g. wrapper HTML step): use
+  `buck2 build -m //tools/coverage:coverage_enabled <target>` — not `--config`.
 
 ---
 
@@ -151,7 +173,7 @@ cov = bxl_main(impl = _cov_impl, cli_args = {})
 
 - [ ] **Step 6: Run it, iterate to green**
 
-Run: `buck2 bxl --config loom.coverage=true //tools/coverage:cov.bxl:cov 2>&1 | tail -20`
+Run: `buck2 bxl //tools/coverage:cov.bxl:cov 2>&1 | tail -20`
 Expected: prints a path to the `core` output dir; `cat <that>/report.txt` shows the
 same table the prototype produced (TOTAL ~97.5% regions over `src/control-plane/core/src/*`).
 
@@ -274,7 +296,7 @@ Concretely, factor a helper inside `_cov_impl`:
 
 - [ ] **Step 3: Run on the 3 pure-logic crates**
 
-Run: `buck2 bxl --config loom.coverage=true //tools/coverage:cov.bxl:cov 2>&1 | tail -20`
+Run: `buck2 bxl //tools/coverage:cov.bxl:cov 2>&1 | tail -20`
 Expected: a combined `core`+`memory`+`runtime` run; `cat <combined>/report.txt`
 lists files from all three crates' `src/`. `--crate control-plane/memory` limits
 to one. (Cap with `LOOM_COVERAGE_JOBS`→`-j` only via the wrapper in Task 4; for
@@ -285,6 +307,16 @@ now add `-j 6` manually if needed.)
 Run the same command and check the buck2 summary line shows `remote:` > 0 for the
 coverage actions (O4). If RE rejects them, set `local_only = True` on the run
 actions and note it; coverage is still correct, just local.
+
+- [ ] **Step 4b: Ensure deterministic object ordering in llvm-cov**
+
+The per-crate object list passed to `llvm-cov` MUST be **deterministically
+ordered with each crate's source-owning (primary) test binary first**. llvm-cov
+attributes each function to the first object that defines it — non-deterministic
+ordering caused `page.rs` coverage to be masked and the reported percentage to
+wobble between 97.5% and 99.4% across runs. Sort the per-crate `bins` list by
+label (or another stable key) and ensure the primary/source-owning test comes
+first before passing them to `report.sh`.
 
 - [ ] **Step 5: Commit**
 
@@ -352,7 +384,7 @@ The `report.sh` actions stay RE-eligible (they don't boot postgres).
 
 - [ ] **Step 3: Run one fixture crate**
 
-Run: `buck2 bxl --config loom.coverage=true //tools/coverage:cov.bxl:cov -- --crate control-plane/postgres 2>&1 | tail -20`
+Run: `buck2 bxl //tools/coverage:cov.bxl:cov -- --crate control-plane/postgres 2>&1 | tail -20`
 Expected: postgres boots locally; `cat <postgres dir>/report.txt` shows
 `src/control-plane/postgres/src/*` files with non-zero coverage. **Cap jobs**
 (`LOOM_COVERAGE_JOBS` via Task 4, or `-j 6` here) — fixture suites are heavy.
@@ -391,16 +423,18 @@ the wrapper has the repo source tree; BXL action sandboxes don't).
 # No arg = whole //src tree. Prints the combined llvm-cov table to STDOUT and
 # writes per-crate + combined lcov/report (+ combined HTML) into .loom/coverage/.
 #
-# COST: the first run recompiles the dep graph under -Cinstrument-coverage and
-# fixture crates boot postgres locally — cap with LOOM_COVERAGE_JOBS=<n>.
-# Never run `buck2 test`/`buck2 run` under --config loom.coverage=true (leaks
-# default_*.profraw); this driver always captures profiles via run_one.sh.
+# COST: the first run recompiles the dep graph under -Cinstrument-coverage
+# (via the //tools/coverage:coverage_enabled modifier) and fixture crates boot
+# postgres locally — cap with LOOM_COVERAGE_JOBS=<n>.
+# Never `buck2 build -m //tools/coverage:coverage_enabled` a test and run it
+# outside cov.bxl, and never run `buck2 test` instrumented — both leak
+# default_*.profraw; this driver always captures profiles via run_one.sh.
 set -euo pipefail
 
 crate="${1:-}"
 jobs="${LOOM_COVERAGE_JOBS:-}"
-cfg=(--config loom.coverage=true)
-[ -n "$jobs" ] && cfg+=(-j "$jobs")
+bxl_flags=()
+[ -n "$jobs" ] && bxl_flags+=(-j "$jobs")
 bxl="//tools/coverage:cov.bxl:cov"
 args=()
 [ -n "$crate" ] && args=(-- --crate "$crate")
@@ -410,7 +444,7 @@ rm -rf "$out"; mkdir -p "$out"
 
 # The BXL prints the combined output dir path on the last stdout line and ensures
 # all per-crate dirs. Capture the printed path, copy everything out of buck-out.
-combined_dir="$(buck2 bxl "${cfg[@]}" "$bxl" "${args[@]}" | tail -1)"
+combined_dir="$(buck2 bxl "${bxl_flags[@]}" "$bxl" "${args[@]}" | tail -1)"
 cp -r "$combined_dir" "$out/combined"
 # Per-crate dirs live as siblings under the same buck-out bxl output root.
 for d in "$(dirname "$combined_dir")"/*/; do
@@ -420,14 +454,16 @@ for d in "$(dirname "$combined_dir")"/*/; do
 done
 
 # Combined HTML (needs source tree, present here) from the combined profdata.
-llvm="$(buck2 build "${cfg[@]}" toolchains//:llvm-x86_64-linux --show-simple-output 2>/dev/null)"
-# Reconstruct the binary object list from every rust_test under the scope.
+# Build the LLVM dist without the modifier (it is not a Rust target).
+llvm="$(buck2 build toolchains//:llvm-x86_64-linux --show-simple-output 2>/dev/null)"
+# Reconstruct the instrumented binary object list for HTML rendering.
+# Use -m to apply the coverage_enabled modifier so the build matches what cov.bxl used.
 scope="//src/...";  [ -n "$crate" ] && scope="//src/${crate}/..."
 bins=()
 while read -r t; do
     t="${t%% (*}"
-    [ -n "$t" ] && bins+=("$(buck2 build "${cfg[@]}" "$t" --show-simple-output 2>/dev/null)")
-done < <(buck2 cquery --config loom.coverage=true "kind('rust_test', ${scope})" 2>/dev/null)
+    [ -n "$t" ] && bins+=("$(buck2 build -m //tools/coverage:coverage_enabled "$t" --show-simple-output 2>/dev/null)")
+done < <(buck2 cquery "kind('rust_test', ${scope})" 2>/dev/null)
 if [ -f "$out/combined/combined.profdata" ] || [ -f "$combined_dir/../combined.profdata" ]; then
     pd="$out/combined/combined.profdata"; [ -f "$pd" ] || pd="$combined_dir/../combined.profdata"
     head_bin="${bins[0]}"; rest=(); for b in "${bins[@]:1}"; do rest+=(-object "$b"); done
@@ -505,13 +541,14 @@ section with:
   to stdout and writes per-crate + `combined/` `lcov.info`/`report.txt` and a
   combined `html/` into the gitignored `.loom/coverage/`. Mechanism:
   `tools/coverage/cov.bxl` discovers every `rust_test` under `//src`, builds them
-  under `--config loom.coverage=true` (`-Cinstrument-coverage`; off by default,
-  normal/CI builds untouched), and runs each as a buck2 action — **fixtures local
-  with postgres/duckdb env, pure-logic on RE** — collecting `.profraw` via
+  with the `//tools/coverage:coverage_enabled` modifier (config-free;
+  `-Cinstrument-coverage` off by default — normal builds and `buck2 test` can't
+  trip it), and runs each as a buck2 action — **fixtures local with
+  postgres/duckdb env, pure-logic on RE** — collecting `.profraw` via
   `run_one.sh`, then merges + renders with the pinned LLVM dist. **Footguns:** the
   first run recompiles the graph instrumented and fixture crates boot postgres
-  locally — cap with `LOOM_COVERAGE_JOBS=<n>`; and never run `buck2 test`/`buck2
-  run` under the coverage config (leaks `default_*.profraw`). Specs/plans:
+  locally — cap with `LOOM_COVERAGE_JOBS=<n>`; and never run an instrumented
+  binary outside `cov.bxl` (leaks `default_*.profraw`). Specs/plans:
   `docs/superpowers/{specs,plans}/2026-06-15-*coverage*`.
 ```
 
