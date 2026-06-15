@@ -541,6 +541,36 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
 }
 
 #[test]
+fn chain_single_hop_jointable_renders_j1_mapping() {
+    // Customer --tags(join-table customer_tag)--> Tag, single hop (N=1).
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+        },
+        ChainType {
+            table: tr("main", "tags"),
+            row_filters: vec![],
+        },
+    ];
+    let hops = vec![LinkBacking::JoinTable {
+        table: tr("main", "customer_tag"),
+        from_key: "id".into(),
+        from_column: "customer_id".into(),
+        to_column: "tag_id".into(),
+        to_key: "id".into(),
+    }];
+    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], &[], 100).unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_1.\"name\" FROM \"main\".\"tags\" t_1 \
+         JOIN \"main\".\"customer_tag\" j1 ON j1.\"tag_id\" = t_1.\"id\" \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = j1.\"customer_id\" LIMIT 100"
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
 fn chain_single_hop_reproduces_traversal_semantics() {
     let types = vec![
         ChainType {
