@@ -156,10 +156,17 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     runs a SQL query, and commits the result as a new snapshot + lineage (inputs → output),
     atomically. Physical `TableRef` in/out, multi-input, append semantics. Proven by an e2e
     that joins two landed tables off the queue and reads the output back through DuckDB.
-  - *Later:* object-model-typed transforms (`Type → Type`, via `resolve` + `bind`); programmatic
-    (registered-plan) transforms; overwrite/incremental output (with compaction); a wider
-    output type set (the write/infer path is canonical scalars only today); DAG / transactional
-    enqueue-downstream; optional Ballista escalation.
+  - *Part 2 — typed transforms part-1 (`Type(s) → Type`)* ✅ DELIVERED
+    (`2026-06-15-typed-transforms-part1-design.md`). A `"typed-transform"` job names input
+    ontology **type(s)** and an output **type**; the worker resolves each type to its DuckLake
+    table, runs the SQL in type terms, validates the result **exactly conforms** to the output
+    type's property contract, and commits the new snapshot. First-class type-named lineage: a
+    new `TypeId` identity in control-plane-core so `upstream(OutputType)` returns the input
+    types. Output reads through query-api as the typed object (governed read-back). Proven by
+    an e2e fixture.
+  - *Later:* programmatic (registered-plan) transforms; overwrite/incremental output (with
+    compaction); a wider output type set (the write/infer path is canonical scalars only today);
+    DAG / transactional enqueue-downstream; optional Ballista escalation.
 
 ---
 
@@ -187,10 +194,11 @@ primitive: ingest land, query serve, transform derive.
 
 The external SQL wire (Quack / Postgres-wire / Flight SQL) is deliberately deferred as
 a distribution/ergonomics concern, gated on a real external consumer *and* a design for
-governance over arbitrary SQL — neither of which is in hand. With Step 2b closed, the
-candidate next slices are the queue-driven **Transform worker** (the one remaining
-unbuilt service pillar) and continuing richer reads (links → derived properties →
-multi-hop), with governed link traversal just delivered as that track's part-1.
+governance over arbitrary SQL — neither of which is in hand. **Typed transforms part-1**
+(`Type(s) → Type` via `resolve` + `bind`, with conformance validation and type-named
+lineage) is now also delivered, bringing the transform track to parity with ingest and
+query. Candidate next slices: richer reads (derived/aggregate properties → multi-hop
+traversal), programmatic transforms, and overwrite/incremental output.
 Smaller query follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
