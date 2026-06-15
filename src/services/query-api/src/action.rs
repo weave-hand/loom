@@ -23,8 +23,6 @@ pub struct ActionDeps<'a> {
 pub enum ActionError {
     #[error("unknown action: {0}")]
     UnknownAction(String),
-    #[error("unknown object type: {0}")]
-    UnknownType(String),
     #[error("forbidden")]
     Forbidden,
     #[error("bad parameters: {0}")]
@@ -54,16 +52,10 @@ pub async fn run_action(
             other => ActionError::ControlPlane(other),
         })?;
 
-    // 2. Resolve the target type (for its table + property logical types).
-    let target = deps
-        .cp
-        .ontology()
-        .get_type(&action.target)
-        .await
-        .map_err(|e| match e {
-            ControlPlaneError::NotFound(_) => ActionError::UnknownType(action.target.0.clone()),
-            other => ActionError::ControlPlane(other),
-        })?;
+    // 2. Resolve the target type (for its table + property logical types). A missing
+    //    target here is a broken ActionDef (internal inconsistency), not a client error —
+    //    propagate as a ControlPlane fault (-> 500), not a 404.
+    let target = deps.cp.ontology().get_type(&action.target).await?;
 
     // 3. Govern: deny-by-default Write on the target type. First live use of Action::Write.
     let policy_target = PolicyTarget::Type(action.target.clone());
@@ -94,6 +86,9 @@ pub async fn run_action(
         .catalog()
         .current_snapshot(&target.table)
         .await
+        .inspect_err(|e| {
+            tracing::warn!(action = action_name, error = %e, "snapshot lookup failed; lineage snapshot_id will be null")
+        })
         .ok()
         .map(|s| s.id.0);
     let event = LineageEvent {
