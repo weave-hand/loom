@@ -1,0 +1,62 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
+rust_library(
+    name = "transform",
+    crate = "transform",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/services/datafusion-io:datafusion-io",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:object_store",
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:thiserror",
+        "//third-party:time",
+        "//third-party:uuid",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "transform-bin",
+    crate = "transform_bin",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//src/control-plane/core:core",
+        "//src/control-plane/worker:worker",
+        "//src/services/runtime:runtime",
+        "//third-party:object_store",
+        "//third-party:tokio",
+        "//third-party:tokio-util",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "transform-e2e",
+    crate = "transform_e2e",
+    srcs = ["tests/transform_e2e.rs"],
+    crate_root = "tests/transform_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":transform",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/worker:worker",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-util",
+        "//third-party:uuid",
+    ],
+)

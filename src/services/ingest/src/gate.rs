@@ -10,7 +10,7 @@
 
 use arrow::datatypes::Schema;
 
-use crate::infer::duck_type;
+use datafusion_io::duck_type;
 
 /// One expected column of a model. `ty` is a DuckLake type string.
 #[derive(Clone, Debug, PartialEq, Eq)]

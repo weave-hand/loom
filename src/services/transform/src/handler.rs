@@ -1,0 +1,101 @@
+//! Queue handler: parse a transform job payload, run it, map the outcome to a
+//! `JobFailure` (deterministic errors -> Abandon, transient -> Retry with backoff).
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use control_plane_core::{
+    ControlPlane, DatasetRef, EventType, Job, JobFailure, LineageEvent, RetryPolicy, RunId,
+    TableRef,
+};
+use object_store::ObjectStore;
+use serde::Deserialize;
+use uuid::Uuid;
+
+use crate::run::{TransformError, TransformRequest, run_transform};
+
+/// Wire form of a transform job payload. `{schema, name}` per table.
+#[derive(Deserialize)]
+struct TableSpec {
+    schema: String,
+    name: String,
+}
+impl From<&TableSpec> for TableRef {
+    fn from(t: &TableSpec) -> Self {
+        TableRef {
+            schema: t.schema.clone(),
+            name: t.name.clone(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct TransformPayload {
+    inputs: Vec<TableSpec>,
+    output: TableSpec,
+    sql: String,
+}
+
+/// Run one transform job. Takes the deps + the job, returns the worker outcome.
+/// Used by the binary's handler closure and by tests.
+pub async fn transform_handler(
+    cp: &dyn ControlPlane,
+    store: Arc<dyn ObjectStore>,
+    job: Job,
+) -> Result<(), JobFailure> {
+    let payload: TransformPayload = match serde_json::from_value(job.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(JobFailure {
+                error: format!("malformed transform payload: {e}"),
+                policy: RetryPolicy::Abandon,
+            });
+        }
+    };
+    let inputs: Vec<TableRef> = payload.inputs.iter().map(TableRef::from).collect();
+    let output = TableRef::from(&payload.output);
+    let run_id = Uuid::new_v4().to_string();
+
+    let lineage = LineageEvent {
+        run_id: RunId(Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: inputs.iter().map(DatasetRef::from).collect(),
+        outputs: vec![DatasetRef::from(&output)],
+        payload: serde_json::json!({ "sql": payload.sql }),
+    };
+
+    let res = run_transform(
+        cp,
+        store,
+        &run_id,
+        TransformRequest {
+            inputs: &inputs,
+            output: &output,
+            sql: &payload.sql,
+            lineage,
+        },
+    )
+    .await;
+
+    res.map(|_snapshot| ()).map_err(|e| JobFailure {
+        error: e.to_string(),
+        policy: retry_policy(&e, job.attempts),
+    })
+}
+
+/// Deterministic failures can't be retried; transient ones back off on attempts.
+fn retry_policy(err: &TransformError, attempts: i32) -> RetryPolicy {
+    match err {
+        TransformError::UnknownInput(..)
+        | TransformError::AmbiguousInput(_)
+        | TransformError::DataFusion(_)
+        | TransformError::Infer(_)
+        | TransformError::NoSnapshot => RetryPolicy::Abandon,
+        TransformError::ControlPlane(_) | TransformError::Scan(_) | TransformError::Write(_) => {
+            RetryPolicy::Retry {
+                delay: Duration::from_secs(2u64.saturating_pow(attempts.clamp(0, 6) as u32)),
+            }
+        }
+    }
+}

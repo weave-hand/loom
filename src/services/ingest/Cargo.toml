@@ -7,7 +7,7 @@ edition = "2024"
 control-plane-core = { path = "../../control-plane/core" }
 arrow = "58"
 bytes = "1"
-datafusion = { version = "54", default-features = false, features = ["parquet"] }
+datafusion = { version = "54", default-features = false, features = ["parquet", "sql"] }
 futures = "0.3"
 parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
 object_store = "0.13"

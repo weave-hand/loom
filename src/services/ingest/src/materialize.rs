@@ -11,8 +11,7 @@ use object_store::ObjectStore;
 
 use crate::IngestError;
 use crate::gate::{ModelShape, validate};
-use crate::infer::infer_columns;
-use crate::write::{IngestWriteConfig, write_dataset};
+use datafusion_io::{WriteConfig, infer_columns, write_dataset};
 
 /// One materialize call: land `batches` for `table`, optionally gated by a model.
 pub struct MaterializeRequest<'a> {
@@ -63,7 +62,7 @@ pub async fn materialize(
         &dir_prefix,
         req.schema.clone(),
         req.batches,
-        &IngestWriteConfig::default(),
+        &WriteConfig::default(),
     )
     .await?;
 

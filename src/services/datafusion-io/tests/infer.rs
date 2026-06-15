@@ -1,5 +1,5 @@
 use arrow::datatypes::{DataType, Field, Schema};
-use ingest::infer::{InferError, duck_type, infer_columns};
+use datafusion_io::infer::{InferError, duck_type, infer_columns};
 
 #[test]
 fn maps_supported_arrow_types_to_ducklake_strings() {

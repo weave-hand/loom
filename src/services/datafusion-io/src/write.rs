@@ -22,9 +22,9 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::file::statistics::Statistics;
 
-/// Tunables for the DataFusion ingest write. Defaults target ~128 MiB Snappy files.
+/// Tunables for the DataFusion write. Defaults target ~128 MiB Snappy files.
 #[derive(Clone, Debug)]
-pub struct IngestWriteConfig {
+pub struct WriteConfig {
     /// Desired size of each output Parquet file, in bytes.
     pub target_file_size_bytes: u64,
     /// Hard upper bound on the number of output files (= partitions).
@@ -34,7 +34,7 @@ pub struct IngestWriteConfig {
     pub compression_factor: f64,
 }
 
-impl Default for IngestWriteConfig {
+impl Default for WriteConfig {
     fn default() -> Self {
         Self {
             target_file_size_bytes: 128 * 1024 * 1024,
@@ -46,7 +46,7 @@ impl Default for IngestWriteConfig {
 
 /// Map total in-memory Arrow size to a partition (file) count: estimate compressed
 /// size, divide by the target file size, clamp to `[1, max_files]`. Pure — no I/O.
-pub fn estimate_partitions(in_memory_bytes: u64, cfg: &IngestWriteConfig) -> usize {
+pub fn estimate_partitions(in_memory_bytes: u64, cfg: &WriteConfig) -> usize {
     let est_compressed = (in_memory_bytes as f64 * cfg.compression_factor).ceil() as u64;
     let target = cfg.target_file_size_bytes.max(1);
     let n = est_compressed.div_ceil(target) as usize;
@@ -65,7 +65,7 @@ pub enum WriteError {
 
 /// The loom object-store URL DataFusion writes through. The authority is arbitrary;
 /// it only keys the registered store.
-const LOOM_STORE_URL: &str = "loom://data";
+pub(crate) const LOOM_STORE_URL: &str = "loom://data";
 
 /// Write `batches` as N size-targeted Snappy Parquet files directly into `store`,
 /// under `dir_prefix` (e.g. "main/customer/<file_prefix>"). Returns one `WrittenFile`
@@ -80,7 +80,7 @@ pub async fn write_dataset(
     dir_prefix: &str,
     schema: Arc<Schema>,
     batches: &[RecordBatch],
-    cfg: &IngestWriteConfig,
+    cfg: &WriteConfig,
 ) -> Result<Vec<WrittenFile>, WriteError> {
     let in_memory: u64 = batches
         .iter()

@@ -1,7 +1,7 @@
-use ingest::write::{IngestWriteConfig, estimate_partitions};
+use datafusion_io::write::{WriteConfig, estimate_partitions};
 
-fn cfg(target: u64, max_files: usize) -> IngestWriteConfig {
-    IngestWriteConfig {
+fn cfg(target: u64, max_files: usize) -> WriteConfig {
+    WriteConfig {
         target_file_size_bytes: target,
         max_files,
         compression_factor: 0.3,
@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use ingest::write::{WrittenFile, file_stats_from_bytes};
+use datafusion_io::write::{WrittenFile, file_stats_from_bytes};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -101,7 +101,7 @@ fn stats_merge_min_max_across_row_groups() {
     assert_eq!(name.max.as_deref(), Some("z"));
 }
 
-use ingest::write::write_dataset;
+use datafusion_io::write::write_dataset;
 use object_store::memory::InMemory;
 use object_store::{ObjectStore, ObjectStoreExt};
 
@@ -135,7 +135,7 @@ async fn write_dataset_splits_into_multiple_files() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     // target = 1 byte forces the partition count to the cap; max_files = 4 + 4 batches
     // (RoundRobinBatch distributes whole batches) => up to 4 files.
-    let cfg = IngestWriteConfig {
+    let cfg = WriteConfig {
         target_file_size_bytes: 1,
         max_files: 4,
         compression_factor: 0.3,

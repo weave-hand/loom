@@ -8,12 +8,9 @@ rust_library(
     edition = "2024",
     deps = [
         "//src/control-plane/core:core",
+        "//src/services/datafusion-io:datafusion-io",
         "//third-party:arrow",
         "//third-party:axum",
-        "//third-party:bytes",
-        "//third-party:datafusion",
-        "//third-party:futures",
-        "//third-party:parquet",
         "//third-party:object_store",
         "//third-party:serde",
         "//third-party:serde_json",
@@ -92,37 +89,12 @@ loom_fixture_test(
 )
 
 rust_test(
-    name = "infer",
-    crate = "infer",
-    srcs = ["tests/infer.rs"],
-    crate_root = "tests/infer.rs",
-    edition = "2024",
-    deps = [":ingest", "//third-party:arrow"],
-)
-
-rust_test(
     name = "gate",
     crate = "gate",
     srcs = ["tests/gate.rs"],
     crate_root = "tests/gate.rs",
     edition = "2024",
     deps = [":ingest", "//third-party:arrow"],
-)
-
-rust_test(
-    name = "write",
-    crate = "write",
-    srcs = ["tests/write.rs"],
-    crate_root = "tests/write.rs",
-    edition = "2024",
-    deps = [
-        ":ingest",
-        "//third-party:arrow",
-        "//third-party:datafusion",
-        "//third-party:object_store",
-        "//third-party:parquet",
-        "//third-party:tokio",
-    ],
 )
 
 rust_test(
