@@ -145,6 +145,14 @@ remote_test_execution_toolchain(
     visibility = ["PUBLIC"],
 )
 
+# Coverage gate: `buck2 build --config loom.coverage=true //…` appends
+# -Cinstrument-coverage to every Rust compile in that configuration, so
+# `rust_test` binaries and their lib deps emit an LLVM coverage map. Off by
+# default — normal builds are byte-for-byte unchanged. Consumed by the
+# //tools/coverage genrules. See docs/.../2026-06-15-rust-coverage-prototype.
+_COVERAGE = read_config("loom", "coverage", "") in ("true", "1")
+_RUSTC_FLAGS = ["-Copt-level=2"] + (["-Cinstrument-coverage"] if _COVERAGE else [])
+
 hermetic_rust_toolchain(
     name = "rust",
     rustc_dist = ":rustc-x86_64-linux",
@@ -153,6 +161,6 @@ hermetic_rust_toolchain(
     rustc_target_triple = RUST_HOST,
     host_triple = RUST_HOST,
     default_edition = "2024",
-    rustc_flags = ["-Copt-level=2"],
+    rustc_flags = _RUSTC_FLAGS,
     visibility = ["PUBLIC"],
 )
