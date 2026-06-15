@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use control_plane_core::ControlPlane;
 use query_api::http::{AppState, router};
-use query_api::serving::EmbeddedDuckDb;
+use query_api::serving::{EmbeddedDuckDb, EmbeddedDuckDbWriter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,7 +15,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cp: Arc<dyn ControlPlane> =
         Arc::new(service_runtime::control_plane(pool, cfg.lock_timeout));
     let serving = Arc::new(EmbeddedDuckDb::attach(&cfg.db.ducklake_libpq(), &cfg.data_path).await?);
-    let app = router(AppState { cp, serving });
+    let action_engine =
+        Arc::new(EmbeddedDuckDbWriter::attach(&cfg.db.ducklake_libpq(), &cfg.data_path).await?);
+    let app = router(AppState {
+        cp,
+        serving,
+        action_engine,
+    });
     service_runtime::serve(cfg.bind_addr, app).await?;
     Ok(())
 }
