@@ -126,7 +126,7 @@ pub async fn run_transform(
     // 4. Collect the result rows now that the output is known to conform.
     let batches = df.collect().await?;
 
-    // 4. Write the result as N Snappy Parquet files under the output table dir.
+    // 5. Write the result as N Snappy Parquet files under the output table dir.
     let dir_prefix = format!("{}/{}/{}", req.output.schema, req.output.name, run_id);
     let written = write_dataset(
         store,
@@ -148,7 +148,7 @@ pub async fn run_transform(
         })
         .collect();
 
-    // 5. One atomic Tx: create_table (idempotent) + append_files + emit lineage.
+    // 6. One atomic Tx: create_table (idempotent) + append_files + emit lineage.
     let mut tx = cp.begin().await?;
     tx.create_table(req.output, &columns).await?;
     tx.append_files(req.output, &data_files).await?;
