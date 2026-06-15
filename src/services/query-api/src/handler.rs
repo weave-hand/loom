@@ -153,6 +153,7 @@ pub async fn read_object(
         &mask_cols,
         &row_filters,
         &q.eq_filters,
+        &[],
         DEFAULT_LIMIT,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;

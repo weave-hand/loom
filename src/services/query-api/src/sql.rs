@@ -4,7 +4,7 @@
 //! bound `?` parameter (never interpolated) — this is the injection boundary.
 
 use control_plane_core::{
-    CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef, validate_row_filter,
+    Aggregation, CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef, validate_row_filter,
 };
 
 use crate::serving::SqlValue;
@@ -117,23 +117,125 @@ fn filter_sql(f: &RowFilter, alias: &str, params: &mut Vec<SqlValue>) -> String 
     }
 }
 
+/// An aggregate-over-link derived property to compile into a correlated subquery in the
+/// SELECT. Owned (the handler clones the resolved link/target/filters into it). The
+/// outer object table is aliased `o`; the subquery's target table is aliased `sub`.
+pub struct DerivedAggregate {
+    pub name: String,
+    pub agg: Aggregation,
+    pub backing: LinkBacking,
+    pub target_table: TableRef,
+    /// The linked type's ACL row-filters (both-ends governance), applied inside the
+    /// subquery (aliased `sub`).
+    pub target_filters: Vec<RowFilter>,
+}
+
+/// A derived-property SELECT expression: either a computed aggregate, or a masked marker
+/// (the property is visible-but-masked — emit the marker, never the aggregate).
+pub enum DerivedSelect {
+    Masked(String),
+    Aggregate(Box<DerivedAggregate>),
+}
+
+/// Build the correlated-subquery SQL for one derived aggregate, pushing its target-filter
+/// params (in order) onto `params`. The outer object table is aliased `o`.
+///
+/// PRECONDITION: each `d.target_filters` entry has passed `validate_row_filter`
+/// (`compile_select` enforces this up front) so the `filter_sql` invariant arms cannot
+/// panic.
+fn derived_aggregate_sql(d: &DerivedAggregate, params: &mut Vec<SqlValue>) -> String {
+    let target = format!(
+        "{}.{}",
+        quote_ident(&d.target_table.schema),
+        quote_ident(&d.target_table.name)
+    );
+    let aggfn = match &d.agg {
+        Aggregation::Count => "COUNT(*)".to_string(),
+        Aggregation::Sum(c) => format!("COALESCE(SUM(sub.{}), 0)", quote_ident(c)),
+        Aggregation::Avg(c) => format!("AVG(sub.{})", quote_ident(c)),
+        Aggregation::Min(c) => format!("MIN(sub.{})", quote_ident(c)),
+        Aggregation::Max(c) => format!("MAX(sub.{})", quote_ident(c)),
+    };
+    let (from_join, correlation) = match &d.backing {
+        LinkBacking::ForeignKey {
+            from_column,
+            to_column,
+        } => (
+            format!("{target} sub"),
+            format!(
+                "sub.{} = o.{}",
+                quote_ident(to_column),
+                quote_ident(from_column)
+            ),
+        ),
+        LinkBacking::JoinTable {
+            table,
+            from_key,
+            from_column,
+            to_column,
+            to_key,
+        } => {
+            let jt = format!(
+                "{}.{}",
+                quote_ident(&table.schema),
+                quote_ident(&table.name)
+            );
+            (
+                format!(
+                    "{target} sub JOIN {jt} j ON j.{} = sub.{}",
+                    quote_ident(to_column),
+                    quote_ident(to_key)
+                ),
+                format!(
+                    "j.{} = o.{}",
+                    quote_ident(from_column),
+                    quote_ident(from_key)
+                ),
+            )
+        }
+    };
+    let mut conjuncts = vec![correlation];
+    for f in &d.target_filters {
+        conjuncts.push(filter_sql(f, "sub", params));
+    }
+    format!(
+        "(SELECT {aggfn} FROM {from_join} WHERE {}) AS {}",
+        conjuncts.join(" AND "),
+        quote_ident(&d.name)
+    )
+}
+
 /// `allowed_cols` must be non-empty (caller enforces). `row_filters` and `eq_filters`
-/// are ANDed together as conjuncts.
+/// are ANDed together as conjuncts. `derived` aggregate subqueries (if any) are appended
+/// to the SELECT list; their params precede the WHERE params. The outer table is aliased
+/// `o` only when at least one aggregate is present (so the no-derived output is unchanged).
+#[allow(clippy::too_many_arguments)]
 pub fn compile_select(
     table: &TableRef,
     allowed_cols: &[String],
     mask_cols: &[String],
     row_filters: &[RowFilter],
     eq_filters: &[(String, SqlValue)],
+    derived: &[DerivedSelect],
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
-    // Validate each ACL filter's shape up front; afterwards the SQL-building arms
-    // below cannot hit a CompareOp<->ScalarValue mismatch.
+    // Validate each ACL filter's shape up front — outer row filters and each derived
+    // aggregate's target filters — so the SQL-building arms below cannot hit a
+    // CompareOp<->ScalarValue mismatch.
     for f in row_filters {
         validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
     }
+    for d in derived {
+        if let DerivedSelect::Aggregate(a) = d {
+            for f in &a.target_filters {
+                validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+            }
+        }
+    }
+
     let mut params = Vec::new();
-    let cols = allowed_cols
+    // Physical columns (no params).
+    let mut col_exprs: Vec<String> = allowed_cols
         .iter()
         .map(|c| {
             if mask_cols.iter().any(|m| m == c) {
@@ -143,13 +245,33 @@ pub fn compile_select(
                 quote_ident(c)
             }
         })
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect();
+    // Derived columns. Aggregate subquery params are pushed here — i.e. BEFORE the WHERE
+    // params below — matching their left-to-right position in the SELECT clause.
+    let has_aggregate = derived
+        .iter()
+        .any(|d| matches!(d, DerivedSelect::Aggregate(_)));
+    for d in derived {
+        match d {
+            DerivedSelect::Masked(name) => {
+                col_exprs.push(format!("'{MASK_MARKER}' AS {}", quote_ident(name)))
+            }
+            DerivedSelect::Aggregate(a) => col_exprs.push(derived_aggregate_sql(a, &mut params)),
+        }
+    }
+    let cols = col_exprs.join(", ");
+
     let from = format!(
         "{}.{}",
         quote_ident(&table.schema),
         quote_ident(&table.name)
     );
+    // The outer table needs an alias only when a correlated subquery references it.
+    let from_clause = if has_aggregate {
+        format!("{from} o")
+    } else {
+        from
+    };
 
     let mut conjuncts: Vec<String> = Vec::new();
     for f in row_filters {
@@ -160,7 +282,7 @@ pub fn compile_select(
         params.push(val.clone());
     }
 
-    let mut sql = format!("SELECT {cols} FROM {from}");
+    let mut sql = format!("SELECT {cols} FROM {from_clause}");
     if !conjuncts.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
