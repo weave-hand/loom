@@ -149,3 +149,8 @@ coverage as a build target.
   core-crate flow is proven; the wrapper and the merge/report cmd are unchanged.
 - **Per-target `coverage = True` / a coverage-aware test macro** — the
   config-gate makes per-target wiring unnecessary for this scope.
+- **Config-free `buck2 build //tools/coverage:core`** via a configuration
+  transition that self-instruments the target's test subtree (no
+  `--config loom.coverage=true` needed). Cleaner ergonomically but materially
+  more work than the config gate; deferred as an easy post-prototype pivot once
+  the core-crate flow is proven.
