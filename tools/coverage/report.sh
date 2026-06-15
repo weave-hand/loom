@@ -29,3 +29,7 @@ for b in "${bins[@]:1}"; do object_args+=("-object" "$b"); done
 # the tools/coverage.sh wrapper can find combined.profdata alongside lcov.info
 # and report.txt without needing the separate declared buck artifact.
 cp "$profdata" "$out_dir/$(basename "$profdata")"
+
+# Record the exact ignore regex used, so the wrapper's (best-effort) HTML render
+# reuses this filter verbatim instead of hard-coding a copy that could drift.
+printf '%s' "$ignore" > "$out_dir/ignore.regex"

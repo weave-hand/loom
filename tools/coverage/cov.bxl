@@ -194,6 +194,12 @@ def _cov_impl(ctx):
         pkg = str(node.label.package)
         groups.setdefault(pkg, []).append(node)
 
+    # Empty scope (e.g. a typo'd --crate) — surface it clearly instead of letting
+    # the combined report.sh fail on zero profraws / an unbound ${bins[0]}.
+    if not groups:
+        ctx.output.print("coverage: no rust_test targets under {} — nothing to do".format(universe))
+        return
+
     all_bins = []
     all_profraws = []
     # Iterate packages in sorted order for determinism.

@@ -77,11 +77,14 @@ done
 echo "==> Copied coverage outputs to $out/" >&2
 
 # ── Combined HTML report (best-effort; source tree is present here) ───────────
-# Reuse the SAME combined-ignore regex as cov.bxl's _combined_ignore():
-#   _COMMON_IGNORE = ["^/", "^third-party/", "/tests/"]
-#   + "^src/control-plane/testkit/"
-# Keep this in sync with tools/coverage/cov.bxl:_combined_ignore().
-COMBINED_IGNORE='^/|^third-party/|/tests/|^src/control-plane/testkit/'
+# Reuse the EXACT combined-ignore regex the bxl used — report.sh writes it into
+# the combined dir (ignore.regex), so there is no second copy to drift. Fall
+# back to the known pattern only if the file is somehow absent.
+if [ -f "$out/combined/ignore.regex" ]; then
+    COMBINED_IGNORE=$(cat "$out/combined/ignore.regex")
+else
+    COMBINED_IGNORE='^/|^third-party/|/tests/|^src/control-plane/testkit/'
+fi
 
 echo "==> Resolving LLVM dist path (cache hit from bxl run)" >&2
 llvm=$(buck2 build "${jflag[@]}" toolchains//:llvm-x86_64-linux --show-simple-output 2>>"$log")
