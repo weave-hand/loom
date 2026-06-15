@@ -146,9 +146,21 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
     masking, roles); rich ontology (links, derived properties); multi-type queries/joins;
     authentication.
-- **Actions** — the ontology's typed write-backs, governed at the HTTP API and executed
-  *through* the serving layer, with loom owning the catalog-commit transaction (the
-  snapshot-commit primitive) so snapshot + lineage + enqueue stay atomic. Own spec.
+- **Actions** —
+  - *Part 1 — governed typed insert* ✅ DELIVERED
+    (`2026-06-15-actions-part1-design.md`). Named ontology `ActionDef` (targets an
+    object type, carries typed parameters), invoked via `POST /actions/{name}`. First
+    live enforcement of `Action::Write` (deny-by-default) at the governed HTTP front
+    door. Writes execute as a **low-latency DuckLake inline write** behind an
+    `ActionEngine` trait (Iceberg-swappable seam); no Parquet file per insert — DuckDB
+    reconciles inline + Parquet rows on read. Insert-only: creates a new typed object,
+    validated against the target type's property contract; the created object reads back
+    through the existing governed read path. Best-effort type-named lineage (documented
+    dangling slice). Proven by a fixture e2e.
+  - *Later:* update/delete actions (gated on row-supersession/compaction); custom-logic
+    / multi-step actions (params differing from properties, or enqueue-downstream);
+    fine-grained write governance (row-filter / deny-column on `Write`); Iceberg
+    `ActionEngine` impl.
 - **Transform workers** —
   - *Part 1 — queue-driven SQL transform* ✅ DELIVERED
     (`2026-06-14-transform-workers-part1-design.md`). A worker (on `control-plane-worker`)
@@ -197,7 +209,11 @@ a distribution/ergonomics concern, gated on a real external consumer *and* a des
 governance over arbitrary SQL — neither of which is in hand. **Typed transforms part-1**
 (`Type(s) → Type` via `resolve` + `bind`, with conformance validation and type-named
 lineage) is now also delivered, bringing the transform track to parity with ingest and
-query. Candidate next slices: richer reads (derived/aggregate properties → multi-hop
+query. **Actions part-1** is now delivered too, bringing the **write-back** verb online
+(`POST /actions/{name}` — governed typed insert enforcing `Action::Write`, inline DuckLake
+write, validated against the type contract, reads back through the governed read path):
+the platform's four core verbs — **land → derive → serve → write** — are all live.
+Candidate next slices: richer reads (derived/aggregate properties → multi-hop
 traversal), programmatic transforms, and overwrite/incremental output.
 Smaller query follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
 
