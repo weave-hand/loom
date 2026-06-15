@@ -57,27 +57,45 @@ and append `["-Cinstrument-coverage"]` to `rustc_flags` when `_COVERAGE` is set.
 This is the whole "config-driven" surface — no per-target `coverage = True`, no
 macro, no edits to any `src/**/BUCK`.
 
-### 2. Driver — `tools/coverage.sh`
+### 2. Coverage as a build artifact — a `genrule` per crate
 
-Argument: a crate directory, default `src/control-plane/core`. Steps:
+Coverage `lcov.info` is produced by a buck2 `genrule`, **not** orchestrated in
+bash. The genrule lives in a dedicated dev-only package, `//tools/coverage`
+(CLAUDE.md already documents `//tools` as dev-only and never built in CI), so it
+is **outside** `//src/...` — CI's `buck2 build/test //src/...` never sees it and
+normal builds are unaffected. It references the crate's test targets by absolute
+label, e.g. `//tools/coverage:core`:
 
-1. Enumerate the crate's test targets:
-   `buck2 uquery "kind('rust_test', //<crate>:)"`.
-2. Build them instrumented:
-   `buck2 build --config loom.coverage=true <targets> --show-simple-output`
-   → instrumented test-binary paths.
-3. Resolve LLVM tools once:
-   `buck2 build toolchains//:llvm-x86_64-linux --show-simple-output`
-   → `<dist>/bin/llvm-profdata`, `<dist>/bin/llvm-cov`.
-4. Run each test binary with
-   `LLVM_PROFILE_FILE="$OUT/%p-%m.profraw"` (plain executables; no fixtures in
-   this crate, so no Postgres/root concerns).
-5. Merge: `llvm-profdata merge -sparse "$OUT"/*.profraw -o "$OUT/coverage.profdata"`.
-6. Report + export, passing **every** test binary as a `--object` and the merged
-   profile:
-   - `llvm-cov report --instr-profile="$OUT/coverage.profdata" <objects…> --sources <crate>/src`
-     → terminal table.
-   - `llvm-cov export --format=lcov --instr-profile=… <objects…> --sources <crate>/src > "$OUT/lcov.info"`.
+```python
+genrule(
+    name = "core",
+    # one output dir holding both artifacts
+    outs = {"lcov": ["lcov.info"], "report": ["report.txt"]},
+    cmd = "$(exe :run) ...",   # or an inline bash cmd; see below
+    # fixture crates ADD a local label here (e.g. one of the prelude's
+    # _GENRULE_LOCAL_LABELS, mirroring loom_fixture_test's remote_execution).
+    # control-plane/core needs no label — pure-logic tests run anywhere.
+)
+```
+
+The genrule's `cmd`:
+
+1. Receives each instrumented test binary via `$(location //src/control-plane/core:page)`
+   etc., and the LLVM tools via `$(location toolchains//:llvm-x86_64-linux)`
+   (`<dist>/bin/llvm-profdata`, `<dist>/bin/llvm-cov`).
+2. Runs each test binary with `LLVM_PROFILE_FILE="$TMP/%p-%m.profraw"`.
+3. `llvm-profdata merge -sparse "$TMP"/*.profraw -o "$TMP/coverage.profdata"`.
+4. Emits the two declared outputs, passing **every** test binary as a `--object`
+   and the merged profile:
+   - `llvm-cov export --format=lcov … <objects…> --sources src/control-plane/core/src > $OUT/lcov.info`
+   - `llvm-cov report … <objects…> --sources src/control-plane/core/src > $OUT/report.txt`
+
+**Instrumentation is the config gate (§1).** The genrule's test-binary deps are
+only instrumented when built under `--config loom.coverage=true`. Because the
+target lives outside `//src/...` it is never built without that flag in practice;
+if someone does, the genrule detects the missing coverage map and **fails with an
+explicit message** (build with `--config loom.coverage=true`) rather than
+emitting empty/misleading data — no silent fallback.
 
 **Why multiple `--object`s + one merged profile:** each `rust_test` statically
 links `control_plane_core`, so the instrumented library regions live in every
@@ -85,22 +103,36 @@ test binary. Merging all profraws and passing all binaries yields the true
 *union* of coverage across the six test files, attributed back to the lib
 sources.
 
-### 3. Output location
+### 3. Driver — `tools/coverage.sh` (thin wrapper)
 
-`.loom/coverage/` — `.loom/` is already gitignored (`.gitignore:7`), so the
-profraws, `coverage.profdata`, and `lcov.info` are all untracked. The script
-creates the dir and clears stale `*.profraw` at the start of each run.
+The script no longer runs binaries; it just drives the build target and surfaces
+the artifacts. Argument: a crate name, default `core`. Steps:
+
+1. `buck2 build --config loom.coverage=true //tools/coverage:<crate> --show-simple-output`.
+2. Copy the built `lcov.info` out of `buck-out` into `.loom/coverage/lcov.info`
+   for editor gutter plugins (`.loom/` is already gitignored, `.gitignore:7`).
+3. `cat` the built `report.txt` to the terminal for the at-a-glance table.
+
+Execution placement (local vs RE) is owned by the genrule's labels, so the
+wrapper carries **no** routing logic — that is the whole point of modelling
+coverage as a build target.
 
 ## Verification
 
-1. Run `tools/coverage.sh`. Confirm it prints a non-zero coverage table for
+1. `buck2 build --config loom.coverage=true //tools/coverage:core` succeeds and
+   produces non-empty `lcov.info` + `report.txt` outputs.
+2. Run `tools/coverage.sh`. Confirm it prints a non-zero coverage table for
    `src/control-plane/core/src/**` and writes a non-empty, well-formed
    `.loom/coverage/lcov.info`.
-2. Sanity check attribution: a type/function known to be exercised by
+3. Sanity check attribution: a type/function known to be exercised by
    `tests/page.rs` (e.g. the page/cursor logic) shows >0% line coverage; the
-   table lists the crate's source files, not test or third-party files.
-3. Confirm a plain `buck2 build //src/...` (no `--config`) still produces an
-   un-instrumented build — i.e. the gate is truly off by default.
+   report lists the crate's source files, not test or third-party files.
+4. Confirm `//src/...` is untouched: a plain `buck2 build //src/...` (no
+   `--config`) neither builds `//tools/coverage:core` nor instruments anything —
+   the gate is off by default and the coverage target is out of that graph.
+5. Confirm the explicit-failure path: `buck2 build //tools/coverage:core`
+   *without* the config fails with the "build with `--config loom.coverage=true`"
+   message, not an empty report.
 
 ## Non-goals (deferred)
 
@@ -108,9 +140,12 @@ creates the dir and clears stale `*.profraw` at the start of each run.
 - **Codecov or other upload.**
 - **HTML report** (`llvm-cov show --format=html`).
 - **Fixture-crate coverage** (postgres/ingest/query-api). Those crates boot
-  `initdb`/`postgres`/`duckdb`, which the existing `loom_fixture_test` macro
-  pins to local, non-root execution. A general `tools/coverage.sh` over `//src/...`
-  must thread the same local-only routing; that is the known next step once the
-  core-crate flow is proven.
+  `initdb`/`postgres`/`duckdb`, which refuse to run as root on RE. Because
+  coverage is a `genrule` (§2), each such crate's coverage target just carries a
+  local label from the prelude's `_GENRULE_LOCAL_LABELS` set — the genrule
+  equivalent of `loom_fixture_test`'s `remote_execution = "disabled"` — so
+  placement is correct **by construction**, with no routing logic in
+  `tools/coverage.sh`. Adding those targets is the known next step once the
+  core-crate flow is proven; the wrapper and the merge/report cmd are unchanged.
 - **Per-target `coverage = True` / a coverage-aware test macro** — the
   config-gate makes per-target wiring unnecessary for this scope.
