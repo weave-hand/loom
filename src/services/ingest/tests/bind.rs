@@ -53,6 +53,7 @@ async fn bind_accepts_conforming_type_and_persists_it() {
             prop("id", "Long", true),             // int64, non-null -> ok
             prop("email", "EmailAddress", false), // varchar, optional -> ok
         ],
+        derived: vec![],
         table: customer(),
     };
     bind(&cp, &cp, type_def.clone()).await.unwrap();
@@ -82,6 +83,7 @@ async fn bind_collects_all_violations_and_persists_nothing() {
             prop("email", "String", true),
             prop("score", "Long", true),
         ],
+        derived: vec![],
         table: customer(),
     };
 
@@ -131,6 +133,7 @@ async fn bind_rejects_an_unknown_table() {
     let type_def = ObjectType {
         name: TypeName("Ghost".into()),
         properties: vec![prop("id", "Long", true)],
+        derived: vec![],
         table: TableRef {
             schema: "main".into(),
             name: "ghost".into(),

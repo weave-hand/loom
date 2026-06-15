@@ -75,6 +75,7 @@ async fn action_inserts_a_typed_object_that_reads_back() {
                     required: false,
                 },
             ],
+            derived: vec![],
         })
         .await
         .unwrap();
@@ -210,6 +211,7 @@ async fn ungranted_subject_is_forbidden() {
                 ty: "Long".into(),
                 required: true,
             }],
+            derived: vec![],
         })
         .await
         .unwrap();

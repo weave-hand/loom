@@ -124,6 +124,7 @@ impl Ontology for PgControlPlane {
                     required: r.required,
                 })
                 .collect(),
+            derived: vec![],
         })
     }
 

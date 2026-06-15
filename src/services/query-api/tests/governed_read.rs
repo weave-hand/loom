@@ -128,6 +128,7 @@ async fn governed_object_read() {
                 required: false,
             },
         ],
+        derived: vec![],
         table: table.clone(),
     })
     .await

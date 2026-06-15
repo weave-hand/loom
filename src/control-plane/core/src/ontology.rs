@@ -33,6 +33,8 @@ pub struct ObjectType {
     pub name: TypeName,
     /// Ordered.
     pub properties: Vec<PropertyDef>,
+    /// Ordered. Aggregate-over-link computed properties (served alongside `properties`).
+    pub derived: Vec<DerivedPropertyDef>,
     pub table: TableRef,
 }
 
@@ -71,6 +73,28 @@ pub struct LinkDef {
     pub to: TypeName,
     pub cardinality: Cardinality,
     pub backing: LinkBacking,
+}
+
+/// How a derived property aggregates over its link's target rows. The `String` is the
+/// target-type column to aggregate (COUNT takes none).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Aggregation {
+    Count,
+    Sum(String),
+    Avg(String),
+    Min(String),
+    Max(String),
+}
+
+/// A computed property: aggregate `agg` over the rows reachable from this type via the
+/// link named `link`. `ty` is the declared logical type of the result (e.g. "Long" for a
+/// count, "Double" for an average).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DerivedPropertyDef {
+    pub name: String,
+    pub ty: String,
+    pub link: String,
+    pub agg: Aggregation,
 }
 
 /// A named ontology action (e.g. "createCustomer").

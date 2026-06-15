@@ -521,6 +521,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             ty: "EmailAddress".into(),
             required: true,
         }],
+        derived: vec![],
     };
     o.define_type(customer.clone())
         .await
@@ -540,6 +541,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 required: false,
             },
         ],
+        derived: vec![],
     };
     o.define_type(order.clone()).await.expect("define Order");
 
@@ -591,6 +593,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             ty: "Currency".into(),
             required: true,
         }],
+        derived: vec![],
     };
     o.define_type(order_v2).await.unwrap();
     assert_eq!(
@@ -709,6 +712,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 required: false,
             },
         ],
+        derived: vec![],
     })
     .await
     .expect("define Widget");
@@ -921,6 +925,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
                 required: false,
             })
             .collect(),
+        derived: vec![],
         table: TableRef {
             schema: "main".into(),
             name: "customer".into(),
