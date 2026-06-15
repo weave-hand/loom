@@ -200,6 +200,10 @@ done
     -instr-profile="$prof_dir/merged.profdata" \
     -ignore-filename-regex="$ignore_regex" \
     "$head_bin" "${object_args[@]}" > "$out_dir/report.txt"
+
+# Also export the merged profile so the driver can render HTML (which needs the
+# source tree, unavailable in this sandbox) from the cached profdata.
+cp "$prof_dir/merged.profdata" "$out_dir/coverage.profdata"
 ```
 
 - [ ] **Step 2: Make it executable**
@@ -237,6 +241,7 @@ genrule(
     outs = {
         "lcov": ["lcov.info"],
         "report": ["report.txt"],
+        "profdata": ["coverage.profdata"],
     },
     cmd = " ".join([
         "bash",
@@ -282,53 +287,50 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Create: `tools/coverage.sh`
 
+**Behaviour (refined during implementation):** the driver builds the genrule
+(cacheable `lcov` + `report` + `profdata`), copies all three into the gitignored
+`.loom/coverage/`, **prints the `report.txt` table to STDOUT** (the agentic /
+terminal signal — this was the key requirement), and additionally renders a
+browsable HTML report. HTML needs the source tree (absent in the genrule
+sandbox), so the driver runs `llvm-cov show` itself against the **cached
+`profdata`** and the instrumented test binaries — discovered from the genrule's
+own `rust_test` deps via `cquery` (no duplicated target list), so the binaries
+are never re-run. A `LOOM_COVERAGE_JOBS` env var caps `buck2 -j` for constrained
+machines (the first instrumented build can saturate all cores).
+
 - [ ] **Step 1: Write the driver**
 
-Create `tools/coverage.sh` with exactly:
+Create `tools/coverage.sh` with the contents implemented in the repo (see the
+committed file). Key points the implementation must preserve:
+- `qcfg=(--config loom.coverage=true)` for **queries** (cquery rejects `-j`);
+  `cfg` adds `-j "$LOOM_COVERAGE_JOBS"` only for **builds**.
+- Discover binaries with `buck2 cquery "${qcfg[@]}" "kind('rust_test', deps(${target}))"`,
+  stripping cquery's ` (cfg#hash)` suffix with `t="${t%% (*}"`. (`uquery deps()`
+  fails here — it can't traverse the unconfigured toolchain graph.)
+- Copy `[lcov]`, `[report]`, `[profdata]` into `.loom/coverage/`.
+- `llvm-cov show -format=html -output-dir=.loom/coverage/html` using the same
+  `-ignore-filename-regex='^/|^third-party/|/tests/'`.
+- `cat .loom/coverage/report.txt` last, so the table is the stdout payload.
 
-```bash
-#!/usr/bin/env bash
-# Dev driver: build the coverage genrule for a crate under the coverage config,
-# copy lcov.info into the gitignored .loom/coverage/, and print the report.
-# Usage: tools/coverage.sh [crate]   (default: core)
-set -euo pipefail
-
-crate="${1:-core}"
-target="//tools/coverage:${crate}"
-
-buck2 build --config loom.coverage=true "$target" >/dev/null
-
-lcov="$(buck2 build --config loom.coverage=true "${target}[lcov]" --show-simple-output 2>/dev/null)"
-report="$(buck2 build --config loom.coverage=true "${target}[report]" --show-simple-output 2>/dev/null)"
-
-mkdir -p .loom/coverage
-cp "$lcov" .loom/coverage/lcov.info
-
-cat "$report"
-echo
-echo "lcov written to .loom/coverage/lcov.info"
-```
-
-- [ ] **Step 2: Make it executable**
-
-Run: `chmod +x tools/coverage.sh`
-Expected: no output.
+- [ ] **Step 2: `chmod +x tools/coverage.sh`**
 
 - [ ] **Step 3: Run the full dev flow**
 
-Run: `./tools/coverage.sh`
-Expected: the coverage table prints to the terminal, ends with `lcov written to .loom/coverage/lcov.info`, and `test -s .loom/coverage/lcov.info` succeeds.
+Run: `LOOM_COVERAGE_JOBS=6 ./tools/coverage.sh`
+Expected: the coverage table prints to stdout; `.loom/coverage/` contains
+`report.txt`, `lcov.info`, `coverage.profdata`, and `html/index.html`; and
+`ls default_*.profraw` finds **zero** repo-root strays.
 
 - [ ] **Step 4: Confirm `.loom/coverage/` is gitignored**
 
-Run: `git status --porcelain .loom/ ; git check-ignore .loom/coverage/lcov.info`
-Expected: `git status` prints nothing for `.loom/`, and `check-ignore` echoes `.loom/coverage/lcov.info` (it is ignored via the existing `/.loom/` rule).
+Run: `git check-ignore .loom/coverage/lcov.info`
+Expected: echoes `.loom/coverage/lcov.info` (ignored via the existing `/.loom/` rule).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tools/coverage.sh
-git commit -m "feat(coverage): tools/coverage.sh dev driver (build, copy lcov, print report)
+git add tools/coverage.sh tools/coverage/cover.sh tools/coverage/BUCK
+git commit -m "feat(coverage): tools/coverage.sh driver — stdout table + lcov + HTML
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```

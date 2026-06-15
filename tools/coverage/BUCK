@@ -23,6 +23,7 @@ genrule(
     outs = {
         "lcov": ["lcov.info"],
         "report": ["report.txt"],
+        "profdata": ["coverage.profdata"],
     },
     cmd = " ".join([
         "bash",

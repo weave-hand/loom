@@ -49,3 +49,8 @@ done
     -instr-profile="$prof_dir/merged.profdata" \
     -ignore-filename-regex="$ignore_regex" \
     "$head_bin" "${object_args[@]}" > "$out_dir/report.txt"
+
+# Also export the merged profile so the driver can render HTML (which needs the
+# source tree, unavailable in this sandbox) from the cached profdata — without
+# re-running the binaries.
+cp "$prof_dir/merged.profdata" "$out_dir/coverage.profdata"
