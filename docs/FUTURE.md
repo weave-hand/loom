@@ -74,11 +74,13 @@ which delivered part-1 of richer read capability.
   source-filter→target traversal. **(B) derived / aggregate properties**
   (`Customer.order_count` — aggregates over a traversed link) is now **DELIVERED**
   (`2026-06-15-derived-properties-design.md`): aggregate-over-link derived properties served
-  through `read_object` as governed correlated subqueries (see the follow-ups below). Still
-  to come: **(C) multi-hop / object-set traversal** (chaining links, starting from a saved
-  object set, inverse-direction traversal, target-side filtering, and returning the
-  source→target association). Both build on the resolvable-link + governed-join primitive
-  delivered here.
+  through `read_object` as governed correlated subqueries (see the follow-ups below). **(C)
+  multi-hop traversal part-1** (chaining links — `Customer → Order → LineItem`) is now also
+  **DELIVERED** (`2026-06-15-query-multi-hop-traversal-design.md`): a `SELECT DISTINCT` chain of
+  governed INNER JOINs, governed at every hop (see the follow-ups below). Still to come (remaining
+  slice-C parts): inverse-direction traversal, target-side filtering, starting from a saved object
+  set, and returning the source→target association. All build on the resolvable-link +
+  governed-join primitive delivered here.
 
 From the derived-properties part-1 slice (`2026-06-15-derived-properties-design.md`), which
 delivered aggregate-over-link derived properties (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) on
@@ -102,6 +104,33 @@ delivered aggregate-over-link derived properties (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX
 - **Derived props as filter/sort targets.** Part-1 projects derived properties but they are not
   filterable/sortable (eq-filters validate against physical columns only). Making them filter/sort
   targets is a follow-on.
+
+From the multi-hop traversal part-1 slice (`2026-06-15-query-multi-hop-traversal-design.md`), which
+delivered forward, source-filtered, deduped link chaining (`GET /objects/{from}/links?path=l1,l2`) as
+a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
+
+- **Inverse-direction hops.** Follow a link from its `to` back to its `from` within a chain. Part-1
+  hops are all forward — each hop traverses from a link's declared `from` to its `to` — so a chain
+  can only run in the links' authored direction. Reverse traversal is a later part.
+- **Caller-supplied target / intermediate filters.** Equality filters on types beyond the source
+  (target-side filtering). Part-1 binds eq-filters to the **source** only; intermediate and target
+  governance is row-filters (policy), not caller input — so a caller cannot narrow the final target
+  set by a value, only the policy can.
+- **Object-set inputs.** Start a chain from a passed/saved set of source object IDs instead of source
+  equality filters. Part-1 always begins the chain from source eq-filters; consuming an explicit
+  object set (e.g. a saved selection) is a later part.
+- **Source→target association.** Return which source each final target came from (pairs), not just
+  the deduped target set. Part-1 returns the deduped final-target objects only; carrying the
+  source→target pairing ties into a **visible-primary-key** concept (the same one the slice A dedup
+  note above defers).
+- **Define-time chain/link validation.** Validate link continuity and physical columns at authoring
+  time (shared with slice A's deferred `define_link` column validation). Part-1 resolves the chain at
+  **read** time, so a broken chain (unknown link, a link whose `from` is not the current type)
+  surfaces then as a `400` rather than at authoring.
+- **Derived properties on chain output.** Serve slice B's aggregates on traversal/chain output.
+  Part-1 chain output is the physical columns of the **final target** only; projecting derived
+  properties onto it is a follow-on (the same class as the "derived properties on traversal output"
+  item in the derived-properties block above).
 
 ## Actions (Step 3)
 
