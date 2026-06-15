@@ -204,6 +204,20 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "action-engine",
+    crate = "action_engine",
+    srcs = ["tests/action_engine.rs"],
+    crate_root = "tests/action_engine.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "inline-write-spike",
     crate = "inline_write_spike",
     srcs = ["tests/inline_write_spike.rs"],

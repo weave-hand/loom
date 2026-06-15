@@ -48,6 +48,90 @@ pub trait ServingEngine: Send + Sync {
     async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError>;
 }
 
+/// A write-capable serving engine — the seam a future Iceberg backend swaps in.
+#[async_trait]
+pub trait ActionEngine: Send + Sync {
+    /// Insert one row of `values` into `table` (columns positionally aligned), INLINE —
+    /// low-latency, no Parquet data file. The new catalog snapshot is read separately by
+    /// the caller via `Catalog::current_snapshot`.
+    async fn insert_row(
+        &self,
+        table: &control_plane_core::TableRef,
+        columns: &[String],
+        values: &[SqlValue],
+    ) -> Result<(), ServingError>;
+}
+
+/// DuckLake inline writer: same ATTACH as `EmbeddedDuckDb` but with inlining ENABLED.
+pub struct EmbeddedDuckDbWriter {
+    attach_sql: String,
+}
+
+impl EmbeddedDuckDbWriter {
+    /// Inlining threshold: rows per write below this land inline (no Parquet). Single-row
+    /// action writes are always well under it.
+    const INLINE_ROW_LIMIT: u32 = 1000;
+
+    pub async fn attach(pg_conn: &str, data_path: &std::path::Path) -> Result<Self, ServingError> {
+        let ext_dir = std::env::var("DUCKDB_EXTENSION_DIR")
+            .map_err(|_| ServingError::Engine("DUCKDB_EXTENSION_DIR unset".into()))?;
+        let attach_sql = format!(
+            "SET extension_directory='{}';\nLOAD ducklake;\nLOAD postgres_scanner;\n\
+             ATTACH 'ducklake:postgres:{}' AS lake \
+             (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT {});\nUSE lake;",
+            ext_dir,
+            pg_conn,
+            data_path.display(),
+            Self::INLINE_ROW_LIMIT,
+        );
+        Ok(Self { attach_sql })
+    }
+}
+
+#[async_trait]
+impl ActionEngine for EmbeddedDuckDbWriter {
+    async fn insert_row(
+        &self,
+        table: &control_plane_core::TableRef,
+        columns: &[String],
+        values: &[SqlValue],
+    ) -> Result<(), ServingError> {
+        // Identifiers come from the ontology (validated table/columns), not user input;
+        // values bind as positional params. Quote identifiers to preserve case.
+        let cols = columns
+            .iter()
+            .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let placeholders = std::iter::repeat_n("?", values.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
+            table.schema.replace('"', "\"\""),
+            table.name.replace('"', "\"\""),
+            cols,
+            placeholders,
+        );
+        let attach = self.attach_sql.clone();
+        let params = values.to_vec();
+        tokio::task::spawn_blocking(move || -> Result<(), ServingError> {
+            let conn = duckdb::Connection::open_in_memory()
+                .map_err(|e| ServingError::Engine(e.to_string()))?;
+            conn.execute_batch(&attach)
+                .map_err(|e| ServingError::Engine(e.to_string()))?;
+            let bound: Vec<duckdb::types::Value> = params.iter().map(to_duck).collect();
+            let pref: Vec<&dyn duckdb::ToSql> =
+                bound.iter().map(|v| v as &dyn duckdb::ToSql).collect();
+            conn.execute(&sql, pref.as_slice())
+                .map_err(|e| ServingError::Engine(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| ServingError::Engine(format!("join: {e}")))?
+    }
+}
+
 /// Embedded DuckDB that has ATTACHed loom's DuckLake catalog read-only.
 /// duckdb-rs is synchronous; calls run on a blocking thread. A fresh connection
 /// per query keeps the slice simple (pool later).
