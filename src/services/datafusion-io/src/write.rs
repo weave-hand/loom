@@ -70,10 +70,11 @@ pub(crate) const LOOM_STORE_URL: &str = "loom://data";
 /// under `dir_prefix` (e.g. "main/customer/<file_prefix>"). Returns one `WrittenFile`
 /// per output file, with paths relative to the table directory.
 ///
-/// Note: DataFusion's RoundRobinBatch distributes whole batches, so the file count is
-/// bounded by min(estimated partitions, batch count). A single huge batch yields one file.
-/// Empty input (no batches, or batches with no rows) yields zero files — the caller's
-/// `append_files(&[])` then registers an empty, row-less snapshot rather than an empty file.
+/// File count is governed by `minimum_parallel_output_files = estimate_partitions`: small
+/// data lands as a single file, while large data splits toward the size target across that
+/// many writers (see the in-body comment). Empty input (no batches, or batches with no rows)
+/// yields zero files — the caller's `append_files(&[])` then registers an empty, row-less
+/// snapshot rather than an empty file.
 pub async fn write_dataset(
     store: Arc<dyn ObjectStore>,
     dir_prefix: &str,

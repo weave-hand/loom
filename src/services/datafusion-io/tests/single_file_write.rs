@@ -154,6 +154,9 @@ async fn large_result_still_splits_into_the_targeted_file_count() {
     // The parquet sink's demuxer opens one file per incoming batch up to the targeted
     // file count, so a real multi-file split needs at least that many input batches (as a
     // large `df.collect()` produces). Build 8 batches against a 8-file target.
+    // NB: this assumes the N input batches survive to the demuxer as N distinct batches — a
+    // DataFusion implementation detail, not a contract; a future coalescing change would
+    // break this assertion (and so be noticed) rather than silently weaken it.
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("amount", DataType::Float64, false),
