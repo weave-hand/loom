@@ -1,74 +1,144 @@
 #!/usr/bin/env bash
-# Dev driver for Rust test coverage (prototype: control-plane/core).
+# tools/coverage.sh — dev wrapper: run the BXL coverage pipeline, copy outputs
+# out of buck-out, and (best-effort) render an HTML report with source context.
 #
-# Builds the //tools/coverage:<crate> genrule under the coverage config, prints
-# the llvm-cov table to STDOUT (for agentic/terminal use), and writes lcov.info,
-# report.txt, and a browsable HTML report into the gitignored .loom/coverage/.
+# Usage:
+#   tools/coverage.sh                        # whole codebase, all 7 crates
+#   tools/coverage.sh control-plane/core     # single crate (package under src/)
 #
-# Usage: tools/coverage.sh [crate]          (default crate: core)
+# Output lands in .loom/coverage/ (gitignored):
+#   combined/      — combined.profdata, lcov.info, report.txt (all crates in scope)
+#   <crate>/       — per-crate report.txt + lcov.info
+#   html/          — HTML source-annotated report (best-effort; needs source tree)
 #
-# COST NOTE: the FIRST run under --config loom.coverage=true recompiles the
-# dependency graph with -Cinstrument-coverage (a separate build configuration),
-# which can saturate all cores. On a constrained machine cap it with e.g.
-#   LOOM_COVERAGE_JOBS=6 tools/coverage.sh
-# Subsequent runs are cache hits and cheap.
+# COST NOTE:
+#   The first instrumented build recompiles every crate in scope with
+#   -Cinstrument-coverage (~same wall time as a clean build). Fixture crates
+#   (postgres, worker, ingest, query-api) boot initdb + postgres locally and are
+#   pinned local-only in the bxl; they're the slow part. Cap parallelism with:
+#     LOOM_COVERAGE_JOBS=4 tools/coverage.sh
+#   Subsequent runs are cache hits and fast.
 #
-# Do NOT run `buck2 test`/`buck2 run` under --config loom.coverage=true: those
-# execute instrumented binaries without LLVM_PROFILE_FILE set and litter
-# default_*.profraw into the repo root. This driver (via cover.sh) always
-# captures profiles into a temp dir, so it never leaks.
+# FOOTGUN:
+#   Never run an instrumented test binary directly outside this flow. The bxl's
+#   run_one.sh captures profraw to a declared buck-out path. Running binaries
+#   built under the coverage_enabled modifier outside that flow emits
+#   default_<pid>.profraw files into the working directory, which can pollute
+#   subsequent coverage merges. This wrapper never executes binaries directly.
+
 set -euo pipefail
 
-crate="${1:-core}"
-target="//tools/coverage:${crate}"
+crate="${1:-}"
+out=".loom/coverage"
+log=$(mktemp /tmp/coverage-XXXXXX.log)
+
+# Build the -j flag array (honor LOOM_COVERAGE_JOBS if set, else let buck2 choose)
 jobs="${LOOM_COVERAGE_JOBS:-}"
-qcfg=(--config loom.coverage=true)            # queries: config only (reject -j)
-cfg=("${qcfg[@]}")                            # builds: config + optional job cap
-[ -n "$jobs" ] && cfg+=(-j "$jobs")
+jflag=()
+[ -n "$jobs" ] && jflag=(-j "$jobs")
 
-# Keep this in sync with the -ignore-filename-regex in tools/coverage/BUCK:
-# drop absolute paths (stdlib/cargo), third-party crates, and test files.
-ignore_regex='^/|^third-party/|/tests/'
+echo "==> Running BXL coverage pipeline (log: $log)" >&2
 
-out=.loom/coverage
-mkdir -p "$out"
+# Build the bxl arg array
+bxl_args=(//tools/coverage:cov.bxl:cov)
+[ -n "$crate" ] && bxl_args+=(-- --crate "$crate")
 
-# 1. Build the cacheable artifacts (lcov + report + merged profdata).
-buck2 build "${cfg[@]}" "$target" >/dev/null
-lcov="$(buck2 build "${cfg[@]}" "${target}[lcov]" --show-simple-output 2>/dev/null)"
-report="$(buck2 build "${cfg[@]}" "${target}[report]" --show-simple-output 2>/dev/null)"
-profdata="$(buck2 build "${cfg[@]}" "${target}[profdata]" --show-simple-output 2>/dev/null)"
-cp "$lcov" "$out/lcov.info"
-cp "$report" "$out/report.txt"
-cp "$profdata" "$out/coverage.profdata"
+# Run the bxl and capture all stdout. buck2 stdout is fully consumed by the
+# $(...) substitution, so this does NOT stall (the stall happens only with an
+# unconsumed live pipe like `buck2 ... | tail` at the shell level). We extract
+# the last line (the combined-dir path) from the captured string with awk —
+# never by piping the live buck2 process to tail.
+bxl_stdout=$(buck2 bxl "${jflag[@]}" "${bxl_args[@]}" 2>"$log")
+combined_dir=$(printf '%s\n' "$bxl_stdout" | awk 'END{print}')
 
-# 2. Render HTML from the cached profdata. llvm-cov show needs the source tree
-#    (present here, unlike the genrule sandbox) and the instrumented binaries —
-#    discovered from the genrule's own rust_test deps, so there's no duplicated
-#    target list. show reads the binaries' coverage maps; it does not run them.
-llvm="$(buck2 build "${cfg[@]}" toolchains//:llvm-x86_64-linux --show-simple-output 2>/dev/null)"
-bins=()
-while read -r t; do
-    t="${t%% (*}"   # strip cquery's " (cfg#hash)" suffix -> plain label
-    [ -n "$t" ] && bins+=("$(buck2 build "${cfg[@]}" "$t" --show-simple-output 2>/dev/null)")
-done < <(buck2 cquery "${qcfg[@]}" "kind('rust_test', deps(${target}))" 2>/dev/null)
-
-if [ "${#bins[@]}" -eq 0 ]; then
-    echo "coverage: found no rust_test deps under ${target}; cannot render HTML." >&2
+if [ -z "$combined_dir" ]; then
+    echo "ERROR: bxl produced no output; see $log" >&2
     exit 1
 fi
 
-head_bin="${bins[0]}"
-object_args=()
-for b in "${bins[@]:1}"; do object_args+=("-object" "$b"); done
-rm -rf "$out/html"
-"$llvm/bin/llvm-cov" show -format=html -output-dir="$out/html" \
-    -instr-profile="$out/coverage.profdata" \
-    -ignore-filename-regex="$ignore_regex" \
-    "$head_bin" "${object_args[@]}" 2>/dev/null
+echo "==> BXL combined dir: $combined_dir" >&2
 
-# 3. Emit the table to stdout (agentic/terminal signal), then point at the rest.
-cat "$out/report.txt"
-echo
-echo "lcov : $out/lcov.info   (editor gutters)"
-echo "html : $out/html/index.html   (browser)"
+# Prepare local output directory
+rm -rf "$out"
+mkdir -p "$out"
+
+# Copy combined dir (contains report.txt, lcov.info, combined.profdata after
+# the report.sh tweak that mirrors profdata into the output dir)
+cp -r "$combined_dir" "$out/combined"
+
+# Copy per-crate dirs: they are siblings of combined_dir under the same parent.
+bxl_root=$(dirname "$combined_dir")
+for d in "$bxl_root"/*/; do
+    dname=$(basename "$d")
+    [ "$dname" = "combined" ] && continue
+    [ -f "${d}report.txt" ] && cp -r "$d" "$out/$dname"
+done
+
+echo "==> Copied coverage outputs to $out/" >&2
+
+# ── Combined HTML report (best-effort; source tree is present here) ───────────
+# Reuse the SAME combined-ignore regex as cov.bxl's _combined_ignore():
+#   _COMMON_IGNORE = ["^/", "^third-party/", "/tests/"]
+#   + "^src/control-plane/testkit/"
+# Keep this in sync with tools/coverage/cov.bxl:_combined_ignore().
+COMBINED_IGNORE='^/|^third-party/|/tests/|^src/control-plane/testkit/'
+
+echo "==> Resolving LLVM dist path (cache hit from bxl run)" >&2
+llvm=$(buck2 build "${jflag[@]}" toolchains//:llvm-x86_64-linux --show-simple-output 2>>"$log")
+llvm="${llvm%$'\n'}"  # strip trailing newline
+
+# Discover all rust_test targets in scope
+if [ -n "$crate" ]; then
+    test_universe="//src/${crate}/..."
+else
+    test_universe="//src/..."
+fi
+
+echo "==> Discovering instrumented test binaries (cache hits)" >&2
+test_targets=$(buck2 cquery "kind('rust_test', ${test_universe})" 2>>"$log") || {
+    echo "WARNING: cquery failed; skipping HTML report (see $log)" >&2
+    test_targets=""
+}
+
+bins=()
+if [ -n "$test_targets" ]; then
+    while IFS= read -r t; do
+        [ -z "$t" ] && continue
+        # Strip configured-target suffix (e.g. " (cfg:...)" or " (<hash>)")
+        label=$(printf '%s' "$t" | awk '{print $1}')
+        bin=$(buck2 build "${jflag[@]}" -m //tools/coverage:coverage_enabled \
+            "$label" --show-simple-output 2>>"$log") || continue
+        bin="${bin%$'\n'}"
+        [ -n "$bin" ] && bins+=("$bin")
+    done <<< "$test_targets"
+fi
+
+profdata="$out/combined/combined.profdata"
+
+if [ ${#bins[@]} -gt 0 ] && [ -f "$profdata" ]; then
+    echo "==> Generating HTML report (${#bins[@]} binaries)" >&2
+    mkdir -p "$out/html"
+    object_args=()
+    for b in "${bins[@]:1}"; do
+        object_args+=(-object "$b")
+    done
+    "$llvm/bin/llvm-cov" show \
+        -format=html \
+        -output-dir="$out/html" \
+        -instr-profile="$profdata" \
+        -ignore-filename-regex="$COMBINED_IGNORE" \
+        "${bins[0]}" "${object_args[@]}" 2>>"$log" \
+        || echo "WARNING: HTML generation failed (see $log)" >&2
+else
+    echo "WARNING: HTML step skipped (bins=${#bins[@]}, profdata=$(test -f "$profdata" && echo present || echo missing))" >&2
+fi
+
+# ── Results ───────────────────────────────────────────────────────────────────
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+cat "$out/combined/report.txt"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "  lcov data : $out/combined/lcov.info"
+[ -f "$out/html/index.html" ] && echo "  HTML      : $out/html/index.html"
+echo "  full log  : $log"

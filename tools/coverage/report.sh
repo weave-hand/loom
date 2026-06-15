@@ -24,3 +24,8 @@ for b in "${bins[@]:1}"; do object_args+=("-object" "$b"); done
     -ignore-filename-regex="$ignore" "$head_bin" "${object_args[@]}" > "$out_dir/lcov.info"
 "$llvm/bin/llvm-cov" report -instr-profile="$profdata" \
     -ignore-filename-regex="$ignore" "$head_bin" "${object_args[@]}" > "$out_dir/report.txt"
+
+# Mirror the profdata into the output dir so the combined dir is self-contained:
+# the tools/coverage.sh wrapper can find combined.profdata alongside lcov.info
+# and report.txt without needing the separate declared buck artifact.
+cp "$profdata" "$out_dir/$(basename "$profdata")"
