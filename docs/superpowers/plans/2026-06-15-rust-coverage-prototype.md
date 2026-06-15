@@ -209,7 +209,7 @@ Expected: no output.
 
 - [ ] **Step 3: Write the genrule BUCK**
 
-Create `tools/coverage/BUCK` with exactly. The third arg to `cover.sh` is the `-ignore-filename-regex` value `^third-party/|/tests/` — confirmed by the spike: it drops third-party crate sources and the integration-test files, leaving the library's own `src/control-plane/core/src/**` (which is what we want to measure). The embedded paths are repo-relative, so lcov `SF:` lines come out as `src/control-plane/core/src/…`.
+Create `tools/coverage/BUCK` with exactly. The third arg to `cover.sh` is the `-ignore-filename-regex` value `^/|^third-party/|/tests/` — confirmed by the spike + verification: `^/` drops absolute paths (rust stdlib at `/rustc/…`, cargo registry), `^third-party/` drops third-party crates, `/tests/` drops the integration-test files, leaving the library's own repo-relative `src/control-plane/core/src/**` (which is what we want to measure). lcov `SF:` lines come out as `src/control-plane/core/src/…`.
 
 ```python
 # Dev-only coverage targets. Live here (NOT under //src/...) so CI's
@@ -243,7 +243,7 @@ genrule(
         "$(location :cover-sh)",
         "$(location toolchains//:llvm-x86_64-linux)",
         "$OUT",
-        "'^third-party/|/tests/'",
+        "'^/|^third-party/|/tests/'",
     ] + ["$(location {})".format(t) for t in _CORE_TESTS]),
 )
 ```
@@ -386,6 +386,6 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ## Risks / things that may need adjustment during execution
 
 - **Profiler runtime linking — RESOLVED by the spike.** `-Cinstrument-coverage` links cleanly against the pinned nightly `rust-std`; the instrumented `:page` build succeeds and emits a coverage map. No `__llvm_profile_*` blocker.
-- **Source filtering — RESOLVED by the spike.** LLVM 22.1.2's `llvm-cov` **ignores a positional source-path filter** (the table comes out unfiltered). The working mechanism is `-ignore-filename-regex`. The plan uses `^third-party/|/tests/` to drop third-party crates and the integration-test files, leaving `src/control-plane/core/src/**`. Embedded paths are repo-relative, so lcov `SF:` lines are `src/control-plane/core/src/…`.
+- **Source filtering — RESOLVED by the spike.** LLVM 22.1.2's `llvm-cov` **ignores a positional source-path filter** (the table comes out unfiltered). The working mechanism is `-ignore-filename-regex`. The plan uses `^/|^third-party/|/tests/` to drop absolute paths (rust stdlib / cargo registry), third-party crates, and the integration-test files, leaving `src/control-plane/core/src/**`. Embedded paths are repo-relative, so lcov `SF:` lines are `src/control-plane/core/src/…`.
 - **llvm-cov flag spelling — RESOLVED by the spike.** Single-dash flags (`-format=lcov`, `-instr-profile=`, `-ignore-filename-regex=`, `-object`) all work on the pinned LLVM 22.1.2.
 - **`$(location)` of a named-output genrule (`[lcov]`/`[report]`).** Expected pattern is `outs`-dict named outputs addressed as `:core[lcov]`. If `--show-simple-output` on a named subtarget misbehaves on this buck2 version, fall back to building `//tools/coverage:core` (the whole out dir) and reading `out/lcov.info` / `out/report.txt` from the printed dir path.

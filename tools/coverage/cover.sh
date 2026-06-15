@@ -3,8 +3,9 @@
 # Args: <llvm_dist_dir> <out_dir> <ignore_regex> <test_bin>...
 # Runs each instrumented rust_test binary under LLVM_PROFILE_FILE, merges the
 # .profraw files, and writes lcov.info + report.txt into <out_dir>, dropping
-# files matching <ignore_regex> (third-party crates and the test files
-# themselves, leaving the library's own src/). Exits non-zero with a clear
+# files matching <ignore_regex> (absolute paths like the rust stdlib, third-party
+# crates, and the test files themselves, leaving the library's own src/). Exits
+# non-zero with a clear
 # message if no coverage data was produced (target built without
 # --config loom.coverage=true).
 #

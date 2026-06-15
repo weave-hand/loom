@@ -29,6 +29,9 @@ genrule(
         "$(location :cover-sh)",
         "$(location toolchains//:llvm-x86_64-linux)",
         "$OUT",
-        "'^third-party/|/tests/'",
+        # Drop absolute paths (rust stdlib at /rustc/…, cargo registry),
+        # third-party crates, and the integration-test files — leaving only the
+        # library's own repo-relative src/control-plane/core/src/**.
+        "'^/|^third-party/|/tests/'",
     ] + ["$(location {})".format(t) for t in _CORE_TESTS]),
 )
