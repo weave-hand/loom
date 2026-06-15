@@ -61,7 +61,9 @@ slices that compose the same primitives.
   `ObjectType`'s properties, reusing core's `satisfies` affinity check.
 - A new queue **job kind `"typed-transform"`**, its handler, and worker dispatch alongside the
   existing physical `"transform"` kind.
-- **Graph-connected lineage** with the type-level relationship recorded in the event payload.
+- **First-class type-named lineage**: a new type-level dataset identity in `control-plane-core`
+  (parallel to the existing `DatasetId(TableRef)`), so a typed transform's provenance nodes *are*
+  the ontology types.
 
 ## What this slice is NOT
 
@@ -70,8 +72,11 @@ slices that compose the same primitives.
   the compute step.
 - **No type authoring inside the transform** — the output type pre-exists (Decision A).
 - **No overwrite / incremental** output — append only, inherited from `run_transform`.
-- **No first-class type-named lineage nodes** — see §5; deferred as an additive enhancement,
-  consistent with `identity.rs`.
+- **No type↔table lineage layer-join** — typed transforms emit type-named nodes (§5); ingest
+  landings and physical transforms still emit table-named nodes. The two layers do not auto-join
+  yet (the backing table refs are kept in the typed event's payload so the linkage stays
+  traceable). Connecting them — e.g. a binding edge emitted at `define_type`/`bind` — is a noted
+  follow-up.
 - **No consolidation** of the two violation enums (`ingest::BindViolation` and this slice's
   conformance `Violation`) into core — noted follow-up.
 
@@ -97,8 +102,8 @@ Flow:
 2. **Resolve output contract.** `cp.ontology().get_type(output)` → `ObjectType { properties,
    table }` (NotFound → `UnknownType`). `properties` is the conformance contract; `table` is the
    output backing table.
-3. **Build lineage** (§5): inputs → output, graph-connected via the resolved backing tables, with
-   the input/output **type names + SQL** in the payload.
+3. **Build lineage** (§5): a `LineageEvent` whose `inputs`/`outputs` are **type-named**
+   `DatasetRef`s (`From<&TypeName>`), with the resolved backing-table refs + SQL in the payload.
 4. **Delegate** to `run_transform` with the input specs, `output.table`, `sql`,
    `conform: Some(&properties)`, and the lineage. Map any `TransformError` through
    `TypedTransformError::Transform`.
@@ -182,25 +187,44 @@ out of this slice to avoid touching the ingest path.
   `typed_transform_handler`. `worker.run(&["transform", "typed-transform"], shutdown, dispatch)`.
   No new binary, no HTTP surface — still queue-driven.
 
-### 5. Lineage — graph-connected, type-level in the payload
+### 5. Lineage — first-class type-named nodes
 
-`identity.rs` already states the intent: *"An ontology type reaches its dataset through
-`ObjectType.table -> DatasetId`; a type-level variant is an additive change if type-level lineage
-lands."* So for this slice:
+`identity.rs` anticipated this: *"An ontology type reaches its dataset through `ObjectType.table ->
+DatasetId`; a type-level variant is an additive change if type-level lineage lands."* This slice
+lands that variant.
 
-- **`inputs`/`outputs` are table-identity `DatasetRef`s** — built from the resolved backing
-  `TableRef`s via the existing `From<&TableRef> for DatasetRef` (loom namespace, `schema.name`).
-  This keeps the provenance graph **connected** end-to-end: ingest landing, physical transforms,
-  and typed transforms all reference the same dataset identities, so `upstream`/`downstream` answer
-  correctly across all three.
-- **The type-level relationship lives in `payload`**: the input type names, the output type name,
-  and the SQL. This satisfies "lineage records input types → output type" while preserving graph
-  connectivity.
-- A **first-class type-named `DatasetRef`** (its own namespace, name = type) is the *additive*
-  enhancement `identity.rs` anticipates — explicitly **deferred**, because emitting type-named
-  nodes today would fragment the graph from the table-named nodes ingest already emits.
+**New core identity — `TypeId`** (in `src/control-plane/core/src/identity.rs`, parallel to the
+existing `DatasetId(TableRef)`):
 
-`EventType::Complete`, a fresh `RunId`, mirroring the physical handler.
+```rust
+/// loom's canonical logical namespace for ontology *types* it governs. Distinct from
+/// `LOOM_DATASET_NAMESPACE` so a type "Customer" and a table "x.Customer" never collide.
+pub const LOOM_TYPE_NAMESPACE: &str = "loom:type";
+
+/// loom's canonical lineage identity for an ontology type.
+pub struct TypeId(TypeName);
+
+impl TypeId {
+    pub fn dataset_ref(&self) -> DatasetRef;          // { namespace: LOOM_TYPE_NAMESPACE, name: <type> }
+    pub fn from_dataset_ref(dr: &DatasetRef) -> Option<TypeId>; // round-trips; None if not loom-type-namespaced
+}
+impl From<&TypeName> for DatasetRef { /* TypeId::from(name).dataset_ref() */ }
+impl From<&TypeName> for TypeId { /* TypeId(name.clone()) */ }
+```
+
+Type names are single identifiers (no schema qualification), so `name = TypeName.0` directly — no
+dot-splitting (the `TableRef` `schema.name` round-trip subtlety does not arise).
+
+**The typed transform emits type-named nodes**: `run_typed_transform` builds the `LineageEvent`
+with `inputs = req.inputs.map(DatasetRef::from)` (the **type** names) and `outputs =
+[DatasetRef::from(output)]` (the output **type**), `EventType::Complete`, a fresh `RunId`. The
+provenance nodes *are* the ontology types, so `upstream(OrderEnriched_type)` returns
+`{Customer_type, Order_type}` — a first-class Object-Model lineage graph.
+
+**Payload** carries the backing-table refs (`inputs`/`output` resolved `schema.name`) and the SQL,
+so the type→table linkage stays traceable even though this slice does not yet *join* the type-named
+and table-named lineage layers (see "What this slice is NOT"; `run_transform` itself is unchanged —
+it still `tx.emit`s the caller-built event, which is now type-named).
 
 ### 6. Error → retry policy
 
@@ -237,10 +261,11 @@ handler (→ Abandon).
      does not exist yet**.
   3. Enqueue a `"typed-transform"` job with **type-name** join SQL producing exactly those columns.
   4. Run the worker for one job.
-  5. **Assert:** the output table has a new snapshot; rows are the correct join; the lineage event
-     references the input and output **dataset identities** (graph-connected) with the **type
-     names + SQL in its payload**; and the result **reads back through query-api as `OrderEnriched`
-     typed objects** (the Object Model round-trips end to end).
+  5. **Assert:** the output table has a new snapshot; rows are the correct join; the lineage event's
+     `inputs`/`outputs` are the **type-named** `DatasetRef`s (`upstream(OrderEnriched)` returns
+     `{Customer, Order}`), with the backing-table refs + SQL in its payload; and the result **reads
+     back through query-api as `OrderEnriched` typed objects** (the Object Model round-trips end to
+     end).
   6. **Negative case:** a second job whose SQL omits a required property (or adds an extra column)
      fails with `DoesNotConform` and **commits nothing** (output table unchanged / still absent).
 
@@ -253,6 +278,9 @@ handler (→ Abandon).
   (`typed_transform_handler`); `src/services/transform/src/main.rs` (kind dispatch);
   `src/services/transform/src/lib.rs` (module wiring + exports); `src/services/transform/BUCK`
   (new modules, test targets).
+- **Modify (core):** `src/control-plane/core/src/identity.rs` (`TypeId`, `LOOM_TYPE_NAMESPACE`,
+  `From<&TypeName> for DatasetRef`/`TypeId`) + its `tests/` target (type round-trip cases mirroring
+  the existing `DatasetId` tests); `src/control-plane/core/src/lib.rs` if exports change.
 - **Modify:** `docs/superpowers/specs/2026-06-06-loom-roadmap.md` (typed transforms part-1
   delivered).
 
@@ -261,8 +289,9 @@ handler (→ Abandon).
 - **Multi-output typed transforms** (`Type(s) → Type(s)`): multi-statement payloads, per-output
   conformance, atomic multi-table commit.
 - **Programmatic transforms**: a registered-plan authoring model swapping only the compute step.
-- **First-class type-named lineage** (the additive `identity.rs` variant) — once the graph model
-  decides how type-named and table-named nodes coexist.
+- **Type↔table lineage layer-join** — connect the type-named nodes this slice emits to the
+  table-named nodes ingest/physical-transforms emit, e.g. a binding edge emitted at
+  `define_type`/`bind` (table → type), so `upstream`/`downstream` traverse across the boundary.
 - **Overwrite / incremental** output (with the compaction / file-supersession slice).
 - **Consolidate violation vocabularies** (`ingest::BindViolation` + `transform::conform::Violation`)
   into `control-plane-core`.
