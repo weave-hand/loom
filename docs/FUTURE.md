@@ -70,12 +70,38 @@ which delivered part-1 of richer read capability.
   deferred column validation above, a maliciously/accidentally-authored backing column with a
   `"` would panic the request thread rather than erroring cleanly. Harden `quote_ident` to
   return a `CompileError` (or escape `"`→`""`) when authoring validation lands.
-- **The remaining relational-read slices.** Part-1 (this slice) is single-link,
-  source-filter→target traversal. Still to come: **(B) derived / aggregate properties**
-  (`Customer.order_count` — aggregates over a traversed link); **(C) multi-hop / object-set
-  traversal** (chaining links, starting from a saved object set, inverse-direction traversal,
-  target-side filtering, and returning the source→target association). Both build on the
-  resolvable-link + governed-join primitive delivered here.
+- **The remaining relational-read slices.** Part-1 (link traversal) is single-link,
+  source-filter→target traversal. **(B) derived / aggregate properties**
+  (`Customer.order_count` — aggregates over a traversed link) is now **DELIVERED**
+  (`2026-06-15-derived-properties-design.md`): aggregate-over-link derived properties served
+  through `read_object` as governed correlated subqueries (see the follow-ups below). Still
+  to come: **(C) multi-hop / object-set traversal** (chaining links, starting from a saved
+  object set, inverse-direction traversal, target-side filtering, and returning the
+  source→target association). Both build on the resolvable-link + governed-join primitive
+  delivered here.
+
+From the derived-properties part-1 slice (`2026-06-15-derived-properties-design.md`), which
+delivered aggregate-over-link derived properties (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) on
+`read_object` as governed correlated subqueries:
+
+- **Scalar/expression derived properties.** Own-column computations are deliberately excluded
+  from part-1 (aggregate-over-link only); they form a separate slice bearing a whitelisted
+  SQL-expression surface (injection-safe, governable).
+- **Derived properties on traversal output (`read_linked_objects`).** Part-1 serves derived
+  properties on the primary `read_object` only; the link-traversal read is unchanged. Projecting
+  derived properties onto traversal output is a follow-on.
+- **Multi-hop aggregates and derived-on-derived.** Part-1 is single-link, non-nested. Aggregating
+  over a chain of links, or a derived property that references another derived property (nested),
+  is deferred.
+- **Materialization.** Part-1 computes derived properties at read time as correlated subqueries.
+  Materializing them (precomputed, refreshed) for hot paths is a follow-on.
+- **Define-time validation.** Part-1 resolves the named link at READ time and omits the derived
+  property if the link/target/column is missing — there is no authoring-time validation of a
+  derived property's link/target/column/result-type at `define_type`. Same class as the deferred
+  "authoring-time physical-column validation at `define_link`" item above.
+- **Derived props as filter/sort targets.** Part-1 projects derived properties but they are not
+  filterable/sortable (eq-filters validate against physical columns only). Making them filter/sort
+  targets is a follow-on.
 
 ## Actions (Step 3)
 
