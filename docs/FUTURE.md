@@ -90,6 +90,14 @@ write behind an `ActionEngine` trait).
   the action's lineage event currently carries no inputs and `run_action` doesn't surface its
   `run_id`, so the event isn't easily queryable — a correlatable action-lineage handle is part
   of this follow-up.
+- **Action parameter ↔ property conformance.** Part-1 validates the request body against the
+  `ActionDef`'s declared parameters (`parse_params`), but does NOT cross-check at invoke time that
+  those parameters mirror the target type's properties (same names, `satisfies` logical types, all
+  required properties covered). So a misconfigured `ActionDef` (a param naming a column the type
+  lacks, or omitting a required property) surfaces as an opaque insert-time 500 rather than a clear
+  error. `define_action` trusts the author to mirror the type (consistent with the design's choice
+  to keep params/properties independent at define time). Follow-up: enforce conformance — at
+  `define_action` time (fail fast) or in `run_action` before the insert.
 - **Update/delete actions.** Part-1 is insert-only; mutating existing objects is gated on the
   deferred row-supersession/compaction work.
 - **Custom-logic / multi-step actions.** Part-1's only action kind is "typed insert" (params
