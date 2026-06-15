@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use control_plane_core::{
     ControlPlane, DatasetRef, EventType, Job, JobFailure, LineageEvent, RetryPolicy, RunId,
-    TableRef,
+    TableRef, TypeName,
 };
 use object_store::ObjectStore;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::run::{TransformError, TransformInput, TransformRequest, run_transform};
+use crate::typed::{TypedTransformError, run_typed_transform};
 
 /// Wire form of a transform job payload. `{schema, name}` per table.
 #[derive(Deserialize)]
@@ -92,6 +93,51 @@ pub async fn transform_handler(
         error: e.to_string(),
         policy: retry_policy(&e, job.attempts),
     })
+}
+
+/// Wire form of a typed transform job (`"typed-transform"` kind): ontology type names.
+#[derive(Deserialize)]
+struct TypedTransformPayload {
+    inputs: Vec<String>,
+    output: String,
+    sql: String,
+}
+
+/// Run one TYPED transform job. Inputs/output are ontology type names; the SQL
+/// references inputs by type name; the result must conform to the output type.
+pub async fn typed_transform_handler(
+    cp: &dyn ControlPlane,
+    store: Arc<dyn ObjectStore>,
+    job: Job,
+) -> Result<(), JobFailure> {
+    let payload: TypedTransformPayload = match serde_json::from_value(job.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(JobFailure {
+                error: format!("malformed typed-transform payload: {e}"),
+                policy: RetryPolicy::Abandon,
+            });
+        }
+    };
+    let inputs: Vec<TypeName> = payload.inputs.iter().map(|s| TypeName(s.clone())).collect();
+    let output = TypeName(payload.output.clone());
+    let run_id = Uuid::new_v4().to_string();
+
+    let res = run_typed_transform(cp, store, &run_id, &inputs, &output, &payload.sql).await;
+
+    res.map(|_snapshot| ()).map_err(|e| JobFailure {
+        error: e.to_string(),
+        policy: typed_retry_policy(&e, job.attempts),
+    })
+}
+
+/// Typed-transform classification: an unknown type is deterministic; otherwise defer to
+/// the physical mapping (which already classifies `DoesNotConform` as Abandon).
+fn typed_retry_policy(err: &TypedTransformError, attempts: i32) -> RetryPolicy {
+    match err {
+        TypedTransformError::UnknownType(_) => RetryPolicy::Abandon,
+        TypedTransformError::Transform(t) => retry_policy(t, attempts),
+    }
 }
 
 /// Deterministic failures can't be retried; transient ones back off on attempts.

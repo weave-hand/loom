@@ -7,6 +7,6 @@ pub mod handler;
 pub mod run;
 pub mod typed;
 
-pub use handler::transform_handler;
+pub use handler::{transform_handler, typed_transform_handler};
 pub use run::{TransformError, TransformInput, TransformRequest, run_transform};
 pub use typed::{TypedTransformError, run_typed_transform};

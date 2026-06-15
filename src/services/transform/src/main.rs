@@ -1,6 +1,6 @@
 //! transform binary: build the control plane + object store from env config via
-//! service_runtime, then run the queue worker loop with the transform handler.
-//! Queue-driven — no HTTP surface.
+//! service_runtime, then run the queue worker loop dispatching the two transform
+//! handlers by job kind. Queue-driven — no HTTP surface.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use control_plane_core::{ControlPlane, Job};
 use control_plane_worker::Worker;
 use object_store::ObjectStore;
 use tokio_util::sync::CancellationToken;
-use transform::transform_handler;
+use transform::{transform_handler, typed_transform_handler};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,11 +22,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = CancellationToken::new();
 
     worker
-        .run(&["transform".to_string()], shutdown, move |job: Job| {
-            let cp = cp_for_handler.clone();
-            let store = store.clone();
-            async move { transform_handler(cp.as_ref(), store, job).await }
-        })
+        .run(
+            &["transform".to_string(), "typed-transform".to_string()],
+            shutdown,
+            move |job: Job| {
+                let cp = cp_for_handler.clone();
+                let store = store.clone();
+                async move {
+                    match job.kind.as_str() {
+                        "typed-transform" => typed_transform_handler(cp.as_ref(), store, job).await,
+                        _ => transform_handler(cp.as_ref(), store, job).await,
+                    }
+                }
+            },
+        )
         .await?;
     Ok(())
 }
