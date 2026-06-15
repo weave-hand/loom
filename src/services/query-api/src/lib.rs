@@ -10,6 +10,7 @@
 
 pub mod handler;
 pub mod http;
+pub mod params;
 pub mod render;
 pub mod serving;
 pub mod sql;

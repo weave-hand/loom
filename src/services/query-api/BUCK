@@ -231,3 +231,16 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "params",
+    crate = "params",
+    srcs = ["tests/params.rs"],
+    crate_root = "tests/params.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+    ],
+)
