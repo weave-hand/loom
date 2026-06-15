@@ -885,8 +885,8 @@ The action orchestration: resolve → Write-ACL → parse params → conform →
 //! NOT fail the action).
 
 use control_plane_core::{
-    Acl, Action, ActionName, Catalog, ControlPlane, ControlPlaneError, DatasetRef, Decision,
-    EventType, Lineage, LineageEvent, Ontology, PolicyTarget, RunId, SubjectId,
+    Action, ActionName, ControlPlane, ControlPlaneError, DatasetRef, Decision, EventType,
+    LineageEvent, PolicyTarget, RunId, SubjectId,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -992,7 +992,7 @@ pub async fn run_action(
 }
 ```
 
-(Trait imports `Acl`/`Catalog`/`Lineage`/`Ontology` are needed because their methods are called on the `cp.acl()`/`cp.catalog()`/`cp.lineage()`/`cp.ontology()` trait objects. If clippy reports any import genuinely unused after the final code, trim it.)
+(`deps.cp` is a `&dyn ControlPlane` trait object, so `cp.acl()`/`cp.catalog()`/`cp.lineage()`/`cp.ontology()` return trait objects and their methods resolve WITHOUT importing `Acl`/`Catalog`/`Lineage`/`Ontology` — do not import those traits here; only the data types above are needed. If clippy reports any import unused after the final code, trim it.)
 
 - [ ] **Step 2: Wire into `lib.rs`**
 
