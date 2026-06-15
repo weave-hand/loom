@@ -69,3 +69,45 @@ fn optional_absent_becomes_null() {
     let got = parse_params(&params, &body(json!({ "id": "1" }))).unwrap();
     assert_eq!(got[1], ("name".into(), SqlValue::Null));
 }
+
+#[test]
+fn parses_bool_date_timestamp_and_integer() {
+    use time::macros::{date, datetime};
+    let params = vec![
+        p("flag", "Boolean", true),
+        p("when", "Date", true),
+        p("at", "Timestamp", true),
+        p("count", "Integer", true),
+    ];
+    let got = parse_params(
+        &params,
+        &body(json!({
+            "flag": true,
+            "when": "2026-06-15",
+            "at": "2026-06-15T12:30:00",
+            "count": 5
+        })),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        vec![
+            ("flag".into(), SqlValue::Bool(true)),
+            ("when".into(), SqlValue::Date(date!(2026 - 06 - 15))),
+            (
+                "at".into(),
+                SqlValue::Timestamp(datetime!(2026 - 06 - 15 12:30:00)),
+            ),
+            ("count".into(), SqlValue::Int(5)),
+        ]
+    );
+}
+
+#[test]
+fn invalid_iso_date_is_an_error() {
+    let params = vec![p("when", "Date", true)];
+    assert!(matches!(
+        parse_params(&params, &body(json!({ "when": "not-a-date" }))),
+        Err(ParamError::BadValue(_, _))
+    ));
+}

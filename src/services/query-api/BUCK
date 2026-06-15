@@ -242,5 +242,6 @@ rust_test(
         ":query-api",
         "//src/control-plane/core:core",
         "//third-party:serde_json",
+        "//third-party:time",
     ],
 )
