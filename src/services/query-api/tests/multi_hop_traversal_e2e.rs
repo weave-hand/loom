@@ -18,7 +18,7 @@ use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use query_api::handler::{ChainQuery, QueryDeps, QueryError, Subject, read_linked_chain};
 use query_api::render::objects_to_json;
-use query_api::serving::{EmbeddedDuckDb, SqlValue};
+use query_api::serving::EmbeddedDuckDb;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -277,7 +277,7 @@ async fn multi_hop_served_and_governed() {
         &ChainQuery {
             from_type: "Customer".into(),
             path: vec!["orders".into(), "lineItems".into()],
-            source_filters: vec![("region".into(), SqlValue::Text("CA".into()))],
+            source_filters: vec![("region".into(), "CA".into())],
         },
         &Subject(a.clone()),
         &deps,
@@ -322,7 +322,7 @@ async fn multi_hop_served_and_governed() {
         &ChainQuery {
             from_type: "Customer".into(),
             path: vec!["orders".into(), "lineItems".into()],
-            source_filters: vec![("region".into(), SqlValue::Text("CA".into()))],
+            source_filters: vec![("region".into(), "CA".into())],
         },
         &Subject(c.clone()),
         &deps,

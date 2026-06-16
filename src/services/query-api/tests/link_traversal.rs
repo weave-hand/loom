@@ -238,7 +238,7 @@ async fn fk_traversal_returns_linked_targets() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "orders".into(),
-            source_filters: vec![("region".into(), SqlValue::Text("CA".into()))],
+            source_filters: vec![("region".into(), "CA".into())],
         },
         &Subject(subj),
         &deps,
@@ -421,7 +421,7 @@ async fn source_filter_on_denied_column_is_bad_filter() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "orders".into(),
-            source_filters: vec![("region".into(), SqlValue::Text("CA".into()))],
+            source_filters: vec![("region".into(), "CA".into())],
         },
         &Subject(subj),
         &deps,
@@ -483,7 +483,7 @@ async fn many_to_many_dedups_shared_targets() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "shared".into(),
-            source_filters: vec![("region".into(), SqlValue::Text("CA".into()))],
+            source_filters: vec![("region".into(), "CA".into())],
         },
         &Subject(subj),
         &deps,

@@ -8,7 +8,7 @@ use crate::handler::{
     ChainQuery, LinkQuery, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_chain,
     read_linked_objects, read_object,
 };
-use crate::serving::{ActionEngine, ServingEngine, SqlValue};
+use crate::serving::{ActionEngine, ServingEngine};
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -45,13 +45,9 @@ async fn get_object(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // Slice limitation: every query-param filter binds as Text; typed (int/bool)
-    // filters are a later spec. A text param against a typed column may simply match
-    // no rows rather than error.
-    let eq_filters = params
-        .into_iter()
-        .map(|(k, v)| (k, SqlValue::Text(v)))
-        .collect();
+    // Raw filter values flow through; the handler coerces each to the column's declared
+    // ontology logical type (via filter::coerce_filter) after the visibility check.
+    let eq_filters: Vec<(String, String)> = params.into_iter().collect();
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
@@ -90,11 +86,8 @@ async fn get_linked(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // Slice limitation: every query-param filter binds as Text (typed filters later).
-    let source_filters = params
-        .into_iter()
-        .map(|(k, v)| (k, SqlValue::Text(v)))
-        .collect();
+    // Raw filter values flow through; the handler coerces each to its column's type.
+    let source_filters: Vec<(String, String)> = params.into_iter().collect();
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
@@ -141,11 +134,8 @@ async fn get_linked_chain(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    // Slice limitation: every query-param filter binds as Text (typed filters later).
-    let source_filters = params
-        .into_iter()
-        .map(|(k, v)| (k, SqlValue::Text(v)))
-        .collect();
+    // Raw filter values flow through; the handler coerces each to its column's type.
+    let source_filters: Vec<(String, String)> = params.into_iter().collect();
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),

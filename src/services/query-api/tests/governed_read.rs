@@ -208,7 +208,7 @@ async fn governed_object_read() {
     let rows2 = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("id".into(), SqlValue::Int(1))],
+            eq_filters: vec![("id".into(), "1".into())],
         },
         &Subject(subj.clone()),
         &deps,
@@ -321,7 +321,7 @@ async fn governed_object_read() {
     let bad = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("secret".into(), SqlValue::Text("s1".into()))],
+            eq_filters: vec![("secret".into(), "s1".into())],
         },
         &Subject(masker),
         &deps,
