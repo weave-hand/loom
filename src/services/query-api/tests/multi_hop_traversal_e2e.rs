@@ -429,9 +429,11 @@ async fn intermediate_typed_filter_coerces_and_narrows() {
     grant_read(&cp, &role, "Order").await;
     grant_read(&cp, &role, "LineItem").await;
 
-    // Intermediate Order.id is Long: filtering id=10 must coerce to Int(10). A text bind
-    // ("10" against a BIGINT column) would match nothing; typed coercion matches order 10
-    // -> line_items 100,101 (102 hangs off order 11, excluded).
+    // Intermediate Order.id is Long: filtering id=10 coerces to Int(10) and binds at the
+    // intermediate position t_1 (proving typed coercion flows through a non-source hop, not
+    // just the source). Order 10 matches -> line_items 100,101 (102 hangs off order 11,
+    // excluded). (The text-vs-typed counterfactual for non-castable types is covered in
+    // typed_filter_e2e.rs with Double/Boolean columns.)
     let rows = read_linked_chain(
         &ChainQuery {
             from_type: "Customer".into(),
