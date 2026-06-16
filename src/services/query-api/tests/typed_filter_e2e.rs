@@ -60,7 +60,7 @@ async fn land(
 }
 
 /// Seed an Order table with NON-TEXT columns: id Long, amount Double, active Boolean.
-/// Rows: (1, 10.5, true), (2, 20.0, false), (3, 10.5, true), (4, NULL, NULL). The caller
+/// Rows: (1, 10.5, true), (2, 20.0, false), (3, 10.5, true), (4, NULL, NULL), (5, 30.0, NULL). The caller
 /// MUST keep the returned `DuckLakeWriter` alive (its TempDir holds the Parquet files).
 async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter, SubjectId) {
     let (cp, db) = fx.fresh_db().await;
@@ -78,17 +78,19 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     let ord_batch = RecordBatch::try_new(
         ord_schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])),
             Arc::new(Float64Array::from(vec![
                 Some(10.5),
                 Some(20.0),
                 Some(10.5),
                 None,
+                Some(30.0),
             ])),
             Arc::new(BooleanArray::from(vec![
                 Some(true),
                 Some(false),
                 Some(true),
+                None,
                 None,
             ])),
         ],
@@ -260,11 +262,13 @@ async fn comparison_set_and_null_operators() {
         }
     };
 
-    // gt on a Double column: amount > 15 -> only row 2 (20.0).
+    // gt on a Double column: amount > 15 -> rows 2 (20.0) and 5 (30.0).
     let r = run(vec![("amount".into(), "gt:15".into())]).await.unwrap();
-    assert_eq!(ids(&r), vec!["2".to_string()]);
+    assert_eq!(ids(&r), vec!["2".to_string(), "5".to_string()]);
 
     // Range (two predicates on one column): 11 <= amount <= 25 -> only row 2.
+    // Both bounds are load-bearing here: ge:11 alone -> {2,5}, le:25 alone -> {1,2,3},
+    // so only their AND yields {2} — neither predicate produces the result on its own.
     let r = run(vec![
         ("amount".into(), "ge:11".into()),
         ("amount".into(), "le:25".into()),
@@ -277,7 +281,7 @@ async fn comparison_set_and_null_operators() {
     let r = run(vec![("id".into(), "in:1,3".into())]).await.unwrap();
     assert_eq!(ids(&r), vec!["1".to_string(), "3".to_string()]);
 
-    // Null checks: amount isnull -> row 4; isnotnull -> rows 1,2,3.
+    // Null checks: amount isnull -> row 4; isnotnull -> rows 1,2,3,5.
     let r = run(vec![("amount".into(), "isnull".into())]).await.unwrap();
     assert_eq!(ids(&r), vec!["4".to_string()]);
     let r = run(vec![("amount".into(), "isnotnull".into())])
@@ -285,7 +289,12 @@ async fn comparison_set_and_null_operators() {
         .unwrap();
     assert_eq!(
         ids(&r),
-        vec!["1".to_string(), "2".to_string(), "3".to_string()]
+        vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "5".to_string()
+        ]
     );
 
     // Bad arity (gt with no operand) -> BadFilter (400).
