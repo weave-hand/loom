@@ -236,7 +236,13 @@ traversal** (slice C part-1 — forward, source-filtered, deduped link chaining,
 hop). The remaining slice-C parts are inverse-direction hops, target-side filtering, object-set
 inputs, and the source→target association. Candidate next slices: those slice-C parts, programmatic
 transforms, and overwrite/incremental output.
-Smaller query follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
+**Typed input filters** are now delivered too
+(`2026-06-16-query-typed-input-filters-design.md`): query-param equality filters now coerce
+to the column's declared ontology logical type (via the `json_repr_of`/`JsonRepr` taxonomy,
+reusing the action-param coercion pattern), so `Long`/`Double`/`Boolean`/`Date`/`Timestamp`
+filters work across `read_object`, single-hop traversal, and multi-hop chains; an uncoercible
+value → 400 (equality-only — comparison operators are a later slice). The remaining smaller
+query follow-ups are a schema sidecar and tz timestamps.
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
 reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,

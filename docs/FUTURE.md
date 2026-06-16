@@ -132,6 +132,28 @@ a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
   properties onto it is a follow-on (the same class as the "derived properties on traversal output"
   item in the derived-properties block above).
 
+From the typed-input-filters slice (`2026-06-16-query-typed-input-filters-design.md`), which
+made query-param equality filters coerce to the column's declared ontology logical type (via the
+`json_repr_of`/`JsonRepr` taxonomy) across `read_object`, single-hop traversal, and multi-hop
+chains:
+
+- **Comparison / set operators.** This slice is equality-only — the flat `col = value` filter
+  shape is unchanged. Range and set predicates (`>`, `<`, `>=`, `<=`, `in`, ranges) are a later
+  slice; they need a richer filter grammar (operator + value) on top of the typed coercion landed
+  here, so they're deferred.
+- **Richer filter error body.** An uncoercible value reuses `BadFilter(col)` (body = the column
+  name). Reporting the *expected* type plus the offending value would make the 400 self-explanatory,
+  but it widens the error contract — deferred to keep this slice's surface minimal.
+- **`422` for body-bearing endpoints.** Typed filters are URI params on a body-less `GET`, so an
+  uncoercible value correctly stays `400` (there is no request body to be unprocessable). Whether
+  `POST /actions`'s `BadParams` (whose typed params *do* live in a request body) should become a
+  `422` is a separate question to reconsider on its own, not part of this slice.
+- **Unify the coercion taxonomy.** `params::parse_value` (coerces a JSON `Value` for action
+  params) and `filter::coerce_filter` (coerces a `&str` for query-param filters) both duplicate the
+  short `JsonRepr` repr-match. Sharing one taxonomy helper across both would remove the duplication;
+  deferred because the input shapes (`Value` vs `&str`) differ enough that the common core wasn't
+  worth extracting under this slice.
+
 ## Actions (Step 3)
 
 From the actions part-1 slice (`2026-06-15-actions-part1-design.md`), which delivered
