@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into acl.policy (role_id, action, target_kind, target_a, target_b, row_filter, deny_columns, mask_columns) values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict (role_id, action, target_kind, target_a, target_b) do update set row_filter = excluded.row_filter, deny_columns = excluded.deny_columns, mask_columns = excluded.mask_columns",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6e34f746933aabcf3340b4121c0254a57fc204398e1ca3546f8f7606cabf6c28"
+}

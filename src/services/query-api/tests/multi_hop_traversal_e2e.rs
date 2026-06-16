@@ -323,6 +323,7 @@ async fn multi_hop_served_and_governed() {
     grant_read(&cp, &c_role, "LineItem").await;
     cp.set_policy(
         &c_role,
+        Action::Read,
         Policy {
             target: PolicyTarget::Type(TypeName("Order".into())),
             row_filter: Some(RowFilter::Compare {
@@ -508,6 +509,7 @@ async fn bad_positioned_filters_are_rejected() {
     // Deny the final-target sku column for this subject.
     cp.set_policy(
         &role,
+        Action::Read,
         Policy {
             target: PolicyTarget::Type(TypeName("LineItem".into())),
             row_filter: None,

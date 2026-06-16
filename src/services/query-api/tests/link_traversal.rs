@@ -320,6 +320,7 @@ async fn source_row_filter_closes_the_leak() {
     grant_read(&cp, &role, "Order").await;
     cp.set_policy(
         &role,
+        Action::Read,
         Policy {
             target: PolicyTarget::Type(TypeName("Customer".into())),
             row_filter: Some(RowFilter::Compare {
@@ -366,6 +367,7 @@ async fn target_row_filter_and_projection_apply() {
     grant_read(&cp, &role, "Order").await;
     cp.set_policy(
         &role,
+        Action::Read,
         Policy {
             target: PolicyTarget::Type(TypeName("Order".into())),
             row_filter: Some(RowFilter::Compare {
@@ -412,6 +414,7 @@ async fn source_filter_on_denied_column_is_bad_filter() {
     grant_read(&cp, &role, "Order").await;
     cp.set_policy(
         &role,
+        Action::Read,
         Policy {
             target: PolicyTarget::Type(TypeName("Customer".into())),
             row_filter: None,

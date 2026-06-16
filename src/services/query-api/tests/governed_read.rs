@@ -151,6 +151,7 @@ async fn governed_object_read() {
     .unwrap();
     cp.set_policy(
         &role,
+        Action::Read,
         Policy {
             target: PolicyTarget::Type(TypeName("Order".into())),
             row_filter: Some(RowFilter::Compare {
@@ -280,6 +281,7 @@ async fn governed_object_read() {
     .unwrap();
     cp.set_policy(
         &mrole,
+        Action::Read,
         Policy {
             target: PolicyTarget::Type(TypeName("Order".into())),
             row_filter: None,
