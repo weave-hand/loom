@@ -112,10 +112,9 @@ a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
 - **Inverse-direction hops.** Follow a link from its `to` back to its `from` within a chain. Part-1
   hops are all forward — each hop traverses from a link's declared `from` to its `to` — so a chain
   can only run in the links' authored direction. Reverse traversal is a later part.
-- **Caller-supplied target / intermediate filters.** Equality filters on types beyond the source
-  (target-side filtering). Part-1 binds eq-filters to the **source** only; intermediate and target
-  governance is row-filters (policy), not caller input — so a caller cannot narrow the final target
-  set by a value, only the policy can.
+- **Caller-supplied target / intermediate filters.** ✅ DELIVERED
+  (`2026-06-16-query-target-intermediate-filters-design.md`): per-hop typed equality filters on
+  any type in a chain, addressed by `<linkname>.<column>` (bare = source), governed per type.
 - **Object-set inputs.** Start a chain from a passed/saved set of source object IDs instead of source
   equality filters. Part-1 always begins the chain from source eq-filters; consuming an explicit
   object set (e.g. a saved selection) is a later part.
@@ -153,6 +152,23 @@ chains:
   short `JsonRepr` repr-match. Sharing one taxonomy helper across both would remove the duplication;
   deferred because the input shapes (`Value` vs `&str`) differ enough that the common core wasn't
   worth extracting under this slice.
+
+From the target/intermediate-filters slice (`2026-06-16-query-target-intermediate-filters-design.md`),
+which made every type in a traversal chain caller-filterable (typed, governed per position) and
+drew the relational/graph boundary:
+
+- **Graph traversal as a first-class concept.** The relational `/links` chain is a fixed, acyclic
+  set of INNER JOINs over DuckLake tables — distinct link names per path, so link-name filter
+  addressing is unambiguous. Genuine graph traversal (self-links, cycles, friend-of-friend,
+  hierarchies, variable-length / recursive paths) belongs to a separate, deferred `/graph` surface
+  (a tree is a special case; a `/tree` surface can split out later if it earns its keep — not
+  committed now), with its own execution (recursive CTEs, cycle guards) and graph-aware filter
+  addressing (positional or per-occurrence) that resolves the repeated-link case `/links` rejects.
+  Plain self-traversal still *works* on `/links` (no regression) — only a per-hop *filter* on a
+  repeated link is refused.
+- **Comparison / set operators on per-hop filters.** Equality-only here, inheriting the
+  typed-input-filters comparison-operators follow-up; a shared richer filter grammar would cover
+  source and per-hop filters at once.
 
 ## Actions (Step 3)
 

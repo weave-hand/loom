@@ -406,14 +406,17 @@ fn chain_two_hop_fk_compiles_to_nested_joins() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
+            eq_filters: vec![("region".to_string(), SqlValue::Text("CA".into()))],
         },
         ChainType {
             table: tr("main", "orders"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
         ChainType {
             table: tr("main", "line_items"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
     ];
     let hops = vec![
@@ -431,7 +434,6 @@ fn chain_two_hop_fk_compiles_to_nested_joins() {
         &hops,
         &["id".to_string(), "sku".to_string()],
         &[],
-        &[("region".to_string(), SqlValue::Text("CA".into()))],
         100,
     )
     .unwrap();
@@ -451,14 +453,17 @@ fn chain_fk_then_jointable_adds_mapping_join_for_that_hop_only() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
         ChainType {
             table: tr("main", "orders"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
         ChainType {
             table: tr("main", "tags"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
     ];
     let hops = vec![
@@ -474,7 +479,7 @@ fn chain_fk_then_jointable_adds_mapping_join_for_that_hop_only() {
             to_key: "id".into(),
         },
     ];
-    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], &[], 100).unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_2.\"name\" FROM \"main\".\"tags\" t_2 \
@@ -491,6 +496,7 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
+            eq_filters: vec![("region".to_string(), SqlValue::Text("CA".into()))],
         },
         ChainType {
             table: tr("main", "orders"),
@@ -499,10 +505,12 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
                 op: CompareOp::Eq,
                 value: ScalarValue::Text("shipped".into()),
             }],
+            eq_filters: vec![],
         },
         ChainType {
             table: tr("main", "line_items"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
     ];
     let hops = vec![
@@ -515,15 +523,7 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
             to_column: "order_id".into(),
         },
     ];
-    let (sql, params) = compile_chain(
-        &types,
-        &hops,
-        &["id".to_string()],
-        &[],
-        &[("region".to_string(), SqlValue::Text("CA".into()))],
-        100,
-    )
-    .unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
@@ -547,10 +547,12 @@ fn chain_single_hop_jointable_renders_j1_mapping() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
         ChainType {
             table: tr("main", "tags"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
     ];
     let hops = vec![LinkBacking::JoinTable {
@@ -560,7 +562,7 @@ fn chain_single_hop_jointable_renders_j1_mapping() {
         to_column: "tag_id".into(),
         to_key: "id".into(),
     }];
-    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], &[], 100).unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_1.\"name\" FROM \"main\".\"tags\" t_1 \
@@ -580,10 +582,12 @@ fn chain_single_hop_reproduces_traversal_semantics() {
                 op: CompareOp::Eq,
                 value: ScalarValue::Text("CA".into()),
             }],
+            eq_filters: vec![],
         },
         ChainType {
             table: tr("main", "orders"),
             row_filters: vec![],
+            eq_filters: vec![],
         },
     ];
     let hops = vec![LinkBacking::ForeignKey {
@@ -595,7 +599,6 @@ fn chain_single_hop_reproduces_traversal_semantics() {
         &hops,
         &["id".to_string(), "secret".to_string()],
         &["secret".to_string()],
-        &[],
         100,
     )
     .unwrap();
@@ -606,4 +609,84 @@ fn chain_single_hop_reproduces_traversal_semantics() {
          WHERE (t_0.\"region\" = ?) LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("CA".into())]);
+}
+
+#[test]
+fn chain_eq_filter_on_final_target_binds_at_t_k() {
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+            eq_filters: vec![],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![],
+            eq_filters: vec![],
+        },
+        ChainType {
+            table: tr("main", "line_items"),
+            row_filters: vec![],
+            eq_filters: vec![("sku".into(), SqlValue::Text("A".into()))],
+        },
+    ];
+    let hops = vec![
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "order_id".into(),
+        },
+    ];
+    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], 100).unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
+         JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
+         WHERE (t_2.\"sku\" = ?) LIMIT 100"
+    );
+    assert_eq!(params, vec![SqlValue::Text("A".into())]);
+}
+
+#[test]
+fn chain_eq_filters_bind_per_position_in_chain_order() {
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+            eq_filters: vec![("region".into(), SqlValue::Text("CA".into()))],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![],
+            eq_filters: vec![("id".into(), SqlValue::Int(10))],
+        },
+        ChainType {
+            table: tr("main", "line_items"),
+            row_filters: vec![],
+            eq_filters: vec![],
+        },
+    ];
+    let hops = vec![
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "order_id".into(),
+        },
+    ];
+    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], 100).unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
+         JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
+         WHERE (t_0.\"region\" = ?) AND (t_1.\"id\" = ?) LIMIT 100"
+    );
+    assert_eq!(params, vec![SqlValue::Text("CA".into()), SqlValue::Int(10)]);
 }

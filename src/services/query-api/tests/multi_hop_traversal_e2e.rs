@@ -16,7 +16,9 @@ use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use ingest::{MaterializeRequest, materialize};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-use query_api::handler::{ChainQuery, QueryDeps, QueryError, Subject, read_linked_chain};
+use query_api::handler::{
+    ChainFilter, ChainQuery, QueryDeps, QueryError, Subject, read_linked_chain,
+};
 use query_api::render::objects_to_json;
 use query_api::serving::EmbeddedDuckDb;
 use time::OffsetDateTime;
@@ -26,6 +28,22 @@ fn tref(s: &str, n: &str) -> TableRef {
     TableRef {
         schema: s.into(),
         name: n.into(),
+    }
+}
+
+fn srcf(col: &str, val: &str) -> ChainFilter {
+    ChainFilter {
+        position: 0,
+        column: col.into(),
+        raw: val.into(),
+    }
+}
+
+fn hopf(position: usize, col: &str, val: &str) -> ChainFilter {
+    ChainFilter {
+        position,
+        column: col.into(),
+        raw: val.into(),
     }
 }
 
@@ -277,7 +295,7 @@ async fn multi_hop_served_and_governed() {
         &ChainQuery {
             from_type: "Customer".into(),
             path: vec!["orders".into(), "lineItems".into()],
-            source_filters: vec![("region".into(), "CA".into())],
+            filters: vec![srcf("region", "CA")],
         },
         &Subject(a.clone()),
         &deps,
@@ -322,7 +340,7 @@ async fn multi_hop_served_and_governed() {
         &ChainQuery {
             from_type: "Customer".into(),
             path: vec!["orders".into(), "lineItems".into()],
-            source_filters: vec![("region".into(), "CA".into())],
+            filters: vec![srcf("region", "CA")],
         },
         &Subject(c.clone()),
         &deps,
@@ -348,7 +366,7 @@ async fn multi_hop_served_and_governed() {
         &ChainQuery {
             from_type: "Customer".into(),
             path: vec!["orders".into(), "lineItems".into()],
-            source_filters: vec![],
+            filters: vec![],
         },
         &Subject(b.clone()),
         &deps,
@@ -358,5 +376,179 @@ async fn multi_hop_served_and_governed() {
     assert!(
         matches!(err, QueryError::Forbidden),
         "no Read on intermediate Order -> Forbidden"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn target_filter_narrows_final_set() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+    };
+    let (a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "Customer").await;
+    grant_read(&cp, &role, "Order").await;
+    grant_read(&cp, &role, "LineItem").await;
+
+    // Customer 1 (CA) reaches line_items 100,101,102; a final-target sku filter narrows.
+    let rows = read_linked_chain(
+        &ChainQuery {
+            from_type: "Customer".into(),
+            path: vec!["orders".into(), "lineItems".into()],
+            filters: vec![srcf("region", "CA"), hopf(2, "sku", "A")],
+        },
+        &Subject(a),
+        &deps,
+    )
+    .await
+    .unwrap();
+    let body = objects_to_json(&rows);
+    let ids: Vec<String> = body["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids, vec!["100".to_string()], "only line_item 100 has sku=A");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn intermediate_typed_filter_coerces_and_narrows() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+    };
+    let (a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "Customer").await;
+    grant_read(&cp, &role, "Order").await;
+    grant_read(&cp, &role, "LineItem").await;
+
+    // Intermediate Order.id is Long: filtering id=10 coerces to Int(10) and binds at the
+    // intermediate position t_1 (proving typed coercion flows through a non-source hop, not
+    // just the source). Order 10 matches -> line_items 100,101 (102 hangs off order 11,
+    // excluded). (The text-vs-typed counterfactual for non-castable types is covered in
+    // typed_filter_e2e.rs with Double/Boolean columns.)
+    let rows = read_linked_chain(
+        &ChainQuery {
+            from_type: "Customer".into(),
+            path: vec!["orders".into(), "lineItems".into()],
+            filters: vec![srcf("region", "CA"), hopf(1, "id", "10")],
+        },
+        &Subject(a),
+        &deps,
+    )
+    .await
+    .unwrap();
+    let body = objects_to_json(&rows);
+    let mut ids: Vec<String> = body["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, vec!["100".to_string(), "101".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_and_intermediate_filters_combine() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+    };
+    let (a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "Customer").await;
+    grant_read(&cp, &role, "Order").await;
+    grant_read(&cp, &role, "LineItem").await;
+
+    // Source region=CA AND intermediate Order.status=pending -> only order 11 -> line_item 102.
+    let rows = read_linked_chain(
+        &ChainQuery {
+            from_type: "Customer".into(),
+            path: vec!["orders".into(), "lineItems".into()],
+            filters: vec![srcf("region", "CA"), hopf(1, "status", "pending")],
+        },
+        &Subject(a),
+        &deps,
+    )
+    .await
+    .unwrap();
+    let body = objects_to_json(&rows);
+    let ids: Vec<String> = body["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids, vec!["102".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bad_positioned_filters_are_rejected() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+    };
+    let (a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "Customer").await;
+    grant_read(&cp, &role, "Order").await;
+    grant_read(&cp, &role, "LineItem").await;
+    // Deny the final-target sku column for this subject.
+    cp.set_policy(
+        &role,
+        Policy {
+            target: PolicyTarget::Type(TypeName("LineItem".into())),
+            row_filter: None,
+            deny_columns: vec!["sku".into()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    // A filter on a denied target column -> BadFilter (visibility before coercion).
+    let denied = read_linked_chain(
+        &ChainQuery {
+            from_type: "Customer".into(),
+            path: vec!["orders".into(), "lineItems".into()],
+            filters: vec![hopf(2, "sku", "A")],
+        },
+        &Subject(a.clone()),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(denied, QueryError::BadFilter(ref c) if c == "sku"),
+        "denied target column filter -> BadFilter; got {denied:?}"
+    );
+
+    // A position past the end of the chain -> BadFilter (guarded, never panics).
+    let oob = read_linked_chain(
+        &ChainQuery {
+            from_type: "Customer".into(),
+            path: vec!["orders".into(), "lineItems".into()],
+            filters: vec![hopf(5, "id", "1")],
+        },
+        &Subject(a),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(oob, QueryError::BadFilter(ref c) if c == "id"),
+        "out-of-range position -> BadFilter; got {oob:?}"
     );
 }

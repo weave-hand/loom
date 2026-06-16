@@ -160,6 +160,16 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     Depth-capped (4 hops), deduped final-target projection (`DISTINCT` over the visible columns),
     source-filter only. The single-hop route forwards into the chain handler as the `N=1` case
     (one compiler). Proven by an e2e.
+  - *Part 6 — target / intermediate filters (slice C part-2)* ✅ DELIVERED
+    (`2026-06-16-query-target-intermediate-filters-design.md`). A traversal caller can now
+    filter **any** type in a chain (source, every intermediate, final target) by typed equality,
+    addressed by a `<linkname>.<column>` query key (bare = source). Each per-hop filter is
+    coerced to its own type's logical type (via `filter::coerce_filter`) and visibility-checked
+    against its own type's governed projection; the N-ends Read governance is unchanged, so
+    caller filters only narrow within already-permitted visibility. Draws the relational
+    (`/links`) vs deferred graph (`/graph`) boundary: a per-hop filter on a link that repeats in
+    the path is rejected (the graph case). Proven by compiler unit tests, a pure resolver unit,
+    and a chain e2e.
   - *Later:* the serving *tier* over Quack (separate `quack_serve`'d DuckDB; the seam's
     Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
     masking, roles); rich ontology (links, derived properties); multi-type queries/joins;
@@ -243,6 +253,12 @@ reusing the action-param coercion pattern), so `Long`/`Double`/`Boolean`/`Date`/
 filters work across `read_object`, single-hop traversal, and multi-hop chains; an uncoercible
 value → 400 (equality-only — comparison operators are a later slice). The remaining smaller
 query follow-ups are a schema sidecar and tz timestamps.
+**Target / intermediate filters** (slice C part-2,
+`2026-06-16-query-target-intermediate-filters-design.md`) are now delivered too: every type a
+traversal touches is caller-filterable (typed, governed per type), not just the source, and the
+relational-vs-graph boundary is drawn (a future `/graph` surface owns cyclic/self-link
+traversal). The remaining slice-C parts are inverse-direction hops, object-set inputs, and the
+source→target association.
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
 reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,

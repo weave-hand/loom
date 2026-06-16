@@ -243,6 +243,15 @@ rust_test(
 )
 
 rust_test(
+    name = "chain-filter-resolve",
+    crate = "chain_filter_resolve",
+    srcs = ["tests/chain_filter_resolve.rs"],
+    crate_root = "tests/chain_filter_resolve.rs",
+    edition = "2024",
+    deps = [":query-api"],
+)
+
+rust_test(
     name = "sql-compile",
     crate = "sql_compile",
     srcs = ["tests/sql_compile.rs"],
