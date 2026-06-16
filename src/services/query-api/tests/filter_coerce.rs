@@ -167,3 +167,24 @@ fn bad_operand_is_error() {
     assert!(coerce_predicate("amount", "Double", "gt:abc").is_err());
     assert!(coerce_predicate("id", "Long", "in:1,x,3").is_err());
 }
+
+#[test]
+fn predicate_edge_cases_are_pinned() {
+    // Single-operand `in` stays a set op (In with a 1-element Vec), not collapsed to Eq.
+    let one = coerce_predicate("id", "Long", "in:5").unwrap();
+    assert_eq!(one.op, CompareOp::In);
+    assert_eq!(one.values, vec![SqlValue::Int(5)]);
+
+    // Negative number operand round-trips through coerce_filter.
+    let neg = coerce_predicate("amount", "Double", "gt:-5").unwrap();
+    assert_eq!(neg.op, CompareOp::Gt);
+    assert_eq!(neg.values, vec![SqlValue::Int(-5)]);
+
+    // Empty middle operand in a set is an error (exercises the per-part empty check).
+    assert!(coerce_predicate("id", "Long", "in:1,,3").is_err());
+
+    // A null op with a trailing colon but no operand is accepted (empty rest = no operand).
+    let n = coerce_predicate("c", "Timestamp", "isnull:").unwrap();
+    assert_eq!(n.op, CompareOp::IsNull);
+    assert!(n.values.is_empty());
+}
