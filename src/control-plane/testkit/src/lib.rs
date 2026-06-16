@@ -1823,7 +1823,7 @@ where
         + control_plane_core::Lineage
         + control_plane_core::Queue,
 {
-    use control_plane_core::{ColumnSpec, DataFile, PageReq, TableRef};
+    use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
     let t = TableRef {
         schema: "main".into(),
         name: "events".into(),
@@ -1848,10 +1848,11 @@ where
         &[DataFile {
             path: "a.parquet".into(),
             path_is_relative: true,
+            file_format: FileFormat::Parquet,
             record_count: 3,
             file_size_bytes: 48,
-            footer_size: 10,
             column_stats: vec![],
+            parquet_footer_size: Some(10),
         }],
     )
     .await

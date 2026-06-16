@@ -4,9 +4,9 @@
 //! Parquet (mirrors postgres/tests/ducklake_interop.rs::duckdb_scans_loom_appended_file).
 
 use control_plane_core::{
-    Acl, Action, ColumnSpec, ColumnStat, CompareOp, ControlPlane, DataFile, Effect, ObjectType,
-    Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ColumnSpec, ColumnStat, CompareOp, ControlPlane, DataFile, Effect, FileFormat,
+    ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue,
+    StatValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use query_api::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
@@ -73,35 +73,33 @@ async fn governed_object_read() {
         &[DataFile {
             path: "o.parquet".into(),
             path_is_relative: true,
+            file_format: FileFormat::Parquet,
             record_count: 3,
             file_size_bytes: bytes.len() as i64,
-            footer_size: footer,
             column_stats: vec![
                 ColumnStat {
                     column_name: "id".into(),
-                    min: Some("1".into()),
-                    max: Some("3".into()),
                     null_count: 0,
-                    value_count: 3,
                     column_size_bytes: 24,
+                    min: Some(StatValue::I64(1)),
+                    max: Some(StatValue::I64(3)),
                 },
                 ColumnStat {
                     column_name: "status".into(),
-                    min: Some("closed".into()),
-                    max: Some("open".into()),
                     null_count: 0,
-                    value_count: 3,
                     column_size_bytes: 24,
+                    min: Some(StatValue::Str("closed".into())),
+                    max: Some(StatValue::Str("open".into())),
                 },
                 ColumnStat {
                     column_name: "secret".into(),
-                    min: Some("s1".into()),
-                    max: Some("s3".into()),
                     null_count: 0,
-                    value_count: 3,
                     column_size_bytes: 24,
+                    min: Some(StatValue::Str("s1".into())),
+                    max: Some(StatValue::Str("s3".into())),
                 },
             ],
+            parquet_footer_size: Some(footer),
         }],
     )
     .await

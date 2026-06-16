@@ -1,5 +1,6 @@
 use control_plane_core::{
-    Catalog, ColumnSpec, ColumnStat, ControlPlane, DataFile, PageReq, TableRef,
+    Catalog, ColumnSpec, ColumnStat, ControlPlane, DataFile, FileFormat, PageReq, StatValue,
+    TableRef,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 
@@ -42,27 +43,26 @@ async fn create_table_then_append_in_one_tx() {
         &[DataFile {
             path: "ducklake-loom-0.parquet".into(),
             path_is_relative: true,
+            file_format: FileFormat::Parquet,
             record_count: 2,
             file_size_bytes: 100,
-            footer_size: 50,
             column_stats: vec![
                 ColumnStat {
                     column_name: "id".into(),
-                    min: Some("1".into()),
-                    max: Some("2".into()),
                     null_count: 0,
-                    value_count: 2,
                     column_size_bytes: 16,
+                    min: Some(StatValue::I64(1)),
+                    max: Some(StatValue::I64(2)),
                 },
                 ColumnStat {
                     column_name: "name".into(),
-                    min: Some("a".into()),
-                    max: Some("b".into()),
                     null_count: 0,
-                    value_count: 2,
                     column_size_bytes: 20,
+                    min: Some(StatValue::Str("a".into())),
+                    max: Some(StatValue::Str("b".into())),
                 },
             ],
+            parquet_footer_size: Some(50),
         }],
     )
     .await

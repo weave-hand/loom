@@ -9,8 +9,8 @@
 //! INSERT that the read API happened to hide would still be caught.
 
 use control_plane_core::{
-    Catalog, ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, Lineage, LineageEvent,
-    NewJob, PageReq, Queue, RunId, TableRef,
+    Catalog, ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, FileFormat, Lineage,
+    LineageEvent, NewJob, PageReq, Queue, RunId, TableRef,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use time::OffsetDateTime;
@@ -53,10 +53,11 @@ async fn rollback_leaks_no_catalog_rows() {
         &[DataFile {
             path: "a.parquet".into(),
             path_is_relative: true,
+            file_format: FileFormat::Parquet,
             record_count: 3,
             file_size_bytes: 48,
-            footer_size: 10,
             column_stats: vec![],
+            parquet_footer_size: Some(10),
         }],
     )
     .await

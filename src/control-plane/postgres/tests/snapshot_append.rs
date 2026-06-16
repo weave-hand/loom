@@ -1,4 +1,6 @@
-use control_plane_core::{Catalog, ColumnStat, ControlPlane, DataFile, PageReq, TableRef};
+use control_plane_core::{
+    Catalog, ColumnStat, ControlPlane, DataFile, FileFormat, PageReq, StatValue, TableRef,
+};
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 
 // Bootstrap a DuckLake catalog + a DuckDB-created table (no loom-written files
@@ -26,17 +28,17 @@ async fn append_files_writes_visible_data_file() {
         &[DataFile {
             path: "ducklake-loom-0.parquet".into(),
             path_is_relative: true,
+            file_format: FileFormat::Parquet,
             record_count: 10,
             file_size_bytes: 444,
-            footer_size: 249,
             column_stats: vec![ColumnStat {
                 column_name: "id".into(),
-                min: Some("0".into()),
-                max: Some("9".into()),
                 null_count: 0,
-                value_count: 10,
                 column_size_bytes: 88,
+                min: Some(StatValue::I64(0)),
+                max: Some(StatValue::I64(9)),
             }],
+            parquet_footer_size: Some(249),
         }],
     )
     .await

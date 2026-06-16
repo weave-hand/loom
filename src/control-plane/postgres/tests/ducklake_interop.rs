@@ -6,7 +6,9 @@
 //! Direction matters: the conformance test proves loom reads its own writes;
 //! THIS proves DuckDB (the foreign engine) reads loom's writes.
 
-use control_plane_core::{ColumnSpec, ColumnStat, ControlPlane, DataFile, TableRef};
+use control_plane_core::{
+    ColumnSpec, ColumnStat, ControlPlane, DataFile, FileFormat, StatValue, TableRef,
+};
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 
 // REQUIRED guardrail: loom creates a table (DDL only), then DuckDB inserts into
@@ -137,27 +139,26 @@ async fn duckdb_scans_loom_appended_file() {
         &[DataFile {
             path: "loom.parquet".into(),
             path_is_relative: true,
+            file_format: FileFormat::Parquet,
             record_count: 1,
             file_size_bytes,
-            footer_size,
             column_stats: vec![
                 ColumnStat {
                     column_name: "id".into(),
-                    min: Some("1".into()),
-                    max: Some("1".into()),
                     null_count: 0,
-                    value_count: 1,
                     column_size_bytes: 8,
+                    min: Some(StatValue::I64(1)),
+                    max: Some(StatValue::I64(1)),
                 },
                 ColumnStat {
                     column_name: "name".into(),
-                    min: Some("a".into()),
-                    max: Some("a".into()),
                     null_count: 0,
-                    value_count: 1,
                     column_size_bytes: 8,
+                    min: Some(StatValue::Str("a".into())),
+                    max: Some(StatValue::Str("a".into())),
                 },
             ],
+            parquet_footer_size: Some(footer_size),
         }],
     )
     .await

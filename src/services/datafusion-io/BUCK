@@ -25,6 +25,7 @@ rust_test(
     edition = "2024",
     deps = [
         ":datafusion-io",
+        "//src/control-plane/core:core",
         "//third-party:arrow",
         "//third-party:datafusion",
         "//third-party:object_store",
