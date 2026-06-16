@@ -15,7 +15,9 @@ use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use ingest::{MaterializeRequest, materialize};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-use query_api::handler::{LinkQuery, QueryDeps, QueryError, Subject, read_linked_objects};
+use query_api::handler::{
+    ChainFilter, LinkQuery, QueryDeps, QueryError, Subject, read_linked_objects,
+};
 use query_api::serving::{EmbeddedDuckDb, SqlValue};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -24,6 +26,14 @@ fn tref(s: &str, n: &str) -> TableRef {
     TableRef {
         schema: s.into(),
         name: n.into(),
+    }
+}
+
+fn srcf(col: &str, val: &str) -> ChainFilter {
+    ChainFilter {
+        position: 0,
+        column: col.into(),
+        raw: val.into(),
     }
 }
 
@@ -238,7 +248,7 @@ async fn fk_traversal_returns_linked_targets() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "orders".into(),
-            source_filters: vec![("region".into(), "CA".into())],
+            filters: vec![srcf("region", "CA")],
         },
         &Subject(subj),
         &deps,
@@ -265,7 +275,7 @@ async fn missing_read_on_source_is_forbidden() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "orders".into(),
-            source_filters: vec![],
+            filters: vec![],
         },
         &Subject(subj),
         &deps,
@@ -291,7 +301,7 @@ async fn missing_read_on_target_is_forbidden() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "orders".into(),
-            source_filters: vec![],
+            filters: vec![],
         },
         &Subject(subj),
         &deps,
@@ -333,7 +343,7 @@ async fn source_row_filter_closes_the_leak() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "orders".into(),
-            source_filters: vec![],
+            filters: vec![],
         },
         &Subject(subj),
         &deps,
@@ -379,7 +389,7 @@ async fn target_row_filter_and_projection_apply() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "orders".into(),
-            source_filters: vec![],
+            filters: vec![],
         },
         &Subject(subj),
         &deps,
@@ -421,7 +431,7 @@ async fn source_filter_on_denied_column_is_bad_filter() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "orders".into(),
-            source_filters: vec![("region".into(), "CA".into())],
+            filters: vec![srcf("region", "CA")],
         },
         &Subject(subj),
         &deps,
@@ -483,7 +493,7 @@ async fn many_to_many_dedups_shared_targets() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "shared".into(),
-            source_filters: vec![("region".into(), "CA".into())],
+            filters: vec![srcf("region", "CA")],
         },
         &Subject(subj),
         &deps,
@@ -510,7 +520,7 @@ async fn unknown_link_is_reported() {
         &LinkQuery {
             from_type: "Customer".into(),
             link: "nope".into(),
-            source_filters: vec![],
+            filters: vec![],
         },
         &Subject(subj),
         &deps,

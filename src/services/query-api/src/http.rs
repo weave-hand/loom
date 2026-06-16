@@ -86,8 +86,16 @@ async fn get_linked(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // Raw filter values flow through; the handler coerces each to its column's type.
-    let source_filters: Vec<(String, String)> = params.into_iter().collect();
+    // Resolve filter keys against the single-link path: bare -> source (t_0), `<link>.col`
+    // -> target (t_1). A bad prefix -> 400.
+    let params: Vec<(String, String)> = params.into_iter().collect();
+    let filters = match crate::chain_filter::resolve_chain_filters(
+        std::slice::from_ref(&link_name),
+        params,
+    ) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
@@ -97,7 +105,7 @@ async fn get_linked(
         &LinkQuery {
             from_type,
             link: link_name,
-            source_filters,
+            filters,
         },
         &Subject(SubjectId(subject)),
         &deps,
@@ -134,8 +142,13 @@ async fn get_linked_chain(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    // Raw filter values flow through; the handler coerces each to its column's type.
-    let source_filters: Vec<(String, String)> = params.into_iter().collect();
+    // Remaining params are filters: bare -> source, `<linkname>.col` -> that link's
+    // position. Unknown/ambiguous prefix -> 400 (ambiguous = the relational/graph boundary).
+    let params: Vec<(String, String)> = params.into_iter().collect();
+    let filters = match crate::chain_filter::resolve_chain_filters(&path, params) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
@@ -145,7 +158,7 @@ async fn get_linked_chain(
         &ChainQuery {
             from_type,
             path,
-            source_filters,
+            filters,
         },
         &Subject(SubjectId(subject)),
         &deps,

@@ -273,12 +273,12 @@ pub async fn read_object(
     })
 }
 
-/// A governed traversal: from source objects matching `source_filters`, follow
-/// `link`, return the linked target objects.
+/// A governed single-hop traversal (the `N=1` chain): from source objects, follow
+/// `link`, return the linked targets. `filters` are positioned (0 = source, 1 = target).
 pub struct LinkQuery {
     pub from_type: String,
     pub link: String,
-    pub source_filters: Vec<(String, String)>,
+    pub filters: Vec<ChainFilter>,
 }
 
 pub async fn read_linked_objects(
@@ -290,7 +290,7 @@ pub async fn read_linked_objects(
         &ChainQuery {
             from_type: q.from_type.clone(),
             path: vec![q.link.clone()],
-            source_filters: q.source_filters.clone(),
+            filters: q.filters.clone(),
         },
         subject,
         deps,
@@ -302,13 +302,32 @@ pub async fn read_linked_objects(
 /// any catalog/ACL work — bounds the join count.
 const MAX_CHAIN_DEPTH: usize = 4;
 
-/// A governed multi-hop traversal: from source objects matching `source_filters`,
+/// Per-position governance metadata for a resolved chain, aligned with the `ChainType`
+/// vector passed to `compile_chain` (index 0 = source, index k = final target).
+struct HopMeta {
+    otype: ObjectType,
+    denied: std::collections::HashSet<String>,
+    masked: std::collections::HashSet<String>,
+}
+
+/// A caller equality filter addressed at a chain position. `position` 0 is the source;
+/// `position` k is the final target. Built by the HTTP resolver from a `<linkname>.col`
+/// (or bare = source) query key; coerced + visibility-checked against the type at that
+/// position in `read_linked_chain`.
+#[derive(Debug, Clone)]
+pub struct ChainFilter {
+    pub position: usize,
+    pub column: String,
+    pub raw: String,
+}
+
+/// A governed multi-hop traversal: from source objects matching the position-0 filters,
 /// follow `path` (an ordered list of link names), return the deduped final-target
-/// objects. Every type in the chain is governed (Read + row-filters).
+/// objects. Every type in the chain is governed (Read + row-filters) and caller-filterable.
 pub struct ChainQuery {
     pub from_type: String,
     pub path: Vec<String>,
-    pub source_filters: Vec<(String, String)>,
+    pub filters: Vec<ChainFilter>,
 }
 
 pub async fn read_linked_chain(
@@ -344,18 +363,19 @@ pub async fn read_linked_chain(
         })?;
     let (s_filters, s_denied, s_masked) = load_policy(deps.acl, &subject.0, &from_target).await?;
 
-    // Resolve the chain left-to-right, gating Read on every hop type and loading each
-    // type's policy. `ctypes[0]` = source; `ctypes[k]` = final target.
+    // Per-position governance metadata, aligned with `ctypes` (index 0 = source).
+    let mut metas: Vec<HopMeta> = vec![HopMeta {
+        otype: from_type.clone(),
+        denied: s_denied,
+        masked: s_masked,
+    }];
     let mut ctypes: Vec<crate::sql::ChainType> = vec![crate::sql::ChainType {
         table: from_type.table.clone(),
         row_filters: s_filters,
         eq_filters: vec![],
     }];
     let mut hops: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(q.path.len());
-    // Final-target accumulators (always overwritten: path is non-empty).
-    let mut target_type: ObjectType = from_type.clone();
-    let mut target_denied = std::collections::HashSet::new();
-    let mut target_masked = std::collections::HashSet::new();
+
     let mut current_name = from_name.clone();
     for link_name in &q.path {
         let links = deps
@@ -386,42 +406,47 @@ pub async fn read_linked_chain(
             row_filters: t_filters,
             eq_filters: vec![],
         });
-        target_type = to_type;
-        target_denied = t_denied;
-        target_masked = t_masked;
+        metas.push(HopMeta {
+            otype: to_type,
+            denied: t_denied,
+            masked: t_masked,
+        });
         current_name = to_name;
     }
 
-    // Source eq-filter columns must be visible (allowed, non-masked) on the source.
-    let from_allowed = project_allowed(&from_type.properties, &s_denied);
-    let mut source_filters: Vec<(String, SqlValue)> = Vec::with_capacity(q.source_filters.len());
-    for (col, raw) in &q.source_filters {
-        if !from_allowed.contains(col) || s_masked.contains(col) {
-            return Err(QueryError::BadFilter(col.clone()));
+    // Caller filters, governed per position: visibility first (denied/masked or unknown
+    // column -> 400, no type-info leak), then coerce the raw value to that position's
+    // declared logical type. The coerced value is bound at the position's alias `t_i`.
+    for f in &q.filters {
+        if f.position >= ctypes.len() {
+            return Err(QueryError::BadFilter(f.column.clone()));
         }
-        let ty = from_type
+        let meta = &metas[f.position];
+        let allowed = project_allowed(&meta.otype.properties, &meta.denied);
+        if !allowed.contains(&f.column) || meta.masked.contains(&f.column) {
+            return Err(QueryError::BadFilter(f.column.clone()));
+        }
+        let ty = meta
+            .otype
             .properties
             .iter()
-            .find(|p| &p.name == col)
+            .find(|p| p.name == f.column)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        let v = crate::filter::coerce_filter(col, ty, raw)
-            .map_err(|_| QueryError::BadFilter(col.clone()))?;
-        source_filters.push((col.clone(), v));
+        let v = crate::filter::coerce_filter(&f.column, ty, &f.raw)
+            .map_err(|_| QueryError::BadFilter(f.column.clone()))?;
+        ctypes[f.position].eq_filters.push((f.column.clone(), v));
     }
 
-    // Source eq-filters bind at t_0 (position 0's eq_filters); the compiler has no
-    // source special-case.
-    ctypes[0].eq_filters = source_filters;
-
-    // Final-target projection.
-    let to_allowed = project_allowed(&target_type.properties, &target_denied);
+    // Final-target projection, from the last position (path is non-empty => >= 2 metas).
+    let target = metas.last().expect("non-empty path yields a final target");
+    let to_allowed = project_allowed(&target.otype.properties, &target.denied);
     if to_allowed.is_empty() {
         return Err(QueryError::Forbidden);
     }
     let to_mask_cols: Vec<String> = to_allowed
         .iter()
-        .filter(|c| target_masked.contains(*c))
+        .filter(|c| target.masked.contains(*c))
         .cloned()
         .collect();
 
@@ -430,7 +455,8 @@ pub async fn read_linked_chain(
     let logical_types: Vec<String> = to_allowed
         .iter()
         .map(|name| {
-            target_type
+            target
+                .otype
                 .properties
                 .iter()
                 .find(|p| &p.name == name)

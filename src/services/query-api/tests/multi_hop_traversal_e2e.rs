@@ -16,7 +16,9 @@ use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use ingest::{MaterializeRequest, materialize};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-use query_api::handler::{ChainQuery, QueryDeps, QueryError, Subject, read_linked_chain};
+use query_api::handler::{
+    ChainFilter, ChainQuery, QueryDeps, QueryError, Subject, read_linked_chain,
+};
 use query_api::render::objects_to_json;
 use query_api::serving::EmbeddedDuckDb;
 use time::OffsetDateTime;
@@ -26,6 +28,14 @@ fn tref(s: &str, n: &str) -> TableRef {
     TableRef {
         schema: s.into(),
         name: n.into(),
+    }
+}
+
+fn srcf(col: &str, val: &str) -> ChainFilter {
+    ChainFilter {
+        position: 0,
+        column: col.into(),
+        raw: val.into(),
     }
 }
 
@@ -277,7 +287,7 @@ async fn multi_hop_served_and_governed() {
         &ChainQuery {
             from_type: "Customer".into(),
             path: vec!["orders".into(), "lineItems".into()],
-            source_filters: vec![("region".into(), "CA".into())],
+            filters: vec![srcf("region", "CA")],
         },
         &Subject(a.clone()),
         &deps,
@@ -322,7 +332,7 @@ async fn multi_hop_served_and_governed() {
         &ChainQuery {
             from_type: "Customer".into(),
             path: vec!["orders".into(), "lineItems".into()],
-            source_filters: vec![("region".into(), "CA".into())],
+            filters: vec![srcf("region", "CA")],
         },
         &Subject(c.clone()),
         &deps,
@@ -348,7 +358,7 @@ async fn multi_hop_served_and_governed() {
         &ChainQuery {
             from_type: "Customer".into(),
             path: vec!["orders".into(), "lineItems".into()],
-            source_filters: vec![],
+            filters: vec![],
         },
         &Subject(b.clone()),
         &deps,
