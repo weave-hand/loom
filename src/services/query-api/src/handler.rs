@@ -8,7 +8,7 @@ use control_plane_core::{
 };
 
 use crate::serving::{ServingEngine, SqlValue};
-use crate::sql::{compile_chain, compile_select};
+use crate::sql::{compile_chain_with, compile_select_with};
 
 /// A governed read result: rows plus, for each projected column, the ontology
 /// property's logical type — the input the wire renderer needs to type each value.
@@ -228,7 +228,8 @@ pub async fn read_object(
         }
     }
 
-    let (sql, params) = compile_select(
+    let (sql, params) = compile_select_with(
+        deps.serving.dialect(),
         &object_type.table,
         &allowed,
         &mask_cols,
@@ -451,7 +452,14 @@ pub async fn read_linked_chain(
         .cloned()
         .collect();
 
-    let (sql, params) = compile_chain(&ctypes, &hops, &to_allowed, &to_mask_cols, DEFAULT_LIMIT)?;
+    let (sql, params) = compile_chain_with(
+        deps.serving.dialect(),
+        &ctypes,
+        &hops,
+        &to_allowed,
+        &to_mask_cols,
+        DEFAULT_LIMIT,
+    )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = to_allowed
         .iter()

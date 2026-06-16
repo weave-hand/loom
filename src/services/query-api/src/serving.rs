@@ -4,8 +4,10 @@
 
 use async_trait::async_trait;
 
+use crate::sql::{DuckDbDialect, SqlDialect};
+
 /// A backend-neutral scalar cell. Scalar-only by design (lists are expanded into
-/// placeholders before binding — see sql::compile_select).
+/// placeholders before binding — see sql::compile_select_with).
 #[derive(Clone, Debug, PartialEq)]
 pub enum SqlValue {
     Text(String),
@@ -46,6 +48,13 @@ pub enum ServingError {
 pub trait ServingEngine: Send + Sync {
     /// Execute read-only `sql`, binding `params` positionally (`?` placeholders).
     async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError>;
+
+    /// The SQL dialect this engine speaks. Defaults to DuckDB — every serving engine
+    /// loom ships today (`EmbeddedDuckDb`, `QuackServingEngine`) is DuckDB-compatible.
+    /// A future non-DuckDB engine overrides this.
+    fn dialect(&self) -> &'static dyn SqlDialect {
+        &DuckDbDialect
+    }
 }
 
 /// A write-capable serving engine — the seam a future Iceberg backend swaps in.
