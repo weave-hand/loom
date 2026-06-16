@@ -378,3 +378,12 @@ rust_test(
     edition = "2024",
     deps = [":query-api"],
 )
+
+rust_test(
+    name = "path-parse",
+    crate = "path_parse",
+    srcs = ["tests/path_parse.rs"],
+    crate_root = "tests/path_parse.rs",
+    edition = "2024",
+    deps = [":query-api"],
+)

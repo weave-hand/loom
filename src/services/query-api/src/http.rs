@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use crate::handler::{
-    ChainQuery, Hop, LinkQuery, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_chain,
-    read_linked_objects, read_object,
+    ChainQuery, Hop, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_chain, read_object,
 };
+use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
 use axum::Router;
 use axum::extract::{Path, Query, State};
@@ -85,11 +85,25 @@ async fn get_linked(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
+    // Pull `direction` (single-hop knob) out of the params; everything else is a filter.
+    let mut direction_raw: Option<String> = None;
+    let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
+    for (k, v) in params {
+        if k == "direction" {
+            direction_raw = Some(v);
+        } else {
+            filter_params.push((k, v));
+        }
+    }
+    let direction = match parse_direction(direction_raw.as_deref()) {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
     // Resolve filter keys against the single-link path: bare -> source (t_0), `<link>.col`
-    // -> target (t_1). A bad prefix -> 400.
+    // -> target (t_1). A bad prefix -> 400. (Filter keys use the bare link name.)
     let filters = match crate::chain_filter::resolve_chain_filters(
         std::slice::from_ref(&link_name),
-        params,
+        filter_params,
     ) {
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -99,10 +113,13 @@ async fn get_linked(
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
     };
-    match read_linked_objects(
-        &LinkQuery {
+    match read_linked_chain(
+        &ChainQuery {
             from_type,
-            link: link_name,
+            path: vec![Hop {
+                link: link_name,
+                direction,
+            }],
             filters,
         },
         &Subject(SubjectId(subject)),
@@ -113,6 +130,7 @@ async fn get_linked(
         Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
+        Err(QueryError::AmbiguousLink(l)) => (StatusCode::BAD_REQUEST, l).into_response(),
         Err(QueryError::BadChain(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
@@ -131,22 +149,20 @@ async fn get_linked_chain(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // `path` is the comma-separated ordered chain of link names; every other pair is a
-    // filter. Repeated filter keys are preserved (e.g. a range on one column).
-    let mut path: Vec<String> = Vec::new();
+    // `path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
+    // every other pair is a filter. Repeated filter keys are preserved (e.g. a range).
+    let mut hops: Vec<Hop> = Vec::new();
     let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         if k == "path" {
-            path = v
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+            hops = parse_path_hops(&v);
         } else {
             filter_params.push((k, v));
         }
     }
-    let filters = match crate::chain_filter::resolve_chain_filters(&path, filter_params) {
+    // Filter keys reference bare link names; resolve against those (direction-independent).
+    let names: Vec<String> = hops.iter().map(|h| h.link.clone()).collect();
+    let filters = match crate::chain_filter::resolve_chain_filters(&names, filter_params) {
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
@@ -158,7 +174,7 @@ async fn get_linked_chain(
     match read_linked_chain(
         &ChainQuery {
             from_type,
-            path: path.into_iter().map(Hop::from).collect(),
+            path: hops,
             filters,
         },
         &Subject(SubjectId(subject)),
@@ -169,6 +185,7 @@ async fn get_linked_chain(
         Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
+        Err(QueryError::AmbiguousLink(l)) => (StatusCode::BAD_REQUEST, l).into_response(),
         Err(QueryError::BadChain(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
