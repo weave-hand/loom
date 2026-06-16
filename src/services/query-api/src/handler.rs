@@ -74,7 +74,7 @@ async fn load_policy(
     QueryError,
 > {
     let policies = acl
-        .policies_for(subject, target, PageReq::unbounded())
+        .policies_for(subject, Action::Read, target, PageReq::unbounded())
         .await?;
     let mut row_filters = Vec::new();
     let mut denied = std::collections::HashSet::new();

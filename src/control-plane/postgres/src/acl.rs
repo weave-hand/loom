@@ -208,7 +208,7 @@ impl Acl for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self, policy), level = "debug")]
-    async fn set_policy(&self, role: &RoleId, policy: Policy) -> Result<()> {
+    async fn set_policy(&self, role: &RoleId, action: Action, policy: Policy) -> Result<()> {
         let r_exists = sqlx::query_scalar!(
             "select exists (select 1 from acl.role where id = $1)",
             &role.0,
@@ -265,13 +265,14 @@ impl Acl for PgControlPlane {
         };
         sqlx::query!(
             "insert into acl.policy \
-                 (role_id, target_kind, target_a, target_b, row_filter, deny_columns, mask_columns) \
-             values ($1, $2, $3, $4, $5, $6, $7) \
-             on conflict (role_id, target_kind, target_a, target_b) do update set \
+                 (role_id, action, target_kind, target_a, target_b, row_filter, deny_columns, mask_columns) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8) \
+             on conflict (role_id, action, target_kind, target_a, target_b) do update set \
                  row_filter = excluded.row_filter, \
                  deny_columns = excluded.deny_columns, \
                  mask_columns = excluded.mask_columns",
             &role.0,
+            action_to_str(action),
             kind,
             &a,
             &b,
@@ -286,12 +287,18 @@ impl Acl for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn clear_policy(&self, role: &RoleId, target: &PolicyTarget) -> Result<()> {
+    async fn clear_policy(
+        &self,
+        role: &RoleId,
+        action: Action,
+        target: &PolicyTarget,
+    ) -> Result<()> {
         let (kind, a, b) = target_cols(target);
         sqlx::query!(
-            "delete from acl.policy where role_id = $1 and target_kind = $2 \
-             and target_a = $3 and target_b = $4",
+            "delete from acl.policy where role_id = $1 and action = $2 and target_kind = $3 \
+             and target_a = $4 and target_b = $5",
             &role.0,
+            action_to_str(action),
             kind,
             &a,
             &b,
@@ -342,6 +349,7 @@ impl Acl for PgControlPlane {
     async fn policies_for(
         &self,
         subject: &SubjectId,
+        action: Action,
         target: &PolicyTarget,
         _page: PageReq,
     ) -> Result<Page<Policy>> {
@@ -355,8 +363,9 @@ impl Acl for PgControlPlane {
              ) \
              select p.row_filter, p.deny_columns, p.mask_columns \
              from eff join acl.policy p on p.role_id = eff.role_id \
-             where p.target_kind = $2 and p.target_a = $3 and p.target_b = $4",
+             where p.action = $2 and p.target_kind = $3 and p.target_a = $4 and p.target_b = $5",
             &subject.0,
+            action_to_str(action),
             kind,
             &a,
             &b,

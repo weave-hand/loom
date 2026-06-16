@@ -199,11 +199,16 @@ pub trait Acl {
     ) -> Result<()>;
     /// Remove a grant. Idempotent (no-op if absent).
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()>;
-    /// Create or replace the row/column policy for `(role, policy.target)`. Role
-    /// must exist, else `NotFound`. Upsert.
-    async fn set_policy(&self, role: &RoleId, policy: Policy) -> Result<()>;
-    /// Remove the policy for `(role, target)`. Idempotent (no-op if absent).
-    async fn clear_policy(&self, role: &RoleId, target: &PolicyTarget) -> Result<()>;
+    /// Create or replace the row/column policy for `(role, action, policy.target)`. Role
+    /// must exist, else `NotFound`. Upsert. Read and write policies are independent.
+    async fn set_policy(&self, role: &RoleId, action: Action, policy: Policy) -> Result<()>;
+    /// Remove the policy for `(role, action, target)`. Idempotent (no-op if absent).
+    async fn clear_policy(
+        &self,
+        role: &RoleId,
+        action: Action,
+        target: &PolicyTarget,
+    ) -> Result<()>;
 
     /// `Allow` iff any role assigned to `subject` has a grant matching
     /// `(action, target)`. Unknown subject → `Deny` (not an error).
@@ -213,12 +218,13 @@ pub trait Acl {
         action: Action,
         target: &PolicyTarget,
     ) -> Result<Decision>;
-    /// All policies across `subject`'s roles whose target equals `target` (order
-    /// unspecified). Unknown subject → empty vec. No merging.
-    /// The `page` request is accepted but not yet enforced; results are a single full page.
+    /// All policies across `subject`'s roles for `(action, target)` (order unspecified).
+    /// Unknown subject → empty vec. No merging. The `page` request is accepted but not yet
+    /// enforced; results are a single full page.
     async fn policies_for(
         &self,
         subject: &SubjectId,
+        action: Action,
         target: &PolicyTarget,
         page: PageReq,
     ) -> Result<Page<Policy>>;

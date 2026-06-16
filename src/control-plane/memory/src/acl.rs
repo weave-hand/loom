@@ -24,7 +24,7 @@ pub(crate) struct AclState {
     roles: HashSet<String>,
     members: HashSet<(String, String)>, // (subject, role)
     grants: HashMap<(String, Action, TargetKey), Effect>, // (role, action, target) -> effect
-    policies: HashMap<(String, TargetKey), Policy>, // (role, target) -> policy
+    policies: HashMap<(String, Action, TargetKey), Policy>, // (role, action, target) -> policy
     inherits: HashSet<(String, String)>, // (role, inherits): role gains inherits's perms
 }
 
@@ -172,7 +172,7 @@ impl Acl for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self, policy), level = "debug")]
-    async fn set_policy(&self, role: &RoleId, policy: Policy) -> Result<()> {
+    async fn set_policy(&self, role: &RoleId, action: Action, policy: Policy) -> Result<()> {
         // role-exists check (short acl lock)
         {
             let acl = self.acl.lock().unwrap();
@@ -200,18 +200,23 @@ impl Acl for MemoryControlPlane {
             }
         }
         // insert (short acl lock)
-        let key = (role.0.clone(), target_key(&policy.target));
+        let key = (role.0.clone(), action, target_key(&policy.target));
         self.acl.lock().unwrap().policies.insert(key, policy);
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn clear_policy(&self, role: &RoleId, target: &PolicyTarget) -> Result<()> {
+    async fn clear_policy(
+        &self,
+        role: &RoleId,
+        action: Action,
+        target: &PolicyTarget,
+    ) -> Result<()> {
         self.acl
             .lock()
             .unwrap()
             .policies
-            .remove(&(role.0.clone(), target_key(target)));
+            .remove(&(role.0.clone(), action, target_key(target)));
         Ok(())
     }
 
@@ -247,6 +252,7 @@ impl Acl for MemoryControlPlane {
     async fn policies_for(
         &self,
         subject: &SubjectId,
+        action: Action,
         target: &PolicyTarget,
         _page: PageReq,
     ) -> Result<Page<Policy>> {
@@ -261,7 +267,11 @@ impl Acl for MemoryControlPlane {
         Ok(Page::from_full(
             effective
                 .iter()
-                .filter_map(|role| acl.policies.get(&(role.clone(), tk.clone())).cloned())
+                .filter_map(|role| {
+                    acl.policies
+                        .get(&(role.clone(), action, tk.clone()))
+                        .cloned()
+                })
                 .collect(),
         ))
     }

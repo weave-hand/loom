@@ -1023,10 +1023,17 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         deny_columns: vec!["ssn".into(), "dob".into()],
         mask_columns: vec![],
     };
-    a.set_policy(&rid("reader"), pol.clone()).await.unwrap();
+    a.set_policy(&rid("reader"), Action::Read, pol.clone())
+        .await
+        .unwrap();
 
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
+        .policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Customer"),
+            PageReq::unbounded(),
+        )
         .await
         .unwrap();
     assert_eq!(got.len(), 1);
@@ -1042,9 +1049,16 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         deny_columns: vec![],
         mask_columns: vec![],
     };
-    a.set_policy(&rid("reader"), pol2.clone()).await.unwrap();
+    a.set_policy(&rid("reader"), Action::Read, pol2.clone())
+        .await
+        .unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
+        .policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Customer"),
+            PageReq::unbounded(),
+        )
         .await
         .unwrap();
     assert_eq!(got.len(), 1, "upsert, not duplicate");
@@ -1065,9 +1079,16 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         deny_columns: vec![],
         mask_columns: vec![],
     };
-    a.set_policy(&rid("writer"), pol_w.clone()).await.unwrap();
+    a.set_policy(&rid("writer"), Action::Read, pol_w.clone())
+        .await
+        .unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
+        .policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Customer"),
+            PageReq::unbounded(),
+        )
         .await
         .unwrap();
     assert_eq!(got.len(), 2, "both roles' policies returned, no merge");
@@ -1075,25 +1096,40 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
 
     // target kinds don't bleed; unknown subject -> empty
     assert!(
-        a.policies_for(&sid("alice"), &ttable("main", "raw"), PageReq::unbounded())
-            .await
-            .unwrap()
-            .is_empty(),
+        a.policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttable("main", "raw"),
+            PageReq::unbounded()
+        )
+        .await
+        .unwrap()
+        .is_empty(),
         "a Type policy is not returned for a Table target"
     );
     assert!(
-        a.policies_for(&sid("nobody"), &ttype("Customer"), PageReq::unbounded())
-            .await
-            .unwrap()
-            .is_empty()
+        a.policies_for(
+            &sid("nobody"),
+            Action::Read,
+            &ttype("Customer"),
+            PageReq::unbounded()
+        )
+        .await
+        .unwrap()
+        .is_empty()
     );
 
     // clear_policy removes only the named (role, target)
-    a.clear_policy(&rid("reader"), &ttype("Customer"))
+    a.clear_policy(&rid("reader"), Action::Read, &ttype("Customer"))
         .await
         .unwrap();
     let got = a
-        .policies_for(&sid("alice"), &ttype("Customer"), PageReq::unbounded())
+        .policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Customer"),
+            PageReq::unbounded(),
+        )
         .await
         .unwrap();
     assert_eq!(got.items, vec![pol_w], "only the writer policy remains");
@@ -1107,17 +1143,102 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         deny_columns: vec!["ssn".into()],
         mask_columns: vec!["email".into(), "phone".into()],
     };
-    a.set_policy(&rid("reader"), pol_mask.clone())
+    a.set_policy(&rid("reader"), Action::Read, pol_mask.clone())
         .await
         .expect("set_policy with mask_columns");
     let got_mask = a
-        .policies_for(&sid("alice"), &ttype("Invoice"), PageReq::unbounded())
+        .policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Invoice"),
+            PageReq::unbounded(),
+        )
         .await
         .expect("policies_for after mask set");
     assert_eq!(
         got_mask.items,
         vec![pol_mask],
         "mask_columns must round-trip alongside deny_columns",
+    );
+
+    // --- action scoping: read and write policies are independent ---
+    // Distinct Read and Write policies on the SAME (role, target). row_filter: None so no
+    // ontology validation is needed; the point is storage keyed by action.
+    let ticket_read = Policy {
+        target: ttype("Ticket"),
+        row_filter: None,
+        deny_columns: vec!["priority".into()],
+        mask_columns: vec![],
+    };
+    let ticket_write = Policy {
+        target: ttype("Ticket"),
+        row_filter: None,
+        deny_columns: vec!["assignee".into()],
+        mask_columns: vec![],
+    };
+    a.set_policy(&rid("reader"), Action::Read, ticket_read.clone())
+        .await
+        .unwrap();
+    a.set_policy(&rid("reader"), Action::Write, ticket_write.clone())
+        .await
+        .unwrap();
+    // A Read query returns only the Read policy; a Write query only the Write policy.
+    let r = a
+        .policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Ticket"),
+            PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.items,
+        vec![ticket_read.clone()],
+        "Read query returns only the Read-scoped policy"
+    );
+    let w = a
+        .policies_for(
+            &sid("alice"),
+            Action::Write,
+            &ttype("Ticket"),
+            PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        w.items,
+        vec![ticket_write.clone()],
+        "Write query returns only the Write-scoped policy"
+    );
+    // clear_policy is action-scoped: clearing Read leaves Write intact.
+    a.clear_policy(&rid("reader"), Action::Read, &ttype("Ticket"))
+        .await
+        .unwrap();
+    assert!(
+        a.policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Ticket"),
+            PageReq::unbounded()
+        )
+        .await
+        .unwrap()
+        .is_empty(),
+        "Read policy cleared"
+    );
+    assert_eq!(
+        a.policies_for(
+            &sid("alice"),
+            Action::Write,
+            &ttype("Ticket"),
+            PageReq::unbounded()
+        )
+        .await
+        .unwrap()
+        .items,
+        vec![ticket_write],
+        "Write policy survives clearing the Read policy"
     );
 
     // --- grant / set_policy on a missing role -> NotFound ---
@@ -1129,6 +1250,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     assert!(matches!(
         a.set_policy(
             &rid("ghost"),
+            Action::Read,
             Policy {
                 target: ttype("X"),
                 row_filter: None,
@@ -1147,7 +1269,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     a.revoke(&rid("reader"), Action::Read, &ttype("Nothing"))
         .await
         .unwrap();
-    a.clear_policy(&rid("reader"), &ttype("Nothing"))
+    a.clear_policy(&rid("reader"), Action::Read, &ttype("Nothing"))
         .await
         .unwrap();
 
@@ -1305,6 +1427,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     );
     a.set_policy(
         &rid("junior"),
+        Action::Read,
         Policy {
             target: ttype("Widget"),
             row_filter: None,
@@ -1315,7 +1438,12 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     .await
     .expect("junior policy");
     let inh_pols = a
-        .policies_for(&sid("h_user"), &ttype("Widget"), PageReq::unbounded())
+        .policies_for(
+            &sid("h_user"),
+            Action::Read,
+            &ttype("Widget"),
+            PageReq::unbounded(),
+        )
         .await
         .expect("inherited policies_for");
     assert!(
@@ -1348,7 +1476,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         mask_columns: vec![],
     };
     assert!(matches!(
-        a.set_policy(&rid("reader"), malformed).await,
+        a.set_policy(&rid("reader"), Action::Read, malformed).await,
         Err(ControlPlaneError::Validation(_)),
     ));
     let unknown_prop = Policy {
@@ -1362,7 +1490,8 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         mask_columns: vec![],
     };
     assert!(matches!(
-        a.set_policy(&rid("reader"), unknown_prop).await,
+        a.set_policy(&rid("reader"), Action::Read, unknown_prop)
+            .await,
         Err(ControlPlaneError::Validation(_)),
     ));
     let undefined_type = Policy {
@@ -1376,7 +1505,8 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         mask_columns: vec![],
     };
     assert!(matches!(
-        a.set_policy(&rid("reader"), undefined_type).await,
+        a.set_policy(&rid("reader"), Action::Read, undefined_type)
+            .await,
         Err(ControlPlaneError::Validation(_)),
     ));
     let table_ok = Policy {
@@ -1389,7 +1519,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         deny_columns: vec![],
         mask_columns: vec![],
     };
-    a.set_policy(&rid("reader"), table_ok)
+    a.set_policy(&rid("reader"), Action::Read, table_ok)
         .await
         .expect("table-target structural ok");
 }

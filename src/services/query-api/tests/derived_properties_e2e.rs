@@ -270,6 +270,7 @@ async fn derived_aggregates_are_served_and_governed() {
     grant_read(&cp, &c_role, "Order").await;
     cp.set_policy(
         &c_role,
+        Action::Read,
         Policy {
             target: PolicyTarget::Type(TypeName("Order".into())),
             row_filter: Some(RowFilter::Compare {
