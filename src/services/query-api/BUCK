@@ -198,6 +198,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "inverse-hops-e2e",
+    crate = "inverse_hops_e2e",
+    srcs = ["tests/inverse_hops_e2e.rs"],
+    crate_root = "tests/inverse_hops_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "serving-types",
     crate = "serving_types",
     srcs = ["tests/serving_types.rs"],
@@ -348,4 +368,22 @@ rust_test(
     crate_root = "tests/sql_dialect.rs",
     edition = "2024",
     deps = [":query-api", "//src/control-plane/core:core"],
+)
+
+rust_test(
+    name = "hop-types",
+    crate = "hop_types",
+    srcs = ["tests/hop_types.rs"],
+    crate_root = "tests/hop_types.rs",
+    edition = "2024",
+    deps = [":query-api"],
+)
+
+rust_test(
+    name = "path-parse",
+    crate = "path_parse",
+    srcs = ["tests/path_parse.rs"],
+    crate_root = "tests/path_parse.rs",
+    edition = "2024",
+    deps = [":query-api"],
 )

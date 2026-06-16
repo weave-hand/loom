@@ -666,6 +666,30 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "join-table backing round-trips"
     );
 
+    // inbound adjacency: links_to(X) returns links whose `to` is X — the inverse of
+    // `links`. `customer` (Order -> Customer, upserted to Many above) is inbound to
+    // Customer; `items` (Customer -> Order, join-table) is inbound to Order.
+    let customer_link = LinkDef {
+        cardinality: Cardinality::Many,
+        ..link.clone()
+    };
+    assert_eq!(
+        o.links_to(&tn("Customer"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .items,
+        vec![customer_link],
+        "links_to returns inbound links (FK)"
+    );
+    assert_eq!(
+        o.links_to(&tn("Order"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .items,
+        vec![m2m.clone()],
+        "links_to returns inbound links (join-table)"
+    );
+
     // link to an undefined endpoint -> NotFound.
     assert!(
         matches!(
@@ -697,6 +721,10 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     ));
     assert!(matches!(
         o.links(&nope, PageReq::unbounded()).await,
+        Err(control_plane_core::ControlPlaneError::NotFound(_))
+    ));
+    assert!(matches!(
+        o.links_to(&nope, PageReq::unbounded()).await,
         Err(control_plane_core::ControlPlaneError::NotFound(_))
     ));
 

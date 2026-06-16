@@ -65,6 +65,37 @@ pub enum LinkBacking {
     },
 }
 
+impl LinkBacking {
+    /// The backing for traversing this link in the inverse direction (`to` -> `from`).
+    /// The column roles are swapped so the same symmetric chain-join compiler reaches
+    /// the origin type; the mapping table (for `JoinTable`) is unchanged. An involution:
+    /// `b.reversed().reversed() == b`.
+    pub fn reversed(&self) -> LinkBacking {
+        match self {
+            LinkBacking::ForeignKey {
+                from_column,
+                to_column,
+            } => LinkBacking::ForeignKey {
+                from_column: to_column.clone(),
+                to_column: from_column.clone(),
+            },
+            LinkBacking::JoinTable {
+                table,
+                from_key,
+                from_column,
+                to_column,
+                to_key,
+            } => LinkBacking::JoinTable {
+                table: table.clone(),
+                from_key: to_key.clone(),
+                from_column: to_column.clone(),
+                to_column: from_column.clone(),
+                to_key: from_key.clone(),
+            },
+        }
+    }
+}
+
 /// A directed link between two types (e.g. `Order.customer -> Customer`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkDef {
@@ -134,6 +165,10 @@ pub trait Ontology {
     /// All links whose `from` is `name`. `NotFound` if the type itself is absent. The `page` request is accepted but not yet enforced; results
     /// are a single full page.
     async fn links(&self, name: &TypeName, page: PageReq) -> Result<Page<LinkDef>>;
+    /// All links whose `to` is `name` — inbound adjacency, the inverse of [`links`].
+    /// `NotFound` if the type itself is absent. The `page` request is accepted but not yet
+    /// enforced; results are a single full page.
+    async fn links_to(&self, name: &TypeName, page: PageReq) -> Result<Page<LinkDef>>;
     /// The physical DuckLake table backing `name`. `NotFound` if the type is absent.
     async fn resolve(&self, name: &TypeName) -> Result<TableRef>;
     /// Create or replace a named action and its ordered parameter list. Upsert.

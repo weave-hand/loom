@@ -178,6 +178,11 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     reusing `coerce_filter` per operand) so `Double`/`Date`/`Timestamp` filtering is preserved; one
     `caller_predicate_sql` renderer reuses the ACL `CompareOp`/`op_sql` machinery. Proven by
     `coerce_predicate` units, compiler-render units, and read/chain e2es.
+  - *Part 8 — inverse-direction hops (slice C part-3)* ✅ DELIVERED
+    (`2026-06-16-inverse-direction-hops-design.md`). Every link traversable backwards
+    (`target <--link-- source`), governed at every hop, single- and multi-hop; via a new
+    inbound-adjacency query (`Ontology::links_to`) + `LinkBacking::reversed()`, with the
+    SQL chain compiler unchanged. Ambiguous inbound link name → deterministic 400.
   - *Later:* the serving *tier* over Quack (separate `quack_serve`'d DuckDB; the seam's
     Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
     masking, roles); rich ontology (links, derived properties); multi-type queries/joins;
@@ -264,8 +269,8 @@ write, validated against the type contract, reads back through the governed read
 the platform's four core verbs — **land → derive → serve → write** — are all live.
 Richer reads now span aggregate-over-link **derived properties** (slice B) and **multi-hop
 traversal** (slice C part-1 — forward, source-filtered, deduped link chaining, governed at every
-hop). The remaining slice-C parts are inverse-direction hops, target-side filtering, object-set
-inputs, and the source→target association. Candidate next slices: those slice-C parts, programmatic
+hop). The remaining slice-C parts are target-side filtering, object-set
+inputs, and the source→target association. Candidate next slices: the remaining slice-C parts (object-set inputs, source→target association), programmatic
 transforms, and overwrite/incremental output.
 **Typed input filters** are now delivered too
 (`2026-06-16-query-typed-input-filters-design.md`): query-param equality filters now coerce
@@ -278,12 +283,21 @@ query follow-ups are a schema sidecar and tz timestamps.
 `2026-06-16-query-target-intermediate-filters-design.md`) are now delivered too: every type a
 traversal touches is caller-filterable (typed, governed per type), not just the source, and the
 relational-vs-graph boundary is drawn (a future `/graph` surface owns cyclic/self-link
-traversal). The remaining slice-C parts are inverse-direction hops, object-set inputs, and the
-source→target association.
+traversal). The remaining slice-C parts are object-set inputs and the source→target association.
 **Comparison / set operators** (`2026-06-16-query-comparison-set-operators-design.md`) complete the
 filter arc: every caller filter, at every read path and chain position, now expresses the full
 `CompareOp` surface (ranges via repeated keys), not just equality — real analytical filtering on the
 governed read path.
+
+**Inverse-direction hops** (slice-C part-3,
+`2026-06-16-inverse-direction-hops-design.md`) are now delivered: every link is
+traversable backwards (`target <--link-- source`), governed at every hop, across the
+single-hop (`?direction=inverse`) and multi-hop (`~`-prefixed `path` elements, freely
+mixed with forward hops) read paths. The control plane gained an inbound-adjacency query
+(`Ontology::links_to`) and `LinkBacking::reversed()`; the SQL chain compiler is unchanged
+(an inverse hop is just a reversed backing + origin type). An inbound link name that is
+not unique for the target type is a deterministic 400 (`AmbiguousLink`). The remaining
+slice-C parts are object-set inputs and the source→target association.
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
 reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,
