@@ -42,7 +42,7 @@ async fn rollback_leaks_no_catalog_rows() {
         &t,
         &[ColumnSpec {
             name: "id".into(),
-            ty: "int64".into(),
+            ty: "long".into(),
             nullable: false,
         }],
     )

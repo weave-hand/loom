@@ -9,13 +9,30 @@ struct PgSeeder {
     writer: DuckLakeWriter,
 }
 
+/// The contract seeds loom LOGICAL types; the pg seeder drives real DuckLake, so it
+/// maps each logical type to the DuckDB physical type used in `CREATE TABLE`. The
+/// adapter's `schema()` then maps DuckLake's stored type back to logical — the
+/// round-trip the contract asserts.
+fn logical_to_duckdb(ty: &str) -> &'static str {
+    match ty {
+        "long" => "BIGINT",
+        "integer" => "INTEGER",
+        "double" => "DOUBLE",
+        "boolean" => "BOOLEAN",
+        "string" => "VARCHAR",
+        "date" => "DATE",
+        "timestamp" => "TIMESTAMP",
+        other => panic!("seed: unmapped logical type {other:?}"),
+    }
+}
+
 #[async_trait]
 impl CatalogSeed for PgSeeder {
     async fn seed(&self, spec: SeedSpec) -> Vec<SeededSnapshot> {
         let cols: Vec<(String, String, bool)> = spec
             .columns
             .into_iter()
-            .map(|c| (c.name, c.ty, c.nullable))
+            .map(|c| (c.name, logical_to_duckdb(&c.ty).to_string(), c.nullable))
             .collect();
         self.writer
             .seed(

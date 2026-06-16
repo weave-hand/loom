@@ -6,12 +6,12 @@ fn customer_shape() -> ModelShape {
         columns: vec![
             ColumnShape {
                 name: "id".into(),
-                ty: "int64".into(),
+                ty: "long".into(),
                 required: true,
             },
             ColumnShape {
                 name: "email".into(),
-                ty: "varchar".into(),
+                ty: "string".into(),
                 required: true,
             },
         ],
@@ -40,7 +40,7 @@ fn missing_required_column_is_a_violation() {
 #[test]
 fn type_mismatch_is_a_violation() {
     let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false), // wrong: varchar, model wants int64
+        Field::new("id", DataType::Utf8, false), // wrong: string, model wants long
         Field::new("email", DataType::Utf8, true),
     ]);
     let v = validate(&customer_shape(), &schema).unwrap_err();

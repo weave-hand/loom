@@ -25,7 +25,7 @@ async fn duckdb_reads_loom_catalog_and_appends() {
     // Bare ATTACH: 27 ducklake_* tables, snapshot 0, `main` schema, no table.
     writer.bootstrap().await;
 
-    // loom natively creates main.t (id int64, name varchar) — DDL only, no file.
+    // loom natively creates main.t (id long, name string) — DDL only, no file.
     let t = TableRef {
         schema: "main".into(),
         name: "t".into(),
@@ -36,12 +36,12 @@ async fn duckdb_reads_loom_catalog_and_appends() {
         &[
             ColumnSpec {
                 name: "id".into(),
-                ty: "int64".into(),
+                ty: "long".into(),
                 nullable: false,
             },
             ColumnSpec {
                 name: "name".into(),
-                ty: "varchar".into(),
+                ty: "string".into(),
                 nullable: true,
             },
         ],
@@ -99,12 +99,12 @@ async fn duckdb_scans_loom_appended_file() {
         &[
             ColumnSpec {
                 name: "id".into(),
-                ty: "int64".into(),
+                ty: "long".into(),
                 nullable: false,
             },
             ColumnSpec {
                 name: "name".into(),
-                ty: "varchar".into(),
+                ty: "string".into(),
                 nullable: true,
             },
         ],

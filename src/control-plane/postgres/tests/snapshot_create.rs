@@ -26,12 +26,12 @@ async fn create_table_then_append_in_one_tx() {
         &[
             ColumnSpec {
                 name: "id".into(),
-                ty: "int64".into(),
+                ty: "long".into(),
                 nullable: false,
             },
             ColumnSpec {
                 name: "name".into(),
-                ty: "varchar".into(),
+                ty: "string".into(),
                 nullable: true,
             },
         ],
@@ -76,10 +76,10 @@ async fn create_table_then_append_in_one_tx() {
     let schema = cp.schema(&t, latest.id).await.unwrap();
     assert_eq!(schema.columns.len(), 2);
     assert_eq!(schema.columns[0].name, "id");
-    assert_eq!(schema.columns[0].ty, "int64");
+    assert_eq!(schema.columns[0].ty, "long");
     assert!(!schema.columns[0].nullable);
     assert_eq!(schema.columns[1].name, "name");
-    assert_eq!(schema.columns[1].ty, "varchar");
+    assert_eq!(schema.columns[1].ty, "string");
     assert!(schema.columns[1].nullable);
 
     let files = cp.files(&t, latest.id, PageReq::unbounded()).await.unwrap();

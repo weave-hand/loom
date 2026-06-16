@@ -31,17 +31,17 @@ async fn governed_object_read() {
         &[
             ColumnSpec {
                 name: "id".into(),
-                ty: "int64".into(),
+                ty: "long".into(),
                 nullable: false,
             },
             ColumnSpec {
                 name: "status".into(),
-                ty: "varchar".into(),
+                ty: "string".into(),
                 nullable: true,
             },
             ColumnSpec {
                 name: "secret".into(),
-                ty: "varchar".into(),
+                ty: "string".into(),
                 nullable: true,
             },
         ],

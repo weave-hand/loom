@@ -105,17 +105,17 @@ async fn modeled_landing_passes_gate_and_returns_a_snapshot() {
     let (schema, b) = batch();
     let t = table();
 
-    // A model the batch satisfies (id int64 required, email varchar optional).
+    // A model the batch satisfies (id long required, email string optional).
     let shape = ModelShape {
         columns: vec![
             ColumnShape {
                 name: "id".into(),
-                ty: "int64".into(),
+                ty: "long".into(),
                 required: true,
             },
             ColumnShape {
                 name: "email".into(),
-                ty: "varchar".into(),
+                ty: "string".into(),
                 required: false,
             },
         ],
@@ -164,12 +164,12 @@ async fn gate_rejection_happens_before_any_write() {
         columns: vec![
             ColumnShape {
                 name: "id".into(),
-                ty: "int64".into(),
+                ty: "long".into(),
                 required: true,
             },
             ColumnShape {
                 name: "ssn".into(),
-                ty: "varchar".into(),
+                ty: "string".into(),
                 required: true,
             },
         ],

@@ -10,9 +10,9 @@
 
 use arrow::datatypes::Schema;
 
-use datafusion_io::duck_type;
+use datafusion_io::arrow_logical_type;
 
-/// One expected column of a model. `ty` is a DuckLake type string.
+/// One expected column of a model. `ty` is a loom logical type string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnShape {
     pub name: String,
@@ -35,7 +35,7 @@ pub struct Violation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ViolationReason {
     MissingRequired,
-    /// The column is present but its inferred DuckLake type does not match the model.
+    /// The column is present but its inferred logical type does not match the model.
     TypeMismatch {
         expected: String,
         found: String,
@@ -59,7 +59,7 @@ pub fn validate(shape: &ModelShape, batch: &Schema) -> Result<(), Vec<Violation>
                     });
                 }
             }
-            Some(field) => match duck_type(field.data_type()) {
+            Some(field) => match arrow_logical_type(field.data_type()) {
                 None => violations.push(Violation {
                     column: col.name.clone(),
                     reason: ViolationReason::Unsupported,

@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    Catalog, ColumnDef, ControlPlaneError, FileRef, Page, PageReq, Result, Snapshot, SnapshotId,
-    TableRef, TableSchema,
+    BaseType, Catalog, ColumnDef, ControlPlaneError, FileRef, Page, PageReq, Result, Snapshot,
+    SnapshotId, TableRef, TableSchema,
 };
 
+use crate::ducklake_type::logical_from_ducklake;
 use crate::{PgControlPlane, backend};
 
 #[async_trait]
@@ -107,17 +108,28 @@ impl Catalog for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(TableSchema {
-            columns: rows
-                .into_iter()
-                .map(|r| ColumnDef {
+        let columns = rows
+            .into_iter()
+            .map(|r| {
+                let ty = logical_from_ducklake(&r.column_type)
+                    .map(BaseType::canonical_name)
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                                "catalog column type {:?} has no loom logical type",
+                                r.column_type
+                            )),
+                        )
+                    })?;
+                Ok(ColumnDef {
                     order: r.column_order,
                     name: r.column_name,
-                    ty: r.column_type,
+                    ty: ty.to_string(),
                     nullable: r.nulls_allowed,
                 })
-                .collect(),
-        })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(TableSchema { columns })
     }
 }
 

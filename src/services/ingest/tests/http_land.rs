@@ -105,7 +105,7 @@ fn model_header(json: &str) -> (axum::http::HeaderName, axum::http::HeaderValue)
 async fn modeled_land_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     let (_cp, state) = app_state(dir.path());
-    let model = r#"{"columns":[{"name":"id","ty":"int64","required":true},{"name":"name","ty":"varchar","required":false}]}"#;
+    let model = r#"{"columns":[{"name":"id","ty":"long","required":true},{"name":"name","ty":"string","required":false}]}"#;
     let (hn, hv) = model_header(model);
     let res = router(state)
         .oneshot(
@@ -126,7 +126,7 @@ async fn nonconforming_model_is_422_with_violations() {
     let dir = tempfile::tempdir().unwrap();
     let (cp, state) = app_state(dir.path());
     // Requires a column the batch does not have.
-    let model = r#"{"columns":[{"name":"missing","ty":"int64","required":true}]}"#;
+    let model = r#"{"columns":[{"name":"missing","ty":"long","required":true}]}"#;
     let (hn, hv) = model_header(model);
     let res = router(state)
         .oneshot(
