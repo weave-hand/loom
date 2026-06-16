@@ -10,6 +10,39 @@ use control_plane_core::{
 use crate::filter::CallerPredicate;
 use crate::serving::SqlValue;
 
+/// The dialect-variant tokens of the read-SQL the compiler emits. The compiler is
+/// otherwise dialect-neutral (ANSI joins/predicates); only these three knobs differ
+/// across the serving engines loom might target. Extend the trait only when a real
+/// dialect needs a token that is currently hardcoded (e.g. an aggregate spelling).
+pub trait SqlDialect: Send + Sync {
+    /// Quote a (trusted, ontology/ACL-derived) identifier.
+    fn quote_ident(&self, id: &str) -> String;
+    /// The placeholder for the `one_based`-th bound parameter. DuckDB ignores the
+    /// index (`?`); a positional dialect would render `$1`, `$2`, …​.
+    fn placeholder(&self, one_based: usize) -> String;
+    /// The trailing row-limit clause (no leading space added by the dialect).
+    fn limit_clause(&self, limit: u32) -> String;
+}
+
+/// The DuckDB dialect — loom's only serving dialect today.
+pub struct DuckDbDialect;
+
+impl SqlDialect for DuckDbDialect {
+    fn quote_ident(&self, id: &str) -> String {
+        assert!(
+            !id.contains('"'),
+            "identifier must not contain a double quote: {id}"
+        );
+        format!("\"{id}\"")
+    }
+    fn placeholder(&self, _one_based: usize) -> String {
+        "?".to_string()
+    }
+    fn limit_clause(&self, limit: u32) -> String {
+        format!("LIMIT {limit}")
+    }
+}
+
 /// The value substituted for a masked column. A compile-time constant (never caller
 /// data), so inlining it as a SQL literal is not an injection vector.
 const MASK_MARKER: &str = "***";
@@ -22,20 +55,12 @@ pub enum CompileError {
     MalformedFilter(String),
 }
 
-fn quote_ident(id: &str) -> String {
-    assert!(
-        !id.contains('"'),
-        "identifier must not contain a double quote: {id}"
-    );
-    format!("\"{id}\"")
-}
-
 /// A column reference, optionally table-qualified. `alias` empty -> unqualified.
-fn col_ref(alias: &str, id: &str) -> String {
+fn col_ref(dialect: &dyn SqlDialect, alias: &str, id: &str) -> String {
     if alias.is_empty() {
-        quote_ident(id)
+        dialect.quote_ident(id)
     } else {
-        format!("{alias}.{}", quote_ident(id))
+        format!("{alias}.{}", dialect.quote_ident(id))
     }
 }
 
@@ -64,7 +89,12 @@ fn op_sql(op: CompareOp) -> &'static str {
 /// caller, `compile_select`, enforces this up front). The `unreachable!` arms below —
 /// and those in `scalar`/`op_sql` — rely on that CompareOp<->ScalarValue invariant; a
 /// caller that skips validation could turn them into a panic.
-fn filter_sql(f: &RowFilter, alias: &str, params: &mut Vec<SqlValue>) -> String {
+fn filter_sql(
+    dialect: &dyn SqlDialect,
+    f: &RowFilter,
+    alias: &str,
+    params: &mut Vec<SqlValue>,
+) -> String {
     match f {
         RowFilter::Compare {
             property,
@@ -79,7 +109,7 @@ fn filter_sql(f: &RowFilter, alias: &str, params: &mut Vec<SqlValue>) -> String 
                 let mut placeholders = Vec::with_capacity(items.len());
                 for it in items {
                     scalar(it, params);
-                    placeholders.push("?");
+                    placeholders.push(dialect.placeholder(params.len()));
                 }
                 let kw = if matches!(op, CompareOp::In) {
                     "IN"
@@ -88,33 +118,40 @@ fn filter_sql(f: &RowFilter, alias: &str, params: &mut Vec<SqlValue>) -> String 
                 };
                 format!(
                     "({} {} ({}))",
-                    col_ref(alias, property),
+                    col_ref(dialect, alias, property),
                     kw,
                     placeholders.join(", ")
                 )
             }
-            CompareOp::IsNull => format!("({} IS NULL)", col_ref(alias, property)),
-            CompareOp::IsNotNull => format!("({} IS NOT NULL)", col_ref(alias, property)),
+            CompareOp::IsNull => format!("({} IS NULL)", col_ref(dialect, alias, property)),
+            CompareOp::IsNotNull => {
+                format!("({} IS NOT NULL)", col_ref(dialect, alias, property))
+            }
             _ => {
                 scalar(value, params);
-                format!("({} {} ?)", col_ref(alias, property), op_sql(*op))
+                format!(
+                    "({} {} {})",
+                    col_ref(dialect, alias, property),
+                    op_sql(*op),
+                    dialect.placeholder(params.len())
+                )
             }
         },
         RowFilter::And(xs) => format!(
             "({})",
             xs.iter()
-                .map(|x| filter_sql(x, alias, params))
+                .map(|x| filter_sql(dialect, x, alias, params))
                 .collect::<Vec<_>>()
                 .join(" AND ")
         ),
         RowFilter::Or(xs) => format!(
             "({})",
             xs.iter()
-                .map(|x| filter_sql(x, alias, params))
+                .map(|x| filter_sql(dialect, x, alias, params))
                 .collect::<Vec<_>>()
                 .join(" OR ")
         ),
-        RowFilter::Not(x) => format!("(NOT {})", filter_sql(x, alias, params)),
+        RowFilter::Not(x) => format!("(NOT {})", filter_sql(dialect, x, alias, params)),
     }
 }
 
@@ -144,18 +181,22 @@ pub enum DerivedSelect {
 /// PRECONDITION: each `d.target_filters` entry has passed `validate_row_filter`
 /// (`compile_select` enforces this up front) so the `filter_sql` invariant arms cannot
 /// panic.
-fn derived_aggregate_sql(d: &DerivedAggregate, params: &mut Vec<SqlValue>) -> String {
+fn derived_aggregate_sql(
+    dialect: &dyn SqlDialect,
+    d: &DerivedAggregate,
+    params: &mut Vec<SqlValue>,
+) -> String {
     let target = format!(
         "{}.{}",
-        quote_ident(&d.target_table.schema),
-        quote_ident(&d.target_table.name)
+        dialect.quote_ident(&d.target_table.schema),
+        dialect.quote_ident(&d.target_table.name)
     );
     let aggfn = match &d.agg {
         Aggregation::Count => "COUNT(*)".to_string(),
-        Aggregation::Sum(c) => format!("COALESCE(SUM(sub.{}), 0)", quote_ident(c)),
-        Aggregation::Avg(c) => format!("AVG(sub.{})", quote_ident(c)),
-        Aggregation::Min(c) => format!("MIN(sub.{})", quote_ident(c)),
-        Aggregation::Max(c) => format!("MAX(sub.{})", quote_ident(c)),
+        Aggregation::Sum(c) => format!("COALESCE(SUM(sub.{}), 0)", dialect.quote_ident(c)),
+        Aggregation::Avg(c) => format!("AVG(sub.{})", dialect.quote_ident(c)),
+        Aggregation::Min(c) => format!("MIN(sub.{})", dialect.quote_ident(c)),
+        Aggregation::Max(c) => format!("MAX(sub.{})", dialect.quote_ident(c)),
     };
     let (from_join, correlation) = match &d.backing {
         LinkBacking::ForeignKey {
@@ -165,8 +206,8 @@ fn derived_aggregate_sql(d: &DerivedAggregate, params: &mut Vec<SqlValue>) -> St
             format!("{target} sub"),
             format!(
                 "sub.{} = o.{}",
-                quote_ident(to_column),
-                quote_ident(from_column)
+                dialect.quote_ident(to_column),
+                dialect.quote_ident(from_column)
             ),
         ),
         LinkBacking::JoinTable {
@@ -178,48 +219,53 @@ fn derived_aggregate_sql(d: &DerivedAggregate, params: &mut Vec<SqlValue>) -> St
         } => {
             let jt = format!(
                 "{}.{}",
-                quote_ident(&table.schema),
-                quote_ident(&table.name)
+                dialect.quote_ident(&table.schema),
+                dialect.quote_ident(&table.name)
             );
             (
                 format!(
                     "{target} sub JOIN {jt} j ON j.{} = sub.{}",
-                    quote_ident(to_column),
-                    quote_ident(to_key)
+                    dialect.quote_ident(to_column),
+                    dialect.quote_ident(to_key)
                 ),
                 format!(
                     "j.{} = o.{}",
-                    quote_ident(from_column),
-                    quote_ident(from_key)
+                    dialect.quote_ident(from_column),
+                    dialect.quote_ident(from_key)
                 ),
             )
         }
     };
     let mut conjuncts = vec![correlation];
     for f in &d.target_filters {
-        conjuncts.push(filter_sql(f, "sub", params));
+        conjuncts.push(filter_sql(dialect, f, "sub", params));
     }
     format!(
         "(SELECT {aggfn} FROM {from_join} WHERE {}) AS {}",
         conjuncts.join(" AND "),
-        quote_ident(&d.name)
+        dialect.quote_ident(&d.name)
     )
 }
 
 /// Render one caller predicate at `alias` (empty = unqualified), pushing its operand
 /// params in conjunct order. Scalar ops use `op_sql`; set ops expand to N placeholders;
 /// null ops emit no param. The column is a trusted ontology identifier (quoted), every
-/// operand a bound `?`.
-fn caller_predicate_sql(p: &CallerPredicate, alias: &str, params: &mut Vec<SqlValue>) -> String {
+/// operand a bound placeholder.
+fn caller_predicate_sql(
+    dialect: &dyn SqlDialect,
+    p: &CallerPredicate,
+    alias: &str,
+    params: &mut Vec<SqlValue>,
+) -> String {
     use control_plane_core::CompareOp::*;
-    let col = col_ref(alias, &p.column);
+    let col = col_ref(dialect, alias, &p.column);
     match p.op {
         In | NotIn => {
             let kw = if matches!(p.op, In) { "IN" } else { "NOT IN" };
             let mut placeholders = Vec::with_capacity(p.values.len());
             for v in &p.values {
                 params.push(v.clone());
-                placeholders.push("?");
+                placeholders.push(dialect.placeholder(params.len()));
             }
             format!("({col} {kw} ({}))", placeholders.join(", "))
         }
@@ -228,7 +274,11 @@ fn caller_predicate_sql(p: &CallerPredicate, alias: &str, params: &mut Vec<SqlVa
         _ => {
             debug_assert_eq!(p.values.len(), 1, "scalar predicate must have one operand");
             params.push(p.values[0].clone());
-            format!("({col} {} ?)", op_sql(p.op))
+            format!(
+                "({col} {} {})",
+                op_sql(p.op),
+                dialect.placeholder(params.len())
+            )
         }
     }
 }
@@ -238,7 +288,8 @@ fn caller_predicate_sql(p: &CallerPredicate, alias: &str, params: &mut Vec<SqlVa
 /// to the SELECT list; their params precede the WHERE params. The outer table is aliased
 /// `o` only when at least one aggregate is present (so the no-derived output is unchanged).
 #[allow(clippy::too_many_arguments)]
-pub fn compile_select(
+pub fn compile_select_with(
+    dialect: &dyn SqlDialect,
     table: &TableRef,
     allowed_cols: &[String],
     mask_cols: &[String],
@@ -268,9 +319,9 @@ pub fn compile_select(
         .map(|c| {
             if mask_cols.iter().any(|m| m == c) {
                 // Masked: emit the constant marker, never the column's value.
-                format!("'{MASK_MARKER}' AS {}", quote_ident(c))
+                format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(c))
             } else {
-                quote_ident(c)
+                dialect.quote_ident(c)
             }
         })
         .collect();
@@ -282,17 +333,19 @@ pub fn compile_select(
     for d in derived {
         match d {
             DerivedSelect::Masked(name) => {
-                col_exprs.push(format!("'{MASK_MARKER}' AS {}", quote_ident(name)))
+                col_exprs.push(format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(name)))
             }
-            DerivedSelect::Aggregate(a) => col_exprs.push(derived_aggregate_sql(a, &mut params)),
+            DerivedSelect::Aggregate(a) => {
+                col_exprs.push(derived_aggregate_sql(dialect, a, &mut params))
+            }
         }
     }
     let cols = col_exprs.join(", ");
 
     let from = format!(
         "{}.{}",
-        quote_ident(&table.schema),
-        quote_ident(&table.name)
+        dialect.quote_ident(&table.schema),
+        dialect.quote_ident(&table.name)
     );
     // The outer table needs an alias only when a correlated subquery references it.
     let from_clause = if has_aggregate {
@@ -303,10 +356,10 @@ pub fn compile_select(
 
     let mut conjuncts: Vec<String> = Vec::new();
     for f in row_filters {
-        conjuncts.push(filter_sql(f, "", &mut params));
+        conjuncts.push(filter_sql(dialect, f, "", &mut params));
     }
     for p in predicates {
-        conjuncts.push(caller_predicate_sql(p, "", &mut params));
+        conjuncts.push(caller_predicate_sql(dialect, p, "", &mut params));
     }
 
     let mut sql = format!("SELECT {cols} FROM {from_clause}");
@@ -314,8 +367,33 @@ pub fn compile_select(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    sql.push_str(&format!(" LIMIT {limit}"));
+    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
     Ok((sql, params))
+}
+
+/// Compile a governed SELECT for loom's default (DuckDB) dialect. Convenience wrapper
+/// for statically-DuckDB callers (e.g. tests); production read paths must use
+/// [`compile_select_with`] with the serving engine's dialect so the engine selects it.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_select(
+    table: &TableRef,
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    row_filters: &[RowFilter],
+    predicates: &[CallerPredicate],
+    derived: &[DerivedSelect],
+    limit: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    compile_select_with(
+        &DuckDbDialect,
+        table,
+        allowed_cols,
+        mask_cols,
+        row_filters,
+        predicates,
+        derived,
+        limit,
+    )
 }
 
 /// One type in a traversal chain: its physical table, the ACL row-filters that govern
@@ -330,16 +408,18 @@ pub struct ChainType {
     pub predicates: Vec<CallerPredicate>,
 }
 
-/// Compile a governed multi-hop traversal. `types` is the chain `[t_0 .. t_k]`
-/// (`t_0` = source, `t_k` = final target); `hops[i]` is the link backing connecting
-/// `types[i]` (from) to `types[i+1]` (to). Only the final target is projected
-/// (`allowed_cols`, `mask_cols` rendered as the marker). Each type's `predicates` bind
-/// at its alias `t_i` (position 0 = source). Every type's row-filters are ANDed into the WHERE.
+/// Compile a governed multi-hop traversal with an explicit SQL dialect. `types` is the
+/// chain `[t_0 .. t_k]` (`t_0` = source, `t_k` = final target); `hops[i]` is the link
+/// backing connecting `types[i]` (from) to `types[i+1]` (to). Only the final target is
+/// projected (`allowed_cols`, `mask_cols` rendered as the marker). Each type's
+/// `predicates` bind at its alias `t_i` (position 0 = source). Every type's row-filters
+/// are ANDed into the WHERE.
 ///
 /// Precondition: `types.len() == hops.len() + 1` and `hops` is non-empty (`k >= 1`).
-/// As in `compile_select`, row filters are validated up front so the `filter_sql`
+/// As in `compile_select_with`, row filters are validated up front so the `filter_sql`
 /// invariant arms cannot panic.
-pub fn compile_chain(
+pub fn compile_chain_with(
+    dialect: &dyn SqlDialect,
     types: &[ChainType],
     hops: &[LinkBacking],
     allowed_cols: &[String],
@@ -354,7 +434,13 @@ pub fn compile_chain(
     }
     let k = hops.len();
     let alias = |i: usize| format!("t_{i}");
-    let tbl = |t: &TableRef| format!("{}.{}", quote_ident(&t.schema), quote_ident(&t.name));
+    let tbl = |t: &TableRef| {
+        format!(
+            "{}.{}",
+            dialect.quote_ident(&t.schema),
+            dialect.quote_ident(&t.name)
+        )
+    };
 
     // Projection: final target `t_k` only.
     let final_alias = alias(k);
@@ -362,9 +448,9 @@ pub fn compile_chain(
         .iter()
         .map(|c| {
             if mask_cols.iter().any(|m| m == c) {
-                format!("'{MASK_MARKER}' AS {}", quote_ident(c))
+                format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(c))
             } else {
-                format!("{final_alias}.{}", quote_ident(c))
+                format!("{final_alias}.{}", dialect.quote_ident(c))
             }
         })
         .collect::<Vec<_>>()
@@ -383,8 +469,8 @@ pub fn compile_chain(
             } => {
                 from.push_str(&format!(
                     " JOIN {from_tbl} {from_alias} ON {from_alias}.{} = {to_alias}.{}",
-                    quote_ident(from_column),
-                    quote_ident(to_column),
+                    dialect.quote_ident(from_column),
+                    dialect.quote_ident(to_column),
                 ));
             }
             LinkBacking::JoinTable {
@@ -398,10 +484,10 @@ pub fn compile_chain(
                 let j = format!("j{i}");
                 from.push_str(&format!(
                     " JOIN {jt} {j} ON {j}.{} = {to_alias}.{} JOIN {from_tbl} {from_alias} ON {from_alias}.{} = {j}.{}",
-                    quote_ident(to_column),
-                    quote_ident(to_key),
-                    quote_ident(from_key),
-                    quote_ident(from_column),
+                    dialect.quote_ident(to_column),
+                    dialect.quote_ident(to_key),
+                    dialect.quote_ident(from_key),
+                    dialect.quote_ident(from_column),
                 ));
             }
         }
@@ -416,10 +502,10 @@ pub fn compile_chain(
     for (i, t) in types.iter().enumerate() {
         let a = alias(i);
         for p in &t.predicates {
-            conjuncts.push(caller_predicate_sql(p, &a, &mut params));
+            conjuncts.push(caller_predicate_sql(dialect, p, &a, &mut params));
         }
         for f in &t.row_filters {
-            conjuncts.push(filter_sql(f, &a, &mut params));
+            conjuncts.push(filter_sql(dialect, f, &a, &mut params));
         }
     }
 
@@ -428,6 +514,19 @@ pub fn compile_chain(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    sql.push_str(&format!(" LIMIT {limit}"));
+    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
     Ok((sql, params))
+}
+
+/// Compile a governed multi-hop traversal for loom's default (DuckDB) dialect. Convenience
+/// wrapper for statically-DuckDB callers (e.g. tests); production paths must use
+/// [`compile_chain_with`] with the serving engine's dialect.
+pub fn compile_chain(
+    types: &[ChainType],
+    hops: &[LinkBacking],
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    limit: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    compile_chain_with(&DuckDbDialect, types, hops, allowed_cols, mask_cols, limit)
 }

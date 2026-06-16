@@ -331,3 +331,12 @@ rust_test(
         "//third-party:time",
     ],
 )
+
+rust_test(
+    name = "sql-dialect",
+    crate = "sql_dialect",
+    srcs = ["tests/sql_dialect.rs"],
+    crate_root = "tests/sql_dialect.rs",
+    edition = "2024",
+    deps = [":query-api", "//src/control-plane/core:core"],
+)
