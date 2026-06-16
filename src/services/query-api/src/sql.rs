@@ -291,30 +291,32 @@ pub fn compile_select(
     Ok((sql, params))
 }
 
-/// One type in a traversal chain: its physical table and the ACL row-filters that
-/// govern it. Every hop's row-filters are ANDed into the join — the chain is governed
-/// at every type, not just its endpoints.
+/// One type in a traversal chain: its physical table, the ACL row-filters that govern
+/// it, and the caller equality filters bound at this position. Every position's filters
+/// are ANDed at its alias `t_i` — the chain is governed and caller-filterable at every
+/// type, not just its endpoints.
 pub struct ChainType {
     pub table: TableRef,
     pub row_filters: Vec<RowFilter>,
+    /// Caller equality filters (`col = value`) for this position, bound at alias `t_i`.
+    /// Position 0's eq_filters are the source filters (no special-case in the compiler).
+    pub eq_filters: Vec<(String, SqlValue)>,
 }
 
 /// Compile a governed multi-hop traversal. `types` is the chain `[t_0 .. t_k]`
 /// (`t_0` = source, `t_k` = final target); `hops[i]` is the link backing connecting
 /// `types[i]` (from) to `types[i+1]` (to). Only the final target is projected
-/// (`allowed_cols`, `mask_cols` rendered as the marker). `source_eq_filters` bind to
-/// the source `t_0`. Every type's row-filters are ANDed into the WHERE.
+/// (`allowed_cols`, `mask_cols` rendered as the marker). Each type's `eq_filters` bind
+/// at its alias `t_i` (position 0 = source). Every type's row-filters are ANDed into the WHERE.
 ///
 /// Precondition: `types.len() == hops.len() + 1` and `hops` is non-empty (`k >= 1`).
 /// As in `compile_select`, row filters are validated up front so the `filter_sql`
 /// invariant arms cannot panic.
-#[allow(clippy::too_many_arguments)]
 pub fn compile_chain(
     types: &[ChainType],
     hops: &[LinkBacking],
     allowed_cols: &[String],
     mask_cols: &[String],
-    source_eq_filters: &[(String, SqlValue)],
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     debug_assert_eq!(types.len(), hops.len() + 1, "chain types must be hops + 1");
@@ -378,16 +380,18 @@ pub fn compile_chain(
         }
     }
 
-    // WHERE: source eq-filters (`t_0`), then every type's row-filters in chain order.
+    // WHERE: per position in chain order, this type's caller eq-filters then its ACL
+    // row-filters, both bound at alias `t_i`. Params are pushed in conjunct-emission
+    // order so positional `?` alignment holds. Source filters are just position 0's
+    // eq_filters — no special case.
     let mut params = Vec::new();
     let mut conjuncts: Vec<String> = Vec::new();
-    let src_alias = alias(0);
-    for (col, val) in source_eq_filters {
-        conjuncts.push(format!("({src_alias}.{} = ?)", quote_ident(col)));
-        params.push(val.clone());
-    }
     for (i, t) in types.iter().enumerate() {
         let a = alias(i);
+        for (col, val) in &t.eq_filters {
+            conjuncts.push(format!("({a}.{} = ?)", quote_ident(col)));
+            params.push(val.clone());
+        }
         for f in &t.row_filters {
             conjuncts.push(filter_sql(f, &a, &mut params));
         }

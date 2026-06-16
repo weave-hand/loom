@@ -349,6 +349,7 @@ pub async fn read_linked_chain(
     let mut ctypes: Vec<crate::sql::ChainType> = vec![crate::sql::ChainType {
         table: from_type.table.clone(),
         row_filters: s_filters,
+        eq_filters: vec![],
     }];
     let mut hops: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(q.path.len());
     // Final-target accumulators (always overwritten: path is non-empty).
@@ -383,6 +384,7 @@ pub async fn read_linked_chain(
         ctypes.push(crate::sql::ChainType {
             table: to_type.table.clone(),
             row_filters: t_filters,
+            eq_filters: vec![],
         });
         target_type = to_type;
         target_denied = t_denied;
@@ -408,6 +410,10 @@ pub async fn read_linked_chain(
         source_filters.push((col.clone(), v));
     }
 
+    // Source eq-filters bind at t_0 (position 0's eq_filters); the compiler has no
+    // source special-case.
+    ctypes[0].eq_filters = source_filters;
+
     // Final-target projection.
     let to_allowed = project_allowed(&target_type.properties, &target_denied);
     if to_allowed.is_empty() {
@@ -419,14 +425,7 @@ pub async fn read_linked_chain(
         .cloned()
         .collect();
 
-    let (sql, params) = compile_chain(
-        &ctypes,
-        &hops,
-        &to_allowed,
-        &to_mask_cols,
-        &source_filters,
-        DEFAULT_LIMIT,
-    )?;
+    let (sql, params) = compile_chain(&ctypes, &hops, &to_allowed, &to_mask_cols, DEFAULT_LIMIT)?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = to_allowed
         .iter()
