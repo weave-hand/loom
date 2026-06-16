@@ -254,12 +254,12 @@ where
             columns: vec![
                 SeedColumn {
                     name: "id".into(),
-                    ty: "BIGINT".into(),
+                    ty: "long".into(),
                     nullable: false,
                 },
                 SeedColumn {
                     name: "name".into(),
-                    ty: "VARCHAR".into(),
+                    ty: "string".into(),
                     nullable: true,
                 },
             ],
@@ -318,9 +318,10 @@ where
         "history ends at the current snapshot"
     );
 
-    // schema at current: the two columns, in order, with non-empty (opaque) types
-    // and correct nullability. `ty` is backend-spelled (DuckLake: `varchar`/`int64`;
-    // the fake: whatever was seeded) so it is treated as opaque, never compared to a literal.
+    // schema at current: the two columns, in order, with loom logical types and
+    // correct nullability. The contract seeds loom LOGICAL types (`long`/`string`);
+    // `Catalog::schema()` returns logical types for every backend (the pg adapter
+    // round-trips them through DuckLake's physical catalog), so we pin the exact values.
     let sch = catalog.schema(&t, cur.id).await.unwrap();
     assert_eq!(
         sch.columns
@@ -330,9 +331,13 @@ where
         vec!["id", "name"],
         "columns in order"
     );
-    assert!(
-        sch.columns.iter().all(|c| !c.ty.is_empty()),
-        "every column has a (backend-spelled) type"
+    assert_eq!(
+        sch.columns[0].ty, "long",
+        "seeded `long` reads back as loom logical `long`"
+    );
+    assert_eq!(
+        sch.columns[1].ty, "string",
+        "seeded `string` reads back as loom logical `string`"
     );
     assert!(
         sch.columns[1].nullable && !sch.columns[0].nullable,
@@ -385,7 +390,7 @@ where
             table: other.clone(),
             columns: vec![SeedColumn {
                 name: "id".into(),
-                ty: "BIGINT".into(),
+                ty: "long".into(),
                 nullable: false,
             }],
             row_batches: vec![1],
@@ -404,12 +409,12 @@ where
             columns: vec![
                 SeedColumn {
                     name: "id".into(),
-                    ty: "BIGINT".into(),
+                    ty: "long".into(),
                     nullable: false,
                 },
                 SeedColumn {
                     name: "name".into(),
-                    ty: "VARCHAR".into(),
+                    ty: "string".into(),
                     nullable: true,
                 },
             ],
@@ -1953,7 +1958,7 @@ where
         + control_plane_core::Lineage
         + control_plane_core::Queue,
 {
-    use control_plane_core::{ColumnSpec, DataFile, PageReq, TableRef};
+    use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
     let t = TableRef {
         schema: "main".into(),
         name: "events".into(),
@@ -1967,7 +1972,7 @@ where
         &t,
         &[ColumnSpec {
             name: "id".into(),
-            ty: "int64".into(),
+            ty: "long".into(),
             nullable: false,
         }],
     )
@@ -1978,10 +1983,11 @@ where
         &[DataFile {
             path: "a.parquet".into(),
             path_is_relative: true,
+            file_format: FileFormat::Parquet,
             record_count: 3,
             file_size_bytes: 48,
-            footer_size: 10,
             column_stats: vec![],
+            parquet_footer_size: Some(10),
         }],
     )
     .await
@@ -2053,7 +2059,7 @@ where
         &t2,
         &[ColumnSpec {
             name: "x".into(),
-            ty: "int64".into(),
+            ty: "long".into(),
             nullable: true,
         }],
     )

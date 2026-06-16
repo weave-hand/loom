@@ -1,5 +1,5 @@
-//! The catalog concern: a read-only view over DuckLake's catalog (`ducklake.*`).
-//! loom reads the catalog; DuckLake (the DuckDB client) writes it. Snapshots are
+//! The catalog concern: a read-only view over the active table-format catalog. The
+//! table-format adapter (DuckLake today) populates it; loom reads it. Snapshots are
 //! catalog-global and identified by a monotonic id; tables/files/columns are
 //! versioned by `begin`/`end` snapshot ranges (MVCC), so reads are "this table
 //! *at* that snapshot".
@@ -10,7 +10,8 @@ use time::OffsetDateTime;
 use crate::error::Result;
 use crate::page::{Page, PageReq};
 
-/// A DuckLake catalog-global snapshot id (monotonic).
+/// A catalog-global snapshot/version id (monotonic). Portable across table formats
+/// (DuckLake, Iceberg, Delta all key versions by i64).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SnapshotId(pub i64);
 
@@ -42,7 +43,8 @@ pub struct FileRef {
 pub struct ColumnDef {
     pub order: i64,
     pub name: String,
-    /// DuckLake's column type string, kept opaque (typing is an ontology concern).
+    /// The column's loom LOGICAL type name (the adapter maps from its physical
+    /// catalog type on read). Typing is an ontology concern.
     pub ty: String,
     pub nullable: bool,
 }

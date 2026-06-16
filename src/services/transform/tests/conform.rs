@@ -22,14 +22,14 @@ fn col(name: &str, ty: &str, nullable: bool) -> ColumnSpec {
 #[test]
 fn exact_match_conforms() {
     let props = vec![prop("id", "Long", true), prop("region", "String", false)];
-    let cols = vec![col("id", "int64", false), col("region", "varchar", true)];
+    let cols = vec![col("id", "long", false), col("region", "string", true)];
     assert_eq!(check_conformance(&cols, &props), Ok(()));
 }
 
 #[test]
 fn missing_column_is_a_violation() {
     let props = vec![prop("id", "Long", true), prop("region", "String", false)];
-    let cols = vec![col("id", "int64", false)];
+    let cols = vec![col("id", "long", false)];
     assert_eq!(
         check_conformance(&cols, &props),
         Err(vec![Violation::MissingColumn {
@@ -42,13 +42,13 @@ fn missing_column_is_a_violation() {
 #[test]
 fn type_mismatch_is_a_violation() {
     let props = vec![prop("id", "Long", true)];
-    let cols = vec![col("id", "varchar", false)];
+    let cols = vec![col("id", "integer", false)];
     assert_eq!(
         check_conformance(&cols, &props),
         Err(vec![Violation::TypeMismatch {
             property: "id".into(),
             logical: "Long".into(),
-            physical: "varchar".into(),
+            physical: "integer".into(),
         }])
     );
 }
@@ -56,7 +56,7 @@ fn type_mismatch_is_a_violation() {
 #[test]
 fn unknown_logical_type_is_a_violation() {
     let props = vec![prop("id", "Wibble", true)];
-    let cols = vec![col("id", "int64", false)];
+    let cols = vec![col("id", "long", false)];
     assert_eq!(
         check_conformance(&cols, &props),
         Err(vec![Violation::UnknownLogicalType {
@@ -69,7 +69,7 @@ fn unknown_logical_type_is_a_violation() {
 #[test]
 fn required_property_over_nullable_column_is_a_violation() {
     let props = vec![prop("id", "Long", true)];
-    let cols = vec![col("id", "int64", true)];
+    let cols = vec![col("id", "long", true)];
     assert_eq!(
         check_conformance(&cols, &props),
         Err(vec![Violation::NullabilityViolation {
@@ -81,7 +81,7 @@ fn required_property_over_nullable_column_is_a_violation() {
 #[test]
 fn extra_result_column_is_a_violation() {
     let props = vec![prop("id", "Long", true)];
-    let cols = vec![col("id", "int64", false), col("extra", "varchar", true)];
+    let cols = vec![col("id", "long", false), col("extra", "string", true)];
     assert_eq!(
         check_conformance(&cols, &props),
         Err(vec![Violation::UnexpectedColumn {
@@ -92,14 +92,14 @@ fn extra_result_column_is_a_violation() {
 
 #[test]
 fn all_violations_are_collected() {
-    // `id` mismatched, `region` missing, `extra` unexpected — all three reported.
+    // `id` mismatched (integer vs Long), `region` missing, `extra` unexpected — all three.
     let props = vec![prop("id", "Long", true), prop("region", "String", false)];
-    let cols = vec![col("id", "varchar", false), col("extra", "boolean", true)];
+    let cols = vec![col("id", "integer", false), col("extra", "boolean", true)];
     let err = check_conformance(&cols, &props).unwrap_err();
     assert!(err.contains(&Violation::TypeMismatch {
         property: "id".into(),
         logical: "Long".into(),
-        physical: "varchar".into(),
+        physical: "integer".into(),
     }));
     assert!(err.contains(&Violation::MissingColumn {
         property: "region".into(),
@@ -127,7 +127,7 @@ fn unknown_logical_type_and_nullability_co_occur() {
     // yields BOTH violations — the nullability check is independent of the type check
     // (mirrors ingest::bind's collect-everything behavior).
     let props = vec![prop("id", "Wibble", true)];
-    let cols = vec![col("id", "int64", true)];
+    let cols = vec![col("id", "long", true)];
     let err = check_conformance(&cols, &props).unwrap_err();
     assert!(err.contains(&Violation::UnknownLogicalType {
         property: "id".into(),

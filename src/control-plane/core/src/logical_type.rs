@@ -1,8 +1,9 @@
-//! loom's logical-type vocabulary: the base scalar types, their DuckLake physical
-//! affinities, and the semantic aliases. Used by dataset->model binding to check a
-//! landed physical column satisfies a declared logical property type. Pure logic,
-//! no I/O. The vocabulary is CLOSED: an unrecognized logical type is an error, never
-//! a silent pass — that keeps the ontology authoritative.
+//! loom's logical-type vocabulary: the base scalar types and their semantic aliases.
+//! Used by dataset→model binding to check a landed column's logical type satisfies a
+//! declared property's logical type. Pure logic, no I/O. The vocabulary is CLOSED: an
+//! unrecognized logical type is an error, never a silent pass — that keeps the ontology
+//! authoritative. Physical mapping (logical ↔ DuckLake type strings) lives in the
+//! postgres adapter (`control_plane_postgres::ducklake_type`).
 //!
 //! NOTE: this vocabulary also classifies how each type renders on the JSON wire
 //! (see `JsonRepr` / `json_repr_of`): Date/Timestamp -> ISO-8601 strings, Long ->
@@ -46,17 +47,16 @@ pub enum JsonRepr {
 }
 
 impl BaseType {
-    /// The DuckLake physical type strings (canonical lowercase) that satisfy this
-    /// base type. Exact-match, no implicit widening (Integer is 32-bit, Long 64-bit).
-    pub fn physical_affinity(self) -> &'static [&'static str] {
+    /// The canonical lowercase logical name (inverse of `resolve_logical` for base names).
+    pub fn canonical_name(self) -> &'static str {
         match self {
-            BaseType::Integer => &["int32"],
-            BaseType::Long => &["int64"],
-            BaseType::Double => &["float64"],
-            BaseType::Boolean => &["boolean"],
-            BaseType::String => &["varchar"],
-            BaseType::Date => &["date"],
-            BaseType::Timestamp => &["timestamp"],
+            BaseType::Integer => "integer",
+            BaseType::Long => "long",
+            BaseType::Double => "double",
+            BaseType::Boolean => "boolean",
+            BaseType::String => "string",
+            BaseType::Date => "date",
+            BaseType::Timestamp => "timestamp",
         }
     }
 
@@ -92,14 +92,15 @@ pub fn resolve_logical(ty: &str) -> Option<BaseType> {
     }
 }
 
-/// Does a DuckLake physical type string satisfy a logical type? Both sides are
-/// normalized (trim + lowercase) before comparison. `Err(UnknownLogicalType)` if
-/// the logical type is neither a base nor a known alias.
-pub fn satisfies(logical_ty: &str, physical_ty: &str) -> Result<bool, UnknownLogicalType> {
-    let base = resolve_logical(logical_ty)
-        .ok_or_else(|| UnknownLogicalType(logical_ty.trim().to_string()))?;
-    let phys = physical_ty.trim().to_ascii_lowercase();
-    Ok(base.physical_affinity().contains(&phys.as_str()))
+/// Does a column's loom LOGICAL type satisfy a declared logical property type? Both
+/// names are resolved to `BaseType` and compared (no implicit widening: Integer is
+/// 32-bit, Long 64-bit — distinct base types). `Err(UnknownLogicalType)` if the
+/// PROPERTY's logical type is unrecognized (an authoring error); an unrecognized
+/// column type simply does not satisfy (`Ok(false)`).
+pub fn satisfies(property_ty: &str, column_ty: &str) -> Result<bool, UnknownLogicalType> {
+    let want = resolve_logical(property_ty)
+        .ok_or_else(|| UnknownLogicalType(property_ty.trim().to_string()))?;
+    Ok(resolve_logical(column_ty) == Some(want))
 }
 
 /// The JSON wire rendering for a logical type name (base or alias, case-insensitively).

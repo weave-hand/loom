@@ -7,10 +7,13 @@
 //! `create_table` row-writing is Task 3; this module handles `append_files`
 //! against tables that already exist in the catalog.
 
-use control_plane_core::{ColumnSpec, ControlPlaneError, DataFile, Result, SnapshotId, TableRef};
+use control_plane_core::{
+    ColumnSpec, ControlPlaneError, DataFile, Result, SnapshotId, TableRef, resolve_logical,
+};
 use sqlx::{Postgres, Transaction};
 
 use crate::backend;
+use crate::ducklake_type::{ducklake_physical_type, to_ducklake_stat_string};
 
 /// Fixed advisory-lock key serializing DuckLake catalog commits in one database.
 /// There is no `ducklake_catalog` row to `FOR UPDATE` in the single-catalog
@@ -250,6 +253,13 @@ async fn write_table(
     // 'literal', default_value_dialect 'duckdb', initial_default NULL, parent NULL.
     for (i, col) in columns.iter().enumerate() {
         let column_id = (i + 1) as i64;
+        let base = resolve_logical(&col.ty).ok_or_else(|| {
+            ControlPlaneError::Backend(Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                "unknown logical column type {:?} for {}",
+                col.ty, col.name
+            )))
+        })?;
+        let physical = ducklake_physical_type(base);
         sqlx::query!(
             "insert into ducklake_column \
                (column_id, begin_snapshot, end_snapshot, table_id, column_order, column_name, \
@@ -261,7 +271,7 @@ async fn write_table(
             table_id,
             column_id,
             col.name,
-            col.ty,
+            physical,
             col.nullable,
         )
         .execute(&mut **tx)
@@ -371,6 +381,8 @@ async fn write_data_file(
     for stat in &file.column_stats {
         let column_id = resolve_column_id(tx, table_id, &stat.column_name).await?;
         let contains_null = stat.null_count > 0;
+        let min_s = stat.min.as_ref().map(to_ducklake_stat_string);
+        let max_s = stat.max.as_ref().map(to_ducklake_stat_string);
         let updated = sqlx::query!(
             "update ducklake_table_column_stats \
              set contains_null = $3, contains_nan = NULL, min_value = $4, \
@@ -379,8 +391,8 @@ async fn write_data_file(
             table_id,
             column_id,
             contains_null,
-            stat.min,
-            stat.max,
+            min_s,
+            max_s,
         )
         .execute(&mut **tx)
         .await
@@ -394,8 +406,8 @@ async fn write_data_file(
                 table_id,
                 column_id,
                 contains_null,
-                stat.min,
-                stat.max,
+                min_s,
+                max_s,
             )
             .execute(&mut **tx)
             .await
@@ -406,6 +418,15 @@ async fn write_data_file(
     // ducklake_data_file: full 16-col Op B tuple. begin_snapshot = new snapshot,
     // end_snapshot/file_order NULL, file_format 'parquet', row_id_start contiguous,
     // partition_id/encryption_key/mapping_id/partial_max NULL.
+    let footer_size = file.parquet_footer_size.ok_or_else(|| {
+        ControlPlaneError::Backend(Box::<dyn std::error::Error + Send + Sync>::from(
+            "parquet data file missing footer_size",
+        ))
+    })?;
+    debug_assert!(matches!(
+        file.file_format,
+        control_plane_core::FileFormat::Parquet
+    ));
     sqlx::query!(
         "insert into ducklake_data_file \
            (data_file_id, table_id, begin_snapshot, end_snapshot, file_order, path, \
@@ -419,7 +440,7 @@ async fn write_data_file(
         file.path_is_relative,
         file.record_count,
         file.file_size_bytes,
-        file.footer_size,
+        footer_size,
         row_id_start,
     )
     .execute(&mut **tx)
@@ -430,6 +451,9 @@ async fn write_data_file(
     // extra_stats NULL for a plain append).
     for stat in &file.column_stats {
         let column_id = resolve_column_id(tx, table_id, &stat.column_name).await?;
+        let value_count = file.record_count - stat.null_count;
+        let min_s = stat.min.as_ref().map(to_ducklake_stat_string);
+        let max_s = stat.max.as_ref().map(to_ducklake_stat_string);
         sqlx::query!(
             "insert into ducklake_file_column_stats \
                (data_file_id, table_id, column_id, column_size_bytes, value_count, \
@@ -439,10 +463,10 @@ async fn write_data_file(
             table_id,
             column_id,
             stat.column_size_bytes,
-            stat.value_count,
+            value_count,
             stat.null_count,
-            stat.min,
-            stat.max,
+            min_s,
+            max_s,
         )
         .execute(&mut **tx)
         .await

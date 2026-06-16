@@ -30,5 +30,5 @@ pub use ontology::{
 };
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
-pub use snapshot::{ColumnSpec, ColumnStat, DataFile};
+pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use transaction::{ControlPlane, Tx};

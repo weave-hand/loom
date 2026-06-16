@@ -81,3 +81,13 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "snapshot-types",
+    crate = "snapshot_types",
+    srcs = ["tests/snapshot_types.rs"],
+    crate_root = "tests/snapshot_types.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use bytes::Bytes;
-use control_plane_core::ColumnStat;
+use control_plane_core::{ColumnStat, StatValue};
 use datafusion::common::config::TableParquetOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::datasource::MemTable;
@@ -165,67 +165,43 @@ pub struct WrittenFile {
     pub column_stats: Vec<ColumnStat>,
 }
 
-/// A typed min/max bound, so we compare numerically (not lexically) when folding
-/// across row groups, then stringify once at the end.
-#[derive(Clone)]
-enum Bound {
-    Bool(bool),
-    I32(i32),
-    I64(i64),
-    F32(f32),
-    F64(f64),
-    Str(String),
-}
-
-impl Bound {
-    fn to_stat_string(&self) -> String {
-        match self {
-            Bound::Bool(v) => v.to_string(),
-            Bound::I32(v) => v.to_string(),
-            Bound::I64(v) => v.to_string(),
-            Bound::F32(v) => v.to_string(),
-            Bound::F64(v) => v.to_string(),
-            Bound::Str(v) => v.clone(),
-        }
-    }
-    fn partial_cmp(&self, other: &Bound) -> Option<std::cmp::Ordering> {
-        use Bound::*;
-        match (self, other) {
-            (Bool(a), Bool(b)) => a.partial_cmp(b),
-            (I32(a), I32(b)) => a.partial_cmp(b),
-            (I64(a), I64(b)) => a.partial_cmp(b),
-            (F32(a), F32(b)) => a.partial_cmp(b),
-            (F64(a), F64(b)) => a.partial_cmp(b),
-            (Str(a), Str(b)) => a.partial_cmp(b),
-            _ => None,
-        }
-    }
-}
-
-fn min_bound(stats: &Statistics) -> Option<Bound> {
+fn min_stat(stats: &Statistics) -> Option<StatValue> {
     match stats {
-        Statistics::Boolean(s) => s.min_opt().map(|v| Bound::Bool(*v)),
-        Statistics::Int32(s) => s.min_opt().map(|v| Bound::I32(*v)),
-        Statistics::Int64(s) => s.min_opt().map(|v| Bound::I64(*v)),
-        Statistics::Float(s) => s.min_opt().map(|v| Bound::F32(*v)),
-        Statistics::Double(s) => s.min_opt().map(|v| Bound::F64(*v)),
+        Statistics::Boolean(s) => s.min_opt().map(|v| StatValue::Bool(*v)),
+        Statistics::Int32(s) => s.min_opt().map(|v| StatValue::I32(*v)),
+        Statistics::Int64(s) => s.min_opt().map(|v| StatValue::I64(*v)),
+        Statistics::Float(s) => s.min_opt().map(|v| StatValue::F32(*v)),
+        Statistics::Double(s) => s.min_opt().map(|v| StatValue::F64(*v)),
         Statistics::ByteArray(s) => s
             .min_opt()
-            .and_then(|v| v.as_utf8().ok().map(|s| Bound::Str(s.to_string()))),
+            .and_then(|v| v.as_utf8().ok().map(|s| StatValue::Str(s.to_string()))),
         _ => None,
     }
 }
 
-fn max_bound(stats: &Statistics) -> Option<Bound> {
+fn max_stat(stats: &Statistics) -> Option<StatValue> {
     match stats {
-        Statistics::Boolean(s) => s.max_opt().map(|v| Bound::Bool(*v)),
-        Statistics::Int32(s) => s.max_opt().map(|v| Bound::I32(*v)),
-        Statistics::Int64(s) => s.max_opt().map(|v| Bound::I64(*v)),
-        Statistics::Float(s) => s.max_opt().map(|v| Bound::F32(*v)),
-        Statistics::Double(s) => s.max_opt().map(|v| Bound::F64(*v)),
+        Statistics::Boolean(s) => s.max_opt().map(|v| StatValue::Bool(*v)),
+        Statistics::Int32(s) => s.max_opt().map(|v| StatValue::I32(*v)),
+        Statistics::Int64(s) => s.max_opt().map(|v| StatValue::I64(*v)),
+        Statistics::Float(s) => s.max_opt().map(|v| StatValue::F32(*v)),
+        Statistics::Double(s) => s.max_opt().map(|v| StatValue::F64(*v)),
         Statistics::ByteArray(s) => s
             .max_opt()
-            .and_then(|v| v.as_utf8().ok().map(|s| Bound::Str(s.to_string()))),
+            .and_then(|v| v.as_utf8().ok().map(|s| StatValue::Str(s.to_string()))),
+        _ => None,
+    }
+}
+
+fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<std::cmp::Ordering> {
+    use StatValue::*;
+    match (a, b) {
+        (Bool(x), Bool(y)) => x.partial_cmp(y),
+        (I32(x), I32(y)) => x.partial_cmp(y),
+        (I64(x), I64(y)) => x.partial_cmp(y),
+        (F32(x), F32(y)) => x.partial_cmp(y),
+        (F64(x), F64(y)) => x.partial_cmp(y),
+        (Str(x), Str(y)) => x.partial_cmp(y),
         _ => None,
     }
 }
@@ -249,8 +225,8 @@ pub fn file_stats_from_bytes(
     for (i, field) in schema.fields().iter().enumerate() {
         let mut null_count: i64 = 0;
         let mut column_size_bytes: i64 = 0;
-        let mut min: Option<Bound> = None;
-        let mut max: Option<Bound> = None;
+        let mut min: Option<StatValue> = None;
+        let mut max: Option<StatValue> = None;
         for rg in meta.row_groups() {
             let col = rg.column(i);
             debug_assert!(
@@ -260,17 +236,21 @@ pub fn file_stats_from_bytes(
             column_size_bytes += col.compressed_size();
             if let Some(stats) = col.statistics() {
                 null_count += stats.null_count_opt().unwrap_or(0) as i64;
-                if let Some(b) = min_bound(stats) {
+                if let Some(b) = min_stat(stats) {
                     min = match min {
-                        Some(cur) if cur.partial_cmp(&b) != Some(std::cmp::Ordering::Greater) => {
+                        Some(cur)
+                            if stat_partial_cmp(&cur, &b) != Some(std::cmp::Ordering::Greater) =>
+                        {
                             Some(cur)
                         }
                         _ => Some(b),
                     };
                 }
-                if let Some(b) = max_bound(stats) {
+                if let Some(b) = max_stat(stats) {
                     max = match max {
-                        Some(cur) if cur.partial_cmp(&b) != Some(std::cmp::Ordering::Less) => {
+                        Some(cur)
+                            if stat_partial_cmp(&cur, &b) != Some(std::cmp::Ordering::Less) =>
+                        {
                             Some(cur)
                         }
                         _ => Some(b),
@@ -280,11 +260,10 @@ pub fn file_stats_from_bytes(
         }
         column_stats.push(ColumnStat {
             column_name: field.name().clone(),
-            min: min.map(|b| b.to_stat_string()),
-            max: max.map(|b| b.to_stat_string()),
             null_count,
-            value_count: record_count - null_count,
             column_size_bytes,
+            min,
+            max,
         });
     }
 

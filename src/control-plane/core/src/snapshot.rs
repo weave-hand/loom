@@ -1,9 +1,11 @@
-//! Inputs for the native DuckLake snapshot-commit primitive (register-only: the
-//! caller writes the Parquet, loom writes the catalog rows). See
-//! `docs/superpowers/specs/2026-06-09-ducklake-single-catalog-write-recipe.md`.
+//! Inputs for the native register-only snapshot-commit primitive (the caller writes
+//! the data files; loom writes the catalog rows). Format-neutral: the active
+//! table-format adapter (DuckLake today) encodes these into its physical catalog.
+//! See `docs/superpowers/specs/2026-06-16-ducklake-format-seams-design.md`.
 
-/// A column for `Tx::create_table`. `ty` is a DuckLake type string ("int64",
-/// "varchar", …) — the dialect stored in `ducklake_column.column_type`.
+/// A column for `Tx::create_table`. `ty` is a loom LOGICAL type name (canonical:
+/// "integer"/"long"/"double"/"boolean"/"string"/"date"/"timestamp", or a known
+/// alias). The active adapter maps it to its physical type string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnSpec {
     pub name: String,
@@ -11,26 +13,48 @@ pub struct ColumnSpec {
     pub nullable: bool,
 }
 
-/// Per-column statistics for one data file (values as strings, matching DuckLake's
-/// VARCHAR stat encoding). `min`/`max` are `None` when absent.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ColumnStat {
-    pub column_name: String,
-    pub min: Option<String>,
-    pub max: Option<String>,
-    pub null_count: i64,
-    /// Count of non-null values (DuckLake `value_count = num_values - null_count`).
-    pub value_count: i64,
-    pub column_size_bytes: i64,
+/// A typed scalar stat bound. Format-neutral: each adapter encodes it its own way
+/// (DuckLake → VARCHAR string; Iceberg → typed binary lower/upper bound). Not `Eq`
+/// (carries floats).
+#[derive(Clone, Debug, PartialEq)]
+pub enum StatValue {
+    Bool(bool),
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Str(String),
 }
 
-/// A Parquet file the caller has already written to object storage.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Per-column statistics for one data file. `value_count` is NOT stored: it is
+/// derivable (`record_count − null_count`) and each format counts differently
+/// (DuckLake excludes nulls; Iceberg includes them), so the adapter derives it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColumnStat {
+    pub column_name: String,
+    pub null_count: i64,
+    pub column_size_bytes: i64,
+    pub min: Option<StatValue>,
+    pub max: Option<StatValue>,
+}
+
+/// The on-storage format of a registered data file. Explicit (not assumed Parquet)
+/// because formats like Iceberg record it per file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileFormat {
+    Parquet,
+}
+
+/// A data file the caller has already written to object storage.
+#[derive(Clone, Debug, PartialEq)]
 pub struct DataFile {
     pub path: String,
     pub path_is_relative: bool,
+    pub file_format: FileFormat,
     pub record_count: i64,
     pub file_size_bytes: i64,
-    pub footer_size: i64,
     pub column_stats: Vec<ColumnStat>,
+    /// Parquet footer length — a physical-Parquet detail some formats persist
+    /// (DuckLake records it; Iceberg ignores it). `Some` for Parquet files.
+    pub parquet_footer_size: Option<i64>,
 }

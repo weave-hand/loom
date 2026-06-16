@@ -141,10 +141,11 @@ pub async fn run_transform(
         .map(|f| DataFile {
             path: f.path,
             path_is_relative: true,
+            file_format: control_plane_core::FileFormat::Parquet,
             record_count: f.record_count,
             file_size_bytes: f.file_size_bytes,
-            footer_size: f.footer_size,
             column_stats: f.column_stats,
+            parquet_footer_size: Some(f.footer_size),
         })
         .collect();
 

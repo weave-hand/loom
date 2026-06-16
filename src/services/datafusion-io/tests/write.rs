@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
+use control_plane_core::StatValue;
 use datafusion_io::write::{WrittenFile, file_stats_from_bytes};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
@@ -87,18 +88,16 @@ fn stats_merge_min_max_across_row_groups() {
     let id = &stats.column_stats[0];
     assert_eq!(id.column_name, "id");
     assert_eq!(id.null_count, 0);
-    assert_eq!(id.value_count, 5);
     assert!(id.column_size_bytes > 0);
     // Merged across all 3 row groups — NOT just the first.
-    assert_eq!(id.min.as_deref(), Some("1"));
-    assert_eq!(id.max.as_deref(), Some("9"));
+    assert_eq!(id.min, Some(StatValue::I64(1)));
+    assert_eq!(id.max, Some(StatValue::I64(9)));
 
     let name = &stats.column_stats[1];
     assert_eq!(name.column_name, "name");
     assert_eq!(name.null_count, 1);
-    assert_eq!(name.value_count, 4);
-    assert_eq!(name.min.as_deref(), Some("a"));
-    assert_eq!(name.max.as_deref(), Some("z"));
+    assert_eq!(name.min, Some(StatValue::Str("a".into())));
+    assert_eq!(name.max, Some(StatValue::Str("z".into())));
 }
 
 use datafusion_io::write::write_dataset;

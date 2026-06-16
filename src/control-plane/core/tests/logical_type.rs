@@ -23,36 +23,58 @@ fn unknown_logical_type_does_not_resolve() {
 }
 
 #[test]
-fn satisfies_matches_physical_affinity() {
-    assert_eq!(satisfies("Long", "int64"), Ok(true));
-    assert_eq!(satisfies("Integer", "int32"), Ok(true));
-    assert_eq!(satisfies("Double", "float64"), Ok(true));
+fn satisfies_matches_same_base_type() {
+    assert_eq!(satisfies("Long", "long"), Ok(true));
+    assert_eq!(satisfies("Integer", "integer"), Ok(true));
+    assert_eq!(satisfies("Double", "double"), Ok(true));
     assert_eq!(satisfies("Boolean", "boolean"), Ok(true));
-    assert_eq!(satisfies("String", "varchar"), Ok(true));
-    assert_eq!(satisfies("EmailAddress", "varchar"), Ok(true));
+    assert_eq!(satisfies("String", "string"), Ok(true));
+    assert_eq!(satisfies("EmailAddress", "string"), Ok(true));
+    assert_eq!(satisfies("String", "Url"), Ok(true));
     assert_eq!(satisfies("Date", "date"), Ok(true));
     assert_eq!(satisfies("Timestamp", "timestamp"), Ok(true));
 }
 
 #[test]
-fn satisfies_rejects_width_mismatch() {
-    assert_eq!(satisfies("Integer", "int64"), Ok(false));
-    assert_eq!(satisfies("Long", "int32"), Ok(false));
+fn satisfies_rejects_different_base_type() {
+    assert_eq!(satisfies("Integer", "long"), Ok(false));
+    assert_eq!(satisfies("Long", "integer"), Ok(false));
 }
 
 #[test]
-fn satisfies_normalizes_physical_casing_and_whitespace() {
-    assert_eq!(satisfies("String", "VARCHAR"), Ok(true));
-    assert_eq!(satisfies("Long", " int64 "), Ok(true));
-    assert_eq!(satisfies(" Long ", "int64"), Ok(true));
+fn satisfies_unknown_column_type_does_not_satisfy() {
+    assert_eq!(satisfies("Long", "int64"), Ok(false));
 }
 
 #[test]
-fn satisfies_errors_on_unknown_logical_type() {
+fn satisfies_normalizes_casing_and_whitespace() {
+    assert_eq!(satisfies("String", "STRING"), Ok(true));
+    assert_eq!(satisfies("Long", " long "), Ok(true));
+    assert_eq!(satisfies(" Long ", "long"), Ok(true));
+}
+
+#[test]
+fn satisfies_errors_on_unknown_property_type() {
     assert_eq!(
         satisfies("Money", "double"),
         Err(UnknownLogicalType("Money".into()))
     );
+}
+
+#[test]
+fn canonical_name_round_trips_base_names() {
+    for name in [
+        "integer",
+        "long",
+        "double",
+        "boolean",
+        "string",
+        "date",
+        "timestamp",
+    ] {
+        let base = resolve_logical(name).unwrap();
+        assert_eq!(base.canonical_name(), name);
+    }
 }
 
 #[test]

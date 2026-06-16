@@ -150,6 +150,15 @@ rust_library(
     visibility = ["PUBLIC"],
 )
 
+rust_test(
+    name = "ducklake-type",
+    crate = "ducklake_type",
+    srcs = ["tests/ducklake_type.rs"],
+    crate_root = "tests/ducklake_type.rs",
+    edition = "2024",
+    deps = [":postgres", "//src/control-plane/core:core"],
+)
+
 loom_fixture_test(
     name = "queue",
     crate = "queue",
