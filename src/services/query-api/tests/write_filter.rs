@@ -4,7 +4,7 @@
 
 use control_plane_core::{CompareOp, Policy, PolicyTarget, RowFilter, ScalarValue, TypeName};
 use query_api::serving::SqlValue;
-use query_api::write_filter::{compare_cell, eval};
+use query_api::write_filter::{WriteVerdict, check_write_policy, compare_cell, eval};
 use std::collections::BTreeMap;
 
 fn date(y: i32, m: u8, d: u8) -> SqlValue {
@@ -320,6 +320,122 @@ fn eval_recurses_through_nested_combinators() {
     assert_eq!(eval(&g, &r), Some(false));
 }
 
-// Silence unused-import warnings for symbols used by Task 3's tests.
-#[allow(dead_code)]
-fn _later_task_imports(_: Policy, _: PolicyTarget, _: TypeName) {}
+fn type_policy(row_filter: Option<RowFilter>, deny: &[&str]) -> Policy {
+    Policy {
+        target: PolicyTarget::Type(TypeName("Widget".into())),
+        row_filter,
+        deny_columns: deny.iter().map(|s| s.to_string()).collect(),
+        mask_columns: vec![],
+    }
+}
+
+#[test]
+fn gate_allows_with_no_policies() {
+    let cols = vec!["id".to_string(), "name".to_string()];
+    let vals = vec![SqlValue::Int(1), SqlValue::Text("x".into())];
+    assert_eq!(check_write_policy(&[], &cols, &vals), WriteVerdict::Allow);
+}
+
+#[test]
+fn gate_denies_a_denied_column() {
+    let cols = vec!["id".to_string(), "name".to_string()];
+    let vals = vec![SqlValue::Int(1), SqlValue::Text("x".into())];
+    let p = type_policy(None, &["name"]);
+    assert_eq!(
+        check_write_policy(&[p], &cols, &vals),
+        WriteVerdict::DenyColumn("name".into())
+    );
+}
+
+#[test]
+fn gate_deny_column_is_union_across_policies() {
+    let cols = vec!["id".to_string(), "secret".to_string()];
+    let vals = vec![SqlValue::Int(1), SqlValue::Text("s".into())];
+    let p1 = type_policy(None, &["name"]);
+    let p2 = type_policy(None, &["secret"]);
+    assert_eq!(
+        check_write_policy(&[p1, p2], &cols, &vals),
+        WriteVerdict::DenyColumn("secret".into())
+    );
+}
+
+#[test]
+fn gate_allows_a_conforming_row() {
+    let cols = vec!["id".to_string(), "name".to_string()];
+    let vals = vec![SqlValue::Int(1), SqlValue::Text("gadget".into())];
+    let f = RowFilter::Compare {
+        property: "name".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("gadget".into()),
+    };
+    let p = type_policy(Some(f), &[]);
+    assert_eq!(check_write_policy(&[p], &cols, &vals), WriteVerdict::Allow);
+}
+
+#[test]
+fn gate_denies_a_row_failing_the_filter() {
+    let cols = vec!["id".to_string(), "name".to_string()];
+    let vals = vec![SqlValue::Int(1), SqlValue::Text("widget".into())];
+    let f = RowFilter::Compare {
+        property: "name".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("gadget".into()),
+    };
+    let p = type_policy(Some(f), &[]);
+    assert_eq!(
+        check_write_policy(&[p], &cols, &vals),
+        WriteVerdict::DenyRow
+    );
+}
+
+#[test]
+fn gate_row_must_satisfy_every_policy_filter() {
+    let cols = vec!["id".to_string(), "name".to_string()];
+    let vals = vec![SqlValue::Int(1), SqlValue::Text("gadget".into())];
+    let pass = type_policy(
+        Some(RowFilter::Compare {
+            property: "name".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Text("gadget".into()),
+        }),
+        &[],
+    );
+    let fail = type_policy(
+        Some(RowFilter::Compare {
+            property: "id".into(),
+            op: CompareOp::Ge,
+            value: ScalarValue::Int(100),
+        }),
+        &[],
+    );
+    // One policy passes, the other fails -> deny (AND across policies).
+    assert_eq!(
+        check_write_policy(&[pass, fail], &cols, &vals),
+        WriteVerdict::DenyRow
+    );
+}
+
+#[test]
+fn gate_none_row_filter_adds_no_constraint() {
+    let cols = vec!["id".to_string()];
+    let vals = vec![SqlValue::Int(1)];
+    let p = type_policy(None, &[]);
+    assert_eq!(check_write_policy(&[p], &cols, &vals), WriteVerdict::Allow);
+}
+
+#[test]
+fn gate_fail_closed_on_unknown_row_filter() {
+    // A filter on a column the action does not set -> NULL -> UNKNOWN -> deny.
+    let cols = vec!["id".to_string()];
+    let vals = vec![SqlValue::Int(1)];
+    let f = RowFilter::Compare {
+        property: "name".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("gadget".into()),
+    };
+    let p = type_policy(Some(f), &[]);
+    assert_eq!(
+        check_write_policy(&[p], &cols, &vals),
+        WriteVerdict::DenyRow
+    );
+}

@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use control_plane_core::{CompareOp, RowFilter, ScalarValue};
+use control_plane_core::{CompareOp, Policy, RowFilter, ScalarValue};
 
 use crate::serving::SqlValue;
 
@@ -148,6 +148,52 @@ fn or3(it: impl Iterator<Item = Option<bool>>) -> Option<bool> {
         }
     }
     if any_unknown { None } else { Some(false) }
+}
+
+/// The outcome of the fine-grained Write gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteVerdict {
+    Allow,
+    /// An inserted column is denied by a Write policy.
+    DenyColumn(String),
+    /// The inserted row fails a Write policy's `row_filter`.
+    DenyRow,
+}
+
+/// Enforce the subject's fine-grained Write policies against the concrete insert.
+/// Deny-column is checked first (union of every policy's `deny_columns`); then the
+/// row must satisfy EVERY policy's `row_filter` — the read side's ANDed conjunction.
+/// A policy with no `row_filter` adds no row constraint; no policies ⇒ `Allow`.
+/// `mask_columns` is ignored (a read-render concept). `columns`/`values` are the
+/// parallel inserted pairs (same length, by construction in `run_action`).
+pub fn check_write_policy(
+    policies: &[Policy],
+    columns: &[String],
+    values: &[SqlValue],
+) -> WriteVerdict {
+    // 1. deny-column: any inserted column in the union of deny_columns.
+    for col in columns {
+        if policies
+            .iter()
+            .any(|p| p.deny_columns.iter().any(|d| d == col))
+        {
+            return WriteVerdict::DenyColumn(col.clone());
+        }
+    }
+    // 2. row-filter: build name -> &cell once; every row_filter must be Some(true).
+    let row: BTreeMap<&str, &SqlValue> = columns
+        .iter()
+        .map(|c| c.as_str())
+        .zip(values.iter())
+        .collect();
+    for p in policies {
+        if let Some(f) = &p.row_filter
+            && eval(f, &row) != Some(true)
+        {
+            return WriteVerdict::DenyRow;
+        }
+    }
+    WriteVerdict::Allow
 }
 
 fn parse_date(s: &str) -> Option<time::Date> {
