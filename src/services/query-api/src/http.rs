@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::handler::{
-    LinkQuery, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_objects, read_object,
+    ChainQuery, LinkQuery, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_chain,
+    read_linked_objects, read_object,
 };
 use crate::serving::{ActionEngine, ServingEngine, SqlValue};
 use axum::Router;
@@ -28,6 +29,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/objects/:type_name", get(get_object))
         .route("/objects/:from_type/links/:link_name", get(get_linked))
+        .route("/objects/:from_type/links", get(get_linked_chain))
         .route("/actions/:action_name", post(post_action))
         .with_state(state)
 }
@@ -112,6 +114,58 @@ async fn get_linked(
         Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
+        Err(QueryError::BadChain(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
+        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    }
+}
+
+async fn get_linked_chain(
+    State(st): State<AppState>,
+    Path(from_type): Path<String>,
+    Query(mut params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let subject = headers
+        .get("X-Loom-Subject")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_string();
+    // `path` is the comma-separated ordered chain of link names; everything else is a
+    // source eq-filter. A request with no usable `path` is a malformed chain (-> 400).
+    let path: Vec<String> = params
+        .remove("path")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    // Slice limitation: every query-param filter binds as Text (typed filters later).
+    let source_filters = params
+        .into_iter()
+        .map(|(k, v)| (k, SqlValue::Text(v)))
+        .collect();
+    let deps = QueryDeps {
+        ontology: st.cp.ontology(),
+        acl: st.cp.acl(),
+        serving: st.serving.as_ref(),
+    };
+    match read_linked_chain(
+        &ChainQuery {
+            from_type,
+            path,
+            source_filters,
+        },
+        &Subject(SubjectId(subject)),
+        &deps,
+    )
+    .await
+    {
+        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
+        Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
+        Err(QueryError::BadChain(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),

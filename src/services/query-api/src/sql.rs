@@ -291,96 +291,109 @@ pub fn compile_select(
     Ok((sql, params))
 }
 
-/// Compile a governed link traversal into a single read-only SELECT DISTINCT.
-/// `f` aliases the source table, `t` the target; for a join-table backing, `j` is
-/// the mapping table. Target columns are projected (masked ones emit the marker);
-/// source eq-filters and both types' row filters are ANDed; every VALUE is bound.
+/// One type in a traversal chain: its physical table and the ACL row-filters that
+/// govern it. Every hop's row-filters are ANDed into the join — the chain is governed
+/// at every type, not just its endpoints.
+pub struct ChainType {
+    pub table: TableRef,
+    pub row_filters: Vec<RowFilter>,
+}
+
+/// Compile a governed multi-hop traversal. `types` is the chain `[t_0 .. t_k]`
+/// (`t_0` = source, `t_k` = final target); `hops[i]` is the link backing connecting
+/// `types[i]` (from) to `types[i+1]` (to). Only the final target is projected
+/// (`allowed_cols`, `mask_cols` rendered as the marker). `source_eq_filters` bind to
+/// the source `t_0`. Every type's row-filters are ANDed into the WHERE.
 ///
-/// PRECONDITION mirrors `compile_select`: row filters are validated up front so the
-/// `filter_sql` invariant arms cannot panic.
+/// Precondition: `types.len() == hops.len() + 1` and `hops` is non-empty (`k >= 1`).
+/// As in `compile_select`, row filters are validated up front so the `filter_sql`
+/// invariant arms cannot panic.
 #[allow(clippy::too_many_arguments)]
-pub fn compile_traversal(
-    from_table: &TableRef,
-    to_table: &TableRef,
-    backing: &LinkBacking,
+pub fn compile_chain(
+    types: &[ChainType],
+    hops: &[LinkBacking],
     allowed_cols: &[String],
     mask_cols: &[String],
-    source_filters: &[RowFilter],
-    target_filters: &[RowFilter],
     source_eq_filters: &[(String, SqlValue)],
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
-    for f in source_filters.iter().chain(target_filters) {
-        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+    debug_assert_eq!(types.len(), hops.len() + 1, "chain types must be hops + 1");
+    for t in types {
+        for f in &t.row_filters {
+            validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+        }
     }
-    let mut params = Vec::new();
+    let k = hops.len();
+    let alias = |i: usize| format!("t_{i}");
+    let tbl = |t: &TableRef| format!("{}.{}", quote_ident(&t.schema), quote_ident(&t.name));
 
+    // Projection: final target `t_k` only.
+    let final_alias = alias(k);
     let cols = allowed_cols
         .iter()
         .map(|c| {
             if mask_cols.iter().any(|m| m == c) {
                 format!("'{MASK_MARKER}' AS {}", quote_ident(c))
             } else {
-                format!("t.{}", quote_ident(c))
+                format!("{final_alias}.{}", quote_ident(c))
             }
         })
         .collect::<Vec<_>>()
         .join(", ");
 
-    let to_from = format!(
-        "{}.{}",
-        quote_ident(&to_table.schema),
-        quote_ident(&to_table.name)
-    );
-    let from_from = format!(
-        "{}.{}",
-        quote_ident(&from_table.schema),
-        quote_ident(&from_table.name)
-    );
-    let join = match backing {
-        LinkBacking::ForeignKey {
-            from_column,
-            to_column,
-        } => format!(
-            "JOIN {from_from} f ON f.{} = t.{}",
-            quote_ident(from_column),
-            quote_ident(to_column),
-        ),
-        LinkBacking::JoinTable {
-            table,
-            from_key,
-            from_column,
-            to_column,
-            to_key,
-        } => {
-            let jt = format!(
-                "{}.{}",
-                quote_ident(&table.schema),
-                quote_ident(&table.name)
-            );
-            format!(
-                "JOIN {jt} j ON j.{} = t.{} JOIN {from_from} f ON f.{} = j.{}",
-                quote_ident(to_column),
-                quote_ident(to_key),
-                quote_ident(from_key),
-                quote_ident(from_column),
-            )
+    // FROM final target, then JOIN each predecessor down to the source.
+    let mut from = format!("{} {}", tbl(&types[k].table), final_alias);
+    for i in (1..=k).rev() {
+        let to_alias = alias(i);
+        let from_alias = alias(i - 1);
+        let from_tbl = tbl(&types[i - 1].table);
+        match &hops[i - 1] {
+            LinkBacking::ForeignKey {
+                from_column,
+                to_column,
+            } => {
+                from.push_str(&format!(
+                    " JOIN {from_tbl} {from_alias} ON {from_alias}.{} = {to_alias}.{}",
+                    quote_ident(from_column),
+                    quote_ident(to_column),
+                ));
+            }
+            LinkBacking::JoinTable {
+                table,
+                from_key,
+                from_column,
+                to_column,
+                to_key,
+            } => {
+                let jt = tbl(table);
+                let j = format!("j{i}");
+                from.push_str(&format!(
+                    " JOIN {jt} {j} ON {j}.{} = {to_alias}.{} JOIN {from_tbl} {from_alias} ON {from_alias}.{} = {j}.{}",
+                    quote_ident(to_column),
+                    quote_ident(to_key),
+                    quote_ident(from_key),
+                    quote_ident(from_column),
+                ));
+            }
         }
-    };
+    }
 
+    // WHERE: source eq-filters (`t_0`), then every type's row-filters in chain order.
+    let mut params = Vec::new();
     let mut conjuncts: Vec<String> = Vec::new();
+    let src_alias = alias(0);
     for (col, val) in source_eq_filters {
-        conjuncts.push(format!("(f.{} = ?)", quote_ident(col)));
+        conjuncts.push(format!("({src_alias}.{} = ?)", quote_ident(col)));
         params.push(val.clone());
     }
-    for f in source_filters {
-        conjuncts.push(filter_sql(f, "f", &mut params));
-    }
-    for f in target_filters {
-        conjuncts.push(filter_sql(f, "t", &mut params));
+    for (i, t) in types.iter().enumerate() {
+        let a = alias(i);
+        for f in &t.row_filters {
+            conjuncts.push(filter_sql(f, &a, &mut params));
+        }
     }
 
-    let mut sql = format!("SELECT DISTINCT {cols} FROM {to_from} t {join}");
+    let mut sql = format!("SELECT DISTINCT {cols} FROM {from}");
     if !conjuncts.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));

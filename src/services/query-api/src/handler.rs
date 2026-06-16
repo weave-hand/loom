@@ -3,12 +3,12 @@
 //! SQL with bound params; execute on the serving engine.
 
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Ontology, PageReq, PolicyTarget, PropertyDef,
-    RowFilter, SubjectId, TypeName,
+    Acl, Action, ControlPlaneError, Decision, ObjectType, Ontology, PageReq, PolicyTarget,
+    PropertyDef, RowFilter, SubjectId, TypeName,
 };
 
 use crate::serving::{ServingEngine, SqlValue};
-use crate::sql::{compile_select, compile_traversal};
+use crate::sql::{compile_chain, compile_select};
 
 /// A governed read result: rows plus, for each projected column, the ontology
 /// property's logical type — the input the wire renderer needs to type each value.
@@ -48,6 +48,9 @@ pub enum QueryError {
     Forbidden,
     #[error("filter column not permitted: {0}")]
     BadFilter(String),
+    /// The traversal chain is malformed (empty path, or depth over the cap).
+    #[error("malformed traversal chain: {0}")]
+    BadChain(String),
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error(transparent)]
@@ -272,9 +275,45 @@ pub async fn read_linked_objects(
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
+    read_linked_chain(
+        &ChainQuery {
+            from_type: q.from_type.clone(),
+            path: vec![q.link.clone()],
+            source_filters: q.source_filters.clone(),
+        },
+        subject,
+        deps,
+    )
+    .await
+}
+
+/// Maximum chain depth (number of hops). A request beyond this is rejected before
+/// any catalog/ACL work — bounds the join count.
+const MAX_CHAIN_DEPTH: usize = 4;
+
+/// A governed multi-hop traversal: from source objects matching `source_filters`,
+/// follow `path` (an ordered list of link names), return the deduped final-target
+/// objects. Every type in the chain is governed (Read + row-filters).
+pub struct ChainQuery {
+    pub from_type: String,
+    pub path: Vec<String>,
+    pub source_filters: Vec<(String, SqlValue)>,
+}
+
+pub async fn read_linked_chain(
+    q: &ChainQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    if q.path.is_empty() || q.path.len() > MAX_CHAIN_DEPTH {
+        return Err(QueryError::BadChain(format!(
+            "path length {} (allowed 1..={MAX_CHAIN_DEPTH})",
+            q.path.len()
+        )));
+    }
+
     let from_name = TypeName(q.from_type.clone());
     let from_target = PolicyTarget::Type(from_name.clone());
-
     // Read on the source (deny-by-default, before existence is revealed).
     if deps
         .acl
@@ -292,63 +331,78 @@ pub async fn read_linked_objects(
             ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.from_type.clone()),
             other => QueryError::ControlPlane(other),
         })?;
+    let (s_filters, s_denied, s_masked) = load_policy(deps.acl, &subject.0, &from_target).await?;
 
-    // Resolve the link by name among the source's links.
-    let links = deps
-        .ontology
-        .links(&from_name, PageReq::unbounded())
-        .await
-        .map_err(|e| match e {
-            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.from_type.clone()),
-            other => QueryError::ControlPlane(other),
-        })?;
-    let link = links
-        .items
-        .into_iter()
-        .find(|l| l.name == q.link)
-        .ok_or_else(|| QueryError::UnknownLink(q.link.clone()))?;
-    let to_name = link.to.clone();
-    let to_target = PolicyTarget::Type(to_name.clone());
-
-    // Read on the target.
-    if deps.acl.check(&subject.0, Action::Read, &to_target).await? == Decision::Deny {
-        return Err(QueryError::Forbidden);
+    // Resolve the chain left-to-right, gating Read on every hop type and loading each
+    // type's policy. `ctypes[0]` = source; `ctypes[k]` = final target.
+    let mut ctypes: Vec<crate::sql::ChainType> = vec![crate::sql::ChainType {
+        table: from_type.table.clone(),
+        row_filters: s_filters,
+    }];
+    let mut hops: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(q.path.len());
+    // Final-target accumulators (always overwritten: path is non-empty).
+    let mut target_type: ObjectType = from_type.clone();
+    let mut target_denied = std::collections::HashSet::new();
+    let mut target_masked = std::collections::HashSet::new();
+    let mut current_name = from_name.clone();
+    for link_name in &q.path {
+        let links = deps
+            .ontology
+            .links(&current_name, PageReq::unbounded())
+            .await
+            .map_err(|e| match e {
+                ControlPlaneError::NotFound(_) => QueryError::UnknownType(current_name.0.clone()),
+                other => QueryError::ControlPlane(other),
+            })?;
+        let link = links
+            .items
+            .into_iter()
+            .find(|l| &l.name == link_name)
+            .ok_or_else(|| QueryError::UnknownLink(link_name.clone()))?;
+        let to_name = link.to.clone();
+        let to_target = PolicyTarget::Type(to_name.clone());
+        // Read on every hop type (the leak-free guarantee).
+        if deps.acl.check(&subject.0, Action::Read, &to_target).await? == Decision::Deny {
+            return Err(QueryError::Forbidden);
+        }
+        // A link pointing at a missing type is an internal inconsistency, not a 404.
+        let to_type = deps.ontology.get_type(&to_name).await?;
+        let (t_filters, t_denied, t_masked) = load_policy(deps.acl, &subject.0, &to_target).await?;
+        hops.push(link.backing.clone());
+        ctypes.push(crate::sql::ChainType {
+            table: to_type.table.clone(),
+            row_filters: t_filters,
+        });
+        target_type = to_type;
+        target_denied = t_denied;
+        target_masked = t_masked;
+        current_name = to_name;
     }
-    // A link pointing at a missing type is an internal inconsistency, not a client 404.
-    let to_type = deps.ontology.get_type(&to_name).await?;
 
-    let (from_row_filters, from_denied, from_masked) =
-        load_policy(deps.acl, &subject.0, &from_target).await?;
-    let (to_row_filters, to_denied, to_masked) =
-        load_policy(deps.acl, &subject.0, &to_target).await?;
-
-    // Source filter columns must be visible (allowed, non-masked) on the source.
-    let from_allowed = project_allowed(&from_type.properties, &from_denied);
+    // Source eq-filter columns must be visible (allowed, non-masked) on the source.
+    let from_allowed = project_allowed(&from_type.properties, &s_denied);
     for (col, _) in &q.source_filters {
-        if !from_allowed.contains(col) || from_masked.contains(col) {
+        if !from_allowed.contains(col) || s_masked.contains(col) {
             return Err(QueryError::BadFilter(col.clone()));
         }
     }
 
-    // Target projection.
-    let to_allowed = project_allowed(&to_type.properties, &to_denied);
+    // Final-target projection.
+    let to_allowed = project_allowed(&target_type.properties, &target_denied);
     if to_allowed.is_empty() {
         return Err(QueryError::Forbidden);
     }
     let to_mask_cols: Vec<String> = to_allowed
         .iter()
-        .filter(|c| to_masked.contains(*c))
+        .filter(|c| target_masked.contains(*c))
         .cloned()
         .collect();
 
-    let (sql, params) = compile_traversal(
-        &from_type.table,
-        &to_type.table,
-        &link.backing,
+    let (sql, params) = compile_chain(
+        &ctypes,
+        &hops,
         &to_allowed,
         &to_mask_cols,
-        &from_row_filters,
-        &to_row_filters,
         &q.source_filters,
         DEFAULT_LIMIT,
     )?;
@@ -356,7 +410,7 @@ pub async fn read_linked_objects(
     let logical_types: Vec<String> = to_allowed
         .iter()
         .map(|name| {
-            to_type
+            target_type
                 .properties
                 .iter()
                 .find(|p| &p.name == name)

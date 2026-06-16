@@ -150,6 +150,16 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     apply inside the subquery, and a derived prop is omitted (like a denied column) when the
     linked type or aggregated column is unreadable — never an error. Read-time only. Proven by
     an e2e.
+  - *Part 5 — governed multi-hop traversal (slice C, part-1)* ✅ DELIVERED
+    (`2026-06-15-query-multi-hop-traversal-design.md`). An ordered chain of links
+    (`GET /objects/{from}/links?path=l1,l2`) is served as a `SELECT DISTINCT` chain of governed
+    INNER JOINs, reusing the per-hop FK/join-table join shapes from slice A. Governed at **every**
+    hop: `Read` is required on each type in the chain (source, every intermediate, final target),
+    and each type's row-filters are AND'd inside the join — generalizing slice A's both-ends rule
+    to N-ends, so a caller can only reach final targets through intermediate rows the policy permits.
+    Depth-capped (4 hops), deduped final-target projection (`DISTINCT` over the visible columns),
+    source-filter only. The single-hop route forwards into the chain handler as the `N=1` case
+    (one compiler). Proven by an e2e.
   - *Later:* the serving *tier* over Quack (separate `quack_serve`'d DuckDB; the seam's
     Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
     masking, roles); rich ontology (links, derived properties); multi-type queries/joins;
@@ -221,8 +231,11 @@ query. **Actions part-1** is now delivered too, bringing the **write-back** verb
 (`POST /actions/{name}` — governed typed insert enforcing `Action::Write`, inline DuckLake
 write, validated against the type contract, reads back through the governed read path):
 the platform's four core verbs — **land → derive → serve → write** — are all live.
-Candidate next slices: richer reads (derived/aggregate properties → multi-hop
-traversal), programmatic transforms, and overwrite/incremental output.
+Richer reads now span aggregate-over-link **derived properties** (slice B) and **multi-hop
+traversal** (slice C part-1 — forward, source-filtered, deduped link chaining, governed at every
+hop). The remaining slice-C parts are inverse-direction hops, target-side filtering, object-set
+inputs, and the source→target association. Candidate next slices: those slice-C parts, programmatic
+transforms, and overwrite/incremental output.
 Smaller query follow-ups also remain (typed input filters, a schema sidecar, tz timestamps).
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
