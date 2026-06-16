@@ -197,6 +197,11 @@ WriteVerdict}`.
 - **Fail-closed, SQL three-valued logic**: allow iff the filter is `Some(true)`.
 - **Deny reuses `ActionError::Forbidden`** (generic 403); the reason is `tracing`-logged only.
 - `mask_columns` **ignored** for writes.
+- **Deny-column counts only actually-set columns.** `parse_params` materializes an omitted optional
+  parameter as an explicit `SqlValue::Null` pair, so `run_action` gates `check_write_policy` on the
+  **non-null** parsed pairs — an omitted optional is not "setting" the column. The insert still
+  writes the full pair list (NULL for omitted optionals). Row-filter results are unchanged by this:
+  in the evaluator an absent property and a present-`Null` cell both resolve to a `Null` cell.
 
 ## Follow-ups (later slices)
 
