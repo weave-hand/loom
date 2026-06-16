@@ -1161,6 +1161,86 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         "mask_columns must round-trip alongside deny_columns",
     );
 
+    // --- action scoping: read and write policies are independent ---
+    // Distinct Read and Write policies on the SAME (role, target). row_filter: None so no
+    // ontology validation is needed; the point is storage keyed by action.
+    let ticket_read = Policy {
+        target: ttype("Ticket"),
+        row_filter: None,
+        deny_columns: vec!["priority".into()],
+        mask_columns: vec![],
+    };
+    let ticket_write = Policy {
+        target: ttype("Ticket"),
+        row_filter: None,
+        deny_columns: vec!["assignee".into()],
+        mask_columns: vec![],
+    };
+    a.set_policy(&rid("reader"), Action::Read, ticket_read.clone())
+        .await
+        .unwrap();
+    a.set_policy(&rid("reader"), Action::Write, ticket_write.clone())
+        .await
+        .unwrap();
+    // A Read query returns only the Read policy; a Write query only the Write policy.
+    let r = a
+        .policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Ticket"),
+            PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.items,
+        vec![ticket_read.clone()],
+        "Read query returns only the Read-scoped policy"
+    );
+    let w = a
+        .policies_for(
+            &sid("alice"),
+            Action::Write,
+            &ttype("Ticket"),
+            PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        w.items,
+        vec![ticket_write.clone()],
+        "Write query returns only the Write-scoped policy"
+    );
+    // clear_policy is action-scoped: clearing Read leaves Write intact.
+    a.clear_policy(&rid("reader"), Action::Read, &ttype("Ticket"))
+        .await
+        .unwrap();
+    assert!(
+        a.policies_for(
+            &sid("alice"),
+            Action::Read,
+            &ttype("Ticket"),
+            PageReq::unbounded()
+        )
+        .await
+        .unwrap()
+        .is_empty(),
+        "Read policy cleared"
+    );
+    assert_eq!(
+        a.policies_for(
+            &sid("alice"),
+            Action::Write,
+            &ttype("Ticket"),
+            PageReq::unbounded()
+        )
+        .await
+        .unwrap()
+        .items,
+        vec![ticket_write],
+        "Write policy survives clearing the Read policy"
+    );
+
     // --- grant / set_policy on a missing role -> NotFound ---
     assert!(matches!(
         a.grant(&rid("ghost"), Action::Read, ttype("X"), Effect::Allow)
