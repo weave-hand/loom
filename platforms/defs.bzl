@@ -10,6 +10,7 @@ def _executor_config():
             remote_execution_properties = {
                 "OSFamily": "Linux",
                 "container-image": "docker://gcr.io/flame-public/rbe-ubuntu24-04:latest",
+                "dockerUser": "buildbuddy",
             },
             remote_execution_use_case = "buck2-default",
             remote_output_paths = "output_paths",
