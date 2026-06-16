@@ -5,7 +5,7 @@
 
 use control_plane_core::{
     Action, ActionName, ControlPlane, ControlPlaneError, DatasetRef, Decision, EventType,
-    LineageEvent, PolicyTarget, RunId, SubjectId,
+    LineageEvent, PageReq, PolicyTarget, RunId, SubjectId,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::handler::ObjectRows;
 use crate::params::{ParamError, parse_params};
 use crate::serving::{ActionEngine, SqlValue};
+use crate::write_filter::{self, WriteVerdict};
 
 pub struct ActionDeps<'a> {
     pub cp: &'a dyn ControlPlane,
@@ -73,6 +74,41 @@ pub async fn run_action(
     let pairs = parse_params(&action.parameters, body)?;
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
     let values: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
+
+    // 4b. Fine-grained Write policy: deny-write-column + row-filter-on-insert. The
+    //     subject already cleared the coarse Write gate; now enforce the row/column
+    //     policy against the concrete row. Fail-closed (deny on UNKNOWN). The HTTP
+    //     body stays a generic 403; the reason is logged only.
+    //
+    //     `parse_params` materializes every optional parameter the caller OMITTED as an
+    //     explicit `SqlValue::Null` pair, so `columns` carries those too. The gate must
+    //     judge only the columns the caller actually SET — an omitted optional column is
+    //     not "setting" it — so gate on the non-null pairs. (The insert below still uses
+    //     the full pair list; inserting NULL for the omitted optionals is correct.)
+    let (set_columns, set_values): (Vec<String>, Vec<SqlValue>) = pairs
+        .iter()
+        .filter(|(_, v)| !matches!(v, SqlValue::Null))
+        .cloned()
+        .unzip();
+    let write_policies = deps
+        .cp
+        .acl()
+        .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
+        .await?;
+    match write_filter::check_write_policy(&write_policies.items, &set_columns, &set_values) {
+        WriteVerdict::Allow => {}
+        WriteVerdict::DenyColumn(col) => {
+            tracing::info!(action = action_name, column = %col, "write denied: policy denies column");
+            return Err(ActionError::Forbidden);
+        }
+        WriteVerdict::DenyRow => {
+            tracing::info!(
+                action = action_name,
+                "write denied: row fails write policy filter"
+            );
+            return Err(ActionError::Forbidden);
+        }
+    }
 
     // 5. Inline insert via the engine.
     deps.action_engine

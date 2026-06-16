@@ -17,3 +17,4 @@ pub mod params;
 pub mod render;
 pub mod serving;
 pub mod sql;
+pub mod write_filter;

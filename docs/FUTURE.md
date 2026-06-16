@@ -215,13 +215,16 @@ write behind an `ActionEngine` trait).
 - **Custom-logic / multi-step actions.** Part-1's only action kind is "typed insert" (params
   map to the target type's properties); actions whose params differ from properties or that
   run bespoke logic or enqueue downstream are a follow-on.
-- **Fine-grained write governance.** Part 1 (control plane) ✅ DELIVERED
-  (`2026-06-16-acl-action-scoped-policies-design.md`): `acl.policy` is action-scoped, so read and
-  write policies are independent. Part 2 (service enforcement) remains: `run_action` loads the
-  `Write` policy and enforces deny-write-column (reject if a param sets a denied column) +
-  row-filter-on-insert (a pure in-memory `RowFilter` evaluator — the inserted row must satisfy the
-  predicate). `mask_columns` on a `Write` policy is expected to be ignored (masking is read-only) —
-  to be confirmed in part 2.
+- **Fine-grained write governance.** ✅ DELIVERED (both parts). Part 1 (control plane,
+  `2026-06-16-acl-action-scoped-policies-design.md`): `acl.policy` is action-scoped, so read and
+  write policies are independent. Part 2 (service enforcement,
+  `2026-06-16-write-enforcement-design.md`): `run_action` loads the `Write` policy and enforces
+  deny-write-column + row-filter-on-insert via a pure in-memory three-valued `RowFilter` evaluator
+  (`write_filter.rs`), fail-closed, with full read-parity coercion. `mask_columns` on a `Write`
+  policy is **ignored** (masking is read-only) — confirmed. Deny-column counts only columns the
+  action actually SETS (an omitted optional, materialized as NULL by `parse_params`, does not
+  count). Open follow-up: surface a *structured* denial reason (which column / row-filter failure)
+  instead of the current logs-only generic 403.
 - **Iceberg `ActionEngine` impl.** The trait's reason for being — a second write backend behind
   the inline-write seam, for deployments that prefer Iceberg over DuckLake inline writes.
 

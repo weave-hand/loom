@@ -201,8 +201,15 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     (`2026-06-16-acl-action-scoped-policies-design.md`). `acl.policy` is now action-scoped:
     `set_policy`/`clear_policy`/`policies_for` key on `(role, action, target)`, so a role holds
     independent read and write policies (parity with the already-action-scoped `role_grant`). The
-    read path is explicitly `Read`-scoped (unchanged). Part 2 (service enforcement: `run_action`
-    consumes the `Write` policy — deny-write-column + row-filter-on-insert) is the next slice.
+    read path is explicitly `Read`-scoped (unchanged).
+  - *Fine-grained write governance — part 2 (service enforcement)* ✅ DELIVERED
+    (`2026-06-16-write-enforcement-design.md`). `run_action` loads the subject's `Write` policy and
+    rejects an insert that sets a denied column or produces a row failing the policy's `row_filter`
+    (a new pure in-memory three-valued evaluator, `write_filter.rs`, with full read-parity
+    coercion). Fail-closed; a generic 403 with a logged reason. Deny-column counts only columns the
+    action actually SETS (an omitted optional, materialized as NULL, is not "setting" it).
+    `mask_columns` is ignored on writes (read-render only). The write front door now reaches parity
+    with the read-side ACL. Proven by a fixture e2e.
 - **Transform workers** —
   - *Part 1 — queue-driven SQL transform* ✅ DELIVERED
     (`2026-06-14-transform-workers-part1-design.md`). A worker (on `control-plane-worker`)

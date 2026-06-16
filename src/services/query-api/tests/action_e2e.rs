@@ -3,8 +3,9 @@
 //! subject is forbidden. Real Postgres + DuckDB.
 
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, ControlPlane, Effect, ObjectType, ParamDef, PolicyTarget,
-    PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionName, CompareOp, ControlPlane, Effect, ObjectType, ParamDef,
+    Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef,
+    TypeName,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use query_api::action::{ActionDeps, ActionError, run_action};
@@ -251,4 +252,245 @@ async fn ungranted_subject_is_forbidden() {
         .query_scalar("SELECT count(*) FROM lake.main.widget")
         .await;
     assert_eq!(count, "0", "forbidden action wrote nothing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_policy_enforces_row_filter_and_deny_column() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer_fx = DuckLakeWriter::new(fx.socket_path(), &db);
+    writer_fx.bootstrap().await;
+    writer_fx
+        .seed(
+            "main",
+            "widget",
+            &[
+                ("id".into(), "BIGINT".into(), false),
+                ("name".into(), "VARCHAR".into(), true),
+            ],
+            &[],
+        )
+        .await;
+    let data_path = writer_fx.data_path().to_path_buf();
+    let pg_conn = format!(
+        "dbname={db} host={} user=postgres",
+        fx.socket_path().display()
+    );
+
+    let widget = TypeName("Widget".into());
+    cp.ontology()
+        .define_type(ObjectType {
+            name: widget.clone(),
+            table: TableRef {
+                schema: "main".into(),
+                name: "widget".into(),
+            },
+            properties: vec![
+                PropertyDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+                PropertyDef {
+                    name: "name".into(),
+                    ty: "String".into(),
+                    required: false,
+                },
+            ],
+            derived: vec![],
+        })
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("createWidget".into()),
+            target: widget.clone(),
+            parameters: vec![
+                ParamDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+                ParamDef {
+                    name: "name".into(),
+                    ty: "String".into(),
+                    required: false,
+                },
+            ],
+        })
+        .await
+        .unwrap();
+
+    let subj = SubjectId("writer".into());
+    let role = RoleId("writers".into());
+    cp.define_subject(&subj).await.unwrap();
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subj, &role).await.unwrap();
+    cp.grant(
+        &role,
+        Action::Write,
+        PolicyTarget::Type(widget.clone()),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Type(widget.clone()),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+
+    let engine = EmbeddedDuckDbWriter::attach(&pg_conn, &data_path)
+        .await
+        .unwrap();
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+    };
+
+    // --- Phase 1: a Write policy with a row filter `name = "gadget"`.
+    cp.set_policy(
+        &role,
+        Action::Write,
+        Policy {
+            target: PolicyTarget::Type(widget.clone()),
+            row_filter: Some(RowFilter::Compare {
+                property: "name".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Text("gadget".into()),
+            }),
+            deny_columns: vec![],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Row that fails the filter -> Forbidden, nothing written.
+    let err = run_action(
+        "createWidget",
+        json!({ "id": "1", "name": "widget" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, ActionError::Forbidden),
+        "row filter denies non-gadget"
+    );
+    assert_eq!(
+        writer_fx
+            .query_scalar("SELECT count(*) FROM lake.main.widget")
+            .await,
+        "0",
+        "denied write wrote nothing"
+    );
+
+    // Row that satisfies the filter -> allowed.
+    run_action(
+        "createWidget",
+        json!({ "id": "1", "name": "gadget" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("conforming write allowed");
+    assert_eq!(
+        writer_fx
+            .query_scalar("SELECT count(*) FROM lake.main.widget")
+            .await,
+        "1",
+        "conforming write landed"
+    );
+
+    // --- Phase 2: replace the policy with a deny-column on `name` (upsert).
+    cp.set_policy(
+        &role,
+        Action::Write,
+        Policy {
+            target: PolicyTarget::Type(widget.clone()),
+            row_filter: None,
+            deny_columns: vec!["name".into()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Setting the denied column -> Forbidden, nothing new written.
+    let err = run_action(
+        "createWidget",
+        json!({ "id": "2", "name": "gadget" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, ActionError::Forbidden),
+        "deny-column blocks setting name"
+    );
+    assert_eq!(
+        writer_fx
+            .query_scalar("SELECT count(*) FROM lake.main.widget")
+            .await,
+        "1",
+        "deny-column write wrote nothing"
+    );
+
+    // Not setting the denied column (name is optional) -> allowed.
+    run_action(
+        "createWidget",
+        json!({ "id": "2" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("write that omits the denied column is allowed");
+    assert_eq!(
+        writer_fx
+            .query_scalar("SELECT count(*) FROM lake.main.widget")
+            .await,
+        "2",
+        "write omitting denied column landed"
+    );
+
+    // --- Phase 3: a restrictive *Read* policy must NOT gate writes (independence).
+    cp.set_policy(
+        &role,
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(widget.clone()),
+            row_filter: Some(RowFilter::Compare {
+                property: "id".into(),
+                op: CompareOp::Lt,
+                value: ScalarValue::Int(0),
+            }),
+            deny_columns: vec!["name".into()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    // The Write policy is still the deny-column-`name` one from Phase 2; a write that
+    // omits name still succeeds — the Read policy is not consulted on the write path.
+    run_action(
+        "createWidget",
+        json!({ "id": "3" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("a restrictive Read policy does not gate the write");
+    assert_eq!(
+        writer_fx
+            .query_scalar("SELECT count(*) FROM lake.main.widget")
+            .await,
+        "3",
+        "Read policy did not block the write"
+    );
 }
