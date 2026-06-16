@@ -109,9 +109,11 @@ From the multi-hop traversal part-1 slice (`2026-06-15-query-multi-hop-traversal
 delivered forward, source-filtered, deduped link chaining (`GET /objects/{from}/links?path=l1,l2`) as
 a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
 
-- **Inverse-direction hops.** Follow a link from its `to` back to its `from` within a chain. Part-1
-  hops are all forward — each hop traverses from a link's declared `from` to its `to` — so a chain
-  can only run in the links' authored direction. Reverse traversal is a later part.
+- **Inverse-direction hops** (slice-C part-3) — DELIVERED
+  (`docs/superpowers/specs/2026-06-16-inverse-direction-hops-design.md`): backward link
+  traversal, governed at every hop, single- and multi-hop, via `Ontology::links_to` +
+  `LinkBacking::reversed()`. Follow-up still open: a `/graph` surface for cyclic /
+  self-link / repeated-link per-hop filtering (the deferred relational-vs-graph boundary).
 - **Caller-supplied target / intermediate filters.** ✅ DELIVERED
   (`2026-06-16-query-target-intermediate-filters-design.md`): per-hop typed equality filters on
   any type in a chain, addressed by `<linkname>.<column>` (bare = source), governed per type.

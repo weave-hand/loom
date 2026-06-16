@@ -418,6 +418,11 @@ pub struct ChainType {
 /// Precondition: `types.len() == hops.len() + 1` and `hops` is non-empty (`k >= 1`).
 /// As in `compile_select_with`, row filters are validated up front so the `filter_sql`
 /// invariant arms cannot panic.
+///
+/// The compiler is **direction-agnostic**: an inverse hop is expressed entirely by the
+/// caller passing that hop's `LinkBacking::reversed()` in `hops` and the link's origin
+/// type in `types` — the symmetric `from_alias.from_column = to_alias.to_column` join is
+/// unchanged.
 pub fn compile_chain_with(
     dialect: &dyn SqlDialect,
     types: &[ChainType],
