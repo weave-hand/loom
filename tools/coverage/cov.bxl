@@ -119,8 +119,15 @@ def _emit(ctx, actions, llvm, run_one, report_sh, pkg, nodes, fixture_env, all_p
         ct = ctx.configured_targets(node.label, modifiers = COVERAGE_MODIFIERS)
         bin = ctx.analysis(ct).providers()[DefaultInfo].default_outputs[0]
         pr = actions.declare_output("prof/{}/{}.profraw".format(name, node.label.name))
-        # Every run is local with the DB env injected (see the uniform-execution
-        # note at the top). The build stays RE-eligible; only the run is local.
+        # Run local with the DB env injected (fixtures need it; pure-logic ignores
+        # it). LOCAL even though RBE is now rootless (dockerUser=buildbuddy, which
+        # *does* let fixtures boot postgres on RE — that's why loom_fixture_test no
+        # longer pins local): heavy instrumented binaries (e.g.
+        # //src/services/datafusion-io:scan) are silently killed on RE before LLVM
+        # flushes their profraw (works fine locally, ~22MB profraw). Tried dropping
+        # local_only post-rootless — datafusion-io still failed on RE. So coverage
+        # runs stay uniformly local rather than re-introducing a fragile
+        # "which crates are heavy" split.
         actions.run(
             cmd_args(["bash", run_one, pr.as_output(), bin]),
             category = "coverage_run",

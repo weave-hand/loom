@@ -4,12 +4,13 @@
 # Any extra args after the binary are passed to it (none needed today).
 set -euo pipefail
 out="$1"; bin="$2"; shift 2
+# A FAILING test exits non-zero but STILL writes its profile, so tolerate a
+# non-zero exit here (the suite is graded by `buck2 test`, not coverage).
 LLVM_PROFILE_FILE="$out" "$bin" "$@" >/dev/null 2>&1 || true
-# The libtest binary exits non-zero only on a FAILING test; coverage still wants
-# the profile, so we don't fail the action on test failure (the test suite is
-# graded by `buck2 test`, not here).
-#
-# INTENTIONALLY FATAL: if the binary aborts before LLVM flushes (e.g. a fixture
-# whose postgres won't boot) no profile is written, the declared `$out` is
-# missing, and buck fails this action — taking down the run. That is the desired
-# signal: a fixture that can't boot should fail loudly, not silently report 0%.
+# But a binary that CRASHES (segfault/OOM — e.g. a heavy instrumented binary on
+# RE, or a fixture whose postgres won't boot) writes NO profile. Require it:
+# without this, buck sees an exit-0 action with a missing declared output and can
+# cache that profile-less "success" (a stale RE failure then poisons later local
+# runs under the same digest). Exiting non-zero makes it a real, uncached failure
+# that re-runs — so the crash surfaces loudly instead of silently reporting 0%.
+test -s "$out" || { echo "coverage: $bin wrote no profile (crashed before flush?)" >&2; exit 1; }
