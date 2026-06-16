@@ -158,6 +158,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "typed-filter-e2e",
+    crate = "typed_filter_e2e",
+    srcs = ["tests/typed_filter_e2e.rs"],
+    crate_root = "tests/typed_filter_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "multi-hop-traversal-e2e",
     crate = "multi_hop_traversal_e2e",
     srcs = ["tests/multi_hop_traversal_e2e.rs"],
