@@ -197,6 +197,12 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     / multi-step actions (params differing from properties, or enqueue-downstream);
     fine-grained write governance (row-filter / deny-column on `Write`); Iceberg
     `ActionEngine` impl.
+  - *Fine-grained write governance — part 1 (control plane)* ✅ DELIVERED
+    (`2026-06-16-acl-action-scoped-policies-design.md`). `acl.policy` is now action-scoped:
+    `set_policy`/`clear_policy`/`policies_for` key on `(role, action, target)`, so a role holds
+    independent read and write policies (parity with the already-action-scoped `role_grant`). The
+    read path is explicitly `Read`-scoped (unchanged). Part 2 (service enforcement: `run_action`
+    consumes the `Write` policy — deny-write-column + row-filter-on-insert) is the next slice.
 - **Transform workers** —
   - *Part 1 — queue-driven SQL transform* ✅ DELIVERED
     (`2026-06-14-transform-workers-part1-design.md`). A worker (on `control-plane-worker`)
