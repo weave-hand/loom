@@ -1,7 +1,6 @@
 //! Thin axum surface. All logic is in handler::read_object; this layer only maps
 //! HTTP <-> the core and serializes Rows to JSON.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::handler::{
@@ -37,7 +36,7 @@ pub fn router(state: AppState) -> Router {
 async fn get_object(
     State(st): State<AppState>,
     Path(type_name): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<Vec<(String, String)>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let subject = headers
@@ -45,9 +44,9 @@ async fn get_object(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // Raw filter values flow through; the handler coerces each to the column's declared
-    // ontology logical type (via filter::coerce_filter) after the visibility check.
-    let eq_filters: Vec<(String, String)> = params.into_iter().collect();
+    // Repeated keys are preserved (a column may carry several predicates, e.g. a range);
+    // the handler parses each value's operator and coerces it.
+    let eq_filters = params;
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
@@ -78,7 +77,7 @@ async fn get_object(
 async fn get_linked(
     State(st): State<AppState>,
     Path((from_type, link_name)): Path<(String, String)>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<Vec<(String, String)>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let subject = headers
@@ -88,7 +87,6 @@ async fn get_linked(
         .to_string();
     // Resolve filter keys against the single-link path: bare -> source (t_0), `<link>.col`
     // -> target (t_1). A bad prefix -> 400.
-    let params: Vec<(String, String)> = params.into_iter().collect();
     let filters = match crate::chain_filter::resolve_chain_filters(
         std::slice::from_ref(&link_name),
         params,
@@ -125,7 +123,7 @@ async fn get_linked(
 async fn get_linked_chain(
     State(st): State<AppState>,
     Path(from_type): Path<String>,
-    Query(mut params): Query<HashMap<String, String>>,
+    Query(params): Query<Vec<(String, String)>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let subject = headers
@@ -133,19 +131,22 @@ async fn get_linked_chain(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // `path` is the comma-separated ordered chain of link names; everything else is a
-    // source eq-filter. A request with no usable `path` is a malformed chain (-> 400).
-    let path: Vec<String> = params
-        .remove("path")
-        .unwrap_or_default()
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    // Remaining params are filters: bare -> source, `<linkname>.col` -> that link's
-    // position. Unknown/ambiguous prefix -> 400 (ambiguous = the relational/graph boundary).
-    let params: Vec<(String, String)> = params.into_iter().collect();
-    let filters = match crate::chain_filter::resolve_chain_filters(&path, params) {
+    // `path` is the comma-separated ordered chain of link names; every other pair is a
+    // filter. Repeated filter keys are preserved (e.g. a range on one column).
+    let mut path: Vec<String> = Vec::new();
+    let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
+    for (k, v) in params {
+        if k == "path" {
+            path = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        } else {
+            filter_params.push((k, v));
+        }
+    }
+    let filters = match crate::chain_filter::resolve_chain_filters(&path, filter_params) {
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
