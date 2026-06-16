@@ -83,13 +83,21 @@ sigils leak into the handler core.
 ## Internal types (`query-api/src/handler.rs`)
 
 ```
-enum Direction { Forward, Inverse }
+enum Direction { Forward, Inverse }   // Default = Forward
 struct Hop { link: String, direction: Direction }
+impl From<&str> for Hop / From<String> for Hop  // -> Forward hop
 ```
 
-- `ChainQuery.path` becomes `Vec<Hop>` (was `Vec<String>`).
-- `LinkQuery` gains `direction: Direction`. `read_linked_objects` builds a one-element
-  `Vec<Hop>` from it and delegates to `read_linked_chain` (unchanged delegation pattern).
+- `ChainQuery.path` becomes `Vec<Hop>` (was `Vec<String>`). The `From<&str>`/`From<String>`
+  conversions keep every existing forward call site (`path: vec!["orders".into(), ...]`)
+  compiling unchanged — only direction-aware code constructs `Hop` explicitly.
+- `LinkQuery` stays **forward-only** (its three fields unchanged); `read_linked_objects`
+  delegates to `read_linked_chain` with a single forward `Hop`. It remains a convenience
+  wrapper — no existing single-hop call site changes.
+- **Single-hop direction is delivered at the HTTP edge:** `get_linked` parses `?direction=`
+  and builds a one-element `ChainQuery { path: vec![Hop { link, direction }] }`, calling
+  `read_linked_chain` directly. `read_linked_chain` is the single governed traversal entry;
+  the single-hop case is just a one-`Hop` path with no special core code.
 - `read_linked_chain` per-hop resolution branches on `hop.direction`:
   - **Forward:** `ontology.links(current)` → find by name → next type = `link.to`, push
     `link.backing` as-is. *(today's behavior)*
