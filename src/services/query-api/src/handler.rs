@@ -275,6 +275,42 @@ pub async fn read_object(
     })
 }
 
+/// Direction a link hop is followed. `Forward` follows the link as defined
+/// (`from -> to`); `Inverse` follows it backwards (`to -> from`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Direction {
+    #[default]
+    Forward,
+    Inverse,
+}
+
+/// One hop in a traversal path: a link name and the direction to follow it. The `From`
+/// conversions yield a Forward hop, so a bare link name (`"orders".into()`) keeps every
+/// existing forward call site unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hop {
+    pub link: String,
+    pub direction: Direction,
+}
+
+impl From<&str> for Hop {
+    fn from(link: &str) -> Self {
+        Hop {
+            link: link.to_string(),
+            direction: Direction::Forward,
+        }
+    }
+}
+
+impl From<String> for Hop {
+    fn from(link: String) -> Self {
+        Hop {
+            link,
+            direction: Direction::Forward,
+        }
+    }
+}
+
 /// A governed single-hop traversal (the `N=1` chain): from source objects, follow
 /// `link`, return the linked targets. `filters` are positioned (0 = source, 1 = target).
 pub struct LinkQuery {
@@ -291,7 +327,7 @@ pub async fn read_linked_objects(
     read_linked_chain(
         &ChainQuery {
             from_type: q.from_type.clone(),
-            path: vec![q.link.clone()],
+            path: vec![q.link.clone().into()],
             filters: q.filters.clone(),
         },
         subject,
@@ -324,11 +360,11 @@ pub struct ChainFilter {
 }
 
 /// A governed multi-hop traversal: from source objects matching the position-0 filters,
-/// follow `path` (an ordered list of link names), return the deduped final-target
+/// follow `path` (an ordered list of directed hops), return the deduped final-target
 /// objects. Every type in the chain is governed (Read + row-filters) and caller-filterable.
 pub struct ChainQuery {
     pub from_type: String,
-    pub path: Vec<String>,
+    pub path: Vec<Hop>,
     pub filters: Vec<ChainFilter>,
 }
 
@@ -379,7 +415,7 @@ pub async fn read_linked_chain(
     let mut hops: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(q.path.len());
 
     let mut current_name = from_name.clone();
-    for link_name in &q.path {
+    for hop in &q.path {
         let links = deps
             .ontology
             .links(&current_name, PageReq::unbounded())
@@ -391,8 +427,8 @@ pub async fn read_linked_chain(
         let link = links
             .items
             .into_iter()
-            .find(|l| &l.name == link_name)
-            .ok_or_else(|| QueryError::UnknownLink(link_name.clone()))?;
+            .find(|l| l.name == hop.link)
+            .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
         let to_name = link.to.clone();
         let to_target = PolicyTarget::Type(to_name.clone());
         // Read on every hop type (the leak-free guarantee).

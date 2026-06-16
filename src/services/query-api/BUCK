@@ -349,3 +349,12 @@ rust_test(
     edition = "2024",
     deps = [":query-api", "//src/control-plane/core:core"],
 )
+
+rust_test(
+    name = "hop-types",
+    crate = "hop_types",
+    srcs = ["tests/hop_types.rs"],
+    crate_root = "tests/hop_types.rs",
+    edition = "2024",
+    deps = [":query-api"],
+)

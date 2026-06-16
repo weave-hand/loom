@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::handler::{
-    ChainQuery, LinkQuery, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_chain,
+    ChainQuery, Hop, LinkQuery, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_chain,
     read_linked_objects, read_object,
 };
 use crate::serving::{ActionEngine, ServingEngine};
@@ -158,7 +158,7 @@ async fn get_linked_chain(
     match read_linked_chain(
         &ChainQuery {
             from_type,
-            path,
+            path: path.into_iter().map(Hop::from).collect(),
             filters,
         },
         &Subject(SubjectId(subject)),
