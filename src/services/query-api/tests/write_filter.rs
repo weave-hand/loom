@@ -156,6 +156,44 @@ fn compare_cell_in_and_not_in() {
     );
 }
 
+#[test]
+fn compare_cell_in_with_unknown_element_propagates() {
+    // A list mixing a non-matching value with a type-mismatched element: no match
+    // found, but one element is UNKNOWN -> the whole IN is UNKNOWN (not false).
+    let cell = SqlValue::Int(9);
+    let list = ScalarValue::List(vec![ScalarValue::Int(1), ScalarValue::Text("x".into())]);
+    assert_eq!(compare_cell(&cell, CompareOp::In, &list), None);
+    assert_eq!(compare_cell(&cell, CompareOp::NotIn, &list), None);
+    // But a present match short-circuits to known, even with an UNKNOWN element.
+    let hit = SqlValue::Int(1);
+    assert_eq!(compare_cell(&hit, CompareOp::In, &list), Some(true));
+    assert_eq!(compare_cell(&hit, CompareOp::NotIn, &list), Some(false));
+}
+
+#[test]
+fn compare_cell_double_int_coercion_direction_and_magnitude() {
+    // Pins the Int-operand -> f64 coercion direction at a large magnitude.
+    let big = SqlValue::Double(1_000_000.5);
+    assert_eq!(
+        compare_cell(&big, CompareOp::Gt, &ScalarValue::Int(1_000_000)),
+        Some(true)
+    );
+    assert_eq!(
+        compare_cell(&big, CompareOp::Lt, &ScalarValue::Int(1_000_001)),
+        Some(true)
+    );
+    // Exact-equality only when the double is whole and equal to the int.
+    let whole = SqlValue::Double(1_000_000.0);
+    assert_eq!(
+        compare_cell(&whole, CompareOp::Eq, &ScalarValue::Int(1_000_000)),
+        Some(true)
+    );
+    assert_eq!(
+        compare_cell(&big, CompareOp::Eq, &ScalarValue::Int(1_000_000)),
+        Some(false)
+    );
+}
+
 // Silence unused-import warnings for symbols used by later tasks' tests.
 #[allow(dead_code)]
 fn _later_task_imports(_: Policy, _: PolicyTarget, _: RowFilter, _: TypeName) {}
