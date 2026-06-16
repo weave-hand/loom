@@ -91,3 +91,13 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "link-backing",
+    crate = "link_backing",
+    srcs = ["tests/link_backing.rs"],
+    crate_root = "tests/link_backing.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
