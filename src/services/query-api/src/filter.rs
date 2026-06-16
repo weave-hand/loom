@@ -23,7 +23,8 @@ pub struct CallerPredicate {
     pub values: Vec<SqlValue>,
 }
 
-/// Coerce `raw` (a query-param string) to `logical_ty`'s `SqlValue`. Equality-only. The
+/// Coerce a single operand `raw` (a query-param string) to `logical_ty`'s `SqlValue`.
+/// Operator-agnostic — the per-operand building block reused by `coerce_predicate`. The
 /// `Number` repr (Integer/Double) resolves to `Int` when `raw` is a clean integer, else
 /// `Double` — equality-correct under DuckDB numeric coercion.
 pub fn coerce_filter(name: &str, logical_ty: &str, raw: &str) -> Result<SqlValue, FilterError> {
