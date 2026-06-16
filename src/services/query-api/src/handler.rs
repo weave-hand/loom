@@ -28,7 +28,7 @@ pub struct Subject(pub SubjectId);
 /// A read request: an ontology type plus optional equality filters on allowed columns.
 pub struct ObjectQuery {
     pub type_name: String,
-    pub eq_filters: Vec<(String, SqlValue)>,
+    pub eq_filters: Vec<(String, String)>,
 }
 
 /// Borrowed dependencies for one read.
@@ -152,11 +152,22 @@ pub async fn read_object(
         .cloned()
         .collect();
 
-    // request equality filters must target a visible, non-masked column.
-    for (col, _) in &q.eq_filters {
+    // Visibility first (denied/masked column -> 400, no type info leak), then coerce the
+    // raw filter value to the column's declared logical type.
+    let mut eq_filters: Vec<(String, SqlValue)> = Vec::with_capacity(q.eq_filters.len());
+    for (col, raw) in &q.eq_filters {
         if !allowed.contains(col) || masked.contains(col) {
             return Err(QueryError::BadFilter(col.clone()));
         }
+        let ty = object_type
+            .properties
+            .iter()
+            .find(|p| &p.name == col)
+            .map(|p| p.ty.as_str())
+            .unwrap_or("");
+        let v = crate::filter::coerce_filter(col, ty, raw)
+            .map_err(|_| QueryError::BadFilter(col.clone()))?;
+        eq_filters.push((col.clone(), v));
     }
 
     // Derived properties (aggregate-over-link), governed both-ends. Resolved + appended
@@ -221,7 +232,7 @@ pub async fn read_object(
         &allowed,
         &mask_cols,
         &row_filters,
-        &q.eq_filters,
+        &eq_filters,
         &derived_selects,
         DEFAULT_LIMIT,
     )?;
@@ -267,7 +278,7 @@ pub async fn read_object(
 pub struct LinkQuery {
     pub from_type: String,
     pub link: String,
-    pub source_filters: Vec<(String, SqlValue)>,
+    pub source_filters: Vec<(String, String)>,
 }
 
 pub async fn read_linked_objects(
@@ -297,7 +308,7 @@ const MAX_CHAIN_DEPTH: usize = 4;
 pub struct ChainQuery {
     pub from_type: String,
     pub path: Vec<String>,
-    pub source_filters: Vec<(String, SqlValue)>,
+    pub source_filters: Vec<(String, String)>,
 }
 
 pub async fn read_linked_chain(
@@ -381,10 +392,20 @@ pub async fn read_linked_chain(
 
     // Source eq-filter columns must be visible (allowed, non-masked) on the source.
     let from_allowed = project_allowed(&from_type.properties, &s_denied);
-    for (col, _) in &q.source_filters {
+    let mut source_filters: Vec<(String, SqlValue)> = Vec::with_capacity(q.source_filters.len());
+    for (col, raw) in &q.source_filters {
         if !from_allowed.contains(col) || s_masked.contains(col) {
             return Err(QueryError::BadFilter(col.clone()));
         }
+        let ty = from_type
+            .properties
+            .iter()
+            .find(|p| &p.name == col)
+            .map(|p| p.ty.as_str())
+            .unwrap_or("");
+        let v = crate::filter::coerce_filter(col, ty, raw)
+            .map_err(|_| QueryError::BadFilter(col.clone()))?;
+        source_filters.push((col.clone(), v));
     }
 
     // Final-target projection.
@@ -403,7 +424,7 @@ pub async fn read_linked_chain(
         &hops,
         &to_allowed,
         &to_mask_cols,
-        &q.source_filters,
+        &source_filters,
         DEFAULT_LIMIT,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
