@@ -36,7 +36,6 @@ def loom_fixture_test(
         crate_root = crate_root,
         edition = edition,
         env = fixture_env,
-        remote_execution = "disabled",
         deps = deps,
         **kwargs
     )
