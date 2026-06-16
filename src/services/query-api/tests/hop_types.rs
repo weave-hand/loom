@@ -17,8 +17,11 @@ fn from_str_is_a_forward_hop() {
 #[test]
 fn from_string_is_a_forward_hop() {
     assert_eq!(
-        Hop::from("orders".to_string()).direction,
-        Direction::Forward
+        Hop::from("orders".to_string()),
+        Hop {
+            link: "orders".to_string(),
+            direction: Direction::Forward,
+        }
     );
 }
 
