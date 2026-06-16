@@ -171,6 +171,11 @@ pub fn check_write_policy(
     columns: &[String],
     values: &[SqlValue],
 ) -> WriteVerdict {
+    debug_assert_eq!(
+        columns.len(),
+        values.len(),
+        "check_write_policy: columns and values must be parallel"
+    );
     // 1. deny-column: any inserted column in the union of deny_columns.
     for col in columns {
         if policies
