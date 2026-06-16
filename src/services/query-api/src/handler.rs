@@ -44,6 +44,11 @@ pub enum QueryError {
     UnknownType(String),
     #[error("unknown link: {0}")]
     UnknownLink(String),
+    /// More than one inbound link shares the requested name (links are keyed by
+    /// `(name, from)`, so `(name, to)` need not be unique). A governed read cannot pick
+    /// one deterministically.
+    #[error("ambiguous inbound link: {0}")]
+    AmbiguousLink(String),
     #[error("forbidden")]
     Forbidden,
     #[error("filter column not permitted: {0}")]
@@ -416,40 +421,74 @@ pub async fn read_linked_chain(
 
     let mut current_name = from_name.clone();
     for hop in &q.path {
-        let links = deps
-            .ontology
-            .links(&current_name, PageReq::unbounded())
-            .await
-            .map_err(|e| match e {
-                ControlPlaneError::NotFound(_) => QueryError::UnknownType(current_name.0.clone()),
-                other => QueryError::ControlPlane(other),
-            })?;
-        let link = links
-            .items
-            .into_iter()
-            .find(|l| l.name == hop.link)
-            .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
-        let to_name = link.to.clone();
-        let to_target = PolicyTarget::Type(to_name.clone());
-        // Read on every hop type (the leak-free guarantee).
-        if deps.acl.check(&subject.0, Action::Read, &to_target).await? == Decision::Deny {
+        let (next_name, backing) = match hop.direction {
+            Direction::Forward => {
+                let links = deps
+                    .ontology
+                    .links(&current_name, PageReq::unbounded())
+                    .await
+                    .map_err(|e| match e {
+                        ControlPlaneError::NotFound(_) => {
+                            QueryError::UnknownType(current_name.0.clone())
+                        }
+                        other => QueryError::ControlPlane(other),
+                    })?;
+                let link = links
+                    .items
+                    .into_iter()
+                    .find(|l| l.name == hop.link)
+                    .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
+                (link.to.clone(), link.backing.clone())
+            }
+            Direction::Inverse => {
+                let links = deps
+                    .ontology
+                    .links_to(&current_name, PageReq::unbounded())
+                    .await
+                    .map_err(|e| match e {
+                        ControlPlaneError::NotFound(_) => {
+                            QueryError::UnknownType(current_name.0.clone())
+                        }
+                        other => QueryError::ControlPlane(other),
+                    })?;
+                let mut matches = links.items.into_iter().filter(|l| l.name == hop.link);
+                let link = matches
+                    .next()
+                    .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
+                if matches.next().is_some() {
+                    return Err(QueryError::AmbiguousLink(hop.link.clone()));
+                }
+                // Inverse: follow the link to its origin, with the backing column roles
+                // swapped so the symmetric chain compiler joins `current` back to `from`.
+                (link.from.clone(), link.backing.reversed())
+            }
+        };
+        let next_target = PolicyTarget::Type(next_name.clone());
+        // Read on every reached type (the leak-free guarantee), forward or inverse.
+        if deps
+            .acl
+            .check(&subject.0, Action::Read, &next_target)
+            .await?
+            == Decision::Deny
+        {
             return Err(QueryError::Forbidden);
         }
         // A link pointing at a missing type is an internal inconsistency, not a 404.
-        let to_type = deps.ontology.get_type(&to_name).await?;
-        let (t_filters, t_denied, t_masked) = load_policy(deps.acl, &subject.0, &to_target).await?;
-        hops.push(link.backing.clone());
+        let next_type = deps.ontology.get_type(&next_name).await?;
+        let (t_filters, t_denied, t_masked) =
+            load_policy(deps.acl, &subject.0, &next_target).await?;
+        hops.push(backing);
         ctypes.push(crate::sql::ChainType {
-            table: to_type.table.clone(),
+            table: next_type.table.clone(),
             row_filters: t_filters,
             predicates: vec![],
         });
         metas.push(HopMeta {
-            otype: to_type,
+            otype: next_type,
             denied: t_denied,
             masked: t_masked,
         });
-        current_name = to_name;
+        current_name = next_name;
     }
 
     // Caller filters, governed per position: visibility first (denied/masked or unknown
