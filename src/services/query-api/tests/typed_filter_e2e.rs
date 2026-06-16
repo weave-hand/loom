@@ -60,8 +60,8 @@ async fn land(
 }
 
 /// Seed an Order table with NON-TEXT columns: id Long, amount Double, active Boolean.
-/// Rows: (1, 10.5, true), (2, 20.0, false), (3, 10.5, true). The caller MUST keep
-/// the returned `DuckLakeWriter` alive (its TempDir holds the Parquet files).
+/// Rows: (1, 10.5, true), (2, 20.0, false), (3, 10.5, true), (4, NULL, NULL). The caller
+/// MUST keep the returned `DuckLakeWriter` alive (its TempDir holds the Parquet files).
 async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter, SubjectId) {
     let (cp, db) = fx.fresh_db().await;
     let writer = DuckLakeWriter::new(fx.socket_path(), &db);
@@ -78,12 +78,18 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     let ord_batch = RecordBatch::try_new(
         ord_schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-            Arc::new(Float64Array::from(vec![Some(10.5), Some(20.0), Some(10.5)])),
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Float64Array::from(vec![
+                Some(10.5),
+                Some(20.0),
+                Some(10.5),
+                None,
+            ])),
             Arc::new(BooleanArray::from(vec![
                 Some(true),
                 Some(false),
                 Some(true),
+                None,
             ])),
         ],
     )
@@ -216,4 +222,73 @@ async fn typed_filters_match_and_reject() {
         matches!(err, QueryError::BadFilter(_)),
         "uncoercible filter value -> BadFilter"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comparison_set_and_null_operators() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer, a) = setup(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+    };
+    let ids = |rows: &query_api::handler::ObjectRows| {
+        let body = objects_to_json(rows);
+        let mut v: Vec<String> = body["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    let run = |filters: Vec<(String, String)>| {
+        let deps = &deps;
+        let a = a.clone();
+        async move {
+            read_object(
+                &ObjectQuery {
+                    type_name: "Order".into(),
+                    eq_filters: filters,
+                },
+                &Subject(a),
+                deps,
+            )
+            .await
+        }
+    };
+
+    // gt on a Double column: amount > 15 -> only row 2 (20.0).
+    let r = run(vec![("amount".into(), "gt:15".into())]).await.unwrap();
+    assert_eq!(ids(&r), vec!["2".to_string()]);
+
+    // Range (two predicates on one column): 11 <= amount <= 25 -> only row 2.
+    let r = run(vec![
+        ("amount".into(), "ge:11".into()),
+        ("amount".into(), "le:25".into()),
+    ])
+    .await
+    .unwrap();
+    assert_eq!(ids(&r), vec!["2".to_string()]);
+
+    // Set membership on Long id: id in (1,3) -> rows 1, 3.
+    let r = run(vec![("id".into(), "in:1,3".into())]).await.unwrap();
+    assert_eq!(ids(&r), vec!["1".to_string(), "3".to_string()]);
+
+    // Null checks: amount isnull -> row 4; isnotnull -> rows 1,2,3.
+    let r = run(vec![("amount".into(), "isnull".into())]).await.unwrap();
+    assert_eq!(ids(&r), vec!["4".to_string()]);
+    let r = run(vec![("amount".into(), "isnotnull".into())])
+        .await
+        .unwrap();
+    assert_eq!(
+        ids(&r),
+        vec!["1".to_string(), "2".to_string(), "3".to_string()]
+    );
+
+    // Bad arity (gt with no operand) -> BadFilter (400).
+    let err = run(vec![("amount".into(), "gt".into())]).await.unwrap_err();
+    assert!(matches!(err, QueryError::BadFilter(_)));
 }
