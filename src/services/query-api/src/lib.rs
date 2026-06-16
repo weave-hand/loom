@@ -9,6 +9,7 @@
 //! loom's DuckLake-on-Postgres catalog. The serving engine is embedded duckdb-rs.
 
 pub mod action;
+pub mod filter;
 pub mod handler;
 pub mod http;
 pub mod params;

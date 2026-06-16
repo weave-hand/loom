@@ -214,6 +214,15 @@ rust_test(
 )
 
 rust_test(
+    name = "filter-coerce",
+    crate = "filter_coerce",
+    srcs = ["tests/filter_coerce.rs"],
+    crate_root = "tests/filter_coerce.rs",
+    edition = "2024",
+    deps = [":query-api"],
+)
+
+rust_test(
     name = "sql-compile",
     crate = "sql_compile",
     srcs = ["tests/sql_compile.rs"],
