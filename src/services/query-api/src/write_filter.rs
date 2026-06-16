@@ -12,7 +12,9 @@
 //! (Caveat: a `Double` NaN yields UNKNOWN here via `partial_cmp`, where DuckDB
 //! would treat NaN as orderable — write filters are not expected to carry NaN.)
 
-use control_plane_core::{CompareOp, ScalarValue};
+use std::collections::BTreeMap;
+
+use control_plane_core::{CompareOp, RowFilter, ScalarValue};
 
 use crate::serving::SqlValue;
 
@@ -96,6 +98,56 @@ fn order_cell(cell: &SqlValue, op: CompareOp, operand: &ScalarValue) -> Option<b
         CompareOp::Ge => ord.is_ge(),
         _ => return None,
     })
+}
+
+/// Evaluate a `RowFilter` against a concrete inserted row (`property name → cell`),
+/// with SQL three-valued logic. `Some(true)` means the row satisfies the filter. An
+/// absent property reads as a NULL (unset) cell.
+pub fn eval(filter: &RowFilter, row: &BTreeMap<&str, &SqlValue>) -> Option<bool> {
+    match filter {
+        RowFilter::Compare {
+            property,
+            op,
+            value,
+        } => {
+            let cell = row
+                .get(property.as_str())
+                .copied()
+                .unwrap_or(&SqlValue::Null);
+            compare_cell(cell, *op, value)
+        }
+        RowFilter::Not(x) => not3(eval(x, row)),
+        RowFilter::And(xs) => and3(xs.iter().map(|x| eval(x, row))),
+        RowFilter::Or(xs) => or3(xs.iter().map(|x| eval(x, row))),
+    }
+}
+
+/// Three-valued AND: `Some(false)` if any child is false; else `None` if any unknown;
+/// else `Some(true)` (empty ⇒ true).
+fn and3(it: impl Iterator<Item = Option<bool>>) -> Option<bool> {
+    let mut any_unknown = false;
+    for v in it {
+        match v {
+            Some(false) => return Some(false),
+            None => any_unknown = true,
+            Some(true) => {}
+        }
+    }
+    if any_unknown { None } else { Some(true) }
+}
+
+/// Three-valued OR: `Some(true)` if any child is true; else `None` if any unknown;
+/// else `Some(false)` (empty ⇒ false).
+fn or3(it: impl Iterator<Item = Option<bool>>) -> Option<bool> {
+    let mut any_unknown = false;
+    for v in it {
+        match v {
+            Some(true) => return Some(true),
+            None => any_unknown = true,
+            Some(false) => {}
+        }
+    }
+    if any_unknown { None } else { Some(false) }
 }
 
 fn parse_date(s: &str) -> Option<time::Date> {

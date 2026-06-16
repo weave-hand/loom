@@ -4,7 +4,8 @@
 
 use control_plane_core::{CompareOp, Policy, PolicyTarget, RowFilter, ScalarValue, TypeName};
 use query_api::serving::SqlValue;
-use query_api::write_filter::compare_cell;
+use query_api::write_filter::{compare_cell, eval};
+use std::collections::BTreeMap;
 
 fn date(y: i32, m: u8, d: u8) -> SqlValue {
     SqlValue::Date(time::Date::from_calendar_date(y, time::Month::try_from(m).unwrap(), d).unwrap())
@@ -194,6 +195,92 @@ fn compare_cell_double_int_coercion_direction_and_magnitude() {
     );
 }
 
-// Silence unused-import warnings for symbols used by later tasks' tests.
+fn row<'a>(pairs: &[(&'a str, &'a SqlValue)]) -> BTreeMap<&'a str, &'a SqlValue> {
+    pairs.iter().copied().collect()
+}
+
+#[test]
+fn eval_compare_leaf_uses_row_cell() {
+    let name = SqlValue::Text("gadget".into());
+    let r = row(&[("name", &name)]);
+    let f = RowFilter::Compare {
+        property: "name".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("gadget".into()),
+    };
+    assert_eq!(eval(&f, &r), Some(true));
+}
+
+#[test]
+fn eval_absent_property_reads_as_null() {
+    let r: BTreeMap<&str, &SqlValue> = BTreeMap::new();
+    // name is unset -> NULL -> Eq is UNKNOWN.
+    let f = RowFilter::Compare {
+        property: "name".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("gadget".into()),
+    };
+    assert_eq!(eval(&f, &r), None);
+    // IsNull on the unset cell is true.
+    let g = RowFilter::Compare {
+        property: "name".into(),
+        op: CompareOp::IsNull,
+        value: ScalarValue::Text("x".into()),
+    };
+    assert_eq!(eval(&g, &r), Some(true));
+}
+
+#[test]
+fn eval_and_or_not_three_valued() {
+    let n = SqlValue::Int(5);
+    let r = row(&[("n", &n)]);
+    let t = RowFilter::Compare {
+        property: "n".into(),
+        op: CompareOp::Ge,
+        value: ScalarValue::Int(1),
+    }; // true
+    let f = RowFilter::Compare {
+        property: "n".into(),
+        op: CompareOp::Lt,
+        value: ScalarValue::Int(1),
+    }; // false
+    let u = RowFilter::Compare {
+        property: "missing".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Int(1),
+    }; // unknown
+
+    // AND: false beats unknown.
+    assert_eq!(
+        eval(&RowFilter::And(vec![f.clone(), u.clone()]), &r),
+        Some(false)
+    );
+    // AND: unknown beats true.
+    assert_eq!(eval(&RowFilter::And(vec![t.clone(), u.clone()]), &r), None);
+    // AND of all-true.
+    assert_eq!(
+        eval(&RowFilter::And(vec![t.clone(), t.clone()]), &r),
+        Some(true)
+    );
+    // OR: true beats unknown.
+    assert_eq!(
+        eval(&RowFilter::Or(vec![t.clone(), u.clone()]), &r),
+        Some(true)
+    );
+    // OR: unknown beats false.
+    assert_eq!(eval(&RowFilter::Or(vec![f.clone(), u.clone()]), &r), None);
+    // NOT(unknown) = unknown; NOT(true) = false.
+    assert_eq!(eval(&RowFilter::Not(Box::new(u.clone())), &r), None);
+    assert_eq!(eval(&RowFilter::Not(Box::new(t.clone())), &r), Some(false));
+}
+
+#[test]
+fn eval_empty_and_or_identities() {
+    let r: BTreeMap<&str, &SqlValue> = BTreeMap::new();
+    assert_eq!(eval(&RowFilter::And(vec![]), &r), Some(true));
+    assert_eq!(eval(&RowFilter::Or(vec![]), &r), Some(false));
+}
+
+// Silence unused-import warnings for symbols used by Task 3's tests.
 #[allow(dead_code)]
-fn _later_task_imports(_: Policy, _: PolicyTarget, _: RowFilter, _: TypeName) {}
+fn _later_task_imports(_: Policy, _: PolicyTarget, _: TypeName) {}
