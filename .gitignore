@@ -14,3 +14,4 @@ rust-project.json
 # LLVM coverage profiling data emitted by instrumented binaries at runtime
 *.profraw
 *.profdata
+.claude/worktrees/
