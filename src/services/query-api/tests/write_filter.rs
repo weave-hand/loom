@@ -281,6 +281,45 @@ fn eval_empty_and_or_identities() {
     assert_eq!(eval(&RowFilter::Or(vec![]), &r), Some(false));
 }
 
+#[test]
+fn eval_recurses_through_nested_combinators() {
+    let n = SqlValue::Int(5);
+    let name = SqlValue::Text("gadget".into());
+    let r = row(&[("n", &n), ("name", &name)]);
+    let n_ge_1 = RowFilter::Compare {
+        property: "n".into(),
+        op: CompareOp::Ge,
+        value: ScalarValue::Int(1),
+    }; // true
+    let n_lt_1 = RowFilter::Compare {
+        property: "n".into(),
+        op: CompareOp::Lt,
+        value: ScalarValue::Int(1),
+    }; // false
+    let name_eq = RowFilter::Compare {
+        property: "name".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("gadget".into()),
+    }; // true
+
+    // And([ Or([n_lt_1(false), name_eq(true)]) -> true, Not(n_lt_1(false)) -> true ]) -> true
+    let f = RowFilter::And(vec![
+        RowFilter::Or(vec![n_lt_1.clone(), name_eq.clone()]),
+        RowFilter::Not(Box::new(n_lt_1.clone())),
+    ]);
+    assert_eq!(eval(&f, &r), Some(true));
+
+    // And([ Or([n_lt_1(false), Not(name_eq)(false)]) -> false, n_ge_1(true) ]) -> false
+    let g = RowFilter::And(vec![
+        RowFilter::Or(vec![
+            n_lt_1.clone(),
+            RowFilter::Not(Box::new(name_eq.clone())),
+        ]),
+        n_ge_1.clone(),
+    ]);
+    assert_eq!(eval(&g, &r), Some(false));
+}
+
 // Silence unused-import warnings for symbols used by Task 3's tests.
 #[allow(dead_code)]
 fn _later_task_imports(_: Policy, _: PolicyTarget, _: TypeName) {}
