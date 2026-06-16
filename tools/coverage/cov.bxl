@@ -11,18 +11,22 @@
 # it). So only this build path is instrumented; normal builds / `buck2 test`
 # are byte-for-byte unchanged.
 #
-# SCOPE: all crates, pure-logic AND fixture. Fixture crates (postgres, worker,
-# ingest, query-api) boot initdb/postgres/duckdb and refuse to run as root, so
-# their test *run* actions are pinned local_only and handed the postgres/duckdb
-# env (built once from the same source targets `loom_fixture_test` uses — see
-# FIXTURE_ENV below, mirrored from src/control-plane/postgres/defs.bzl). Their
-# build stays RE-eligible; only the `run_one` action is local. Pure-logic crates
-# run RE-eligible with no env, exactly as before. Fixtures are identified by
-# PACKAGE (FIXTURE_PACKAGES): robust, because not every fixture test goes through
-# the `loom_fixture_test` macro (e.g. //src/services/ingest:materialize is a bare
-# rust_test that still boots a DB), so the `remote_execution` attr is unreliable.
-# The report.sh / combined-merge actions stay RE-eligible — they only run
-# llvm-profdata/llvm-cov, no DB.
+# SCOPE: all crates, pure-logic AND fixture — UNIFORMLY, with NO classification.
+# Every test *run* action is pinned local_only and handed the postgres/duckdb env
+# (built once from the source targets `loom_fixture_test` uses — see FIXTURE_ENV,
+# mirrored from src/control-plane/postgres/defs.bzl). Why uniform instead of
+# classifying fixture vs pure-logic:
+#   - Fixture tests boot initdb/postgres/duckdb and can't run as root on RE.
+#   - Heavy instrumented binaries (e.g. //src/services/datafusion-io:write) fail
+#     to flush their profraw on RE even though they need no DB — so RE is
+#     unreliable for the runs generally, not just for fixtures.
+#   - The DB env is harmless to pure-logic tests (they never read it).
+#   - Any hardcoded fixture/first-party package list rots when a crate is added
+#     (it did: datafusion-io + transform broke a list-based version). Both the
+#     run treatment AND the per-crate filtering now derive everything from the
+#     discovered tests, so new crates are picked up automatically.
+# Only the `run_one` action is local; the build and the report.sh/merge actions
+# (just llvm-profdata/llvm-cov, no DB) stay RE-eligible.
 #
 # DETERMINISTIC OBJECT ORDERING (critical for a reproducible %):
 #   Each rust_test binary statically links the whole crate library, so the same
@@ -60,61 +64,52 @@
 # they statically link) compile with -Cinstrument-coverage — no global config.
 COVERAGE_MODIFIERS = ["root//tools/coverage:coverage_enabled"]
 
-# Fixture crates: boot initdb/postgres/duckdb, can't run as root on RE. Run their
-# test actions local_only with FIXTURE_ENV. Classified by PACKAGE (robust) rather
-# than by the remote_execution attr — see the SCOPE note above for why.
-FIXTURE_PACKAGES = [
-    "src/control-plane/postgres",
-    "src/control-plane/worker",
-    "src/services/ingest",
-    "src/services/query-api",
-]
+# NO hardcoded crate lists. Every test runs the same way — local_only with the
+# postgres/duckdb env injected universally (pure-logic tests ignore the env). This
+# is deliberately uniform rather than classifying fixture vs pure-logic:
+#   - Fixture tests (postgres/duckdb) MUST run local (can't run as root on RE).
+#   - Heavy instrumented binaries (e.g. datafusion-io) fail to flush their profraw
+#     on RE, so even "pure-logic" tests are unreliable on RE under instrumentation.
+#   - Any hardcoded fixture/first-party package list rots the moment a crate is
+#     added (it did — datafusion-io/transform broke a list-based version).
+# So: run everything local, inject the env everywhere, and DERIVE the first-party
+# package set from the discovered tests (see `all_pkgs` in _cov_impl).
 
-# All first-party packages: the 7 measured crate packages + testkit (the shared
-# contract harness, NOT a measured crate). Used to build the per-crate and
-# combined ignore regexes.
-FIRST_PARTY_PACKAGES = [
-    "src/control-plane/core",
-    "src/control-plane/memory",
-    "src/control-plane/postgres",
-    "src/control-plane/worker",
-    "src/control-plane/testkit",
-    "src/services/runtime",
-    "src/services/ingest",
-    "src/services/query-api",
-]
+# testkit is the one first-party lib that is a shared contract harness, never a
+# measured crate, and has no rust_test of its own (so it won't appear in the
+# discovered package set) — exclude it from reports explicitly.
+_TESTKIT = "src/control-plane/testkit"
 
 # Common exclusions for every report: stdlib/absolute paths, third-party crates,
 # and test sources.
 _COMMON_IGNORE = ["^/", "^third-party/", "/tests/"]
 
-def _ignore_for(keep_pkg):
-    # Per-crate scope: exclude every first-party package EXCEPT keep_pkg, so the
-    # report shows only `src/<keep_pkg>/src/**`.
+def _ignore_for(keep_pkg, all_pkgs):
+    # Per-crate scope: exclude every other discovered package (+ testkit) so the
+    # report shows only `src/<keep_pkg>/src/**`. `all_pkgs` is derived from the
+    # tests actually present, so this needs no maintenance as crates are added.
     parts = list(_COMMON_IGNORE)
-    for pkg in FIRST_PARTY_PACKAGES:
+    for pkg in all_pkgs:
         if pkg != keep_pkg:
             parts.append("^" + pkg + "/")
+    parts.append("^" + _TESTKIT + "/")
     return "|".join(parts)
 
 def _combined_ignore():
-    # Combined scope: keep all 7 measured crates' src; drop only testkit among
+    # Combined scope: keep every measured crate's src; drop only testkit among
     # the first-party packages (plus the common exclusions).
     parts = list(_COMMON_IGNORE)
-    parts.append("^src/control-plane/testkit/")
+    parts.append("^" + _TESTKIT + "/")
     return "|".join(parts)
 
 COMBINED_IGNORE = _combined_ignore()
-
-def _is_fixture(node):
-    return str(node.label.package) in FIXTURE_PACKAGES
 
 def _out0(ctx, lbl):
     # Default output[0] of an UNMODIFIED configured target (env tools — built
     # normally, not instrumented).
     return ctx.analysis(ctx.configured_targets(lbl)).providers()[DefaultInfo].default_outputs[0]
 
-def _emit(ctx, actions, llvm, run_one, report_sh, pkg, nodes, fixture, fixture_env):
+def _emit(ctx, actions, llvm, run_one, report_sh, pkg, nodes, fixture_env, all_pkgs):
     name = pkg.replace("/", "_")
     # Sort by label name: single stable deterministic key -> reproducible object
     # order -> reproducible coverage %. See the ordering note at the top.
@@ -124,23 +119,20 @@ def _emit(ctx, actions, llvm, run_one, report_sh, pkg, nodes, fixture, fixture_e
         ct = ctx.configured_targets(node.label, modifiers = COVERAGE_MODIFIERS)
         bin = ctx.analysis(ct).providers()[DefaultInfo].default_outputs[0]
         pr = actions.declare_output("prof/{}/{}.profraw".format(name, node.label.name))
-        run_kwargs = {}
-        if fixture:
-            # Fixtures boot postgres/duckdb: run local with the DB env. Build is
-            # still RE-eligible; only this run action is pinned local.
-            run_kwargs["local_only"] = True
-            run_kwargs["env"] = fixture_env
+        # Every run is local with the DB env injected (see the uniform-execution
+        # note at the top). The build stays RE-eligible; only the run is local.
         actions.run(
             cmd_args(["bash", run_one, pr.as_output(), bin]),
             category = "coverage_run",
             identifier = "{}:{}".format(name, node.label.name),
-            **run_kwargs
+            local_only = True,
+            env = fixture_env,
         )
         bins.append(bin)
         profraws.append(pr)
 
     # Per-crate report keeps ONLY this crate's own src (see filtering note).
-    ignore = _ignore_for(pkg)
+    ignore = _ignore_for(pkg, all_pkgs)
     out_dir = actions.declare_output(name, dir = True)
     profdata = actions.declare_output("{}.profdata".format(name))
     args = cmd_args(["bash", report_sh, cmd_args(llvm), out_dir.as_output(), profdata.as_output(), ignore])
@@ -186,9 +178,18 @@ def _cov_impl(ctx):
     crate = ctx.cli_args.crate
     universe = "//src/{}/...".format(crate) if crate else "//src/..."
 
+    # FULL first-party package set (every package under //src with a rust_test),
+    # independent of the --crate run scope. Used to build the per-crate ignore
+    # regex so a SINGLE-crate report still excludes sibling crates' src that its
+    # tests transitively link. Derived from the query — no hardcoded list.
+    full_pkgs_seen = {}
+    for node in ctx.uquery().kind("rust_test", ctx.uquery().eval("//src/...")):
+        full_pkgs_seen[str(node.label.package)] = None
+    all_pkgs = sorted(full_pkgs_seen.keys())
+
     tests = ctx.uquery().kind("rust_test", ctx.uquery().eval(universe))
 
-    # Group ALL tests by crate package (fixtures included now).
+    # Group the IN-SCOPE tests by crate package (fixtures included now).
     groups = {}
     for node in tests:
         pkg = str(node.label.package)
@@ -202,9 +203,9 @@ def _cov_impl(ctx):
 
     all_bins = []
     all_profraws = []
-    # Iterate packages in sorted order for determinism.
+    # Run/report only the in-scope packages; filter against the FULL package set
+    # (all_pkgs) so per-crate reports exclude sibling src even in --crate mode.
     for pkg in sorted(groups.keys()):
-        fixture = pkg in FIXTURE_PACKAGES
         out_dir, bins, profraws = _emit(
             ctx,
             actions,
@@ -213,8 +214,8 @@ def _cov_impl(ctx):
             report_sh,
             pkg,
             groups[pkg],
-            fixture,
             fixture_env,
+            all_pkgs,
         )
         ctx.output.print("CRATE {} -> {}".format(pkg, ctx.output.ensure(out_dir)))
         all_bins.extend(bins)
