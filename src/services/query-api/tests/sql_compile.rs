@@ -1,4 +1,5 @@
 use control_plane_core::{Aggregation, CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
+use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
 use query_api::sql::{ChainType, DerivedAggregate, DerivedSelect, compile_chain, compile_select};
 
@@ -6,6 +7,14 @@ fn t() -> TableRef {
     TableRef {
         schema: "main".into(),
         name: "orders".into(),
+    }
+}
+
+fn eqp(col: &str, val: SqlValue) -> CallerPredicate {
+    CallerPredicate {
+        column: col.into(),
+        op: CompareOp::Eq,
+        values: vec![val],
     }
 }
 
@@ -127,13 +136,13 @@ fn ands_acl_filter_with_request_equality_filter() {
         op: CompareOp::Eq,
         value: ScalarValue::Text("acme".into()),
     };
-    let eq = vec![("status".to_string(), SqlValue::Text("open".into()))];
+    let preds = vec![eqp("status", SqlValue::Text("open".into()))];
     let (sql, params) = compile_select(
         &t(),
         &["id".into()],
         &[],
         std::slice::from_ref(&acl),
-        &eq,
+        &preds,
         &[],
         10,
     )
@@ -207,8 +216,8 @@ fn compiles_is_not_null_without_a_param() {
 fn eq_filters_only_form_the_where_clause() {
     // No ACL row filter, only a request equality filter: the WHERE prefix and
     // conjunct-joining must still be correct (no leading/trailing AND).
-    let eq = vec![("status".to_string(), SqlValue::Text("open".into()))];
-    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &eq, &[], 10).unwrap();
+    let preds = vec![eqp("status", SqlValue::Text("open".into()))];
+    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 10"#
@@ -349,7 +358,7 @@ fn derived_jointable_sum_with_target_filter_orders_params_first() {
         &["id".to_string()],
         &[],
         &[],
-        &[("region".to_string(), SqlValue::Text("CA".into()))],
+        &[eqp("region", SqlValue::Text("CA".into()))],
         &derived,
         100,
     )
@@ -406,17 +415,17 @@ fn chain_two_hop_fk_compiles_to_nested_joins() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
-            eq_filters: vec![("region".to_string(), SqlValue::Text("CA".into()))],
+            predicates: vec![eqp("region", SqlValue::Text("CA".into()))],
         },
         ChainType {
             table: tr("main", "orders"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
         ChainType {
             table: tr("main", "line_items"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
     ];
     let hops = vec![
@@ -453,17 +462,17 @@ fn chain_fk_then_jointable_adds_mapping_join_for_that_hop_only() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
         ChainType {
             table: tr("main", "orders"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
         ChainType {
             table: tr("main", "tags"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
     ];
     let hops = vec![
@@ -496,7 +505,7 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
-            eq_filters: vec![("region".to_string(), SqlValue::Text("CA".into()))],
+            predicates: vec![eqp("region", SqlValue::Text("CA".into()))],
         },
         ChainType {
             table: tr("main", "orders"),
@@ -505,12 +514,12 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
                 op: CompareOp::Eq,
                 value: ScalarValue::Text("shipped".into()),
             }],
-            eq_filters: vec![],
+            predicates: vec![],
         },
         ChainType {
             table: tr("main", "line_items"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
     ];
     let hops = vec![
@@ -547,12 +556,12 @@ fn chain_single_hop_jointable_renders_j1_mapping() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
         ChainType {
             table: tr("main", "tags"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
     ];
     let hops = vec![LinkBacking::JoinTable {
@@ -582,12 +591,12 @@ fn chain_single_hop_reproduces_traversal_semantics() {
                 op: CompareOp::Eq,
                 value: ScalarValue::Text("CA".into()),
             }],
-            eq_filters: vec![],
+            predicates: vec![],
         },
         ChainType {
             table: tr("main", "orders"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
     ];
     let hops = vec![LinkBacking::ForeignKey {
@@ -617,17 +626,17 @@ fn chain_eq_filter_on_final_target_binds_at_t_k() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
         ChainType {
             table: tr("main", "orders"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
         ChainType {
             table: tr("main", "line_items"),
             row_filters: vec![],
-            eq_filters: vec![("sku".into(), SqlValue::Text("A".into()))],
+            predicates: vec![eqp("sku", SqlValue::Text("A".into()))],
         },
     ];
     let hops = vec![
@@ -657,17 +666,17 @@ fn chain_eq_filters_bind_per_position_in_chain_order() {
         ChainType {
             table: tr("main", "customer"),
             row_filters: vec![],
-            eq_filters: vec![("region".into(), SqlValue::Text("CA".into()))],
+            predicates: vec![eqp("region", SqlValue::Text("CA".into()))],
         },
         ChainType {
             table: tr("main", "orders"),
             row_filters: vec![],
-            eq_filters: vec![("id".into(), SqlValue::Int(10))],
+            predicates: vec![eqp("id", SqlValue::Int(10))],
         },
         ChainType {
             table: tr("main", "line_items"),
             row_filters: vec![],
-            eq_filters: vec![],
+            predicates: vec![],
         },
     ];
     let hops = vec![
@@ -689,4 +698,106 @@ fn chain_eq_filters_bind_per_position_in_chain_order() {
          WHERE (t_0.\"region\" = ?) AND (t_1.\"id\" = ?) LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("CA".into()), SqlValue::Int(10)]);
+}
+
+#[test]
+fn caller_predicate_gt_renders_with_param() {
+    let preds = vec![CallerPredicate {
+        column: "amount".into(),
+        op: CompareOp::Gt,
+        values: vec![SqlValue::Int(100)],
+    }];
+    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" > ?) LIMIT 10"#
+    );
+    assert_eq!(params, vec![SqlValue::Int(100)]);
+}
+
+#[test]
+fn caller_predicate_in_expands_placeholders() {
+    let preds = vec![CallerPredicate {
+        column: "status".into(),
+        op: CompareOp::In,
+        values: vec![SqlValue::Text("open".into()), SqlValue::Text("paid".into())],
+    }];
+    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("status" IN (?, ?)) LIMIT 10"#
+    );
+    assert_eq!(
+        params,
+        vec![SqlValue::Text("open".into()), SqlValue::Text("paid".into())]
+    );
+}
+
+#[test]
+fn caller_predicate_isnotnull_no_param() {
+    let preds = vec![CallerPredicate {
+        column: "closed_at".into(),
+        op: CompareOp::IsNotNull,
+        values: vec![],
+    }];
+    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn caller_predicate_range_two_same_column_ands() {
+    let preds = vec![
+        CallerPredicate {
+            column: "amount".into(),
+            op: CompareOp::Ge,
+            values: vec![SqlValue::Int(100)],
+        },
+        CallerPredicate {
+            column: "amount".into(),
+            op: CompareOp::Le,
+            values: vec![SqlValue::Int(200)],
+        },
+    ];
+    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" >= ?) AND ("amount" <= ?) LIMIT 10"#
+    );
+    assert_eq!(params, vec![SqlValue::Int(100), SqlValue::Int(200)]);
+}
+
+#[test]
+fn caller_predicate_binds_at_chain_alias() {
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+            predicates: vec![],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![],
+            predicates: vec![CallerPredicate {
+                column: "amount".into(),
+                op: CompareOp::Gt,
+                values: vec![SqlValue::Int(50)],
+            }],
+        },
+    ];
+    let hops = vec![LinkBacking::ForeignKey {
+        from_column: "id".into(),
+        to_column: "customer_id".into(),
+    }];
+    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], 100).unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_1.\"id\" FROM \"main\".\"orders\" t_1 \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
+         WHERE (t_1.\"amount\" > ?) LIMIT 100"
+    );
+    assert_eq!(params, vec![SqlValue::Int(50)]);
 }

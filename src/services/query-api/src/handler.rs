@@ -152,9 +152,10 @@ pub async fn read_object(
         .cloned()
         .collect();
 
-    // Visibility first (denied/masked column -> 400, no type info leak), then coerce the
-    // raw filter value to the column's declared logical type.
-    let mut eq_filters: Vec<(String, SqlValue)> = Vec::with_capacity(q.eq_filters.len());
+    // Visibility first (denied/masked column -> 400, no type info leak), then parse the
+    // raw value into a typed predicate (operator + coerced operands) for the column.
+    let mut predicates: Vec<crate::filter::CallerPredicate> =
+        Vec::with_capacity(q.eq_filters.len());
     for (col, raw) in &q.eq_filters {
         if !allowed.contains(col) || masked.contains(col) {
             return Err(QueryError::BadFilter(col.clone()));
@@ -165,9 +166,9 @@ pub async fn read_object(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        let v = crate::filter::coerce_filter(col, ty, raw)
+        let p = crate::filter::coerce_predicate(col, ty, raw)
             .map_err(|_| QueryError::BadFilter(col.clone()))?;
-        eq_filters.push((col.clone(), v));
+        predicates.push(p);
     }
 
     // Derived properties (aggregate-over-link), governed both-ends. Resolved + appended
@@ -232,7 +233,7 @@ pub async fn read_object(
         &allowed,
         &mask_cols,
         &row_filters,
-        &eq_filters,
+        &predicates,
         &derived_selects,
         DEFAULT_LIMIT,
     )?;
@@ -372,7 +373,7 @@ pub async fn read_linked_chain(
     let mut ctypes: Vec<crate::sql::ChainType> = vec![crate::sql::ChainType {
         table: from_type.table.clone(),
         row_filters: s_filters,
-        eq_filters: vec![],
+        predicates: vec![],
     }];
     let mut hops: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(q.path.len());
 
@@ -404,7 +405,7 @@ pub async fn read_linked_chain(
         ctypes.push(crate::sql::ChainType {
             table: to_type.table.clone(),
             row_filters: t_filters,
-            eq_filters: vec![],
+            predicates: vec![],
         });
         metas.push(HopMeta {
             otype: to_type,
@@ -415,8 +416,8 @@ pub async fn read_linked_chain(
     }
 
     // Caller filters, governed per position: visibility first (denied/masked or unknown
-    // column -> 400, no type-info leak), then coerce the raw value to that position's
-    // declared logical type. The coerced value is bound at the position's alias `t_i`.
+    // column -> 400, no type-info leak), then parse the raw value into a typed predicate
+    // (operator + coerced operands) bound at the position's alias `t_i`.
     for f in &q.filters {
         if f.position >= ctypes.len() {
             return Err(QueryError::BadFilter(f.column.clone()));
@@ -433,9 +434,9 @@ pub async fn read_linked_chain(
             .find(|p| p.name == f.column)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        let v = crate::filter::coerce_filter(&f.column, ty, &f.raw)
+        let p = crate::filter::coerce_predicate(&f.column, ty, &f.raw)
             .map_err(|_| QueryError::BadFilter(f.column.clone()))?;
-        ctypes[f.position].eq_filters.push((f.column.clone(), v));
+        ctypes[f.position].predicates.push(p);
     }
 
     // Final-target projection, from the last position (path is non-empty => >= 2 metas).

@@ -239,7 +239,7 @@ rust_test(
     srcs = ["tests/filter_coerce.rs"],
     crate_root = "tests/filter_coerce.rs",
     edition = "2024",
-    deps = [":query-api"],
+    deps = [":query-api", "//src/control-plane/core:core"],
 )
 
 rust_test(

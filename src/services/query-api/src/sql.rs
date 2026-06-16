@@ -7,6 +7,7 @@ use control_plane_core::{
     Aggregation, CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef, validate_row_filter,
 };
 
+use crate::filter::CallerPredicate;
 use crate::serving::SqlValue;
 
 /// The value substituted for a masked column. A compile-time constant (never caller
@@ -205,7 +206,34 @@ fn derived_aggregate_sql(d: &DerivedAggregate, params: &mut Vec<SqlValue>) -> St
     )
 }
 
-/// `allowed_cols` must be non-empty (caller enforces). `row_filters` and `eq_filters`
+/// Render one caller predicate at `alias` (empty = unqualified), pushing its operand
+/// params in conjunct order. Scalar ops use `op_sql`; set ops expand to N placeholders;
+/// null ops emit no param. The column is a trusted ontology identifier (quoted), every
+/// operand a bound `?`.
+fn caller_predicate_sql(p: &CallerPredicate, alias: &str, params: &mut Vec<SqlValue>) -> String {
+    use control_plane_core::CompareOp::*;
+    let col = col_ref(alias, &p.column);
+    match p.op {
+        In | NotIn => {
+            let kw = if matches!(p.op, In) { "IN" } else { "NOT IN" };
+            let mut placeholders = Vec::with_capacity(p.values.len());
+            for v in &p.values {
+                params.push(v.clone());
+                placeholders.push("?");
+            }
+            format!("({col} {kw} ({}))", placeholders.join(", "))
+        }
+        IsNull => format!("({col} IS NULL)"),
+        IsNotNull => format!("({col} IS NOT NULL)"),
+        _ => {
+            debug_assert_eq!(p.values.len(), 1, "scalar predicate must have one operand");
+            params.push(p.values[0].clone());
+            format!("({col} {} ?)", op_sql(p.op))
+        }
+    }
+}
+
+/// `allowed_cols` must be non-empty (caller enforces). `row_filters` and `predicates`
 /// are ANDed together as conjuncts. `derived` aggregate subqueries (if any) are appended
 /// to the SELECT list; their params precede the WHERE params. The outer table is aliased
 /// `o` only when at least one aggregate is present (so the no-derived output is unchanged).
@@ -215,7 +243,7 @@ pub fn compile_select(
     allowed_cols: &[String],
     mask_cols: &[String],
     row_filters: &[RowFilter],
-    eq_filters: &[(String, SqlValue)],
+    predicates: &[CallerPredicate],
     derived: &[DerivedSelect],
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
@@ -277,9 +305,8 @@ pub fn compile_select(
     for f in row_filters {
         conjuncts.push(filter_sql(f, "", &mut params));
     }
-    for (col, val) in eq_filters {
-        conjuncts.push(format!("({} = ?)", quote_ident(col)));
-        params.push(val.clone());
+    for p in predicates {
+        conjuncts.push(caller_predicate_sql(p, "", &mut params));
     }
 
     let mut sql = format!("SELECT {cols} FROM {from_clause}");
@@ -298,15 +325,15 @@ pub fn compile_select(
 pub struct ChainType {
     pub table: TableRef,
     pub row_filters: Vec<RowFilter>,
-    /// Caller equality filters (`col = value`) for this position, bound at alias `t_i`.
-    /// Position 0's eq_filters are the source filters (no special-case in the compiler).
-    pub eq_filters: Vec<(String, SqlValue)>,
+    /// Caller filter predicates for this position, bound at alias `t_i`. Position 0's
+    /// predicates are the source filters (no special-case in the compiler).
+    pub predicates: Vec<CallerPredicate>,
 }
 
 /// Compile a governed multi-hop traversal. `types` is the chain `[t_0 .. t_k]`
 /// (`t_0` = source, `t_k` = final target); `hops[i]` is the link backing connecting
 /// `types[i]` (from) to `types[i+1]` (to). Only the final target is projected
-/// (`allowed_cols`, `mask_cols` rendered as the marker). Each type's `eq_filters` bind
+/// (`allowed_cols`, `mask_cols` rendered as the marker). Each type's `predicates` bind
 /// at its alias `t_i` (position 0 = source). Every type's row-filters are ANDed into the WHERE.
 ///
 /// Precondition: `types.len() == hops.len() + 1` and `hops` is non-empty (`k >= 1`).
@@ -380,17 +407,16 @@ pub fn compile_chain(
         }
     }
 
-    // WHERE: per position in chain order, this type's caller eq-filters then its ACL
+    // WHERE: per position in chain order, this type's caller predicates then its ACL
     // row-filters, both bound at alias `t_i`. Params are pushed in conjunct-emission
     // order so positional `?` alignment holds. Source filters are just position 0's
-    // eq_filters — no special case.
+    // predicates — no special case.
     let mut params = Vec::new();
     let mut conjuncts: Vec<String> = Vec::new();
     for (i, t) in types.iter().enumerate() {
         let a = alias(i);
-        for (col, val) in &t.eq_filters {
-            conjuncts.push(format!("({a}.{} = ?)", quote_ident(col)));
-            params.push(val.clone());
+        for p in &t.predicates {
+            conjuncts.push(caller_predicate_sql(p, &a, &mut params));
         }
         for f in &t.row_filters {
             conjuncts.push(filter_sql(f, &a, &mut params));

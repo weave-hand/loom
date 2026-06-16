@@ -535,6 +535,23 @@ async fn bad_positioned_filters_are_rejected() {
         "denied target column filter -> BadFilter; got {denied:?}"
     );
 
+    // An operator filter on the same denied column is rejected too (visibility precedes parse).
+    let denied_op = read_linked_chain(
+        &ChainQuery {
+            from_type: "Customer".into(),
+            path: vec!["orders".into(), "lineItems".into()],
+            filters: vec![hopf(2, "sku", "ne:A")],
+        },
+        &Subject(a.clone()),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(denied_op, QueryError::BadFilter(ref c) if c == "sku"),
+        "operator filter on denied column -> BadFilter; got {denied_op:?}"
+    );
+
     // A position past the end of the chain -> BadFilter (guarded, never panics).
     let oob = read_linked_chain(
         &ChainQuery {
@@ -551,4 +568,41 @@ async fn bad_positioned_filters_are_rejected() {
         matches!(oob, QueryError::BadFilter(ref c) if c == "id"),
         "out-of-range position -> BadFilter; got {oob:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn intermediate_comparison_operator_narrows() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+    };
+    let (a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "Customer").await;
+    grant_read(&cp, &role, "Order").await;
+    grant_read(&cp, &role, "LineItem").await;
+
+    // Intermediate Order.id is Long: id > 10 keeps order 11 (drops order 10) for Customer 1,
+    // so only line_item 102 (which hangs off order 11) is reachable.
+    let rows = read_linked_chain(
+        &ChainQuery {
+            from_type: "Customer".into(),
+            path: vec!["orders".into(), "lineItems".into()],
+            filters: vec![srcf("region", "CA"), hopf(1, "id", "gt:10")],
+        },
+        &Subject(a),
+        &deps,
+    )
+    .await
+    .unwrap();
+    let body = objects_to_json(&rows);
+    let ids: Vec<String> = body["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids, vec!["102".to_string()]);
 }
