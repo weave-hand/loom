@@ -170,6 +170,25 @@ drew the relational/graph boundary:
   typed-input-filters comparison-operators follow-up; a shared richer filter grammar would cover
   source and per-hop filters at once.
 
+From the comparison/set-operators slice (`2026-06-16-query-comparison-set-operators-design.md`), which
+gave caller filters the full `CompareOp` surface (`op:operand` grammar, ranges via repeated keys):
+
+- **`or`-combined caller predicates.** All caller predicates are ANDed (matching the equality
+  filters they generalize). A disjunction grammar (OR across caller predicates) is deferred.
+- **`between:lo,hi` sugar.** Ranges are two predicates (`ge` + `le`) via repeated keys; a dedicated
+  `between` operator is sugar only, deferred.
+- **Literal comma inside an `in` operand.** `in:` splits on commas, so an operand containing a comma
+  cannot be expressed — needs an escaping / alternate-delimiter convention.
+- **Text-pattern matching** (`like`/`ilike`/`contains`). No such `CompareOp` variant exists today; a
+  separate slice (and a new operator + safe rendering) would add it.
+- **Predicates on derived (aggregate) properties.** Caller predicates validate against physical
+  columns only; making derived properties filterable is shared with the derived-properties
+  "filter/sort targets" follow-up.
+- **Rename `ObjectQuery.eq_filters` / `LinkQuery`/`ChainQuery` filter fields.** The request-struct
+  field is still named `eq_filters` (and the wire keys "equality filters") though it now carries the
+  full operator grammar. A rename to `filters`/`predicates` for clarity is a cosmetic follow-up
+  (touches http.rs + the read e2es).
+
 ## Actions (Step 3)
 
 From the actions part-1 slice (`2026-06-15-actions-part1-design.md`), which delivered

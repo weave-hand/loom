@@ -170,6 +170,14 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     (`/links`) vs deferred graph (`/graph`) boundary: a per-hop filter on a link that repeats in
     the path is rejected (the graph case). Proven by compiler unit tests, a pure resolver unit,
     and a chain e2e.
+  - *Part 7 — comparison / set operators on filters* ✅ DELIVERED
+    (`2026-06-16-query-comparison-set-operators-design.md`). Caller filters across `read_object`,
+    traversal, and chains (at every position) now express the full `CompareOp` surface — `ne`, `lt`,
+    `le`, `gt`, `ge`, `in`, `nin`, `isnull`, `isnotnull` — via a value-prefixed `op:operand` grammar
+    (bare value = `eq`; `eq:` escape; ranges as repeated keys). Operands stay typed (`SqlValue`,
+    reusing `coerce_filter` per operand) so `Double`/`Date`/`Timestamp` filtering is preserved; one
+    `caller_predicate_sql` renderer reuses the ACL `CompareOp`/`op_sql` machinery. Proven by
+    `coerce_predicate` units, compiler-render units, and read/chain e2es.
   - *Later:* the serving *tier* over Quack (separate `quack_serve`'d DuckDB; the seam's
     Quack-client impl); the client-facing Quack endpoint; full ACL (deny-override,
     masking, roles); rich ontology (links, derived properties); multi-type queries/joins;
@@ -259,6 +267,10 @@ traversal touches is caller-filterable (typed, governed per type), not just the 
 relational-vs-graph boundary is drawn (a future `/graph` surface owns cyclic/self-link
 traversal). The remaining slice-C parts are inverse-direction hops, object-set inputs, and the
 source→target association.
+**Comparison / set operators** (`2026-06-16-query-comparison-set-operators-design.md`) complete the
+filter arc: every caller filter, at every read path and chain position, now expresses the full
+`CompareOp` surface (ranges via repeated keys), not just equality — real analytical filtering on the
+governed read path.
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
 reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,
