@@ -225,6 +225,48 @@ impl Ontology for PgControlPlane {
         ))
     }
 
+    async fn links_to(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
+        let exists: bool = sqlx::query_scalar!(
+            "select exists (select 1 from ontology.object_type where name = $1)",
+            name.0,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?
+        .unwrap_or(false);
+        if !exists {
+            return Err(ControlPlaneError::NotFound(name.0.clone()));
+        }
+        let rows = sqlx::query!(
+            "select name, from_type, to_type, cardinality, backing_kind, from_column, \
+                    to_column, from_key, to_key, join_table_schema, join_table_name \
+             from ontology.link where to_type = $1",
+            name.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(Page::from_full(
+            rows.into_iter()
+                .map(|r| LinkDef {
+                    name: r.name,
+                    from: TypeName(r.from_type),
+                    to: TypeName(r.to_type),
+                    cardinality: cardinality_from_str(r.cardinality.as_str()),
+                    backing: backing_from_row(
+                        &r.backing_kind,
+                        r.from_column,
+                        r.to_column,
+                        r.from_key,
+                        r.to_key,
+                        r.join_table_schema,
+                        r.join_table_name,
+                    ),
+                })
+                .collect(),
+        ))
+    }
+
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {
         let row = sqlx::query!(
             "select table_schema, table_name from ontology.object_type where name = $1",

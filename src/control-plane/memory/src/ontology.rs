@@ -77,6 +77,20 @@ impl Ontology for MemoryControlPlane {
         ))
     }
 
+    async fn links_to(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
+        let ont = self.ontology.lock().unwrap();
+        if !ont.types.contains_key(&name.0) {
+            return Err(ControlPlaneError::NotFound(name.0.clone()));
+        }
+        Ok(Page::from_full(
+            ont.links
+                .iter()
+                .filter(|l| l.to == *name)
+                .cloned()
+                .collect(),
+        ))
+    }
+
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {
         Ok(self.get_type(name).await?.table)
     }
