@@ -51,19 +51,30 @@ non-DuckDB engine overrides this." This slice is that engine.
 
 One new module in query-api: `src/serving_datafusion.rs`, holding
 `DataFusionServingEngine` — a third `ServingEngine` impl alongside the DuckDB ones
-in `serving.rs`. It owns:
+in `serving.rs`. It owns **only** an `IcebergCatalog` (concrete, not `dyn Catalog`)
+— the mirror reader. Concrete because the engine needs to enumerate live tables,
+which the `core::Catalog` trait does not expose.
 
-- an `IcebergCatalog` (concrete, not `dyn Catalog`) — the mirror reader. Concrete
-  because the engine needs to enumerate live tables, which the `core::Catalog`
-  trait does not expose.
-- an `Arc<dyn ObjectStore>` — the same store the data files live in.
+It does **not** take an injected object store. The mirror records **absolute**
+`file://` data-file paths (`iceberg_mirror.data_file.path` = the Iceberg
+`data_file.file_path()`), so the engine registers a non-prefixed
+`object_store::local::LocalFileSystem::new()` under the `file://` scheme in each
+query's `SessionContext` and registers tables by their absolute path. (S3/object
+stores are a later concern — that's where an injected/configured store would slot
+in.)
 
-New query-api dependencies: `datafusion-io` (brings DataFusion + the
-`scan_table` building block and `LOOM_STORE_URL`) and `object_store`.
-`control-plane-postgres` is already a dependency, so `IcebergCatalog` is in reach.
+New query-api dependencies: `//third-party:datafusion`, `//third-party:object_store`,
+`//third-party:arrow`. `control-plane-postgres` is already a dependency, so
+`IcebergCatalog` is in reach. (We do **not** depend on `datafusion-io` — its
+`scan_table` reconstructs *table-relative* keys for the DuckLake layout, the wrong
+convention here; the engine does its own absolute-path registration, mirroring
+`scan_table`'s `ParquetFormat::default().with_force_view_types(false)` so string
+columns stay canonical `Utf8`.)
 
 **No change** to the `ServingEngine` trait, the read handler, the SQL compiler, or
-the DuckDB impls. The slice is isolated to one new engine type, one small mirror
+the DuckDB impls. The read handler's `QueryDeps` uses only `ontology`, `acl`, and
+`serving` — it never calls `cp.catalog()` — so ontology/ACL stay on the shared
+`PgControlPlane` (format-agnostic) and only the serving engine swaps. The slice is isolated to one new engine type, one small mirror
 helper, and a one-line binary swap. (This is the chosen "Approach A": the engine
 owns the catalog and pre-registers live tables, rather than extending the seam to
 pass referenced tables from the handler — that would touch the trait, both DuckDB
@@ -83,9 +94,9 @@ Read-only, mirror-local; no change to the `core::Catalog` trait.
 3. For each live table: resolve its `current_snapshot`, fetch its live `files` at
    that snapshot, and register it as a DataFusion `ListingTable` under a
    **schema-qualified** name (`"schema"."table"`), so the compiled SQL's
-   `"schema"."table"` references resolve. (`scan_table` registers a *bare* name
-   today — see "File-path reconstruction" for why the engine uses its own
-   registration rather than `scan_table` verbatim.)
+   `"schema"."table"` references resolve. (The engine uses its own absolute-path
+   registration — see "File-path convention" — not `scan_table`, which registers a
+   *bare*, table-relative name.)
 4. **Parameters:** reuse the existing, tested `inline_params` (the Quack path's
    injection-safe `?`→literal renderer, with `''`-doubling as the escape boundary)
    to inline `params` into `sql`, then `ctx.sql(&inlined)`. This sidesteps
@@ -107,14 +118,13 @@ Each table is registered at its own latest `current_snapshot`. A multi-table que
 
 ## Dialect
 
-A thin `DataFusionDialect` implementing `SqlDialect`:
-- `quote_ident(id)` → `"id"` (double-quote, reject embedded `"`), identical to
-  `DuckDbDialect` so the compiled SQL's quoted identifiers preserve case.
-- `LIMIT n`.
-
-Today it is behaviorally identical to `DuckDbDialect`; it exists as its own type so
-future DataFusion/DuckDB SQL divergence has a home. `DataFusionServingEngine::dialect()`
-returns it.
+The engine **inherits the `ServingEngine` trait's default `dialect()`**
+(`DuckDbDialect`) — no new dialect type. Because the engine inlines params (so the
+placeholder is always `?`) and the SQL compiler quotes every identifier, the SQL
+`DuckDbDialect` emits — `"id"` quoting, `LIMIT n`, `?`-then-inlined literals — is
+already valid DataFusion SQL. A separate `DataFusionDialect` would be byte-for-byte
+identical and is therefore omitted (YAGNI); add one only if a real token ever
+diverges between DuckDB and DataFusion.
 
 ## Result mapping
 
@@ -144,12 +154,14 @@ query-api `main.rs` selects the serving engine from a new env var
 
 - unset or `ducklake` (default) → `EmbeddedDuckDb` + `EmbeddedDuckDbWriter`
   (today's behavior, unchanged).
-- `iceberg` → `DataFusionServingEngine` over `IcebergCatalog::new(pool)` +
-  `service_runtime::local_store(&cfg.data_path)`, paired with an
-  `UnsupportedActionEngine`.
+- `iceberg` → `DataFusionServingEngine::new(IcebergCatalog::new(pool.clone()))`,
+  paired with an `UnsupportedActionEngine`. `cp` (the `PgControlPlane` for
+  ontology/ACL) is built and used exactly as today — `PgPool` is `Clone`, so the
+  pool is shared between `cp` and the engine's `IcebergCatalog`.
 
-Parsing is a tiny unit-testable helper in query-api; `service_runtime`'s `Config`
-is untouched (only query-api needs this knob this slice).
+Parsing is a tiny unit-testable helper in query-api (`parse_serving_backend`);
+`service_runtime`'s `Config` is untouched (only query-api needs this knob this
+slice).
 
 `UnsupportedActionEngine` is a new `ActionEngine` impl whose `insert_row` returns
 `ServingError::Engine("actions unsupported on the iceberg serving backend")`. The
@@ -180,16 +192,20 @@ silently misbehaving — consistent with "file-backed reads only, no inline writ
 All tests are `rust_test` integration targets (no inline `#[cfg(test)]`),
 fixture-backed ones via `loom_fixture_test`.
 
-## Open detail / risk — verify first in the plan
+## File-path convention (resolved during planning)
 
-**File-path reconstruction.** `datafusion-io::scan_table` reconstructs object keys
-as `<LOOM_STORE_URL>/<schema>/<table>/<path>` — the DuckLake *table-relative*
-layout. Iceberg manifests commonly store **absolute** data-file paths
-(`file:///…`/`s3://…`). The mirror's `iceberg_mirror.data_file.path` therefore may
-be absolute, not table-relative. The engine's registration must resolve the
-mirror's stored paths to correct object-store URLs, handling absolute-vs-relative —
-likely a dedicated scan variant rather than reusing `scan_table` verbatim.
+`iceberg_mirror.data_file.path` stores the Iceberg `data_file.file_path()` verbatim
+(see `iceberg_mirror::added_files_of`), which is an **absolute** URI — for the
+LocalFsStorage path the slice exercises, `file:///<warehouse>/<ns>/<name>/…/loom-<uuid>.parquet`.
+The warehouse is the writer's own location, unrelated to any `data_path`.
 
-**This is the first thing the plan verifies**: seed one Iceberg table, inspect what
-`iceberg_mirror.data_file.path` actually contains, and shape the registration to
-match before building anything else on top.
+Consequences, baked into the design above:
+- The engine registers each file by its **absolute** path as a
+  `ListingTableUrl::parse(path)`, NOT via `scan_table`'s `<schema>/<table>/<rel>`
+  reconstruction.
+- The engine registers a **non-prefixed** `LocalFileSystem::new()` under `file://`
+  (a `new_with_prefix(data_path)` store could not reach the absolute warehouse
+  paths).
+- The plan's first product task still ends with an integration test that registers
+  a *seeded* table and `SELECT`s it back, so the absolute-path handling is proven
+  empirically before the engine is assembled on top.
