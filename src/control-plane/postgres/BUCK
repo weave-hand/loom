@@ -361,3 +361,18 @@ loom_fixture_test(
     crate_root = "tests/iceberg_snapshot_seq.rs",
     deps = [":postgres", "//third-party:tokio"],
 )
+
+loom_fixture_test(
+    name = "iceberg-writer",
+    crate = "iceberg_writer",
+    srcs = ["tests/iceberg_writer.rs"],
+    crate_root = "tests/iceberg_writer.rs",
+    deps = [
+        ":postgres",
+        "//third-party:arrow-array-57",
+        "//third-party:iceberg",
+        "//third-party:parquet-57",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
