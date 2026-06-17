@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select path as \"path!\", record_count as \"record_count!\", file_size_bytes as \"file_size_bytes!\" from iceberg_mirror.data_file where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) order by data_file_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "path!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "record_count!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "record_count"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "file_size_bytes!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "file_size_bytes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "30fdca7dbed32ee23320ef56d543d114ed801ea8c2f6e74e51f035ceb8cc2485"
+}
