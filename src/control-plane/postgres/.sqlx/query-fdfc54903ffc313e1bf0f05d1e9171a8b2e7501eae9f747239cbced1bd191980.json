@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into iceberg_mirror.column (table_id, column_order, column_name, column_type, nulls_allowed, begin_snapshot) values ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Bool",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fdfc54903ffc313e1bf0f05d1e9171a8b2e7501eae9f747239cbced1bd191980"
+}

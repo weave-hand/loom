@@ -23,6 +23,10 @@ pub mod fixture;
 mod acl;
 mod catalog;
 pub mod ducklake_type;
+pub mod iceberg_catalog;
+pub mod iceberg_mirror;
+pub mod iceberg_sql_catalog;
+pub mod iceberg_type;
 mod lineage;
 mod ontology;
 mod queue;
@@ -43,6 +47,12 @@ impl PgControlPlane {
     /// builds one per fresh database; services will build one at startup).
     pub fn new(pool: PgPool, lock_timeout: Duration) -> Self {
         Self { pool, lock_timeout }
+    }
+
+    /// The underlying connection pool. Used by the Iceberg read adapter and test
+    /// seeder, which share the control plane's database.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
 }
 

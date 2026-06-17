@@ -139,6 +139,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//third-party:async-trait",
+        "//third-party:iceberg",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
@@ -157,6 +158,15 @@ rust_test(
     crate_root = "tests/ducklake_type.rs",
     edition = "2024",
     deps = [":postgres", "//src/control-plane/core:core"],
+)
+
+rust_test(
+    name = "iceberg-type",
+    crate = "iceberg_type",
+    srcs = ["tests/iceberg_type.rs"],
+    crate_root = "tests/iceberg_type.rs",
+    edition = "2024",
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:iceberg"],
 )
 
 loom_fixture_test(
@@ -318,6 +328,20 @@ loom_fixture_test(
     srcs = ["tests/catalog.rs"],
     crate_root = "tests/catalog.rs",
     duckdb = True,
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg_catalog",
+    crate = "iceberg_catalog",
+    srcs = ["tests/iceberg_catalog.rs"],
+    crate_root = "tests/iceberg_catalog.rs",
     deps = [
         ":postgres",
         "//src/control-plane/core:core",

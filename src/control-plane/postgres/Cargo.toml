@@ -25,6 +25,10 @@ tracing = "0.1"
 # Test-only (tests/lineage_roundtrip.rs), declared as a normal dep so reindeer emits
 # //third-party:proptest in non-vendored mode (same pattern as the worker crate).
 proptest = "1"
+# Iceberg table-format adapter (read path): canonical metadata machinery. loom serves reads
+# from its own iceberg_mirror.* projection; iceberg is used only in the test seeder + the
+# vendored SQL catalog (src/iceberg_sql_catalog/, ported from iceberg-catalog-sql to sqlx 0.9).
+iceberg = "0.9"
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }
