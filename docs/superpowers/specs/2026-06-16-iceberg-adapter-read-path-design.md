@@ -176,14 +176,22 @@ to `DuckLakeWriter` in `fixture.rs`):
 
 1. Builds loom's vendored SQL catalog (sqlx 0.9) pointed at the hermetic Postgres, with a
    `file://` warehouse in a temp dir (`FileIO` local storage).
-2. Creates the namespace + table and commits the seeded rows via `iceberg`'s `Transaction`
-   + Parquet writer. The vendored catalog manages its JDBC pointer tables.
-3. Calls `iceberg_mirror` to project the committed table's metadata into the
-   `iceberg_mirror.*` rows.
+2. Creates the namespace + table via the catalog (`create_namespace` / `create_table`),
+   exercising the vendored catalog end to end; the vendored catalog manages its JDBC pointer
+   tables and writes the canonical `metadata.json`.
+3. Reads back the schema Iceberg actually recorded (`load_table().metadata().current_schema()`)
+   and projects it — plus one synthetic data-file row per batch — into `iceberg_mirror.*`.
 
 A `PgSeeder`-equivalent impls the testkit `CatalogSeed` trait (logical types in, the same
-contract surface as DuckLake's seeder). Because the seeder writes via `iceberg`, the read
-path is validated against genuinely spec-compliant metadata, not a loom-fabricated mirror.
+contract surface as DuckLake's seeder). The **schema** the mirror serves is genuine Iceberg
+catalog metadata (so the logical↔Iceberg type round-trip is validated against a real table),
+and the vendored catalog is exercised for real. **Slice 1 does not write real Parquet bytes:**
+that needs the `iceberg` writer chain bound to **arrow/parquet 57** (a distinct major from the
+arrow 58 the services use, whose version-suffixed buck targets are not publicly visible), and
+producing real data files is the **write path's** concern — slice 2. The catalog contracts
+assert file *counts*/*paths* and schema/type round-trips, all of which a real-schema +
+synthetic-file projection satisfies; slice 2 replaces the synthetic files with real committed
+`DataFile`s via the writer chain.
 
 ## Testing strategy
 

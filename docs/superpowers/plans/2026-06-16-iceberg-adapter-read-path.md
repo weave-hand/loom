@@ -678,6 +678,18 @@ git rev-parse --short HEAD
 
 ## Task 7: `IcebergWriter` seeder — drive the vendored catalog + iceberg, fill the mirror
 
+> **As-built note:** the writer-chain approach below was simplified during implementation. The
+> arrow/parquet **57** the `iceberg` writer needs are transitive-only crates whose
+> version-suffixed buck targets aren't publicly visible (the public `//third-party:arrow`/
+> `parquet` aliases are the services' **58**), and writing real Parquet bytes is really the
+> *write path's* job (slice 2). The shipped seeder instead: creates the table via the vendored
+> catalog (`create_namespace`/`create_table` — exercising it end to end), reads back the schema
+> Iceberg recorded (`load_table().metadata().current_schema()`) and projects it, plus **one
+> synthetic data-file row per batch**, into `iceberg_mirror.*`. The contracts assert file
+> counts/paths and schema/type round-trips, which this satisfies; slice 2 swaps in real
+> committed `DataFile`s. See the design spec's "Fixture / seeder" section. Steps below are the
+> original writer-chain plan, kept for slice-2 reference.
+
 **Files:**
 - Modify: `src/control-plane/postgres/src/fixture.rs` (add `IcebergWriter`)
 - Possibly modify: `src/control-plane/postgres/src/lib.rs` / `PgFixture` (expose a `PgPool` +
