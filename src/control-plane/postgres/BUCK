@@ -166,7 +166,7 @@ rust_test(
     srcs = ["tests/iceberg_type.rs"],
     crate_root = "tests/iceberg_type.rs",
     edition = "2024",
-    deps = [":postgres", "//src/control-plane/core:core"],
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:iceberg"],
 )
 
 loom_fixture_test(

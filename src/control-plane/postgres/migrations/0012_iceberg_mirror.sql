@@ -5,6 +5,8 @@ create schema if not exists iceberg_mirror;
 create table iceberg_mirror.snapshot (
     snapshot_id         bigint      primary key,
     snapshot_time       timestamptz not null default now(),
+    -- Reserved: the schema version a snapshot reads at. Always 0 in slice 1 (no schema
+    -- evolution); slice 2's write path will populate it as schemas drift across snapshots.
     schema_version      bigint      not null default 0,
     iceberg_snapshot_id bigint
 );
@@ -19,6 +21,12 @@ create table iceberg_mirror.table (
 );
 create index iceberg_table_lookup_idx
     on iceberg_mirror.table (table_namespace, table_name, begin_snapshot);
+-- At most one live row per table — the invariant the read-path MVCC predicates assume
+-- (loom owns this schema, so it enforces it; a second concurrent/buggy live row would make
+-- resolve_table/current_snapshot ambiguous).
+create unique index iceberg_table_one_live_idx
+    on iceberg_mirror.table (table_namespace, table_name)
+    where end_snapshot is null;
 
 -- Column schema, MVCC-versioned. `column_type` holds the Iceberg primitive type name
 -- (e.g. "long","string"); the adapter maps it to a loom logical type on read.
