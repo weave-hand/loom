@@ -591,6 +591,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "arrow-array",
+    actual = ":arrow-array-57",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "arrow-array-57.3.1.crate",
     sha256 = "c8a4ab47b3f3eac60f7fd31b81e9028fda018607bcc63451aca4f2b755269862",
@@ -622,7 +628,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "1",
         "CARGO_PKG_VERSION_PRE": "",
     },
-    visibility = [],
+    visibility = ["PUBLIC"],
     deps = [
         ":ahash-0.8",
         ":arrow-buffer-57",
@@ -1266,6 +1272,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "arrow-schema",
+    actual = ":arrow-schema-57",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "arrow-schema-57.3.1.crate",
     sha256 = "e4cf0d4a6609679e03002167a61074a21d7b1ad9ea65e462b2c0a97f8a3b2bc6",
@@ -1297,7 +1309,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "1",
         "CARGO_PKG_VERSION_PRE": "",
     },
-    visibility = [],
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -11637,6 +11649,7 @@ buildscript_run(
     version = "0.9.12",
 )
 
+
 http_archive(
     name = "parquet-57.3.1.crate",
     sha256 = "2e832c6aa20310fc6de7ea5a3f4e20d34fd83e3b43229d32b81ffe5c14d74692",
@@ -11691,7 +11704,7 @@ cargo.rust_library(
         "tokio",
         "zstd",
     ],
-    visibility = [],
+    visibility = ["PUBLIC"],
     deps = [
         ":ahash-0.8",
         ":arrow-array-57",

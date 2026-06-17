@@ -963,10 +963,13 @@ dependencies = [
 name = "control-plane-postgres"
 version = "0.1.0"
 dependencies = [
+ "arrow-array 57.3.1",
+ "arrow-schema 57.3.1",
  "async-trait",
  "control-plane-core",
  "control-plane-testkit",
  "iceberg",
+ "parquet 57.3.1",
  "proptest",
  "serde_json",
  "sqlx",

@@ -138,8 +138,11 @@ rust_library(
     },
     deps = [
         "//src/control-plane/core:core",
+        "//third-party:arrow-array-57",
+        "//third-party:arrow-schema-57",
         "//third-party:async-trait",
         "//third-party:iceberg",
+        "//third-party:parquet-57",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",

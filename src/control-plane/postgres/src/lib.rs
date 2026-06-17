@@ -35,6 +35,13 @@ mod transaction;
 
 use transaction::PgTx;
 
+// TEMP (removed in Task 2 when iceberg_writer lands): prove the v57 third-party
+// targets are visible to this crate.
+#[allow(unused_imports)]
+use arrow_array::RecordBatch as _Slice2VisibilityProbeBatch;
+#[allow(unused_imports)]
+use parquet::file::properties::WriterProperties as _Slice2VisibilityProbeProps;
+
 /// Postgres-backed control plane over a sqlx connection pool.
 #[derive(Clone)]
 pub struct PgControlPlane {

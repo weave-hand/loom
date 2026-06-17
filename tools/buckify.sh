@@ -84,6 +84,51 @@ def add_link_attrs(m):
 
 content = run_call.sub(add_link_attrs, content)
 
+# (3) Reconcile two public majors of one crate. The iceberg writer (slice 2) needs
+#     arrow/parquet 57; ingest/datafusion-io need 58. Both majors are direct deps of
+#     some workspace member, so reindeer marks both "public" and emits one bare
+#     alias per major — BOTH named e.g. `parquet` — which buck2 rejects as a double
+#     registration. The native fix (a Cargo dep rename) is honoured only from the
+#     ROOT package's deps (index.rs: "Only the root package's renames matter"), and
+#     loom is a VIRTUAL workspace with no root package, so renames are ignored for
+#     alias naming. reindeer also hardcodes the versioned library to Visibility
+#     ::Private, so a `visibility` fixup (which only tunes the alias) can't expose
+#     it. Hence two deterministic corrections here:
+#       (a) widen the specific :*-57 targets first-party code depends on to PUBLIC;
+#       (b) de-duplicate each bare alias to its highest public version, so existing
+#           bare-alias users (datafusion-io → //third-party:parquet) keep 58 while
+#           postgres depends on the explicit //third-party:parquet-57 target.
+#     Upstream-clean fixes (build dep_renamed from all members, or add a
+#     per-(package,version) alias-name fixup) are tracked for a reindeer PR.
+PUBLIC_VERSIONED_TARGETS = ["parquet-57", "arrow-array-57", "arrow-schema-57"]
+for name in PUBLIC_VERSIONED_TARGETS:
+    lib = re.compile(
+        r'(cargo\.rust_library\(\s*\n\s*name = "' + re.escape(name) + r'",.*?\n)(\s*)visibility = \[\]',
+        re.DOTALL)
+    content, n = lib.subn(lambda m: m.group(1) + m.group(2) + 'visibility = ["PUBLIC"]', content)
+    assert n == 1, f"visibility pass: expected exactly one {name} library, found {n}"
+
+# (b) Dedupe bare aliases. For each alias name emitted more than once, keep the one
+#     pointing at the highest version (parsed from the `:name-<ver>` actual) and drop
+#     the rest. First-party code that needs a non-highest version uses the explicit
+#     versioned target (made PUBLIC above).
+alias_block = re.compile(
+    r'\nalias\(\s*\n\s*name = "([^"]+)",\s*\n\s*actual = ":([^"]+)",\s*\n(?:\s*visibility = \[[^\]]*\],\s*\n)?\)\n')
+def ver_key(actual):
+    # actual is "<crate>-<ver>"; take the trailing version, compare numerically.
+    ver = actual.rsplit("-", 1)[-1]
+    return tuple(int(p) if p.isdigit() else 0 for p in ver.split("."))
+by_name = {}
+for m in alias_block.finditer(content):
+    by_name.setdefault(m.group(1), []).append(m)
+drop_spans = []
+for name, ms in by_name.items():
+    if len(ms) > 1:
+        keep = max(ms, key=lambda m: ver_key(m.group(2)))
+        drop_spans += [(m.start(), m.end()) for m in ms if m is not keep]
+for start, end in sorted(drop_spans, reverse=True):
+    content = content[:start] + "\n" + content[end:]
+
 with open(path, "w") as f:
     f.write(content)
 PYFIX
