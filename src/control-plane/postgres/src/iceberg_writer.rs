@@ -58,8 +58,12 @@ pub async fn append_batches(
 
 async fn write_parquet(table: &Table, batches: Vec<RecordBatch>) -> Result<Vec<DataFile>> {
     let location_generator = DefaultLocationGenerator::new(table.metadata().clone())?;
+    // Unique per-append prefix: DefaultFileNameGenerator restarts its counter at 0
+    // each call, so a fixed prefix would emit the same `<prefix>-00000.parquet` path
+    // for every append — and iceberg's fast_append rejects re-adding an already-
+    // referenced path (whether from a prior sequential append or a concurrent writer).
     let file_name_generator = DefaultFileNameGenerator::new(
-        "loom".to_string(),
+        format!("loom-{}", uuid::Uuid::new_v4()),
         None,
         iceberg::spec::DataFileFormat::Parquet,
     );

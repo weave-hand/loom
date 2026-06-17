@@ -5,10 +5,16 @@
 //! adapter (`iceberg_catalog`) serves from the rows they write. Shared with the slice-2 write
 //! path, which folds these into the catalog's `update_table` transaction.
 
-use control_plane_core::{Result, SnapshotId};
+use control_plane_core::{ControlPlaneError, Result, SnapshotId};
+use iceberg::table::Table;
 use sqlx::PgConnection;
 
 use crate::backend;
+
+/// Map an `iceberg` error into the control-plane backend error.
+fn iceberg_err(e: iceberg::Error) -> ControlPlaneError {
+    ControlPlaneError::Backend(Box::new(e))
+}
 
 /// A neutral view of one committed Iceberg data file the projection writes.
 pub struct ProjectedFile {
@@ -175,4 +181,74 @@ pub async fn mark_dropped(
     .await
     .map_err(backend)?;
     Ok(())
+}
+
+/// Build `ProjectedColumn`s from an Iceberg table's current schema (in-memory).
+/// Columns are emitted in schema order; only primitive types are supported (the
+/// only types loom's ontology maps — see `iceberg_type`).
+pub fn columns_of(table: &Table) -> Vec<ProjectedColumn> {
+    table
+        .metadata()
+        .current_schema()
+        .as_struct()
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, field)| ProjectedColumn {
+            order: (i + 1) as i64,
+            name: field.name.clone(),
+            iceberg_type: match field.field_type.as_ref() {
+                iceberg::spec::Type::Primitive(p) => p.to_string(),
+                other => panic!("project: non-primitive column type {other:?}"),
+            },
+            nullable: !field.required,
+        })
+        .collect()
+}
+
+/// Read the data files the table's current snapshot ADDED, as neutral
+/// `ProjectedFile`s, by loading that snapshot's manifests via the table's FileIO.
+/// Returns empty if the table has no current snapshot (e.g. a create with no
+/// append). Only entries stamped with the current snapshot id are taken, so an
+/// append projects exactly its new files (existing files stay live in the mirror).
+pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
+    let Some(snapshot) = table.metadata().current_snapshot() else {
+        return Ok(Vec::new());
+    };
+    let manifest_list = snapshot
+        .load_manifest_list(table.file_io(), table.metadata())
+        .await
+        .map_err(iceberg_err)?;
+    let mut files = Vec::new();
+    for manifest_file in manifest_list.entries() {
+        let manifest = manifest_file
+            .load_manifest(table.file_io())
+            .await
+            .map_err(iceberg_err)?;
+        for entry in manifest.entries() {
+            if entry.snapshot_id() == Some(snapshot.snapshot_id()) {
+                let df = entry.data_file();
+                files.push(ProjectedFile {
+                    path: df.file_path().to_string(),
+                    file_format: "parquet".to_string(),
+                    record_count: df.record_count() as i64,
+                    file_size_bytes: df.file_size_in_bytes() as i64,
+                });
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// True if the mirror already has any column row for `table_id` — used to project
+/// columns exactly once per table lifetime (slice 2 has no schema evolution).
+pub async fn columns_exist(conn: &mut PgConnection, table_id: i64) -> Result<bool> {
+    let exists = sqlx::query_scalar!(
+        "select exists(select 1 from iceberg_mirror.column where table_id = $1) as \"e!\"",
+        table_id,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(exists)
 }

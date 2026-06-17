@@ -154,6 +154,16 @@ impl PgFixture {
         )
     }
 
+    /// A fresh sqlx pool for an existing fixture database — for the read side of a
+    /// test that also drives the vendored catalog over the same db via `pg_dsn`.
+    pub async fn pool_for(&self, db: &str) -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(self.opts(db))
+            .await
+            .expect("connect pool_for")
+    }
+
     /// Create a fresh database (migrated) and return a `PgControlPlane` bound to it
     /// together with the database name, so test-support writers can target the same db.
     pub async fn fresh_db(&self) -> (PgControlPlane, String) {

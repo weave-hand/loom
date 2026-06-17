@@ -376,3 +376,19 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "iceberg-write-roundtrip",
+    crate = "iceberg_write_roundtrip",
+    srcs = ["tests/iceberg_write_roundtrip.rs"],
+    crate_root = "tests/iceberg_write_roundtrip.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array-57",
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
