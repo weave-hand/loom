@@ -1,0 +1,203 @@
+//! read_associations on an in-memory control plane + a stub serving engine. The stub
+//! returns canned id pairs (no real DuckDB); the test asserts the returned `pairs` and
+//! the per-end identity logical types, plus the `NoIdentity` governance path. Real-data
+//! pairs over DuckDB are covered by the association e2e (Task 4).
+
+use std::time::Duration;
+
+use async_trait::async_trait;
+use control_plane_core::{
+    Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, ObjectType, Ontology, PolicyTarget,
+    PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+};
+use control_plane_memory::MemoryControlPlane;
+use query_api::handler::{
+    Associations, ChainQuery, Hop, QueryDeps, QueryError, Subject, read_associations,
+};
+use query_api::serving::{Rows, ServingEngine, ServingError, SqlValue};
+
+/// A serving stub that returns canned (source_id, target_id) pairs in the order
+/// compile_chain_pairs projects them.
+struct PairServing {
+    rows: Vec<Vec<SqlValue>>,
+}
+
+#[async_trait]
+impl ServingEngine for PairServing {
+    async fn fetch_rows(
+        &self,
+        _sql: &str,
+        _params: &[SqlValue],
+    ) -> std::result::Result<Rows, ServingError> {
+        Ok(Rows {
+            columns: vec!["id".into(), "order_id".into()],
+            rows: self.rows.clone(),
+        })
+    }
+}
+
+fn customer_type(identity: Option<String>) -> ObjectType {
+    ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "region".into(),
+                ty: "Text".into(),
+                required: false,
+            },
+        ],
+        derived: vec![],
+        table: TableRef {
+            schema: "main".into(),
+            name: "customer".into(),
+        },
+        identity,
+    }
+}
+
+fn order_type(identity: Option<String>) -> ObjectType {
+    ObjectType {
+        name: TypeName("Order".into()),
+        properties: vec![
+            PropertyDef {
+                name: "order_id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "customer_id".into(),
+                ty: "Long".into(),
+                required: false,
+            },
+        ],
+        derived: vec![],
+        table: TableRef {
+            schema: "main".into(),
+            name: "order".into(),
+        },
+        identity,
+    }
+}
+
+/// Seed a control plane: Customer --orders--> Order (FK), an analyst granted Read on both.
+async fn seeded(customer: ObjectType, order: ObjectType) -> (MemoryControlPlane, SubjectId) {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    cp.define_type(customer).await.unwrap();
+    cp.define_type(order).await.unwrap();
+    cp.define_link(LinkDef {
+        name: "orders".into(),
+        from: TypeName("Customer".into()),
+        to: TypeName("Order".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+    })
+    .await
+    .unwrap();
+
+    let analyst = SubjectId("analyst".into());
+    let reader = RoleId("reader".into());
+    cp.define_subject(&analyst).await.unwrap();
+    cp.define_role(&reader).await.unwrap();
+    cp.assign_role(&analyst, &reader).await.unwrap();
+    for t in ["Customer", "Order"] {
+        cp.grant(
+            &reader,
+            Action::Read,
+            PolicyTarget::Type(TypeName(t.into())),
+            Effect::Allow,
+        )
+        .await
+        .unwrap();
+    }
+    (cp, analyst)
+}
+
+fn assoc_query() -> ChainQuery {
+    ChainQuery {
+        from_type: "Customer".into(),
+        path: vec![Hop::from("orders")],
+        filters: vec![],
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_associations_returns_id_pairs() {
+    let (cp, subj) = seeded(
+        customer_type(Some("id".into())),
+        order_type(Some("order_id".into())),
+    )
+    .await;
+    let serving = PairServing {
+        rows: vec![
+            vec![SqlValue::Int(5), SqlValue::Int(12)],
+            vec![SqlValue::Int(5), SqlValue::Int(13)],
+            vec![SqlValue::Int(6), SqlValue::Int(14)],
+        ],
+    };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+    };
+    let Associations {
+        from_id_type,
+        to_id_type,
+        pairs,
+    } = read_associations(&assoc_query(), &Subject(subj), &deps)
+        .await
+        .unwrap();
+    assert_eq!(from_id_type, "Long");
+    assert_eq!(to_id_type, "Long");
+    assert_eq!(
+        pairs,
+        vec![
+            (SqlValue::Int(5), SqlValue::Int(12)),
+            (SqlValue::Int(5), SqlValue::Int(13)),
+            (SqlValue::Int(6), SqlValue::Int(14)),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_associations_rejects_source_without_identity() {
+    let (cp, subj) = seeded(customer_type(None), order_type(Some("order_id".into()))).await;
+    let serving = PairServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+    };
+    let err = read_associations(&assoc_query(), &Subject(subj), &deps)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, QueryError::NoIdentity(t) if t == "Customer"),
+        "expected NoIdentity(Customer)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_associations_rejects_target_without_identity() {
+    let (cp, subj) = seeded(customer_type(Some("id".into())), order_type(None)).await;
+    let serving = PairServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+    };
+    let err = read_associations(&assoc_query(), &Subject(subj), &deps)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, QueryError::NoIdentity(t) if t == "Order"),
+        "expected NoIdentity(Order)"
+    );
+}

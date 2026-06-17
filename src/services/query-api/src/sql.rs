@@ -423,14 +423,15 @@ pub struct ChainType {
 /// caller passing that hop's `LinkBacking::reversed()` in `hops` and the link's origin
 /// type in `types` — the symmetric `from_alias.from_column = to_alias.to_column` join is
 /// unchanged.
-pub fn compile_chain_with(
+/// Build the shared FROM clause (final target, then JOIN each predecessor down to the
+/// source) and the per-position WHERE conjuncts (caller predicates then ACL row-filters,
+/// bound at alias `t_i`) for a chain. The projection differs per caller. Row filters are
+/// validated up front so `filter_sql` cannot panic.
+fn chain_from_where(
     dialect: &dyn SqlDialect,
     types: &[ChainType],
     hops: &[LinkBacking],
-    allowed_cols: &[String],
-    mask_cols: &[String],
-    limit: u32,
-) -> Result<(String, Vec<SqlValue>), CompileError> {
+) -> Result<(String, Vec<String>, Vec<SqlValue>), CompileError> {
     debug_assert_eq!(types.len(), hops.len() + 1, "chain types must be hops + 1");
     for t in types {
         for f in &t.row_filters {
@@ -447,22 +448,7 @@ pub fn compile_chain_with(
         )
     };
 
-    // Projection: final target `t_k` only.
-    let final_alias = alias(k);
-    let cols = allowed_cols
-        .iter()
-        .map(|c| {
-            if mask_cols.iter().any(|m| m == c) {
-                format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(c))
-            } else {
-                format!("{final_alias}.{}", dialect.quote_ident(c))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    // FROM final target, then JOIN each predecessor down to the source.
-    let mut from = format!("{} {}", tbl(&types[k].table), final_alias);
+    let mut from = format!("{} {}", tbl(&types[k].table), alias(k));
     for i in (1..=k).rev() {
         let to_alias = alias(i);
         let from_alias = alias(i - 1);
@@ -498,10 +484,6 @@ pub fn compile_chain_with(
         }
     }
 
-    // WHERE: per position in chain order, this type's caller predicates then its ACL
-    // row-filters, both bound at alias `t_i`. Params are pushed in conjunct-emission
-    // order so positional `?` alignment holds. Source filters are just position 0's
-    // predicates — no special case.
     let mut params = Vec::new();
     let mut conjuncts: Vec<String> = Vec::new();
     for (i, t) in types.iter().enumerate() {
@@ -513,7 +495,59 @@ pub fn compile_chain_with(
             conjuncts.push(filter_sql(dialect, f, &a, &mut params));
         }
     }
+    Ok((from, conjuncts, params))
+}
 
+pub fn compile_chain_with(
+    dialect: &dyn SqlDialect,
+    types: &[ChainType],
+    hops: &[LinkBacking],
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    limit: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    let k = hops.len();
+    let final_alias = format!("t_{k}");
+    let cols = allowed_cols
+        .iter()
+        .map(|c| {
+            if mask_cols.iter().any(|m| m == c) {
+                format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(c))
+            } else {
+                format!("{final_alias}.{}", dialect.quote_ident(c))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (from, conjuncts, params) = chain_from_where(dialect, types, hops)?;
+    let mut sql = format!("SELECT DISTINCT {cols} FROM {from}");
+    if !conjuncts.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conjuncts.join(" AND "));
+    }
+    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
+    Ok((sql, params))
+}
+
+/// Compile a governed chain that projects exactly the source (`t_0`) and final-target
+/// (`t_k`) identity columns as a DISTINCT pair, through the same governed joins/filters as
+/// [`compile_chain_with`]. `source_id`/`target_id` are the identity property names (=
+/// physical columns) of the source and final-target types.
+pub fn compile_chain_pairs(
+    dialect: &dyn SqlDialect,
+    types: &[ChainType],
+    hops: &[LinkBacking],
+    source_id: &str,
+    target_id: &str,
+    limit: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    let k = hops.len();
+    let cols = format!(
+        "t_0.{}, t_{k}.{}",
+        dialect.quote_ident(source_id),
+        dialect.quote_ident(target_id),
+    );
+    let (from, conjuncts, params) = chain_from_where(dialect, types, hops)?;
     let mut sql = format!("SELECT DISTINCT {cols} FROM {from}");
     if !conjuncts.is_empty() {
         sql.push_str(" WHERE ");
