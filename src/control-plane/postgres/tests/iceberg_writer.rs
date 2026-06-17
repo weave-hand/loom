@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::sync::Arc;
 
-use arrow_array::{Int64Array, RecordBatch, StringArray};
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
@@ -87,12 +87,36 @@ async fn writes_real_parquet_and_commits() {
     assert_eq!(df.record_count, 3);
     assert!(df.file_size_bytes > 0);
 
-    // Read the written file back with the parquet reader to prove valid Parquet.
+    // Read the written file back with the parquet reader to prove valid Parquet, and
+    // assert the actual cell values survived the writer chain (not just the row count).
     let path = df.path.strip_prefix("file://").unwrap_or(&df.path);
     let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).expect("open parquet"))
         .expect("parquet reader")
         .build()
         .expect("build reader");
-    let rows: usize = reader.map(|b| b.expect("batch").num_rows()).sum();
-    assert_eq!(rows, 3, "parquet bytes hold the 3 written rows");
+    let mut ids = Vec::new();
+    let mut names = Vec::new();
+    for b in reader {
+        let b = b.expect("batch");
+        let id = b
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("id column");
+        let name = b
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("name column");
+        for i in 0..b.num_rows() {
+            ids.push(id.value(i));
+            names.push(name.value(i).to_string());
+        }
+    }
+    assert_eq!(ids, vec![1, 2, 3], "id values survive the writer chain");
+    assert_eq!(
+        names,
+        vec!["a", "b", "c"],
+        "name values survive the writer chain"
+    );
 }

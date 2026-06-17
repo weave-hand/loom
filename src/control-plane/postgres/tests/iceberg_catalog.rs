@@ -29,6 +29,9 @@ impl CatalogSeed for IcebergSeeder {
             .into_iter()
             .map(|s| SeededSnapshot {
                 snapshot: SnapshotId(s),
+                // One Parquet file per appended batch: the contract's batches are far below
+                // RollingFileWriterBuilder's default roll size, so each append produces exactly
+                // one rolling file. A batch large enough to roll would add more.
                 files_added: 1,
             })
             .collect()
