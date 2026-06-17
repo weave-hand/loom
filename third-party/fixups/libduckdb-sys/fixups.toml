@@ -1,2 +1,7 @@
-[buildscript]
-run = true
+# Native-lib crate: its build script compiles a native library and emits
+# cargo:rustc-link-lib / cargo:rustc-link-search. The prelude's buildscript_run
+# forwards those only when these attrs are set, so the final link resolves the
+# native symbols. (The table form of `run` implies run = true.)
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true
