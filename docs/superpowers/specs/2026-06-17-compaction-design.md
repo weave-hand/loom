@@ -82,7 +82,13 @@ existing append and replace loops. For each staged `(table, expire, write)`:
    named files was already superseded (e.g. a concurrent compaction) — return
    `ControlPlaneError::Conflict` so the whole transaction rolls back. Without this
    guard the loser of a race would write its coalesced output while the small
-   files it "expired" were already gone, **duplicating** their rows.
+   files it "expired" were already gone, **duplicating** their rows. No new
+   advisory lock is required: `commit_snapshot` already holds the per-database
+   `pg_advisory_xact_lock(CATALOG_LOCK_KEY)` for the whole commit, so two
+   compactions are fully serialized — the loser therefore observes the winner's
+   committed `end_snapshot` and this assertion deterministically fails it. The
+   selection→commit gap (selection reads files outside the lock) is the only race
+   window, and the assertion is its optimistic-concurrency check.
 3. Delta-adjust `ducklake_table_stats`: subtract the summed `record_count` and
    `file_size_bytes` returned above. `next_row_id` is **not** decremented (row-ids
    are monotonic; see assumption below).
@@ -117,6 +123,14 @@ snapshot `s`, set `end = Some(s)` on each live `FileRef` whose `path` is in the
 expire set, then push the `write` files live at `s`. The memory adapter derives
 table stats from live files on read, so no explicit stat arithmetic is needed —
 removing the small files and adding the coalesced ones self-corrects record counts.
+
+**Race guard (parity with postgres).** Count the live files matched by the expire
+set; if `matched != expire.len()`, return `ControlPlaneError::Conflict` and apply
+nothing. Without this, a racing second compaction — serialized behind the catalog
+`Mutex` — would find the small files already expired (so re-expire nothing) yet
+still push its own coalesced output, **duplicating** rows. This mirrors the
+postgres `rows_affected == expire.len()` assertion, keeping the fake faithful so a
+future compaction concurrency contract passes on both adapters.
 
 The `has_catalog_ops` short-circuit in `commit` must also consider
 `staged_compactions` so a compaction-only transaction yields a snapshot id.
