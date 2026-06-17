@@ -323,6 +323,41 @@ impl SqlCatalog {
             }
         }
     }
+
+    /// Project the loom `iceberg_mirror.*` rows for a just-committed table state,
+    /// enlisted in the caller's transaction so they commit atomically with the
+    /// pointer CAS. The mirror is a deterministic projection of the canonical
+    /// staged Iceberg metadata: columns from the current schema (in-memory), data
+    /// files from the new snapshot's manifests. The namespace key matches the read
+    /// path (`TableRef.schema` == `NamespaceIdent::join(".")`).
+    async fn project_mirror(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        ident: &TableIdent,
+        staged: &Table,
+    ) -> control_plane_core::Result<()> {
+        use crate::iceberg_mirror::{
+            added_files_of, columns_exist, columns_of, ensure_table, next_snapshot,
+            project_columns, project_files,
+        };
+
+        let ns = ident.namespace().join(".");
+        let name = ident.name();
+        let iceberg_snap = staged
+            .metadata()
+            .current_snapshot()
+            .map(|s| s.snapshot_id());
+        let files = added_files_of(staged).await?;
+
+        let conn = &mut **tx;
+        let at = next_snapshot(conn, iceberg_snap).await?;
+        let tid = ensure_table(conn, &ns, name, at).await?;
+        if !columns_exist(conn, tid).await? {
+            project_columns(conn, tid, at, &columns_of(staged)).await?;
+        }
+        project_files(conn, tid, at, &files).await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -690,6 +725,9 @@ impl Catalog for SqlCatalog {
             return no_such_table_err(identifier);
         }
 
+        // Pointer delete + mirror drop in one transaction (same atomicity contract
+        // as update_table).
+        let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
         self.execute(
             &format!(
                 "DELETE FROM {CATALOG_TABLE_NAME}
@@ -706,10 +744,32 @@ impl Catalog for SqlCatalog {
                 Some(identifier.name()),
                 Some(&identifier.namespace().join(".")),
             ],
-            None,
+            Some(&mut tx),
         )
         .await?;
 
+        // Only end the mirror (and spend a snapshot id) when there is live mirror
+        // state to end. A table created via the catalog but never appended has no
+        // mirror row — dropping it is just the pointer delete, with no snapshot
+        // allocated (which would otherwise leave an orphan snapshot row).
+        let ns = identifier.namespace().join(".");
+        let unexpected = |e: control_plane_core::ControlPlaneError| {
+            Error::new(ErrorKind::Unexpected, e.to_string())
+        };
+        if crate::iceberg_mirror::live_table_id(&mut tx, &ns, identifier.name())
+            .await
+            .map_err(unexpected)?
+            .is_some()
+        {
+            let at = crate::iceberg_mirror::next_snapshot(&mut tx, None)
+                .await
+                .map_err(unexpected)?;
+            crate::iceberg_mirror::mark_dropped(&mut tx, &ns, identifier.name(), at)
+                .await
+                .map_err(unexpected)?;
+        }
+
+        tx.commit().await.map_err(from_sqlx_error)?;
         Ok(())
     }
 
@@ -912,6 +972,13 @@ impl Catalog for SqlCatalog {
             .write_to(staged_table.file_io(), &staged_metadata_location)
             .await?;
 
+        // One Postgres transaction covers the pointer CAS AND the loom mirror
+        // projection: they commit or roll back together, so the mirror can never
+        // diverge from the pointer it projects. (The data Parquet + metadata JSON
+        // are already written to object storage above; on rollback they orphan and
+        // are GC'd later — standard Iceberg, outside the catalog-state boundary.)
+        let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
+
         let update_result = self
             .execute(
                 &format!(
@@ -934,11 +1001,14 @@ impl Catalog for SqlCatalog {
                     Some(&table_ident.namespace().join(".")),
                     Some(current_metadata_location.as_str()),
                 ],
-                None,
+                Some(&mut tx),
             )
             .await?;
 
         if update_result.rows_affected() == 0 {
+            // CAS lost: roll back pointer + mirror together, surface a retryable
+            // conflict so iceberg's commit backoff re-bases and retries.
+            let _ = tx.rollback().await;
             return Err(Error::new(
                 ErrorKind::CatalogCommitConflicts,
                 format!("Commit conflicted for table: {table_ident}"),
@@ -946,6 +1016,11 @@ impl Catalog for SqlCatalog {
             .with_retryable(true));
         }
 
+        self.project_mirror(&mut tx, &table_ident, &staged_table)
+            .await
+            .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
+
+        tx.commit().await.map_err(from_sqlx_error)?;
         Ok(staged_table)
     }
 }

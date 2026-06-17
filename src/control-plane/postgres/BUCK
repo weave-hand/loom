@@ -138,8 +138,11 @@ rust_library(
     },
     deps = [
         "//src/control-plane/core:core",
+        "//third-party:arrow-array-57",
+        "//third-party:arrow-schema-57",
         "//third-party:async-trait",
         "//third-party:iceberg",
+        "//third-party:parquet-57",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
@@ -347,6 +350,45 @@ loom_fixture_test(
         "//src/control-plane/core:core",
         "//src/control-plane/testkit:testkit",
         "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-snapshot-seq",
+    crate = "iceberg_snapshot_seq",
+    srcs = ["tests/iceberg_snapshot_seq.rs"],
+    crate_root = "tests/iceberg_snapshot_seq.rs",
+    deps = [":postgres", "//third-party:tokio"],
+)
+
+loom_fixture_test(
+    name = "iceberg-writer",
+    crate = "iceberg_writer",
+    srcs = ["tests/iceberg_writer.rs"],
+    crate_root = "tests/iceberg_writer.rs",
+    deps = [
+        ":postgres",
+        "//third-party:arrow-array-57",
+        "//third-party:iceberg",
+        "//third-party:parquet-57",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-write-roundtrip",
+    crate = "iceberg_write_roundtrip",
+    srcs = ["tests/iceberg_write_roundtrip.rs"],
+    crate_root = "tests/iceberg_write_roundtrip.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array-57",
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
         "//third-party:tokio",
     ],
 )

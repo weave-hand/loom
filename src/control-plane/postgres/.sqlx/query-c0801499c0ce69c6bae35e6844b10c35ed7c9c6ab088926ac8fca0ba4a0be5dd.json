@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select coalesce(max(snapshot_id), 0) + 1 as \"next!\" from iceberg_mirror.snapshot",
+  "query": "select nextval('iceberg_mirror.snapshot_seq') as \"next!\"",
   "describe": {
     "columns": [
       {
@@ -17,5 +17,5 @@
       null
     ]
   },
-  "hash": "2764e36bb1849472497a699eda72da83316555b28c350426dc2bda62e356c19b"
+  "hash": "c0801499c0ce69c6bae35e6844b10c35ed7c9c6ab088926ac8fca0ba4a0be5dd"
 }

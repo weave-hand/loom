@@ -27,6 +27,7 @@ pub mod iceberg_catalog;
 pub mod iceberg_mirror;
 pub mod iceberg_sql_catalog;
 pub mod iceberg_type;
+pub mod iceberg_writer;
 mod lineage;
 mod ontology;
 mod queue;

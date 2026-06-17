@@ -25,15 +25,12 @@ use crate::PgControlPlane;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use iceberg::io::LocalFsStorageFactory;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::{Catalog, CatalogBuilder as _, NamespaceIdent, TableCreation, TableIdent};
 use sqlx::PgPool;
 
-use crate::iceberg_mirror::{
-    ProjectedColumn, ProjectedFile, ensure_table, mark_dropped, next_snapshot, project_columns,
-    project_files,
-};
 use crate::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -152,6 +149,16 @@ impl PgFixture {
             "postgres://postgres@localhost/{db}?host={}",
             self.socket_dir.path().display()
         )
+    }
+
+    /// A fresh sqlx pool for an existing fixture database — for the read side of a
+    /// test that also drives the vendored catalog over the same db via `pg_dsn`.
+    pub async fn pool_for(&self, db: &str) -> PgPool {
+        PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(self.opts(db))
+            .await
+            .expect("connect pool_for")
     }
 
     /// Create a fresh database (migrated) and return a `PgControlPlane` bound to it
@@ -473,17 +480,15 @@ impl DuckLakeWriter {
     }
 }
 
-/// Test-only seeder for the Iceberg read path. Creates real, spec-compliant Iceberg tables via
-/// the vendored SQL catalog (exercising the catalog port end to end against the hermetic
-/// Postgres + a `file://` warehouse), reads the schema Iceberg actually recorded, and projects
-/// it — plus one synthetic data-file row per batch — into `iceberg_mirror.*` so the read adapter
-/// can serve it. Sibling of `DuckLakeWriter`.
+/// Test-only seeder for the Iceberg path. Creates real, spec-compliant Iceberg tables via the
+/// vendored SQL catalog (exercising the catalog port end to end against the hermetic Postgres +
+/// a `file://` warehouse), then writes real Parquet through the slice-2 writer chain
+/// (`iceberg_writer::append_batches`). Each append's `update_table` projects the canonical
+/// metadata into `iceberg_mirror.*`, so the read adapter serves exactly what was committed.
+/// Sibling of `DuckLakeWriter`.
 ///
-/// Slice 1 is the read path, so the seeder does NOT write real Parquet bytes (that needs the
-/// `iceberg` writer chain bound to arrow/parquet 57, and is the write path's concern — slice 2).
-/// The catalog contracts assert file counts/paths and schema/type round-trips, all of which a
-/// real-schema + synthetic-file projection satisfies. `long`/`string` columns cover every type
-/// the contracts seed.
+/// The catalog contracts assert file counts/paths and schema/type round-trips, all satisfied by
+/// the real write→project→read path. `long`/`string` columns cover every type the contracts seed.
 pub struct IcebergWriter {
     /// Shared with the read adapter — mirror rows land in the control plane's database.
     pool: PgPool,
@@ -529,8 +534,8 @@ impl IcebergWriter {
             .expect("build vendored SqlCatalog")
     }
 
-    /// Create the table (real Iceberg, via the catalog) if absent, then record each row-batch as
-    /// its own loom snapshot adding one synthetic data file of that many rows.
+    /// Create the table (real Iceberg, via the catalog) if absent, then append one real Parquet
+    /// file of that many rows per batch via the writer chain (each append projects the mirror).
     /// `columns`: `(name, loom-logical-type, nullable)`. Returns the per-batch loom snapshot ids.
     pub async fn seed(
         &self,
@@ -578,66 +583,67 @@ impl IcebergWriter {
                 .expect("create_table");
         }
 
-        // Read back the schema Iceberg recorded, so the mirror reflects real catalog metadata.
+        // The mirror is projected inside the catalog's update_table during each append
+        // (real Parquet via the writer chain), so the seeder no longer writes mirror rows
+        // directly — it builds a real Arrow batch per requested row count and appends it.
         let table = catalog.load_table(&table_ident).await.expect("load_table");
-        let proj_cols: Vec<ProjectedColumn> = table
-            .metadata()
-            .current_schema()
-            .as_struct()
-            .fields()
-            .iter()
-            .enumerate()
-            .map(|(i, field)| {
-                let iceberg_type = match field.field_type.as_ref() {
-                    Type::Primitive(p) => p.to_string(),
-                    other => panic!("seed: non-primitive column type {other:?}"),
-                };
-                ProjectedColumn {
-                    order: (i + 1) as i64,
-                    name: field.name.clone(),
-                    iceberg_type,
-                    nullable: !field.required,
-                }
-            })
-            .collect();
+        let current_schema = table.metadata().current_schema().clone();
+        let arrow_schema = Arc::new(
+            iceberg::arrow::schema_to_arrow_schema(&current_schema).expect("arrow schema"),
+        );
 
         let mut snapshots = Vec::new();
         for &rows in batches {
-            let mut conn = self.pool.acquire().await.expect("acquire");
-            let at = next_snapshot(&mut conn, None).await.expect("next_snapshot");
-            let tid = ensure_table(&mut conn, ns, name, at)
+            let arrays: Vec<ArrayRef> = current_schema
+                .as_struct()
+                .fields()
+                .iter()
+                .map(|f| Self::column_array(f, rows))
+                .collect();
+            let batch = RecordBatch::try_new(arrow_schema.clone(), arrays).expect("record batch");
+            // Reload so each append commits against the latest pointer.
+            let table = catalog.load_table(&table_ident).await.expect("reload");
+            crate::iceberg_writer::append_batches(&catalog, &table, vec![batch])
                 .await
-                .expect("ensure_table");
-            if snapshots.is_empty() {
-                project_columns(&mut conn, tid, at, &proj_cols)
-                    .await
-                    .expect("project_columns");
-            }
-            let file = ProjectedFile {
-                path: format!("{ns}/{name}/data-{}.parquet", at.0),
-                file_format: "parquet".to_string(),
-                record_count: rows as i64,
-                file_size_bytes: (rows as i64) * 16 + 100,
-            };
-            project_files(&mut conn, tid, at, std::slice::from_ref(&file))
-                .await
-                .expect("project_files");
-            snapshots.push(at.0);
+                .expect("append_batches");
+            snapshots.push(self.latest_snapshot_id().await);
         }
         snapshots
     }
 
-    /// Drop a table in the mirror (sets `end_snapshot`), returning the loom snapshot id at which
-    /// it was dropped. The read path reads only the mirror, and the delete contract exercises the
-    /// mirror's MVCC `end`-bound.
+    /// Build a synthetic Arrow array of `rows` values for one column, typed to match its
+    /// Iceberg primitive type. Only the types the catalog contracts seed (`long`, `string`)
+    /// are supported, mirroring `iceberg_type`.
+    fn column_array(field: &iceberg::spec::NestedField, rows: usize) -> ArrayRef {
+        match field.field_type.as_ref() {
+            Type::Primitive(PrimitiveType::Long) => {
+                Arc::new(Int64Array::from((0..rows as i64).collect::<Vec<_>>()))
+            }
+            Type::Primitive(PrimitiveType::String) => Arc::new(StringArray::from(
+                (0..rows).map(|i| format!("row{i}")).collect::<Vec<_>>(),
+            )),
+            other => panic!("seed: unsupported column type for real batch: {other:?}"),
+        }
+    }
+
+    /// The most-recently allocated loom snapshot id. The seeder is single-writer, so right
+    /// after an append (or a drop) this is the id that commit projected.
+    async fn latest_snapshot_id(&self) -> i64 {
+        let m: Option<i64> =
+            sqlx::query_scalar("select max(snapshot_id) from iceberg_mirror.snapshot")
+                .fetch_one(&self.pool)
+                .await
+                .expect("max snapshot");
+        m.expect("at least one snapshot")
+    }
+
+    /// Drop the table via the vendored catalog; the mirror is marked dropped in the same
+    /// transaction (see `SqlCatalog::drop_table`). Returns the loom snapshot id at which it
+    /// was dropped. The delete contract exercises the mirror's MVCC `end`-bound.
     pub async fn drop_table(&self, ns: &str, name: &str) -> i64 {
-        let mut conn = self.pool.acquire().await.expect("acquire");
-        let at = next_snapshot(&mut conn, None)
-            .await
-            .expect("next_snapshot for drop");
-        mark_dropped(&mut conn, ns, name, at)
-            .await
-            .expect("mark_dropped");
-        at.0
+        let catalog = self.catalog().await;
+        let ident = TableIdent::new(NamespaceIdent::new(ns.to_string()), name.to_string());
+        catalog.drop_table(&ident).await.expect("drop_table");
+        self.latest_snapshot_id().await
     }
 }
