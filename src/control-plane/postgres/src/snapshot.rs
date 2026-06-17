@@ -34,8 +34,8 @@ struct Head {
 /// snapshot. Returns the new [`SnapshotId`]. Assumes all referenced tables exist
 /// in the catalog (created by DuckDB or, in Task 3, by loom's `create_table`).
 #[tracing::instrument(
-    skip(tx, staged_tables, staged_files, staged_replacements),
-    fields(tables = staged_tables.len(), files = staged_files.len(), replacements = staged_replacements.len()),
+    skip(tx, staged_tables, staged_files, staged_replacements, staged_compactions),
+    fields(tables = staged_tables.len(), files = staged_files.len(), replacements = staged_replacements.len(), compactions = staged_compactions.len()),
     level = "debug"
 )]
 pub(crate) async fn commit_snapshot(
@@ -43,6 +43,7 @@ pub(crate) async fn commit_snapshot(
     staged_tables: &[(TableRef, Vec<ColumnSpec>)],
     staged_files: &[(TableRef, Vec<DataFile>)],
     staged_replacements: &[(TableRef, Vec<DataFile>)],
+    staged_compactions: &[(TableRef, Vec<String>, Vec<DataFile>)],
 ) -> Result<SnapshotId> {
     lock_catalog(tx).await?;
     let head = read_head(tx).await?;
@@ -132,6 +133,57 @@ pub(crate) async fn commit_snapshot(
         }
     }
 
+    // (3c) compaction loop: supersede a SUBSET of the table's live files (named by
+    //      relative path) and write the coalesced replacements. Unlike the replace loop,
+    //      the table's other live files stay and table stats are adjusted by delta — the
+    //      expired files' record_count/file_size are subtracted, then write_data_file
+    //      re-adds the new files. next_row_id is NOT decremented (row-ids are monotonic).
+    //      The expire UPDATE must affect exactly `expire.len()` rows; a shortfall means a
+    //      concurrent compaction already superseded a target -> Conflict, whole tx rolls
+    //      back (commit_snapshot holds the per-database advisory lock, so the loser
+    //      observes the winner's committed end_snapshot).
+    for (table, expire, files) in staged_compactions {
+        let table_id = resolve_table_id(tx, table).await?;
+        let expired = sqlx::query!(
+            "update ducklake_data_file set end_snapshot = $1 \
+             where table_id = $2 and end_snapshot is null and path = any($3) \
+             returning record_count as \"record_count!\", file_size_bytes as \"file_size_bytes!\"",
+            new_snapshot_id,
+            table_id,
+            &expire[..],
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(backend)?;
+        if expired.len() != expire.len() {
+            return Err(ControlPlaneError::Conflict(format!(
+                "compact_files: expired {} of {} files for {}.{} (concurrent supersession)",
+                expired.len(),
+                expire.len(),
+                table.schema,
+                table.name
+            )));
+        }
+        let expired_records: i64 = expired.iter().map(|r| r.record_count).sum();
+        let expired_bytes: i64 = expired.iter().map(|r| r.file_size_bytes).sum();
+        sqlx::query!(
+            "update ducklake_table_stats \
+             set record_count = record_count - $2, file_size_bytes = file_size_bytes - $3 \
+             where table_id = $1",
+            table_id,
+            expired_records,
+            expired_bytes,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(backend)?;
+        for file in files {
+            let data_file_id = next_file_id;
+            next_file_id += 1;
+            write_data_file(tx, table_id, new_snapshot_id, data_file_id, file).await?;
+        }
+    }
+
     // (4) the single new snapshot row (recipe §2 step 1): id+1, with the
     //     post-commit schema_version, next_catalog_id, next_file_id.
     sqlx::query!(
@@ -160,6 +212,15 @@ pub(crate) async fn commit_snapshot(
     for (table, files) in staged_replacements {
         let table_id = resolve_table_id(tx, table).await?;
         segments.push(format!("deleted_from_table:{table_id}"));
+        if !files.is_empty() {
+            segments.push(format!("inserted_into_table:{table_id}"));
+        }
+    }
+    for (table, expire, files) in staged_compactions {
+        let table_id = resolve_table_id(tx, table).await?;
+        if !expire.is_empty() {
+            segments.push(format!("deleted_from_table:{table_id}"));
+        }
         if !files.is_empty() {
             segments.push(format!("inserted_into_table:{table_id}"));
         }

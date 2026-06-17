@@ -22,6 +22,7 @@ pub(crate) struct MemoryTx {
     pub(crate) staged_tables: Vec<(TableRef, Vec<ColumnSpec>)>,
     pub(crate) staged_files: Vec<(TableRef, Vec<DataFile>)>,
     pub(crate) staged_replacements: Vec<(TableRef, Vec<DataFile>)>,
+    pub(crate) staged_compactions: Vec<(TableRef, Vec<String>, Vec<DataFile>)>,
 }
 
 #[async_trait]
@@ -48,7 +49,8 @@ impl Tx for MemoryTx {
 
         let has_catalog_ops = !self.staged_tables.is_empty()
             || !self.staged_files.is_empty()
-            || !self.staged_replacements.is_empty();
+            || !self.staged_replacements.is_empty()
+            || !self.staged_compactions.is_empty();
         if !has_catalog_ops {
             return Ok(None);
         }
@@ -137,6 +139,57 @@ impl Tx for MemoryTx {
                     });
                 }
             }
+
+            // Apply staged file compactions: expire the NAMED live files at a new
+            // snapshot and add the coalesced replacements. Unlike a replacement, the
+            // table's other live files are untouched. Validate BEFORE mutating (the
+            // memory commit applies directly to shared state, so a mid-apply error must
+            // not leave partial changes): a named path that is not live -> Conflict (a
+            // concurrent compaction superseded it), matching the postgres guard.
+            for (table, expire, files) in self.staged_compactions {
+                use control_plane_core::FileRef;
+                let key = (table.schema.clone(), table.name.clone());
+                let expire_set: std::collections::HashSet<&str> =
+                    expire.iter().map(|p| p.as_str()).collect();
+                let live_matched = cat
+                    .files
+                    .get(&key)
+                    .map(|fs| {
+                        fs.iter()
+                            .filter(|f| f.end.is_none() && expire_set.contains(f.val.path.as_str()))
+                            .count()
+                    })
+                    .unwrap_or(0);
+                if live_matched != expire.len() {
+                    return Err(control_plane_core::ControlPlaneError::Conflict(format!(
+                        "compact_files: {} of {} expire targets live for {}.{}",
+                        live_matched,
+                        expire.len(),
+                        table.schema,
+                        table.name
+                    )));
+                }
+                let s = cat.new_snapshot();
+                last_snapshot = Some(s);
+                if let Some(existing) = cat.files.get_mut(&key) {
+                    for f in existing.iter_mut() {
+                        if f.end.is_none() && expire_set.contains(f.val.path.as_str()) {
+                            f.end = Some(s);
+                        }
+                    }
+                }
+                for file in files {
+                    cat.files.entry(key.clone()).or_default().push(Versioned {
+                        begin: s,
+                        end: None,
+                        val: FileRef {
+                            path: file.path,
+                            record_count: file.record_count,
+                            file_size_bytes: file.file_size_bytes,
+                        },
+                    });
+                }
+            }
         }
 
         Ok(last_snapshot.map(SnapshotId))
@@ -173,6 +226,17 @@ impl Tx for MemoryTx {
     async fn replace_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
         self.staged_replacements
             .push((table.clone(), files.to_vec()));
+        Ok(())
+    }
+
+    async fn compact_files(
+        &mut self,
+        table: &TableRef,
+        expire: &[String],
+        write: &[DataFile],
+    ) -> Result<()> {
+        self.staged_compactions
+            .push((table.clone(), expire.to_vec(), write.to_vec()));
         Ok(())
     }
 }

@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ducklake_data_file set end_snapshot = $1 where table_id = $2 and end_snapshot is null and path = any($3) returning record_count as \"record_count!\", file_size_bytes as \"file_size_bytes!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "record_count!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ducklake_data_file",
+            "name": "record_count"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "file_size_bytes!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "ducklake_data_file",
+            "name": "file_size_bytes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "2aa79510606bd771059ef1ec56dec916a83fc191691031f0c02db6e7098bf819"
+}

@@ -2175,3 +2175,96 @@ where
     );
     assert_eq!(back.items[0].path, "a.parquet");
 }
+
+/// Contract for `Tx::compact_files` (selective compaction). Append three files, then
+/// compact two of them into one: the current snapshot lists the untouched file plus the
+/// coalesced one (the two compacted files expired), the total record_count is preserved,
+/// and the prior snapshot still time-travels to all three originals. `cp` must be freshly
+/// empty (postgres: a DuckLake catalog must be bootstrapped first).
+pub async fn snapshot_compact_contract<C>(cp: &C)
+where
+    C: control_plane_core::ControlPlane + control_plane_core::Catalog,
+{
+    use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
+    let t = TableRef {
+        schema: "main".into(),
+        name: "compact_me".into(),
+    };
+    let file = |path: &str, rows: i64| DataFile {
+        path: path.into(),
+        path_is_relative: true,
+        file_format: FileFormat::Parquet,
+        record_count: rows,
+        file_size_bytes: rows * 16,
+        column_stats: vec![],
+        parquet_footer_size: Some(10),
+    };
+
+    // create + append a(3) + b(5) + c(2) as three files.
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(
+        &t,
+        &[ColumnSpec {
+            name: "id".into(),
+            ty: "long".into(),
+            nullable: false,
+        }],
+    )
+    .await
+    .unwrap();
+    tx.append_files(
+        &t,
+        &[
+            file("a.parquet", 3),
+            file("b.parquet", 5),
+            file("c.parquet", 2),
+        ],
+    )
+    .await
+    .unwrap();
+    let s1 = tx
+        .commit()
+        .await
+        .unwrap()
+        .expect("append yields a snapshot");
+
+    let at1 = cp.files(&t, s1, PageReq::unbounded()).await.unwrap();
+    assert_eq!(at1.len(), 3, "three files live after append");
+    let total1: i64 = at1.items.iter().map(|f| f.record_count).sum();
+    assert_eq!(total1, 10);
+
+    // compact a + b into d(8); c untouched.
+    let mut tx = cp.begin().await.unwrap();
+    tx.compact_files(
+        &t,
+        &["a.parquet".into(), "b.parquet".into()],
+        &[file("d.parquet", 8)],
+    )
+    .await
+    .unwrap();
+    let s2 = tx
+        .commit()
+        .await
+        .unwrap()
+        .expect("compact yields a snapshot");
+
+    // current snapshot lists c + d only; record_count preserved.
+    let cur = cp.current_snapshot(&t).await.unwrap();
+    assert_eq!(cur.id, s2, "compact advanced the current snapshot");
+    let at2 = cp.files(&t, s2, PageReq::unbounded()).await.unwrap();
+    let mut paths: Vec<&str> = at2.items.iter().map(|f| f.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec!["c.parquet", "d.parquet"],
+        "a,b expired; d added; c untouched"
+    );
+    let total2: i64 = at2.items.iter().map(|f| f.record_count).sum();
+    assert_eq!(total2, 10, "compaction preserves the row set");
+
+    // time travel: the prior snapshot still lists all three originals.
+    let back = cp.files(&t, s1, PageReq::unbounded()).await.unwrap();
+    let mut bpaths: Vec<&str> = back.items.iter().map(|f| f.path.as_str()).collect();
+    bpaths.sort();
+    assert_eq!(bpaths, vec!["a.parquet", "b.parquet", "c.parquet"]);
+}

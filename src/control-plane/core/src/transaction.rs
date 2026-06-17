@@ -53,4 +53,17 @@ pub trait Tx: Send {
     /// snapshots — time travel preserved), and `files` become the table's live
     /// contents. Staged; applied at commit.
     async fn replace_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()>;
+    /// Compact a subset of the table's live data files: the files named by `expire`
+    /// (their table-relative paths, exactly as stored) are superseded at the new
+    /// snapshot (still visible at older snapshots — time travel preserved) and `write`
+    /// becomes live in their place. Unlike `replace_files`, the table's OTHER live files
+    /// are untouched and table stats are adjusted by delta. Staged; applied at commit.
+    /// Returns `ControlPlaneError::Conflict` at commit if any named file is not live
+    /// (e.g. a concurrent compaction already superseded it).
+    async fn compact_files(
+        &mut self,
+        table: &TableRef,
+        expire: &[String],
+        write: &[DataFile],
+    ) -> Result<()>;
 }
