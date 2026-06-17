@@ -126,6 +126,83 @@ async fn bind_collects_all_violations_and_persists_nothing() {
 }
 
 #[tokio::test]
+async fn bind_accepts_identity_naming_a_required_property() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+
+    // `id` is a required property (int64, non-null) -> a valid identity.
+    let type_def = ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![
+            prop("id", "Long", true),
+            prop("email", "EmailAddress", false),
+        ],
+        derived: vec![],
+        table: customer(),
+        identity: Some("id".into()),
+    };
+    bind(&cp, &cp, type_def).await.unwrap();
+}
+
+#[tokio::test]
+async fn bind_rejects_identity_naming_unknown_property() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+
+    // `nope` is not a declared property -> BadIdentity.
+    let type_def = ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![],
+        table: customer(),
+        identity: Some("nope".into()),
+    };
+    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let BindError::DoesNotConform(v) = err else {
+        panic!("expected DoesNotConform, got {err:?}");
+    };
+    assert!(
+        v.iter()
+            .any(|x| matches!(x.reason, BindViolationReason::BadIdentity(_))),
+        "expected a BadIdentity violation, got {v:?}"
+    );
+}
+
+#[tokio::test]
+async fn bind_rejects_identity_naming_non_required_property() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+
+    // `email` is a declared but non-required (nullable) property -> a PK can't be
+    // nullable -> BadIdentity.
+    let type_def = ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![
+            prop("id", "Long", true),
+            prop("email", "EmailAddress", false),
+        ],
+        derived: vec![],
+        table: customer(),
+        identity: Some("email".into()),
+    };
+    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let BindError::DoesNotConform(v) = err else {
+        panic!("expected DoesNotConform, got {err:?}");
+    };
+    assert!(
+        v.iter()
+            .any(|x| matches!(x.reason, BindViolationReason::BadIdentity(_))),
+        "expected a BadIdentity violation, got {v:?}"
+    );
+}
+
+#[tokio::test]
 async fn bind_rejects_an_unknown_table() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;

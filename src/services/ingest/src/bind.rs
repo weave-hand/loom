@@ -28,6 +28,7 @@ pub enum BindViolationReason {
     UnknownLogicalType(String),
     TypeMismatch { logical: String, physical: String },
     NullabilityViolation, // a required property backed by a nullable column
+    BadIdentity(String),  // identity names no declared property, or a non-required one
 }
 
 /// Validate `type_def` against the physical schema of its target table, then persist
@@ -84,6 +85,22 @@ pub async fn bind(
                 property: p.name.clone(),
                 reason: BindViolationReason::NullabilityViolation,
             });
+        }
+    }
+
+    // Identity (if declared) must name a declared, required property — a primary key
+    // cannot be nullable. The violation's `property` is the named identity column.
+    if let Some(id) = &type_def.identity {
+        match type_def.properties.iter().find(|p| &p.name == id) {
+            None => violations.push(BindViolation {
+                property: id.clone(),
+                reason: BindViolationReason::BadIdentity("names no declared property".into()),
+            }),
+            Some(p) if !p.required => violations.push(BindViolation {
+                property: id.clone(),
+                reason: BindViolationReason::BadIdentity("names a non-required property".into()),
+            }),
+            Some(_) => {}
         }
     }
 
