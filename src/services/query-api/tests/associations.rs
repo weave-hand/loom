@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, ObjectType, Ontology, PolicyTarget,
-    PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
+    PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{
@@ -199,5 +199,79 @@ async fn read_associations_rejects_target_without_identity() {
     assert!(
         matches!(err, QueryError::NoIdentity(t) if t == "Order"),
         "expected NoIdentity(Order)"
+    );
+}
+
+// The identity-visibility gate (leak prevention): an association projects the source and
+// target identity values, so a caller who cannot READ an identity column must not obtain
+// it through a pair. Denied (source) and masked (target) identity each -> Forbidden.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_associations_forbids_a_denied_source_identity() {
+    let (cp, subj) = seeded(
+        customer_type(Some("id".into())),
+        order_type(Some("order_id".into())),
+    )
+    .await;
+    // Deny the source identity column for the reader role the analyst holds.
+    cp.set_policy(
+        &RoleId("reader".into()),
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(TypeName("Customer".into())),
+            row_filter: None,
+            deny_columns: vec!["id".into()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    let serving = PairServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+    };
+    let err = read_associations(&assoc_query(), &Subject(subj), &deps)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, QueryError::Forbidden),
+        "a denied source identity -> Forbidden, got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_associations_forbids_a_masked_target_identity() {
+    let (cp, subj) = seeded(
+        customer_type(Some("id".into())),
+        order_type(Some("order_id".into())),
+    )
+    .await;
+    // Mask the target identity column: you cannot name a target you can only see masked.
+    cp.set_policy(
+        &RoleId("reader".into()),
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(TypeName("Order".into())),
+            row_filter: None,
+            deny_columns: vec![],
+            mask_columns: vec!["order_id".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let serving = PairServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+    };
+    let err = read_associations(&assoc_query(), &Subject(subj), &deps)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, QueryError::Forbidden),
+        "a masked target identity -> Forbidden, got {err:?}"
     );
 }
