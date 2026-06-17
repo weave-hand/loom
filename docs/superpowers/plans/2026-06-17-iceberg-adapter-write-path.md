@@ -94,12 +94,22 @@ let committed: iceberg::table::Table = tx.commit(&catalog).await?;
 - `arrow-array` and `arrow-schema` have **no** bare alias (nothing deps them directly), so a v57 direct dep on them is collision-free and creates fresh `//third-party:arrow-array` / `:arrow-schema` aliases pointing at 57.
 - The only first-party consumer of the bare `//third-party:parquet` alias is `src/services/datafusion-io/BUCK`. If reindeer flips that alias off 58, only datafusion-io is at risk — immunize it by pinning to the versioned `:parquet-58`.
 
-**Files:**
-- Modify: `src/control-plane/postgres/Cargo.toml`
-- Create: `third-party/fixups/parquet/fixups.toml`, `third-party/fixups/arrow-array/fixups.toml`, `third-party/fixups/arrow-schema/fixups.toml`
-- Modify (fallback): `tools/buckify.sh`
-- Modify (contingency): `src/services/datafusion-io/BUCK`
-- Modify: `src/control-plane/postgres/BUCK`
+> **AS-BUILT (commit a26533c):** the plan's reindeer-fixup-first / bare-alias / datafusion-io-contingency
+> path was superseded after reading reindeer's source. Findings: (1) the `visibility` fixup only tunes the
+> bare *alias*, never the versioned lib, so it can't expose `:parquet-57`; (2) a Cargo dep *rename* (the
+> native disambiguator) is honored **only from a root package's deps**, and loom is a **virtual workspace**
+> (`resolve.root == None`), so member renames are ignored — verified empirically. So `buckify.sh` gained two
+> deterministic passes: **widen** the `:*-57` targets to PUBLIC, and **dedupe** each bare alias to its
+> highest version (parquet→58), leaving `datafusion-io`/`ingest` untouched (no contingency edit needed).
+> postgres deps the explicit `//third-party:{parquet-57,arrow-array-57,arrow-schema-57}`. No fixups created.
+> The lock already had arrow/parquet 57 (transitive via iceberg) — edit Cargo.toml + run buckify only; do
+> NOT `cargo generate-lockfile` (it re-resolves the graph and drops unrelated crates).
+
+**Files (as-built):**
+- Modify: `src/control-plane/postgres/Cargo.toml` (add `arrow-array`/`arrow-schema`/`parquet` `= "57"`)
+- Modify: `tools/buckify.sh` (widen `:*-57` to PUBLIC + dedupe bare alias to highest version)
+- Modify: `src/control-plane/postgres/BUCK` (dep the versioned `:*-57` targets)
+- Modify: `src/control-plane/postgres/src/lib.rs` (temp visibility probe; removed in Task 2)
 
 - [ ] **Step 1: Add the v57 deps to the postgres manifest**
 
