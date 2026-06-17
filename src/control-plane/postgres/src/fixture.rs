@@ -21,6 +21,23 @@ use tempfile::TempDir;
 
 use crate::PgControlPlane;
 
+// --- Iceberg seeder imports (used by `IcebergWriter` below) ---
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use iceberg::io::LocalFsStorageFactory;
+use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+use iceberg::{Catalog, CatalogBuilder as _, NamespaceIdent, TableCreation, TableIdent};
+use sqlx::PgPool;
+
+use crate::iceberg_mirror::{
+    ProjectedColumn, ProjectedFile, ensure_table, mark_dropped, next_snapshot, project_columns,
+    project_files,
+};
+use crate::iceberg_sql_catalog::{
+    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
+};
+
 static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A running ephemeral Postgres cluster. Killed and cleaned up on drop.
@@ -126,6 +143,15 @@ impl PgFixture {
     /// their own connection string, e.g. the DuckLake writer).
     pub fn socket_path(&self) -> &std::path::Path {
         self.socket_dir.path()
+    }
+
+    /// A libpq/sqlx connection URI for `db` over the fixture's unix socket — for
+    /// clients that take a DSN string (e.g. the vendored Iceberg SQL catalog).
+    pub fn pg_dsn(&self, db: &str) -> String {
+        format!(
+            "postgres://postgres@localhost/{db}?host={}",
+            self.socket_dir.path().display()
+        )
     }
 
     /// Create a fresh database (migrated) and return a `PgControlPlane` bound to it
@@ -444,5 +470,174 @@ impl DuckLakeWriter {
             })
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+/// Test-only seeder for the Iceberg read path. Creates real, spec-compliant Iceberg tables via
+/// the vendored SQL catalog (exercising the catalog port end to end against the hermetic
+/// Postgres + a `file://` warehouse), reads the schema Iceberg actually recorded, and projects
+/// it — plus one synthetic data-file row per batch — into `iceberg_mirror.*` so the read adapter
+/// can serve it. Sibling of `DuckLakeWriter`.
+///
+/// Slice 1 is the read path, so the seeder does NOT write real Parquet bytes (that needs the
+/// `iceberg` writer chain bound to arrow/parquet 57, and is the write path's concern — slice 2).
+/// The catalog contracts assert file counts/paths and schema/type round-trips, all of which a
+/// real-schema + synthetic-file projection satisfies. `long`/`string` columns cover every type
+/// the contracts seed.
+pub struct IcebergWriter {
+    /// Shared with the read adapter — mirror rows land in the control plane's database.
+    pool: PgPool,
+    /// libpq DSN for the vendored `SqlCatalog` (it opens its own sqlx pool).
+    pg_dsn: String,
+    /// `file://` warehouse root; removed on drop.
+    warehouse: TempDir,
+}
+
+impl IcebergWriter {
+    pub fn new(pool: PgPool, pg_dsn: String) -> Self {
+        Self {
+            pool,
+            pg_dsn,
+            warehouse: tempfile::tempdir().expect("warehouse temp dir"),
+        }
+    }
+
+    fn iceberg_type(logical: &str) -> Type {
+        match logical {
+            "long" => Type::Primitive(PrimitiveType::Long),
+            "integer" => Type::Primitive(PrimitiveType::Int),
+            "double" => Type::Primitive(PrimitiveType::Double),
+            "boolean" => Type::Primitive(PrimitiveType::Boolean),
+            "string" => Type::Primitive(PrimitiveType::String),
+            "date" => Type::Primitive(PrimitiveType::Date),
+            "timestamp" => Type::Primitive(PrimitiveType::Timestamp),
+            other => panic!("seed: unmapped logical type {other:?}"),
+        }
+    }
+
+    async fn catalog(&self) -> SqlCatalog {
+        let mut props = HashMap::new();
+        props.insert(SQL_CATALOG_PROP_URI.to_string(), self.pg_dsn.clone());
+        props.insert(
+            SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+            format!("file://{}", self.warehouse.path().display()),
+        );
+        SqlCatalogBuilder::default()
+            .with_storage_factory(Arc::new(LocalFsStorageFactory))
+            .load("loom", props)
+            .await
+            .expect("build vendored SqlCatalog")
+    }
+
+    /// Create the table (real Iceberg, via the catalog) if absent, then record each row-batch as
+    /// its own loom snapshot adding one synthetic data file of that many rows.
+    /// `columns`: `(name, loom-logical-type, nullable)`. Returns the per-batch loom snapshot ids.
+    pub async fn seed(
+        &self,
+        ns: &str,
+        name: &str,
+        columns: &[(String, String, bool)],
+        batches: &[usize],
+    ) -> Vec<i64> {
+        let catalog = self.catalog().await;
+        let namespace = NamespaceIdent::new(ns.to_string());
+        let _ = catalog.create_namespace(&namespace, HashMap::new()).await;
+        let table_ident = TableIdent::new(namespace.clone(), name.to_string());
+
+        if !catalog.table_exists(&table_ident).await.unwrap_or(false) {
+            let fields: Vec<_> = columns
+                .iter()
+                .enumerate()
+                .map(|(i, (cname, cty, nullable))| {
+                    let id = (i + 1) as i32;
+                    let f = if *nullable {
+                        NestedField::optional(id, cname, Self::iceberg_type(cty))
+                    } else {
+                        NestedField::required(id, cname, Self::iceberg_type(cty))
+                    };
+                    Arc::new(f)
+                })
+                .collect();
+            let schema = Schema::builder()
+                .with_fields(fields)
+                .build()
+                .expect("build iceberg schema");
+            let creation = TableCreation::builder()
+                .name(name.to_string())
+                .location(format!(
+                    "file://{}/{}/{}",
+                    self.warehouse.path().display(),
+                    ns,
+                    name
+                ))
+                .schema(schema)
+                .build();
+            catalog
+                .create_table(&namespace, creation)
+                .await
+                .expect("create_table");
+        }
+
+        // Read back the schema Iceberg recorded, so the mirror reflects real catalog metadata.
+        let table = catalog.load_table(&table_ident).await.expect("load_table");
+        let proj_cols: Vec<ProjectedColumn> = table
+            .metadata()
+            .current_schema()
+            .as_struct()
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, field)| {
+                let iceberg_type = match field.field_type.as_ref() {
+                    Type::Primitive(p) => p.to_string(),
+                    other => panic!("seed: non-primitive column type {other:?}"),
+                };
+                ProjectedColumn {
+                    order: (i + 1) as i64,
+                    name: field.name.clone(),
+                    iceberg_type,
+                    nullable: !field.required,
+                }
+            })
+            .collect();
+
+        let mut snapshots = Vec::new();
+        for &rows in batches {
+            let mut conn = self.pool.acquire().await.expect("acquire");
+            let at = next_snapshot(&mut conn, None).await.expect("next_snapshot");
+            let tid = ensure_table(&mut conn, ns, name, at)
+                .await
+                .expect("ensure_table");
+            if snapshots.is_empty() {
+                project_columns(&mut conn, tid, at, &proj_cols)
+                    .await
+                    .expect("project_columns");
+            }
+            let file = ProjectedFile {
+                path: format!("{ns}/{name}/data-{}.parquet", at.0),
+                file_format: "parquet".to_string(),
+                record_count: rows as i64,
+                file_size_bytes: (rows as i64) * 16 + 100,
+            };
+            project_files(&mut conn, tid, at, std::slice::from_ref(&file))
+                .await
+                .expect("project_files");
+            snapshots.push(at.0);
+        }
+        snapshots
+    }
+
+    /// Drop a table in the mirror (sets `end_snapshot`), returning the loom snapshot id at which
+    /// it was dropped. The read path reads only the mirror, and the delete contract exercises the
+    /// mirror's MVCC `end`-bound.
+    pub async fn drop_table(&self, ns: &str, name: &str) -> i64 {
+        let mut conn = self.pool.acquire().await.expect("acquire");
+        let at = next_snapshot(&mut conn, None)
+            .await
+            .expect("next_snapshot for drop");
+        mark_dropped(&mut conn, ns, name, at)
+            .await
+            .expect("mark_dropped");
+        at.0
     }
 }

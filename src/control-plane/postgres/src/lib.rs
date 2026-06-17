@@ -48,6 +48,12 @@ impl PgControlPlane {
     pub fn new(pool: PgPool, lock_timeout: Duration) -> Self {
         Self { pool, lock_timeout }
     }
+
+    /// The underlying connection pool. Used by the Iceberg read adapter and test
+    /// seeder, which share the control plane's database.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
 }
 
 /// Apply pending migrations from `migrations_dir` (tracked in `_sqlx_migrations`).
