@@ -353,3 +353,11 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "iceberg-snapshot-seq",
+    crate = "iceberg_snapshot_seq",
+    srcs = ["tests/iceberg_snapshot_seq.rs"],
+    crate_root = "tests/iceberg_snapshot_seq.rs",
+    deps = [":postgres", "//third-party:tokio"],
+)

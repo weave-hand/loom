@@ -36,16 +36,12 @@ pub async fn next_snapshot(
     conn: &mut PgConnection,
     iceberg_snapshot_id: Option<i64>,
 ) -> Result<SnapshotId> {
-    // FIXME(slice-2): `max(snapshot_id) + 1` is NOT concurrency-safe — two writers compute the
-    // same id and the second `insert` fails on the PK (and a SERIALIZABLE tx doesn't fix it;
-    // both read the same max). Fine for the single-threaded seeder. When the write path lands,
-    // back this with a Postgres sequence (or an advisory lock), not max+1.
-    let id = sqlx::query_scalar!(
-        "select coalesce(max(snapshot_id), 0) + 1 as \"next!\" from iceberg_mirror.snapshot"
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(backend)?;
+    // Concurrency-safe: nextval is atomic and never reuses a value, so two concurrent
+    // writers get distinct ids and neither collides on the snapshot PK (migration 0013).
+    let id = sqlx::query_scalar!("select nextval('iceberg_mirror.snapshot_seq') as \"next!\"")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
     sqlx::query!(
         "insert into iceberg_mirror.snapshot (snapshot_id, iceberg_snapshot_id) values ($1, $2)",
         id,
