@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use crate::handler::{
-    ChainQuery, Hop, ObjectQuery, QueryDeps, QueryError, Subject, read_linked_chain, read_object,
+    Associations, ChainQuery, Hop, ObjectQuery, QueryDeps, QueryError, Subject, read_associations,
+    read_linked_chain, read_object,
 };
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
@@ -85,14 +86,15 @@ async fn get_linked(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // Pull `direction` (single-hop knob) out of the params; everything else is a filter.
+    // Pull `direction` (single-hop knob) and `shape` out of the params; the rest are filters.
     let mut direction_raw: Option<String> = None;
+    let mut shape: Option<String> = None;
     let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
-        if k == "direction" {
-            direction_raw = Some(v);
-        } else {
-            filter_params.push((k, v));
+        match k.as_str() {
+            "direction" => direction_raw = Some(v),
+            "shape" => shape = Some(v),
+            _ => filter_params.push((k, v)),
         }
     }
     let direction = match parse_direction(direction_raw.as_deref()) {
@@ -113,28 +115,19 @@ async fn get_linked(
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
     };
-    match read_linked_chain(
-        &ChainQuery {
-            from_type,
-            path: vec![Hop {
-                link: link_name,
-                direction,
-            }],
-            filters,
-        },
-        &Subject(SubjectId(subject)),
-        &deps,
-    )
-    .await
-    {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
-        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-        Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
-        Err(QueryError::AmbiguousLink(l)) => (StatusCode::BAD_REQUEST, l).into_response(),
-        Err(QueryError::BadChain(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    let query = ChainQuery {
+        from_type,
+        path: vec![Hop {
+            link: link_name,
+            direction,
+        }],
+        filters,
+    };
+    let subj = Subject(SubjectId(subject));
+    match shape.as_deref() {
+        None | Some("objects") => respond_objects(read_linked_chain(&query, &subj, &deps).await),
+        Some("association") => respond_associations(read_associations(&query, &subj, &deps).await),
+        Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
     }
 }
 
@@ -152,12 +145,13 @@ async fn get_linked_chain(
     // `path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
     // every other pair is a filter. Repeated filter keys are preserved (e.g. a range).
     let mut hops: Vec<Hop> = Vec::new();
+    let mut shape: Option<String> = None;
     let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
-        if k == "path" {
-            hops = parse_path_hops(&v);
-        } else {
-            filter_params.push((k, v));
+        match k.as_str() {
+            "path" => hops = parse_path_hops(&v),
+            "shape" => shape = Some(v),
+            _ => filter_params.push((k, v)),
         }
     }
     // Filter keys reference bare link names; resolve against those (direction-independent).
@@ -171,25 +165,47 @@ async fn get_linked_chain(
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
     };
-    match read_linked_chain(
-        &ChainQuery {
-            from_type,
-            path: hops,
-            filters,
-        },
-        &Subject(SubjectId(subject)),
-        &deps,
-    )
-    .await
-    {
+    let query = ChainQuery {
+        from_type,
+        path: hops,
+        filters,
+    };
+    let subj = Subject(SubjectId(subject));
+    match shape.as_deref() {
+        None | Some("objects") => respond_objects(read_linked_chain(&query, &subj, &deps).await),
+        Some("association") => respond_associations(read_associations(&query, &subj, &deps).await),
+        Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
+    }
+}
+
+fn respond_objects(
+    res: Result<crate::handler::ObjectRows, QueryError>,
+) -> axum::response::Response {
+    match res {
         Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
-        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-        Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
-        Err(QueryError::AmbiguousLink(l)) => (StatusCode::BAD_REQUEST, l).into_response(),
-        Err(QueryError::BadChain(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+        Err(e) => chain_error(e),
+    }
+}
+
+fn respond_associations(res: Result<Associations, QueryError>) -> axum::response::Response {
+    match res {
+        Ok(a) => Json(crate::render::associations_to_json(&a)).into_response(),
+        Err(e) => chain_error(e),
+    }
+}
+
+/// Shared HTTP mapping for chain/association read errors.
+fn chain_error(e: QueryError) -> axum::response::Response {
+    match e {
+        QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
+        QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
+        QueryError::AmbiguousLink(l) => (StatusCode::BAD_REQUEST, l).into_response(),
+        QueryError::BadChain(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
+        QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
+        QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
+        // Opaque body for backend/serving faults (no internal detail leaked).
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     }
 }
 
