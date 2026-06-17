@@ -35,6 +35,8 @@ struct TransformPayload {
     inputs: Vec<TableSpec>,
     output: TableSpec,
     sql: String,
+    #[serde(default)]
+    output_mode: crate::run::OutputMode,
 }
 
 /// Run one transform job. Takes the deps + the job, returns the worker outcome.
@@ -84,6 +86,7 @@ pub async fn transform_handler(
             output: &output,
             sql: &payload.sql,
             conform: None,
+            output_mode: payload.output_mode,
             lineage,
         },
     )
@@ -101,6 +104,8 @@ struct TypedTransformPayload {
     inputs: Vec<String>,
     output: String,
     sql: String,
+    #[serde(default)]
+    output_mode: crate::run::OutputMode,
 }
 
 /// Run one typed transform job. Inputs/output are ontology type names; the SQL
@@ -123,7 +128,16 @@ pub async fn typed_transform_handler(
     let output = TypeName(payload.output);
     let run_id = Uuid::new_v4().to_string();
 
-    let res = run_typed_transform(cp, store, &run_id, &inputs, &output, &payload.sql).await;
+    let res = run_typed_transform(
+        cp,
+        store,
+        &run_id,
+        &inputs,
+        &output,
+        &payload.sql,
+        payload.output_mode,
+    )
+    .await;
 
     res.map(|_snapshot| ()).map_err(|e| JobFailure {
         error: e.to_string(),

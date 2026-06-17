@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from ducklake_table_column_stats where table_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6ce7c186e3a607664be9bbbcd4f8a678311c46d4b1a9881438850162f1c111d3"
+}

@@ -280,6 +280,15 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "snapshot-replace",
+    crate = "snapshot_replace",
+    srcs = ["tests/snapshot_replace.rs"],
+    crate_root = "tests/snapshot_replace.rs",
+    duckdb = True,
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "facade",
     crate = "facade",
     srcs = ["tests/facade.rs"],

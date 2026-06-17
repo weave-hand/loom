@@ -15,6 +15,17 @@ use object_store::ObjectStore;
 
 use crate::conform::{Violation, check_conformance};
 
+/// Where a transform's result lands relative to the output table's existing contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMode {
+    /// Add the result's files to the table (today's behavior).
+    #[default]
+    Append,
+    /// Replace the table's live contents with the result (older snapshots time-travel).
+    Overwrite,
+}
+
 /// One input to a transform: a physical table plus the name it is registered under in
 /// DataFusion (what the SQL references). The physical path registers tables under their
 /// own name; the typed path registers them under the ontology type name.
@@ -31,6 +42,9 @@ pub struct TransformRequest<'a> {
     /// When `Some`, the result schema must EXACTLY conform to these properties (typed
     /// transforms); checked before any write. `None` skips the check (physical path).
     pub conform: Option<&'a [PropertyDef]>,
+    /// Append (default) adds the result to the table; Overwrite replaces its live
+    /// contents (expiring the prior files at the new snapshot).
+    pub output_mode: OutputMode,
     /// Built by the caller; inputs -> output. Emitted in the commit transaction.
     pub lineage: LineageEvent,
 }
@@ -149,10 +163,13 @@ pub async fn run_transform(
         })
         .collect();
 
-    // 6. One atomic Tx: create_table (idempotent) + append_files + emit lineage.
+    // 6. One atomic Tx: create_table (idempotent) + append_files/replace_files + emit lineage.
     let mut tx = cp.begin().await?;
     tx.create_table(req.output, &columns).await?;
-    tx.append_files(req.output, &data_files).await?;
+    match req.output_mode {
+        OutputMode::Append => tx.append_files(req.output, &data_files).await?,
+        OutputMode::Overwrite => tx.replace_files(req.output, &data_files).await?,
+    }
     tx.emit(req.lineage).await?;
     tx.commit().await?.ok_or(TransformError::NoSnapshot)
 }

@@ -2099,3 +2099,79 @@ where
         "rolled-back table absent"
     );
 }
+
+/// Contract for `Tx::replace_files` (overwrite). Append a file, then replace it: the
+/// current snapshot lists ONLY the replacement (stats reflect the new file, not the
+/// sum), and the prior snapshot still time-travels to the original file. `cp` must be
+/// freshly empty (postgres: a DuckLake catalog must be bootstrapped first).
+pub async fn snapshot_replace_contract<C>(cp: &C)
+where
+    C: control_plane_core::ControlPlane + control_plane_core::Catalog,
+{
+    use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
+    let t = TableRef {
+        schema: "main".into(),
+        name: "replace_me".into(),
+    };
+    let file = |path: &str, rows: i64| DataFile {
+        path: path.into(),
+        path_is_relative: true,
+        file_format: FileFormat::Parquet,
+        record_count: rows,
+        file_size_bytes: rows * 16,
+        column_stats: vec![],
+        parquet_footer_size: Some(10),
+    };
+
+    // create + append a.parquet (3 rows).
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(
+        &t,
+        &[ColumnSpec {
+            name: "id".into(),
+            ty: "long".into(),
+            nullable: false,
+        }],
+    )
+    .await
+    .unwrap();
+    tx.append_files(&t, &[file("a.parquet", 3)]).await.unwrap();
+    let s1 = tx
+        .commit()
+        .await
+        .unwrap()
+        .expect("append yields a snapshot");
+
+    let at1 = cp.files(&t, s1, PageReq::unbounded()).await.unwrap();
+    assert_eq!(at1.len(), 1, "one file live after append");
+    assert_eq!(at1.items[0].path, "a.parquet");
+
+    // replace with b.parquet (5 rows).
+    let mut tx = cp.begin().await.unwrap();
+    tx.replace_files(&t, &[file("b.parquet", 5)]).await.unwrap();
+    let s2 = tx
+        .commit()
+        .await
+        .unwrap()
+        .expect("replace yields a snapshot");
+
+    // current snapshot lists ONLY the replacement.
+    let cur = cp.current_snapshot(&t).await.unwrap();
+    assert_eq!(cur.id, s2, "replace advanced the current snapshot");
+    let at2 = cp.files(&t, s2, PageReq::unbounded()).await.unwrap();
+    assert_eq!(at2.len(), 1, "replace leaves exactly the new file live");
+    assert_eq!(at2.items[0].path, "b.parquet");
+    assert_eq!(
+        at2.items[0].record_count, 5,
+        "stats reflect the new file only"
+    );
+
+    // time travel: the prior snapshot still lists the original file.
+    let back = cp.files(&t, s1, PageReq::unbounded()).await.unwrap();
+    assert_eq!(
+        back.len(),
+        1,
+        "prior snapshot retains its file (time travel)"
+    );
+    assert_eq!(back.items[0].path, "a.parquet");
+}

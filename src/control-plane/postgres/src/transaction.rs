@@ -12,17 +12,22 @@ pub(crate) struct PgTx {
     pub(crate) tx: sqlx::Transaction<'static, Postgres>,
     pub(crate) staged_tables: Vec<(TableRef, Vec<ColumnSpec>)>,
     pub(crate) staged_files: Vec<(TableRef, Vec<DataFile>)>,
+    pub(crate) staged_replacements: Vec<(TableRef, Vec<DataFile>)>,
 }
 
 #[async_trait]
 impl Tx for PgTx {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn commit(mut self: Box<Self>) -> Result<Option<SnapshotId>> {
-        if !self.staged_tables.is_empty() || !self.staged_files.is_empty() {
+        if !self.staged_tables.is_empty()
+            || !self.staged_files.is_empty()
+            || !self.staged_replacements.is_empty()
+        {
             let id = crate::snapshot::commit_snapshot(
                 &mut self.tx,
                 &self.staged_tables,
                 &self.staged_files,
+                &self.staged_replacements,
             )
             .await?;
             self.tx.commit().await.map_err(backend)?;
@@ -54,6 +59,12 @@ impl Tx for PgTx {
 
     async fn append_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
         self.staged_files.push((table.clone(), files.to_vec()));
+        Ok(())
+    }
+
+    async fn replace_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
+        self.staged_replacements
+            .push((table.clone(), files.to_vec()));
         Ok(())
     }
 }

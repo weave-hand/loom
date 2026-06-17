@@ -40,9 +40,14 @@ items — they're the "later, if a consumer needs it" pile.
   so this is a lower-risk path about *which* columns change; it adds an `ALTER` op to the
   `CatalogSeed` seam and DuckDB-CLI surface. Add it when a consumer (or a bug) makes
   column-level time travel matter.
-- **File supersession / compaction.** The delete contract covers a dropped table, not
-  files being *replaced* (compaction) — superseded data files gaining an `end_snapshot`
-  while the table stays live. Not deterministically CLI-drivable today; deferred.
+- **File supersession / compaction.** The file-supersession *mechanism* — superseded data
+  files gaining an `end_snapshot` while the table stays live — is now delivered as the
+  `Tx::replace_files` primitive behind transform **overwrite output mode**
+  (`2026-06-17-overwrite-output-mode-design.md`): an overwrite expires the prior files at
+  the new snapshot and writes the new ones, time travel preserved. Still deferred:
+  **compaction** (read a table's small files, coalesce, and `replace_files` with logically
+  identical data — needs the read-coalesce pass + a trigger policy) and **watermark/
+  incremental** (stateful append-delta) output. Both reuse `replace_files`.
 
 ## Ontology & read path (Step 3)
 

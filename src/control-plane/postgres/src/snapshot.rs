@@ -34,14 +34,15 @@ struct Head {
 /// snapshot. Returns the new [`SnapshotId`]. Assumes all referenced tables exist
 /// in the catalog (created by DuckDB or, in Task 3, by loom's `create_table`).
 #[tracing::instrument(
-    skip(tx, staged_tables, staged_files),
-    fields(tables = staged_tables.len(), files = staged_files.len()),
+    skip(tx, staged_tables, staged_files, staged_replacements),
+    fields(tables = staged_tables.len(), files = staged_files.len(), replacements = staged_replacements.len()),
     level = "debug"
 )]
 pub(crate) async fn commit_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     staged_tables: &[(TableRef, Vec<ColumnSpec>)],
     staged_files: &[(TableRef, Vec<DataFile>)],
+    staged_replacements: &[(TableRef, Vec<DataFile>)],
 ) -> Result<SnapshotId> {
     lock_catalog(tx).await?;
     let head = read_head(tx).await?;
@@ -94,6 +95,43 @@ pub(crate) async fn commit_snapshot(
         }
     }
 
+    // (3b) replace loop: for each replacement, expire the table's currently-live data
+    //      files at the new snapshot (time travel preserved), reset table-level stats so
+    //      they recompute from the new files (next_row_id is NOT reset — row-ids must stay
+    //      unique across snapshots), then write the new files via the same path as append.
+    for (table, files) in staged_replacements {
+        let table_id = resolve_table_id(tx, table).await?;
+        sqlx::query!(
+            "update ducklake_data_file set end_snapshot = $1 \
+             where table_id = $2 and end_snapshot is null",
+            new_snapshot_id,
+            table_id,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query!(
+            "update ducklake_table_stats set record_count = 0, file_size_bytes = 0 \
+             where table_id = $1",
+            table_id,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query!(
+            "delete from ducklake_table_column_stats where table_id = $1",
+            table_id,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(backend)?;
+        for file in files {
+            let data_file_id = next_file_id;
+            next_file_id += 1;
+            write_data_file(tx, table_id, new_snapshot_id, data_file_id, file).await?;
+        }
+    }
+
     // (4) the single new snapshot row (recipe §2 step 1): id+1, with the
     //     post-commit schema_version, next_catalog_id, next_file_id.
     sqlx::query!(
@@ -118,6 +156,13 @@ pub(crate) async fn commit_snapshot(
         }
         let table_id = resolve_table_id(tx, table).await?;
         segments.push(format!("inserted_into_table:{table_id}"));
+    }
+    for (table, files) in staged_replacements {
+        let table_id = resolve_table_id(tx, table).await?;
+        segments.push(format!("deleted_from_table:{table_id}"));
+        if !files.is_empty() {
+            segments.push(format!("inserted_into_table:{table_id}"));
+        }
     }
     let changes_made = segments.join(",");
     sqlx::query!(

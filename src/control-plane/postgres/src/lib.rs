@@ -81,6 +81,7 @@ impl ControlPlane for PgControlPlane {
             tx,
             staged_tables: Vec::new(),
             staged_files: Vec::new(),
+            staged_replacements: Vec::new(),
         }))
     }
 }

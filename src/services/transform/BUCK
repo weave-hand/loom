@@ -51,11 +51,46 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "output-mode",
+    crate = "output_mode",
+    srcs = ["tests/output_mode.rs"],
+    crate_root = "tests/output_mode.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//third-party:serde",
+        "//third-party:serde_json",
+    ],
+)
+
 loom_fixture_test(
     name = "transform-e2e",
     crate = "transform_e2e",
     srcs = ["tests/transform_e2e.rs"],
     crate_root = "tests/transform_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":transform",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/worker:worker",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-util",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "overwrite-e2e",
+    crate = "overwrite_e2e",
+    srcs = ["tests/overwrite_e2e.rs"],
+    crate_root = "tests/overwrite_e2e.rs",
     duckdb = True,
     deps = [
         ":transform",

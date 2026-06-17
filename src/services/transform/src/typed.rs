@@ -30,6 +30,7 @@ pub async fn run_typed_transform(
     inputs: &[TypeName],
     output: &TypeName,
     sql: &str,
+    output_mode: crate::run::OutputMode,
 ) -> Result<SnapshotId, TypedTransformError> {
     // 1. Resolve each input type to its backing table.
     let mut input_tables = Vec::with_capacity(inputs.len());
@@ -83,6 +84,7 @@ pub async fn run_typed_transform(
             output: &out_type.table,
             sql,
             conform: Some(&out_type.properties),
+            output_mode,
             lineage,
         },
     )
