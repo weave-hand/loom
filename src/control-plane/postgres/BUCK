@@ -327,3 +327,17 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "iceberg_catalog",
+    crate = "iceberg_catalog",
+    srcs = ["tests/iceberg_catalog.rs"],
+    crate_root = "tests/iceberg_catalog.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
