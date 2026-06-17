@@ -969,7 +969,6 @@ dependencies = [
  "proptest",
  "serde_json",
  "sqlx",
- "strum",
  "tempfile",
  "time",
  "tokio",

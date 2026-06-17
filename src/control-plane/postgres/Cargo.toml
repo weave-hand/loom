@@ -29,8 +29,6 @@ proptest = "1"
 # from its own iceberg_mirror.* projection; iceberg is used only in the test seeder + the
 # vendored SQL catalog (src/iceberg_sql_catalog/, ported from iceberg-catalog-sql to sqlx 0.9).
 iceberg = "0.9"
-# Used by the vendored SQL catalog for one record-type enum (EnumString/Display).
-strum = { version = "0.27", features = ["derive"] }
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }

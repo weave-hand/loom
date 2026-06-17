@@ -23,6 +23,7 @@ pub mod fixture;
 mod acl;
 mod catalog;
 pub mod ducklake_type;
+pub mod iceberg_sql_catalog;
 mod lineage;
 mod ontology;
 mod queue;

@@ -15426,12 +15426,6 @@ cargo.rust_library(
     visibility = [],
 )
 
-alias(
-    name = "strum",
-    actual = ":strum-0.27",
-    visibility = ["PUBLIC"],
-)
-
 http_archive(
     name = "strum-0.27.2.crate",
     sha256 = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf",
