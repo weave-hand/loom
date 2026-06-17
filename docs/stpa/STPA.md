@@ -153,4 +153,3 @@ flowchart TD
 - Is there a stuck-job reaper distinct from lock-expiry reclaim, or does a job whose worker crashes after lock expiry but is never re-eligible (e.g. wrong kind set) stall indefinitely?
 - Subject identity comes from an unverified X-Loom-Subject header (authn is a later spec) — until wired, any HTTP client can impersonate any subject and bypass ACL.
 - The sql.rs quote_ident function panics (assert!) if an ontology property name contains a double quote; should this be an error return to prevent a handler panic?
-
