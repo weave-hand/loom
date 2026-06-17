@@ -13,6 +13,7 @@ pub(crate) struct PgTx {
     pub(crate) staged_tables: Vec<(TableRef, Vec<ColumnSpec>)>,
     pub(crate) staged_files: Vec<(TableRef, Vec<DataFile>)>,
     pub(crate) staged_replacements: Vec<(TableRef, Vec<DataFile>)>,
+    pub(crate) staged_compactions: Vec<(TableRef, Vec<String>, Vec<DataFile>)>,
 }
 
 #[async_trait]
@@ -22,12 +23,14 @@ impl Tx for PgTx {
         if !self.staged_tables.is_empty()
             || !self.staged_files.is_empty()
             || !self.staged_replacements.is_empty()
+            || !self.staged_compactions.is_empty()
         {
             let id = crate::snapshot::commit_snapshot(
                 &mut self.tx,
                 &self.staged_tables,
                 &self.staged_files,
                 &self.staged_replacements,
+                &self.staged_compactions,
             )
             .await?;
             self.tx.commit().await.map_err(backend)?;
@@ -65,6 +68,17 @@ impl Tx for PgTx {
     async fn replace_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
         self.staged_replacements
             .push((table.clone(), files.to_vec()));
+        Ok(())
+    }
+
+    async fn compact_files(
+        &mut self,
+        table: &TableRef,
+        expire: &[String],
+        write: &[DataFile],
+    ) -> Result<()> {
+        self.staged_compactions
+            .push((table.clone(), expire.to_vec(), write.to_vec()));
         Ok(())
     }
 }
