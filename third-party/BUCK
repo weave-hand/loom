@@ -628,7 +628,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "1",
         "CARGO_PKG_VERSION_PRE": "",
     },
-    visibility = ["PUBLIC"],
+    visibility = [],
     deps = [
         ":ahash-0.8",
         ":arrow-buffer-57",
@@ -1309,7 +1309,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "1",
         "CARGO_PKG_VERSION_PRE": "",
     },
-    visibility = ["PUBLIC"],
+    visibility = [],
 )
 
 http_archive(
@@ -11649,6 +11649,12 @@ buildscript_run(
     version = "0.9.12",
 )
 
+alias(
+    name = "parquet57",
+    actual = ":parquet-57",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "parquet-57.3.1.crate",
     sha256 = "2e832c6aa20310fc6de7ea5a3f4e20d34fd83e3b43229d32b81ffe5c14d74692",
@@ -11703,7 +11709,7 @@ cargo.rust_library(
         "tokio",
         "zstd",
     ],
-    visibility = ["PUBLIC"],
+    visibility = [],
     deps = [
         ":ahash-0.8",
         ":arrow-array-57",
