@@ -10305,9 +10305,9 @@ buildscript_run(
         "pkg-config",
         "vcpkg",
     ],
-    version = "1.10503.1",
     rustc_link_lib = True,
     rustc_link_search = True,
+    version = "1.10503.1",
 )
 
 http_archive(
@@ -12448,8 +12448,6 @@ buildscript_run(
         "CARGO_PKG_VERSION_PRE": "",
     },
     version = "0.2.37",
-    rustc_link_lib = True,
-    rustc_link_search = True,
 )
 
 http_archive(
@@ -13311,9 +13309,9 @@ buildscript_run(
         "default",
         "dev_urandom_fallback",
     ],
-    version = "0.17.14",
     rustc_link_lib = True,
     rustc_link_search = True,
+    version = "0.17.14",
 )
 
 http_archive(
@@ -19806,7 +19804,7 @@ buildscript_run(
         "std",
         "zdict_builder",
     ],
-    version = "2.0.16+zstd.1.5.7",
     rustc_link_lib = True,
     rustc_link_search = True,
+    version = "2.0.16+zstd.1.5.7",
 )
