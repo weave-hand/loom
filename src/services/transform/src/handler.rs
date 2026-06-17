@@ -84,6 +84,7 @@ pub async fn transform_handler(
             output: &output,
             sql: &payload.sql,
             conform: None,
+            output_mode: crate::run::OutputMode::Append,
             lineage,
         },
     )

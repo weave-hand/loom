@@ -83,6 +83,7 @@ pub async fn run_typed_transform(
             output: &out_type.table,
             sql,
             conform: Some(&out_type.properties),
+            output_mode: crate::run::OutputMode::Append,
             lineage,
         },
     )

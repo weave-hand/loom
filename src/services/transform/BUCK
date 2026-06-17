@@ -51,6 +51,19 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "output-mode",
+    crate = "output_mode",
+    srcs = ["tests/output_mode.rs"],
+    crate_root = "tests/output_mode.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//third-party:serde",
+        "//third-party:serde_json",
+    ],
+)
+
 loom_fixture_test(
     name = "transform-e2e",
     crate = "transform_e2e",
