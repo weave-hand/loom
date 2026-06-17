@@ -36,6 +36,9 @@ pub struct ObjectType {
     /// Ordered. Aggregate-over-link computed properties (served alongside `properties`).
     pub derived: Vec<DerivedPropertyDef>,
     pub table: TableRef,
+    /// The property that is this type's primary key, if declared. Names one of
+    /// `properties`. `None` = no declared identity (back-compatible).
+    pub identity: Option<String>,
 }
 
 /// Link multiplicity.

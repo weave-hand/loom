@@ -119,6 +119,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
         ],
         derived: vec![],
         table: ord.clone(),
+        identity: None,
     })
     .await
     .unwrap();

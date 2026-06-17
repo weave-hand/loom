@@ -55,6 +55,7 @@ async fn bind_accepts_conforming_type_and_persists_it() {
         ],
         derived: vec![],
         table: customer(),
+        identity: None,
     };
     bind(&cp, &cp, type_def.clone()).await.unwrap();
 
@@ -85,6 +86,7 @@ async fn bind_collects_all_violations_and_persists_nothing() {
         ],
         derived: vec![],
         table: customer(),
+        identity: None,
     };
 
     let err = bind(&cp, &cp, type_def).await.unwrap_err();
@@ -138,6 +140,7 @@ async fn bind_rejects_an_unknown_table() {
             schema: "main".into(),
             name: "ghost".into(),
         },
+        identity: None,
     };
     let err = bind(&cp, &cp, type_def).await.unwrap_err();
     assert!(matches!(err, BindError::TableNotFound(_)), "got {err:?}");
