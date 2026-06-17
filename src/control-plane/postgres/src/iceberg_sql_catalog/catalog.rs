@@ -748,13 +748,26 @@ impl Catalog for SqlCatalog {
         )
         .await?;
 
+        // Only end the mirror (and spend a snapshot id) when there is live mirror
+        // state to end. A table created via the catalog but never appended has no
+        // mirror row — dropping it is just the pointer delete, with no snapshot
+        // allocated (which would otherwise leave an orphan snapshot row).
         let ns = identifier.namespace().join(".");
-        let at = crate::iceberg_mirror::next_snapshot(&mut tx, None)
+        let unexpected = |e: control_plane_core::ControlPlaneError| {
+            Error::new(ErrorKind::Unexpected, e.to_string())
+        };
+        if crate::iceberg_mirror::live_table_id(&mut tx, &ns, identifier.name())
             .await
-            .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
-        crate::iceberg_mirror::mark_dropped(&mut tx, &ns, identifier.name(), at)
-            .await
-            .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
+            .map_err(unexpected)?
+            .is_some()
+        {
+            let at = crate::iceberg_mirror::next_snapshot(&mut tx, None)
+                .await
+                .map_err(unexpected)?;
+            crate::iceberg_mirror::mark_dropped(&mut tx, &ns, identifier.name(), at)
+                .await
+                .map_err(unexpected)?;
+        }
 
         tx.commit().await.map_err(from_sqlx_error)?;
         Ok(())

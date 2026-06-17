@@ -144,6 +144,22 @@ pub async fn project_files(
     Ok(())
 }
 
+/// The `table_id` of the currently-live mirror row for `(ns, name)`, or `None` if the table has
+/// no live mirror state (e.g. created via the catalog but never appended — `create_table` writes
+/// the Iceberg pointer but does not project the mirror). Lets a drop skip the mirror leg (and its
+/// snapshot allocation) when there is nothing to end.
+pub async fn live_table_id(conn: &mut PgConnection, ns: &str, name: &str) -> Result<Option<i64>> {
+    sqlx::query_scalar!(
+        "select table_id as \"id!\" from iceberg_mirror.table \
+         where table_namespace = $1 and table_name = $2 and end_snapshot is null",
+        ns,
+        name,
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(backend)
+}
+
 /// Mark a table (and its live columns/files) dropped at `at` — sets `end_snapshot = at` on every
 /// currently-live row. Drives `CatalogSeed::drop_table` and the MVCC `end`-bound the delete
 /// contract exercises.

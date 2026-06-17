@@ -121,6 +121,33 @@ async fn append_round_trips_through_the_mirror() {
     assert_eq!(schema.columns.len(), 2, "id + name projected");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_unappended_table_succeeds_without_orphan_snapshot() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let whs = wh.path().display().to_string();
+    let catalog = make_catalog(fx.pg_dsn(&db), &whs).await;
+    create_t(&catalog, &whs).await; // creates the table; never appended
+
+    let ident = TableIdent::new(NamespaceIdent::new("wh".into()), "t".into());
+    catalog.drop_table(&ident).await.expect("drop");
+    assert!(
+        !catalog.table_exists(&ident).await.expect("exists"),
+        "an un-appended table must still be droppable"
+    );
+
+    let pool: PgPool = fx.pool_for(&db).await;
+    let snaps: i64 = sqlx::query_scalar("select count(*) from iceberg_mirror.snapshot")
+        .fetch_one(&pool)
+        .await
+        .expect("count snapshots");
+    assert_eq!(
+        snaps, 0,
+        "no snapshot allocated when there is no mirror to end"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_appends_keep_the_mirror_consistent() {
     let fx = PgFixture::start();
