@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into iceberg_mirror.table (table_namespace, table_name, begin_snapshot) values ($1, $2, $3) returning table_id as \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.\"table\"",
+            "name": "table_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8694e4c3bf620a93f5f3dc427bb265c75b2a45a888a57f709311df1079abdde5"
+}
