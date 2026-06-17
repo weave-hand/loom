@@ -230,8 +230,7 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     new `TypeId` identity in control-plane-core so `upstream(OutputType)` returns the input
     types. Output reads through query-api as the typed object (governed read-back). Proven by
     an e2e fixture.
-  - *Later:* programmatic (registered-plan) transforms; compaction of small files (reuses
-    `replace_files`); watermark/incremental output; a wider output type set (the write/infer path is canonical scalars only today);
+  - *Later:* programmatic (registered-plan) transforms; watermark/incremental output; a wider output type set (the write/infer path is canonical scalars only today);
     DAG / transactional enqueue-downstream; optional Ballista escalation.
 
 ---
@@ -304,6 +303,16 @@ mixed with forward hops) read paths. The control plane gained an inbound-adjacen
 (an inverse hop is just a reversed backing + origin type). An inbound link name that is
 not unique for the target type is a deterministic 400 (`AmbiguousLink`). The remaining
 slice-C parts are object-set inputs and the source→target association.
+
+**Selective compaction** (`2026-06-17-compaction-design.md`) is now delivered: a
+table's sub-threshold Parquet files can be coalesced into fewer size-targeted ones
+(large files left in place) via a new partial-supersede control-plane primitive
+(`Tx::compact_files`) and a `compact_table` service function. The primitive expires a
+named subset of live files at the new snapshot and writes coalesced replacements,
+adjusting table stats by delta (vs `replace_files`, which expires all files); older
+snapshots still time-travel to the originals. A concurrent-compaction race is rejected
+by an exact expire-count assertion. Library primitive only — a queue job and operator
+endpoint remain deferred, as does watermark-tracked incremental output.
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
 reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,

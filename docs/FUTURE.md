@@ -41,13 +41,19 @@ items — they're the "later, if a consumer needs it" pile.
   `CatalogSeed` seam and DuckDB-CLI surface. Add it when a consumer (or a bug) makes
   column-level time travel matter.
 - **File supersession / compaction.** The file-supersession *mechanism* — superseded data
-  files gaining an `end_snapshot` while the table stays live — is now delivered as the
+  files gaining an `end_snapshot` while the table stays live — is delivered as the
   `Tx::replace_files` primitive behind transform **overwrite output mode**
   (`2026-06-17-overwrite-output-mode-design.md`): an overwrite expires the prior files at
-  the new snapshot and writes the new ones, time travel preserved. Still deferred:
-  **compaction** (read a table's small files, coalesce, and `replace_files` with logically
-  identical data — needs the read-coalesce pass + a trigger policy) and **watermark/
-  incremental** (stateful append-delta) output. Both reuse `replace_files`.
+  the new snapshot and writes the new ones, time travel preserved. **Selective (size-threshold)
+  compaction** is now delivered too (`2026-06-17-compaction-design.md`): a new partial-supersede
+  primitive `Tx::compact_files` expires a *named subset* of a table's live files and writes
+  coalesced replacements (adjusting table stats by delta, leaving other files untouched), and a
+  `compact_table` service function reads only the sub-threshold files, rewrites them via
+  `write_dataset`, and swaps them through `compact_files` — time travel preserved. Compacted files
+  get **fresh row-ids**, which is sound today because loom has no merge-on-read delete vectors;
+  revisit this if row-level deletes land. Still deferred: a **queue-driven compaction job /
+  operator endpoint** (the library primitive is wired but unscheduled) and **watermark-tracked
+  incremental** (stateful append-delta) output.
 
 ## Ontology & read path (Step 3)
 
