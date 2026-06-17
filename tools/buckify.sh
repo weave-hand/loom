@@ -111,7 +111,10 @@ for name in PUBLIC_VERSIONED_TARGETS:
 # (b) Dedupe bare aliases. For each alias name emitted more than once, keep the one
 #     pointing at the highest version (parsed from the `:name-<ver>` actual) and drop
 #     the rest. First-party code that needs a non-highest version uses the explicit
-#     versioned target (made PUBLIC above).
+#     versioned target (made PUBLIC above). Intentionally permissive: when reindeer
+#     emits no duplicate (the common case for every other crate), this no-ops. A
+#     genuinely-missed duplicate would still be caught loudly — by buck2's own
+#     double-registration error — so there is no silent-failure path here.
 alias_block = re.compile(
     r'\nalias\(\s*\n\s*name = "([^"]+)",\s*\n\s*actual = ":([^"]+)",\s*\n(?:\s*visibility = \[[^\]]*\],\s*\n)?\)\n')
 def ver_key(actual):
@@ -127,7 +130,10 @@ for name, ms in by_name.items():
         keep = max(ms, key=lambda m: ver_key(m.group(2)))
         drop_spans += [(m.start(), m.end()) for m in ms if m is not keep]
 for start, end in sorted(drop_spans, reverse=True):
-    content = content[:start] + "\n" + content[end:]
+    # The match consumes the blank-line separator before the alias and the newline
+    # after its `)`; splice with "" (not "\n") so the kept neighbour keeps exactly
+    # one blank-line separator rather than gaining a second.
+    content = content[:start] + content[end:]
 
 with open(path, "w") as f:
     f.write(content)

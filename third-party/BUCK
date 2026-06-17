@@ -11649,7 +11649,6 @@ buildscript_run(
     version = "0.9.12",
 )
 
-
 http_archive(
     name = "parquet-57.3.1.crate",
     sha256 = "2e832c6aa20310fc6de7ea5a3f4e20d34fd83e3b43229d32b81ffe5c14d74692",
