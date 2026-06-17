@@ -8,33 +8,33 @@
 loom-owned Postgres mirror, validated by the existing backend-agnostic `catalog_contract` /
 `catalog_delete_contract` — coexisting with DuckLake, which stays green.
 
-**Architecture:** `iceberg-catalog-sql::SqlCatalog` (0.9.1) owns the canonical `table →
-metadata.json` pointer in Postgres + writes spec-compliant metadata to a `file://` warehouse.
-loom owns an `iceberg_mirror.*` schema — a read-optimized projection of snapshots / files /
-stats / schema — and a `core::Catalog` impl that serves entirely from it (pure SQL, the same
-shape as `postgres/src/catalog.rs`). The mirror is a **rebuildable cache**; **loom owns the
-catalog-global monotonic `SnapshotId` space and MVCC (`begin/end_snapshot`)** in the mirror,
-independent of Iceberg's per-table snapshot ids (which the mirror records for traceability
-only). At read time the adapter never touches `iceberg` or object store; `iceberg` is used
-only in the test seeder to write a real canonical table and in the projection that fills the
-mirror from it.
+**Architecture:** loom **vendors** the Apache `iceberg-catalog-sql` SQL-catalog module (ported
+sqlx 0.8 → loom's sqlx 0.9) so it owns `update_table` — that owns the canonical `table →
+metadata.json` pointer in JDBC tables in loom's Postgres and writes spec-compliant metadata to
+a `file://` warehouse. loom also owns an `iceberg_mirror.*` schema — a read-optimized
+projection of snapshots / files / schema — and a `core::Catalog` impl that serves entirely from
+it (pure SQL, the same shape as `postgres/src/catalog.rs`). The mirror is a **rebuildable
+cache**; **loom owns the catalog-global monotonic `SnapshotId` space and MVCC
+(`begin/end_snapshot`)** in the mirror, independent of Iceberg's per-table snapshot ids (which
+the mirror records for traceability only). At read time the adapter touches neither `iceberg`
+nor object store; `iceberg` + the vendored catalog are used only in the test seeder.
 
-**Tech Stack:** Rust, buck2, sqlx (compile-time `query!` macros + committed `.sqlx` cache),
-`iceberg` 0.9.1, `iceberg-catalog-sql` 0.9.1, `object_store::local::LocalFileSystem` (tests),
-hermetic Postgres fixture (`loom_fixture_test`).
+**Tech Stack:** Rust, buck2, sqlx 0.9 (runtime queries in the vendored catalog; compile-time
+`query!` + committed `.sqlx` for the loom-side mirror reads), `iceberg` 0.9.1, `strum`,
+`object_store::local::LocalFileSystem` (tests), hermetic Postgres fixture (`loom_fixture_test`).
 
 **Design spec:** `docs/superpowers/specs/2026-06-16-iceberg-adapter-read-path-design.md`.
 
 ---
 
-## Orientation for the implementer (read before Task 1)
+## Orientation for the implementer (read before Task 2)
 
 You are adding files to the `//src/control-plane/postgres` crate. The **DuckLake adapter is
-your template** — read these first and mirror their shape exactly:
+your template** for the loom-side files — read these first and mirror their shape:
 
-- `src/control-plane/postgres/src/catalog.rs` — the `impl Catalog for PgControlPlane` you will
-  parallel as `impl Catalog for IcebergCatalog` over `iceberg_mirror.*` tables. Note the
-  `sqlx::query!` style with `as "col!"` non-null annotations, `backend` error mapping,
+- `src/control-plane/postgres/src/catalog.rs` — the `impl Catalog for PgControlPlane` you
+  parallel as `impl Catalog for IcebergCatalog` over `iceberg_mirror.*`. Note the
+  `sqlx::query!` style with `as "col!"` non-null annotations, the `backend` error mapping,
   `NotFound` on empty, and the `resolve_table` helper with the MVCC predicate
   `begin_snapshot <= $at AND (end_snapshot IS NULL OR end_snapshot > $at)`.
 - `src/control-plane/postgres/src/ducklake_type.rs` — `logical_from_ducklake`; you write the
@@ -44,101 +44,157 @@ your template** — read these first and mirror their shape exactly:
 - `src/control-plane/postgres/tests/catalog.rs` — `PgSeeder` + `postgres_passes_catalog_contract`.
   Your `tests/iceberg_catalog.rs` is the Iceberg twin.
 - `src/control-plane/testkit/src/lib.rs` — the `CatalogSeed` trait (`seed` / `drop_table`),
-  `SeedSpec` / `SeedColumn` / `SeededSnapshot`, and `catalog_contract` / `catalog_delete_contract`.
-  **Do not modify testkit** — it is already backend-agnostic and your adapter must satisfy it
-  as-is.
-- `src/control-plane/postgres/migrations/0001_queue.sql` — migration style; you add `0012_…`.
-- `src/control-plane/postgres/defs.bzl` — the `loom_fixture_test` macro; `BUCK` — existing
+  `SeedSpec` / `SeedColumn` / `SeededSnapshot`, and `catalog_contract` /
+  `catalog_delete_contract`. **Do not modify testkit** — it is already backend-agnostic and your
+  adapter must satisfy it as-is.
+- `src/control-plane/postgres/migrations/0001_queue.sql` — migration style (you add `0012_…`).
+- `src/control-plane/postgres/defs.bzl` — the `loom_fixture_test` macro; `BUCK` — the existing
   `loom_fixture_test(name="catalog", … duckdb=True …)` target you parallel.
 - `CLAUDE.md` §"Compile-time SQL" and `tools/sqlx-prepare.sh` — how the `.sqlx` cache is
   generated and the `sqlx-cache-check` test that enforces it.
 
 **Two hard rules from prior loom work (do not skip):**
 1. **Format before committing.** `buck2 run //tools:rustfmt -- --edition 2024 <files>` *before*
-   `git add`. The prek rustfmt hook is check-only and will silently abort `--amend`. After any
+   `git add`. The prek rustfmt hook is check-only and silently aborts `--amend`. After any
    commit run `git rev-parse --short HEAD` and confirm the SHA changed.
-2. **Stage by explicit path, never `git add -A`.** `docs/TO_BE_PLANNED.md` is an unrelated
-   scratch file — never stage it. `git status` before every commit.
+2. **Stage by explicit path, never `git add -A`.** `docs/TO_BE_PLANNED.md` is unrelated scratch —
+   never stage it. `git status` before every commit.
 
-**iceberg-rust 0.9.1 API note:** the writer/transaction/catalog-builder signatures below are
-written against the published 0.9.1 API but **must be verified against the crate** as the first
-move in Task 6 (read `https://docs.rs/iceberg/0.9.1` and `https://docs.rs/iceberg-catalog-sql/0.9.1`
-or the vendored source under buck-out after buckify). Where a call is marked `// VERIFY`, confirm
-the exact name/signature before relying on it. The loom-side code (Tasks 2–5, 7) carries no such
-uncertainty.
+**iceberg-rust 0.9.1 API:** writer/transaction/catalog signatures below are written against the
+published 0.9.1 API; where a call is marked `// VERIFY`, confirm the exact name/signature
+against `https://docs.rs/iceberg/0.9.1` (or the vendored source) before relying on it. The
+loom-side code (Tasks 3–6, 8) carries no such uncertainty.
 
 ---
 
-## Task 1: Import `iceberg` + `iceberg-catalog-sql` and prove they build on RE
+## Task 1 — Dependencies (DONE: commit `da1f76e`)
+
+Already landed; recorded here for context. Do not redo.
+
+- `iceberg = "0.9"` + `strum` added to `src/control-plane/postgres/Cargo.toml`;
+  `iceberg-catalog-sql` deliberately **not** a dependency (it pins sqlx 0.8 and owns its own
+  connection — can't share a transaction; loom vendors it instead in Task 2). Single sqlx 0.9.
+- 7 buildscript fixups added (`anyhow`, `erased-serde`, `fastnum`, `portable-atomic`,
+  `prettyplease`, `typeid`, `typetag`).
+- Deleted the stale `third-party/fixups/brotli/fixups.toml` (its v3 alloc-no-stdlib remap died
+  when the lock unified on v2). `//third-party:iceberg` and `//third-party:brotli-8` build on RE.
+
+If you re-run `./tools/buckify.sh`, expect a clean `third-party/BUCK` diff (the `reindeer-check`
+hook enforces it).
+
+---
+
+## Task 2: Vendor + port the SQL catalog (sqlx 0.8 → 0.9)
 
 **Files:**
-- Modify: `src/control-plane/postgres/Cargo.toml`
-- Modify: `Cargo.lock` (regenerated)
-- Modify: `third-party/BUCK` (regenerated by buckify)
-- Modify: `src/control-plane/postgres/BUCK` (add deps)
+- Create: `src/control-plane/postgres/src/iceberg_sql_catalog/mod.rs` (from upstream `lib.rs`)
+- Create: `src/control-plane/postgres/src/iceberg_sql_catalog/catalog.rs` (the ~996 impl lines)
+- Create: `src/control-plane/postgres/src/iceberg_sql_catalog/error.rs` (from upstream `error.rs`)
+- Modify: `src/control-plane/postgres/src/lib.rs` (declare the module)
+- Modify: `src/control-plane/postgres/BUCK` (add `//third-party:iceberg`, `//third-party:strum`,
+  and any sqlx/async-trait deps the module needs to the `rust_library`'s `deps`)
 
-- [ ] **Step 1: Add the dependencies to the crate manifest**
+This vendors the Apache `iceberg-catalog-sql` 0.9.1 catalog into loom, ported to sqlx 0.9 over
+Postgres. loom owns it so a later slice can fold the mirror upsert into `update_table`'s
+transaction. **No standalone unit test** — Task 8's contract exercises it end to end through the
+seeder.
 
-In `src/control-plane/postgres/Cargo.toml`, under `[dependencies]`:
-
-```toml
-iceberg = "0.9"
-iceberg-catalog-sql = "0.9"
-```
-
-- [ ] **Step 2: Refresh the lockfile and regenerate third-party rules**
-
-Run:
-```bash
-buck2 run //tools:reindeer -- update      # refresh Cargo.lock for the new crates
-./tools/buckify.sh                         # regenerate third-party/BUCK
-```
-Expected: `third-party/BUCK` gains `iceberg-0.9.*` and `iceberg-catalog-sql-0.9.*` rules (plus
-transitive deps: opendal, parquet, apache-avro, etc.). The `reindeer-check` prek hook will be
-satisfied because the lock and BUCK now agree.
-
-- [ ] **Step 3: Wire the deps into the postgres crate's BUCK**
-
-In `src/control-plane/postgres/BUCK`, add to the `rust_library`'s `deps`:
-```python
-"//third-party:iceberg",
-"//third-party:iceberg-catalog-sql",
-```
-(Use the exact alias names buckify emitted — check `third-party/BUCK` for the `name = …`.)
-
-- [ ] **Step 4: Build the crate ON REMOTE EXECUTION (the real risk gate)**
-
-These crates pull a large native-ish transitive tree (parquet/avro/opendal). Per the
-*verify-native-deps-on-re* lesson, a crate can build under `--local-only` yet fail on RE (the
-CI path). Prove RE now, before writing any code:
-```bash
-buck2 build //src/control-plane/postgres:postgres > /tmp/ice_build.log 2>&1; tail -5 /tmp/ice_build.log
-```
-Expected: `BUILD SUCCEEDED`. If it fails on RE only, fix via a **prelude submodule bump**, not a
-fork (see CLAUDE.md). Do not proceed until the crate compiles on RE with the deps linked (a
-trivial `use iceberg::Catalog as _;` in `lib.rs` can force the link; remove it after).
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 1: Fetch the upstream source at the pinned tag**
 
 ```bash
-buck2 run //tools:rustfmt -- --edition 2024 src/control-plane/postgres/src/lib.rs
-git add src/control-plane/postgres/Cargo.toml Cargo.lock third-party/BUCK src/control-plane/postgres/BUCK
-git status   # confirm no stray files (no docs/TO_BE_PLANNED.md)
-git commit -m "build(iceberg): import iceberg + iceberg-catalog-sql 0.9 into the postgres crate"
-git rev-parse --short HEAD   # confirm SHA advanced
+mkdir -p src/control-plane/postgres/src/iceberg_sql_catalog
+for f in catalog.rs error.rs lib.rs; do
+  gh api "repos/apache/iceberg-rust/contents/crates/catalog/sql/src/$f?ref=v0.9.1" \
+    --jq '.content' | base64 -d > "src/control-plane/postgres/src/iceberg_sql_catalog/$f"
+done
+mv src/control-plane/postgres/src/iceberg_sql_catalog/lib.rs \
+   src/control-plane/postgres/src/iceberg_sql_catalog/mod.rs
+```
+Keep the Apache license header at the top of each file (it's an Apache-2.0 vendored copy).
+
+- [ ] **Step 2: Strip the upstream test module**
+
+`catalog.rs` is 2453 lines; lines ~997–2453 are `#[cfg(test)] mod tests`. Delete that module
+entirely (loom's `catalog_contract` replaces it, and inline `#[cfg(test)]` violates loom's
+no-inline-tests rule). After deletion the file is ~996 impl lines.
+
+- [ ] **Step 3: Port sqlx 0.8 `any` → sqlx 0.9 `postgres`**
+
+The upstream import block is:
+```rust
+use sqlx::any::{AnyPoolOptions, AnyQueryResult, AnyRow, install_default_drivers};
+use sqlx::{Any, AnyPool, Row, Transaction};
+```
+Replace with concrete Postgres types so the catalog shares loom's sqlx 0.9 Postgres stack:
+```rust
+use sqlx::postgres::{PgPoolOptions, PgQueryResult, PgRow};
+use sqlx::{PgPool, Postgres, Row, Transaction};
+```
+Then mechanically port the ~30 sqlx touch-points (the upstream has ~15 `sqlx::` refs / ~24
+`.bind`/`.fetch`/`.execute` sites):
+- `AnyPool` → `PgPool`; `AnyPoolOptions` → `PgPoolOptions`; `AnyRow` → `PgRow`;
+  `AnyQueryResult` → `PgQueryResult`; `Transaction<'_, Any>` → `Transaction<'_, Postgres>`.
+- **Remove every `install_default_drivers()` call** (sqlx 0.9 Postgres needs no driver install).
+- **Drop the `SqlBindStyle` enum and its branching.** Postgres is always `$1..$N`, so render
+  placeholders directly as `$N`. Where the upstream builds SQL with a configurable placeholder,
+  hardcode the Postgres form. (Grep for `SqlBindStyle`, `bind_style`, and any `?`-vs-`$`
+  placeholder helper; the `SQL_CATALOG_PROP_BIND_STYLE` constant can stay defined but unused, or
+  be removed.)
+- `sqlx::query(&sql)` / `.bind(..)` / `.fetch_all`/`.fetch_optional`/`.execute` keep the same
+  shape; only the row/pool types change. `row.try_get::<T, _>(col)` is unchanged.
+- The two `CREATE TABLE IF NOT EXISTS` statements (`iceberg_tables`,
+  `iceberg_namespace_properties`) are standard SQL — keep as-is (Postgres accepts the
+  `VARCHAR(n)` DDL). These run at catalog init, **not** via loom's migrator.
+
+Keep loom's edits to the file **minimal** — this is a faithful port, not a redesign. The
+slice-2 transaction-coupling change to `update_table` is out of scope here.
+
+- [ ] **Step 4: `error.rs` + module wiring**
+
+`error.rs` maps sqlx errors to `iceberg::Error` — port its sqlx error type references the same
+way (`sqlx::Error` is version-agnostic in shape; adjust any `Any`-specific variant). In
+`src/control-plane/postgres/src/lib.rs` add `pub mod iceberg_sql_catalog;`. In `mod.rs`, keep
+`pub use catalog::*;` and the `SqlCatalog` / builder exports; drop the upstream rustdoc example
+that references the published crate name.
+
+- [ ] **Step 5: Build the crate (offline; the vendored catalog is runtime sqlx, no `.sqlx` needed)**
+
+The vendored catalog uses runtime `sqlx::query(&sql)` (not the compile-time `query!` macro), so
+it needs no `.sqlx` entries. Build:
+```bash
+buck2 build //src/control-plane/postgres:postgres > /tmp/b.log 2>&1; tail -6 /tmp/b.log
+```
+Expected: BUILD SUCCEEDED. Iterate on the sqlx type-swaps until it compiles. If a type or method
+moved between sqlx 0.8 and 0.9, fix locally (the surface is small).
+
+- [ ] **Step 6: Commit**
+
+```bash
+buck2 run //tools:rustfmt -- --edition 2024 src/control-plane/postgres/src/iceberg_sql_catalog/mod.rs \
+  src/control-plane/postgres/src/iceberg_sql_catalog/catalog.rs \
+  src/control-plane/postgres/src/iceberg_sql_catalog/error.rs src/control-plane/postgres/src/lib.rs
+git add src/control-plane/postgres/src/iceberg_sql_catalog src/control-plane/postgres/src/lib.rs src/control-plane/postgres/BUCK
+git status
+git commit -m "feat(iceberg): vendor the SQL catalog, ported sqlx 0.8(any) -> 0.9(postgres)"
+git rev-parse --short HEAD
 ```
 
 ---
 
-## Task 2: The `iceberg_mirror.*` mirror schema migration
+## Task 3: The `iceberg_mirror.*` mirror schema migration
 
 **Files:**
 - Create: `src/control-plane/postgres/migrations/0012_iceberg_mirror.sql`
 
 The mirror parallels the slice of DuckLake's catalog the read path needs, with **loom-owned**
-catalog-global snapshot ids and MVCC. Tables are keyed by `(table_namespace, table_name)` and
-versioned by `begin_snapshot` / `end_snapshot` (nullable; `NULL` = still live). A single global
-sequence issues monotonic snapshot ids across all tables (mirroring `ducklake_snapshot`).
+catalog-global snapshot ids and MVCC. Keyed by `(table_namespace, table_name)`, versioned by
+`begin_snapshot` / `end_snapshot` (nullable; `NULL` = still live). A single global counter
+issues monotonic snapshot ids across all tables.
+
+> **Scope note:** `core::Catalog` returns `FileRef { path, record_count, file_size_bytes }` —
+> **no column stats**. So slice 1 does not project, store, or decode per-column stats; there is
+> no `iceberg_mirror.column_stat` table here. Stats are write-side metadata
+> (`DataFile.column_stats`) and land in slice 2.
 
 - [ ] **Step 1: Write the migration**
 
@@ -150,14 +206,13 @@ create schema if not exists iceberg_mirror;
 -- Catalog-global monotonic snapshot ids (loom's authority, independent of Iceberg's
 -- per-table snapshot ids). One row per loom snapshot.
 create table iceberg_mirror.snapshot (
-    snapshot_id     bigint      primary key,
-    snapshot_time   timestamptz not null default now(),
-    schema_version  bigint      not null default 0,
-    -- the Iceberg snapshot id this loom snapshot projected from (traceability only).
+    snapshot_id         bigint      primary key,
+    snapshot_time       timestamptz not null default now(),
+    schema_version      bigint      not null default 0,
     iceberg_snapshot_id bigint
 );
 
--- Table existence, MVCC-versioned (begin/end snapshot).
+-- Table existence, MVCC-versioned.
 create table iceberg_mirror.table (
     table_id         bigserial primary key,
     table_namespace  text      not null,
@@ -197,22 +252,13 @@ create index iceberg_data_file_live_idx
     on iceberg_mirror.data_file (table_id, begin_snapshot);
 ```
 
-> **Scope note:** `core::Catalog` returns `FileRef { path, record_count, file_size_bytes }` —
-> **no column stats**. So slice 1 (the read path) does not project, store, or decode per-column
-> stats: there is no `iceberg_mirror.column_stat` table here. Stats are write-side metadata
-> (`DataFile.column_stats`) and land in **slice 2**, where they round-trip testably through the
-> commit path. Adding them now would be untested surface.
+- [ ] **Step 2: Verify the migrations target builds**
 
-- [ ] **Step 2: Verify it applies in the hermetic fixture**
-
-The migration runs automatically via `fresh_db()` (the sqlx `Migrator` reads
-`LOOM_MIGRATIONS_DIR` in lexical order). A dedicated apply-test isn't needed yet — Task 7's
-contract test will boot `fresh_db()` and fail loudly if the migration is malformed. For a fast
-local sanity check now:
 ```bash
 buck2 build //src/control-plane/postgres:migrations > /tmp/mig.log 2>&1; tail -3 /tmp/mig.log
 ```
-Expected: BUILD SUCCEEDED (the migrations dir is a buck input).
+Expected: BUILD SUCCEEDED. (Task 8's contract boots `fresh_db()` and will fail loudly if the SQL
+is malformed.)
 
 - [ ] **Step 3: Commit**
 
@@ -225,13 +271,13 @@ git rev-parse --short HEAD
 
 ---
 
-## Task 3: `iceberg_type.rs` — logical type decode (pure logic, TDD)
+## Task 4: `iceberg_type.rs` — logical type decode (pure logic, TDD)
 
 **Files:**
 - Create: `src/control-plane/postgres/src/iceberg_type.rs`
-- Modify: `src/control-plane/postgres/src/lib.rs` (declare `mod iceberg_type;`)
+- Modify: `src/control-plane/postgres/src/lib.rs` (declare `pub mod iceberg_type;`)
 - Test: `src/control-plane/postgres/tests/iceberg_type.rs`
-- Modify: `src/control-plane/postgres/BUCK` (new `loom_fixture_test`-free `rust_test`; pure logic → RE)
+- Modify: `src/control-plane/postgres/BUCK` (a plain `rust_test`; pure logic → RE)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -263,17 +309,13 @@ fn logical_from_iceberg_rejects_unknown() {
 
 - [ ] **Step 2: Run it to confirm it fails to compile (module absent)**
 
-Run:
 ```bash
 buck2 test //src/control-plane/postgres:iceberg_type > /tmp/t.log 2>&1; grep -E "FAIL|error\[|cannot find" /tmp/t.log | head
 ```
-Expected: compile error — `iceberg_type` module / functions not found. (The BUCK target is added
-in Step 4; if buck2 errors that the target is unknown, add Step 4's target first, then re-run.)
+Expected: compile error — module/function not found. (If buck2 says the target is unknown, add
+Step 4's target first, then re-run.)
 
 - [ ] **Step 3: Implement `iceberg_type.rs`**
-
-Create `src/control-plane/postgres/src/iceberg_type.rs`. Mirror `ducklake_type.rs`'s closed-
-vocabulary discipline (unknown → `None`).
 
 ```rust
 //! Iceberg physical type names → loom logical types for the `iceberg_mirror` read path. The
@@ -293,22 +335,16 @@ pub fn logical_from_iceberg(physical: &str) -> Option<BaseType> {
         "boolean" => Some(BaseType::Boolean),
         "string" => Some(BaseType::String),
         "date" => Some(BaseType::Date),
-        // Iceberg spells microsecond timestamps "timestamp"/"timestamptz"; loom maps both to
-        // its single logical `timestamp`.
         "timestamp" | "timestamptz" => Some(BaseType::Timestamp),
         _ => None,
     }
 }
 ```
-
-Add `pub mod iceberg_type;` to `src/control-plane/postgres/src/lib.rs` (match the existing
-`mod`/`pub mod` visibility pattern — it must be `pub` so the integration test can import it,
-mirroring how `ducklake_type` is exposed).
+Add `pub mod iceberg_type;` to `lib.rs` (must be `pub` for the integration test to import it,
+mirroring `ducklake_type`).
 
 - [ ] **Step 4: Add the test target to BUCK**
 
-In `src/control-plane/postgres/BUCK`, add a plain `rust_test` (pure logic, no fixture → runs on
-RE). Mirror the existing pure-logic test targets in that file:
 ```python
 rust_test(
     name = "iceberg_type",
@@ -318,14 +354,13 @@ rust_test(
     deps = [":postgres", "//src/control-plane/core:core"],
 )
 ```
-(Match the exact dep alias for the core crate used elsewhere in this BUCK.)
+(Match the exact core-crate alias used elsewhere in this BUCK.)
 
-- [ ] **Step 5: Run the test — expect PASS**
+- [ ] **Step 5: Run — expect PASS**
 
 ```bash
 buck2 test //src/control-plane/postgres:iceberg_type > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log
 ```
-Expected: pass (3 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -333,28 +368,23 @@ Expected: pass (3 tests).
 buck2 run //tools:rustfmt -- --edition 2024 src/control-plane/postgres/src/iceberg_type.rs src/control-plane/postgres/src/lib.rs src/control-plane/postgres/tests/iceberg_type.rs
 git add src/control-plane/postgres/src/iceberg_type.rs src/control-plane/postgres/src/lib.rs src/control-plane/postgres/tests/iceberg_type.rs src/control-plane/postgres/BUCK
 git status
-git commit -m "feat(iceberg): logical_from_iceberg + stat_from_mirror type decode (pure logic)"
+git commit -m "feat(iceberg): logical_from_iceberg type decode (pure logic)"
 git rev-parse --short HEAD
 ```
 
 ---
 
-## Task 4: `iceberg_catalog.rs` — `impl Catalog` over the mirror
+## Task 5: `iceberg_catalog.rs` — `impl Catalog` over the mirror
 
 **Files:**
 - Create: `src/control-plane/postgres/src/iceberg_catalog.rs`
-- Modify: `src/control-plane/postgres/src/lib.rs` (declare module; define the `IcebergCatalog` handle)
+- Modify: `src/control-plane/postgres/src/lib.rs` (declare module + export the handle)
 - Modify: `src/control-plane/postgres/.sqlx/` (regenerated cache — committed)
 
-This is a near-mechanical parallel of `catalog.rs`, querying `iceberg_mirror.*` instead of
-`ducklake_*`. It needs a handle holding a `PgPool`. Define a small `IcebergCatalog { pool:
-PgPool }` (the read adapter is independent of `PgControlPlane`; slice 2 will add the write
-side). Construct it from the same pool the fixture builds.
+A near-mechanical parallel of `catalog.rs` querying `iceberg_mirror.*`. Define a small
+`IcebergCatalog { pool: PgPool }` handle (the read adapter is independent of `PgControlPlane`).
 
-- [ ] **Step 1: Define the handle and module**
-
-In `src/control-plane/postgres/src/lib.rs`, add `pub mod iceberg_catalog;` and (near
-`PgControlPlane`) export the handle. In `iceberg_catalog.rs`:
+- [ ] **Step 1: Handle + module + `resolve_table`**
 
 ```rust
 use async_trait::async_trait;
@@ -378,7 +408,6 @@ impl IcebergCatalog {
         Self { pool }
     }
 
-    /// Resolve the `table_id` of `table` live at snapshot `at`, or `NotFound`.
     async fn resolve_table(&self, table: &TableRef, at: SnapshotId) -> Result<i64> {
         sqlx::query_scalar!(
             "select table_id as \"table_id!\" from iceberg_mirror.table \
@@ -398,10 +427,10 @@ impl IcebergCatalog {
 }
 ```
 
-- [ ] **Step 2: Implement the four `Catalog` methods**
+- [ ] **Step 2: The four `Catalog` methods**
 
-Append to `iceberg_catalog.rs`. These mirror `catalog.rs` exactly; the `exists(...)` snapshot
-subquery filters by table liveness so `current_snapshot`/`snapshots` are drop-aware.
+These mirror `catalog.rs` exactly; the `exists(...)` snapshot subquery filters by table liveness
+so `current_snapshot`/`snapshots` are drop-aware.
 
 ```rust
 #[async_trait]
@@ -416,18 +445,11 @@ impl Catalog for IcebergCatalog {
                  where t.table_namespace = $1 and t.table_name = $2 \
                    and t.begin_snapshot <= sn.snapshot_id and (t.end_snapshot is null or t.end_snapshot > sn.snapshot_id)) \
              order by sn.snapshot_id desc limit 1",
-            table.schema,
-            table.name,
+            table.schema, table.name,
         )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?
+        .fetch_optional(&self.pool).await.map_err(backend)?
         .ok_or_else(|| ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name)))?;
-        Ok(Snapshot {
-            id: SnapshotId(row.snapshot_id),
-            time: row.snapshot_time,
-            schema_version: row.schema_version,
-        })
+        Ok(Snapshot { id: SnapshotId(row.snapshot_id), time: row.snapshot_time, schema_version: row.schema_version })
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -440,27 +462,15 @@ impl Catalog for IcebergCatalog {
                  where t.table_namespace = $1 and t.table_name = $2 \
                    and t.begin_snapshot <= sn.snapshot_id and (t.end_snapshot is null or t.end_snapshot > sn.snapshot_id)) \
              order by sn.snapshot_id",
-            table.schema,
-            table.name,
+            table.schema, table.name,
         )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
+        .fetch_all(&self.pool).await.map_err(backend)?;
         if rows.is_empty() {
-            return Err(ControlPlaneError::NotFound(format!(
-                "{}.{}",
-                table.schema, table.name
-            )));
+            return Err(ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name)));
         }
-        Ok(Page::from_full(
-            rows.into_iter()
-                .map(|r| Snapshot {
-                    id: SnapshotId(r.snapshot_id),
-                    time: r.snapshot_time,
-                    schema_version: r.schema_version,
-                })
-                .collect(),
-        ))
+        Ok(Page::from_full(rows.into_iter().map(|r| Snapshot {
+            id: SnapshotId(r.snapshot_id), time: r.snapshot_time, schema_version: r.schema_version,
+        }).collect()))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -471,21 +481,12 @@ impl Catalog for IcebergCatalog {
              from iceberg_mirror.data_file \
              where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) \
              order by data_file_id",
-            tid,
-            at.0,
+            tid, at.0,
         )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
-        Ok(Page::from_full(
-            rows.into_iter()
-                .map(|r| FileRef {
-                    path: r.path,
-                    record_count: r.record_count,
-                    file_size_bytes: r.file_size_bytes,
-                })
-                .collect(),
-        ))
+        .fetch_all(&self.pool).await.map_err(backend)?;
+        Ok(Page::from_full(rows.into_iter().map(|r| FileRef {
+            path: r.path, record_count: r.record_count, file_size_bytes: r.file_size_bytes,
+        }).collect()))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -496,52 +497,35 @@ impl Catalog for IcebergCatalog {
              from iceberg_mirror.column \
              where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) \
              order by column_order",
-            tid,
-            at.0,
+            tid, at.0,
         )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
-        let columns = rows
-            .into_iter()
-            .map(|r| {
-                let ty = logical_from_iceberg(&r.column_type)
-                    .map(BaseType::canonical_name)
-                    .ok_or_else(|| {
-                        ControlPlaneError::Backend(Box::<dyn std::error::Error + Send + Sync>::from(
-                            format!("catalog column type {:?} has no loom logical type", r.column_type),
-                        ))
-                    })?;
-                Ok(ColumnDef {
-                    order: r.column_order,
-                    name: r.column_name,
-                    ty: ty.to_string(),
-                    nullable: r.nulls_allowed,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        .fetch_all(&self.pool).await.map_err(backend)?;
+        let columns = rows.into_iter().map(|r| {
+            let ty = logical_from_iceberg(&r.column_type)
+                .map(BaseType::canonical_name)
+                .ok_or_else(|| ControlPlaneError::Backend(Box::<dyn std::error::Error + Send + Sync>::from(
+                    format!("catalog column type {:?} has no loom logical type", r.column_type))))?;
+            Ok(ColumnDef { order: r.column_order, name: r.column_name, ty: ty.to_string(), nullable: r.nulls_allowed })
+        }).collect::<Result<Vec<_>>>()?;
         Ok(TableSchema { columns })
     }
 }
 ```
+Add `pub mod iceberg_catalog;` to `lib.rs`.
 
 - [ ] **Step 3: Regenerate the `.sqlx` cache**
 
-The new `query!` macros must validate against the live schema (incl. `iceberg_mirror.*`).
-`tools/sqlx-prepare.sh` boots postgres, applies migrations (now including `0012`), and runs
-`cargo sqlx prepare`:
 ```bash
 ./tools/sqlx-prepare.sh > /tmp/sqlx.log 2>&1; tail -5 /tmp/sqlx.log
 ```
-Expected: new `src/control-plane/postgres/.sqlx/query-*.json` files for the Iceberg queries.
-Commit them.
+Expected: new `.sqlx/query-*.json` for the Iceberg-mirror queries. Commit them.
 
-- [ ] **Step 4: Build the crate (offline macros read the committed cache)**
+- [ ] **Step 4: Build**
 
 ```bash
 buck2 build //src/control-plane/postgres:postgres > /tmp/b.log 2>&1; tail -3 /tmp/b.log
 ```
-Expected: BUILD SUCCEEDED. (No runtime test yet — Task 7 exercises it via the contract.)
+Expected: BUILD SUCCEEDED.
 
 - [ ] **Step 5: Commit**
 
@@ -555,103 +539,31 @@ git rev-parse --short HEAD
 
 ---
 
-## Task 5: `iceberg_mirror.rs` — the projection (Iceberg table → mirror rows)
+## Task 6: `iceberg_mirror.rs` — the projection (snapshot alloc + MVCC writes)
 
 **Files:**
 - Create: `src/control-plane/postgres/src/iceberg_mirror.rs`
 - Modify: `src/control-plane/postgres/src/lib.rs` (declare module)
-- Modify: `src/control-plane/postgres/.sqlx/` (regenerated — INSERTs added)
+- Modify: `src/control-plane/postgres/.sqlx/` (regenerated — INSERT/UPDATEs added)
 
-This is the real, shared-with-slice-2 component: given a loaded `iceberg::table::Table` and a
-freshly-allocated loom `SnapshotId`, write the `iceberg_mirror.*` rows. It owns loom's snapshot
-allocation and MVCC bookkeeping. Because it is exercised end-to-end only by the seeder (Task 6)
-and the contract (Task 7), it has no standalone unit test; its correctness is proven by
-`catalog_contract` reading back what it wrote.
+The real, shared-with-slice-2 component: it owns loom's snapshot allocation + MVCC bookkeeping
+and writes the `iceberg_mirror.*` rows. The seeder (Task 7) builds the neutral `Projected*`
+structs from the `iceberg` writer output and calls these. No standalone unit test; proven by the
+contract.
 
-- [ ] **Step 1: Implement the snapshot allocator + table upsert**
-
-Create `src/control-plane/postgres/src/iceberg_mirror.rs`. All functions take a
-`&mut sqlx::PgConnection` (or `&mut Transaction`) so the seeder can batch a snapshot atomically.
+- [ ] **Step 1: Snapshot allocator + table upsert**
 
 ```rust
 //! Projection of canonical Iceberg table metadata into the loom-owned `iceberg_mirror.*`
-//! schema. loom allocates a catalog-global monotonic `SnapshotId` per appended batch and
-//! records MVCC `begin/end_snapshot`. Shared with the slice-2 write path (which calls this to
-//! refresh the mirror after an `iceberg::Transaction` commit).
+//! schema. loom allocates a catalog-global monotonic `SnapshotId` per appended batch and records
+//! MVCC `begin/end_snapshot`. Shared with the slice-2 write path.
 
-use control_plane_core::SnapshotId;
+use control_plane_core::{Result, SnapshotId};
 use sqlx::PgConnection;
 
 use crate::backend;
-use control_plane_core::Result;
 
-/// Allocate the next catalog-global snapshot id and insert its `iceberg_mirror.snapshot` row.
-pub async fn next_snapshot(
-    conn: &mut PgConnection,
-    iceberg_snapshot_id: Option<i64>,
-) -> Result<SnapshotId> {
-    // Monotonic: max(existing)+1, starting at 1. (A dedicated sequence is a fine alternative;
-    // max+1 keeps the mirror self-contained and matches DuckLake's per-commit id growth.)
-    let id = sqlx::query_scalar!(
-        "select coalesce(max(snapshot_id), 0) + 1 as \"next!\" from iceberg_mirror.snapshot"
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(backend)?;
-    sqlx::query!(
-        "insert into iceberg_mirror.snapshot (snapshot_id, iceberg_snapshot_id) values ($1, $2)",
-        id,
-        iceberg_snapshot_id,
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(backend)?;
-    Ok(SnapshotId(id))
-}
-
-/// Ensure a live `iceberg_mirror.table` row exists for `(ns, name)` at `at`, returning its
-/// `table_id`. Inserts a new row beginning at `at` if none is live.
-pub async fn ensure_table(
-    conn: &mut PgConnection,
-    ns: &str,
-    name: &str,
-    at: SnapshotId,
-) -> Result<i64> {
-    if let Some(tid) = sqlx::query_scalar!(
-        "select table_id as \"id!\" from iceberg_mirror.table \
-         where table_namespace = $1 and table_name = $2 and end_snapshot is null",
-        ns,
-        name,
-    )
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(backend)?
-    {
-        return Ok(tid);
-    }
-    let tid = sqlx::query_scalar!(
-        "insert into iceberg_mirror.table (table_namespace, table_name, begin_snapshot) \
-         values ($1, $2, $3) returning table_id as \"id!\"",
-        ns,
-        name,
-        at.0,
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(backend)?;
-    Ok(tid)
-}
-```
-
-- [ ] **Step 2: Implement column + data-file projection**
-
-Append the column and data-file projection. The seeder (Task 6) builds these neutral structs
-directly from the `iceberg` writer output, so the projection stays free of `iceberg` types and
-is plain SQL. (No stats in slice 1 — see the Task 2 scope note.)
-
-```rust
-/// A neutral view of one committed Iceberg data file the projection writes. The seeder produces
-/// these from the `iceberg` writer's `Vec<DataFile>`.
+/// A neutral view of one committed Iceberg data file the projection writes.
 pub struct ProjectedFile {
     pub path: String,
     pub file_format: String, // "parquet"
@@ -667,107 +579,90 @@ pub struct ProjectedColumn {
     pub nullable: bool,
 }
 
+/// Allocate the next catalog-global snapshot id and insert its `iceberg_mirror.snapshot` row.
+pub async fn next_snapshot(conn: &mut PgConnection, iceberg_snapshot_id: Option<i64>) -> Result<SnapshotId> {
+    let id = sqlx::query_scalar!(
+        "select coalesce(max(snapshot_id), 0) + 1 as \"next!\" from iceberg_mirror.snapshot"
+    ).fetch_one(&mut *conn).await.map_err(backend)?;
+    sqlx::query!(
+        "insert into iceberg_mirror.snapshot (snapshot_id, iceberg_snapshot_id) values ($1, $2)",
+        id, iceberg_snapshot_id,
+    ).execute(&mut *conn).await.map_err(backend)?;
+    Ok(SnapshotId(id))
+}
+
+/// Ensure a live `iceberg_mirror.table` row exists for `(ns, name)`, returning its `table_id`.
+pub async fn ensure_table(conn: &mut PgConnection, ns: &str, name: &str, at: SnapshotId) -> Result<i64> {
+    if let Some(tid) = sqlx::query_scalar!(
+        "select table_id as \"id!\" from iceberg_mirror.table \
+         where table_namespace = $1 and table_name = $2 and end_snapshot is null",
+        ns, name,
+    ).fetch_optional(&mut *conn).await.map_err(backend)? {
+        return Ok(tid);
+    }
+    let tid = sqlx::query_scalar!(
+        "insert into iceberg_mirror.table (table_namespace, table_name, begin_snapshot) \
+         values ($1, $2, $3) returning table_id as \"id!\"",
+        ns, name, at.0,
+    ).fetch_one(&mut *conn).await.map_err(backend)?;
+    Ok(tid)
+}
+```
+
+- [ ] **Step 2: Column + data-file projection, and `mark_dropped`**
+
+```rust
 /// Write the column rows for loom snapshot `at`.
-pub async fn project_columns(
-    conn: &mut PgConnection,
-    table_id: i64,
-    at: SnapshotId,
-    columns: &[ProjectedColumn],
-) -> Result<()> {
+pub async fn project_columns(conn: &mut PgConnection, table_id: i64, at: SnapshotId, columns: &[ProjectedColumn]) -> Result<()> {
     for c in columns {
         sqlx::query!(
             "insert into iceberg_mirror.column \
              (table_id, column_order, column_name, column_type, nulls_allowed, begin_snapshot) \
              values ($1, $2, $3, $4, $5, $6)",
-            table_id,
-            c.order,
-            c.name,
-            c.iceberg_type,
-            c.nullable,
-            at.0,
-        )
-        .execute(&mut *conn)
-        .await
-        .map_err(backend)?;
+            table_id, c.order, c.name, c.iceberg_type, c.nullable, at.0,
+        ).execute(&mut *conn).await.map_err(backend)?;
     }
     Ok(())
 }
 
 /// Write the data-file rows for loom snapshot `at`.
-pub async fn project_files(
-    conn: &mut PgConnection,
-    table_id: i64,
-    at: SnapshotId,
-    files: &[ProjectedFile],
-) -> Result<()> {
+pub async fn project_files(conn: &mut PgConnection, table_id: i64, at: SnapshotId, files: &[ProjectedFile]) -> Result<()> {
     for f in files {
         sqlx::query!(
             "insert into iceberg_mirror.data_file \
              (table_id, path, file_format, record_count, file_size_bytes, begin_snapshot) \
              values ($1, $2, $3, $4, $5, $6)",
-            table_id,
-            f.path,
-            f.file_format,
-            f.record_count,
-            f.file_size_bytes,
-            at.0,
-        )
-        .execute(&mut *conn)
-        .await
-        .map_err(backend)?;
+            table_id, f.path, f.file_format, f.record_count, f.file_size_bytes, at.0,
+        ).execute(&mut *conn).await.map_err(backend)?;
     }
     Ok(())
 }
 
 /// Mark a table (and its live columns/files) dropped at `at` — sets `end_snapshot = at` on every
-/// currently-live row. Drives `CatalogSeed::drop_table` and is the MVCC `end`-bound the delete
+/// currently-live row. Drives `CatalogSeed::drop_table` and the MVCC `end`-bound the delete
 /// contract exercises.
 pub async fn mark_dropped(conn: &mut PgConnection, ns: &str, name: &str, at: SnapshotId) -> Result<()> {
     let tid = sqlx::query_scalar!(
         "update iceberg_mirror.table set end_snapshot = $3 \
          where table_namespace = $1 and table_name = $2 and end_snapshot is null \
          returning table_id as \"id!\"",
-        ns,
-        name,
-        at.0,
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(backend)?;
-    sqlx::query!(
-        "update iceberg_mirror.column set end_snapshot = $2 where table_id = $1 and end_snapshot is null",
-        tid,
-        at.0,
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(backend)?;
-    sqlx::query!(
-        "update iceberg_mirror.data_file set end_snapshot = $2 where table_id = $1 and end_snapshot is null",
-        tid,
-        at.0,
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(backend)?;
+        ns, name, at.0,
+    ).fetch_one(&mut *conn).await.map_err(backend)?;
+    sqlx::query!("update iceberg_mirror.column set end_snapshot = $2 where table_id = $1 and end_snapshot is null", tid, at.0)
+        .execute(&mut *conn).await.map_err(backend)?;
+    sqlx::query!("update iceberg_mirror.data_file set end_snapshot = $2 where table_id = $1 and end_snapshot is null", tid, at.0)
+        .execute(&mut *conn).await.map_err(backend)?;
     Ok(())
 }
 ```
 
-> The projection's public surface is exactly `next_snapshot` / `ensure_table` / `project_columns`
-> / `project_files` / `mark_dropped`. In slice 1 the seeder builds `ProjectedColumn` /
-> `ProjectedFile` directly from the `iceberg` writer output (Task 6) — no `iceberg::Table` import
-> is needed here. Slice 2 adds a live-from-`Table` projection (manifest scan via
-> `Table::file_io()`) reusing these same writer functions.
-
-- [ ] **Step 3: Declare the module, regenerate `.sqlx`, build**
+- [ ] **Step 3: Declare module, regenerate `.sqlx`, build**
 
 Add `pub mod iceberg_mirror;` to `lib.rs`. Then:
 ```bash
 ./tools/sqlx-prepare.sh > /tmp/sqlx.log 2>&1; tail -5 /tmp/sqlx.log
 buck2 build //src/control-plane/postgres:postgres > /tmp/b.log 2>&1; tail -3 /tmp/b.log
 ```
-Expected: new `.sqlx` entries for the INSERTs/UPDATEs; BUILD SUCCEEDED.
 
 - [ ] **Step 4: Commit**
 
@@ -775,53 +670,52 @@ Expected: new `.sqlx` entries for the INSERTs/UPDATEs; BUILD SUCCEEDED.
 buck2 run //tools:rustfmt -- --edition 2024 src/control-plane/postgres/src/iceberg_mirror.rs src/control-plane/postgres/src/lib.rs
 git add src/control-plane/postgres/src/iceberg_mirror.rs src/control-plane/postgres/src/lib.rs src/control-plane/postgres/.sqlx
 git status
-git commit -m "feat(iceberg): iceberg_mirror projection — snapshot alloc, MVCC table/column/file/stat writes"
+git commit -m "feat(iceberg): iceberg_mirror projection — snapshot alloc + MVCC table/column/file writes"
 git rev-parse --short HEAD
 ```
 
 ---
 
-## Task 6: `IcebergWriter` seeder — drive iceberg-rust, fill the mirror
+## Task 7: `IcebergWriter` seeder — drive the vendored catalog + iceberg, fill the mirror
 
 **Files:**
 - Modify: `src/control-plane/postgres/src/fixture.rs` (add `IcebergWriter`)
+- Possibly modify: `src/control-plane/postgres/src/lib.rs` / `PgFixture` (expose a `PgPool` +
+  a `pg_dsn()` the catalog and a fresh pool can use)
 
-This is the only place `iceberg` / `iceberg-catalog-sql` are *called*. It builds a `SqlCatalog`
-over the hermetic Postgres + a `file://` warehouse, creates a namespace+table, appends each
-row-batch as an Iceberg snapshot, derives `ProjectedColumn`/`ProjectedFile` from the writer
-output, and projects them into the mirror under a fresh loom snapshot.
+The only place `iceberg` + the vendored catalog are *called*. It builds loom's vendored
+`SqlCatalog` over the hermetic Postgres + a `file://` warehouse, creates a namespace+table,
+appends each row-batch as an Iceberg snapshot, derives `Projected*` from the writer output, and
+projects them into the mirror under a fresh loom snapshot.
 
-- [ ] **Step 1: VERIFY the iceberg-rust 0.9.1 API before writing code**
+- [ ] **Step 1: VERIFY the iceberg 0.9.1 writer/transaction API**
 
-Read `https://docs.rs/iceberg/0.9.1` (modules: `catalog`, `spec`, `transaction`, `writer`,
-`io`) and `https://docs.rs/iceberg-catalog-sql/0.9.1`. Confirm exact names for: `SqlCatalogBuilder`
-+ `SQL_CATALOG_PROP_{URI,WAREHOUSE,BIND_STYLE}` + `SqlBindStyle`; `Catalog::create_namespace` /
-`create_table` (`TableCreation`, `Schema`/`NestedField`/`PrimitiveType`); the writer chain
-(`ParquetWriterBuilder::new`, `RollingFileWriterBuilder::new_with_default_file_size`,
-`DataFileWriterBuilder::new`, `DefaultLocationGenerator`, `DefaultFileNameGenerator`); and
+Confirm against `https://docs.rs/iceberg/0.9.1`: `Catalog::{create_namespace, create_table,
+load_table}` (+ `TableCreation`, `Schema`/`NestedField`/`PrimitiveType`); the writer chain
+(`ParquetWriterBuilder::new(WriterProperties::default(), schema)` →
+`RollingFileWriterBuilder::new_with_default_file_size(parquet_builder, file_io, location_gen,
+name_gen)` → `DataFileWriterBuilder::new(rolling)` → `.build(None).await` → `.write(batch).await`
+→ `.close().await -> Vec<DataFile>`); `DefaultLocationGenerator::new(table.metadata().clone())`,
+`DefaultFileNameGenerator::new(name, None, DataFileFormat::Parquet)`; and
 `Transaction::new(&table).fast_append()…add_data_files(Vec<DataFile>)…commit(&catalog) -> Table`.
-Note the `Table::file_io()` accessor (lets the projection scan manifests without building
-`FileIO`). Record any deltas from the snippets below and adapt.
+Note `Table::file_io()` and `Table::metadata().current_snapshot_id()`.
 
-- [ ] **Step 2: Implement `IcebergWriter`**
+- [ ] **Step 2: Implement `IcebergWriter` + the seed loop**
 
-Add to `src/control-plane/postgres/src/fixture.rs` (sibling to `DuckLakeWriter`). The catalog
-URI is the fixture's Postgres socket DSN; the warehouse is a temp `file://` dir the struct owns
-and cleans on drop (mirror `DuckLakeWriter`'s temp-dir handling). Sketch (adapt to the verified
-API):
+Sketch (adapt to the verified API + the vendored catalog's constructor):
 
 ```rust
 use std::collections::HashMap;
-use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};               // VERIFY paths
-use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};                   // VERIFY paths
-use iceberg_catalog_sql::{SqlBindStyle, SqlCatalogBuilder,                       // VERIFY
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SQL_CATALOG_PROP_BIND_STYLE};
+use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};          // VERIFY paths
+use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};              // VERIFY paths
+use crate::iceberg_sql_catalog::SqlCatalog;                                 // loom's vendored catalog
+use crate::iceberg_mirror::{ProjectedColumn, ProjectedFile, ensure_table, mark_dropped, next_snapshot, project_columns, project_files};
 
-/// Test-only seeder: writes real canonical Iceberg tables (via iceberg-rust) into the hermetic
-/// Postgres catalog + a temp file:// warehouse, then projects them into iceberg_mirror.*.
+/// Test-only seeder: writes real canonical Iceberg tables (via the vendored catalog + iceberg)
+/// into the hermetic Postgres + a temp file:// warehouse, then projects them into iceberg_mirror.*.
 pub struct IcebergWriter {
-    pool: PgPool,            // the fixture's pool (for the mirror projection)
-    pg_dsn: String,          // catalog URI for SqlCatalog
+    pool: PgPool,                 // the fixture's pool (for the mirror projection)
+    pg_dsn: String,               // catalog URI for the vendored SqlCatalog
     warehouse: tempfile::TempDir,
 }
 
@@ -830,16 +724,14 @@ impl IcebergWriter {
         Self { pool, pg_dsn, warehouse: tempfile::tempdir().unwrap() }
     }
 
-    async fn catalog(&self) -> impl Catalog {
-        let mut props = HashMap::new();
-        props.insert(SQL_CATALOG_PROP_URI.to_string(), self.pg_dsn.clone());
-        props.insert(SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-            format!("file://{}", self.warehouse.path().display()));
-        props.insert(SQL_CATALOG_PROP_BIND_STYLE.to_string(), SqlBindStyle::DollarNumeric.to_string()); // VERIFY enum/spelling
-        SqlCatalogBuilder::default().load("loom", props).await.expect("build SqlCatalog") // VERIFY
+    async fn catalog(&self) -> SqlCatalog {
+        // VERIFY: the vendored catalog's constructor/builder signature after the sqlx-0.9 port.
+        // It takes the Postgres DSN + a file:// warehouse + a FileIO; it create-table-if-not-exists
+        // its JDBC tables on first use.
+        let warehouse = format!("file://{}", self.warehouse.path().display());
+        SqlCatalog::connect("loom", &self.pg_dsn, &warehouse).await.expect("build vendored SqlCatalog")
     }
 
-    /// Map a loom logical type name to an Iceberg primitive type for table creation.
     fn iceberg_type(logical: &str) -> Type {
         match logical {
             "long" => Type::Primitive(PrimitiveType::Long),
@@ -852,84 +744,80 @@ impl IcebergWriter {
             other => panic!("seed: unmapped logical type {other:?}"),
         }
     }
-}
-```
 
-- [ ] **Step 3: Implement the seed loop (create table, append batches, project)**
-
-Add a `seed(&self, ns, name, columns: &[(name, logical_ty, nullable)], batches: &[usize]) ->
-Vec<i64>` method returning the loom snapshot ids (one per batch). For each batch: build a
-`RecordBatch` of `n` rows for the schema (reuse the Arrow-building helper pattern from
-`datafusion-io` tests, or hand-roll columns: an `id: Long` = `0..n`, a `name: String` =
-`format!("r{i}")` — match the contract's `(id long, name string)` shape), write it via the
-writer chain to get `Vec<DataFile>`, commit with `Transaction::fast_append`, then derive
-`ProjectedColumn`s (from the table schema) and `ProjectedFile`s (from the committed `DataFile`s
-— `file_path`, `record_count`, `file_size_in_bytes`; **no stats in slice 1**), open a `pool`
-transaction, call `next_snapshot` / `ensure_table` / `project_columns` (first batch only) /
-`project_files`, and commit. Pseudocode:
-
-```rust
-pub async fn seed(&self, ns: &str, name: &str,
-    columns: &[(String, String, bool)], batches: &[usize]) -> Vec<i64> {
-    let catalog = self.catalog().await;
-    // create namespace (ignore AlreadyExists) + table from `columns`             // VERIFY API
-    let mut snapshots = Vec::new();
-    for (batch_idx, &rows) in batches.iter().enumerate() {
-        let table = catalog.load_table(&TableIdent::...).await.expect("load");      // VERIFY
-        let data_files = write_batch_parquet(&table, columns, rows).await;          // writer chain // VERIFY
-        let table = Transaction::new(&table).fast_append()                          // VERIFY
-            .add_data_files(data_files.clone()).expect("add")
-            .apply().expect("apply")          // VERIFY: 0.9 may fold apply into the action
-            .commit(&catalog).await.expect("commit");
-        let ice_snap = table.metadata().current_snapshot_id();                      // VERIFY accessor
-        let mut tx = self.pool.begin().await.unwrap();
-        let at = next_snapshot(&mut tx, ice_snap).await.unwrap();
-        let tid = ensure_table(&mut tx, ns, name, at).await.unwrap();
-        if batch_idx == 0 {
-            project_columns(&mut tx, tid, at, &projected_columns(columns)).await.unwrap();
+    /// Create the table if absent and append each batch as its own loom snapshot.
+    /// `columns`: (name, loom-logical-type, nullable). Returns the per-batch loom snapshot ids.
+    pub async fn seed(&self, ns: &str, name: &str, columns: &[(String, String, bool)], batches: &[usize]) -> Vec<i64> {
+        let catalog = self.catalog().await;
+        // create namespace (ignore AlreadyExists) + table from `columns`              // VERIFY API
+        let mut snapshots = Vec::new();
+        for (batch_idx, &rows) in batches.iter().enumerate() {
+            let table = catalog.load_table(/* TableIdent for ns.name */).await.expect("load"); // VERIFY
+            let data_files = write_batch_parquet(&table, columns, rows).await;          // writer chain // VERIFY
+            let table = iceberg::transaction::Transaction::new(&table)                  // VERIFY
+                .fast_append().add_data_files(data_files.clone()) /* VERIFY */
+                .commit(&catalog).await.expect("commit");
+            let ice_snap = table.metadata().current_snapshot_id();                      // VERIFY accessor (Option<i64>)
+            let mut tx = self.pool.begin().await.unwrap();
+            let at = next_snapshot(&mut tx, ice_snap).await.unwrap();
+            let tid = ensure_table(&mut tx, ns, name, at).await.unwrap();
+            if batch_idx == 0 {
+                project_columns(&mut tx, tid, at, &projected_columns(columns)).await.unwrap();
+            }
+            project_files(&mut tx, tid, at, &projected_files(&data_files)).await.unwrap();
+            tx.commit().await.unwrap();
+            snapshots.push(at.0);
         }
-        project_files(&mut tx, tid, at, &projected_files(&data_files)).await.unwrap();
-        tx.commit().await.unwrap();
-        snapshots.push(at.0);
+        snapshots
     }
-    snapshots
+
+    pub async fn drop_table(&self, ns: &str, name: &str) -> i64 {
+        let mut tx = self.pool.begin().await.unwrap();
+        let at = next_snapshot(&mut tx, None).await.unwrap();
+        mark_dropped(&mut tx, ns, name, at).await.unwrap();
+        tx.commit().await.unwrap();
+        at.0
+    }
 }
 ```
 
-Also add `drop_table(&self, ns, name) -> i64`: open a `pool` tx, `next_snapshot`, `mark_dropped`,
-commit, return the snapshot id. (Optionally also call `catalog.drop_table` on the canonical side
-— not required for the read contract, which reads only the mirror.)
+Helper notes for the implementer:
+- `write_batch_parquet`: build a `RecordBatch` of `rows` rows matching the contract's
+  `(id long, name string)` schema (`id` = `0..rows`, `name` = `format!("r{i}")`), then run the
+  verified writer chain to get `Vec<DataFile>`. Use the arrow version `iceberg` re-exports.
+- `projected_columns(columns)`: map each `(name, logical, nullable)` to a `ProjectedColumn` with
+  `iceberg_type` = the Iceberg primitive *name string* (`"long"`, `"string"`, …) matching what
+  `logical_from_iceberg` decodes — i.e. the lowercase Iceberg primitive name, not the loom
+  logical name (they coincide for `long`/`string`/`double`/`boolean`/`date`; map `integer`→`int`).
+- `projected_files(&data_files)`: from each committed `DataFile` take `file_path`,
+  `record_count`, `file_size_in_bytes`; `file_format` = `"parquet"`. (No stats — slice 1.)
 
-- [ ] **Step 4: Build (no test wiring yet)**
+- [ ] **Step 3: Build (no test wiring yet)**
 
 ```bash
-buck2 build //src/control-plane/postgres:postgres > /tmp/b.log 2>&1; tail -3 /tmp/b.log
+buck2 build //src/control-plane/postgres:postgres > /tmp/b.log 2>&1; tail -6 /tmp/b.log
 ```
-Expected: BUILD SUCCEEDED. Iterate on the `// VERIFY` calls until the writer/transaction/catalog
-API compiles. If a `tempfile` dep is missing, add it to `Cargo.toml` (dev/normal as needed) and
-re-run buckify.
+Iterate on `// VERIFY` calls until it compiles. `tempfile` is already a dep.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-buck2 run //tools:rustfmt -- --edition 2024 src/control-plane/postgres/src/fixture.rs
-git add src/control-plane/postgres/src/fixture.rs src/control-plane/postgres/Cargo.toml Cargo.lock third-party/BUCK
+buck2 run //tools:rustfmt -- --edition 2024 src/control-plane/postgres/src/fixture.rs src/control-plane/postgres/src/lib.rs
+git add src/control-plane/postgres/src/fixture.rs src/control-plane/postgres/src/lib.rs
 git status
-git commit -m "feat(iceberg): IcebergWriter test seeder — canonical Iceberg writes + mirror projection"
+git commit -m "feat(iceberg): IcebergWriter test seeder — vendored catalog + iceberg writes + mirror projection"
 git rev-parse --short HEAD
 ```
 
 ---
 
-## Task 7: The contract test — `iceberg_passes_catalog_contract`
+## Task 8: The contract test — `iceberg_passes_catalog_contract`
 
 **Files:**
 - Create: `src/control-plane/postgres/tests/iceberg_catalog.rs`
-- Modify: `src/control-plane/postgres/BUCK` (new `loom_fixture_test` target)
+- Modify: `src/control-plane/postgres/BUCK` (new `loom_fixture_test` target — **no `duckdb`**)
 
 - [ ] **Step 1: Write the test (the Iceberg twin of `tests/catalog.rs`)**
-
-Create `src/control-plane/postgres/tests/iceberg_catalog.rs`:
 
 ```rust
 use async_trait::async_trait;
@@ -940,26 +828,16 @@ use control_plane_testkit::{
     CatalogSeed, SeedSpec, SeededSnapshot, catalog_contract, catalog_delete_contract,
 };
 
-struct IcebergSeeder {
-    writer: IcebergWriter,
-}
+struct IcebergSeeder { writer: IcebergWriter }
 
 #[async_trait]
 impl CatalogSeed for IcebergSeeder {
     async fn seed(&self, spec: SeedSpec) -> Vec<SeededSnapshot> {
-        let cols: Vec<(String, String, bool)> = spec
-            .columns
-            .into_iter()
-            .map(|c| (c.name, c.ty, c.nullable)) // seeder maps logical -> Iceberg internally
-            .collect();
-        self.writer
-            .seed(&spec.table.schema, &spec.table.name, &cols, &spec.row_batches)
-            .await
-            .into_iter()
-            .map(|s| SeededSnapshot { snapshot: SnapshotId(s), files_added: 1 })
-            .collect()
+        let cols: Vec<(String, String, bool)> = spec.columns.into_iter()
+            .map(|c| (c.name, c.ty, c.nullable)).collect(); // seeder maps logical -> Iceberg internally
+        self.writer.seed(&spec.table.schema, &spec.table.name, &cols, &spec.row_batches).await
+            .into_iter().map(|s| SeededSnapshot { snapshot: SnapshotId(s), files_added: 1 }).collect()
     }
-
     async fn drop_table(&self, table: &TableRef) -> SnapshotId {
         SnapshotId(self.writer.drop_table(&table.schema, &table.name).await)
     }
@@ -969,10 +847,8 @@ impl CatalogSeed for IcebergSeeder {
 async fn iceberg_passes_catalog_contract() {
     let fixture = PgFixture::start();
     let (cp, _db) = fixture.fresh_db().await;
-    let catalog = IcebergCatalog::new(cp.pool.clone()); // VERIFY: expose the pool / a ctor that shares it
-    let seeder = IcebergSeeder {
-        writer: IcebergWriter::new(cp.pool.clone(), fixture.pg_dsn()), // VERIFY: add pg_dsn() to PgFixture
-    };
+    let catalog = IcebergCatalog::new(cp.pool.clone());          // VERIFY: expose the pool
+    let seeder = IcebergSeeder { writer: IcebergWriter::new(cp.pool.clone(), fixture.pg_dsn()) }; // VERIFY: add pg_dsn()
     catalog_contract(&catalog, &seeder).await;
 }
 
@@ -981,23 +857,18 @@ async fn iceberg_passes_catalog_delete_contract() {
     let fixture = PgFixture::start();
     let (cp, _db) = fixture.fresh_db().await;
     let catalog = IcebergCatalog::new(cp.pool.clone());
-    let seeder = IcebergSeeder {
-        writer: IcebergWriter::new(cp.pool.clone(), fixture.pg_dsn()),
-    };
+    let seeder = IcebergSeeder { writer: IcebergWriter::new(cp.pool.clone(), fixture.pg_dsn()) };
     catalog_delete_contract(&catalog, &seeder).await;
 }
 ```
 
-> If `PgControlPlane` doesn't expose `pool`, add a `pub(crate)`/`pub` accessor or have the
-> fixture return the `PgPool` (mirror how `DuckLakeWriter` obtains its connection). Add a
-> `PgFixture::pg_dsn()` returning the `postgres://…?host=<socket>` DSN that both `SqlCatalog`
-> and a fresh `PgPool` accept — derive it from the existing socket-path/db-name the fixture
-> already holds.
+> If `PgControlPlane` doesn't expose `pool`, add a `pub` accessor or have the fixture return the
+> `PgPool`. Add `PgFixture::pg_dsn()` returning the `postgres://…?host=<socket>` DSN both the
+> vendored catalog and a fresh `PgPool` accept — derive it from the socket-path/db-name the
+> fixture already holds.
 
-- [ ] **Step 2: Add the BUCK target**
+- [ ] **Step 2: Add the BUCK target (no `duckdb=True` — the seeder needs no DuckDB CLI)**
 
-In `src/control-plane/postgres/BUCK`, parallel the `catalog` fixture target. **No `duckdb=True`**
-— the Iceberg seeder needs no DuckDB CLI:
 ```python
 loom_fixture_test(
     name = "iceberg_catalog",
@@ -1008,17 +879,17 @@ loom_fixture_test(
             "//third-party:async-trait", "//third-party:tokio"],
 )
 ```
-(Match exact alias names already used by the `catalog` target.)
+(Match the exact alias names the `catalog` target uses.)
 
 - [ ] **Step 3: Run the contract — the headline assertion**
 
 ```bash
 buck2 test //src/control-plane/postgres:iceberg_catalog > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|panicked" /tmp/t.log
 ```
-Expected: both tests pass — the Iceberg adapter satisfies the same `Catalog` contract DuckLake
-does. Debug against `/tmp/t.log` (the fixture prints postgres/iceberg errors). Common first
-failures: snapshot-id monotonicity across batches, the `(id long, name string)` Arrow batch not
-matching the created Iceberg schema, or a stat-bound decode mismatch.
+Expected: both pass — the Iceberg adapter satisfies the same `Catalog` contract DuckLake does.
+Debug against `/tmp/t.log`. Common first failures: snapshot-id monotonicity across batches, the
+`(id long, name string)` Arrow batch not matching the created Iceberg schema, or the vendored
+catalog's JDBC-table init racing `fresh_db()`.
 
 - [ ] **Step 4: Commit**
 
@@ -1032,53 +903,50 @@ git rev-parse --short HEAD
 
 ---
 
-## Task 8: Full-suite verification
+## Task 9: Full-suite verification
 
-**Files:** none (verification only)
-
-- [ ] **Step 1: Full build + test, local and RE**
+- [ ] **Step 1: Full build + test (local + RE)**
 
 ```bash
 buck2 test //src/... > /tmp/all.log 2>&1; grep -E "Tests finished|FAIL" /tmp/all.log
 ```
-Expected: all pass, including the untouched DuckLake `catalog` / `catalog_delete` tests
-(coexistence proof) and the new Iceberg ones. Confirm the `sqlx-cache-check` test passes (it
-re-validates every committed `.sqlx`, now including the Iceberg queries).
+Expected: all pass — the untouched DuckLake `catalog`/`catalog_delete` tests (coexistence proof),
+the new Iceberg ones, and `sqlx-cache-check` (re-validates every committed `.sqlx`, now including
+the Iceberg-mirror queries).
 
 - [ ] **Step 2: clippy clean**
 
 ```bash
 ./tools/clippy-all.sh > /tmp/clippy.log 2>&1; tail -5 /tmp/clippy.log
 ```
-Expected: no findings. (Remove any leftover unused `// VERIFY` scaffolding imports if clippy
-flags them.)
+Expected: no findings. (The vendored catalog is Apache code; if clippy flags style in it, prefer
+`#[allow(...)]` at the module to keep it a faithful copy rather than rewriting.)
 
 - [ ] **Step 3: prek all hooks**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek.log 2>&1; grep -iE "failed|passed" /tmp/prek.log | tail -20
 ```
-Expected: all Passed (rustfmt, clippy, file checks, reindeer-in-sync against the new deps,
-no-inline-tests). Commit anything the hooks rewrite.
+Expected: all Passed (rustfmt, clippy, file checks, reindeer-in-sync, no-inline-tests — confirm
+the vendored catalog's tests were stripped). Commit anything the hooks rewrite.
 
-- [ ] **Step 4: Confirm the branch state**
+- [ ] **Step 4: Confirm branch state, then finish**
 
 ```bash
 git log --oneline main..HEAD
 git rev-parse --abbrev-ref HEAD   # feat/iceberg-adapter-read-path
 ```
-Expected: the spec commit + Tasks 1–7 commits, all on `feat/iceberg-adapter-read-path`. Then use
-**superpowers:finishing-a-development-branch** to open the PR.
+Then use **superpowers:finishing-a-development-branch** to open the PR.
 
 ---
 
 ## Notes carried forward to slices 2 & 3 (not built here)
 
 - **Slice 2 (write path)** reuses `iceberg_mirror`'s `next_snapshot` / `ensure_table` /
-  `project_columns` / `project_files` inside a `ControlPlane`/`Tx` impl that commits canonical
-  metadata via `SqlCatalog` + `iceberg::Transaction`, then refreshes the mirror. Because the
-  mirror is rebuildable, the refresh is best-effort + reconcile, not two-phase commit.
+  `project_columns` / `project_files` and folds the mirror upsert **into the vendored catalog's
+  `update_table` transaction** — atomic pointer+mirror (the rebuildable cache is the backstop).
+  Adds per-column stats (the `column_stat` table + `StatValue` decode) since `DataFile.column_stats`
+  round-trips there. The ingest materializer can then target Iceberg.
 - **Slice 3 (inline writes)** adds an `ActionEngine` impl for DuckLake-parity inline small writes.
-- **The live-from-`Table` projection** (reading manifests via `Table::file_io()` rather than the
-  writer's `Vec<DataFile>` output) is the slice-2 path; slice 1 deliberately projects from the
-  writer output the seeder already holds.
+- **Live-from-`Table` projection** (manifest scan via `Table::file_io()` rather than the writer's
+  `Vec<DataFile>`) is the slice-2 path; slice 1 projects from the writer output the seeder holds.
