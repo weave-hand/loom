@@ -230,8 +230,8 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     new `TypeId` identity in control-plane-core so `upstream(OutputType)` returns the input
     types. Output reads through query-api as the typed object (governed read-back). Proven by
     an e2e fixture.
-  - *Later:* programmatic (registered-plan) transforms; overwrite/incremental output (with
-    compaction); a wider output type set (the write/infer path is canonical scalars only today);
+  - *Later:* programmatic (registered-plan) transforms; compaction of small files (reuses
+    `replace_files`); watermark/incremental output; a wider output type set (the write/infer path is canonical scalars only today);
     DAG / transactional enqueue-downstream; optional Ballista escalation.
 
 ---
@@ -271,7 +271,13 @@ Richer reads now span aggregate-over-link **derived properties** (slice B) and *
 traversal** (slice C part-1 — forward, source-filtered, deduped link chaining, governed at every
 hop). The remaining slice-C parts are target-side filtering, object-set
 inputs, and the source→target association. Candidate next slices: the remaining slice-C parts (object-set inputs, source→target association), programmatic
-transforms, and overwrite/incremental output.
+transforms, compaction (reuses `replace_files`), and watermark/incremental output.
+**Overwrite output mode** (`2026-06-17-overwrite-output-mode-design.md`) is now delivered:
+a transform can set `output_mode = overwrite` to replace its output table's live contents
+(vs the default append), backed by a new DuckLake-faithful `Tx::replace_files` primitive
+that expires the prior files at the new snapshot — older snapshots still time-travel to
+them — and resets table stats. Compaction (reusing `replace_files`) and watermark-tracked
+incremental output remain deferred.
 **Typed input filters** are now delivered too
 (`2026-06-16-query-typed-input-filters-design.md`): query-param equality filters now coerce
 to the column's declared ontology logical type (via the `json_repr_of`/`JsonRepr` taxonomy,
