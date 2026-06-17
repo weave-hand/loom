@@ -1,6 +1,12 @@
-# Reindeer (https://github.com/facebookincubator/reindeer) — third-party Rust
-# dependency importer. Used at dev time to materialize BUCK targets for crates
-# declared in third-party manifests; not a build-time dep of any service.
+# Reindeer (third-party Rust dependency importer). Used at dev time to materialize
+# BUCK targets for crates declared in third-party manifests; not a build-time dep
+# of any service.
+#
+# loom consumes the **weave-hand/reindeer** fork, which carries the "honor
+# dependency renames from all workspace members" fix (PR #1) that upstream lacks:
+# it lets a virtual workspace disambiguate two public majors of one crate via a
+# Cargo dep rename, so `tools/buckify.sh` needs no alias post-processing. The fork
+# ships the same per-arch `.zst` release assets as upstream.
 #
 # We pull the prebuilt release binary instead of building from source. To bump:
 # replace REINDEER_VERSION below, then update each SHA256 from the matching
@@ -9,20 +15,20 @@
 # `buck2 run //tools:reindeer -- <args>` invokes the binary for the current
 # target CPU. Only Linux x86_64 / aarch64 are wired — matches platforms/BUCK.
 
-REINDEER_VERSION = "v2026.04.27.00"
+REINDEER_VERSION = "v2026.07.17.00"
 
-_REINDEER_URL = "https://github.com/facebookincubator/reindeer/releases/download/{version}/reindeer-{triple}.zst"
+_REINDEER_URL = "https://github.com/weave-hand/reindeer/releases/download/{version}/reindeer-{triple}.zst"
 
 http_file(
     name = "reindeer-x86_64-linux.zst",
     urls = [_REINDEER_URL.format(version = REINDEER_VERSION, triple = "x86_64-unknown-linux-gnu")],
-    sha256 = "3a0548d59373fac6e10cedf3ccb5ad2e940ebc31330b7e282346c53f8a1cb976",
+    sha256 = "2b58af20425e40d79eb22e8761a754789d65644d2e7f7ff478e3e0dd75dbbdc4",
 )
 
 http_file(
     name = "reindeer-aarch64-linux.zst",
     urls = [_REINDEER_URL.format(version = REINDEER_VERSION, triple = "aarch64-unknown-linux-gnu")],
-    sha256 = "fbbf16f9fb3af0846cf76edc8f3edbdb8a560b2fcb000d32f6204bccf2367051",
+    sha256 = "9ee50586a3ad9d5cba41f3d22d3fa3303f8aba01d9b7f499acfe16eeec1afc13",
 )
 
 # NOTE: `uses_xz` is borrowed from the prelude's set of "host-only decompressor

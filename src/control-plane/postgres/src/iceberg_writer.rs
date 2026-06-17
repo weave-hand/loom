@@ -16,7 +16,7 @@ use iceberg::writer::file_writer::location_generator::{
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, Result};
-use parquet::file::properties::WriterProperties;
+use parquet57::file::properties::WriterProperties;
 
 /// A neutral summary of one committed Parquet data file, returned to callers
 /// (tests, the seeder) that want to assert on the write without depending on

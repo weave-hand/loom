@@ -14,7 +14,7 @@ use control_plane_postgres::iceberg_writer::append_batches;
 use iceberg::io::LocalFsStorageFactory;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet57::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn writes_real_parquet_and_commits() {
