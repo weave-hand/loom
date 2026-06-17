@@ -160,6 +160,15 @@ rust_test(
     deps = [":postgres", "//src/control-plane/core:core"],
 )
 
+rust_test(
+    name = "iceberg-type",
+    crate = "iceberg_type",
+    srcs = ["tests/iceberg_type.rs"],
+    crate_root = "tests/iceberg_type.rs",
+    edition = "2024",
+    deps = [":postgres", "//src/control-plane/core:core"],
+)
+
 loom_fixture_test(
     name = "queue",
     crate = "queue",
