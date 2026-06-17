@@ -48,4 +48,9 @@ pub trait Tx: Send {
     async fn create_table(&mut self, table: &TableRef, columns: &[ColumnSpec]) -> Result<()>;
     /// Register already-written Parquet data files as part of the snapshot. Staged.
     async fn append_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()>;
+    /// Replace the table's live data files with `files` in this snapshot: the
+    /// currently-live files are expired at the new snapshot (still visible at older
+    /// snapshots — time travel preserved), and `files` become the table's live
+    /// contents. Staged; applied at commit.
+    async fn replace_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()>;
 }

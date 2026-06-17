@@ -206,6 +206,7 @@ impl ControlPlane for MemoryControlPlane {
             staged_events: Vec::new(),
             staged_tables: Vec::new(),
             staged_files: Vec::new(),
+            staged_replacements: Vec::new(),
         }))
     }
 }

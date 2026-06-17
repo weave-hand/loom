@@ -21,6 +21,7 @@ pub(crate) struct MemoryTx {
     pub(crate) staged_events: Vec<LineageEvent>,
     pub(crate) staged_tables: Vec<(TableRef, Vec<ColumnSpec>)>,
     pub(crate) staged_files: Vec<(TableRef, Vec<DataFile>)>,
+    pub(crate) staged_replacements: Vec<(TableRef, Vec<DataFile>)>,
 }
 
 #[async_trait]
@@ -45,7 +46,9 @@ impl Tx for MemoryTx {
             self.notify.notify_waiters();
         }
 
-        let has_catalog_ops = !self.staged_tables.is_empty() || !self.staged_files.is_empty();
+        let has_catalog_ops = !self.staged_tables.is_empty()
+            || !self.staged_files.is_empty()
+            || !self.staged_replacements.is_empty();
         if !has_catalog_ops {
             return Ok(None);
         }
@@ -107,6 +110,33 @@ impl Tx for MemoryTx {
                     });
                 }
             }
+
+            // Apply staged file replacements: expire the table's live files at a new
+            // snapshot, then add the replacements live at that snapshot.
+            for (table, files) in self.staged_replacements {
+                use control_plane_core::FileRef;
+                let key = (table.schema.clone(), table.name.clone());
+                let s = cat.new_snapshot();
+                last_snapshot = Some(s);
+                if let Some(existing) = cat.files.get_mut(&key) {
+                    for f in existing.iter_mut() {
+                        if f.end.is_none() {
+                            f.end = Some(s);
+                        }
+                    }
+                }
+                for file in files {
+                    cat.files.entry(key.clone()).or_default().push(Versioned {
+                        begin: s,
+                        end: None,
+                        val: FileRef {
+                            path: file.path,
+                            record_count: file.record_count,
+                            file_size_bytes: file.file_size_bytes,
+                        },
+                    });
+                }
+            }
         }
 
         Ok(last_snapshot.map(SnapshotId))
@@ -137,6 +167,12 @@ impl Tx for MemoryTx {
 
     async fn append_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
         self.staged_files.push((table.clone(), files.to_vec()));
+        Ok(())
+    }
+
+    async fn replace_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
+        self.staged_replacements
+            .push((table.clone(), files.to_vec()));
         Ok(())
     }
 }
