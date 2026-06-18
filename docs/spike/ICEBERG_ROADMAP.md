@@ -46,6 +46,22 @@ pointer+mirror storage · read-path first · vendor the catalog.
   (`UnsupportedActionEngine`) — inlining is a DuckLake-only feature loom hasn't
   rebuilt. Spec/plan: `docs/superpowers/{specs,plans}/2026-06-17-iceberg-datafusion-serving-engine*`.
 
+### Slice A — inline writes + read union (loom-native inlining)
+- `inline_append` (`postgres`): small writes land as typed rows in a per-table
+  `iceberg_mirror.inline_<table_id>` table created on the fly — **no object-storage
+  Parquet, no Iceberg metadata**. A mirror-only commit: synthetic snapshot + typed
+  rows + lineage, atomic in one Postgres transaction.
+- `IcebergCatalog::inline_parquet` encodes a table's live inline rows to in-memory
+  Parquet bytes (arrow/parquet 57); the slice-3 serving engine registers them under
+  a `memory://` store and **unions** them with the table's `file://` Parquet (a
+  DataFusion `UNION ALL` view — a `ListingTable` can't span two object stores).
+- This is the DuckLake `DATA_INLINING` capability rebuilt loom-natively. **External
+  Iceberg clients see inline rows only after a future flush** (bounded staleness,
+  accepted). Spec/plan: `docs/superpowers/{specs,plans}/2026-06-18-iceberg-inline-writes*`.
+- **Remaining inline follow-ups:** flush/compaction of inline → Parquet (also
+  restores external visibility); the inline-vs-Parquet threshold + the
+  `LandingBackend`/ingest-binary wiring (**Slice B**).
+
 ## Left (deferred)
 
 1. **Per-column stats + pruning read path** — the mirror stores only
