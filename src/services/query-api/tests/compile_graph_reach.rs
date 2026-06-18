@@ -193,4 +193,6 @@ fn two_step_path_cycle_with_intermediate_filter() {
     assert_eq!(params.len(), 4, "got {params:?}");
     assert_eq!(params[0], SqlValue::Text("US".into())); // s.region
     assert_eq!(params[1], SqlValue::Bool(true)); // g1.active
+    assert_eq!(params[2], SqlValue::Text("US".into())); // nxt.region (final node, start filter)
+    assert_eq!(params[3], SqlValue::Text("US".into())); // p.region (projection)
 }
