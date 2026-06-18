@@ -395,3 +395,15 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "iceberg-live-tables",
+    crate = "iceberg_live_tables",
+    srcs = ["tests/iceberg_live_tables.rs"],
+    crate_root = "tests/iceberg_live_tables.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+    ],
+)

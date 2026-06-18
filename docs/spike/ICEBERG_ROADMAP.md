@@ -32,17 +32,31 @@ pointer+mirror storage · read-path first · vendor the catalog.
 - Seeder now drives the real write → project → read path, so the contracts
   validate **real** writes. **Append-only.**
 
-## Left (deferred, per the slice-2 spec)
+### Slice 3 — loom-native read serving (DataFusion, no DuckDB)
+- `DataFusionServingEngine` (`query-api`): a `ServingEngine` that enumerates live
+  tables from the mirror (`IcebergCatalog::live_tables`), registers each table's
+  live Parquet files (absolute `file://` paths) as a schema-qualified DataFusion
+  `ListingTable`, inlines params, runs the governed/compiled SQL through
+  DataFusion, and maps Arrow → `Rows`. **No DuckDB in the path** — the first
+  loom-native serving engine, the thing the mirror was built to enable.
+- Selected in the binary by `LOOM_SERVING_BACKEND=iceberg` (default `ducklake`
+  keeps the DuckDB path untouched); `cp` (ontology/ACL) stays `PgControlPlane` —
+  the handler never calls `cp.catalog()`.
+- **Reads file-backed tables only.** Actions/inline writes are rejected
+  (`UnsupportedActionEngine`) — inlining is a DuckLake-only feature loom hasn't
+  rebuilt. Spec/plan: `docs/superpowers/{specs,plans}/2026-06-17-iceberg-datafusion-serving-engine*`.
+
+## Left (deferred)
 
 1. **Per-column stats + pruning read path** — the mirror stores only
    `record_count` / `file_size`; no lower/upper bounds or null counts, so no
    predicate pushdown / file skipping.
 2. **Overwrite/replace** — append-only today; the Iceberg analogue of DuckLake's
    `replace_files` (transform overwrite output mode).
-3. **Service-binary wiring** — the write path is a **library** component, not
-   wired into the production ingest HTTP service; a real HTTP ingest can't target
-   Iceberg yet (needs DuckLake-vs-Iceberg backend selection). Symmetrically,
-   query-api doesn't serve Iceberg-backed tables through a running service.
+3. **Write/ingest service wiring** — the read side shipped in slice 3, but the
+   *write* path is still a **library** component: a real HTTP ingest can't target
+   Iceberg yet (needs a DuckLake-vs-Iceberg landing backend selection in the
+   ingest binary, analogous to query-api's `LOOM_SERVING_BACKEND`).
 4. **Multi-writer perf** — the atomic commit holds the Postgres tx open across
    object-store manifest reads; fine single-writer, needs optimizing for
    throughput.

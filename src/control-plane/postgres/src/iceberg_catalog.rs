@@ -41,6 +41,28 @@ impl IcebergCatalog {
             ControlPlaneError::NotFound(format!("{}.{} @ {}", table.schema, table.name, at.0))
         })
     }
+
+    /// Every table currently live in the mirror (those with no `end_snapshot`),
+    /// as loom `TableRef`s (`table_namespace` -> schema, `table_name` -> name).
+    /// The read engine registers each as a DataFusion table.
+    #[tracing::instrument(skip(self), level = "debug")]
+    pub async fn live_tables(&self) -> Result<Vec<TableRef>> {
+        let rows = sqlx::query!(
+            "select table_namespace as \"schema!\", table_name as \"name!\" \
+             from iceberg_mirror.table where end_snapshot is null \
+             order by table_namespace, table_name"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| TableRef {
+                schema: r.schema,
+                name: r.name,
+            })
+            .collect())
+    }
 }
 
 #[async_trait]

@@ -17,5 +17,6 @@ pub mod params;
 pub mod path_parse;
 pub mod render;
 pub mod serving;
+pub mod serving_datafusion;
 pub mod sql;
 pub mod write_filter;

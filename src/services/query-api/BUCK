@@ -9,9 +9,12 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",
+        "//third-party:datafusion",
         "//third-party:duckdb",
+        "//third-party:object_store",
         "//third-party:serde_json",
         "//third-party:thiserror",
         "//third-party:time",
@@ -32,6 +35,7 @@ rust_binary(
         ":query-api",
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
         "//third-party:tokio",
     ],
     env = {"CARGO_PKG_VERSION": "0.1.0"},
@@ -253,6 +257,67 @@ loom_fixture_test(
         "//third-party:time",
         "//third-party:tokio",
     ],
+)
+
+loom_fixture_test(
+    name = "datafusion-serving",
+    crate = "datafusion_serving",
+    srcs = ["tests/datafusion_serving.rs"],
+    crate_root = "tests/datafusion_serving.rs",
+    deps = [
+        ":query-api",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "datafusion-register",
+    crate = "datafusion_register",
+    srcs = ["tests/datafusion_register.rs"],
+    crate_root = "tests/datafusion_register.rs",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:datafusion",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "datafusion-value-map",
+    crate = "datafusion_value_map",
+    srcs = ["tests/datafusion_value_map.rs"],
+    crate_root = "tests/datafusion_value_map.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:arrow",
+        "//third-party:time",
+    ],
+)
+
+rust_test(
+    name = "unsupported-action",
+    crate = "unsupported_action",
+    srcs = ["tests/unsupported_action.rs"],
+    crate_root = "tests/unsupported_action.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "serving-backend-parse",
+    crate = "serving_backend_parse",
+    srcs = ["tests/serving_backend_parse.rs"],
+    crate_root = "tests/serving_backend_parse.rs",
+    edition = "2024",
+    deps = [":query-api"],
 )
 
 rust_test(
