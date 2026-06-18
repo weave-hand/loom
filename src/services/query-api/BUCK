@@ -235,6 +235,19 @@ loom_fixture_test(
 )
 
 rust_test(
+    name = "datafusion-value-map",
+    crate = "datafusion_value_map",
+    srcs = ["tests/datafusion_value_map.rs"],
+    crate_root = "tests/datafusion_value_map.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:arrow",
+        "//third-party:time",
+    ],
+)
+
+rust_test(
     name = "render",
     crate = "render",
     srcs = ["tests/render.rs"],
