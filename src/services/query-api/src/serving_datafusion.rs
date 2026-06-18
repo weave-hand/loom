@@ -24,7 +24,7 @@ use datafusion::execution::context::SessionContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use object_store::local::LocalFileSystem;
 
-use crate::serving::{Rows, ServingEngine, ServingError, SqlValue, inline_params};
+use crate::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue, inline_params};
 
 /// loom-native serving engine: serves governed reads for file-backed Iceberg
 /// tables from the mirror via DataFusion. Holds only the mirror reader; the
@@ -121,6 +121,45 @@ pub async fn register_iceberg_table(
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque serving error.
 fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
     ServingError::Engine(e.to_string())
+}
+
+/// The `ActionEngine` for the iceberg serving backend: there is no inline write
+/// path (inlining is a DuckLake feature loom has not rebuilt), so writes are
+/// rejected. The action endpoint surfaces this as an opaque error.
+pub struct UnsupportedActionEngine;
+
+#[async_trait]
+impl ActionEngine for UnsupportedActionEngine {
+    async fn insert_row(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _values: &[SqlValue],
+    ) -> Result<(), ServingError> {
+        Err(ServingError::Engine(
+            "actions unsupported on the iceberg serving backend".into(),
+        ))
+    }
+}
+
+/// Which table-format backend the query-api binary serves reads from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServingBackend {
+    /// DuckLake via embedded DuckDB (default; today's behavior).
+    DuckLake,
+    /// File-backed Iceberg via the loom-native DataFusion engine.
+    Iceberg,
+}
+
+/// Parse `LOOM_SERVING_BACKEND`. Unset -> DuckLake. Case-insensitive.
+pub fn parse_serving_backend(v: Option<&str>) -> Result<ServingBackend, String> {
+    match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("") | Some("ducklake") => Ok(ServingBackend::DuckLake),
+        Some("iceberg") => Ok(ServingBackend::Iceberg),
+        Some(other) => Err(format!(
+            "LOOM_SERVING_BACKEND must be 'ducklake' or 'iceberg', got {other:?}"
+        )),
+    }
 }
 
 /// Flatten DataFusion result batches into the engine-neutral `Rows`. Columns come

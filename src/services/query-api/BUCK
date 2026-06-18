@@ -35,6 +35,7 @@ rust_binary(
         ":query-api",
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
         "//third-party:tokio",
     ],
     env = {"CARGO_PKG_VERSION": "0.1.0"},
@@ -271,6 +272,28 @@ rust_test(
         "//third-party:arrow",
         "//third-party:time",
     ],
+)
+
+rust_test(
+    name = "unsupported-action",
+    crate = "unsupported_action",
+    srcs = ["tests/unsupported_action.rs"],
+    crate_root = "tests/unsupported_action.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "serving-backend-parse",
+    crate = "serving_backend_parse",
+    srcs = ["tests/serving_backend_parse.rs"],
+    crate_root = "tests/serving_backend_parse.rs",
+    edition = "2024",
+    deps = [":query-api"],
 )
 
 rust_test(
