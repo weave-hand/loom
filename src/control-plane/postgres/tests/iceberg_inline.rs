@@ -57,3 +57,59 @@ async fn inline_append_writes_rows_snapshot_and_lineage() {
         .unwrap();
     assert_eq!(events, 1, "one lineage event for the inline write");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_parquet_encodes_live_rows() {
+    use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+    use parquet57::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("name".to_string(), "string".to_string(), false),
+    ];
+    writer.seed("sales", "orders", &cols, &[3]).await;
+    let snap = writer
+        .inline(
+            "sales",
+            "orders",
+            &cols,
+            &[(100, "row100"), (101, "row101")],
+            uuid::Uuid::new_v4(),
+        )
+        .await;
+
+    let catalog = IcebergCatalog::new(pool);
+    let table = control_plane_core::TableRef {
+        schema: "sales".into(),
+        name: "orders".into(),
+    };
+    let bytes = catalog
+        .inline_parquet(&table, control_plane_core::SnapshotId(snap))
+        .await
+        .expect("inline_parquet")
+        .expect("Some bytes when inline rows exist");
+
+    let reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes))
+        .unwrap()
+        .build()
+        .unwrap();
+    let total: usize = reader.map(|b| b.unwrap().num_rows()).sum();
+    assert_eq!(total, 2, "two inline rows encoded to parquet");
+
+    // A table that was never inline-written yields None at its seed snapshot.
+    let other = control_plane_core::TableRef {
+        schema: "sales".into(),
+        name: "orders".into(),
+    };
+    let none = catalog
+        .inline_parquet(&other, control_plane_core::SnapshotId(1))
+        .await
+        .expect("inline_parquet at snapshot 1");
+    assert!(none.is_none(), "no inline rows live at the seed snapshot");
+}

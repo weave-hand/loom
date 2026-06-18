@@ -5,20 +5,29 @@
 //! `IcebergCatalog::inline_parquet`. External Iceberg clients don't see inline rows
 //! until a future flush. See the slice-A design doc.
 
+use std::sync::Arc;
+
+use arrow_array::builder::{
+    BooleanBuilder, Date32Builder, Float64Builder, Int32Builder, Int64Builder, StringBuilder,
+    TimestampMicrosecondBuilder,
+};
 use arrow_array::{
-    Array, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
+    Array, ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
     StringArray, TimestampMicrosecondArray,
 };
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use control_plane_core::{
     ColumnSpec, ControlPlaneError, LineageEvent, Result, SnapshotId, TableRef,
 };
+use parquet57::arrow::ArrowWriter;
 use sqlx::postgres::PgArguments;
 use sqlx::query::Query;
-use sqlx::{AssertSqlSafe, PgConnection, PgPool, Postgres};
+use sqlx::{AssertSqlSafe, PgConnection, PgPool, Postgres, Row};
 
 use crate::backend;
+use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_mirror::{
-    ProjectedColumn, columns_exist, ensure_table, next_snapshot, project_columns,
+    ProjectedColumn, columns_exist, ensure_table, live_table_id, next_snapshot, project_columns,
 };
 use crate::iceberg_type::{iceberg_physical_type, pg_type_for};
 use crate::lineage::pg_emit;
@@ -189,4 +198,176 @@ pub async fn inline_append(
 
     tx.commit().await.map_err(backend)?;
     Ok(at)
+}
+
+/// Arrow field for a logical column (canonical, non-`*View` so it matches the
+/// file-Parquet side the slice-3 engine reads).
+fn arrow_field(name: &str, logical: &str, nullable: bool) -> Result<Field> {
+    let dt = match logical {
+        "integer" => DataType::Int32,
+        "long" => DataType::Int64,
+        "double" => DataType::Float64,
+        "boolean" => DataType::Boolean,
+        "string" => DataType::Utf8,
+        "date" => DataType::Date32,
+        "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, None),
+        other => {
+            return Err(ControlPlaneError::Backend(
+                format!("inline read: unsupported type {other:?}").into(),
+            ));
+        }
+    };
+    Ok(Field::new(name, dt, nullable))
+}
+
+/// Build an arrow-57 array for column `i` (typed `logical`) from PG rows.
+fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Result<ArrayRef> {
+    macro_rules! get {
+        ($ty:ty) => {
+            rows.iter()
+                .map(|r| r.try_get::<Option<$ty>, _>(i))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(backend)?
+        };
+    }
+    Ok(match logical {
+        "integer" => {
+            let mut b = Int32Builder::new();
+            for v in get!(i32) {
+                b.append_option(v);
+            }
+            Arc::new(b.finish())
+        }
+        "long" => {
+            let mut b = Int64Builder::new();
+            for v in get!(i64) {
+                b.append_option(v);
+            }
+            Arc::new(b.finish())
+        }
+        "double" => {
+            let mut b = Float64Builder::new();
+            for v in get!(f64) {
+                b.append_option(v);
+            }
+            Arc::new(b.finish())
+        }
+        "boolean" => {
+            let mut b = BooleanBuilder::new();
+            for v in get!(bool) {
+                b.append_option(v);
+            }
+            Arc::new(b.finish())
+        }
+        "string" => {
+            let mut b = StringBuilder::new();
+            for v in get!(String) {
+                b.append_option(v);
+            }
+            Arc::new(b.finish())
+        }
+        "date" => {
+            let mut b = Date32Builder::new();
+            let epoch = time::macros::date!(1970 - 01 - 01);
+            for v in get!(time::Date) {
+                b.append_option(v.map(|d| (d - epoch).whole_days() as i32));
+            }
+            Arc::new(b.finish())
+        }
+        "timestamp" => {
+            let mut b = TimestampMicrosecondBuilder::new();
+            for v in get!(time::PrimitiveDateTime) {
+                b.append_option(v.map(|t| {
+                    (t.assume_utc() - time::OffsetDateTime::UNIX_EPOCH)
+                        .whole_microseconds()
+                        .try_into()
+                        .unwrap_or(i64::MAX)
+                }));
+            }
+            Arc::new(b.finish())
+        }
+        other => {
+            return Err(ControlPlaneError::Backend(
+                format!("inline read: unsupported type {other:?}").into(),
+            ));
+        }
+    })
+}
+
+impl IcebergCatalog {
+    /// Encode `table`'s live inline rows at `at` to Parquet bytes (one row group),
+    /// or `None` if there is no inline storage or no live inline rows. The serving
+    /// engine drops these into an in-memory object store and unions them with the
+    /// table's `file://` Parquet.
+    pub async fn inline_parquet(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+    ) -> Result<Option<Vec<u8>>> {
+        use control_plane_core::Catalog;
+
+        let mut conn = self.pool.acquire().await.map_err(backend)?;
+        let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
+            return Ok(None);
+        };
+
+        // Inline storage may not exist (table never had an inline write).
+        let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+            "select to_regclass('{}')::text",
+            inline_table_name(tid)
+        )))
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+        if exists.is_none() {
+            return Ok(None);
+        }
+
+        // The column schema at `at` (logical types, in order).
+        let schema = self.schema(table, at).await?;
+        let col_list = schema
+            .columns
+            .iter()
+            .map(|c| format!("\"{}\"", c.name.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "select {col_list} from {} \
+             where begin_snapshot <= {} and (end_snapshot is null or end_snapshot > {}) \
+             order by loom_row_id",
+            inline_table_name(tid),
+            at.0,
+            at.0,
+        )))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(backend)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        // Build one arrow-57 array per column from the PG rows.
+        let fields = schema
+            .columns
+            .iter()
+            .map(|c| arrow_field(&c.name, &c.ty, c.nullable))
+            .collect::<Result<Vec<_>>>()?;
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(fields.len());
+        for (i, c) in schema.columns.iter().enumerate() {
+            arrays.push(column_array(&rows, i, &c.ty)?);
+        }
+        let arrow_schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(arrow_schema.clone(), arrays)
+            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut w = ArrowWriter::try_new(&mut buf, arrow_schema, None)
+            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+        w.write(&batch)
+            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+        w.close()
+            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+        Ok(Some(buf))
+    }
 }
