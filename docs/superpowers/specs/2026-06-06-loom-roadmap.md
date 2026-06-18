@@ -352,3 +352,15 @@ chart publishes when its `Chart.yaml` version is bumped. See `docs/deploy.md`. O
 follow-ups: a schema-migration Job (the chart provisions PG but doesn't migrate),
 and replacing the `LocalFileSystem` PVC with a real S3/MinIO object store (which
 removes the RWX-for-multi-pod constraint).
+
+**`/graph` part-1 — bounded recursive reachability** (`2026-06-18-graph-reachability-design.md`)
+is now delivered: `GET /objects/:type/graph/:link?depth=N` serves the deduped set of objects
+reachable from a seed set via 1..N hops of a **self-link** (`from == to == :type`), backed by a
+depth-bounded `WITH RECURSIVE` CTE (DuckDB-native). Governed at every level: `Read` on the type,
+the type's row-filters AND'd into the seed, every recursive expansion, and the final projection —
+so a caller reaches only nodes routed entirely through permitted rows. The seed is scoped via the
+already-shipped `?_ids=` and source-position filters; depth defaults to 5 and is capped at 10
+(out-of-range → 400); cycles terminate by the depth bound and the result is deduped by the
+declared identity. This is the graph counterpart to the relational `/links` arc. Remaining
+`/graph` parts (deferred to `docs/FUTURE.md`): multi-link / heterogeneous paths, graph-aware
+filter addressing, min-depth annotation, shortest-path / `/tree`, weighted edges.

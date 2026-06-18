@@ -557,6 +557,112 @@ pub fn compile_chain_pairs(
     Ok((sql, params))
 }
 
+/// Compile a depth-bounded recursive reachability query over a SELF-link: the deduped set
+/// of `table` rows reachable from the seed set (rows matching `seed_predicates` + the type's
+/// `row_filters`) via 1..`depth` hops of `backing`. Governed: `row_filters` are rendered at
+/// the seed (`s`), every recursive expansion (`nxt`), and the final projection (`p`), so a
+/// node is reached only through permitted rows. `identity` is the dedup/visited key (the
+/// CTE column `id`). Termination is guaranteed by the inlined `depth` bound regardless of
+/// cycles; the outer `DISTINCT` dedups the node set. Every caller value is a bound param.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_graph_reach(
+    dialect: &dyn SqlDialect,
+    table: &TableRef,
+    identity: &str,
+    backing: &LinkBacking,
+    seed_predicates: &[CallerPredicate],
+    row_filters: &[RowFilter],
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    depth: u32,
+    limit: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    for f in row_filters {
+        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+    }
+    let q = |id: &str| dialect.quote_ident(id);
+    let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
+    let id = q(identity);
+    let mut params: Vec<SqlValue> = Vec::new();
+
+    // Anchor (seed) WHERE at alias `s`: caller seed predicates, then the ACL row-filters.
+    let mut seed_conj: Vec<String> = Vec::new();
+    for p in seed_predicates {
+        seed_conj.push(caller_predicate_sql(dialect, p, "s", &mut params));
+    }
+    for f in row_filters {
+        seed_conj.push(filter_sql(dialect, f, "s", &mut params));
+    }
+    let seed_where = if seed_conj.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", seed_conj.join(" AND "))
+    };
+
+    // Recursive step: join the link cur -> nxt, bound depth, govern `nxt` with row-filters.
+    let link_join = match backing {
+        LinkBacking::ForeignKey {
+            from_column,
+            to_column,
+        } => format!(
+            " JOIN {tbl} nxt ON cur.{} = nxt.{}",
+            q(from_column),
+            q(to_column)
+        ),
+        LinkBacking::JoinTable {
+            table: jt,
+            from_key,
+            from_column,
+            to_column,
+            to_key,
+        } => {
+            let jtbl = format!("{}.{}", q(&jt.schema), q(&jt.name));
+            format!(
+                " JOIN {jtbl} j ON cur.{} = j.{} JOIN {tbl} nxt ON j.{} = nxt.{}",
+                q(from_key),
+                q(from_column),
+                q(to_column),
+                q(to_key),
+            )
+        }
+    };
+    let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
+    for f in row_filters {
+        rec_conj.push(filter_sql(dialect, f, "nxt", &mut params));
+    }
+    let rec_where = rec_conj.join(" AND ");
+
+    // Projection of `p`: visible columns (masked -> marker), reachable in >= 1 hop, governed.
+    let cols = allowed_cols
+        .iter()
+        .map(|c| {
+            if mask_cols.iter().any(|m| m == c) {
+                format!("'{MASK_MARKER}' AS {}", q(c))
+            } else {
+                format!("p.{}", q(c))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut proj_conj: Vec<String> =
+        vec![format!("p.{id} IN (SELECT id FROM reach WHERE depth >= 1)")];
+    for f in row_filters {
+        proj_conj.push(filter_sql(dialect, f, "p", &mut params));
+    }
+    let proj_where = proj_conj.join(" AND ");
+
+    let sql = format!(
+        "WITH RECURSIVE reach(id, depth) AS (\
+           SELECT s.{id}, 0 FROM {tbl} s{seed_where} \
+           UNION \
+           SELECT nxt.{id}, r.depth + 1 FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{link_join} WHERE {rec_where}\
+         ) \
+         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {}",
+        dialect.limit_clause(limit)
+    );
+    Ok((sql, params))
+}
+
 /// Compile a governed multi-hop traversal for loom's default (DuckDB) dialect. Convenience
 /// wrapper for statically-DuckDB callers (e.g. tests); production paths must use
 /// [`compile_chain_with`] with the serving engine's dialect.

@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use crate::handler::{
-    Associations, ChainQuery, Hop, ObjectQuery, QueryDeps, QueryError, Subject, read_associations,
-    read_linked_chain, read_object,
+    Associations, ChainQuery, GraphQuery, Hop, ObjectQuery, QueryDeps, QueryError, Subject,
+    read_associations, read_graph_reach, read_linked_chain, read_object,
 };
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
@@ -30,6 +30,7 @@ pub fn router(state: AppState) -> Router {
         .route("/objects/:type_name", get(get_object))
         .route("/objects/:from_type/links/:link_name", get(get_linked))
         .route("/objects/:from_type/links", get(get_linked_chain))
+        .route("/objects/:type_name/graph/:link_name", get(get_graph))
         .route("/actions/:action_name", post(post_action))
         .with_state(state)
 }
@@ -254,6 +255,85 @@ fn chain_error(e: QueryError) -> axum::response::Response {
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
         // Opaque body for backend/serving faults (no internal detail leaked).
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    }
+}
+
+const MAX_GRAPH_DEPTH: u32 = 10;
+const DEFAULT_GRAPH_DEPTH: u32 = 5;
+
+async fn get_graph(
+    State(st): State<AppState>,
+    Path((type_name, link_name)): Path<(String, String)>,
+    Query(params): Query<Vec<(String, String)>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let subject = headers
+        .get("X-Loom-Subject")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_string();
+    // Pull `depth` and `_ids` out; the rest are seed filters.
+    let mut depth = DEFAULT_GRAPH_DEPTH;
+    let mut ids: Vec<String> = Vec::new();
+    let mut ids_present = false;
+    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
+    for (k, v) in params {
+        match k.as_str() {
+            "depth" => match v.parse::<u32>() {
+                Ok(d) => depth = d,
+                Err(_) => {
+                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
+                        .into_response();
+                }
+            },
+            "_ids" => {
+                ids_present = true;
+                ids = v
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+            }
+            _ => filters.push((k, v)),
+        }
+    }
+    if ids_present && ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
+    }
+    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
+        )
+            .into_response();
+    }
+    let deps = QueryDeps {
+        ontology: st.cp.ontology(),
+        acl: st.cp.acl(),
+        serving: st.serving.as_ref(),
+    };
+    match read_graph_reach(
+        &GraphQuery {
+            type_name,
+            link: link_name,
+            depth,
+            filters,
+            ids,
+        },
+        &Subject(SubjectId(subject)),
+        &deps,
+    )
+    .await
+    {
+        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
+        Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
+        Err(QueryError::NotSelfLink(l)) => (StatusCode::BAD_REQUEST, l).into_response(),
+        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
+        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
+        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        // Opaque body for backend/serving faults (no internal detail leaked).
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     }
 }
 

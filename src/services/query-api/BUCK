@@ -226,6 +226,30 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "graph-reach-e2e",
+    crate = "graph_reach_e2e",
+    srcs = ["tests/graph_reach_e2e.rs"],
+    crate_root = "tests/graph_reach_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "inverse-hops-e2e",
     crate = "inverse_hops_e2e",
     srcs = ["tests/inverse_hops_e2e.rs"],
@@ -385,12 +409,39 @@ rust_test(
 )
 
 rust_test(
+    name = "graph-reach",
+    crate = "graph_reach",
+    srcs = ["tests/graph_reach.rs"],
+    crate_root = "tests/graph_reach.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "compile-chain-pairs",
     crate = "compile_chain_pairs",
     srcs = ["tests/compile_chain_pairs.rs"],
     crate_root = "tests/compile_chain_pairs.rs",
     edition = "2024",
     deps = [":query-api", "//src/control-plane/core:core"],
+)
+
+rust_test(
+    name = "compile-graph-reach",
+    crate = "compile_graph_reach",
+    srcs = ["tests/compile_graph_reach.rs"],
+    crate_root = "tests/compile_graph_reach.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
 )
 
 rust_test(
