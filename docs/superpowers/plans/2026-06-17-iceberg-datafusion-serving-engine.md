@@ -84,7 +84,9 @@ async fn live_tables_lists_only_live() {
 
     let catalog = IcebergCatalog::new(pool);
     let mut live = catalog.live_tables().await.expect("live_tables");
-    live.sort_by(|a, b| (a.schema.as_str(), a.name.as_str()).cmp(&(b.schema, b.name)));
+    live.sort_by(|a, b| {
+        (a.schema.as_str(), a.name.as_str()).cmp(&(b.schema.as_str(), b.name.as_str()))
+    });
 
     assert_eq!(
         live,
