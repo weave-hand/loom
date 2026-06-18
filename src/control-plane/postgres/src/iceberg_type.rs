@@ -21,3 +21,34 @@ pub fn logical_from_iceberg(physical: &str) -> Option<BaseType> {
         _ => None,
     }
 }
+
+/// loom logical type name -> Iceberg primitive type name (write path, used to
+/// project `iceberg_mirror.column` rows for an inline-only table). The inverse of
+/// `logical_from_iceberg`. `None` for a name loom has no Iceberg mapping for.
+pub fn iceberg_physical_type(logical: &str) -> Option<&'static str> {
+    match logical.trim().to_ascii_lowercase().as_str() {
+        "integer" => Some("int"),
+        "long" => Some("long"),
+        "double" => Some("double"),
+        "boolean" => Some("boolean"),
+        "string" => Some("string"),
+        "date" => Some("date"),
+        "timestamp" => Some("timestamp"),
+        _ => None,
+    }
+}
+
+/// loom logical type name -> Postgres column type for the per-table inline storage
+/// (`iceberg_mirror.inline_<table_id>`). `None` for an unsupported name.
+pub fn pg_type_for(logical: &str) -> Option<&'static str> {
+    match logical.trim().to_ascii_lowercase().as_str() {
+        "integer" => Some("integer"),
+        "long" => Some("bigint"),
+        "double" => Some("double precision"),
+        "boolean" => Some("boolean"),
+        "string" => Some("text"),
+        "date" => Some("date"),
+        "timestamp" => Some("timestamp"),
+        _ => None,
+    }
+}
