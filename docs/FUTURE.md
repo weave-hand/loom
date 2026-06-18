@@ -126,8 +126,10 @@ a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
 - **Inverse-direction hops** (slice-C part-3) — DELIVERED
   (`docs/superpowers/specs/2026-06-16-inverse-direction-hops-design.md`): backward link
   traversal, governed at every hop, single- and multi-hop, via `Ontology::links_to` +
-  `LinkBacking::reversed()`. Follow-up still open: a `/graph` surface for cyclic /
-  self-link / repeated-link per-hop filtering (the deferred relational-vs-graph boundary).
+  `LinkBacking::reversed()`. `/graph` part-1 (bounded recursive self-link reachability) is
+  now DELIVERED; remaining `/graph` parts (multi-link / heterogeneous paths, graph-aware
+  filter addressing, min-depth annotation, `/tree`, weighted edges) are recorded in the
+  **Graph traversal** item below.
 - **Caller-supplied target / intermediate filters.** ✅ DELIVERED
   (`2026-06-16-query-target-intermediate-filters-design.md`): per-hop typed equality filters on
   any type in a chain, addressed by `<linkname>.<column>` (bare = source), governed per type.
@@ -149,8 +151,9 @@ a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
   400; present-but-empty `?_ids=` → 400. Bundled in the same slice: all query control params now
   use a reserved `_` prefix (`_path`, `_direction`, `_shape`, `_ids`), and bind-time rejects any
   property or derived-property name beginning with `_` (`BindViolationReason::ReservedName`) —
-  making control-param/column collisions impossible by construction. Remaining graph follow-up: the
-  `/graph` surface for cyclic/self-link traversal (see the **Graph traversal** item below).
+  making control-param/column collisions impossible by construction. `/graph` part-1
+  (bounded recursive self-link reachability) is now DELIVERED; remaining `/graph` parts are
+  recorded in the **Graph traversal** item below.
 - **Define-time chain/link validation.** Validate link continuity and physical columns at authoring
   time (shared with slice A's deferred `define_link` column validation). Part-1 resolves the chain at
   **read** time, so a broken chain (unknown link, a link whose `from` is not the current type)
@@ -186,15 +189,34 @@ From the target/intermediate-filters slice (`2026-06-16-query-target-intermediat
 which made every type in a traversal chain caller-filterable (typed, governed per position) and
 drew the relational/graph boundary:
 
-- **Graph traversal as a first-class concept.** The relational `/links` chain is a fixed, acyclic
-  set of INNER JOINs over DuckLake tables — distinct link names per path, so link-name filter
+- **Graph traversal — `/graph` surface.** The relational `/links` chain is a fixed, acyclic set
+  of INNER JOINs over DuckLake tables — distinct link names per path, so link-name filter
   addressing is unambiguous. Genuine graph traversal (self-links, cycles, friend-of-friend,
-  hierarchies, variable-length / recursive paths) belongs to a separate, deferred `/graph` surface
-  (a tree is a special case; a `/tree` surface can split out later if it earns its keep — not
-  committed now), with its own execution (recursive CTEs, cycle guards) and graph-aware filter
-  addressing (positional or per-occurrence) that resolves the repeated-link case `/links` rejects.
-  Plain self-traversal still *works* on `/links` (no regression) — only a per-hop *filter* on a
-  repeated link is refused.
+  hierarchies, variable-length / recursive paths) lives on the separate `/graph` surface, with its
+  own execution (recursive CTEs, cycle guards) and graph-aware filter addressing that resolves the
+  repeated-link case `/links` rejects. Plain self-traversal still *works* on `/links` (no
+  regression) — only a per-hop *filter* on a repeated link is refused.
+
+  **Part 1 — bounded recursive self-link reachability is DELIVERED**
+  (`2026-06-18-graph-reachability-design.md`): `GET /objects/:type/graph/:link?depth=N` serves the
+  deduped set of objects reachable from a seed set via 1..N hops of a self-link (`from == to ==
+  :type`), governed at the seed, every recursive expansion, and the final projection (`WITH
+  RECURSIVE`, depth-bounded termination, deduped by the declared identity). The graph counterpart
+  to the relational `/links` arc.
+
+  Remaining `/graph` parts (deferred):
+  - **Multi-link / heterogeneous paths.** Recursion across links whose `from` and `to` differ, or
+    chaining multiple self-links in a single graph walk.
+  - **Graph-aware filter addressing.** Per-occurrence or positional filter addressing that resolves
+    the repeated-link ambiguity `/links` rejects (a path that visits the same link name twice
+    cannot address per-hop filters by link name alone).
+  - **Min-depth annotation.** Annotating reachable objects with the minimum hop count at which
+    they were first reached (currently the deduped set carries no depth label).
+  - **Shortest-path / `/tree` surface.** A separate surface (or a `/tree` split-out) serving the
+    path itself — not just the reachable set — for shortest-path, spanning-tree, or hierarchical
+    views. Not committed yet.
+  - **Weighted edges.** Edge-weight–aware traversal (e.g. min-cost reachability), requiring
+    weight columns on the join-table backing.
 - **Comparison / set operators on per-hop filters.** Equality-only here, inheriting the
   typed-input-filters comparison-operators follow-up; a shared richer filter grammar would cover
   source and per-hop filters at once.
