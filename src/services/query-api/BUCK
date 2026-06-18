@@ -385,6 +385,21 @@ rust_test(
 )
 
 rust_test(
+    name = "graph-reach",
+    crate = "graph_reach",
+    srcs = ["tests/graph_reach.rs"],
+    crate_root = "tests/graph_reach.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "compile-chain-pairs",
     crate = "compile_chain_pairs",
     srcs = ["tests/compile_chain_pairs.rs"],

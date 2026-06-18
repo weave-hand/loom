@@ -63,6 +63,10 @@ pub enum QueryError {
     /// declared identity, so its objects cannot be named in a pair.
     #[error("type has no declared identity: {0}")]
     NoIdentity(String),
+    /// `/graph` was asked to recurse a link that is not a self-link (`from != to`). Only a
+    /// link whose endpoints are the same type can be followed repeatedly.
+    #[error("not a self-link: {0}")]
+    NotSelfLink(String),
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error(transparent)]
@@ -429,6 +433,16 @@ pub struct ChainQuery {
     pub ids: Vec<String>,
 }
 
+/// A bounded recursive reachability read over a self-link. `filters`/`ids` scope the SEED
+/// set (the starting objects); the recursion follows `link` up to `depth` hops.
+pub struct GraphQuery {
+    pub type_name: String,
+    pub link: String,
+    pub depth: u32,
+    pub filters: Vec<(String, String)>,
+    pub ids: Vec<String>,
+}
+
 /// Resolve + govern a chain: depth check, source Read gate, per-hop type resolution
 /// (forward/inverse) with Read-on-every-reached-type, per-position row-filters, and
 /// caller-filter coercion/visibility. Returns the per-position metadata, the compiler
@@ -725,5 +739,118 @@ pub async fn read_associations(
         from_id_type,
         to_id_type,
         pairs,
+    })
+}
+
+/// Serve a bounded recursive reachability read over a self-link: from the seed set, follow
+/// `link` up to `depth` hops, return the deduped reachable objects. Governed: Read on the
+/// type, row-filters at the seed/every expansion/projection, declared identity (dedup key;
+/// visibility not required since it is never projected unless it is itself a visible column).
+pub async fn read_graph_reach(
+    q: &GraphQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    let type_name = TypeName(q.type_name.clone());
+    let target = PolicyTarget::Type(type_name.clone());
+
+    // Read gate (deny-by-default, before existence is revealed).
+    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
+        return Err(QueryError::Forbidden);
+    }
+    let object_type = deps
+        .ontology
+        .get_type(&type_name)
+        .await
+        .map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
+            other => QueryError::ControlPlane(other),
+        })?;
+    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+
+    // Declared identity is the recursion's dedup key.
+    let identity = object_type
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
+
+    // Resolve the link from the type's outbound links; it MUST be a self-link.
+    let links = deps
+        .ontology
+        .links(&type_name, PageReq::unbounded())
+        .await?;
+    let link = links
+        .items
+        .into_iter()
+        .find(|l| l.name == q.link)
+        .ok_or_else(|| QueryError::UnknownLink(q.link.clone()))?;
+    if link.from != type_name || link.to != type_name {
+        return Err(QueryError::NotSelfLink(q.link.clone()));
+    }
+
+    // Projection: visible columns minus denied; masked applied. Empty -> Forbidden.
+    let allowed = project_allowed(&object_type.properties, &denied);
+    if allowed.is_empty() {
+        return Err(QueryError::Forbidden);
+    }
+    let mask_cols: Vec<String> = allowed
+        .iter()
+        .filter(|c| masked.contains(*c))
+        .cloned()
+        .collect();
+
+    // Seed predicates: source filters (visibility-checked + coerced) then the ?_ids= set.
+    let mut seed_predicates: Vec<crate::filter::CallerPredicate> = Vec::new();
+    for (col, raw) in &q.filters {
+        if !allowed.contains(col) || masked.contains(col) {
+            return Err(QueryError::BadFilter(col.clone()));
+        }
+        let ty = object_type
+            .properties
+            .iter()
+            .find(|p| &p.name == col)
+            .map(|p| p.ty.as_str())
+            .unwrap_or("");
+        seed_predicates.push(
+            crate::filter::coerce_predicate(col, ty, raw)
+                .map_err(|_| QueryError::BadFilter(col.clone()))?,
+        );
+    }
+    if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
+        seed_predicates.push(p);
+    }
+
+    let (sql, params) = crate::sql::compile_graph_reach(
+        deps.serving.dialect(),
+        &object_type.table,
+        &identity,
+        &link.backing,
+        &seed_predicates,
+        &row_filters,
+        &allowed,
+        &mask_cols,
+        q.depth,
+        DEFAULT_LIMIT,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let logical_types: Vec<String> = allowed
+        .iter()
+        .map(|name| {
+            object_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    debug_assert_eq!(
+        served.columns, allowed,
+        "serving engine returned columns out of the projected order"
+    );
+    Ok(ObjectRows {
+        columns: allowed,
+        logical_types,
+        rows: served.rows,
     })
 }
