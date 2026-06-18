@@ -56,6 +56,10 @@ pub enum QueryError {
     /// The traversal chain is malformed (empty path, or depth over the cap).
     #[error("malformed traversal chain: {0}")]
     BadChain(String),
+    /// Association was requested but a projected end (source or final target) has no
+    /// declared identity, so its objects cannot be named in a pair.
+    #[error("type has no declared identity: {0}")]
+    NoIdentity(String),
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error(transparent)]
@@ -373,11 +377,23 @@ pub struct ChainQuery {
     pub filters: Vec<ChainFilter>,
 }
 
-pub async fn read_linked_chain(
+/// Resolve + govern a chain: depth check, source Read gate, per-hop type resolution
+/// (forward/inverse) with Read-on-every-reached-type, per-position row-filters, and
+/// caller-filter coercion/visibility. Returns the per-position metadata, the compiler
+/// `ChainType`s (row-filters + caller predicates), and the hop backings. Shared by the
+/// object-projection read and the association read so governance lives in one place.
+async fn resolve_chain(
     q: &ChainQuery,
     subject: &Subject,
     deps: &QueryDeps<'_>,
-) -> Result<ObjectRows, QueryError> {
+) -> Result<
+    (
+        Vec<HopMeta>,
+        Vec<crate::sql::ChainType>,
+        Vec<control_plane_core::LinkBacking>,
+    ),
+    QueryError,
+> {
     if q.path.is_empty() || q.path.len() > MAX_CHAIN_DEPTH {
         return Err(QueryError::BadChain(format!(
             "path length {} (allowed 1..={MAX_CHAIN_DEPTH})",
@@ -515,6 +531,15 @@ pub async fn read_linked_chain(
         ctypes[f.position].predicates.push(p);
     }
 
+    Ok((metas, ctypes, hops))
+}
+
+pub async fn read_linked_chain(
+    q: &ChainQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    let (metas, ctypes, hops) = resolve_chain(q, subject, deps).await?;
     // Final-target projection, from the last position (path is non-empty => >= 2 metas).
     let target = metas.last().expect("non-empty path yields a final target");
     let to_allowed = project_allowed(&target.otype.properties, &target.denied);
@@ -556,5 +581,91 @@ pub async fn read_linked_chain(
         columns: to_allowed,
         logical_types,
         rows: served.rows,
+    })
+}
+
+/// A governed source→target association result: deduped identity pairs plus the logical
+/// type of each end's identity (for typed rendering).
+#[derive(Debug)]
+pub struct Associations {
+    pub from_id_type: String,
+    pub to_id_type: String,
+    pub pairs: Vec<(SqlValue, SqlValue)>,
+}
+
+/// A governed traversal returning source↔final-target identity pairs (the edge list)
+/// instead of the projected target objects. Resolves + governs the chain identically to
+/// `read_linked_chain`, then requires a declared, caller-visible identity on the source
+/// and final-target types and projects the two id columns as a DISTINCT pair.
+pub async fn read_associations(
+    q: &ChainQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<Associations, QueryError> {
+    let (metas, ctypes, hops) = resolve_chain(q, subject, deps).await?;
+    let source = &metas[0];
+    let target = metas.last().expect("non-empty path yields a final target");
+
+    // Both projected ends must declare an identity.
+    let source_id = source
+        .otype
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::NoIdentity(source.otype.name.0.clone()))?;
+    let target_id = target
+        .otype
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::NoIdentity(target.otype.name.0.clone()))?;
+
+    // …and the identity column must be visible (not denied, not masked) on each end —
+    // you cannot associate objects you cannot identify.
+    let s_allowed = project_allowed(&source.otype.properties, &source.denied);
+    if !s_allowed.contains(&source_id) || source.masked.contains(&source_id) {
+        return Err(QueryError::Forbidden);
+    }
+    let t_allowed = project_allowed(&target.otype.properties, &target.denied);
+    if !t_allowed.contains(&target_id) || target.masked.contains(&target_id) {
+        return Err(QueryError::Forbidden);
+    }
+
+    let from_id_type = source
+        .otype
+        .properties
+        .iter()
+        .find(|p| p.name == source_id)
+        .map(|p| p.ty.clone())
+        .unwrap_or_default();
+    let to_id_type = target
+        .otype
+        .properties
+        .iter()
+        .find(|p| p.name == target_id)
+        .map(|p| p.ty.clone())
+        .unwrap_or_default();
+
+    let (sql, params) = crate::sql::compile_chain_pairs(
+        deps.serving.dialect(),
+        &ctypes,
+        &hops,
+        &source_id,
+        &target_id,
+        DEFAULT_LIMIT,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let pairs: Vec<(SqlValue, SqlValue)> = served
+        .rows
+        .into_iter()
+        .map(|mut row| {
+            // compile_chain_pairs SELECTs exactly [source_id, target_id] in that order.
+            let to = row.pop().unwrap_or(SqlValue::Null);
+            let from = row.pop().unwrap_or(SqlValue::Null);
+            (from, to)
+        })
+        .collect();
+    Ok(Associations {
+        from_id_type,
+        to_id_type,
+        pairs,
     })
 }

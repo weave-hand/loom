@@ -166,6 +166,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
         ],
         derived: vec![],
         table: cust.clone(),
+        identity: None,
     })
     .await
     .unwrap();
@@ -190,6 +191,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
         ],
         derived: vec![],
         table: ord.clone(),
+        identity: None,
     })
     .await
     .unwrap();
@@ -214,6 +216,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
         ],
         derived: vec![],
         table: li.clone(),
+        identity: None,
     })
     .await
     .unwrap();

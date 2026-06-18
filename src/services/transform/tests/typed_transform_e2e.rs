@@ -181,6 +181,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
             properties: vec![prop("id", "Long", true), prop("region", "String", false)],
             derived: vec![],
             table: customers.clone(),
+            identity: None,
         })
         .await
         .unwrap();
@@ -194,6 +195,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
             ],
             derived: vec![],
             table: orders.clone(),
+            identity: None,
         })
         .await
         .unwrap();
@@ -210,6 +212,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
             ],
             derived: vec![],
             table: enriched.clone(),
+            identity: None,
         })
         .await
         .unwrap();
@@ -373,6 +376,7 @@ async fn non_conforming_typed_transform_commits_nothing() {
             properties: vec![prop("id", "Long", true), prop("region", "String", false)],
             derived: vec![],
             table: customers.clone(),
+            identity: None,
         })
         .await
         .unwrap();
@@ -386,6 +390,7 @@ async fn non_conforming_typed_transform_commits_nothing() {
             properties: vec![prop("id", "Long", true), prop("region", "String", false)],
             derived: vec![],
             table: bad.clone(),
+            identity: None,
         })
         .await
         .unwrap();

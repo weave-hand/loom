@@ -7,7 +7,7 @@
 use control_plane_core::{JsonRepr, json_repr_of};
 use serde_json::{Value, json};
 
-use crate::handler::ObjectRows;
+use crate::handler::{Associations, ObjectRows};
 use crate::serving::{SqlValue, iso_date, iso_timestamp};
 
 /// `{ "objects": [ { property: typed_value, ... }, ... ] }`. Keys are the projected
@@ -30,6 +30,22 @@ pub fn objects_to_json(rows: &ObjectRows) -> Value {
         })
         .collect();
     json!({ "objects": objects })
+}
+
+/// `{ "associations": [ { "from": <typed id>, "to": <typed id> }, ... ] }`. Each id is
+/// rendered by its identity property's logical type.
+pub fn associations_to_json(a: &Associations) -> Value {
+    let assocs: Vec<Value> = a
+        .pairs
+        .iter()
+        .map(|(from, to)| {
+            json!({
+                "from": render_cell(&a.from_id_type, from),
+                "to": render_cell(&a.to_id_type, to),
+            })
+        })
+        .collect();
+    json!({ "associations": assocs })
 }
 
 /// Render one cell as JSON, driven by its declared logical type.

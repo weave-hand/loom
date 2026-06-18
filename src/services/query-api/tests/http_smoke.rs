@@ -62,6 +62,7 @@ async fn seeded_control_plane() -> MemoryControlPlane {
             schema: "main".into(),
             name: "orders".into(),
         },
+        identity: None,
     })
     .await
     .unwrap();

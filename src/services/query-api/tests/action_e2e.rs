@@ -77,6 +77,7 @@ async fn action_inserts_a_typed_object_that_reads_back() {
                 },
             ],
             derived: vec![],
+            identity: None,
         })
         .await
         .unwrap();
@@ -213,6 +214,7 @@ async fn ungranted_subject_is_forbidden() {
                 required: true,
             }],
             derived: vec![],
+            identity: None,
         })
         .await
         .unwrap();
@@ -298,6 +300,7 @@ async fn write_policy_enforces_row_filter_and_deny_column() {
                 },
             ],
             derived: vec![],
+            identity: None,
         })
         .await
         .unwrap();

@@ -65,8 +65,10 @@ which delivered part-1 of richer read capability.
   target key column may itself be ACL-denied and deduping on a key would expose it (and a
   subject can't distinguish two targets with identical visible columns anyway). True
   object-identity dedup (two distinct targets sharing a visible projection kept separate) needs
-  a **visible primary key** on the type. That promotes a per-type primary-key concept, which
-  ties into the **derived/aggregate-properties slice (B)** — fold it in there.
+  a **visible primary key** on the type. That per-type primary-key concept now exists —
+  `ObjectType.identity` landed in `2026-06-17-object-identity-association-design.md` (and powers
+  source→target association). Reworking traversal dedup to key on the visible identity (rather
+  than the whole visible projection) is the remaining follow-up here.
 - **Authoring-time physical-column validation at `define_link`.** A link's backing names
   physical columns (`from_column`/`to_column`, plus the mapping-table columns for join-table
   backings) but `define_link` stores them **without** checking they exist in the backing tables
@@ -88,10 +90,11 @@ which delivered part-1 of richer read capability.
   through `read_object` as governed correlated subqueries (see the follow-ups below). **(C)
   multi-hop traversal part-1** (chaining links — `Customer → Order → LineItem`) is now also
   **DELIVERED** (`2026-06-15-query-multi-hop-traversal-design.md`): a `SELECT DISTINCT` chain of
-  governed INNER JOINs, governed at every hop (see the follow-ups below). Still to come (remaining
-  slice-C parts): inverse-direction traversal, target-side filtering, starting from a saved object
-  set, and returning the source→target association. All build on the resolvable-link +
-  governed-join primitive delivered here.
+  governed INNER JOINs, governed at every hop (see the follow-ups below). Inverse-direction
+  traversal, target-side filtering, and the source→target association (with first-class object
+  identity, `2026-06-17-object-identity-association-design.md`) are now also delivered; the one
+  remaining slice-C part is starting a chain from an object set keyed on identity. All build on the
+  resolvable-link + governed-join primitive delivered here.
 
 From the derived-properties part-1 slice (`2026-06-15-derived-properties-design.md`), which
 delivered aggregate-over-link derived properties (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`) on
@@ -130,11 +133,23 @@ a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
   any type in a chain, addressed by `<linkname>.<column>` (bare = source), governed per type.
 - **Object-set inputs.** Start a chain from a passed/saved set of source object IDs instead of source
   equality filters. Part-1 always begins the chain from source eq-filters; consuming an explicit
-  object set (e.g. a saved selection) is a later part.
-- **Source→target association.** Return which source each final target came from (pairs), not just
-  the deduped target set. Part-1 returns the deduped final-target objects only; carrying the
-  source→target pairing ties into a **visible-primary-key** concept (the same one the slice A dedup
-  note above defers).
+  object set (e.g. a saved selection) is a later part. Now that **object identity** is first-class
+  (`2026-06-17-object-identity-association-design.md`), this is keyed on the identity column — see
+  **Object-set inputs keyed on identity** below.
+- **Source→target association.** ✅ DELIVERED
+  (`2026-06-17-object-identity-association-design.md`): a governed traversal can now return the
+  **edge list** — source↔target identity pairs — instead of just the deduped target set, via a
+  `?shape=association` flag on the existing chain routes. Output is compact id-pairs
+  (`{"associations":[{"from":<id>,"to":<id>}]}`), governed both-ends like the chain read plus a
+  declared, caller-visible identity required on the source and final target (else `NoIdentity` →
+  400). This landed the **object identity** concept it ties into: `ObjectType` gained a
+  first-class `identity: Option<String>` (the PK property), validated at bind. Follow-up still
+  open: **object-set inputs keyed on identity** (see below).
+- **Object-set inputs keyed on identity.** Start a chain from a passed set of source identity
+  values — `?ids=1,2,3` → an `in:` predicate on the source's declared identity column. This is
+  sugar over the already-shipped `in:` set operator on the now-first-class identity column, so it
+  is a small separate slice. (Supersedes the broader "object-set inputs" item above, now that
+  identity exists to key on.)
 - **Define-time chain/link validation.** Validate link continuity and physical columns at authoring
   time (shared with slice A's deferred `define_link` column validation). Part-1 resolves the chain at
   **read** time, so a broken chain (unknown link, a link whose `from` is not the current type)

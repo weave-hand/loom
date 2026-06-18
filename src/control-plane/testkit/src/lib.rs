@@ -521,12 +521,20 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     let customer = ObjectType {
         name: tn("Customer"),
         table: tref("main", "customer"),
-        properties: vec![PropertyDef {
-            name: "email".into(),
-            ty: "EmailAddress".into(),
-            required: true,
-        }],
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "email".into(),
+                ty: "EmailAddress".into(),
+                required: true,
+            },
+        ],
         derived: vec![],
+        identity: Some("id".into()),
     };
     o.define_type(customer.clone())
         .await
@@ -547,6 +555,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             },
         ],
         derived: vec![],
+        identity: None,
     };
     o.define_type(order.clone()).await.expect("define Order");
 
@@ -554,6 +563,20 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.get_type(&tn("Order")).await.unwrap(),
         order,
         "round-trips"
+    );
+
+    // identity round-trips (declared PK property name persists).
+    let got_customer = o.get_type(&tn("Customer")).await.unwrap();
+    assert_eq!(
+        got_customer.identity.as_deref(),
+        Some("id"),
+        "declared identity persists through define_type/get_type"
+    );
+    // an undeclared identity stays None.
+    assert_eq!(
+        o.get_type(&tn("Order")).await.unwrap().identity,
+        None,
+        "an undeclared identity stays None"
     );
     assert_eq!(
         o.get_type(&tn("Order"))
@@ -599,6 +622,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             required: true,
         }],
         derived: vec![],
+        identity: None,
     };
     o.define_type(order_v2).await.unwrap();
     assert_eq!(
@@ -746,6 +770,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             },
         ],
         derived: vec![],
+        identity: None,
     })
     .await
     .expect("define Widget");
@@ -837,6 +862,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             },
         ],
         table: tref("main", "account"),
+        identity: None,
     })
     .await
     .expect("define Account with derived");
@@ -861,6 +887,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         }],
         derived: vec![],
         table: tref("main", "account"),
+        identity: None,
     })
     .await
     .unwrap();
@@ -1018,6 +1045,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
             schema: "main".into(),
             name: "customer".into(),
         },
+        identity: None,
     })
     .await
     .expect("define Customer type");

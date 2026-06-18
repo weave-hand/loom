@@ -198,6 +198,30 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "association-e2e",
+    crate = "association_e2e",
+    srcs = ["tests/association_e2e.rs"],
+    crate_root = "tests/association_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "inverse-hops-e2e",
     crate = "inverse_hops_e2e",
     srcs = ["tests/inverse_hops_e2e.rs"],
@@ -276,6 +300,30 @@ rust_test(
     crate = "sql_compile",
     srcs = ["tests/sql_compile.rs"],
     crate_root = "tests/sql_compile.rs",
+    edition = "2024",
+    deps = [":query-api", "//src/control-plane/core:core"],
+)
+
+rust_test(
+    name = "associations",
+    crate = "associations",
+    srcs = ["tests/associations.rs"],
+    crate_root = "tests/associations.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "compile-chain-pairs",
+    crate = "compile_chain_pairs",
+    srcs = ["tests/compile_chain_pairs.rs"],
+    crate_root = "tests/compile_chain_pairs.rs",
     edition = "2024",
     deps = [":query-api", "//src/control-plane/core:core"],
 )

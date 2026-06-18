@@ -268,8 +268,8 @@ write, validated against the type contract, reads back through the governed read
 the platform's four core verbs — **land → derive → serve → write** — are all live.
 Richer reads now span aggregate-over-link **derived properties** (slice B) and **multi-hop
 traversal** (slice C part-1 — forward, source-filtered, deduped link chaining, governed at every
-hop). The remaining slice-C parts are target-side filtering, object-set
-inputs, and the source→target association. Candidate next slices: the remaining slice-C parts (object-set inputs, source→target association), programmatic
+hop). The remaining slice-C part is object-set inputs keyed on identity. Candidate next
+slices: object-set inputs, programmatic
 transforms, compaction (reuses `replace_files`), and watermark/incremental output.
 **Overwrite output mode** (`2026-06-17-overwrite-output-mode-design.md`) is now delivered:
 a transform can set `output_mode = overwrite` to replace its output table's live contents
@@ -288,7 +288,7 @@ query follow-ups are a schema sidecar and tz timestamps.
 `2026-06-16-query-target-intermediate-filters-design.md`) are now delivered too: every type a
 traversal touches is caller-filterable (typed, governed per type), not just the source, and the
 relational-vs-graph boundary is drawn (a future `/graph` surface owns cyclic/self-link
-traversal). The remaining slice-C parts are object-set inputs and the source→target association.
+traversal). The remaining slice-C part is object-set inputs keyed on identity.
 **Comparison / set operators** (`2026-06-16-query-comparison-set-operators-design.md`) complete the
 filter arc: every caller filter, at every read path and chain position, now expresses the full
 `CompareOp` surface (ranges via repeated keys), not just equality — real analytical filtering on the
@@ -302,7 +302,7 @@ mixed with forward hops) read paths. The control plane gained an inbound-adjacen
 (`Ontology::links_to`) and `LinkBacking::reversed()`; the SQL chain compiler is unchanged
 (an inverse hop is just a reversed backing + origin type). An inbound link name that is
 not unique for the target type is a deterministic 400 (`AmbiguousLink`). The remaining
-slice-C parts are object-set inputs and the source→target association.
+slice-C part is object-set inputs keyed on identity.
 
 **Selective compaction** (`2026-06-17-compaction-design.md`) is now delivered: a
 table's sub-threshold Parquet files can be coalesced into fewer size-targeted ones
@@ -313,6 +313,21 @@ adjusting table stats by delta (vs `replace_files`, which expires all files); ol
 snapshots still time-travel to the originals. A concurrent-compaction race is rejected
 by an exact expire-count assertion. Library primitive only — a queue job and operator
 endpoint remain deferred, as does watermark-tracked incremental output.
+
+**Object identity + source→target association** (slice-C,
+`2026-06-17-object-identity-association-design.md`) is now delivered: `ObjectType`
+gained a first-class `identity: Option<String>` naming its primary-key property —
+persisted in the ontology and validated at bind (a declared identity must name a
+required property, else `BadIdentity`). Consuming it, a governed traversal can now
+return the **edge list** — source↔target identity pairs — instead of the
+`DISTINCT`-collapsed target set, via a `?shape=association` flag on the existing chain
+routes (`/objects/:from/links` and `/objects/:from/links/:link`). Output is
+`{"associations":[{"from":<id>,"to":<id>}]}`, governed both-ends exactly like the
+chain read plus one rule: the source and final-target must each have a declared,
+caller-visible identity (else `NoIdentity` → 400). The remaining slice-C follow-up is
+**object-set inputs keyed on identity** (`?ids=1,2,3` → an `in:` predicate on the
+source identity column), plus the longer-standing `/graph` surface for cyclic /
+self-link traversal.
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
 reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,

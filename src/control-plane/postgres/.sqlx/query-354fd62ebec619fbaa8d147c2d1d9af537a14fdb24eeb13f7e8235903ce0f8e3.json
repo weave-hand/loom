@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select table_schema, table_name, identity from ontology.object_type where name = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "table_schema",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.object_type",
+            "name": "table_schema"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "table_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.object_type",
+            "name": "table_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "identity",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.object_type",
+            "name": "identity"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "354fd62ebec619fbaa8d147c2d1d9af537a14fdb24eeb13f7e8235903ce0f8e3"
+}

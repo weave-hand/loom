@@ -13,13 +13,14 @@ impl Ontology for PgControlPlane {
     async fn define_type(&self, ty: ObjectType) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query!(
-            "insert into ontology.object_type (name, table_schema, table_name) \
-             values ($1, $2, $3) \
+            "insert into ontology.object_type (name, table_schema, table_name, identity) \
+             values ($1, $2, $3, $4) \
              on conflict (name) do update set table_schema = excluded.table_schema, \
-                 table_name = excluded.table_name",
+                 table_name = excluded.table_name, identity = excluded.identity",
             ty.name.0,
             ty.table.schema,
             ty.table.name,
+            ty.identity,
         )
         .execute(&mut *tx)
         .await
@@ -121,7 +122,7 @@ impl Ontology for PgControlPlane {
 
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
         let row = sqlx::query!(
-            "select table_schema, table_name from ontology.object_type where name = $1",
+            "select table_schema, table_name, identity from ontology.object_type where name = $1",
             name.0,
         )
         .fetch_optional(&self.pool)
@@ -168,6 +169,7 @@ impl Ontology for PgControlPlane {
                 })
                 .collect(),
             derived,
+            identity: row.identity,
         })
     }
 
