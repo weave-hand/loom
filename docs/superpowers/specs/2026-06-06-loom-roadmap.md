@@ -361,6 +361,15 @@ the type's row-filters AND'd into the seed, every recursive expansion, and the f
 so a caller reaches only nodes routed entirely through permitted rows. The seed is scoped via the
 already-shipped `?_ids=` and source-position filters; depth defaults to 5 and is capped at 10
 (out-of-range → 400); cycles terminate by the depth bound and the result is deduped by the
-declared identity. This is the graph counterpart to the relational `/links` arc. Remaining
-`/graph` parts (deferred to `docs/FUTURE.md`): multi-link / heterogeneous paths, graph-aware
-filter addressing, min-depth annotation, shortest-path / `/tree`, weighted edges.
+declared identity. This is the graph counterpart to the relational `/links` arc.
+
+**`/graph` part-2 — repeated path-cycle** (`2026-06-18-graph-path-cycle-design.md`) is now
+delivered: `GET /objects/:type/graph?path=l1,…,lK&depth=N` follows a multi-link path that forms a
+cycle (returns to the queried type) up to N times, returning the deduped reachable objects of the
+queried type. The recursive `WITH RECURSIVE` step joins `cur` through the whole K-link path to
+`nxt` (both the start type), governed at every intermediate type (Read + row-filters inside the
+recursion — the N-ends guarantee applied per recursive application of the pattern). Part-1's single
+self-link is now the 1-element case; the old `NotSelfLink` error is unified into `NotCyclicPath`.
+Remaining `/graph` parts (deferred to `docs/FUTURE.md`): inverse links inside the path, multi-edge
+union reachability (`?links=`), recursive-core + relational-tail (`path=knows*,worksAt`), min-depth
+annotation, shortest-path / `/tree`, weighted edges.

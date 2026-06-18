@@ -202,11 +202,26 @@ drew the relational/graph boundary:
   deduped set of objects reachable from a seed set via 1..N hops of a self-link (`from == to ==
   :type`), governed at the seed, every recursive expansion, and the final projection (`WITH
   RECURSIVE`, depth-bounded termination, deduped by the declared identity). The graph counterpart
-  to the relational `/links` arc.
+  to the relational `/links` arc. Part-1's single self-link is now the 1-element case of part-2.
+
+  **Part 2 — repeated path-cycle is DELIVERED**
+  (`2026-06-18-graph-path-cycle-design.md`): `GET /objects/:type/graph?path=l1,…,lK&depth=N`
+  follows a multi-link cyclic path (the path must return to the queried type) up to N times,
+  returning the deduped reachable objects of the queried type. The recursive CTE step joins `cur`
+  through the whole K-link path to `nxt` (both the start type); every intermediate type is
+  governed (Read + row-filters) inside the recursion — the N-ends guarantee applied per recursive
+  application. `NotSelfLink` is unified into `NotCyclicPath`; the single-link `/graph/:link` route
+  forwards a 1-element path into the same machinery.
 
   Remaining `/graph` parts (deferred):
-  - **Multi-link / heterogeneous paths.** Recursion across links whose `from` and `to` differ, or
-    chaining multiple self-links in a single graph walk.
+  - **Inverse links inside the path.** Each path link is followed forward in part-2; a cycle is
+    formed by forward links that return to the start type. Mixing backward hops into a cyclic
+    path (e.g. `~memberOf,hasMember`) is a follow-on.
+  - **Multi-edge union reachability (`?links=`).** Unioning multiple self-links (option C) for
+    reachability over a *set* of links rather than a fixed ordered path.
+  - **Recursive-core + relational-tail (`path=knows*,worksAt`).** A path whose cycle prefix is
+    followed by a non-cyclic relational tail — the recursive hop reaches a type, then a fixed
+    acyclic chain continues from there.
   - **Graph-aware filter addressing.** Per-occurrence or positional filter addressing that resolves
     the repeated-link ambiguity `/links` rejects (a path that visits the same link name twice
     cannot address per-hop filters by link name alone).
