@@ -29,6 +29,9 @@ pub struct Subject(pub SubjectId);
 pub struct ObjectQuery {
     pub type_name: String,
     pub eq_filters: Vec<(String, String)>,
+    /// Object-set input: scope the read to these identity values (an `In` predicate on
+    /// the declared identity). Empty = no scoping.
+    pub ids: Vec<String>,
 }
 
 /// Borrowed dependencies for one read.
@@ -110,6 +113,47 @@ fn project_allowed(
         .collect()
 }
 
+/// Lower an object-set input (`ids`) to an `In` predicate on `otype`'s declared identity
+/// column, governed like any caller filter. `None` when `ids` is empty. Errors: no
+/// declared identity (`NoIdentity`); the identity column is denied or masked, so it is not
+/// a permitted filter column (`BadFilter`); or a value does not coerce (`BadFilter`).
+pub fn identity_in_predicate(
+    otype: &ObjectType,
+    denied: &std::collections::HashSet<String>,
+    masked: &std::collections::HashSet<String>,
+    ids: &[String],
+) -> Result<Option<crate::filter::CallerPredicate>, QueryError> {
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let identity = otype
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::NoIdentity(otype.name.0.clone()))?;
+    let allowed = project_allowed(&otype.properties, denied);
+    if !allowed.contains(&identity) || masked.contains(&identity) {
+        return Err(QueryError::BadFilter(identity));
+    }
+    let ty = otype
+        .properties
+        .iter()
+        .find(|p| p.name == identity)
+        .map(|p| p.ty.as_str())
+        .unwrap_or("");
+    let mut values = Vec::with_capacity(ids.len());
+    for raw in ids {
+        values.push(
+            crate::filter::coerce_filter(&identity, ty, raw)
+                .map_err(|_| QueryError::BadFilter(identity.clone()))?,
+        );
+    }
+    Ok(Some(crate::filter::CallerPredicate {
+        column: identity,
+        op: control_plane_core::CompareOp::In,
+        values,
+    }))
+}
+
 /// The target column a derived aggregate reads, if any (COUNT reads none).
 fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
     use control_plane_core::Aggregation::*;
@@ -177,6 +221,11 @@ pub async fn read_object(
             .unwrap_or("");
         let p = crate::filter::coerce_predicate(col, ty, raw)
             .map_err(|_| QueryError::BadFilter(col.clone()))?;
+        predicates.push(p);
+    }
+
+    // Object-set input: scope to the given identities (an In predicate on the identity).
+    if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
         predicates.push(p);
     }
 
@@ -338,6 +387,7 @@ pub async fn read_linked_objects(
             from_type: q.from_type.clone(),
             path: vec![q.link.clone().into()],
             filters: q.filters.clone(),
+            ids: vec![],
         },
         subject,
         deps,
@@ -375,6 +425,8 @@ pub struct ChainQuery {
     pub from_type: String,
     pub path: Vec<Hop>,
     pub filters: Vec<ChainFilter>,
+    /// Object-set input: scope the SOURCE to these identity values. Empty = no scoping.
+    pub ids: Vec<String>,
 }
 
 /// Resolve + govern a chain: depth check, source Read gate, per-hop type resolution
@@ -529,6 +581,12 @@ async fn resolve_chain(
         let p = crate::filter::coerce_predicate(&f.column, ty, &f.raw)
             .map_err(|_| QueryError::BadFilter(f.column.clone()))?;
         ctypes[f.position].predicates.push(p);
+    }
+
+    // Object-set input: scope the SOURCE (position 0) to the given identities.
+    let source = &metas[0];
+    if let Some(p) = identity_in_predicate(&source.otype, &source.denied, &source.masked, &q.ids)? {
+        ctypes[0].predicates.push(p);
     }
 
     Ok((metas, ctypes, hops))

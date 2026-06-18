@@ -435,3 +435,39 @@ rust_test(
     edition = "2024",
     deps = [":query-api"],
 )
+
+rust_test(
+    name = "identity-in-predicate",
+    crate = "identity_in_predicate",
+    srcs = ["tests/identity_in_predicate.rs"],
+    crate_root = "tests/identity_in_predicate.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+loom_fixture_test(
+    name = "object-set-e2e",
+    crate = "object_set_e2e",
+    srcs = ["tests/object_set_e2e.rs"],
+    crate_root = "tests/object_set_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+        "//third-party:uuid",
+    ],
+)

@@ -125,6 +125,7 @@ fn assoc_query() -> ChainQuery {
         from_type: "Customer".into(),
         path: vec![Hop::from("orders")],
         filters: vec![],
+        ids: vec![],
     }
 }
 

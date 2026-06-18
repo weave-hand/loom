@@ -185,6 +185,7 @@ async fn governed_object_read() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(subj.clone()),
         &deps,
@@ -209,6 +210,7 @@ async fn governed_object_read() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![("id".into(), "1".into())],
+            ids: vec![],
         },
         &Subject(subj.clone()),
         &deps,
@@ -224,6 +226,7 @@ async fn governed_object_read() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(stranger),
         &deps,
@@ -252,6 +255,7 @@ async fn governed_object_read() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(subj.clone()),
         &deps,
@@ -294,6 +298,7 @@ async fn governed_object_read() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(masker.clone()),
         &deps,
@@ -323,6 +328,7 @@ async fn governed_object_read() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![("secret".into(), "s1".into())],
+            ids: vec![],
         },
         &Subject(masker),
         &deps,

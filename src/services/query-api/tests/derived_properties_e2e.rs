@@ -229,6 +229,7 @@ async fn derived_aggregates_are_served_and_governed() {
         &ObjectQuery {
             type_name: "Customer".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(a),
         &deps,
@@ -254,6 +255,7 @@ async fn derived_aggregates_are_served_and_governed() {
         &ObjectQuery {
             type_name: "Customer".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(b),
         &deps,
@@ -290,6 +292,7 @@ async fn derived_aggregates_are_served_and_governed() {
         &ObjectQuery {
             type_name: "Customer".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(c),
         &deps,

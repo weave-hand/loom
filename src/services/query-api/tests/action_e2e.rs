@@ -161,6 +161,7 @@ async fn action_inserts_a_typed_object_that_reads_back() {
         &ObjectQuery {
             type_name: "Widget".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(subj.clone()),
         &qdeps,
