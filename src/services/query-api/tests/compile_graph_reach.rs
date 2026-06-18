@@ -1,10 +1,10 @@
 //! compile_graph_reach emits a depth-bounded WITH RECURSIVE reachability query over a
-//! self-link, governed by the type's row-filters at seed/expansion/projection.
+//! path-cycle, governed by the type's row-filters at seed/expansion/projection.
 
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{DuckDbDialect, compile_graph_reach};
+use query_api::sql::{DuckDbDialect, GraphStep, compile_graph_reach};
 
 fn person() -> TableRef {
     TableRef {
@@ -24,7 +24,11 @@ fn fk_self_link_recursive_reach() {
         &DuckDbDialect,
         &person(),
         "id",
-        &backing,
+        &[GraphStep {
+            backing,
+            next_table: person(),
+            next_filters: vec![],
+        }],
         &[], // no seed predicates
         &[], // no row-filters
         &["id".to_string(), "name".to_string()],
@@ -81,7 +85,11 @@ fn join_table_self_link_and_row_filter_and_seed() {
         &DuckDbDialect,
         &person(),
         "id",
-        &backing,
+        &[GraphStep {
+            backing,
+            next_table: person(),
+            next_filters: vec![],
+        }],
         &seed,
         &row_filters,
         &["id".to_string()],
@@ -109,4 +117,82 @@ fn join_table_self_link_and_row_filter_and_seed() {
         "1 seed id + 3 row-filter renderings; got {params:?}"
     );
     assert_eq!(params[0], SqlValue::Int(5));
+}
+
+#[test]
+fn two_step_path_cycle_with_intermediate_filter() {
+    // Person --memberOf(FK Person.team_id -> Team.id)--> Team
+    //        --hasMember(FK Team.id -> Person.team_id)--> Person   (a Person->Team->Person cycle)
+    // Team has an ACL row-filter `active = true` (intermediate governance); Person (start) has
+    // `region = 'US'` (seed + nxt + projection).
+    let team = TableRef {
+        schema: "main".into(),
+        name: "team".into(),
+    };
+    let path = vec![
+        GraphStep {
+            backing: LinkBacking::ForeignKey {
+                from_column: "team_id".into(),
+                to_column: "id".into(),
+            },
+            next_table: team.clone(),
+            next_filters: vec![RowFilter::Compare {
+                property: "active".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Bool(true),
+            }],
+        },
+        GraphStep {
+            backing: LinkBacking::ForeignKey {
+                from_column: "id".into(),
+                to_column: "team_id".into(),
+            },
+            next_table: person(),
+            next_filters: vec![], // final step: nxt is the start type, governed by row_filters
+        },
+    ];
+    let start_filters = vec![RowFilter::Compare {
+        property: "region".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("US".into()),
+    }];
+    let (sql, params) = compile_graph_reach(
+        &DuckDbDialect,
+        &person(),
+        "id",
+        &path,
+        &[],
+        &start_filters,
+        &["id".to_string()],
+        &[],
+        2,
+        1000,
+    )
+    .unwrap();
+    // Chain join cur -> g1(Team) -> nxt(Person).
+    assert!(
+        sql.contains(r#"cur."team_id" = g1."id""#),
+        "step1 join: {sql}"
+    );
+    assert!(
+        sql.contains(r#"g1."id" = nxt."team_id""#),
+        "step2 join: {sql}"
+    );
+    // Intermediate Team filter at g1; start filter at s/nxt/p.
+    assert!(
+        sql.contains(r#"g1."active""#),
+        "intermediate filter at g1: {sql}"
+    );
+    assert!(
+        sql.contains(r#"s."region""#)
+            && sql.contains(r#"nxt."region""#)
+            && sql.contains(r#"p."region""#),
+        "start filter at s/nxt/p: {sql}"
+    );
+    // Param order: seed start-filter (s) , g1 active, nxt region, p region = 4.
+    assert_eq!(params.len(), 4, "got {params:?}");
+    assert_eq!(params[0], SqlValue::Text("US".into())); // s.region
+    assert_eq!(params[1], SqlValue::Bool(true)); // g1.active
+    assert_eq!(params[2], SqlValue::Text("US".into())); // nxt.region (final node, start filter)
+    assert_eq!(params[3], SqlValue::Text("US".into())); // p.region (projection)
 }

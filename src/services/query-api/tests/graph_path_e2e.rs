@@ -1,15 +1,20 @@
-//! Graph reachability e2e: GET /objects/:type/graph/:link over the real HTTP router
+//! Graph path-cycle e2e: GET /objects/:type/graph?path=l1,l2 over the real HTTP router
 //! backed by a DuckDB serving engine reading a DuckLake-on-Postgres catalog. Proves the
-//! bounded recursive reachability shape {objects:[...]} over a self-link:
-//!   - depth bounds (reachable-within-1 vs -2 vs -3 differ),
-//!   - a cycle (1->2->3->1) terminates and the node set is deduped,
-//!   - a Read row-filter (active=true) prunes reachability THROUGH a blocked node,
-//!   - a non-self link -> 400 (NotCyclicPath),
-//!   - ?depth=0 and ?depth=99 -> 400 (out-of-range depth).
+//! bounded recursive reachability shape {objects:[...]} over a MULTI-LINK cyclic path
+//! `Person --memberOf--> Team --hasMember--> Person` (shared-team membership):
+//!   - depth bounds (a bridge person makes depth 2 reach further than depth 1),
+//!   - a cycle (the pattern inherently revisits the seed) terminates and the set dedups,
+//!   - a Read row-filter on the INTERMEDIATE `Team` (active=true) prunes the Persons
+//!     reachable only through the inactive team (intermediate governance in the recursion),
+//!   - a non-cyclic `?path=worksAt` (ends at Company) -> 400 (NotCyclicPath),
+//!   - an absent/empty `?path=` -> 400.
 //!
-//! The graph is a single `Person` table with a `knows(a, b)` join-table SELF-link and a
-//! boolean `active` column. Edge set: 1->2, 2->3, 3->1 (a 3-cycle), 3->4. Person declares
-//! identity `id`. A separate `employer` FK link Person -> Company drives the non-self case.
+//! Graph: a `person` table, a `team` table, and a `membership(person_id, team_id)` join
+//! table backing BOTH directions (memberOf: Person -> Team; hasMember: Team -> Person).
+//! Teams: T1{1,2}, T2{3,4,5}, T3{5,6}. Person 5 bridges T2 and T3, so from person 3 the
+//! shared-membership reach grows with depth: depth 1 -> {3,4,5} (T2), depth 2 -> {3,4,5,6}
+//! (via 5 -> T3 -> 6). Team T3 is INACTIVE, so an active=true Team filter prunes 6. A
+//! `company` table + a `worksAt` FK link Person -> Company drives the non-cyclic case.
 
 use std::sync::Arc;
 
@@ -97,11 +102,11 @@ async fn land(
     .unwrap();
 }
 
-/// Seed a single `Person` table with a `knows(a, b)` join-table self-link forming a graph
-/// `1->2, 2->3, 3->1 (cycle), 3->4`, plus a boolean `active` column (node 2 inactive). A
-/// `company` table + `employer` FK link Person -> Company drives the non-self-link case.
-/// Person declares identity `id`. Returns the wired control plane + serving engine; the
-/// caller MUST keep the `DuckLakeWriter` alive (its TempDir holds the Parquet read).
+/// Seed the shared-membership graph: person, team, membership(person_id, team_id), company.
+/// Teams T1{1,2}, T2{3,4,5}, T3{5,6}; T3 inactive. `memberOf` Person->Team and `hasMember`
+/// Team->Person both back onto `membership`, forming a Person->Team->Person cycle. A
+/// `worksAt` FK Person->Company drives the non-cyclic case. Person & Team declare identity
+/// `id`. Caller MUST keep the `DuckLakeWriter` alive (its TempDir holds the Parquet read).
 async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter) {
     let (cp, db) = fx.fresh_db().await;
     let writer = DuckLakeWriter::new(fx.socket_path(), &db);
@@ -109,49 +114,84 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     let store: Arc<dyn ObjectStore> =
         Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
 
-    // person(id, name, active, company_id): node 2 is INACTIVE (governance test).
+    // person(id, name, company_id): 6 persons; company drives the worksAt link.
     let person = tref("main", "person");
     let person_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("name", DataType::Utf8, true),
-        Field::new("active", DataType::Boolean, false),
         Field::new("company_id", DataType::Int64, true),
     ]));
     let person_batch = RecordBatch::try_new(
         person_schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6])),
             Arc::new(StringArray::from(vec![
                 Some("ann"),
                 Some("bob"),
                 Some("cal"),
                 Some("dee"),
+                Some("eve"),
+                Some("fin"),
             ])),
-            // node 2 (bob) inactive; the rest active.
-            Arc::new(BooleanArray::from(vec![true, false, true, true])),
-            Arc::new(Int64Array::from(vec![Some(7), Some(7), Some(8), Some(8)])),
+            Arc::new(Int64Array::from(vec![
+                Some(7),
+                Some(7),
+                Some(8),
+                Some(8),
+                Some(8),
+                Some(8),
+            ])),
         ],
     )
     .unwrap();
     land(&cp, &store, &person, person_schema, person_batch).await;
 
-    // knows(a, b): the self-link edge set 1->2, 2->3, 3->1 (cycle), 3->4.
-    let knows = tref("main", "knows");
-    let knows_schema = Arc::new(Schema::new(vec![
-        Field::new("a", DataType::Int64, false),
-        Field::new("b", DataType::Int64, false),
+    // team(id, name, active): T3 (id=3) is INACTIVE (intermediate governance test).
+    let team = tref("main", "team");
+    let team_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("active", DataType::Boolean, false),
     ]));
-    let knows_batch = RecordBatch::try_new(
-        knows_schema.clone(),
+    let team_batch = RecordBatch::try_new(
+        team_schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 3])),
-            Arc::new(Int64Array::from(vec![2, 3, 1, 4])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec![
+                Some("red"),
+                Some("green"),
+                Some("blue"),
+            ])),
+            Arc::new(BooleanArray::from(vec![true, true, false])),
         ],
     )
     .unwrap();
-    land(&cp, &store, &knows, knows_schema, knows_batch).await;
+    land(&cp, &store, &team, team_schema, team_batch).await;
 
-    // company(id, name): targets for the non-self employer link.
+    // membership(person_id, team_id): T1{1,2}, T2{3,4,5}, T3{5,6}. Person 5 bridges T2/T3.
+    let membership = tref("main", "membership");
+    let membership_schema = Arc::new(Schema::new(vec![
+        Field::new("person_id", DataType::Int64, false),
+        Field::new("team_id", DataType::Int64, false),
+    ]));
+    let membership_batch = RecordBatch::try_new(
+        membership_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 5, 6])),
+            Arc::new(Int64Array::from(vec![1, 1, 2, 2, 2, 3, 3])),
+        ],
+    )
+    .unwrap();
+    land(
+        &cp,
+        &store,
+        &membership,
+        membership_schema,
+        membership_batch,
+    )
+    .await;
+
+    // company(id, name): targets for the non-cyclic worksAt link.
     let company = tref("main", "company");
     let company_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -173,11 +213,24 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
         properties: vec![
             prop("id", "Long", true),
             prop("name", "String", false),
-            prop("active", "Boolean", true),
             prop("company_id", "Long", false),
         ],
         derived: vec![],
         table: person.clone(),
+        identity: Some("id".into()),
+    })
+    .await
+    .unwrap();
+    // Team declares identity `id`.
+    cp.define_type(ObjectType {
+        name: TypeName("Team".into()),
+        properties: vec![
+            prop("id", "Long", true),
+            prop("name", "String", false),
+            prop("active", "Boolean", true),
+        ],
+        derived: vec![],
+        table: team.clone(),
         identity: Some("id".into()),
     })
     .await
@@ -192,25 +245,41 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    // `knows`: the join-table SELF-link Person -> Person.
+    // `memberOf`: Person -> Team via the membership join-table.
     cp.define_link(LinkDef {
-        name: "knows".into(),
+        name: "memberOf".into(),
         from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
+        to: TypeName("Team".into()),
         cardinality: Cardinality::Many,
         backing: LinkBacking::JoinTable {
-            table: knows.clone(),
+            table: membership.clone(),
             from_key: "id".into(),
-            from_column: "a".into(),
-            to_column: "b".into(),
+            from_column: "person_id".into(),
+            to_column: "team_id".into(),
             to_key: "id".into(),
         },
     })
     .await
     .unwrap();
-    // `employer`: a non-self FK link Person -> Company (drives NotCyclicPath -> 400).
+    // `hasMember`: Team -> Person via the same membership join-table (the inverse edge).
     cp.define_link(LinkDef {
-        name: "employer".into(),
+        name: "hasMember".into(),
+        from: TypeName("Team".into()),
+        to: TypeName("Person".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::JoinTable {
+            table: membership.clone(),
+            from_key: "id".into(),
+            from_column: "team_id".into(),
+            to_column: "person_id".into(),
+            to_key: "id".into(),
+        },
+    })
+    .await
+    .unwrap();
+    // `worksAt`: a non-cyclic FK link Person -> Company (drives NotCyclicPath -> 400).
+    cp.define_link(LinkDef {
+        name: "worksAt".into(),
         from: TypeName("Person".into()),
         to: TypeName("Company".into()),
         cardinality: Cardinality::One,
@@ -301,7 +370,7 @@ fn ids(body: &serde_json::Value) -> Vec<i64> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn depth_bounds_and_cycle_termination() {
+async fn shared_membership_reach_depth_bounds_and_cycle() {
     let fx = PgFixture::start();
     let (cp, eng, _writer) = setup(&fx).await;
     let cp = Arc::new(cp);
@@ -309,63 +378,73 @@ async fn depth_bounds_and_cycle_termination() {
 
     let (_a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Person").await;
+    grant_read(&cp, &role, "Team").await;
 
-    // depth=1 from {1}: one hop 1->2 => {2}.
+    // depth=1 from {1}: memberOf T1, hasMember -> {1, 2} (the cycle revisits 1; deduped).
     let (status, body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Person/graph/knows?depth=1&_ids=1",
-        "alice",
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(ids(&body), vec![2], "depth 1: {body}");
-
-    // depth=2 from {1}: 1->2->3 => {2, 3}.
-    let (status, body) = get(
-        cp.clone(),
-        eng.clone(),
-        "/objects/Person/graph/knows?depth=2&_ids=1",
-        "alice",
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(ids(&body), vec![2, 3], "depth 2: {body}");
-
-    // depth=3 from {1}: 1->2->3->{1 (cycle), 4}. Terminates despite the 1->2->3->1 cycle;
-    // the node set is deduped (1 reappears exactly once via the cycle) => {1, 2, 3, 4}.
-    let (status, body) = get(
-        cp.clone(),
-        eng.clone(),
-        "/objects/Person/graph/knows?depth=3&_ids=1",
+        "/objects/Person/graph?path=memberOf,hasMember&depth=1&_ids=1",
         "alice",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         ids(&body),
-        vec![1, 2, 3, 4],
-        "depth 3 over the cycle terminates + dedups: {body}"
+        vec![1, 2],
+        "depth 1 from 1 (T1 cluster): {body}"
+    );
+
+    // depth=1 from {3}: T2 -> {3, 4, 5}. Person 5 bridges to T3 but only at the next hop.
+    let (status, body) = get(
+        cp.clone(),
+        eng.clone(),
+        "/objects/Person/graph?path=memberOf,hasMember&depth=1&_ids=3",
+        "alice",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        ids(&body),
+        vec![3, 4, 5],
+        "depth 1 from 3 (T2 cluster): {body}"
+    );
+
+    // depth=2 from {3}: via bridge person 5 (also on T3), T3 -> {5, 6}, so 6 joins. The
+    // pattern inherently revisits {3,4,5}; it terminates and the set dedups to {3,4,5,6}.
+    let (status, body) = get(
+        cp.clone(),
+        eng.clone(),
+        "/objects/Person/graph?path=memberOf,hasMember&depth=2&_ids=3",
+        "alice",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        ids(&body),
+        vec![3, 4, 5, 6],
+        "depth 2 from 3 reaches further via the T3 bridge + dedups the cycle: {body}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn row_filter_prunes_reachability_through_blocked_node() {
+async fn intermediate_team_filter_prunes_reach_through_inactive_team() {
     let fx = PgFixture::start();
     let (cp, eng, _writer) = setup(&fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
-    // A Read row-filter active=true on Person makes node 2 (inactive) unreachable; since 2
-    // is the only first hop out of 1, ALL reachability THROUGH 2 (3, 4, the cycle back to 1)
-    // is cut. From {1}, depth 3 now reaches nothing.
+    // A Read row-filter active=true on the INTERMEDIATE `Team` makes T3 (inactive)
+    // un-traversable inside the recursion, so person 6 — reachable only THROUGH T3 — is
+    // pruned. From {3}, depth 2 now stays at {3, 4, 5} (T2 only).
     let (_c, role) = subject_with_role(&cp, "carol").await;
     grant_read(&cp, &role, "Person").await;
+    grant_read(&cp, &role, "Team").await;
     cp.set_policy(
         &role,
         Action::Read,
         Policy {
-            target: PolicyTarget::Type(TypeName("Person".into())),
+            target: PolicyTarget::Type(TypeName("Team".into())),
             row_filter: Some(RowFilter::Compare {
                 property: "active".into(),
                 op: CompareOp::Eq,
@@ -381,20 +460,20 @@ async fn row_filter_prunes_reachability_through_blocked_node() {
     let (status, body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Person/graph/knows?depth=3&_ids=1",
+        "/objects/Person/graph?path=memberOf,hasMember&depth=2&_ids=3",
         "carol",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         ids(&body),
-        Vec::<i64>::new(),
-        "reachability through the inactive node 2 is cut: {body}"
+        vec![3, 4, 5],
+        "the inactive Team T3 is pruned, so person 6 (reachable only through it) disappears: {body}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn non_self_link_is_400() {
+async fn non_cyclic_path_is_400() {
     let fx = PgFixture::start();
     let (cp, eng, _writer) = setup(&fx).await;
     let cp = Arc::new(cp);
@@ -402,25 +481,31 @@ async fn non_self_link_is_400() {
 
     let (_a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Person").await;
+    grant_read(&cp, &role, "Team").await;
+    // Read on Company so the path RESOLVES to the cyclic check: read_graph_reach Read-gates
+    // every landed type BEFORE the cyclic check, so without Read on Company the worksAt
+    // landing returns 403 (Forbidden), masking the 400 we want to assert.
     grant_read(&cp, &role, "Company").await;
 
-    // employer is Person -> Company (not a self-link) -> 400 NotCyclicPath.
+    // worksAt is Person -> Company; following it forward lands on Company, NOT back at Person,
+    // so the path is not a cycle -> 400 NotCyclicPath. (memberOf,worksAt would instead 404 as
+    // worksAt is not a Team outbound link; a single non-cyclic link isolates NotCyclicPath.)
     let (status, _body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Person/graph/employer?depth=2&_ids=1",
+        "/objects/Person/graph?path=worksAt&depth=2&_ids=1",
         "alice",
     )
     .await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "recursing a non-self link -> 400"
+        "a non-cyclic path -> 400 NotCyclicPath"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn out_of_range_depth_is_400() {
+async fn absent_or_empty_path_is_400() {
     let fx = PgFixture::start();
     let (cp, eng, _writer) = setup(&fx).await;
     let cp = Arc::new(cp);
@@ -428,24 +513,25 @@ async fn out_of_range_depth_is_400() {
 
     let (_a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Person").await;
+    grant_read(&cp, &role, "Team").await;
 
-    // depth=0 (below 1) -> 400.
+    // Absent ?path= -> 400.
     let (status, _body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Person/graph/knows?depth=0&_ids=1",
+        "/objects/Person/graph?depth=2&_ids=1",
         "alice",
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "depth=0 -> 400");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "absent path -> 400");
 
-    // depth=99 (above the cap 10) -> 400.
+    // Empty ?path= -> 400.
     let (status, _body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Person/graph/knows?depth=99&_ids=1",
+        "/objects/Person/graph?path=&depth=2&_ids=1",
         "alice",
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "depth=99 -> 400");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "empty path -> 400");
 }
