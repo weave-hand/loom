@@ -11,6 +11,7 @@ use arrow::array::{
     Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray, TimestampMicrosecondArray,
 };
 use arrow::datatypes::{DataType, TimeUnit};
+use arrow::util::display::{ArrayFormatter, FormatOptions};
 use async_trait::async_trait;
 use control_plane_core::{PageReq, TableRef};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -223,6 +224,12 @@ fn arrow_to_sqlvalue(array: &dyn Array, row: usize) -> SqlValue {
                 .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
             SqlValue::Timestamp(time::PrimitiveDateTime::new(odt.date(), odt.time()))
         }
-        _ => SqlValue::Text(format!("{array:?}")),
+        // Defensive: a type loom doesn't serve as a first-class scalar. Render the
+        // single cell (not the whole array) so the fallback is bounded and
+        // row-correct; mirrors the DuckDB engine's per-value `from_duck` fallback.
+        _ => match ArrayFormatter::try_new(array, &FormatOptions::default()) {
+            Ok(fmt) => SqlValue::Text(fmt.value(row).to_string()),
+            Err(_) => SqlValue::Null,
+        },
     }
 }

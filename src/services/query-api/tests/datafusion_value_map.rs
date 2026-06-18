@@ -58,6 +58,25 @@ fn maps_each_scalar_type_and_nulls() {
 }
 
 #[test]
+fn unmapped_type_falls_back_per_row() {
+    // UInt32 is not a first-class scalar -> the defensive fallback renders each
+    // cell (not the whole array), so distinct rows yield distinct text + nulls map.
+    use arrow::array::UInt32Array;
+    let schema = Arc::new(Schema::new(vec![Field::new("u", DataType::UInt32, true)]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(UInt32Array::from(vec![Some(10), Some(20), None]))],
+    )
+    .unwrap();
+
+    let rows = batches_to_rows(vec![batch]);
+
+    assert_eq!(rows.rows[0], vec![SqlValue::Text("10".into())]);
+    assert_eq!(rows.rows[1], vec![SqlValue::Text("20".into())]);
+    assert_eq!(rows.rows[2], vec![SqlValue::Null]);
+}
+
+#[test]
 fn empty_batches_yield_no_rows() {
     let rows = batches_to_rows(vec![]);
     assert!(rows.columns.is_empty());
