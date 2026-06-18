@@ -824,7 +824,11 @@ pub async fn read_graph_reach(
         deps.serving.dialect(),
         &object_type.table,
         &identity,
-        &link.backing,
+        &[crate::sql::GraphStep {
+            backing: link.backing.clone(),
+            next_table: object_type.table.clone(),
+            next_filters: Vec::new(),
+        }],
         &seed_predicates,
         &row_filters,
         &allowed,

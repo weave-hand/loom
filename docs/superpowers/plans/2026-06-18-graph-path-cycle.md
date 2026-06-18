@@ -34,7 +34,7 @@
 **Interfaces:**
 - Produces: `pub struct GraphStep { pub backing: LinkBacking, pub next_table: TableRef, pub next_filters: Vec<RowFilter> }`; `compile_graph_reach(dialect, table, identity, path: &[GraphStep], seed_predicates, row_filters, allowed_cols, mask_cols, depth, limit) -> Result<(String, Vec<SqlValue>), CompileError>`.
 
-- [ ] **Step 1: Update the compiler unit tests for the path param + add a multi-step case**
+- [x] **Step 1: Update the compiler unit tests for the path param + add a multi-step case**
 
 In `src/services/query-api/tests/compile_graph_reach.rs`, the two existing tests pass a single `backing`; change them to pass a 1-element `path` and add a 2-step case. Replace the file's two test bodies' `compile_graph_reach(... &backing, ...)` calls so the 4th argument is `&[GraphStep { backing, next_table: person(), next_filters: vec![] }]` (import `GraphStep` from `query_api::sql`). The 1-step assertions are unchanged (a 1-element path emits the same SQL). Then append a multi-step test:
 
@@ -95,12 +95,12 @@ fn two_step_path_cycle_with_intermediate_filter() {
 
 (The existing imports already cover `LinkBacking`, `RowFilter`, `ScalarValue`, `CompareOp`, `TableRef`, `SqlValue`, `DuckDbDialect`; add `GraphStep` to the `query_api::sql` import.)
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `buck2 test //src/services/query-api:compile-graph-reach > /tmp/t.log 2>&1; grep -nE "Tests finished|FAIL|error\[" /tmp/t.log`
 Expected: FAIL (compile error — `GraphStep` undefined / arg type mismatch).
 
-- [ ] **Step 3: Add `GraphStep` and generalize `compile_graph_reach`**
+- [x] **Step 3: Add `GraphStep` and generalize `compile_graph_reach`**
 
 In `src/services/query-api/src/sql.rs`, replace the entire `compile_graph_reach` function (the `#[allow(clippy::too_many_arguments)] pub fn compile_graph_reach(...) { ... }` block) with:
 
@@ -255,7 +255,7 @@ pub fn compile_graph_reach(
 }
 ```
 
-- [ ] **Step 4: Adapt the single call site in `read_graph_reach`**
+- [x] **Step 4: Adapt the single call site in `read_graph_reach`**
 
 In `src/services/query-api/src/handler.rs`, the `compile_graph_reach(...)` call currently passes `&link.backing`. Change that one argument to a 1-element path (Task 2 replaces this with the full path resolution; this keeps part-1 compiling and behaviorally identical now):
 
@@ -269,14 +269,14 @@ In `src/services/query-api/src/handler.rs`, the `compile_graph_reach(...)` call 
 
 (Replace exactly the `&link.backing,` argument line with the block above.)
 
-- [ ] **Step 5: Run the compiler tests + the part-1 graph tests (regression)**
+- [x] **Step 5: Run the compiler tests + the part-1 graph tests (regression)**
 
 Run: `buck2 test //src/services/query-api:compile-graph-reach > /tmp/t.log 2>&1; grep -nE "Tests finished|Pass [0-9]|FAIL|panicked" /tmp/t.log`
 Expected: PASS (the two 1-step cases + the new 2-step case).
 Run: `buck2 test //src/services/query-api:graph-reach //src/services/query-api:graph-reach-e2e > /tmp/t2.log 2>&1; grep -nE "Tests finished|Pass [0-9]|FAIL|panicked" /tmp/t2.log`
 Expected: PASS (part-1 handler test + e2e unchanged — the 1-element path is byte-identical SQL).
 
-- [ ] **Step 6: Clippy + commit**
+- [x] **Step 6: Clippy + commit**
 
 Run: `tools/clippy-all.sh > /tmp/c.log 2>&1; grep -nE "warning|error" /tmp/c.log || echo CLEAN`
 Expected: CLEAN.

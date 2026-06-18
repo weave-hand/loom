@@ -557,19 +557,29 @@ pub fn compile_chain_pairs(
     Ok((sql, params))
 }
 
-/// Compile a depth-bounded recursive reachability query over a SELF-link: the deduped set
-/// of `table` rows reachable from the seed set (rows matching `seed_predicates` + the type's
-/// `row_filters`) via 1..`depth` hops of `backing`. Governed: `row_filters` are rendered at
-/// the seed (`s`), every recursive expansion (`nxt`), and the final projection (`p`), so a
-/// node is reached only through permitted rows. `identity` is the dedup/visited key (the
-/// CTE column `id`). Termination is guaranteed by the inlined `depth` bound regardless of
-/// cycles; the outer `DISTINCT` dedups the node set. Every caller value is a bound param.
+/// One step of a graph path-cycle: a link's backing, the table of the type it lands on, and
+/// that landed type's ACL row-filters (intermediate governance). For the FINAL step the
+/// landed type is the start type; the handler passes its `next_filters` empty, since the
+/// start type's `row_filters` govern the final node `nxt`.
+pub struct GraphStep {
+    pub backing: LinkBacking,
+    pub next_table: TableRef,
+    pub next_filters: Vec<RowFilter>,
+}
+
+/// Compile a depth-bounded recursive reachability query over a PATH-CYCLE: the deduped set of
+/// `table` rows reachable from the seed set by repeating `path` (which starts and ends at
+/// `table`) up to `depth` times. Each recursive step joins `cur` through the whole path to
+/// `nxt` (both `table`), governing each intermediate landing with its `next_filters` and the
+/// final node `nxt` with the start `row_filters`. A 1-step path is the single-self-link case
+/// (byte-identical SQL). Termination by the inlined `depth` bound; `DISTINCT` dedups. Every
+/// caller value is a bound param.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_graph_reach(
     dialect: &dyn SqlDialect,
     table: &TableRef,
     identity: &str,
-    backing: &LinkBacking,
+    path: &[GraphStep],
     seed_predicates: &[CallerPredicate],
     row_filters: &[RowFilter],
     allowed_cols: &[String],
@@ -580,12 +590,17 @@ pub fn compile_graph_reach(
     for f in row_filters {
         validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
     }
+    for step in path {
+        for f in &step.next_filters {
+            validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+        }
+    }
     let q = |id: &str| dialect.quote_ident(id);
     let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
     let id = q(identity);
     let mut params: Vec<SqlValue> = Vec::new();
 
-    // Anchor (seed) WHERE at alias `s`: caller seed predicates, then the ACL row-filters.
+    // Anchor (seed) WHERE at alias `s`: caller seed predicates, then the start ACL row-filters.
     let mut seed_conj: Vec<String> = Vec::new();
     for p in seed_predicates {
         seed_conj.push(caller_predicate_sql(dialect, p, "s", &mut params));
@@ -599,34 +614,78 @@ pub fn compile_graph_reach(
         format!(" WHERE {}", seed_conj.join(" AND "))
     };
 
-    // Recursive step: join the link cur -> nxt, bound depth, govern `nxt` with row-filters.
-    let link_join = match backing {
-        LinkBacking::ForeignKey {
-            from_column,
-            to_column,
-        } => format!(
-            " JOIN {tbl} nxt ON cur.{} = nxt.{}",
-            q(from_column),
-            q(to_column)
-        ),
-        LinkBacking::JoinTable {
-            table: jt,
-            from_key,
-            from_column,
-            to_column,
-            to_key,
-        } => {
-            let jtbl = format!("{}.{}", q(&jt.schema), q(&jt.name));
-            format!(
-                " JOIN {jtbl} j ON cur.{} = j.{} JOIN {tbl} nxt ON j.{} = nxt.{}",
-                q(from_key),
-                q(from_column),
-                q(to_column),
-                q(to_key),
-            )
+    // Recursive step: join `cur` through every path link to `nxt`. Intermediate landings are
+    // aliased g1..g{K-1}; the final landing is `nxt`. A join-table step adds a per-step `j{n}`.
+    let k = path.len();
+    let from_alias = |i: usize| {
+        if i == 0 {
+            "cur".to_string()
+        } else {
+            format!("g{i}")
         }
     };
+    let to_alias = |i: usize| {
+        if i + 1 == k {
+            "nxt".to_string()
+        } else {
+            format!("g{}", i + 1)
+        }
+    };
+    let mut joins = String::new();
+    for (i, step) in path.iter().enumerate() {
+        let fa = from_alias(i);
+        let ta = to_alias(i);
+        let to_tbl = format!(
+            "{}.{}",
+            q(&step.next_table.schema),
+            q(&step.next_table.name)
+        );
+        match &step.backing {
+            LinkBacking::ForeignKey {
+                from_column,
+                to_column,
+            } => {
+                joins.push_str(&format!(
+                    " JOIN {to_tbl} {ta} ON {fa}.{} = {ta}.{}",
+                    q(from_column),
+                    q(to_column),
+                ));
+            }
+            LinkBacking::JoinTable {
+                table: jt,
+                from_key,
+                from_column,
+                to_column,
+                to_key,
+            } => {
+                let jtbl = format!("{}.{}", q(&jt.schema), q(&jt.name));
+                // For a single-step path use alias `j` (byte-identical to the prior single-link
+                // form); multi-step paths index the alias `j{i+1}` to avoid collisions.
+                let j = if k == 1 {
+                    "j".to_string()
+                } else {
+                    format!("j{}", i + 1)
+                };
+                joins.push_str(&format!(
+                    " JOIN {jtbl} {j} ON {fa}.{} = {j}.{} JOIN {to_tbl} {ta} ON {j}.{} = {ta}.{}",
+                    q(from_key),
+                    q(from_column),
+                    q(to_column),
+                    q(to_key),
+                ));
+            }
+        }
+    }
+
+    // Recursive WHERE: depth bound, each intermediate's filters at its alias (path order),
+    // then the start row_filters at the final node `nxt`.
     let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
+    for (i, step) in path.iter().enumerate() {
+        let ta = to_alias(i);
+        for f in &step.next_filters {
+            rec_conj.push(filter_sql(dialect, f, &ta, &mut params));
+        }
+    }
     for f in row_filters {
         rec_conj.push(filter_sql(dialect, f, "nxt", &mut params));
     }
@@ -655,7 +714,7 @@ pub fn compile_graph_reach(
         "WITH RECURSIVE reach(id, depth) AS (\
            SELECT s.{id}, 0 FROM {tbl} s{seed_where} \
            UNION \
-           SELECT nxt.{id}, r.depth + 1 FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{link_join} WHERE {rec_where}\
+           SELECT nxt.{id}, r.depth + 1 FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
          ) \
          SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {}",
         dialect.limit_clause(limit)
