@@ -433,8 +433,10 @@ pub struct ChainQuery {
     pub ids: Vec<String>,
 }
 
-/// A bounded recursive reachability read over a self-link. `filters`/`ids` scope the SEED
-/// set (the starting objects); the recursion follows `link` up to `depth` hops.
+/// A bounded recursive reachability read over a path-cycle. `filters`/`ids` scope the SEED
+/// set (the starting objects); the recursion repeats `path` (a cyclic link pattern that
+/// returns to `type_name`) up to `depth` times. A 1-element `path` is the single-self-link
+/// case.
 pub struct GraphQuery {
     pub type_name: String,
     pub path: Vec<String>,
@@ -742,10 +744,12 @@ pub async fn read_associations(
     })
 }
 
-/// Serve a bounded recursive reachability read over a self-link: from the seed set, follow
-/// `link` up to `depth` hops, return the deduped reachable objects. Governed: Read on the
-/// type, row-filters at the seed/every expansion/projection, declared identity (dedup key;
-/// visibility not required since it is never projected unless it is itself a visible column).
+/// Serve a bounded recursive reachability read over a path-cycle: from the seed set, repeat
+/// `path` (a cyclic link pattern returning to the queried type) up to `depth` times, return
+/// the deduped reachable objects. Governed: Read on the queried type AND every intermediate
+/// type in the cycle, row-filters at the seed/every recursive expansion/projection, declared
+/// identity (dedup key; visibility not required since it is never projected unless it is
+/// itself a visible column).
 pub async fn read_graph_reach(
     q: &GraphQuery,
     subject: &Subject,
