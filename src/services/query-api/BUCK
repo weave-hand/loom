@@ -234,6 +234,20 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "datafusion-register",
+    crate = "datafusion_register",
+    srcs = ["tests/datafusion_register.rs"],
+    crate_root = "tests/datafusion_register.rs",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:datafusion",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "datafusion-value-map",
     crate = "datafusion_value_map",

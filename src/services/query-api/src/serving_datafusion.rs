@@ -4,13 +4,89 @@
 //! and runs the governed/compiled SQL through DataFusion — no DuckDB in the path.
 //! See docs/superpowers/specs/2026-06-17-iceberg-datafusion-serving-engine-design.md.
 
+use std::sync::Arc;
+
 use arrow::array::{
     Array, BooleanArray, Date32Array, Float32Array, Float64Array, Int8Array, Int16Array,
     Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray, TimestampMicrosecondArray,
 };
 use arrow::datatypes::{DataType, TimeUnit};
+use control_plane_core::{PageReq, TableRef};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use datafusion::catalog::MemorySchemaProvider;
+use datafusion::common::TableReference;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::listing::{
+    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+};
+use datafusion::execution::context::SessionContext;
+use datafusion::execution::object_store::ObjectStoreUrl;
+use object_store::local::LocalFileSystem;
 
-use crate::serving::{Rows, SqlValue};
+use crate::serving::{Rows, ServingError, SqlValue};
+
+/// Register `table`'s live data files (at its current snapshot) as a DataFusion
+/// `ListingTable` under the schema-qualified name `"schema"."table"`, so the
+/// compiled read SQL resolves it. Files are registered by their ABSOLUTE `file://`
+/// paths as stored in the mirror (`iceberg_mirror.data_file.path`).
+pub async fn register_iceberg_table(
+    ctx: &SessionContext,
+    catalog: &IcebergCatalog,
+    table: &TableRef,
+) -> Result<(), ServingError> {
+    use control_plane_core::Catalog;
+
+    // A non-prefixed local store for the absolute warehouse paths (a prefixed store
+    // could not reach files outside data_path). Idempotent across calls on one ctx.
+    ctx.register_object_store(
+        ObjectStoreUrl::local_filesystem().as_ref(),
+        Arc::new(LocalFileSystem::new()),
+    );
+
+    let snap = catalog.current_snapshot(table).await.map_err(to_serving)?;
+    let files = catalog
+        .files(table, snap.id, PageReq::unbounded())
+        .await
+        .map_err(to_serving)?;
+    let urls: Vec<ListingTableUrl> = files
+        .items
+        .iter()
+        .map(|f| ListingTableUrl::parse(&f.path))
+        .collect::<Result<_, _>>()
+        .map_err(to_serving)?;
+
+    // Keep string/binary as canonical Utf8/Binary (not the *View variants) so
+    // arrow_to_sqlvalue maps them — same choice as datafusion_io::scan_table.
+    let format = ParquetFormat::default().with_force_view_types(false);
+    let opts = ListingOptions::new(Arc::new(format));
+    let cfg = ListingTableConfig::new_with_multi_paths(urls)
+        .with_listing_options(opts)
+        .infer_schema(&ctx.state())
+        .await
+        .map_err(to_serving)?;
+    let provider = ListingTable::try_new(cfg).map_err(to_serving)?;
+
+    // Ensure the schema exists in the default catalog, then register the table
+    // schema-qualified so `"schema"."table"` references resolve.
+    let cat = ctx
+        .catalog("datafusion")
+        .ok_or_else(|| ServingError::Engine("no default datafusion catalog".into()))?;
+    if cat.schema(&table.schema).is_none() {
+        cat.register_schema(&table.schema, Arc::new(MemorySchemaProvider::new()))
+            .map_err(to_serving)?;
+    }
+    ctx.register_table(
+        TableReference::partial(table.schema.clone(), table.name.clone()),
+        Arc::new(provider),
+    )
+    .map_err(to_serving)?;
+    Ok(())
+}
+
+/// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque serving error.
+fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
+    ServingError::Engine(e.to_string())
+}
 
 /// Flatten DataFusion result batches into the engine-neutral `Rows`. Columns come
 /// from the first batch's schema (DataFusion preserves projection order, satisfying
