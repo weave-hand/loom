@@ -394,6 +394,18 @@ rust_test(
 )
 
 rust_test(
+    name = "compile-graph-reach",
+    crate = "compile_graph_reach",
+    srcs = ["tests/compile_graph_reach.rs"],
+    crate_root = "tests/compile_graph_reach.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
     name = "write-filter",
     crate = "write_filter",
     srcs = ["tests/write_filter.rs"],

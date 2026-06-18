@@ -33,7 +33,7 @@
 - Consumes: `filter_sql`, `caller_predicate_sql`, `MASK_MARKER`, `validate_row_filter`, `CallerPredicate`, `RowFilter`, `LinkBacking`, `TableRef`, `SqlValue` (all in/around `sql.rs`).
 - Produces: `pub fn compile_graph_reach(dialect: &dyn SqlDialect, table: &TableRef, identity: &str, backing: &LinkBacking, seed_predicates: &[CallerPredicate], row_filters: &[RowFilter], allowed_cols: &[String], mask_cols: &[String], depth: u32, limit: u32) -> Result<(String, Vec<SqlValue>), CompileError>`
 
-- [ ] **Step 1: Write the failing compiler unit test**
+- [x] **Step 1: Write the failing compiler unit test**
 
 Create `src/services/query-api/tests/compile_graph_reach.rs`:
 
@@ -141,12 +141,12 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `buck2 test //src/services/query-api:compile-graph-reach > /tmp/t.log 2>&1; grep -nE "Tests finished|FAIL|error\[" /tmp/t.log`
 Expected: FAIL (compile error — `compile_graph_reach` undefined).
 
-- [ ] **Step 3: Implement `compile_graph_reach`**
+- [x] **Step 3: Implement `compile_graph_reach`**
 
 In `src/services/query-api/src/sql.rs`, after `compile_chain_pairs`, add:
 
@@ -253,12 +253,12 @@ pub fn compile_graph_reach(
 }
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: `buck2 test //src/services/query-api:compile-graph-reach > /tmp/t.log 2>&1; grep -nE "Tests finished|Pass [0-9]|FAIL|panicked" /tmp/t.log`
 Expected: PASS (both cases).
 
-- [ ] **Step 5: Clippy + commit**
+- [x] **Step 5: Clippy + commit**
 
 Run: `tools/clippy-all.sh > /tmp/c.log 2>&1; grep -nE "warning|error" /tmp/c.log || echo CLEAN`
 Expected: CLEAN.
