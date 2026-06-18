@@ -403,7 +403,7 @@ async fn single_hop_returns_exact_pairs() {
     let (status, body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Customer/links/orders?shape=association",
+        "/objects/Customer/links/orders?_shape=association",
         "alice",
     )
     .await;
@@ -437,7 +437,7 @@ async fn multi_hop_pairs_source_to_final_target() {
     let (status, body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Customer/links?path=orders,lineItems&shape=association",
+        "/objects/Customer/links?_path=orders,lineItems&_shape=association",
         "alice",
     )
     .await;
@@ -488,7 +488,7 @@ async fn intermediate_filter_drops_routed_pairs() {
     let (status, body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Customer/links?path=orders,lineItems&shape=association",
+        "/objects/Customer/links?_path=orders,lineItems&_shape=association",
         "carol",
     )
     .await;
@@ -524,7 +524,7 @@ async fn dedup_collapses_same_pair_distinct_sources_kept() {
     let (status, body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Customer/links/directItems?shape=association",
+        "/objects/Customer/links/directItems?_shape=association",
         "alice",
     )
     .await;
@@ -564,7 +564,7 @@ async fn no_identity_source_is_400() {
     let (status, _body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Region/links/regionOrders?shape=association",
+        "/objects/Region/links/regionOrders?_shape=association",
         "alice",
     )
     .await;
@@ -590,7 +590,7 @@ async fn no_identity_target_is_400() {
     let (status, _body) = get(
         cp.clone(),
         eng.clone(),
-        "/objects/Customer/links/asRegion?shape=association",
+        "/objects/Customer/links/asRegion?_shape=association",
         "alice",
     )
     .await;

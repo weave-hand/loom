@@ -86,14 +86,14 @@ async fn get_linked(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // Pull `direction` (single-hop knob) and `shape` out of the params; the rest are filters.
+    // Pull `_direction` (single-hop knob) and `_shape` out of the params; the rest are filters.
     let mut direction_raw: Option<String> = None;
     let mut shape: Option<String> = None;
     let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         match k.as_str() {
-            "direction" => direction_raw = Some(v),
-            "shape" => shape = Some(v),
+            "_direction" => direction_raw = Some(v),
+            "_shape" => shape = Some(v),
             _ => filter_params.push((k, v)),
         }
     }
@@ -142,15 +142,15 @@ async fn get_linked_chain(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // `path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
+    // `_path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
     // every other pair is a filter. Repeated filter keys are preserved (e.g. a range).
     let mut hops: Vec<Hop> = Vec::new();
     let mut shape: Option<String> = None;
     let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         match k.as_str() {
-            "path" => hops = parse_path_hops(&v),
-            "shape" => shape = Some(v),
+            "_path" => hops = parse_path_hops(&v),
+            "_shape" => shape = Some(v),
             _ => filter_params.push((k, v)),
         }
     }
