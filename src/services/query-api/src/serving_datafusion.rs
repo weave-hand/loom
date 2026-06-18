@@ -11,6 +11,7 @@ use arrow::array::{
     Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray, TimestampMicrosecondArray,
 };
 use arrow::datatypes::{DataType, TimeUnit};
+use async_trait::async_trait;
 use control_plane_core::{PageReq, TableRef};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use datafusion::catalog::MemorySchemaProvider;
@@ -23,7 +24,41 @@ use datafusion::execution::context::SessionContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use object_store::local::LocalFileSystem;
 
-use crate::serving::{Rows, ServingError, SqlValue};
+use crate::serving::{Rows, ServingEngine, ServingError, SqlValue, inline_params};
+
+/// loom-native serving engine: serves governed reads for file-backed Iceberg
+/// tables from the mirror via DataFusion. Holds only the mirror reader; the
+/// `file://` object store and table registrations are built per query.
+pub struct DataFusionServingEngine {
+    catalog: IcebergCatalog,
+}
+
+impl DataFusionServingEngine {
+    pub fn new(catalog: IcebergCatalog) -> Self {
+        Self { catalog }
+    }
+}
+
+#[async_trait]
+impl ServingEngine for DataFusionServingEngine {
+    async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
+        let ctx = SessionContext::new();
+        // Register every live table so the compiled SQL's table refs resolve.
+        // (Approach A: pre-register; the per-query mirror read is cheap. A schema
+        // cache is a noted perf follow-up, not implemented here.)
+        for table in self.catalog.live_tables().await.map_err(to_serving)? {
+            register_iceberg_table(&ctx, &self.catalog, &table).await?;
+        }
+        // DataFusion has no positional bind slot here; inline params with the same
+        // injection-safe renderer the Quack engine uses (`?` -> SQL literal).
+        let inlined = inline_params(sql, params);
+        let df = ctx.sql(&inlined).await.map_err(to_serving)?;
+        let batches = df.collect().await.map_err(to_serving)?;
+        Ok(batches_to_rows(batches))
+    }
+    // dialect(): inherit the trait default (DuckDbDialect). The compiled SQL it
+    // produces is valid DataFusion SQL, so no override is needed.
+}
 
 /// Register `table`'s live data files (at its current snapshot) as a DataFusion
 /// `ListingTable` under the schema-qualified name `"schema"."table"`, so the
