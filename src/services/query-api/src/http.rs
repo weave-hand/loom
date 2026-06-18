@@ -31,6 +31,7 @@ pub fn router(state: AppState) -> Router {
         .route("/objects/:from_type/links/:link_name", get(get_linked))
         .route("/objects/:from_type/links", get(get_linked_chain))
         .route("/objects/:type_name/graph/:link_name", get(get_graph))
+        .route("/objects/:type_name/graph", get(get_graph_path))
         .route("/actions/:action_name", post(post_action))
         .with_state(state)
 }
@@ -307,6 +308,92 @@ async fn get_graph(
         )
             .into_response();
     }
+    graph_respond(
+        &st,
+        type_name,
+        vec![link_name],
+        depth,
+        filters,
+        ids,
+        subject,
+    )
+    .await
+}
+
+/// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` (comma-split; empty/absent ->
+/// 400) plus the same `depth`/`_ids`/filter handling as `get_graph`, then shares the
+/// `read_graph_reach` call + error mapping via `graph_respond`.
+async fn get_graph_path(
+    State(st): State<AppState>,
+    Path(type_name): Path<String>,
+    Query(params): Query<Vec<(String, String)>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let subject = headers
+        .get("X-Loom-Subject")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_string();
+    let mut depth = DEFAULT_GRAPH_DEPTH;
+    let mut ids: Vec<String> = Vec::new();
+    let mut ids_present = false;
+    let mut path: Vec<String> = Vec::new();
+    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
+    for (k, v) in params {
+        match k.as_str() {
+            "path" => {
+                path = v
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            }
+            "depth" => match v.parse::<u32>() {
+                Ok(d) => depth = d,
+                Err(_) => {
+                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
+                        .into_response();
+                }
+            },
+            "_ids" => {
+                ids_present = true;
+                ids = v
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+            }
+            _ => filters.push((k, v)),
+        }
+    }
+    if path.is_empty() {
+        return (StatusCode::BAD_REQUEST, "path requires at least one link").into_response();
+    }
+    if ids_present && ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
+    }
+    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
+        )
+            .into_response();
+    }
+    graph_respond(&st, type_name, path, depth, filters, ids, subject).await
+}
+
+/// Shared tail for both graph routes: builds `QueryDeps`, runs `read_graph_reach`, and maps
+/// the result/error to an HTTP response. Single-link and multi-link routes differ only in how
+/// they assemble `path`.
+async fn graph_respond(
+    st: &AppState,
+    type_name: String,
+    path: Vec<String>,
+    depth: u32,
+    filters: Vec<(String, String)>,
+    ids: Vec<String>,
+    subject: String,
+) -> axum::response::Response {
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
@@ -315,7 +402,7 @@ async fn get_graph(
     match read_graph_reach(
         &GraphQuery {
             type_name,
-            path: vec![link_name],
+            path,
             depth,
             filters,
             ids,
