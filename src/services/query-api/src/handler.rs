@@ -63,10 +63,10 @@ pub enum QueryError {
     /// declared identity, so its objects cannot be named in a pair.
     #[error("type has no declared identity: {0}")]
     NoIdentity(String),
-    /// `/graph` was asked to recurse a link that is not a self-link (`from != to`). Only a
-    /// link whose endpoints are the same type can be followed repeatedly.
-    #[error("not a self-link: {0}")]
-    NotSelfLink(String),
+    /// `/graph` was given a path that does not form a cycle (following it does not return to
+    /// the queried type), so it cannot be repeated. Use relational `/links` for fixed paths.
+    #[error("path is not a cycle on the queried type: {0}")]
+    NotCyclicPath(String),
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error(transparent)]
@@ -437,7 +437,7 @@ pub struct ChainQuery {
 /// set (the starting objects); the recursion follows `link` up to `depth` hops.
 pub struct GraphQuery {
     pub type_name: String,
-    pub link: String,
+    pub path: Vec<String>,
     pub depth: u32,
     pub filters: Vec<(String, String)>,
     pub ids: Vec<String>,
@@ -774,18 +774,51 @@ pub async fn read_graph_reach(
         .clone()
         .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
 
-    // Resolve the link from the type's outbound links; it MUST be a self-link.
-    let links = deps
-        .ontology
-        .links(&type_name, PageReq::unbounded())
-        .await?;
-    let link = links
-        .items
-        .into_iter()
-        .find(|l| l.name == q.link)
-        .ok_or_else(|| QueryError::UnknownLink(q.link.clone()))?;
-    if link.from != type_name || link.to != type_name {
-        return Err(QueryError::NotSelfLink(q.link.clone()));
+    // Resolve the path-cycle: walk l1..lK forward from the queried type. Each landed type is
+    // Read-gated and its row-filters loaded (intermediate governance). After the last link the
+    // type must be the queried type again (a cycle) — else it cannot be repeated.
+    if q.path.is_empty() {
+        return Err(QueryError::NotCyclicPath(String::new()));
+    }
+    let mut steps: Vec<crate::sql::GraphStep> = Vec::with_capacity(q.path.len());
+    let mut current = type_name.clone();
+    let last = q.path.len() - 1;
+    for (i, link_name) in q.path.iter().enumerate() {
+        let links = deps.ontology.links(&current, PageReq::unbounded()).await?;
+        let link = links
+            .items
+            .into_iter()
+            .find(|l| &l.name == link_name)
+            .ok_or_else(|| QueryError::UnknownLink(link_name.clone()))?;
+        let landed = link.to.clone();
+        let landed_target = PolicyTarget::Type(landed.clone());
+        // Read on every reached type (intermediate + final).
+        if deps
+            .acl
+            .check(&subject.0, Action::Read, &landed_target)
+            .await?
+            == Decision::Deny
+        {
+            return Err(QueryError::Forbidden);
+        }
+        let landed_type = deps.ontology.get_type(&landed).await?;
+        let (landed_filters, _ld, _lm) = load_policy(deps.acl, &subject.0, &landed_target).await?;
+        // Intermediates carry their own row-filters; the FINAL landing is the start type, whose
+        // filters are rendered at `nxt` by the compiler -> pass empty here (no double-render).
+        let next_filters = if i == last {
+            Vec::new()
+        } else {
+            landed_filters
+        };
+        steps.push(crate::sql::GraphStep {
+            backing: link.backing.clone(),
+            next_table: landed_type.table.clone(),
+            next_filters,
+        });
+        current = landed;
+    }
+    if current != type_name {
+        return Err(QueryError::NotCyclicPath(q.path.join(",")));
     }
 
     // Projection: visible columns minus denied; masked applied. Empty -> Forbidden.
@@ -824,11 +857,7 @@ pub async fn read_graph_reach(
         deps.serving.dialect(),
         &object_type.table,
         &identity,
-        &[crate::sql::GraphStep {
-            backing: link.backing.clone(),
-            next_table: object_type.table.clone(),
-            next_filters: Vec::new(),
-        }],
+        &steps,
         &seed_predicates,
         &row_filters,
         &allowed,

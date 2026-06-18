@@ -315,7 +315,7 @@ async fn get_graph(
     match read_graph_reach(
         &GraphQuery {
             type_name,
-            link: link_name,
+            path: vec![link_name],
             depth,
             filters,
             ids,
@@ -328,7 +328,7 @@ async fn get_graph(
         Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
-        Err(QueryError::NotSelfLink(l)) => (StatusCode::BAD_REQUEST, l).into_response(),
+        Err(QueryError::NotCyclicPath(p)) => (StatusCode::BAD_REQUEST, p).into_response(),
         Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
