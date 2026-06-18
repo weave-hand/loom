@@ -23,7 +23,10 @@ use datafusion::datasource::listing::{
 };
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
+use object_store::ObjectStoreExt;
 use object_store::local::LocalFileSystem;
+use object_store::memory::InMemory;
+use object_store::path::Path as ObjPath;
 
 use crate::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue, inline_params};
 
@@ -84,23 +87,61 @@ pub async fn register_iceberg_table(
         .files(table, snap.id, PageReq::unbounded())
         .await
         .map_err(to_serving)?;
-    let urls: Vec<ListingTableUrl> = files
+    let file_urls: Vec<ListingTableUrl> = files
         .items
         .iter()
         .map(|f| ListingTableUrl::parse(&f.path))
         .collect::<Result<_, _>>()
         .map_err(to_serving)?;
+    let file_provider = if file_urls.is_empty() {
+        None
+    } else {
+        Some(listing_table(ctx, file_urls).await?)
+    };
 
-    // Keep string/binary as canonical Utf8/Binary (not the *View variants) so
-    // arrow_to_sqlvalue maps them — same choice as datafusion_io::scan_table.
-    let format = ParquetFormat::default().with_force_view_types(false);
-    let opts = ListingOptions::new(Arc::new(format));
-    let cfg = ListingTableConfig::new_with_multi_paths(urls)
-        .with_listing_options(opts)
-        .infer_schema(&ctx.state())
+    // Inline rows (mirror-only typed rows) are encoded to in-memory Parquet under a
+    // memory:// store. A ListingTable can't span two object stores, so inline is a
+    // SEPARATE provider, unioned with the file provider below.
+    let inline_provider = if let Some(bytes) = catalog
+        .inline_parquet(table, snap.id)
         .await
-        .map_err(to_serving)?;
-    let provider = ListingTable::try_new(cfg).map_err(to_serving)?;
+        .map_err(to_serving)?
+    {
+        let mem = Arc::new(InMemory::new());
+        let key = format!(
+            "inline/{}_{}_{}.parquet",
+            table.schema, table.name, snap.id.0
+        );
+        mem.put(&ObjPath::from(key.clone()), bytes.into())
+            .await
+            .map_err(to_serving)?;
+        ctx.register_object_store(
+            ObjectStoreUrl::parse("memory://")
+                .map_err(to_serving)?
+                .as_ref(),
+            mem,
+        );
+        let url = ListingTableUrl::parse(format!("memory:///{key}")).map_err(to_serving)?;
+        Some(listing_table(ctx, vec![url]).await?)
+    } else {
+        None
+    };
+
+    // Combine: file-only, inline-only, or a UNION ALL view of both.
+    let provider: Arc<dyn datafusion::catalog::TableProvider> =
+        match (file_provider, inline_provider) {
+            (Some(f), Some(i)) => {
+                let df = ctx
+                    .read_table(Arc::new(f))
+                    .map_err(to_serving)?
+                    .union(ctx.read_table(Arc::new(i)).map_err(to_serving)?)
+                    .map_err(to_serving)?;
+                df.into_view()
+            }
+            (Some(f), None) => Arc::new(f),
+            (None, Some(i)) => Arc::new(i),
+            (None, None) => return Ok(()), // a live table with no data; nothing to register
+        };
 
     // Ensure the schema exists in the default catalog, then register the table
     // schema-qualified so `"schema"."table"` references resolve.
@@ -113,10 +154,27 @@ pub async fn register_iceberg_table(
     }
     ctx.register_table(
         TableReference::partial(table.schema.clone(), table.name.clone()),
-        Arc::new(provider),
+        provider,
     )
     .map_err(to_serving)?;
     Ok(())
+}
+
+/// Build a `ListingTable` over `urls` (all in one object store). Keeps string/binary
+/// as canonical Utf8/Binary (not the `*View` variants) so `arrow_to_sqlvalue` maps
+/// them — same choice as `datafusion_io::scan_table`.
+async fn listing_table(
+    ctx: &SessionContext,
+    urls: Vec<ListingTableUrl>,
+) -> Result<ListingTable, ServingError> {
+    let format = ParquetFormat::default().with_force_view_types(false);
+    let opts = ListingOptions::new(Arc::new(format));
+    let cfg = ListingTableConfig::new_with_multi_paths(urls)
+        .with_listing_options(opts)
+        .infer_schema(&ctx.state())
+        .await
+        .map_err(to_serving)?;
+    ListingTable::try_new(cfg).map_err(to_serving)
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque serving error.

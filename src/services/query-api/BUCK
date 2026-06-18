@@ -260,6 +260,19 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "datafusion-inline-union",
+    crate = "datafusion_inline_union",
+    srcs = ["tests/datafusion_inline_union.rs"],
+    crate_root = "tests/datafusion_inline_union.rs",
+    deps = [
+        ":query-api",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "datafusion-serving",
     crate = "datafusion_serving",
     srcs = ["tests/datafusion_serving.rs"],
