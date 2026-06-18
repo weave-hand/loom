@@ -175,6 +175,14 @@ rust_test(
     deps = [":postgres", "//src/control-plane/core:core", "//third-party:iceberg"],
 )
 
+rust_test(
+    name = "iceberg-inline-types",
+    crate = "iceberg_inline_types",
+    srcs = ["tests/iceberg_inline_types.rs"],
+    crate_root = "tests/iceberg_inline_types.rs",
+    deps = [":postgres"],
+)
+
 loom_fixture_test(
     name = "queue",
     crate = "queue",
@@ -393,6 +401,22 @@ loom_fixture_test(
         "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-inline",
+    crate = "iceberg_inline",
+    srcs = ["tests/iceberg_inline.rs"],
+    crate_root = "tests/iceberg_inline.rs",
+    named_deps = {"parquet57": "//third-party:parquet57"},
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:bytes",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 

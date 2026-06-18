@@ -611,6 +611,57 @@ impl IcebergWriter {
         snapshots
     }
 
+    /// Inline-append `rows` of `(id long, name string)` to `(ns, name)` via
+    /// `inline_append` (mirror-only, no Parquet). `columns` is the table's logical
+    /// schema. Returns the new loom snapshot id. Test-only.
+    pub async fn inline(
+        &self,
+        ns: &str,
+        name: &str,
+        columns: &[(String, String, bool)],
+        rows: &[(i64, &str)],
+        run: uuid::Uuid,
+    ) -> i64 {
+        let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
+            arrow_schema::Field::new("name", arrow_schema::DataType::Utf8, false),
+        ]));
+        let ids: Vec<i64> = rows.iter().map(|(i, _)| *i).collect();
+        let names: Vec<&str> = rows.iter().map(|(_, n)| *n).collect();
+        let batch = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                std::sync::Arc::new(arrow_array::Int64Array::from(ids)),
+                std::sync::Arc::new(arrow_array::StringArray::from(names)),
+            ],
+        )
+        .expect("inline batch");
+        let specs: Vec<control_plane_core::ColumnSpec> = columns
+            .iter()
+            .map(|(n, t, nullable)| control_plane_core::ColumnSpec {
+                name: n.clone(),
+                ty: t.clone(),
+                nullable: *nullable,
+            })
+            .collect();
+        let lineage = control_plane_core::LineageEvent {
+            run_id: control_plane_core::RunId(run),
+            event_type: control_plane_core::EventType::Complete,
+            event_time: time::OffsetDateTime::now_utc(),
+            inputs: vec![],
+            outputs: vec![],
+            payload: serde_json::json!({ "source": "inline-test" }),
+        };
+        let table = control_plane_core::TableRef {
+            schema: ns.into(),
+            name: name.into(),
+        };
+        crate::iceberg_inline::inline_append(&self.pool, &table, &specs, &batch, lineage)
+            .await
+            .expect("inline_append")
+            .0
+    }
+
     /// Build a synthetic Arrow array of `rows` values for one column, typed to match its
     /// Iceberg primitive type. Only the types the catalog contracts seed (`long`, `string`)
     /// are supported, mirroring `iceberg_type`.
