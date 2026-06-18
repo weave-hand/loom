@@ -9,9 +9,12 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",
+        "//third-party:datafusion",
         "//third-party:duckdb",
+        "//third-party:object_store",
         "//third-party:serde_json",
         "//third-party:thiserror",
         "//third-party:time",

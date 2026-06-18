@@ -3531,12 +3531,15 @@ checksum = "5a651516ddc9168ebd67b24afd085a718be02f8858fe406591b013d101ce2f40"
 name = "query-api"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "async-trait",
  "axum",
  "control-plane-core",
  "control-plane-postgres",
+ "datafusion",
  "duckdb",
  "http-body-util",
+ "object_store",
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
