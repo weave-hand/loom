@@ -29,6 +29,7 @@ pub enum BindViolationReason {
     TypeMismatch { logical: String, physical: String },
     NullabilityViolation, // a required property backed by a nullable column
     BadIdentity(String),  // identity names no declared property, or a non-required one
+    ReservedName,         // a property/derived name begins with `_`, reserved for control params
 }
 
 /// Validate `type_def` against the physical schema of its target table, then persist
@@ -101,6 +102,26 @@ pub async fn bind(
                 reason: BindViolationReason::BadIdentity("names a non-required property".into()),
             }),
             Some(_) => {}
+        }
+    }
+
+    // Property and derived-property names beginning with `_` are reserved: the query
+    // surface prefixes control params with `_` (e.g. `_ids`, `_path`), so a `_`-named
+    // property would be unaddressable as a filter and could shadow a control param.
+    for p in &type_def.properties {
+        if p.name.starts_with('_') {
+            violations.push(BindViolation {
+                property: p.name.clone(),
+                reason: BindViolationReason::ReservedName,
+            });
+        }
+    }
+    for d in &type_def.derived {
+        if d.name.starts_with('_') {
+            violations.push(BindViolation {
+                property: d.name.clone(),
+                reason: BindViolationReason::ReservedName,
+            });
         }
     }
 

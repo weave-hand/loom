@@ -45,9 +45,26 @@ async fn get_object(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // Repeated keys are preserved (a column may carry several predicates, e.g. a range);
-    // the handler parses each value's operator and coerces it.
-    let eq_filters = params;
+    // Pull the `_ids` object-set input out of the params; the rest are filters. Repeated
+    // filter keys are preserved (a column may carry several predicates, e.g. a range); the
+    // handler parses each value's operator and coerces it.
+    let mut ids: Vec<String> = Vec::new();
+    let mut eq_filters: Vec<(String, String)> = Vec::with_capacity(params.len());
+    for (k, v) in params {
+        if k == "_ids" {
+            ids = v
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            if ids.is_empty() {
+                return (StatusCode::BAD_REQUEST, "_ids requires at least one value")
+                    .into_response();
+            }
+        } else {
+            eq_filters.push((k, v));
+        }
+    }
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
@@ -57,6 +74,7 @@ async fn get_object(
         &ObjectQuery {
             type_name,
             eq_filters,
+            ids,
         },
         &Subject(SubjectId(subject)),
         &deps,
@@ -67,6 +85,7 @@ async fn get_object(
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
+        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
         // Return an opaque body for backend/serving faults: a governance-fronted
         // service must not echo internal error detail (SQL fragments, table/column
         // names) to the client. TODO(serving-tier): log `e` server-side once a
@@ -86,16 +105,30 @@ async fn get_linked(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // Pull `direction` (single-hop knob) and `shape` out of the params; the rest are filters.
+    // Pull `_direction` (single-hop knob), `_shape`, and `_ids` out of the params; the rest
+    // are filters.
     let mut direction_raw: Option<String> = None;
     let mut shape: Option<String> = None;
+    let mut ids: Vec<String> = Vec::new();
+    let mut ids_present = false;
     let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         match k.as_str() {
-            "direction" => direction_raw = Some(v),
-            "shape" => shape = Some(v),
+            "_direction" => direction_raw = Some(v),
+            "_shape" => shape = Some(v),
+            "_ids" => {
+                ids_present = true;
+                ids = v
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+            }
             _ => filter_params.push((k, v)),
         }
+    }
+    if ids_present && ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
     }
     let direction = match parse_direction(direction_raw.as_deref()) {
         Ok(d) => d,
@@ -122,6 +155,7 @@ async fn get_linked(
             direction,
         }],
         filters,
+        ids,
     };
     let subj = Subject(SubjectId(subject));
     match shape.as_deref() {
@@ -142,17 +176,30 @@ async fn get_linked_chain(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
-    // `path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
+    // `_path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
     // every other pair is a filter. Repeated filter keys are preserved (e.g. a range).
     let mut hops: Vec<Hop> = Vec::new();
     let mut shape: Option<String> = None;
+    let mut ids: Vec<String> = Vec::new();
+    let mut ids_present = false;
     let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         match k.as_str() {
-            "path" => hops = parse_path_hops(&v),
-            "shape" => shape = Some(v),
+            "_path" => hops = parse_path_hops(&v),
+            "_shape" => shape = Some(v),
+            "_ids" => {
+                ids_present = true;
+                ids = v
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+            }
             _ => filter_params.push((k, v)),
         }
+    }
+    if ids_present && ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
     }
     // Filter keys reference bare link names; resolve against those (direction-independent).
     let names: Vec<String> = hops.iter().map(|h| h.link.clone()).collect();
@@ -169,6 +216,7 @@ async fn get_linked_chain(
         from_type,
         path: hops,
         filters,
+        ids,
     };
     let subj = Subject(SubjectId(subject));
     match shape.as_deref() {

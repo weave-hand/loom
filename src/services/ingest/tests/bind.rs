@@ -2,7 +2,8 @@
 //! a non-conforming type is rejected with ALL violations and nothing is persisted.
 
 use control_plane_core::{
-    ControlPlaneError, ObjectType, Ontology, PropertyDef, TableRef, TypeName,
+    Aggregation, ControlPlaneError, DerivedPropertyDef, ObjectType, Ontology, PropertyDef,
+    TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use ingest::{BindError, BindViolationReason, bind};
@@ -221,4 +222,84 @@ async fn bind_rejects_an_unknown_table() {
     };
     let err = bind(&cp, &cp, type_def).await.unwrap_err();
     assert!(matches!(err, BindError::TableNotFound(_)), "got {err:?}");
+}
+
+// Seed main.reserved: id BIGINT NOT NULL, _x BIGINT NULL.
+// The physical column `_x` exists so the only violation is the reserved name.
+async fn seed_reserved(writer: &DuckLakeWriter) {
+    writer
+        .seed(
+            "main",
+            "reserved",
+            &[
+                ("id".into(), "BIGINT".into(), false),
+                ("_x".into(), "BIGINT".into(), true),
+            ],
+            &[1],
+        )
+        .await;
+}
+
+fn reserved_table() -> TableRef {
+    TableRef {
+        schema: "main".into(),
+        name: "reserved".into(),
+    }
+}
+
+#[tokio::test]
+async fn bind_rejects_a_property_name_starting_with_underscore() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_reserved(&writer).await;
+
+    // `_x` exists as a physical column, so the only violation is the reserved name.
+    let type_def = ObjectType {
+        name: TypeName("Reserved".into()),
+        properties: vec![prop("id", "Long", true), prop("_x", "Long", false)],
+        derived: vec![],
+        table: reserved_table(),
+        identity: None,
+    };
+    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let BindError::DoesNotConform(v) = err else {
+        panic!("expected DoesNotConform, got {err:?}");
+    };
+    assert!(
+        v.iter()
+            .any(|x| x.property == "_x" && matches!(x.reason, BindViolationReason::ReservedName)),
+        "expected a ReservedName violation for '_x', got {v:?}"
+    );
+}
+
+#[tokio::test]
+async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+
+    // Base conforming type, but derived property name begins with `_`.
+    let type_def = ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![DerivedPropertyDef {
+            name: "_y".into(),
+            ty: "long".into(),
+            link: "whatever".into(),
+            agg: Aggregation::Count,
+        }],
+        table: customer(),
+        identity: None,
+    };
+    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let BindError::DoesNotConform(v) = err else {
+        panic!("expected DoesNotConform, got {err:?}");
+    };
+    assert!(
+        v.iter()
+            .any(|x| x.property == "_y" && matches!(x.reason, BindViolationReason::ReservedName)),
+        "expected a ReservedName violation for '_y', got {v:?}"
+    );
 }

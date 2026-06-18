@@ -139,6 +139,7 @@ async fn landed_then_bound_dataset_is_queryable() {
         &ObjectQuery {
             type_name: "Customer".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(subj),
         &deps,

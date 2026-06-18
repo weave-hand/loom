@@ -310,6 +310,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
         &ObjectQuery {
             type_name: "OrderEnriched".into(),
             eq_filters: vec![],
+            ids: vec![],
         },
         &Subject(subj),
         &deps,

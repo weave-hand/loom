@@ -178,6 +178,7 @@ async fn typed_filters_match_and_reject() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![("amount".into(), "10.5".into())],
+            ids: vec![],
         },
         &Subject(a.clone()),
         &deps,
@@ -191,6 +192,7 @@ async fn typed_filters_match_and_reject() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![("active".into(), "true".into())],
+            ids: vec![],
         },
         &Subject(a.clone()),
         &deps,
@@ -202,6 +204,7 @@ async fn typed_filters_match_and_reject() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![("active".into(), "false".into())],
+            ids: vec![],
         },
         &Subject(a.clone()),
         &deps,
@@ -215,6 +218,7 @@ async fn typed_filters_match_and_reject() {
         &ObjectQuery {
             type_name: "Order".into(),
             eq_filters: vec![("amount".into(), "abc".into())],
+            ids: vec![],
         },
         &Subject(a.clone()),
         &deps,
@@ -255,6 +259,7 @@ async fn comparison_set_and_null_operators() {
                 &ObjectQuery {
                     type_name: "Order".into(),
                     eq_filters: filters,
+                    ids: vec![],
                 },
                 &Subject(a),
                 deps,
