@@ -4,7 +4,7 @@
 //!   - depth bounds (reachable-within-1 vs -2 vs -3 differ),
 //!   - a cycle (1->2->3->1) terminates and the node set is deduped,
 //!   - a Read row-filter (active=true) prunes reachability THROUGH a blocked node,
-//!   - a non-self link -> 400 (NotSelfLink),
+//!   - a non-self link -> 400 (NotCyclicPath),
 //!   - ?depth=0 and ?depth=99 -> 400 (out-of-range depth).
 //!
 //! The graph is a single `Person` table with a `knows(a, b)` join-table SELF-link and a
@@ -208,7 +208,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     })
     .await
     .unwrap();
-    // `employer`: a non-self FK link Person -> Company (drives NotSelfLink -> 400).
+    // `employer`: a non-self FK link Person -> Company (drives NotCyclicPath -> 400).
     cp.define_link(LinkDef {
         name: "employer".into(),
         from: TypeName("Person".into()),
@@ -404,7 +404,7 @@ async fn non_self_link_is_400() {
     grant_read(&cp, &role, "Person").await;
     grant_read(&cp, &role, "Company").await;
 
-    // employer is Person -> Company (not a self-link) -> 400 NotSelfLink.
+    // employer is Person -> Company (not a self-link) -> 400 NotCyclicPath.
     let (status, _body) = get(
         cp.clone(),
         eng.clone(),
