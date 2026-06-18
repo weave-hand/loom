@@ -320,14 +320,24 @@ gained a first-class `identity: Option<String>` naming its primary-key property 
 persisted in the ontology and validated at bind (a declared identity must name a
 required property, else `BadIdentity`). Consuming it, a governed traversal can now
 return the **edge list** — source↔target identity pairs — instead of the
-`DISTINCT`-collapsed target set, via a `?shape=association` flag on the existing chain
+`DISTINCT`-collapsed target set, via a `?_shape=association` flag on the existing chain
 routes (`/objects/:from/links` and `/objects/:from/links/:link`). Output is
 `{"associations":[{"from":<id>,"to":<id>}]}`, governed both-ends exactly like the
 chain read plus one rule: the source and final-target must each have a declared,
-caller-visible identity (else `NoIdentity` → 400). The remaining slice-C follow-up is
-**object-set inputs keyed on identity** (`?ids=1,2,3` → an `in:` predicate on the
-source identity column), plus the longer-standing `/graph` surface for cyclic /
-self-link traversal.
+caller-visible identity (else `NoIdentity` → 400).
+
+**Object-set inputs + reserved control-param namespace**
+(`2026-06-18-object-set-inputs-design.md`) complete the graph-query arc: `?_ids=1,2,3`
+scopes any read — plain `/objects/:type`, single/multi-hop traversal, or association —
+to a set of source objects by their declared identity (an `In` predicate on the identity
+column, via a shared `identity_in_predicate` helper wired into `read_object` and
+`resolve_chain`). No declared identity → 400; denied/masked identity or uncoercible
+value → 400; present-but-empty `?_ids=` → 400. Bundled with this slice: all query
+control params now use a reserved `_` prefix (`_path`, `_direction`, `_shape`, `_ids`),
+and bind-time now rejects any property or derived-property name beginning with `_`
+(`BindViolationReason::ReservedName`) — making control-param/column collisions
+impossible by construction. The remaining graph follow-up is the `/graph` surface for
+cyclic/self-link traversal.
 
 **Packaging / deploy (landed, MVP).** The ingest + query-api binaries now ship as
 reproducible apko/Wolfi OCI images and a Helm chart (in their own `deploy//` cell,

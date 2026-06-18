@@ -91,9 +91,9 @@ which delivered part-1 of richer read capability.
   multi-hop traversal part-1** (chaining links — `Customer → Order → LineItem`) is now also
   **DELIVERED** (`2026-06-15-query-multi-hop-traversal-design.md`): a `SELECT DISTINCT` chain of
   governed INNER JOINs, governed at every hop (see the follow-ups below). Inverse-direction
-  traversal, target-side filtering, and the source→target association (with first-class object
-  identity, `2026-06-17-object-identity-association-design.md`) are now also delivered; the one
-  remaining slice-C part is starting a chain from an object set keyed on identity. All build on the
+  traversal, target-side filtering, source→target association (with first-class object
+  identity, `2026-06-17-object-identity-association-design.md`), and object-set inputs keyed on
+  identity (`2026-06-18-object-set-inputs-design.md`) are now all delivered. All build on the
   resolvable-link + governed-join primitive delivered here.
 
 From the derived-properties part-1 slice (`2026-06-15-derived-properties-design.md`), which
@@ -131,11 +131,7 @@ a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
 - **Caller-supplied target / intermediate filters.** ✅ DELIVERED
   (`2026-06-16-query-target-intermediate-filters-design.md`): per-hop typed equality filters on
   any type in a chain, addressed by `<linkname>.<column>` (bare = source), governed per type.
-- **Object-set inputs.** Start a chain from a passed/saved set of source object IDs instead of source
-  equality filters. Part-1 always begins the chain from source eq-filters; consuming an explicit
-  object set (e.g. a saved selection) is a later part. Now that **object identity** is first-class
-  (`2026-06-17-object-identity-association-design.md`), this is keyed on the identity column — see
-  **Object-set inputs keyed on identity** below.
+- **Object-set inputs.** ✅ DELIVERED — see **Object-set inputs keyed on identity** below.
 - **Source→target association.** ✅ DELIVERED
   (`2026-06-17-object-identity-association-design.md`): a governed traversal can now return the
   **edge list** — source↔target identity pairs — instead of just the deduped target set, via a
@@ -145,11 +141,16 @@ a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop:
   400). This landed the **object identity** concept it ties into: `ObjectType` gained a
   first-class `identity: Option<String>` (the PK property), validated at bind. Follow-up still
   open: **object-set inputs keyed on identity** (see below).
-- **Object-set inputs keyed on identity.** Start a chain from a passed set of source identity
-  values — `?ids=1,2,3` → an `in:` predicate on the source's declared identity column. This is
-  sugar over the already-shipped `in:` set operator on the now-first-class identity column, so it
-  is a small separate slice. (Supersedes the broader "object-set inputs" item above, now that
-  identity exists to key on.)
+- **Object-set inputs keyed on identity.** ✅ DELIVERED
+  (`2026-06-18-object-set-inputs-design.md`). `?_ids=1,2,3` scopes any read — plain
+  `/objects/:type`, single/multi-hop traversal, or association — to a set of source objects by
+  their declared identity (an `In` predicate via `identity_in_predicate`, wired into `read_object`
+  and `resolve_chain`). No declared identity → 400; denied/masked identity or uncoercible value →
+  400; present-but-empty `?_ids=` → 400. Bundled in the same slice: all query control params now
+  use a reserved `_` prefix (`_path`, `_direction`, `_shape`, `_ids`), and bind-time rejects any
+  property or derived-property name beginning with `_` (`BindViolationReason::ReservedName`) —
+  making control-param/column collisions impossible by construction. Remaining graph follow-up: the
+  `/graph` surface for cyclic/self-link traversal (see the **Graph traversal** item below).
 - **Define-time chain/link validation.** Validate link continuity and physical columns at authoring
   time (shared with slice A's deferred `define_link` column validation). Part-1 resolves the chain at
   **read** time, so a broken chain (unknown link, a link whose `from` is not the current type)
