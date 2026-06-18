@@ -124,6 +124,10 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
 /// rows + lineage) in ONE Postgres transaction. No object storage, no Iceberg
 /// metadata. `columns` is the table's logical schema (authoritative). Returns the
 /// new loom snapshot id.
+///
+/// CONTRACT: `batch`'s columns must align **positionally** with `columns` (same
+/// order, same logical types) — `batch.column(i)` is read as `columns[i]`. Both
+/// come from the landing's schema, so they agree by construction.
 pub async fn inline_append(
     pool: &PgPool,
     table: &TableRef,

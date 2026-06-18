@@ -127,7 +127,12 @@ pub async fn register_iceberg_table(
         None
     };
 
-    // Combine: file-only, inline-only, or a UNION ALL view of both.
+    // Combine: file-only, inline-only, or a UNION ALL view of both. The two
+    // providers infer schema independently from their own Parquet, so a column's
+    // nullability may differ (Parquet writers often mark columns nullable
+    // regardless of the logical `required` flag); `DataFrame::union` widens
+    // nullability, so this is fine — names + datatypes match because both derive
+    // from the same table schema.
     let provider: Arc<dyn datafusion::catalog::TableProvider> =
         match (file_provider, inline_provider) {
             (Some(f), Some(i)) => {
@@ -182,9 +187,11 @@ fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
     ServingError::Engine(e.to_string())
 }
 
-/// The `ActionEngine` for the iceberg serving backend: there is no inline write
-/// path (inlining is a DuckLake feature loom has not rebuilt), so writes are
-/// rejected. The action endpoint surfaces this as an opaque error.
+/// The `ActionEngine` for the iceberg serving backend: governed action write-backs
+/// are not supported, so writes are rejected. (loom now has inline writes via
+/// `iceberg_inline::inline_append`, but those are a landing/ingest path, not the
+/// single-row action-engine path this trait serves.) The action endpoint surfaces
+/// this as an opaque error.
 pub struct UnsupportedActionEngine;
 
 #[async_trait]
