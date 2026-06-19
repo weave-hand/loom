@@ -10,6 +10,7 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/services/datafusion-io:datafusion-io",
         "//third-party:arrow",
+        "//third-party:async-trait",
         "//third-party:axum",
         "//third-party:object_store",
         "//third-party:serde",
@@ -95,6 +96,15 @@ rust_test(
     crate_root = "tests/gate.rs",
     edition = "2024",
     deps = [":ingest", "//third-party:arrow"],
+)
+
+rust_test(
+    name = "landing",
+    crate = "landing",
+    srcs = ["tests/landing.rs"],
+    crate_root = "tests/landing.rs",
+    edition = "2024",
+    deps = [":ingest"],
 )
 
 rust_test(
