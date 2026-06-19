@@ -139,7 +139,8 @@ This is the substantive post-processing stage. All of it runs in the
 4. **Waiver filter**: drop rows matching a `{file, function}` waiver entry —
    collect those separately for the "Accepted" section.
 5. **Threshold**: keep rows exceeding **any** tunable constant declared at the
-   top of the jq: `cyclomatic > 15`, `cognitive > 15`, `mi < 60`, `loc > 100`.
+   top of the jq: `cyclomatic > 15`, `cognitive > 15`, `mi < 20` (MI on the
+   Visual-Studio 0-100 scale, lower = worse), `loc > 100`.
 6. **Sort** by `(file, start_line)` — stable semantic order, so diffs localize.
 7. Render `docs/code-health/complexity.md`:
    - Small **agent preamble** ("Notable changes this run") — see §5.4.
