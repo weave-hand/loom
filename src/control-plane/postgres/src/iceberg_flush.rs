@@ -24,6 +24,7 @@ use time::OffsetDateTime;
 use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_landing::append_parquet_snapshot;
+use crate::iceberg_mirror::{live_table_id, reset_inline_trigger};
 use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
 
 /// Flush `table`'s live inline rows into a real Iceberg Parquet snapshot, retiring
@@ -81,6 +82,12 @@ async fn flush_locked(
 
     // Capture the live inline rows + their ids (+ the inline table id) at current.
     let Some((tid, row_ids, batch)) = ice.inline_live_batch(table, current.id).await? else {
+        // Nothing live to flush — but a prior crash could have left the trigger
+        // armed; disarm it so the table can re-trigger. No-op if no trigger row.
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        if let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? {
+            reset_inline_trigger(&mut conn, tid).await?;
+        }
         return Ok(None);
     };
 
@@ -113,6 +120,13 @@ async fn flush_locked(
         Some(end_cap),
     )
     .await?;
+
+    // Disarm the trigger now that the inline rows are file-backed. Standalone
+    // (not in the cap tx): a crash between the cap and here self-heals because the
+    // job is re-run and hits the None branch above. No-op if no trigger row.
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    reset_inline_trigger(&mut conn, tid).await?;
+
     Ok(Some(snap))
 }
 
