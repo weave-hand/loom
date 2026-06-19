@@ -83,6 +83,31 @@ GitHub Actions, at `.github/workflows/ci.yml` (repo: `weave-hand/loom`). For the
 - **buck2 install** is the local composite action `.github/actions/setup-buck2`, shared by all jobs. It restores the binary from an `actions/cache` keyed on the release tag (so only the first run per release downloads/decompresses) and adds it to `PATH`. Bump the version via the `BUCK2_RELEASE` env in `ci.yml`.
 - **Avoid per-run toolchain downloads.** The workflow sets `BUCK_PREFER_REMOTE: "true"` and builds with `-M none`. Compute is already cached on BuildBuddy (~95% action-cache hits), but on a fresh runner any action that runs *locally* must materialize its inputs (LLVM, rustc, std — multiple GiB) from CAS. Preferring remote keeps those actions on RE so nothing is pulled down; `-M none` skips downloading final artifacts too. The toolchain's `assemble_sysroot` action (in `toolchains/rust_dist.bzl`) is also RE-eligible (not `local_only`) for the same reason — otherwise it forces the rustc/std dists local on every build. Net effect: a cached CI build downloads single-digit MiB (`local: 0`), versus ~4 GiB before. Keep any new `local_only`/`uses_local_*` actions off the common build path, or CI pays to materialize their inputs every run.
 
+## Cloud routines (scheduled code-health runs)
+
+The code-health skills (`loom-complexity`, `loom-duplication`, and the `*-fix`
+remediation skills) can run as scheduled cloud sessions. Two committed artifacts
+wire the environment; see `docs/build-execution.md` for the RE cost model they lean on.
+
+- **`tools/cloud-setup.sh`** — the **setup script** (paste into the environment's
+  "Setup script" field; committed for review). Runs once as root; its filesystem is
+  snapshotted and reused, so it does the heavy one-time work: `apt install gh zstd`,
+  installs the pinned buck2 (`BUCK2_RELEASE`, kept aligned with CI + the prelude) to
+  `/usr/local/bin`, inits the prelude submodule, and **pre-warms the routines' tools**
+  (`buck2 build --config project.remote_enabled= //tools:jq //tools:rust-code-analysis
+  //tools:lucidshark-duplo` — forced local since the BuildBuddy key isn't available
+  at setup time). Keep it under ~5 min so the snapshot can build. Needs network to
+  `github.com` + `*.githubusercontent.com` in the env's allowed hosts.
+- **`tools/cloud-session-start.sh`** — the **SessionStart hook** (wired in
+  `.claude/settings.json`). NO-OP unless `REMOTE_ENV=true`, so it's inert for local
+  dev. The cloud session injects `BUILDBUDDY_API_KEY` (remote execution — `.buckconfig`
+  reads `$BUILDBUDDY_API_KEY`) and `GITHUB_TOKEN` (gh PR landing); since each Bash
+  tool call starts a fresh shell from the profile, the hook persists these (and buck2's
+  PATH) into `~/.bashrc` idempotently, then activates `tools/env.sh` (its builds now go
+  over RE). `REMOTE_ENV` is just the "this is a cloud routine" marker — RE is driven by
+  the key being present. To bump buck2: change `BUCK2_RELEASE` in `cloud-setup.sh`
+  alongside `ci.yml` and the submodule pin.
+
 ## Cell layout
 
 Cells declared in `.buckconfig`:
