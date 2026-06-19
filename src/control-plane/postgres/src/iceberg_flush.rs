@@ -25,23 +25,25 @@ pub async fn flush_table(
     table: &TableRef,
     run_id: RunId,
 ) -> Result<Option<SnapshotId>> {
-    // Session advisory lock on a stable key for this table, held for the whole
-    // operation on a dedicated connection. Released on every return path.
-    let mut lock_conn = pool.acquire().await.map_err(backend)?;
+    // Transaction-scoped advisory lock on a stable key for this table, held for the
+    // whole operation. A *xact* lock (not a session lock) auto-releases when this
+    // transaction ends — including on panic, when the dropped transaction rolls back
+    // — so the lock can never leak onto a pooled connection and silently defeat the
+    // mutex on reuse (session advisory locks are re-entrant per connection). Two
+    // concurrent flushes contend on `key`; the second blocks until the first's tx ends.
+    let mut lock_tx = pool.begin().await.map_err(backend)?;
     let key = lock_key(&table.schema, &table.name);
-    sqlx::query("select pg_advisory_lock($1)")
+    sqlx::query("select pg_advisory_xact_lock($1)")
         .bind(key)
-        .execute(&mut *lock_conn)
+        .execute(&mut *lock_tx)
         .await
         .map_err(backend)?;
 
     let result = flush_locked(catalog, pool, table, run_id).await;
 
-    // Always release, regardless of outcome.
-    let _ = sqlx::query("select pg_advisory_unlock($1)")
-        .bind(key)
-        .execute(&mut *lock_conn)
-        .await;
+    // End the lock-holding transaction (nothing was written on it; rollback releases
+    // the lock). A drop would do the same — this is explicit for clarity.
+    let _ = lock_tx.rollback().await;
     result
 }
 

@@ -104,6 +104,12 @@ async fn flush_inline_only_makes_rows_file_backed_exactly_once() {
         !files.items.is_empty(),
         "at least one Parquet file at current"
     );
+    // The flushed file(s) carry exactly the 3 inline rows — none lost, none duplicated.
+    let flushed_rows: i64 = files.items.iter().map(|f| f.record_count).sum();
+    assert_eq!(
+        flushed_rows, 3,
+        "flushed Parquet holds exactly the inline rows"
+    );
 
     // No live inline rows remain — they were end-capped at the flush snapshot.
     let inline = ice
