@@ -66,6 +66,7 @@ async fn small_iceberg_land_inlines_through_http() {
             pool: pool.clone(),
             // Generous limit: a 3-row request stays inline.
             inline_byte_limit: 16 * 1024 * 1024,
+            flush_byte_threshold: 1, // tiny: any inline landing crosses it
         }),
     };
 
@@ -107,4 +108,14 @@ async fn small_iceberg_land_inlines_through_http() {
         .expect("events");
     assert_eq!(page.items.len(), 1, "one lineage event");
     assert_eq!(page.items[0].outputs[0].name, "wh.customer");
+
+    // The inline landing crossed the (tiny) flush threshold: exactly one job queued.
+    let n: i64 = sqlx::query_scalar("select count(*) from queue.jobs where kind = 'flush_table'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        n, 1,
+        "inline landing past the flush threshold enqueues one job"
+    );
 }

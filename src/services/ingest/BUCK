@@ -126,6 +126,7 @@ loom_fixture_test(
         "//third-party:http-body-util",
         "//third-party:iceberg",
         "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:tokio",
         "//third-party:tower",

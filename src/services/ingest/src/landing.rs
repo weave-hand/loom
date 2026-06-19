@@ -97,6 +97,8 @@ pub struct IcebergMaterializer {
     pub catalog: Arc<SqlCatalog>,
     pub pool: PgPool,
     pub inline_byte_limit: usize,
+    /// Live-inline-byte total at/above which a flush_table job is enqueued.
+    pub flush_byte_threshold: i64,
 }
 
 #[async_trait]
@@ -109,6 +111,7 @@ impl LandingMaterializer for IcebergMaterializer {
             req.columns,
             req.ipc_body,
             self.inline_byte_limit,
+            self.flush_byte_threshold,
             req.lineage,
         )
         .await
