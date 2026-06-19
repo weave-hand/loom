@@ -862,6 +862,150 @@ pub fn compile_graph_reach_union(
     Ok((sql, params))
 }
 
+/// Build the single-self-link recursive reachability CTE (`WITH RECURSIVE reach(id, depth) AS
+/// (…)`) used by the recursive-core + relational-tail compiler. The emitted CTE is the
+/// degenerate 1-step case of [`compile_graph_reach`]'s path-cycle CTE: a seed anchor governed by
+/// `seed_predicates` + `row_filters` at alias `s`, a distinct `UNION` (not `UNION ALL`) to
+/// deduplicate across iterations, and a single recursive step following `backing` (the self-link,
+/// via the shared [`link_join`]) with `row_filters` applied at the landing node `nxt` under the
+/// inlined `r.depth < depth` bound. The `UNION`'s deduplication ensures recursion terminates and
+/// stays cycle-safe on cyclic self-links. Seed then recursive params are appended to `params` in
+/// that order. This is a focused helper, NOT a refactor of `compile_graph_reach` (whose CTE
+/// generalizes over a multi-link path); the shared surface is the self-hop join, which already
+/// lives in `link_join`.
+#[allow(clippy::too_many_arguments)]
+fn recursive_reach_cte(
+    dialect: &dyn SqlDialect,
+    table: &TableRef,
+    identity: &str,
+    backing: &LinkBacking,
+    seed_predicates: &[CallerPredicate],
+    row_filters: &[RowFilter],
+    depth: u32,
+    params: &mut Vec<SqlValue>,
+) -> Result<String, CompileError> {
+    for f in row_filters {
+        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+    }
+    let q = |id: &str| dialect.quote_ident(id);
+    let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
+    let id = q(identity);
+
+    let mut seed_conj: Vec<String> = Vec::new();
+    for p in seed_predicates {
+        seed_conj.push(caller_predicate_sql(dialect, p, "s", params));
+    }
+    for f in row_filters {
+        seed_conj.push(filter_sql(dialect, f, "s", params));
+    }
+    let seed_where = if seed_conj.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", seed_conj.join(" AND "))
+    };
+
+    let joins = link_join(dialect, backing, "cur", "nxt", &tbl, "j");
+
+    let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
+    for f in row_filters {
+        rec_conj.push(filter_sql(dialect, f, "nxt", params));
+    }
+    let rec_where = rec_conj.join(" AND ");
+
+    Ok(format!(
+        "WITH RECURSIVE reach(id, depth) AS (\
+           SELECT s.{id}, 0 FROM {tbl} s{seed_where} \
+           UNION \
+           SELECT nxt.{id}, r.depth + 1 FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
+         )"
+    ))
+}
+
+/// Compile a depth-bounded recursive-core + relational-tail reachability read: from the seed set,
+/// follow `core_backing` (a self-link on `table`) 1..`depth` times to a reachable set, then chain
+/// `tail_hops` forward off that set (`tail_types[0]` = `table`, `tail_types[k]` = the projected
+/// final type) and project the final type's columns DISTINCT. The recursive core is the
+/// [`recursive_reach_cte`]; the tail is the shared [`chain_from_where`]; the two are glued by
+/// `t_0.{identity} IN (SELECT id FROM reach WHERE depth >= 1)` (the depth>=1 reachable set,
+/// excluding the seed unless a cycle re-reaches it). `tail_types[0]` MUST carry empty row-filters:
+/// the queried type's governance lives in the CTE (`core_row_filters`), so re-applying at `t_0`
+/// would only duplicate params. Param order: seed predicates, seed `core_row_filters` (s),
+/// recursive `core_row_filters` (nxt), then the tail's per-position params. Precondition:
+/// `tail_types.len() == tail_hops.len() + 1` and `tail_hops` non-empty. Every caller value is a
+/// bound param.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_graph_reach_tail(
+    dialect: &dyn SqlDialect,
+    table: &TableRef,
+    identity: &str,
+    core_backing: &LinkBacking,
+    seed_predicates: &[CallerPredicate],
+    core_row_filters: &[RowFilter],
+    tail_types: &[ChainType],
+    tail_hops: &[LinkBacking],
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    depth: u32,
+    limit: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    debug_assert_eq!(
+        tail_types.len(),
+        tail_hops.len() + 1,
+        "tail types must be hops + 1"
+    );
+    debug_assert!(!tail_hops.is_empty(), "part-B tail must have >= 1 hop");
+    debug_assert!(
+        tail_types[0].row_filters.is_empty() && tail_types[0].predicates.is_empty(),
+        "tail_types[0] must carry empty row-filters and predicates: governance lives in the CTE"
+    );
+    let q = |id: &str| dialect.quote_ident(id);
+    let id = q(identity);
+    let mut params: Vec<SqlValue> = Vec::new();
+
+    // Recursive core CTE first (the CTE is textually first, so its `?` placeholders bind first).
+    let cte = recursive_reach_cte(
+        dialect,
+        table,
+        identity,
+        core_backing,
+        seed_predicates,
+        core_row_filters,
+        depth,
+        &mut params,
+    )?;
+
+    // Relational tail: t_0 = `table` (the reachable set), chained forward to the final type t_k.
+    let (from, conjuncts, tail_params) = chain_from_where(dialect, tail_types, tail_hops)?;
+    params.extend(tail_params);
+
+    let k = tail_hops.len();
+    let final_alias = format!("t_{k}");
+    let cols = allowed_cols
+        .iter()
+        .map(|c| {
+            if mask_cols.iter().any(|m| m == c) {
+                format!("'{MASK_MARKER}' AS {}", q(c))
+            } else {
+                format!("{final_alias}.{}", q(c))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Glue: t_0 (the queried type at the tail's source) is constrained to the depth>=1 reach set.
+    let mut where_conj = vec![format!(
+        "t_0.{id} IN (SELECT id FROM reach WHERE depth >= 1)"
+    )];
+    where_conj.extend(conjuncts);
+    let where_sql = where_conj.join(" AND ");
+
+    let sql = format!(
+        "{cte} SELECT DISTINCT {cols} FROM {from} WHERE {where_sql} {}",
+        dialect.limit_clause(limit)
+    );
+    Ok((sql, params))
+}
+
 /// Compile a governed multi-hop traversal for loom's default (DuckDB) dialect. Convenience
 /// wrapper for statically-DuckDB callers (e.g. tests); production paths must use
 /// [`compile_chain_with`] with the serving engine's dialect.

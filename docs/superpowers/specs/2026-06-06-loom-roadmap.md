@@ -380,6 +380,9 @@ mixed FK/join-table backings via the shared `link_join` helper) and the single r
 `reach` to it, then to the landing node `nxt` for governance. Single-type governance — every link
 is a self-link, so the queried type's row-filters apply at the seed, the landing node, and the
 projection (no intermediates). `?path=` and `?links=` are mutually exclusive.
+
+**`/graph` part-B — recursive-core + relational-tail** is now delivered: a `*`-suffixed
+self-link core followed by a forward relational tail to the projected (possibly different) type.
+
 Remaining `/graph` parts (deferred to `docs/FUTURE.md`): inverse links inside the path,
-recursive-core + relational-tail (`path=knows*,worksAt`), min-depth annotation, shortest-path /
-`/tree`, weighted edges.
+min-depth annotation, shortest-path / `/tree`, weighted edges.

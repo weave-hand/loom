@@ -226,6 +226,17 @@ drew the relational/graph boundary:
   the projection. A non-self link reuses `NotCyclicPath`; `?path=` and `?links=` are mutually
   exclusive on the `/graph` route.
 
+  **Part B — recursive-core + relational-tail is DELIVERED.** `GET
+  /objects/:type/graph?path=l0*,l1,…,lk&depth=N` follows a `*`-suffixed self-link
+  core (`l0`, the path prefix) transitively up to N hops, then chains the forward
+  relational tail `l1..lk` off the depth≥1 reachable set, projecting the final
+  tail type (possibly a different type). The recursive core reuses the single
+  self-link CTE; the tail reuses the relational chain compiler; the two are glued
+  by `t_0.id IN (SELECT id FROM reach WHERE depth >= 1)`. Governance is layered:
+  Read + row-filters on the queried type (in the CTE) and on every tail-reached
+  type. Caller `?param` filters scope the seed; the tail is forward-only. A
+  misplaced/duplicated `*`, a non-self core link, or an empty tail is a 400.
+
   **Recursive reachability on the DataFusion/Iceberg serving engine — unverified.** The graph
   reachability compilers (`compile_graph_reach`, `compile_graph_reach_union`) emit `WITH RECURSIVE`
   SQL run today only against the DuckDB serving engine (the `DuckLake` backend). The single-
@@ -246,9 +257,6 @@ drew the relational/graph boundary:
   - **Inverse links inside the path.** Each path link is followed forward in part-2; a cycle is
     formed by forward links that return to the start type. Mixing backward hops into a cyclic
     path (e.g. `~memberOf,hasMember`) is a follow-on.
-  - **Recursive-core + relational-tail (`path=knows*,worksAt`).** A path whose cycle prefix is
-    followed by a non-cyclic relational tail — the recursive hop reaches a type, then a fixed
-    acyclic chain continues from there.
   - **Graph-aware filter addressing.** Per-occurrence or positional filter addressing that resolves
     the repeated-link ambiguity `/links` rejects (a path that visits the same link name twice
     cannot address per-hop filters by link name alone).

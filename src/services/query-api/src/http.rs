@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use crate::handler::{
-    Associations, ChainQuery, GraphQuery, GraphUnionQuery, Hop, ObjectQuery, QueryDeps, QueryError,
-    Subject, read_associations, read_graph_reach, read_graph_reach_union, read_linked_chain,
-    read_object,
+    Associations, ChainQuery, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop, ObjectQuery,
+    QueryDeps, QueryError, Subject, read_associations, read_graph_reach, read_graph_reach_union,
+    read_graph_reach_with_tail, read_linked_chain, read_object,
 };
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
@@ -385,7 +385,8 @@ async fn get_graph_path(
         )
             .into_response();
     }
-    // Exactly one of `path` (ordered cycle) or `links` (self-link union) selects the mode.
+    // Exactly one of `path` (ordered cycle / `*` recursive-core+tail) or `links` (self-link
+    // union) selects the mode.
     if !path.is_empty() && !links.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -403,6 +404,43 @@ async fn get_graph_path(
         )
             .into_response();
     }
+    // Part B: a `*`-suffixed segment marks a recursive core followed by a relational tail. The
+    // `*` MUST be on exactly one segment, and that segment MUST be the path prefix (index 0).
+    let starred: Vec<usize> = path
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.ends_with('*'))
+        .map(|(i, _)| i)
+        .collect();
+    if !starred.is_empty() {
+        if starred.len() > 1 {
+            return (
+                StatusCode::BAD_REQUEST,
+                "at most one path segment may be marked recursive with `*`",
+            )
+                .into_response();
+        }
+        if starred[0] != 0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                "the recursive `*` segment must be the first path segment",
+            )
+                .into_response();
+        }
+        let core_link = path[0].trim_end_matches('*').to_string();
+        if core_link.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "recursive core link name must not be empty",
+            )
+                .into_response();
+        }
+        let tail_links: Vec<String> = path[1..].to_vec();
+        return graph_tail_respond(
+            &st, type_name, core_link, tail_links, depth, filters, ids, subject,
+        )
+        .await;
+    }
     graph_respond(&st, type_name, path, depth, filters, ids, subject).await
 }
 
@@ -412,6 +450,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
         QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
+        QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
@@ -474,6 +513,43 @@ async fn graph_union_respond(
         &GraphUnionQuery {
             type_name,
             links,
+            depth,
+            filters,
+            ids,
+        },
+        &Subject(SubjectId(subject)),
+        &deps,
+    )
+    .await
+    {
+        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Err(e) => graph_error(e),
+    }
+}
+
+/// Recursive-core + relational-tail (`?path=l0*,l1,…`) tail: build a `GraphTailQuery`, run
+/// `read_graph_reach_with_tail`, map via `graph_error`.
+#[allow(clippy::too_many_arguments)]
+async fn graph_tail_respond(
+    st: &AppState,
+    type_name: String,
+    core_link: String,
+    tail_links: Vec<String>,
+    depth: u32,
+    filters: Vec<(String, String)>,
+    ids: Vec<String>,
+    subject: String,
+) -> axum::response::Response {
+    let deps = QueryDeps {
+        ontology: st.cp.ontology(),
+        acl: st.cp.acl(),
+        serving: st.serving.as_ref(),
+    };
+    match read_graph_reach_with_tail(
+        &GraphTailQuery {
+            type_name,
+            core_link,
+            tail_links,
             depth,
             filters,
             ids,
