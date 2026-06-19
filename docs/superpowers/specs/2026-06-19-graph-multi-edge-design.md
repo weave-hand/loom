@@ -208,3 +208,41 @@ unchanged — it remains the part-1 path-cycle of length 1.
 3. **HTTP + e2e** — `?links=` branch on the `/graph` route with path/links dispatch and the
    ambiguity 400; extract `graph_error`; the `knows`/`colleagues` DuckDB e2e.
 4. **Docs** — roadmap + `docs/FUTURE.md` (part-3 delivered; remaining `/graph` parts).
+
+## Addendum (2026-06-19, during implementation): edge-relation formulation
+
+The "N-arm `UNION` recursive term" sketched above — one recursive `SELECT … FROM reach …` per
+link — is **invalid on DuckDB**: a recursive CTE's recursive term may reference the CTE name only
+ONCE, and multiple self-referencing arms raise `Binder Error: Circular reference to CTE`. The
+implemented compiler preserves identical semantics and governance with a single recursive
+self-reference: each backing contributes one **non-recursive** arm emitting `(from_id, to_id)`
+pairs (via the same `link_join` shapes), the arms are combined with `UNION ALL` into an edge
+relation, and the one recursive step joins `reach` to that relation, then to the landing node
+`nxt`:
+
+```sql
+WITH RECURSIVE reach(id, depth) AS (
+  SELECT s."id", 0 FROM person s WHERE <seed preds@s + row_filters@s>
+  UNION
+  SELECT e.to_id, r.depth + 1
+  FROM reach r
+  JOIN (
+    SELECT cur."id" AS from_id, nxt."id" AS to_id FROM person cur JOIN person nxt ON cur."knows_id" = nxt."id"
+    UNION ALL
+    SELECT cur."id" AS from_id, nxt."id" AS to_id FROM person cur JOIN colleagues j1 ON cur."id" = j1."a" JOIN person nxt ON j1."b" = nxt."id"
+  ) e ON r.id = e.from_id
+  JOIN person nxt ON e.to_id = nxt."id"
+  WHERE r.depth < 3 AND <row_filters@nxt>
+)
+SELECT DISTINCT <proj@p> FROM person p
+WHERE p."id" IN (SELECT id FROM reach WHERE depth >= 1) AND <row_filters@p>
+LIMIT 1000
+```
+
+Governance is unchanged (row-filters at the seed `s`, the landing node `nxt`, and the projection
+`p`); the only observable difference is that the landing-node filter is rendered **once** (shared
+across all arms) rather than once per arm, so param count drops from `seed + N·|row_filters| +
+projection` to `seed + |row_filters| + projection`. The compiler unit tests assert this final
+shape (`UNION ALL` arm count, the bare CTE-level `UNION`, both join shapes, the reduced param
+count); the DuckDB-backed `graph-union-e2e` proves it executes and returns the correct reachable
+sets.

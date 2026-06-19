@@ -213,12 +213,23 @@ drew the relational/graph boundary:
   application. `NotSelfLink` is unified into `NotCyclicPath`; the single-link `/graph/:link` route
   forwards a 1-element path into the same machinery.
 
+  **Part 3 — multi-edge union reachability is DELIVERED**
+  (`2026-06-19-graph-multi-edge-design.md`): `GET /objects/:type/graph?links=l1,…,lN&depth=N`
+  follows ANY ONE of a set of self-links at each recursive step (a union over edge types),
+  returning the deduped reachable objects of the queried type. To stay within DuckDB's recursive
+  CTE rules (a recursive term may reference the CTE only ONCE — multiple self-referencing arms
+  raise "Circular reference to CTE"), the compiler builds a non-recursive `(from_id, to_id)` edge
+  relation — the `UNION ALL` of one arm per named link (mixed FK/join-table backings, each via the
+  shared `link_join` helper) — and the single recursive step joins `reach` to that edge relation,
+  then to the landing node `nxt` for governance. Single-type governance (every link is a self-link,
+  no intermediate types): the queried type's row-filters apply at the seed, the landing node, and
+  the projection. A non-self link reuses `NotCyclicPath`; `?path=` and `?links=` are mutually
+  exclusive on the `/graph` route.
+
   Remaining `/graph` parts (deferred):
   - **Inverse links inside the path.** Each path link is followed forward in part-2; a cycle is
     formed by forward links that return to the start type. Mixing backward hops into a cyclic
     path (e.g. `~memberOf,hasMember`) is a follow-on.
-  - **Multi-edge union reachability (`?links=`).** Unioning multiple self-links (option C) for
-    reachability over a *set* of links rather than a fixed ordered path.
   - **Recursive-core + relational-tail (`path=knows*,worksAt`).** A path whose cycle prefix is
     followed by a non-cyclic relational tail — the recursive hop reaches a type, then a fixed
     acyclic chain continues from there.
