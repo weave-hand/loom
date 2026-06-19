@@ -1,0 +1,32 @@
+[
+  {
+    "file": "src/b.rs",
+    "theme_value": 79,
+    "members": [
+      {
+        "function": "waived_big",
+        "line": 5,
+        "cc": 40.0,
+        "cog": 50.0,
+        "mi": 5,
+        "sloc": 300.0,
+        "value": 79
+      }
+    ]
+  },
+  {
+    "file": "src/a.rs",
+    "theme_value": 31.4,
+    "members": [
+      {
+        "function": "gnarly",
+        "line": 40,
+        "cc": 23.0,
+        "cog": 31.0,
+        "mi": 14.2,
+        "sloc": 180.0,
+        "value": 31.4
+      }
+    ]
+  }
+]
