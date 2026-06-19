@@ -80,3 +80,27 @@ fn ducklake_libpq_renders_all_fields() {
         "dbname=loom host=db.internal port=5432 user=loom password=secret"
     );
 }
+
+#[test]
+fn pg_url_tcp_and_socket() {
+    let tcp = DbConfig {
+        host: "db.internal".into(),
+        port: 5432,
+        user: "loom".into(),
+        password: "secret".into(),
+        dbname: "loom".into(),
+    };
+    assert_eq!(tcp.pg_url(), "postgres://loom:secret@db.internal:5432/loom");
+
+    let socket = DbConfig {
+        host: "/var/run/postgresql".into(),
+        port: 5432,
+        user: "loom".into(),
+        password: "secret".into(),
+        dbname: "loom".into(),
+    };
+    assert_eq!(
+        socket.pg_url(),
+        "postgres://loom:secret@localhost/loom?host=/var/run/postgresql"
+    );
+}

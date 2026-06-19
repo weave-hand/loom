@@ -33,7 +33,9 @@ rust_binary(
     edition = "2024",
     deps = [
         ":ingest",
+        "//src/control-plane/postgres:postgres",
         "//src/services/runtime:runtime",
+        "//third-party:iceberg",
         "//third-party:tokio",
     ],
     visibility = ["PUBLIC"],

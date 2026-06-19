@@ -45,6 +45,24 @@ impl DbConfig {
             self.dbname, self.host, self.port, self.user, self.password
         )
     }
+
+    /// A sqlx-connectable `postgres://` URL — what the vendored Iceberg SQL catalog
+    /// (`SqlCatalog`) opens its own pool with. A `host` beginning with `/` is a unix
+    /// socket directory (passed as a `?host=` query param, libpq convention, with the
+    /// authority host left as `localhost`); otherwise a TCP `host:port` authority.
+    pub fn pg_url(&self) -> String {
+        if self.host.starts_with('/') {
+            format!(
+                "postgres://{}:{}@localhost/{}?host={}",
+                self.user, self.password, self.dbname, self.host
+            )
+        } else {
+            format!(
+                "postgres://{}:{}@{}:{}/{}",
+                self.user, self.password, self.host, self.port, self.dbname
+            )
+        }
+    }
 }
 
 /// Fully-resolved service configuration.
