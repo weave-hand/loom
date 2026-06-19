@@ -3,16 +3,18 @@
 //! each step follows ANY ONE of a set of self-links:
 //!   - ?links=knows,colleagues unions both edge sets (reaches more than either alone),
 //!   - ?links=knows alone is a strict subset (a colleagues-only node is absent),
-//!   - a cycle terminates and the node set is deduped,
+//!   - a cycle formed ACROSS the union (5--knows-->6, 6--colleagues-->5) terminates + dedups,
 //!   - a Read row-filter (active=true) prunes reachability through a blocked node,
 //!   - ?path=…&links=… together -> 400, empty ?links= -> 400.
 //!
 //! Graph: one `Person` table with a `knows` FK self-link via knows_id and a `colleagues(a, b)`
-//! join-table self-link, plus a boolean `active` column. knows edges: 1->2, 2->3 (acyclic, so
-//! knows alone reaches {2,3} from 1). colleagues edge: 1->4 (so the union adds the
-//! colleagues-only node 4). No edge returns to 1, keeping the reachable sets free of the seed.
-//! Cycle termination over the recursive CTE is covered by graph_reach_e2e (shared machinery);
-//! this suite isolates the union axis. Person declares identity `id`.
+//! join-table self-link, plus a boolean `active` column. Component A (nodes 1..4): knows edges
+//! 1->2, 2->3 (acyclic, so knows alone reaches {2,3} from 1); colleagues edge 1->4 (so the union
+//! adds the colleagues-only node 4); no edge returns to 1, keeping the {1}-seeded sets free of the
+//! seed. Component B (nodes 5,6): 5--knows-->6 and 6--colleagues-->5 form a 2-cycle that exists
+//! ONLY across the union of both backings — exercising termination + dedup over the union
+//! edge-relation CTE (a distinct shape from the path compiler) on real DuckDB. Person declares
+//! identity `id`.
 
 use std::sync::Arc;
 
@@ -111,6 +113,10 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
 
     // person(id, name, active, knows_id): the FK self-link edges 1->2, 2->3 live in knows_id.
     // node 2 (bob) is INACTIVE (governance test). node 4 has no knows_id (colleagues-only).
+    // Nodes 5,6 are a separate component used only by the union-cycle test: 5 --knows--> 6 and
+    // 6 --colleagues--> 5 form a 2-cycle that exists ONLY across the union of both backings
+    // (neither link alone closes it). They are disconnected from 1..4, so the {1}-seeded
+    // assertions are unaffected.
     let person = tref("main", "person");
     let person_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -121,23 +127,35 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     let person_batch = RecordBatch::try_new(
         person_schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6])),
             Arc::new(StringArray::from(vec![
                 Some("ann"),
                 Some("bob"),
                 Some("cal"),
                 Some("dee"),
+                Some("eve"),
+                Some("fin"),
             ])),
-            Arc::new(BooleanArray::from(vec![true, false, true, true])),
-            // 1->2, 2->3, 3 and 4 have no outbound knows edge.
-            Arc::new(Int64Array::from(vec![Some(2), Some(3), None, None])),
+            Arc::new(BooleanArray::from(vec![
+                true, false, true, true, true, true,
+            ])),
+            // 1->2, 2->3 (3,4 have no outbound knows edge); 5->6 (6 has none).
+            Arc::new(Int64Array::from(vec![
+                Some(2),
+                Some(3),
+                None,
+                None,
+                Some(6),
+                None,
+            ])),
         ],
     )
     .unwrap();
     land(&cp, &store, &person, person_schema, person_batch).await;
 
-    // colleagues(a, b): join-table self-link edge 1->4. knows never touches 4, so the union
-    // adds 4 over knows alone. No back-edge to 1 -> the seed stays out of the reachable set.
+    // colleagues(a, b): join-table self-link edges 1->4 and 6->5. knows never touches 4, so the
+    // union adds 4 over knows alone (no back-edge to 1 -> the {1} seed stays out of its own
+    // result). 6->5 closes the 5<->6 union-cycle (5->6 is the knows edge).
     let colleagues = tref("main", "colleagues");
     let colleagues_schema = Arc::new(Schema::new(vec![
         Field::new("a", DataType::Int64, false),
@@ -146,8 +164,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     let colleagues_batch = RecordBatch::try_new(
         colleagues_schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![1])),
-            Arc::new(Int64Array::from(vec![4])),
+            Arc::new(Int64Array::from(vec![1, 6])),
+            Arc::new(Int64Array::from(vec![4, 5])),
         ],
     )
     .unwrap();
@@ -316,6 +334,36 @@ async fn union_reaches_more_than_either_link_alone() {
         ids(&body),
         vec![2, 3, 4],
         "union adds the colleagues-only node 4: {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn union_cycle_terminates_and_dedups() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let cp = Arc::new(cp);
+    let eng = Arc::new(eng);
+
+    let (_a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "Person").await;
+
+    // Nodes 5,6 form a 2-cycle that exists ONLY across the union: 5 --knows--> 6 (FK) and
+    // 6 --colleagues--> 5 (join table). From {5} with both links at depth 5: 5->6 (d1),
+    // 6->5 (d2), 5->6 (d3)... The recursive depth bound terminates the traversal and the
+    // CTE-level UNION dedups, so each node appears once => {5, 6}. Neither link alone closes
+    // this cycle (knows only goes 5->6; colleagues only goes 6->5).
+    let (status, body) = get(
+        cp.clone(),
+        eng.clone(),
+        "/objects/Person/graph?links=knows,colleagues&depth=5&_ids=5",
+        "alice",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        ids(&body),
+        vec![5, 6],
+        "union-cycle terminates and dedups to {{5,6}}: {body}"
     );
 }
 
