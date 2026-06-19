@@ -50,6 +50,13 @@ impl DbConfig {
     /// (`SqlCatalog`) opens its own pool with. A `host` beginning with `/` is a unix
     /// socket directory (passed as a `?host=` query param, libpq convention, with the
     /// authority host left as `localhost`); otherwise a TCP `host:port` authority.
+    ///
+    /// NOTE: `user`/`password` are interpolated raw, not percent-encoded — a password
+    /// containing URL-reserved characters (`@ : / ? #`) would corrupt parsing. This is
+    /// the only connection form with that limitation (`ducklake_libpq` is libpq
+    /// space-delimited; `pg_connect_options` is structured). Acceptable for the current
+    /// controlled-deploy posture; percent-encode here if free-form passwords are ever
+    /// supported.
     pub fn pg_url(&self) -> String {
         if self.host.starts_with('/') {
             format!(
