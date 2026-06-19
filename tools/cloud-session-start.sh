@@ -16,7 +16,13 @@
 # setup script (/usr/local/bin); we re-assert it for safety.
 
 set -u
-[ "${REMOTE_ENV:-}" = "true" ] || exit 0   # inert outside cloud routines
+# Gate on the platform-set CLAUDE_CODE_REMOTE (always "true" in any cloud session),
+# falling back to the user-supplied REMOTE_ENV marker. Keying solely on REMOTE_ENV was
+# brittle: it lives in the environment's "Environment variables" field, so editing that
+# field (rename/remove) could silently knock out the entire cloud bootstrap — no buck2
+# PATH, no remote execution, no submodule init, no warning. CLAUDE_CODE_REMOTE is owned
+# by the platform and cannot be clobbered that way.
+[ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || [ "${REMOTE_ENV:-}" = "true" ] || exit 0   # inert outside cloud routines
 
 # The hook runs from within the repo (invoked as $CLAUDE_PROJECT_DIR/tools/...), so
 # $0 resolves correctly here (unlike the setup script, which runs from /tmp). Prefer
