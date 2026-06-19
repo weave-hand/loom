@@ -192,9 +192,13 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:arrow",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
         "//third-party:object_store",
         "//third-party:serde_json",
         "//third-party:time",
+        "//third-party:tower",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
@@ -229,6 +233,7 @@ loom_fixture_test(
     duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -253,6 +258,7 @@ loom_fixture_test(
     duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -277,6 +283,7 @@ loom_fixture_test(
     duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -301,6 +308,7 @@ loom_fixture_test(
     duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -325,6 +333,7 @@ loom_fixture_test(
     duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -732,6 +741,7 @@ loom_fixture_test(
     duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",

@@ -9,86 +9,14 @@ use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use async_trait::async_trait;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use control_plane_core::{
-    Acl, Action, Cardinality, ControlPlane, DatasetRef, Effect, EventType, LineageEvent,
-    LinkBacking, LinkDef, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, RunId,
-    SubjectId, TableRef, TypeName,
-};
+use axum::http::StatusCode;
+use control_plane_core::{Cardinality, LinkBacking, LinkDef, ObjectType, Ontology, TypeName};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use http_body_util::BodyExt;
-use ingest::{MaterializeRequest, materialize};
+use e2e_support::{get, grant_read, land, prop, subject_with_role, tref};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-use query_api::http::{AppState, router};
-use query_api::serving::{ActionEngine, EmbeddedDuckDb, ServingError, SqlValue};
-use time::OffsetDateTime;
-use tower::ServiceExt;
-use uuid::Uuid;
-
-fn tref(s: &str, n: &str) -> TableRef {
-    TableRef {
-        schema: s.into(),
-        name: n.into(),
-    }
-}
-
-fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-    }
-}
-
-/// No-op write engine: the read-only routes never touch it, but `AppState` requires one.
-struct StubAction;
-
-#[async_trait]
-impl ActionEngine for StubAction {
-    async fn insert_row(
-        &self,
-        _table: &TableRef,
-        _columns: &[String],
-        _values: &[SqlValue],
-    ) -> std::result::Result<(), ServingError> {
-        Ok(())
-    }
-}
-
-async fn land(
-    cp: &PgControlPlane,
-    store: &Arc<dyn ObjectStore>,
-    table: &TableRef,
-    schema: Arc<Schema>,
-    batch: RecordBatch,
-) {
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(table)],
-        payload: serde_json::json!({}),
-    };
-    materialize(
-        cp,
-        store.clone(),
-        MaterializeRequest {
-            table,
-            schema,
-            batches: &[batch],
-            file_prefix: "run-1",
-            gate: None,
-            lineage,
-        },
-    )
-    .await
-    .unwrap();
-}
+use query_api::serving::EmbeddedDuckDb;
 
 /// Seed customer(id, region) ids {1,2,3} and orders(id, customer_id, status) FK-linked.
 /// Define Customer (identity `id`), Order (identity `order_id`... here `id`), the FK link
@@ -201,58 +129,6 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
     (cp, eng, writer)
-}
-
-async fn subject_with_role(cp: &PgControlPlane, name: &str) -> (SubjectId, RoleId) {
-    let subj = SubjectId(name.into());
-    let role = RoleId(format!("{name}-role"));
-    cp.define_subject(&subj).await.unwrap();
-    cp.define_role(&role).await.unwrap();
-    cp.assign_role(&subj, &role).await.unwrap();
-    (subj, role)
-}
-
-async fn grant_read(cp: &PgControlPlane, role: &RoleId, type_name: &str) {
-    cp.grant(
-        role,
-        Action::Read,
-        PolicyTarget::Type(TypeName(type_name.into())),
-        Effect::Allow,
-    )
-    .await
-    .unwrap();
-}
-
-/// Drive the HTTP router and return (status, parsed JSON body).
-async fn get(
-    cp: Arc<PgControlPlane>,
-    eng: Arc<EmbeddedDuckDb>,
-    uri: &str,
-    subject: &str,
-) -> (StatusCode, serde_json::Value) {
-    let app = router(AppState {
-        cp: cp as Arc<dyn ControlPlane>,
-        serving: eng,
-        action_engine: Arc::new(StubAction),
-    });
-    let res = app
-        .oneshot(
-            Request::builder()
-                .uri(uri)
-                .header("X-Loom-Subject", subject)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
 }
 
 /// Sorted values of the given identity key from an objects body. `Long` identities render

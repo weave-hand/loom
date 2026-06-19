@@ -20,85 +20,17 @@ use std::sync::Arc;
 
 use arrow::array::{BooleanArray, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use async_trait::async_trait;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use control_plane_core::{
-    Acl, Action, Cardinality, CompareOp, ControlPlane, DatasetRef, Effect, EventType, LineageEvent,
-    LinkBacking, LinkDef, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId,
-    RowFilter, RunId, ScalarValue, SubjectId, TableRef, TypeName,
+    Acl, Action, Cardinality, CompareOp, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
+    PolicyTarget, RowFilter, ScalarValue, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use http_body_util::BodyExt;
-use ingest::{MaterializeRequest, materialize};
+use e2e_support::{get, grant_read, ids_i64 as ids, land, prop, subject_with_role, tref};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-use query_api::http::{AppState, router};
-use query_api::serving::{ActionEngine, EmbeddedDuckDb, ServingError, SqlValue};
-use time::OffsetDateTime;
-use tower::ServiceExt;
-use uuid::Uuid;
-
-fn tref(s: &str, n: &str) -> TableRef {
-    TableRef {
-        schema: s.into(),
-        name: n.into(),
-    }
-}
-
-fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-    }
-}
-
-struct StubAction;
-
-#[async_trait]
-impl ActionEngine for StubAction {
-    async fn insert_row(
-        &self,
-        _table: &TableRef,
-        _columns: &[String],
-        _values: &[SqlValue],
-    ) -> std::result::Result<(), ServingError> {
-        Ok(())
-    }
-}
-
-async fn land(
-    cp: &PgControlPlane,
-    store: &Arc<dyn ObjectStore>,
-    table: &TableRef,
-    schema: Arc<Schema>,
-    batch: RecordBatch,
-) {
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(table)],
-        payload: serde_json::json!({}),
-    };
-    materialize(
-        cp,
-        store.clone(),
-        MaterializeRequest {
-            table,
-            schema,
-            batches: &[batch],
-            file_prefix: "run-1",
-            gate: None,
-            lineage,
-        },
-    )
-    .await
-    .unwrap();
-}
+use query_api::serving::EmbeddedDuckDb;
 
 /// Seed person/company/city. knows: 1->2, 2->3 (FK knows_id). worksAt: 1->10, 2->11, 3->12 (FK
 /// worksat_id). locatedIn: 10->22, 11->20, 12->20 (FK city_id; companies 11 & 12 share city 20).
@@ -266,69 +198,6 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
     (cp, eng, writer)
-}
-
-async fn subject_with_role(cp: &PgControlPlane, name: &str) -> (SubjectId, RoleId) {
-    let subj = SubjectId(name.into());
-    let role = RoleId(format!("{name}-role"));
-    cp.define_subject(&subj).await.unwrap();
-    cp.define_role(&role).await.unwrap();
-    cp.assign_role(&subj, &role).await.unwrap();
-    (subj, role)
-}
-
-async fn grant_read(cp: &PgControlPlane, role: &RoleId, type_name: &str) {
-    cp.grant(
-        role,
-        Action::Read,
-        PolicyTarget::Type(TypeName(type_name.into())),
-        Effect::Allow,
-    )
-    .await
-    .unwrap();
-}
-
-async fn get(
-    cp: Arc<PgControlPlane>,
-    eng: Arc<EmbeddedDuckDb>,
-    uri: &str,
-    subject: &str,
-) -> (StatusCode, serde_json::Value) {
-    let app = router(AppState {
-        cp: cp as Arc<dyn ControlPlane>,
-        serving: eng,
-        action_engine: Arc::new(StubAction),
-    });
-    let res = app
-        .oneshot(
-            Request::builder()
-                .uri(uri)
-                .header("X-Loom-Subject", subject)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
-}
-
-/// Sorted `id`s from an {"objects":[...]} body. `id` is a `Long`, rendered as a numeric STRING.
-fn ids(body: &serde_json::Value) -> Vec<i64> {
-    let mut out: Vec<i64> = body["objects"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|o| o["id"].as_str().unwrap().parse::<i64>().unwrap())
-        .collect();
-    out.sort_unstable();
-    out
 }
 
 #[tokio::test(flavor = "multi_thread")]
