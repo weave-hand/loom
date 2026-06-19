@@ -463,6 +463,18 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "inline-trigger-helpers",
+    crate = "inline_trigger_helpers",
+    srcs = ["tests/inline_trigger_helpers.rs"],
+    crate_root = "tests/inline_trigger_helpers.rs",
+    deps = [
+        ":postgres",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-flush",
     crate = "iceberg_flush",
     srcs = ["tests/iceberg_flush.rs"],

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update iceberg_mirror.inline_trigger set enqueued = true where table_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1ef6766a501d06453d78364140e9c989afc63a492bfd3dd15ce0cc7e2184238a"
+}

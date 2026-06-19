@@ -268,3 +268,71 @@ pub async fn columns_exist(conn: &mut PgConnection, table_id: i64) -> Result<boo
     .map_err(backend)?;
     Ok(exists)
 }
+
+/// The trigger row after a bump: the new running total, the effective threshold
+/// (per-table override or the passed global default), and whether a flush job is
+/// already pending for this table.
+#[derive(Debug, Clone, Copy)]
+pub struct TriggerState {
+    pub live_bytes: i64,
+    pub effective: i64,
+    pub enqueued: bool,
+}
+
+/// Add `add_bytes` to the table's live-inline-bytes counter (creating the row on
+/// first write), returning the post-bump state plus the effective threshold
+/// (`COALESCE(threshold, global_threshold)`). Idempotent row creation via upsert.
+pub async fn bump_inline_trigger(
+    conn: &mut PgConnection,
+    table_id: i64,
+    add_bytes: i64,
+    global_threshold: i64,
+) -> Result<TriggerState> {
+    let row = sqlx::query!(
+        "insert into iceberg_mirror.inline_trigger (table_id, live_bytes) \
+         values ($1, $2) \
+         on conflict (table_id) do update \
+           set live_bytes = iceberg_mirror.inline_trigger.live_bytes + excluded.live_bytes \
+         returning live_bytes as \"live_bytes!\", \
+                   coalesce(threshold, $3) as \"effective!\", \
+                   enqueued as \"enqueued!\"",
+        table_id,
+        add_bytes,
+        global_threshold,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(TriggerState {
+        live_bytes: row.live_bytes,
+        effective: row.effective,
+        enqueued: row.enqueued,
+    })
+}
+
+/// Mark the table's trigger as having a pending flush job (debounce). No-op if the
+/// row is absent (it is always created by a preceding `bump_inline_trigger`).
+pub async fn arm_inline_trigger(conn: &mut PgConnection, table_id: i64) -> Result<()> {
+    sqlx::query!(
+        "update iceberg_mirror.inline_trigger set enqueued = true where table_id = $1",
+        table_id,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Reset the table's trigger after a flush: clear the counter and re-arm. No-op if
+/// the row is absent.
+pub async fn reset_inline_trigger(conn: &mut PgConnection, table_id: i64) -> Result<()> {
+    sqlx::query!(
+        "update iceberg_mirror.inline_trigger \
+         set live_bytes = 0, enqueued = false where table_id = $1",
+        table_id,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
