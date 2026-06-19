@@ -342,3 +342,50 @@ command_alias(
     }),
     visibility = ["PUBLIC"],
 )
+
+# rust-code-analysis (https://github.com/weave-hand/rust-code-analysis) — Mozilla's
+# multi-language metrics CLI; drives the //loom-complexity routine. Ships `.tar.gz`
+# per-arch with a `…-<triple>/` wrapper dir holding `rust-code-analysis-cli`
+# (and -web, README); `--strip-components=1` flattens it. tar.gz ⇒ no `uses_xz`
+# label (builds on RE). To bump: replace RCA_VERSION, refresh each SHA256.
+#
+# `buck2 run //tools:rust-code-analysis -- -m -O json -p src -o <dir>`.
+
+RCA_VERSION = "v2026.06.19.00"
+
+_RCA_URL = "https://github.com/weave-hand/rust-code-analysis/releases/download/{version}/rust-code-analysis-{version}-{triple}.tar.gz"
+
+http_file(
+    name = "rca-x86_64-linux.tar.gz",
+    urls = [_RCA_URL.format(version = RCA_VERSION, triple = "x86_64-unknown-linux-gnu")],
+    sha256 = "7f7e7d88e4135b869683230aced76781c8e089d03c096e192ce49dd8eb342b84",
+)
+
+http_file(
+    name = "rca-aarch64-linux.tar.gz",
+    urls = [_RCA_URL.format(version = RCA_VERSION, triple = "aarch64-unknown-linux-gnu")],
+    sha256 = "459671ab9fb431db6e97d5dee38def443cf7cfff77f8edda3419605af6c9323e",
+)
+
+genrule(
+    name = "rust-code-analysis-x86_64-linux",
+    out = "rust-code-analysis-cli",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :rca-x86_64-linux.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/rust-code-analysis-cli $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "rust-code-analysis-aarch64-linux",
+    out = "rust-code-analysis-cli",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :rca-aarch64-linux.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/rust-code-analysis-cli $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "rust-code-analysis",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":rust-code-analysis-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":rust-code-analysis-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
