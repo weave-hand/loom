@@ -8,13 +8,16 @@ rust_library(
     edition = "2024",
     deps = [
         "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
         "//src/services/datafusion-io:datafusion-io",
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",
+        "//third-party:iceberg",
         "//third-party:object_store",
         "//third-party:serde",
         "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:uuid",
@@ -105,6 +108,27 @@ rust_test(
     crate_root = "tests/landing.rs",
     edition = "2024",
     deps = [":ingest"],
+)
+
+loom_fixture_test(
+    name = "iceberg-land",
+    crate = "iceberg_land",
+    srcs = ["tests/iceberg_land.rs"],
+    crate_root = "tests/iceberg_land.rs",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tower",
+        "//third-party:uuid",
+    ],
 )
 
 rust_test(

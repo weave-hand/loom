@@ -11,6 +11,10 @@ use async_trait::async_trait;
 use control_plane_core::{ColumnSpec, ControlPlane, LineageEvent, SnapshotId, TableRef};
 use object_store::ObjectStore;
 
+use control_plane_postgres::iceberg_landing::land as iceberg_land;
+use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
+use sqlx::PgPool;
+
 use crate::IngestError;
 use crate::materialize::land_ducklake;
 
@@ -81,5 +85,33 @@ impl LandingMaterializer for DuckLakeMaterializer {
             req.lineage,
         )
         .await
+    }
+}
+
+/// Lands to Iceberg via the loom-native landing path. A thin forwarder: it passes
+/// the raw IPC body (decoded in arrow-57 inside the postgres crate, the cross-major
+/// boundary), the resolved columns, the byte limit, and the lineage event. Small
+/// requests inline (mirror-only rows); large requests write real Parquet — both
+/// emit lineage atomically and return the loom mirror snapshot id.
+pub struct IcebergMaterializer {
+    pub catalog: Arc<SqlCatalog>,
+    pub pool: PgPool,
+    pub inline_byte_limit: usize,
+}
+
+#[async_trait]
+impl LandingMaterializer for IcebergMaterializer {
+    async fn land(&self, req: LandRequest<'_>) -> Result<SnapshotId, IngestError> {
+        iceberg_land(
+            &self.pool,
+            &self.catalog,
+            req.table,
+            req.columns,
+            req.ipc_body,
+            self.inline_byte_limit,
+            req.lineage,
+        )
+        .await
+        .map_err(IngestError::from)
     }
 }
