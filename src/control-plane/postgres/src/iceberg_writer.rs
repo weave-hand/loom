@@ -4,7 +4,10 @@
 //! loom projects the `iceberg_mirror.*` rows atomically (see `iceberg_sql_catalog`).
 //! This module is pure write — it holds no mirror logic.
 
+use std::collections::HashMap;
+
 use arrow_array::RecordBatch;
+use async_trait::async_trait;
 use iceberg::spec::DataFile;
 use iceberg::table::Table;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
@@ -15,8 +18,12 @@ use iceberg::writer::file_writer::location_generator::{
 };
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
-use iceberg::{Catalog, Result};
+use iceberg::{Catalog, Namespace, NamespaceIdent, Result, TableCommit, TableCreation, TableIdent};
 use parquet57::file::properties::WriterProperties;
+
+use control_plane_core::LineageEvent;
+
+use crate::iceberg_sql_catalog::SqlCatalog;
 
 /// A neutral summary of one committed Parquet data file, returned to callers
 /// (tests, the seeder) that want to assert on the write without depending on
@@ -53,6 +60,116 @@ pub async fn append_batches(
     let action = tx.fast_append().add_data_files(data_files);
     let tx = action.apply(tx)?;
     tx.commit(catalog).await?;
+    Ok(summaries)
+}
+
+/// A per-call `Catalog` decorator that attaches a loom `LineageEvent` to the one
+/// `update_table` the iceberg commit performs, so the lineage row lands in the
+/// same Postgres tx as the pointer CAS + mirror projection. Every other method
+/// delegates to the inner `SqlCatalog`. Constructed fresh per append (holds
+/// borrows), so there is no shared mutable state across concurrent commits.
+#[derive(Debug)]
+struct LineageEmittingCatalog<'a> {
+    inner: &'a SqlCatalog,
+    lineage: &'a LineageEvent,
+}
+
+#[async_trait]
+impl Catalog for LineageEmittingCatalog<'_> {
+    /// The one method that differs: route the commit through `do_update_table`
+    /// with the lineage event so it commits/rolls back atomically with the
+    /// snapshot.
+    async fn update_table(&self, commit: TableCommit) -> Result<Table> {
+        self.inner.do_update_table(commit, Some(self.lineage)).await
+    }
+
+    // --- pure delegation below ---
+    async fn list_namespaces(
+        &self,
+        parent: Option<&NamespaceIdent>,
+    ) -> Result<Vec<NamespaceIdent>> {
+        self.inner.list_namespaces(parent).await
+    }
+    async fn create_namespace(
+        &self,
+        namespace: &NamespaceIdent,
+        properties: HashMap<String, String>,
+    ) -> Result<Namespace> {
+        self.inner.create_namespace(namespace, properties).await
+    }
+    async fn get_namespace(&self, namespace: &NamespaceIdent) -> Result<Namespace> {
+        self.inner.get_namespace(namespace).await
+    }
+    async fn namespace_exists(&self, namespace: &NamespaceIdent) -> Result<bool> {
+        self.inner.namespace_exists(namespace).await
+    }
+    async fn update_namespace(
+        &self,
+        namespace: &NamespaceIdent,
+        properties: HashMap<String, String>,
+    ) -> Result<()> {
+        self.inner.update_namespace(namespace, properties).await
+    }
+    async fn drop_namespace(&self, namespace: &NamespaceIdent) -> Result<()> {
+        self.inner.drop_namespace(namespace).await
+    }
+    async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
+        self.inner.list_tables(namespace).await
+    }
+    async fn create_table(
+        &self,
+        namespace: &NamespaceIdent,
+        creation: TableCreation,
+    ) -> Result<Table> {
+        self.inner.create_table(namespace, creation).await
+    }
+    async fn load_table(&self, table: &TableIdent) -> Result<Table> {
+        self.inner.load_table(table).await
+    }
+    async fn drop_table(&self, table: &TableIdent) -> Result<()> {
+        self.inner.drop_table(table).await
+    }
+    async fn table_exists(&self, table: &TableIdent) -> Result<bool> {
+        self.inner.table_exists(table).await
+    }
+    async fn rename_table(&self, src: &TableIdent, dest: &TableIdent) -> Result<()> {
+        self.inner.rename_table(src, dest).await
+    }
+    async fn register_table(&self, table: &TableIdent, metadata_location: String) -> Result<Table> {
+        self.inner.register_table(table, metadata_location).await
+    }
+}
+
+/// Like [`append_batches`], but emits `lineage` atomically with the commit: the
+/// pointer CAS + mirror projection + lineage row share one Postgres transaction
+/// via the [`LineageEmittingCatalog`] decorator. Takes a concrete `&SqlCatalog`
+/// because the decorator needs the inherent `do_update_table`. The lineage event
+/// is re-presented on each commit-retry attempt and only persists on the winning,
+/// committed attempt (a lost CAS rolls the lineage row back with the snapshot).
+pub async fn append_batches_with_lineage(
+    catalog: &SqlCatalog,
+    table: &Table,
+    batches: Vec<RecordBatch>,
+    lineage: &LineageEvent,
+) -> Result<Vec<WrittenFile>> {
+    let data_files = write_parquet(table, batches).await?;
+    let summaries: Vec<WrittenFile> = data_files
+        .iter()
+        .map(|df| WrittenFile {
+            path: df.file_path().to_string(),
+            record_count: df.record_count() as i64,
+            file_size_bytes: df.file_size_in_bytes() as i64,
+        })
+        .collect();
+
+    let wrapper = LineageEmittingCatalog {
+        inner: catalog,
+        lineage,
+    };
+    let tx = Transaction::new(table);
+    let action = tx.fast_append().add_data_files(data_files);
+    let tx = action.apply(tx)?;
+    tx.commit(&wrapper).await?;
     Ok(summaries)
 }
 

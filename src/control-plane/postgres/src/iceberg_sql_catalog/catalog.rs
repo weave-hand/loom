@@ -30,6 +30,10 @@ use iceberg::{
 use sqlx::postgres::{PgPoolOptions, PgQueryResult, PgRow};
 use sqlx::{AssertSqlSafe, PgPool, Postgres, Row, Transaction};
 
+use control_plane_core::LineageEvent;
+
+use crate::lineage::pg_emit;
+
 use super::error::{
     from_sqlx_error, no_such_namespace_err, no_such_table_err, table_already_exists_err,
 };
@@ -357,6 +361,78 @@ impl SqlCatalog {
         }
         project_files(conn, tid, at, &files).await?;
         Ok(())
+    }
+
+    /// The real commit: pointer CAS + mirror projection (+ optional lineage),
+    /// all in one Postgres transaction. `update_table` calls this with `None`;
+    /// the loom landing path passes `Some(event)` so the lineage row commits or
+    /// rolls back together with the snapshot it describes.
+    pub(crate) async fn do_update_table(
+        &self,
+        commit: TableCommit,
+        lineage: Option<&LineageEvent>,
+    ) -> Result<Table> {
+        let table_ident = commit.identifier().clone();
+        let current_table = self.load_table(&table_ident).await?;
+        let current_metadata_location = current_table.metadata_location_result()?.to_string();
+
+        let staged_table = commit.apply(current_table)?;
+        let staged_metadata_location = staged_table.metadata_location_result()?;
+
+        staged_table
+            .metadata()
+            .write_to(staged_table.file_io(), &staged_metadata_location)
+            .await?;
+
+        let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
+
+        let update_result = self
+            .execute(
+                &format!(
+                    "UPDATE {CATALOG_TABLE_NAME}
+                     SET {CATALOG_FIELD_METADATA_LOCATION_PROP} = ?, {CATALOG_FIELD_PREVIOUS_METADATA_LOCATION_PROP} = ?
+                     WHERE {CATALOG_FIELD_CATALOG_NAME} = ?
+                      AND {CATALOG_FIELD_TABLE_NAME} = ?
+                      AND {CATALOG_FIELD_TABLE_NAMESPACE} = ?
+                      AND (
+                        {CATALOG_FIELD_RECORD_TYPE} = '{CATALOG_FIELD_TABLE_RECORD_TYPE}'
+                        OR {CATALOG_FIELD_RECORD_TYPE} IS NULL
+                      )
+                      AND {CATALOG_FIELD_METADATA_LOCATION_PROP} = ?"
+                ),
+                vec![
+                    Some(staged_metadata_location),
+                    Some(current_metadata_location.as_str()),
+                    Some(&self.name),
+                    Some(table_ident.name()),
+                    Some(&table_ident.namespace().join(".")),
+                    Some(current_metadata_location.as_str()),
+                ],
+                Some(&mut tx),
+            )
+            .await?;
+
+        if update_result.rows_affected() == 0 {
+            let _ = tx.rollback().await;
+            return Err(Error::new(
+                ErrorKind::CatalogCommitConflicts,
+                format!("Commit conflicted for table: {table_ident}"),
+            )
+            .with_retryable(true));
+        }
+
+        self.project_mirror(&mut tx, &table_ident, &staged_table)
+            .await
+            .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
+
+        if let Some(ev) = lineage {
+            pg_emit(&mut *tx, ev)
+                .await
+                .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
+        }
+
+        tx.commit().await.map_err(from_sqlx_error)?;
+        Ok(staged_table)
     }
 }
 
@@ -958,69 +1034,10 @@ impl Catalog for SqlCatalog {
             .build()?)
     }
 
-    /// Updates an existing table within the SQL catalog.
+    /// Updates an existing table within the SQL catalog. Lineage-free path:
+    /// the loom landing path uses `do_update_table(.., Some(ev))` to attach a
+    /// lineage event atomically (see `iceberg_writer::append_batches_with_lineage`).
     async fn update_table(&self, commit: TableCommit) -> Result<Table> {
-        let table_ident = commit.identifier().clone();
-        let current_table = self.load_table(&table_ident).await?;
-        let current_metadata_location = current_table.metadata_location_result()?.to_string();
-
-        let staged_table = commit.apply(current_table)?;
-        let staged_metadata_location = staged_table.metadata_location_result()?;
-
-        staged_table
-            .metadata()
-            .write_to(staged_table.file_io(), &staged_metadata_location)
-            .await?;
-
-        // One Postgres transaction covers the pointer CAS AND the loom mirror
-        // projection: they commit or roll back together, so the mirror can never
-        // diverge from the pointer it projects. (The data Parquet + metadata JSON
-        // are already written to object storage above; on rollback they orphan and
-        // are GC'd later — standard Iceberg, outside the catalog-state boundary.)
-        let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
-
-        let update_result = self
-            .execute(
-                &format!(
-                    "UPDATE {CATALOG_TABLE_NAME}
-                     SET {CATALOG_FIELD_METADATA_LOCATION_PROP} = ?, {CATALOG_FIELD_PREVIOUS_METADATA_LOCATION_PROP} = ?
-                     WHERE {CATALOG_FIELD_CATALOG_NAME} = ?
-                      AND {CATALOG_FIELD_TABLE_NAME} = ?
-                      AND {CATALOG_FIELD_TABLE_NAMESPACE} = ?
-                      AND (
-                        {CATALOG_FIELD_RECORD_TYPE} = '{CATALOG_FIELD_TABLE_RECORD_TYPE}'
-                        OR {CATALOG_FIELD_RECORD_TYPE} IS NULL
-                      )
-                      AND {CATALOG_FIELD_METADATA_LOCATION_PROP} = ?"
-                ),
-                vec![
-                    Some(staged_metadata_location),
-                    Some(current_metadata_location.as_str()),
-                    Some(&self.name),
-                    Some(table_ident.name()),
-                    Some(&table_ident.namespace().join(".")),
-                    Some(current_metadata_location.as_str()),
-                ],
-                Some(&mut tx),
-            )
-            .await?;
-
-        if update_result.rows_affected() == 0 {
-            // CAS lost: roll back pointer + mirror together, surface a retryable
-            // conflict so iceberg's commit backoff re-bases and retries.
-            let _ = tx.rollback().await;
-            return Err(Error::new(
-                ErrorKind::CatalogCommitConflicts,
-                format!("Commit conflicted for table: {table_ident}"),
-            )
-            .with_retryable(true));
-        }
-
-        self.project_mirror(&mut tx, &table_ident, &staged_table)
-            .await
-            .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
-
-        tx.commit().await.map_err(from_sqlx_error)?;
-        Ok(staged_table)
+        self.do_update_table(commit, None).await
     }
 }

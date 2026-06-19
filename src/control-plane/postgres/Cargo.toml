@@ -39,6 +39,13 @@ iceberg = "0.9"
 arrow-array = "57"
 arrow-schema = "57"
 parquet57 = { package = "parquet", version = "57", default-features = false, features = ["arrow"] }
+# arrow-ipc / arrow-select are also pulled in at 58 transitively (the arrow umbrella,
+# datafusion 54), so a bare direct 57 dep would collide on the shared alias the same
+# way parquet did. Rename to <crate>57 (the parquet57 precedent) so reindeer emits a
+# distinct versioned target consumed via named_deps in BUCK. Used by iceberg_landing
+# (arrow-57 IPC decode + multi-batch concat).
+arrow-ipc57 = { package = "arrow-ipc", version = "57", default-features = false }
+arrow-select57 = { package = "arrow-select", version = "57", default-features = false }
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }

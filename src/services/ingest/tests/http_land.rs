@@ -48,8 +48,10 @@ fn app_state(dir: &std::path::Path) -> (Arc<dyn ControlPlane>, AppState) {
     let cp: Arc<dyn ControlPlane> = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new_with_prefix(dir).unwrap());
     let state = AppState {
-        cp: cp.clone(),
-        store,
+        materializer: Arc::new(ingest::landing::DuckLakeMaterializer {
+            cp: cp.clone(),
+            store,
+        }),
     };
     (cp, state)
 }

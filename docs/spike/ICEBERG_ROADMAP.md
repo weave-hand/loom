@@ -58,9 +58,30 @@ pointer+mirror storage · read-path first · vendor the catalog.
 - This is the DuckLake `DATA_INLINING` capability rebuilt loom-natively. **External
   Iceberg clients see inline rows only after a future flush** (bounded staleness,
   accepted). Spec/plan: `docs/superpowers/{specs,plans}/2026-06-18-iceberg-inline-writes*`.
-- **Remaining inline follow-ups:** flush/compaction of inline → Parquet (also
-  restores external visibility); the inline-vs-Parquet threshold + the
-  `LandingBackend`/ingest-binary wiring (**Slice B**).
+- **Remaining inline follow-up:** flush/compaction of inline → Parquet (also
+  restores external visibility).
+
+### Slice B — landing backend + ingest wiring
+
+- The ingest binary now selects a landing backend at boot via
+  `LOOM_LANDING_BACKEND` (default `ducklake`, today's path untouched; `iceberg`
+  enables the loom-native path), mirroring query-api's `LOOM_SERVING_BACKEND`. A
+  `LandingMaterializer` port (`DuckLakeMaterializer` / `IcebergMaterializer`) is
+  injected into the HTTP `AppState`; gate + schema resolution + lineage happen in
+  the handler before dispatch.
+- The Iceberg backend routes by **in-memory byte size** (`LOOM_INLINE_BYTE_LIMIT`,
+  default 16 MiB): small requests `inline_append` (mirror-only rows), large
+  requests write real Parquet. Both emit lineage atomically.
+- **Atomic lineage on the Parquet path:** the Slice-2 `append_batches` emitted no
+  lineage. Slice B adds `SqlCatalog::do_update_table(commit, Option<&LineageEvent>)`
+  (the trait `update_table` delegates with `None`) and a per-call
+  `LineageEmittingCatalog` decorator (`append_batches_with_lineage`) so the lineage
+  row shares the pointer-CAS + mirror-projection tx and rolls back with a lost CAS.
+- The arrow-57 landing logic (IPC decode, routing, both write branches,
+  create-if-absent) lives in the postgres crate's `iceberg_landing` module; the
+  ingest `IcebergMaterializer` is a thin forwarder passing the raw IPC body, so the
+  arrow-57/58 cross-major boundary stays inside the postgres crate. Spec/plan:
+  `docs/superpowers/{specs,plans}/2026-06-18-iceberg-landing-backend*`.
 
 ## Left (deferred)
 
@@ -69,10 +90,10 @@ pointer+mirror storage · read-path first · vendor the catalog.
    predicate pushdown / file skipping.
 2. **Overwrite/replace** — append-only today; the Iceberg analogue of DuckLake's
    `replace_files` (transform overwrite output mode).
-3. **Write/ingest service wiring** — the read side shipped in slice 3, but the
-   *write* path is still a **library** component: a real HTTP ingest can't target
-   Iceberg yet (needs a DuckLake-vs-Iceberg landing backend selection in the
-   ingest binary, analogous to query-api's `LOOM_SERVING_BACKEND`).
+3. **Inline flush/compaction** — inline rows are loom-read-engine-only until a
+   flush rewrites them to Parquet (also restores external Iceberg-client
+   visibility). The landing path that produces them shipped in Slice B; the flush
+   that drains them has not.
 4. **Multi-writer perf** — the atomic commit holds the Postgres tx open across
    object-store manifest reads; fine single-writer, needs optimizing for
    throughput.
@@ -88,13 +109,10 @@ pointer+mirror storage · read-path first · vendor the catalog.
 
 ## Where to go next
 
-Both pillars are built (read + write), so the question is **depth vs reach**:
+Read and write are now both end-to-end reachable from running services
+(`LOOM_SERVING_BACKEND` / `LOOM_LANDING_BACKEND`), so the question is **depth**:
 
-- **Reach → slice 3: service-binary wiring (#3).** Turns the library into
-  something a running service actually uses — the first point where Iceberg is
-  end-to-end usable, not just contract-proven. Highest "make it real" value.
-- **Depth → stats + pruning (#1)** makes Iceberg reads performant, or
+- **Inline flush/compaction (#3)** drains inline rows to Parquet and restores
+  external visibility — the natural follow-on to Slice B.
+- **Per-column stats + pruning (#1)** makes Iceberg reads performant, or
   **overwrite (#2)** brings the write path to transform parity.
-
-Recommendation: **#3 (service wiring)** — without it, the adapter is correct but
-unreachable from outside.

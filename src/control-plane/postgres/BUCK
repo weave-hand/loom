@@ -136,10 +136,15 @@ rust_library(
         "SQLX_OFFLINE": "true",
         "SQLX_OFFLINE_DIR": "$(location :sqlx-cache)/.sqlx",
     },
-    # parquet is renamed to `parquet57` in Cargo.toml (two public majors); named_deps
-    # sets the matching buck2 extern crate name so `use parquet57` resolves the same
-    # under buck2 and cargo (the bare `:parquet57` alias's crate attr is "parquet").
-    named_deps = {"parquet57": "//third-party:parquet57"},
+    # parquet/arrow-ipc/arrow-select are renamed to `<crate>57` in Cargo.toml (two
+    # public majors each); named_deps sets the matching buck2 extern crate name so
+    # `use parquet57`/`arrow_ipc57`/`arrow_select57` resolve the same under buck2 and
+    # cargo (the bare `:<crate>57` aliases' crate attr is the unsuffixed name).
+    named_deps = {
+        "parquet57": "//third-party:parquet57",
+        "arrow_ipc57": "//third-party:arrow-ipc57",
+        "arrow_select57": "//third-party:arrow-select57",
+    },
     deps = [
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -381,10 +386,35 @@ loom_fixture_test(
     named_deps = {"parquet57": "//third-party:parquet57"},
     deps = [
         ":postgres",
+        "//src/control-plane/core:core",
         "//third-party:arrow-array",
         "//third-party:iceberg",
+        "//third-party:serde_json",
         "//third-party:tempfile",
+        "//third-party:time",
         "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-landing",
+    crate = "iceberg_landing",
+    srcs = ["tests/iceberg_landing.rs"],
+    crate_root = "tests/iceberg_landing.rs",
+    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 

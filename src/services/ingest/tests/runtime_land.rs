@@ -66,8 +66,10 @@ async fn lands_through_real_runtime_wiring() {
     let store = Arc::new(service_runtime::local_store(writer.data_path()).expect("store"));
 
     let res = router(AppState {
-        cp: cp.clone(),
-        store,
+        materializer: Arc::new(ingest::landing::DuckLakeMaterializer {
+            cp: cp.clone(),
+            store,
+        }),
     })
     .oneshot(
         Request::builder()

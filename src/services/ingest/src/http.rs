@@ -14,21 +14,22 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
-use control_plane_core::{ControlPlane, DatasetId, EventType, LineageEvent, RunId, TableRef};
-use object_store::ObjectStore;
+use control_plane_core::{DatasetId, EventType, LineageEvent, RunId, TableRef};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::IngestError;
 use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason};
-use crate::materialize::{MaterializeRequest, materialize};
+use crate::landing::{LandRequest, LandingMaterializer};
+use crate::materialize::resolve_columns;
 
-/// Shared, owned dependencies: the control-plane facade + an object store.
+/// Shared, owned dependencies: the configured landing backend (DuckLake or
+/// Iceberg), chosen at boot. Gate + schema resolution + lineage are backend-
+/// agnostic and happen in the handler before dispatch.
 #[derive(Clone)]
 pub struct AppState {
-    pub cp: Arc<dyn ControlPlane>,
-    pub store: Arc<dyn ObjectStore>,
+    pub materializer: Arc<dyn LandingMaterializer>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -144,16 +145,33 @@ async fn land(
         payload: serde_json::json!({ "source": "http-land" }),
     };
 
-    let req = MaterializeRequest {
+    // Gate + schema resolution: backend-agnostic, run once before dispatch.
+    let columns = match resolve_columns(&schema, gate.as_ref()) {
+        Ok(c) => c,
+        Err(IngestError::DoesNotConform(violations)) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(violations_json(&violations)),
+            )
+                .into_response();
+        }
+        Err(IngestError::Infer(_)) => {
+            return (StatusCode::BAD_REQUEST, "unsupported column type").into_response();
+        }
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    };
+
+    let req = LandRequest {
         table: &table,
-        schema,
+        schema: schema.clone(),
+        columns: &columns,
         batches: &batches,
+        ipc_body: body.as_ref(),
         file_prefix: &file_prefix,
-        gate: gate.as_ref(),
         lineage,
     };
 
-    match materialize(st.cp.as_ref(), st.store.clone(), req).await {
+    match st.materializer.land(req).await {
         Ok(snap) => Json(serde_json::json!({
             "snapshot_id": snap.0,
             "dataset": format!("{}.{}", table.schema, table.name),

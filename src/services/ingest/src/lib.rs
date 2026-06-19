@@ -5,6 +5,7 @@
 pub mod bind;
 pub mod gate;
 pub mod http;
+pub mod landing;
 pub mod materialize;
 
 pub use bind::{BindError, BindViolation, BindViolationReason, bind};

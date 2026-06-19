@@ -1003,6 +1003,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "arrow-ipc57",
+    actual = ":arrow-ipc-57",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "arrow-ipc-57.3.1.crate",
     sha256 = "8cf72d04c07229fbf4dbebe7145cac37d7cf7ec582fe705c6b92cb314af096ab",
@@ -1354,6 +1360,12 @@ cargo.rust_library(
         ":serde_core-1",
         ":serde_json-1",
     ],
+)
+
+alias(
+    name = "arrow-select57",
+    actual = ":arrow-select-57",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -2641,23 +2653,23 @@ alias(
 )
 
 http_archive(
-    name = "bytes-1.11.1.crate",
-    sha256 = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33",
-    strip_prefix = "bytes-1.11.1",
-    urls = ["https://static.crates.io/crates/bytes/1.11.1/download"],
+    name = "bytes-1.12.0.crate",
+    sha256 = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593",
+    strip_prefix = "bytes-1.12.0",
+    urls = ["https://static.crates.io/crates/bytes/1.12.0/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "bytes-1",
-    srcs = [":bytes-1.11.1.crate"],
+    srcs = [":bytes-1.12.0.crate"],
     crate = "bytes",
-    crate_root = "bytes-1.11.1.crate/src/lib.rs",
+    crate_root = "bytes-1.12.0.crate/src/lib.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "bytes",
         "CARGO_CRATE_NAME": "bytes",
-        "CARGO_MANIFEST_DIR": "bytes-1.11.1.crate",
+        "CARGO_MANIFEST_DIR": "bytes-1.12.0.crate",
         "CARGO_PKG_AUTHORS": "Carl Lerche <me@carllerche.com>:Sean McArthur <sean@seanmonstar.com>",
         "CARGO_PKG_DESCRIPTION": "Types and traits for working with bytes",
         "CARGO_PKG_HOMEPAGE": "",
@@ -2665,10 +2677,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/tokio-rs/bytes",
         "CARGO_PKG_RUST_VERSION": "1.57",
-        "CARGO_PKG_VERSION": "1.11.1",
+        "CARGO_PKG_VERSION": "1.12.0",
         "CARGO_PKG_VERSION_MAJOR": "1",
-        "CARGO_PKG_VERSION_MINOR": "11",
-        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_MINOR": "12",
+        "CARGO_PKG_VERSION_PATCH": "0",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
@@ -7792,23 +7804,23 @@ buildscript_run(
 )
 
 http_archive(
-    name = "getrandom-0.4.2.crate",
-    sha256 = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555",
-    strip_prefix = "getrandom-0.4.2",
-    urls = ["https://static.crates.io/crates/getrandom/0.4.2/download"],
+    name = "getrandom-0.4.3.crate",
+    sha256 = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099",
+    strip_prefix = "getrandom-0.4.3",
+    urls = ["https://static.crates.io/crates/getrandom/0.4.3/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "getrandom-0.4",
-    srcs = [":getrandom-0.4.2.crate"],
+    srcs = [":getrandom-0.4.3.crate"],
     crate = "getrandom",
-    crate_root = "getrandom-0.4.2.crate/src/lib.rs",
+    crate_root = "getrandom-0.4.3.crate/src/lib.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "getrandom",
         "CARGO_CRATE_NAME": "getrandom",
-        "CARGO_MANIFEST_DIR": "getrandom-0.4.2.crate",
+        "CARGO_MANIFEST_DIR": "getrandom-0.4.3.crate",
         "CARGO_PKG_AUTHORS": "The Rand Project Developers",
         "CARGO_PKG_DESCRIPTION": "A small cross-platform library for retrieving random data from system source",
         "CARGO_PKG_HOMEPAGE": "",
@@ -7816,10 +7828,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/rust-random/getrandom",
         "CARGO_PKG_RUST_VERSION": "1.85",
-        "CARGO_PKG_VERSION": "0.4.2",
+        "CARGO_PKG_VERSION": "0.4.3",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "4",
-        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PATCH": "3",
         "CARGO_PKG_VERSION_PRE": "",
         "OUT_DIR": "$(location :getrandom-0.4-build-script-run[out_dir])",
     },
@@ -7851,14 +7863,14 @@ cargo.rust_library(
 
 cargo.rust_binary(
     name = "getrandom-0.4-build-script-build",
-    srcs = [":getrandom-0.4.2.crate"],
+    srcs = [":getrandom-0.4.3.crate"],
     crate = "build_script_build",
-    crate_root = "getrandom-0.4.2.crate/build.rs",
+    crate_root = "getrandom-0.4.3.crate/build.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "build-script-build",
         "CARGO_CRATE_NAME": "build_script_build",
-        "CARGO_MANIFEST_DIR": "getrandom-0.4.2.crate",
+        "CARGO_MANIFEST_DIR": "getrandom-0.4.3.crate",
         "CARGO_PKG_AUTHORS": "The Rand Project Developers",
         "CARGO_PKG_DESCRIPTION": "A small cross-platform library for retrieving random data from system source",
         "CARGO_PKG_HOMEPAGE": "",
@@ -7866,10 +7878,10 @@ cargo.rust_binary(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/rust-random/getrandom",
         "CARGO_PKG_RUST_VERSION": "1.85",
-        "CARGO_PKG_VERSION": "0.4.2",
+        "CARGO_PKG_VERSION": "0.4.3",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "4",
-        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PATCH": "3",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
@@ -7892,14 +7904,14 @@ buildscript_run(
         "CARGO_PKG_RUST_VERSION": "1.85",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "4",
-        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PATCH": "3",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
         "std",
         "sys_rng",
     ],
-    version = "0.4.2",
+    version = "0.4.3",
 )
 
 http_archive(
@@ -18539,34 +18551,34 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "webpki-roots-1.0.7.crate",
-    sha256 = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d",
-    strip_prefix = "webpki-roots-1.0.7",
-    urls = ["https://static.crates.io/crates/webpki-roots/1.0.7/download"],
+    name = "webpki-roots-1.0.8.crate",
+    sha256 = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf",
+    strip_prefix = "webpki-roots-1.0.8",
+    urls = ["https://static.crates.io/crates/webpki-roots/1.0.8/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "webpki-roots-1",
-    srcs = [":webpki-roots-1.0.7.crate"],
+    srcs = [":webpki-roots-1.0.8.crate"],
     crate = "webpki_roots",
-    crate_root = "webpki-roots-1.0.7.crate/src/lib.rs",
+    crate_root = "webpki-roots-1.0.8.crate/src/lib.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "webpki_roots",
         "CARGO_CRATE_NAME": "webpki_roots",
-        "CARGO_MANIFEST_DIR": "webpki-roots-1.0.7.crate",
+        "CARGO_MANIFEST_DIR": "webpki-roots-1.0.8.crate",
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Mozilla's CA root certificates for use with webpki",
         "CARGO_PKG_HOMEPAGE": "https://github.com/rustls/webpki-roots",
         "CARGO_PKG_NAME": "webpki-roots",
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/rustls/webpki-roots",
-        "CARGO_PKG_RUST_VERSION": "1.64",
-        "CARGO_PKG_VERSION": "1.0.7",
+        "CARGO_PKG_RUST_VERSION": "1.70",
+        "CARGO_PKG_VERSION": "1.0.8",
         "CARGO_PKG_VERSION_MAJOR": "1",
         "CARGO_PKG_VERSION_MINOR": "0",
-        "CARGO_PKG_VERSION_PATCH": "7",
+        "CARGO_PKG_VERSION_PATCH": "8",
         "CARGO_PKG_VERSION_PRE": "",
     },
     named_deps = {
