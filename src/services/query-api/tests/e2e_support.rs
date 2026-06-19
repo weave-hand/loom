@@ -4,23 +4,36 @@
 //! `multi_hop_traversal_e2e` and `inverse_hops_e2e`.  Direction-specific
 //! helpers (`inv`, `hopf`, `srcf`, …) stay local to their respective test
 //! files.
+//!
+//! Also provides the shared HTTP/ACL harness used by the `*_e2e` route tests:
+//! `prop` (a `PropertyDef` constructor), the no-op `StubAction` write engine,
+//! `subject_with_role` / `grant_read` (ACL setup), `get` (drive the axum
+//! router via a oneshot request), and `ids_i64` (parse an `{objects:[…]}`
+//! body's `id`s as sorted `i64`s).
 
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
+use async_trait::async_trait;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Cardinality, DatasetRef, EventType, LineageEvent, LinkBacking, LinkDef, ObjectType, Ontology,
-    PropertyDef, RunId, TableRef, TypeName,
+    Acl, Action, Cardinality, ControlPlane, DatasetRef, Effect, EventType, LineageEvent,
+    LinkBacking, LinkDef, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, RunId,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use http_body_util::BodyExt;
 use ingest::{MaterializeRequest, materialize};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
+use query_api::http::{AppState, router};
 use query_api::render::objects_to_json;
-use query_api::serving::EmbeddedDuckDb;
+use query_api::serving::{ActionEngine, EmbeddedDuckDb, ServingError, SqlValue};
 use time::OffsetDateTime;
+use tower::ServiceExt;
 use uuid::Uuid;
 
 /// Convenience constructor for a `TableRef`.
@@ -29,6 +42,95 @@ pub fn tref(s: &str, n: &str) -> TableRef {
         schema: s.into(),
         name: n.into(),
     }
+}
+
+pub fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
+    PropertyDef {
+        name: name.into(),
+        ty: ty.into(),
+        required,
+    }
+}
+
+/// No-op write engine: the read-only graph route never touches it, but `AppState`
+/// requires one.
+pub struct StubAction;
+
+#[async_trait]
+impl ActionEngine for StubAction {
+    async fn insert_row(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _values: &[SqlValue],
+    ) -> std::result::Result<(), ServingError> {
+        Ok(())
+    }
+}
+
+pub async fn subject_with_role(cp: &PgControlPlane, name: &str) -> (SubjectId, RoleId) {
+    let subj = SubjectId(name.into());
+    let role = RoleId(format!("{name}-role"));
+    cp.define_subject(&subj).await.unwrap();
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subj, &role).await.unwrap();
+    (subj, role)
+}
+
+pub async fn grant_read(cp: &PgControlPlane, role: &RoleId, type_name: &str) {
+    cp.grant(
+        role,
+        Action::Read,
+        PolicyTarget::Type(TypeName(type_name.into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+}
+
+/// Drive the HTTP router and return (status, parsed JSON body).
+pub async fn get(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<EmbeddedDuckDb>,
+    uri: &str,
+    subject: &str,
+) -> (StatusCode, serde_json::Value) {
+    let app = router(AppState {
+        cp: cp as Arc<dyn ControlPlane>,
+        serving: eng,
+        action_engine: Arc::new(StubAction),
+    });
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("X-Loom-Subject", subject)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, json)
+}
+
+/// Collect the sorted set of `id`s from an {"objects":[...]} reachability body. `id` is a
+/// `Long`, rendered as a numeric STRING (int64 exceeds JSON's safe-integer range), so parse.
+pub fn ids_i64(body: &serde_json::Value) -> Vec<i64> {
+    let mut out: Vec<i64> = body["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap().parse::<i64>().unwrap())
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 /// Materialize a single `RecordBatch` into the DuckLake-backed control plane.
