@@ -70,26 +70,24 @@ CREATE TABLE iceberg_mirror.inline_trigger (
   tables), so its queries are sqlx **compile-time** `query!` and it ships in a
   migration.
 
-### Transactional enqueue: `PgQueue::enqueue_tx`
+### Transactional enqueue: reuse the existing `pg_insert`
 
-A transaction-scoped sibling of `enqueue`:
+No new method is needed. `queue.rs` already exposes a transaction-capable
+enqueue:
 
 ```rust
-// postgres/src/queue.rs
-impl PgQueue {
-    pub async fn enqueue_tx(
-        &self,
-        conn: &mut sqlx::PgConnection,
-        job: NewJob,
-    ) -> Result<JobId>;
-}
+// postgres/src/queue.rs (existing)
+pub(crate) async fn pg_insert<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E, job: &NewJob,
+) -> Result<JobId>;   // INSERT INTO queue.jobs … + pg_notify, in one statement
 ```
 
-It runs the same `INSERT INTO queue.jobs … RETURNING id` + `pg_notify` as
-`enqueue`, but on the **caller's** connection so it shares the caller's
-transaction. (`NOTIFY` issued inside a transaction correctly fires on commit.)
-This mirrors how `Tx::emit` already threads atomic lineage through a commit tx —
-the established loom pattern for atomic side effects.
+It is generic over any `PgExecutor`, so `&mut *conn` (the `inline_append`
+transaction) satisfies it directly. `NOTIFY` issued inside a transaction
+correctly fires on commit. (The `Queue` trait already documents this path —
+"for transactional enqueue, use `Tx::enqueue`"; `pg_insert` is the shared
+helper underneath.) So the trigger enqueues with `crate::queue::pg_insert(&mut
+*conn, &job)` — no new public surface.
 
 ### Write-path change: `inline_append`
 
@@ -120,18 +118,25 @@ The global threshold reaches `inline_append` via the existing config plumbing
 (an added field on the materializer/landing config sourced from
 `LOOM_FLUSH_BYTE_THRESHOLD`).
 
-### Flush-side reset (in the existing flush commit tx)
+### Flush-side reset (standalone, both paths)
 
-`flush_table`'s atomic commit already end-caps the inline rows. It gains one more
-statement in the same `CommitExtras` transaction:
+After a flush, the counter must reset and the trigger must re-arm.
+`flush_table` runs a standalone statement against the table's `inline_trigger`
+row:
 
 ```sql
 UPDATE iceberg_mirror.inline_trigger
 SET live_bytes = 0, enqueued = false
-WHERE table_id = $table_id;
+WHERE table_id = $table_id;   -- no-op if the row is absent
 ```
 
-So the counter resets and the trigger re-arms **atomically with the cap**. Reset
+This is a **standalone `UPDATE`, not folded into the `CommitExtras` cap tx** —
+keeping the reset out of the vendored-catalog commit path (one fewer reason to
+touch `do_update_table`). The only gap it introduces is a crash *between* the cap
+commit and the reset, which **self-heals**: the job wasn't completed, so it is
+reclaimed and re-run, and the re-run takes the `None` path (rows already capped)
+which issues the same reset. Combined with at-least-once job processing
+(Spec 2's worker), the flag cannot stay stuck. Reset
 is to **zero, not decrement-by-flushed-bytes**: a write landing between a flush's
 row-capture and its commit is not in the capped set, so zeroing slightly
 *undercounts* those bytes — which only *delays* their next flush. Undercount is
@@ -209,15 +214,18 @@ enqueued=false` — atomically with the cap on the `Some` path, via the standalo
 
 - **Create** a migration under `postgres/migrations/` adding
   `iceberg_mirror.inline_trigger`.
-- **Modify** `postgres/src/queue.rs` — add `enqueue_tx(&self, &mut PgConnection,
-  NewJob)`; factor the shared INSERT+NOTIFY so `enqueue` and `enqueue_tx` don't
-  duplicate SQL.
-- **Modify** `postgres/src/iceberg_inline.rs` — compute `batch_bytes`; upsert +
-  bump `inline_trigger`; conditional `enqueue_tx` + set `enqueued`; thread the
-  global threshold in.
-- **Modify** `postgres/src/iceberg_flush.rs` (or the `CommitExtras` end-cap path
-  in `iceberg_sql_catalog/catalog.rs`) — add the `inline_trigger` reset to the
-  flush commit tx.
+- **`postgres/src/queue.rs`** — no change; the existing generic `pg_insert` is
+  the transactional enqueue.
+- **Modify** `postgres/src/iceberg_mirror.rs` — add the static-schema trigger
+  helpers (`bump_inline_trigger`, `arm_inline_trigger`, `reset_inline_trigger`),
+  compile-time `query!` in the module's existing style.
+- **Modify** `postgres/src/iceberg_inline.rs` — add a `flush_threshold:
+  Option<i64>` param to `inline_append`; when `Some`, compute `batch_bytes`
+  (`RecordBatch::get_array_memory_size`), bump the trigger, and on crossing
+  `pg_insert` a `flush_table` job + arm. `None` preserves today's behavior.
+- **Modify** `postgres/src/iceberg_flush.rs` — standalone `inline_trigger` reset
+  on both flush paths (`Some`: after the commit; `None`: resolve the `table_id`
+  and reset). No `catalog.rs` / `CommitExtras` change.
 - **Modify** the ingest/landing config (`services/runtime` + the
   `IcebergMaterializer` path) — read `LOOM_FLUSH_BYTE_THRESHOLD` (default 64 MiB)
   and pass it to `inline_append`.
