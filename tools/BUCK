@@ -287,3 +287,58 @@ command_alias(
     }),
     visibility = ["PUBLIC"],
 )
+
+# jq (https://github.com/jqlang/jq) — vendored so the code-health routines render
+# deterministically without depending on a host `jq` (loom-stpa uses host jq; that
+# is a reproducibility hole for a scheduled routine). The Linux release assets are
+# RAW STATIC BINARIES (not archives), so the genrule is just cp + chmod — no
+# host-only label needed (cp/chmod are on every RE worker, like the prek block).
+# To bump: replace JQ_VERSION and refresh each SHA256 from the `<asset>.sha256` on
+# the release page (or `sha256sum` the downloaded asset).
+#
+# Two naming quirks vs the other blocks: (1) jq's git tags are `jq-X.Y.Z`, not
+# `vX.Y.Z`, so JQ_VERSION carries the `jq-` prefix and feeds straight into the URL;
+# (2) jq's release assets use `amd64`/`arm64` in their filenames (not Rust triples),
+# so the `http_file` names mirror that while the genrules keep the repo's
+# `x86_64`/`aarch64` convention.
+#
+# `buck2 run //tools:jq -- <args>`. Linux x86_64 / aarch64 only (matches platforms/BUCK).
+
+JQ_VERSION = "jq-1.8.1"  # jq tags are "jq-X.Y.Z", not "vX.Y.Z"
+
+_JQ_URL = "https://github.com/jqlang/jq/releases/download/{version}/jq-linux-{arch}"
+
+http_file(
+    name = "jq-amd64.bin",
+    urls = [_JQ_URL.format(version = JQ_VERSION, arch = "amd64")],
+    sha256 = "020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d",
+)
+
+http_file(
+    name = "jq-arm64.bin",
+    urls = [_JQ_URL.format(version = JQ_VERSION, arch = "arm64")],
+    sha256 = "6bc62f25981328edd3cfcfe6fe51b073f2d7e7710d7ef7fcdac28d4e384fc3d4",
+)
+
+genrule(
+    name = "jq-x86_64-linux",
+    out = "jq",
+    cmd = "cp $(location :jq-amd64.bin) $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "jq-aarch64-linux",
+    out = "jq",
+    cmd = "cp $(location :jq-arm64.bin) $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "jq",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":jq-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":jq-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
