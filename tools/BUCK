@@ -389,3 +389,49 @@ command_alias(
     }),
     visibility = ["PUBLIC"],
 )
+
+# lucidshark-duplo (https://github.com/toniantunovi/lucidshark-duplo) — duplicate-code
+# detector; drives the //loom-duplication routine. `.tar.gz` with the `lucidshark-duplo`
+# binary at the archive root (no wrapper dir). tar.gz ⇒ no `uses_xz` label. To bump:
+# replace DUPLO_VERSION, refresh each SHA256.
+#
+# `buck2 run //tools:lucidshark-duplo -- <file-list> --json -m 20`.
+
+DUPLO_VERSION = "v0.2.0"
+
+_DUPLO_URL = "https://github.com/toniantunovi/lucidshark-duplo/releases/download/{version}/lucidshark-duplo-linux-{arch}.tar.gz"
+
+http_file(
+    name = "duplo-x86_64-linux.tar.gz",
+    urls = [_DUPLO_URL.format(version = DUPLO_VERSION, arch = "x86_64")],
+    sha256 = "f7aecf9669eb5a1eeac3d51a9e271b9c80330e0c8f6ed7c6f00a5a04437376fc",
+)
+
+http_file(
+    name = "duplo-aarch64-linux.tar.gz",
+    urls = [_DUPLO_URL.format(version = DUPLO_VERSION, arch = "aarch64")],
+    sha256 = "1e509820936f85323c1794629f31707dcea4a7305556a126b059bec968d14d49",
+)
+
+genrule(
+    name = "lucidshark-duplo-x86_64-linux",
+    out = "lucidshark-duplo",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :duplo-x86_64-linux.tar.gz) -C $TMP/x && cp $TMP/x/lucidshark-duplo $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "lucidshark-duplo-aarch64-linux",
+    out = "lucidshark-duplo",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :duplo-aarch64-linux.tar.gz) -C $TMP/x && cp $TMP/x/lucidshark-duplo $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "lucidshark-duplo",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":lucidshark-duplo-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":lucidshark-duplo-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
