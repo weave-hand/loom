@@ -46,6 +46,18 @@ non-DuckDB engine overrides this." This slice is that engine.
   (`current_snapshot`).
 - **Governed write-back actions** on the Iceberg backend (no inline write path —
   see `UnsupportedActionEngine` below).
+- **Recursive-CTE graph reads (`/graph`).** This engine is unproven against the
+  `WITH RECURSIVE` reachability SQL emitted by `compile_graph_reach` /
+  `compile_graph_reach_union` (the `/graph` part-1/2/3 compilers). The shape is
+  SQL-standard linear recursion (single self-reference, distinct `UNION`, joins in
+  the recursive term, an outer `IN (SELECT id FROM reach …)`) and DataFusion 54
+  supports all of it (recursive CTEs default-on since 37.0.0), so no compiler change
+  is expected — but no test runs a recursive CTE through `DataFusionServingEngine`,
+  and a real check must land the graph into the `iceberg_mirror` rather than DuckLake.
+  **Follow-up for this arc:** add a recursive-CTE-over-DataFusion integration test
+  (mirror-landed self-link graph → `DataFusionServingEngine`, asserting the same
+  reachable sets as the DuckDB graph e2es `graph-reach-e2e` / `graph-union-e2e`).
+  See `docs/FUTURE.md` (the `/graph` surface section).
 
 ## Architecture
 

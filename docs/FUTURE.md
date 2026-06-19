@@ -226,6 +226,22 @@ drew the relational/graph boundary:
   the projection. A non-self link reuses `NotCyclicPath`; `?path=` and `?links=` are mutually
   exclusive on the `/graph` route.
 
+  **Recursive reachability on the DataFusion/Iceberg serving engine — unverified.** The graph
+  reachability compilers (`compile_graph_reach`, `compile_graph_reach_union`) emit `WITH RECURSIVE`
+  SQL run today only against the DuckDB serving engine (the `DuckLake` backend). The single-
+  self-reference edge-relation form is the SQL-**standard** linear-recursion shape (not a DuckDB
+  workaround), and DataFusion 54 (loom's pin) supports the exact shape the compilers emit —
+  `WITH RECURSIVE`, distinct `UNION` with cross-iteration dedup (not `UNION ALL`-only), JOINs in
+  the recursive term, and the outer `… IN (SELECT id FROM reach …)` subquery (recursive CTEs
+  default-on since DataFusion 37.0.0). So it is **expected to port to the `Iceberg`/
+  `DataFusionServingEngine` backend with no compiler change**, but this is unproven: no test runs a
+  recursive CTE through DataFusion, and a real check must land the graph into the `iceberg_mirror`
+  (not DuckLake). **TODO (Iceberg serving arc):** add a recursive-CTE-over-DataFusion verification
+  test (mirror-landed self-link graph → `DataFusionServingEngine`, asserting the same reachable
+  sets as the DuckDB graph e2es). Note the `WITH RECURSIVE`/`UNION` keyword is currently a hardcoded
+  literal in the compilers, not routed through `SqlDialect` (unlike `quote_ident`/`limit_clause`) —
+  add a dialect knob only if a future engine needs `UNION ALL`.
+
   Remaining `/graph` parts (deferred):
   - **Inverse links inside the path.** Each path link is followed forward in part-2; a cycle is
     formed by forward links that return to the start type. Mixing backward hops into a cyclic
