@@ -17,8 +17,14 @@ use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
 
 /// Flush `table`'s live inline rows into a real Iceberg Parquet snapshot, retiring
 /// the inline rows at the same snapshot. Returns the new mirror snapshot id, or
-/// `None` if there were no live inline rows. Serialized per table by a session
-/// advisory lock held for the duration of this call.
+/// `None` if there were no live inline rows. Serialized per table by a transaction-
+/// scoped advisory lock held for the duration of this call.
+///
+/// The returned id is the table's current snapshot read back after commit, not
+/// strictly the snapshot this flush allocated: under a concurrent committed writer
+/// it may be newer. It is informational (it does not feed the end-cap), so treat it
+/// as "at least this flush's data is live", not as an exact handle to the flush
+/// snapshot.
 pub async fn flush_table(
     catalog: &SqlCatalog,
     pool: &PgPool,
