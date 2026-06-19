@@ -370,6 +370,16 @@ queried type. The recursive `WITH RECURSIVE` step joins `cur` through the whole 
 `nxt` (both the start type), governed at every intermediate type (Read + row-filters inside the
 recursion — the N-ends guarantee applied per recursive application of the pattern). Part-1's single
 self-link is now the 1-element case; the old `NotSelfLink` error is unified into `NotCyclicPath`.
-Remaining `/graph` parts (deferred to `docs/FUTURE.md`): inverse links inside the path, multi-edge
-union reachability (`?links=`), recursive-core + relational-tail (`path=knows*,worksAt`), min-depth
-annotation, shortest-path / `/tree`, weighted edges.
+
+**`/graph` part-3 — multi-edge union reachability** (`2026-06-19-graph-multi-edge-design.md`) is
+now delivered: `GET /objects/:type/graph?links=l1,…,lN&depth=N` follows ANY ONE of a set of
+self-links at each step (a union over edge types), returning the deduped reachable objects of the
+queried type. Because DuckDB allows a recursive CTE to reference itself only once, the compiler
+builds a non-recursive `(from_id, to_id)` edge relation (the `UNION ALL` of one arm per named link,
+mixed FK/join-table backings via the shared `link_join` helper) and the single recursive step joins
+`reach` to it, then to the landing node `nxt` for governance. Single-type governance — every link
+is a self-link, so the queried type's row-filters apply at the seed, the landing node, and the
+projection (no intermediates). `?path=` and `?links=` are mutually exclusive.
+Remaining `/graph` parts (deferred to `docs/FUTURE.md`): inverse links inside the path,
+recursive-core + relational-tail (`path=knows*,worksAt`), min-depth annotation, shortest-path /
+`/tree`, weighted edges.

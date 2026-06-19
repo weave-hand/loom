@@ -445,6 +445,17 @@ pub struct GraphQuery {
     pub ids: Vec<String>,
 }
 
+/// A bounded recursive reachability read over a UNION of self-links. `filters`/`ids` scope the
+/// SEED set (the starting objects); the recursion follows ANY ONE of `links` (each a self-link
+/// on `type_name`) up to `depth` times.
+pub struct GraphUnionQuery {
+    pub type_name: String,
+    pub links: Vec<String>,
+    pub depth: u32,
+    pub filters: Vec<(String, String)>,
+    pub ids: Vec<String>,
+}
+
 /// Resolve + govern a chain: depth check, source Read gate, per-hop type resolution
 /// (forward/inverse) with Read-on-every-reached-type, per-position row-filters, and
 /// caller-filter coercion/visibility. Returns the per-position metadata, the compiler
@@ -862,6 +873,136 @@ pub async fn read_graph_reach(
         &object_type.table,
         &identity,
         &steps,
+        &seed_predicates,
+        &row_filters,
+        &allowed,
+        &mask_cols,
+        q.depth,
+        DEFAULT_LIMIT,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let logical_types: Vec<String> = allowed
+        .iter()
+        .map(|name| {
+            object_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    debug_assert_eq!(
+        served.columns, allowed,
+        "serving engine returned columns out of the projected order"
+    );
+    Ok(ObjectRows {
+        columns: allowed,
+        logical_types,
+        rows: served.rows,
+    })
+}
+
+/// Serve a bounded recursive reachability read over a UNION of self-links: from the seed set,
+/// repeatedly follow ANY ONE of `links` (each a self-link on the queried type) up to `depth`
+/// times, return the deduped reachable objects. Governed: Read on the queried type and the
+/// queried type's row-filters at the seed/every recursive expansion/projection; declared identity
+/// (dedup key). Every named link must be a self-link (its `to` is the queried type) -> else
+/// NotCyclicPath; an unknown link -> UnknownLink. Because every link lands on the already-gated
+/// queried type, there are no intermediate types and no per-link Read gate.
+pub async fn read_graph_reach_union(
+    q: &GraphUnionQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    let type_name = TypeName(q.type_name.clone());
+    let target = PolicyTarget::Type(type_name.clone());
+
+    // Read gate (deny-by-default, before existence is revealed).
+    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
+        return Err(QueryError::Forbidden);
+    }
+    let object_type = deps
+        .ontology
+        .get_type(&type_name)
+        .await
+        .map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
+            other => QueryError::ControlPlane(other),
+        })?;
+    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+
+    // Declared identity is the recursion's dedup key.
+    let identity = object_type
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
+
+    // Resolve the self-link set: every named link must be an outbound link of the queried type
+    // whose `to` is the queried type (a self-link). Dedup by name (first-seen order; a link
+    // listed twice yields one arm). No per-link Read gate — every link lands on the queried type,
+    // already gated above.
+    if q.links.is_empty() {
+        return Err(QueryError::NotCyclicPath(String::new()));
+    }
+    let links = deps
+        .ontology
+        .links(&type_name, PageReq::unbounded())
+        .await?;
+    let mut backings: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(q.links.len());
+    let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
+    for link_name in &q.links {
+        if !seen.insert(link_name) {
+            continue; // duplicate -> one arm
+        }
+        let link = links
+            .items
+            .iter()
+            .find(|l| &l.name == link_name)
+            .ok_or_else(|| QueryError::UnknownLink(link_name.clone()))?;
+        if link.to != type_name {
+            return Err(QueryError::NotCyclicPath(link_name.clone()));
+        }
+        backings.push(link.backing.clone());
+    }
+
+    // Projection: visible columns minus denied; masked applied. Empty -> Forbidden.
+    let allowed = project_allowed(&object_type.properties, &denied);
+    if allowed.is_empty() {
+        return Err(QueryError::Forbidden);
+    }
+    let mask_cols: Vec<String> = allowed
+        .iter()
+        .filter(|c| masked.contains(*c))
+        .cloned()
+        .collect();
+
+    // Seed predicates: source filters (visibility-checked + coerced) then the ?_ids= set.
+    let mut seed_predicates: Vec<crate::filter::CallerPredicate> = Vec::new();
+    for (col, raw) in &q.filters {
+        if !allowed.contains(col) || masked.contains(col) {
+            return Err(QueryError::BadFilter(col.clone()));
+        }
+        let ty = object_type
+            .properties
+            .iter()
+            .find(|p| &p.name == col)
+            .map(|p| p.ty.as_str())
+            .unwrap_or("");
+        seed_predicates.push(
+            crate::filter::coerce_predicate(col, ty, raw)
+                .map_err(|_| QueryError::BadFilter(col.clone()))?,
+        );
+    }
+    if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
+        seed_predicates.push(p);
+    }
+
+    let (sql, params) = crate::sql::compile_graph_reach_union(
+        deps.serving.dialect(),
+        &object_type.table,
+        &identity,
+        &backings,
         &seed_predicates,
         &row_filters,
         &allowed,
