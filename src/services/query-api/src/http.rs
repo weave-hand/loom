@@ -4,8 +4,9 @@
 use std::sync::Arc;
 
 use crate::handler::{
-    Associations, ChainQuery, GraphQuery, Hop, ObjectQuery, QueryDeps, QueryError, Subject,
-    read_associations, read_graph_reach, read_linked_chain, read_object,
+    Associations, ChainQuery, GraphQuery, GraphUnionQuery, Hop, ObjectQuery, QueryDeps, QueryError,
+    Subject, read_associations, read_graph_reach, read_graph_reach_union, read_linked_chain,
+    read_object,
 };
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
@@ -338,11 +339,19 @@ async fn get_graph_path(
     let mut ids: Vec<String> = Vec::new();
     let mut ids_present = false;
     let mut path: Vec<String> = Vec::new();
+    let mut links: Vec<String> = Vec::new();
     let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         match k.as_str() {
             "path" => {
                 path = v
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            }
+            "links" => {
+                links = v
                     .split(',')
                     .filter(|s| !s.is_empty())
                     .map(String::from)
@@ -366,9 +375,6 @@ async fn get_graph_path(
             _ => filters.push((k, v)),
         }
     }
-    if path.is_empty() {
-        return (StatusCode::BAD_REQUEST, "path requires at least one link").into_response();
-    }
     if ids_present && ids.is_empty() {
         return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
     }
@@ -379,12 +385,43 @@ async fn get_graph_path(
         )
             .into_response();
     }
+    // Exactly one of `path` (ordered cycle) or `links` (self-link union) selects the mode.
+    if !path.is_empty() && !links.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "specify either path or links, not both",
+        )
+            .into_response();
+    }
+    if !links.is_empty() {
+        return graph_union_respond(&st, type_name, links, depth, filters, ids, subject).await;
+    }
+    if path.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "path or links requires at least one link",
+        )
+            .into_response();
+    }
     graph_respond(&st, type_name, path, depth, filters, ids, subject).await
 }
 
-/// Shared tail for both graph routes: builds `QueryDeps`, runs `read_graph_reach`, and maps
-/// the result/error to an HTTP response. Single-link and multi-link routes differ only in how
-/// they assemble `path`.
+/// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
+fn graph_error(e: QueryError) -> axum::response::Response {
+    match e {
+        QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
+        QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
+        QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
+        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
+        QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
+        QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
+        // Opaque body for backend/serving faults (no internal detail leaked).
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    }
+}
+
+/// Path-cycle (`?path=` / single `/graph/:link`) tail: build a `GraphQuery`, run
+/// `read_graph_reach`, map via `graph_error`.
 async fn graph_respond(
     st: &AppState,
     type_name: String,
@@ -413,14 +450,41 @@ async fn graph_respond(
     .await
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
-        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-        Err(QueryError::UnknownLink(l)) => (StatusCode::NOT_FOUND, l).into_response(),
-        Err(QueryError::NotCyclicPath(p)) => (StatusCode::BAD_REQUEST, p).into_response(),
-        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        // Opaque body for backend/serving faults (no internal detail leaked).
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+        Err(e) => graph_error(e),
+    }
+}
+
+/// Union (`?links=`) tail: build a `GraphUnionQuery`, run `read_graph_reach_union`, map via
+/// `graph_error`.
+async fn graph_union_respond(
+    st: &AppState,
+    type_name: String,
+    links: Vec<String>,
+    depth: u32,
+    filters: Vec<(String, String)>,
+    ids: Vec<String>,
+    subject: String,
+) -> axum::response::Response {
+    let deps = QueryDeps {
+        ontology: st.cp.ontology(),
+        acl: st.cp.acl(),
+        serving: st.serving.as_ref(),
+    };
+    match read_graph_reach_union(
+        &GraphUnionQuery {
+            type_name,
+            links,
+            depth,
+            filters,
+            ids,
+        },
+        &Subject(SubjectId(subject)),
+        &deps,
+    )
+    .await
+    {
+        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Err(e) => graph_error(e),
     }
 }
 

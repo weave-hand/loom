@@ -746,12 +746,29 @@ pub fn compile_graph_reach(
 
 /// Compile a depth-bounded recursive reachability query over a UNION of self-links: the deduped
 /// set of `table` rows reachable from the seed set by repeatedly following ANY ONE of `backings`
-/// (each a self-link on `table`) up to `depth` times. The recursive term is a UNION of one
-/// self-hop arm per backing; every arm lands on `nxt` (= `table`) and is governed by the start
-/// `row_filters` at `nxt`. Param order is SQL-emission order: seed predicates, seed row-filters
-/// (`s`), each arm's row-filters (`nxt`, in `backings` order), then projection row-filters (`p`).
-/// Termination by the inlined `depth` bound; `DISTINCT` + `depth >= 1` dedups/reachability. Every
-/// caller value is a bound param. `backings` is non-empty (the handler enforces).
+/// (each a self-link on `table`) up to `depth` times.
+///
+/// The recursive CTE has a single recursive self-reference to avoid DuckDB's "Circular reference
+/// to CTE" error that occurs when multiple arms each reference the CTE name. Instead, all edge
+/// arms are collapsed into a non-recursive `(from_id, to_id)` subquery joined in one step:
+///
+/// ```sql
+/// WITH RECURSIVE reach(id, depth) AS (
+///   SELECT s.id, 0 FROM tbl s WHERE {seed}
+///   UNION
+///   SELECT e.to_id, r.depth + 1
+///   FROM reach r
+///   JOIN (arm0 UNION ALL arm1 ...) e ON r.id = e.from_id
+///   JOIN tbl nxt ON e.to_id = nxt.id
+///   WHERE r.depth < {depth} AND {row_filters_at_nxt}
+/// )
+/// SELECT DISTINCT {cols} FROM tbl p WHERE p.id IN (SELECT id FROM reach WHERE depth >= 1)
+///   AND {row_filters_at_p} LIMIT {limit}
+/// ```
+///
+/// Param order: seed predicates, seed row-filters (`s`), recursive row-filters (`nxt`, ONE set
+/// shared across all arms), projection row-filters (`p`). `backings` is non-empty (enforced by
+/// caller). Every caller value is a bound param.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_graph_reach_union(
     dialect: &dyn SqlDialect,
@@ -787,23 +804,32 @@ pub fn compile_graph_reach_union(
         format!(" WHERE {}", seed_conj.join(" AND "))
     };
 
-    // Recursive term: one UNION arm per self-link backing. Each arm joins `cur` to `nxt` (both
-    // `table`) via the single hop, governed by the start row_filters at `nxt`. The join-table
-    // alias `j{i}` is per-arm (arm index) so multiple join-table links never collide.
-    let mut arms: Vec<String> = Vec::with_capacity(backings.len());
-    for (i, backing) in backings.iter().enumerate() {
-        let jt_alias = format!("j{i}");
-        let joins = link_join(dialect, backing, "cur", "nxt", &tbl, &jt_alias);
-        let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
-        for f in row_filters {
-            rec_conj.push(filter_sql(dialect, f, "nxt", &mut params));
-        }
-        let rec_where = rec_conj.join(" AND ");
-        arms.push(format!(
-            "SELECT nxt.{id}, r.depth + 1 FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}"
-        ));
+    // Edge subquery: each backing contributes one non-recursive arm that emits (from_id, to_id)
+    // pairs. Arms are joined with UNION ALL (duplicates acceptable here; the outer CTE dedupes).
+    // The join-table alias `j{i}` is per-arm so multiple join-table links never collide.
+    let edge_arms: Vec<String> = backings
+        .iter()
+        .enumerate()
+        .map(|(i, backing)| {
+            let jt_alias = format!("j{i}");
+            let joins = link_join(dialect, backing, "cur", "nxt", &tbl, &jt_alias);
+            format!("SELECT cur.{id} AS from_id, nxt.{id} AS to_id FROM {tbl} cur{joins}")
+        })
+        .collect();
+    let edges_sql = edge_arms.join(" UNION ALL ");
+
+    // Recursive step: single join of `reach r` to the edge subquery, then to `nxt` for filter.
+    // Row-filters are applied at `nxt` (the landing node). This single `reach` reference avoids
+    // DuckDB's "Circular reference to CTE" error that arises from multiple arms each referencing
+    // the CTE name.
+    let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
+    for f in row_filters {
+        rec_conj.push(filter_sql(dialect, f, "nxt", &mut params));
     }
-    let recursive = arms.join(" UNION ");
+    let rec_where = rec_conj.join(" AND ");
+    let recursive = format!(
+        "SELECT e.to_id, r.depth + 1 FROM reach r JOIN ({edges_sql}) e ON r.id = e.from_id JOIN {tbl} nxt ON e.to_id = nxt.{id} WHERE {rec_where}"
+    );
 
     // Projection of `p`: visible columns (masked -> marker), reachable in >= 1 hop, governed.
     let cols = allowed_cols

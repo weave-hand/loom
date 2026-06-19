@@ -1,6 +1,8 @@
-//! compile_graph_reach_union emits a depth-bounded WITH RECURSIVE reachability query whose
-//! recursive term is a UNION of one self-hop arm per self-link, governed by the queried
-//! type's row-filters at the seed `s`, each arm's landing node `nxt`, and the projection `p`.
+//! compile_graph_reach_union emits a depth-bounded WITH RECURSIVE reachability query. The
+//! recursive term has a single CTE self-reference: all edge arms are collapsed into a non-recursive
+//! (from_id, to_id) subquery joined with UNION ALL, avoiding DuckDB's "Circular reference to CTE"
+//! error that arises from multiple arms each referencing the CTE name directly. Row-filters are
+//! applied at the seed `s`, the single shared landing node `nxt`, and the projection `p`.
 
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
@@ -54,36 +56,42 @@ fn two_self_links_union_with_row_filter() {
         "got: {sql}"
     );
     assert!(sql.contains("r.depth < 3"), "depth bound inlined: {sql}");
-    // seed UNION arm0 UNION arm1 => exactly two " UNION " tokens.
+    // One CTE-level UNION (anchor vs recursive step); one UNION ALL inside the edge subquery.
+    // Note: " UNION " is a substring of " UNION ALL ", so count bare UNION as (UNION - UNION ALL).
+    let union_all = sql.matches(" UNION ALL ").count();
+    let union_any = sql.matches(" UNION ").count();
+    assert_eq!(union_all, 1, "one UNION ALL inside edge subquery: {sql}");
     assert_eq!(
-        sql.matches(" UNION ").count(),
-        2,
-        "two recursive arms unioned: {sql}"
+        union_any - union_all,
+        1,
+        "one bare CTE-level UNION (not UNION ALL): {sql}"
     );
-    // FK arm joins cur.knows_id = nxt.id.
+    // FK arm (arm index 0) joins cur.knows_id = nxt.id inside the edge subquery.
     assert!(
         sql.contains(r#"cur."knows_id" = nxt."id""#),
         "fk arm: {sql}"
     );
-    // Join-table arm uses the per-arm alias j1 (arm index 1).
+    // Join-table arm (arm index 1) uses the per-arm alias j1 inside the edge subquery.
     assert!(
         sql.contains(r#"cur."id" = j1."a""#) && sql.contains(r#"j1."b" = nxt."id""#),
         "join-table arm with j1 alias: {sql}"
     );
-    // Row-filter rendered at seed s, each arm's nxt (x2), and projection p.
+    // Row-filter rendered at seed s, the single shared nxt, and projection p.
     assert!(
         sql.contains(r#"s."active""#)
             && sql.contains(r#"nxt."active""#)
             && sql.contains(r#"p."active""#),
         "row-filter at s/nxt/p: {sql}"
     );
-    // Param count: seed s (1) + arm0 nxt (1) + arm1 nxt (1) + projection p (1) = 4.
+    // Param count: seed s (1) + one shared nxt (1) + projection p (1) = 3.
+    // (The old per-arm-nxt approach emitted N sets of row-filter params; the new single
+    // shared-nxt approach emits just one set regardless of how many arms there are.)
     assert_eq!(
         params.len(),
-        4,
-        "1 seed + 2 arm-nxt + 1 projection; got {params:?}"
+        3,
+        "1 seed + 1 shared-nxt + 1 projection; got {params:?}"
     );
-    assert_eq!(params, vec![SqlValue::Bool(true); 4]);
+    assert_eq!(params, vec![SqlValue::Bool(true); 3]);
     // Reachable in >= 1 hop, projected distinct.
     assert!(sql.contains("depth >= 1"), "reachability bound: {sql}");
     assert!(
@@ -117,13 +125,18 @@ fn single_self_link_with_seed_predicate() {
         1000,
     )
     .unwrap();
-    // seed UNION arm0 => exactly one " UNION " token.
+    // seed UNION recursive-step => exactly one " UNION " token; single arm has no UNION ALL.
     assert_eq!(sql.matches(" UNION ").count(), 1, "single arm: {sql}");
+    assert_eq!(
+        sql.matches(" UNION ALL ").count(),
+        0,
+        "no UNION ALL for single arm: {sql}"
+    );
     assert!(
         sql.contains(r#"cur."parent_id" = nxt."id""#),
         "fk arm: {sql}"
     );
-    // Only the seed In value is bound (FK arm needs no join-table alias).
+    // Only the seed In value is bound (no row-filters, no projection filters).
     assert_eq!(params.len(), 1, "seed id only; got {params:?}");
     assert_eq!(params[0], SqlValue::Int(7));
 }
