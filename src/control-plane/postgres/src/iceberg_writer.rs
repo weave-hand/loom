@@ -23,7 +23,7 @@ use parquet57::file::properties::WriterProperties;
 
 use control_plane_core::LineageEvent;
 
-use crate::iceberg_sql_catalog::SqlCatalog;
+use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
 
 /// A neutral summary of one committed Parquet data file, returned to callers
 /// (tests, the seeder) that want to assert on the write without depending on
@@ -63,24 +63,43 @@ pub async fn append_batches(
     Ok(summaries)
 }
 
-/// A per-call `Catalog` decorator that attaches a loom `LineageEvent` to the one
-/// `update_table` the iceberg commit performs, so the lineage row lands in the
-/// same Postgres tx as the pointer CAS + mirror projection. Every other method
-/// delegates to the inner `SqlCatalog`. Constructed fresh per append (holds
+/// A per-call `Catalog` decorator that carries `CommitExtras` (lineage and/or an
+/// inline end-cap) into the one `update_table` the iceberg commit performs, so both
+/// land in the same Postgres tx as the pointer CAS + mirror projection. Every other
+/// method delegates to the inner `SqlCatalog`. Constructed fresh per append (holds
 /// borrows), so there is no shared mutable state across concurrent commits.
-#[derive(Debug)]
-struct LineageEmittingCatalog<'a> {
+struct CommitExtrasCatalog<'a> {
     inner: &'a SqlCatalog,
-    lineage: &'a LineageEvent,
+    lineage: Option<&'a LineageEvent>,
+    end_cap: Option<InlineEndCap<'a>>,
+}
+
+impl std::fmt::Debug for CommitExtrasCatalog<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommitExtrasCatalog")
+            .field("lineage", &self.lineage.is_some())
+            .field("end_cap", &self.end_cap.is_some())
+            .finish()
+    }
 }
 
 #[async_trait]
-impl Catalog for LineageEmittingCatalog<'_> {
+impl Catalog for CommitExtrasCatalog<'_> {
     /// The one method that differs: route the commit through `do_update_table`
-    /// with the lineage event so it commits/rolls back atomically with the
-    /// snapshot.
+    /// with the extras so they commit/roll back atomically with the snapshot.
     async fn update_table(&self, commit: TableCommit) -> Result<Table> {
-        self.inner.do_update_table(commit, Some(self.lineage)).await
+        self.inner
+            .do_update_table(
+                commit,
+                CommitExtras {
+                    lineage: self.lineage,
+                    end_cap: self.end_cap.as_ref().map(|c| InlineEndCap {
+                        table_id: c.table_id,
+                        row_ids: c.row_ids,
+                    }),
+                },
+            )
+            .await
     }
 
     // --- pure delegation below ---
@@ -140,17 +159,16 @@ impl Catalog for LineageEmittingCatalog<'_> {
     }
 }
 
-/// Like [`append_batches`], but emits `lineage` atomically with the commit: the
-/// pointer CAS + mirror projection + lineage row share one Postgres transaction
-/// via the [`LineageEmittingCatalog`] decorator. Takes a concrete `&SqlCatalog`
-/// because the decorator needs the inherent `do_update_table`. The lineage event
-/// is re-presented on each commit-retry attempt and only persists on the winning,
-/// committed attempt (a lost CAS rolls the lineage row back with the snapshot).
-pub async fn append_batches_with_lineage(
+/// Append `batches` as real Parquet and commit, running `extras` (lineage and/or
+/// inline end-cap) inside the one commit tx. Generalizes
+/// [`append_batches_with_lineage`]. Takes a concrete `&SqlCatalog` because the
+/// [`CommitExtrasCatalog`] decorator needs the inherent `do_update_table`.
+pub async fn append_batches_with_extras(
     catalog: &SqlCatalog,
     table: &Table,
     batches: Vec<RecordBatch>,
-    lineage: &LineageEvent,
+    lineage: Option<&LineageEvent>,
+    end_cap: Option<InlineEndCap<'_>>,
 ) -> Result<Vec<WrittenFile>> {
     let data_files = write_parquet(table, batches).await?;
     let summaries: Vec<WrittenFile> = data_files
@@ -162,15 +180,31 @@ pub async fn append_batches_with_lineage(
         })
         .collect();
 
-    let wrapper = LineageEmittingCatalog {
+    let wrapper = CommitExtrasCatalog {
         inner: catalog,
         lineage,
+        end_cap,
     };
     let tx = Transaction::new(table);
     let action = tx.fast_append().add_data_files(data_files);
     let tx = action.apply(tx)?;
     tx.commit(&wrapper).await?;
     Ok(summaries)
+}
+
+/// Like [`append_batches`], but emits `lineage` atomically with the commit: the
+/// pointer CAS + mirror projection + lineage row share one Postgres transaction
+/// via the [`CommitExtrasCatalog`] decorator. The lineage event is re-presented on
+/// each commit-retry attempt and only persists on the winning, committed attempt (a
+/// lost CAS rolls the lineage row back with the snapshot). Thin wrapper around
+/// [`append_batches_with_extras`].
+pub async fn append_batches_with_lineage(
+    catalog: &SqlCatalog,
+    table: &Table,
+    batches: Vec<RecordBatch>,
+    lineage: &LineageEvent,
+) -> Result<Vec<WrittenFile>> {
+    append_batches_with_extras(catalog, table, batches, Some(lineage), None).await
 }
 
 async fn write_parquet(table: &Table, batches: Vec<RecordBatch>) -> Result<Vec<DataFile>> {

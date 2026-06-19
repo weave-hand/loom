@@ -22,9 +22,9 @@ use sqlx::PgPool;
 
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_inline::inline_append;
-use crate::iceberg_sql_catalog::SqlCatalog;
+use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
 use crate::iceberg_type::iceberg_physical_type;
-use crate::iceberg_writer::append_batches_with_lineage;
+use crate::iceberg_writer::append_batches_with_extras;
 
 /// Boxing helper: wrap any boxable error as a control-plane `Backend` fault.
 fn be<E: std::error::Error + Send + Sync + 'static>(e: E) -> ControlPlaneError {
@@ -115,16 +115,18 @@ fn align_to_columns(
     Ok((projected, batches))
 }
 
-/// The Parquet branch: ensure the namespace + table exist, then append real
-/// Parquet with an atomic lineage emit, and read the resulting mirror snapshot id
-/// back. Idempotent on namespace/table (create-if-absent).
-async fn land_parquet(
+/// Ensure the iceberg table exists (create-if-absent from `columns`), append
+/// `batches` (bare arrow-57 — re-wrapped under the table's field-id schema) as a
+/// real Parquet snapshot running `extras` in the commit tx, and return the mirror
+/// snapshot id. Shared by the landing Parquet path and the flush path.
+pub(crate) async fn append_parquet_snapshot(
     pool: &PgPool,
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
-    lineage: LineageEvent,
+    lineage: Option<&LineageEvent>,
+    end_cap: Option<InlineEndCap<'_>>,
 ) -> Result<SnapshotId> {
     let ns = NamespaceIdent::new(table.schema.clone());
     if !catalog.namespace_exists(&ns).await.map_err(be)? {
@@ -158,7 +160,7 @@ async fn land_parquet(
         .map(|b| RecordBatch::try_new(ice_arrow.clone(), b.columns().to_vec()).map_err(be))
         .collect::<Result<Vec<_>>>()?;
 
-    append_batches_with_lineage(catalog, &ice_table, batches, &lineage)
+    append_batches_with_extras(catalog, &ice_table, batches, lineage, end_cap)
         .await
         .map_err(be)?;
 
@@ -166,6 +168,21 @@ async fn land_parquet(
         .current_snapshot(table)
         .await?
         .id)
+}
+
+/// The Parquet branch: ensure the namespace + table exist, then append real
+/// Parquet with an atomic lineage emit, and read the resulting mirror snapshot id
+/// back. Idempotent on namespace/table (create-if-absent). Delegates to
+/// [`append_parquet_snapshot`].
+async fn land_parquet(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batches: Vec<RecordBatch>,
+    lineage: LineageEvent,
+) -> Result<SnapshotId> {
+    append_parquet_snapshot(pool, catalog, table, columns, batches, Some(&lineage), None).await
 }
 
 /// Build an iceberg `Schema` from loom `ColumnSpec`s, assigning 1-based field ids.

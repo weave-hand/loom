@@ -24,6 +24,7 @@ mod acl;
 mod catalog;
 pub mod ducklake_type;
 pub mod iceberg_catalog;
+pub mod iceberg_flush;
 pub mod iceberg_inline;
 pub mod iceberg_landing;
 pub mod iceberg_mirror;
