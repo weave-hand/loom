@@ -8,9 +8,11 @@ use std::sync::Arc;
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use async_trait::async_trait;
-use control_plane_core::{ColumnSpec, LineageEvent, SnapshotId, TableRef};
+use control_plane_core::{ColumnSpec, ControlPlane, LineageEvent, SnapshotId, TableRef};
+use object_store::ObjectStore;
 
 use crate::IngestError;
+use crate::materialize::land_ducklake;
 
 /// Which table format a running ingest service lands to. Chosen once at boot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,4 +58,28 @@ pub struct LandRequest<'a> {
 #[async_trait]
 pub trait LandingMaterializer: Send + Sync {
     async fn land(&self, req: LandRequest<'_>) -> Result<SnapshotId, IngestError>;
+}
+
+/// Lands to DuckLake via the DataFusion Parquet write path — today's behaviour,
+/// now behind the port. Uses the request's arrow-58 `schema`/`batches`.
+pub struct DuckLakeMaterializer {
+    pub cp: Arc<dyn ControlPlane>,
+    pub store: Arc<dyn ObjectStore>,
+}
+
+#[async_trait]
+impl LandingMaterializer for DuckLakeMaterializer {
+    async fn land(&self, req: LandRequest<'_>) -> Result<SnapshotId, IngestError> {
+        land_ducklake(
+            self.cp.as_ref(),
+            self.store.clone(),
+            req.table,
+            req.schema.clone(),
+            req.columns,
+            req.batches,
+            req.file_prefix,
+            req.lineage,
+        )
+        .await
+    }
 }

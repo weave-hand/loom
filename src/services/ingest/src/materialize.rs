@@ -27,19 +27,17 @@ pub struct MaterializeRequest<'a> {
     pub lineage: LineageEvent,
 }
 
-/// Land data as a registered DuckLake snapshot + lineage, atomically.
-pub async fn materialize(
-    cp: &dyn ControlPlane,
-    object_store: Arc<dyn ObjectStore>,
-    req: MaterializeRequest<'_>,
-) -> Result<SnapshotId, IngestError> {
-    // 1. Optional model gate — the front edge; reject before any write.
-    if let Some(shape) = req.gate {
-        validate(shape, &req.schema).map_err(IngestError::DoesNotConform)?;
+/// Validate the optional model gate and resolve the physical schema. Backend-
+/// agnostic: the HTTP handler runs this once, before dispatching to whichever
+/// landing backend is configured. The model wins when supplied; otherwise infer.
+pub fn resolve_columns(
+    schema: &Schema,
+    gate: Option<&ModelShape>,
+) -> Result<Vec<ColumnSpec>, IngestError> {
+    if let Some(shape) = gate {
+        validate(shape, schema).map_err(IngestError::DoesNotConform)?;
     }
-
-    // 2. Physical schema: the model wins when supplied; otherwise infer.
-    let columns: Vec<ColumnSpec> = match req.gate {
+    Ok(match gate {
         Some(shape) => shape
             .columns
             .iter()
@@ -49,24 +47,36 @@ pub async fn materialize(
                 nullable: !c.required,
             })
             .collect(),
-        None => infer_columns(&req.schema)?,
-    };
+        None => infer_columns(schema)?,
+    })
+}
 
-    // 3. DataFusion write: N Snappy Parquet files straight to object storage.
-    let dir_prefix = format!(
-        "{}/{}/{}",
-        req.table.schema, req.table.name, req.file_prefix
-    );
+/// The DuckLake write tail: DataFusion Parquet write + one atomic control-plane
+/// transaction (create_table + append_files + emit + commit). `columns` is the
+/// already-resolved physical schema (see [`resolve_columns`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn land_ducklake(
+    cp: &dyn ControlPlane,
+    object_store: Arc<dyn ObjectStore>,
+    table: &TableRef,
+    schema: Arc<Schema>,
+    columns: &[ColumnSpec],
+    batches: &[RecordBatch],
+    file_prefix: &str,
+    lineage: LineageEvent,
+) -> Result<SnapshotId, IngestError> {
+    // DataFusion write: N Snappy Parquet files straight to object storage.
+    let dir_prefix = format!("{}/{}/{}", table.schema, table.name, file_prefix);
     let files = write_dataset(
         object_store,
         &dir_prefix,
-        req.schema.clone(),
-        req.batches,
+        schema,
+        batches,
         &WriteConfig::default(),
     )
     .await?;
 
-    // 4. One atomic transaction: create_table (idempotent) + append_files + emit.
+    // One atomic transaction: create_table (idempotent) + append_files + emit.
     let data_files: Vec<DataFile> = files
         .into_iter()
         .map(|f| DataFile {
@@ -81,8 +91,30 @@ pub async fn materialize(
         .collect();
 
     let mut tx = cp.begin().await?;
-    tx.create_table(req.table, &columns).await?;
-    tx.append_files(req.table, &data_files).await?;
-    tx.emit(req.lineage).await?;
+    tx.create_table(table, columns).await?;
+    tx.append_files(table, &data_files).await?;
+    tx.emit(lineage).await?;
     tx.commit().await?.ok_or(IngestError::NoSnapshot)
+}
+
+/// Land data as a registered DuckLake snapshot + lineage, atomically. Thin
+/// convenience over [`resolve_columns`] + [`land_ducklake`] for callers that
+/// hold a whole [`MaterializeRequest`] (the integration tests).
+pub async fn materialize(
+    cp: &dyn ControlPlane,
+    object_store: Arc<dyn ObjectStore>,
+    req: MaterializeRequest<'_>,
+) -> Result<SnapshotId, IngestError> {
+    let columns = resolve_columns(&req.schema, req.gate)?;
+    land_ducklake(
+        cp,
+        object_store,
+        req.table,
+        req.schema.clone(),
+        &columns,
+        req.batches,
+        req.file_prefix,
+        req.lineage,
+    )
+    .await
 }
