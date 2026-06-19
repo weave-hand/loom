@@ -323,8 +323,9 @@ pub async fn arm_inline_trigger(conn: &mut PgConnection, table_id: i64) -> Resul
     Ok(())
 }
 
-/// Reset the table's trigger after a flush: clear the counter and re-arm. No-op if
-/// the row is absent.
+/// Reset the table's trigger after a flush: clear the counter and disarm
+/// (`enqueued = false`), so the next accumulation can re-trigger. No-op if the
+/// row is absent.
 pub async fn reset_inline_trigger(conn: &mut PgConnection, table_id: i64) -> Result<()> {
     sqlx::query!(
         "update iceberg_mirror.inline_trigger \
