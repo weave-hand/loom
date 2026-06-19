@@ -263,7 +263,7 @@ git config --get user.name  >/dev/null 2>&1 || git config user.name  "code-healt
 git switch -C "$BRANCH"
 # The branch should contain ONLY this theme's refactor (+ tests/waiver/CLAUDE.md).
 git add -A
-git commit --no-verify -m "$(cat /tmp/cxfix-title.txt)" -F /tmp/cxfix-pr.md
+git commit --no-verify -m "$(cat /tmp/cxfix-title.txt)" -m "$(cat /tmp/cxfix-pr.md)"
 git push --no-verify -f -u origin "$BRANCH"
 PR_STATE="$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || echo NONE)"
 if [ "$PR_STATE" != "OPEN" ]; then
@@ -566,7 +566,7 @@ git config --get user.email >/dev/null 2>&1 || git config user.email "code-healt
 git config --get user.name  >/dev/null 2>&1 || git config user.name  "code-health-bot"
 git switch -C "$BRANCH"
 git add -A
-git commit --no-verify -m "$(cat /tmp/dupfix-title.txt)" -F /tmp/dupfix-pr.md
+git commit --no-verify -m "$(cat /tmp/dupfix-title.txt)" -m "$(cat /tmp/dupfix-pr.md)"
 git push --no-verify -f -u origin "$BRANCH"
 PR_STATE="$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || echo NONE)"
 if [ "$PR_STATE" != "OPEN" ]; then
