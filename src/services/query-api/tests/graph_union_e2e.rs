@@ -303,7 +303,7 @@ async fn union_reaches_more_than_either_link_alone() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(ids(&body), vec![2, 3], "knows alone: {body}");
 
-    // knows UNION colleagues from {1}, depth 3: adds the colleagues edge 1<->4 => {2, 3, 4}.
+    // knows UNION colleagues from {1}, depth 3: adds the colleagues edge 1->4 => {2, 3, 4}.
     let (status, body) = get(
         cp.clone(),
         eng.clone(),
