@@ -44,6 +44,9 @@ declare -A TOOLS=(
     [btd]="root//tools:btd-bin-x86_64"
     [supertd]="root//tools:supertd-bin-x86_64"
     [rustfmt]="root//tools:rustfmt"
+    [jq]="root//tools:jq-x86_64-linux"
+    [rust-code-analysis-cli]="root//tools:rust-code-analysis-x86_64-linux"
+    [lucidshark-duplo]="root//tools:lucidshark-duplo-x86_64-linux"
 )
 for name in "${!TOOLS[@]}"; do
     if p="$(resolve "${TOOLS[$name]}")"; then ln -sfn "$p" "$BIN/$name"; fi

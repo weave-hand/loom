@@ -287,3 +287,151 @@ command_alias(
     }),
     visibility = ["PUBLIC"],
 )
+
+# jq (https://github.com/jqlang/jq) — vendored so the code-health routines render
+# deterministically without depending on a host `jq` (loom-stpa uses host jq; that
+# is a reproducibility hole for a scheduled routine). The Linux release assets are
+# RAW STATIC BINARIES (not archives), so the genrule is just cp + chmod — no
+# host-only label needed (cp/chmod are on every RE worker, like the prek block).
+# To bump: replace JQ_VERSION and refresh each SHA256 from the `<asset>.sha256` on
+# the release page (or `sha256sum` the downloaded asset).
+#
+# Two naming quirks vs the other blocks: (1) jq's git tags are `jq-X.Y.Z`, not
+# `vX.Y.Z`, so JQ_VERSION carries the `jq-` prefix and feeds straight into the URL;
+# (2) jq's release assets use `amd64`/`arm64` in their filenames (not Rust triples),
+# so the `http_file` names mirror that while the genrules keep the repo's
+# `x86_64`/`aarch64` convention.
+#
+# `buck2 run //tools:jq -- <args>`. Linux x86_64 / aarch64 only (matches platforms/BUCK).
+
+JQ_VERSION = "jq-1.8.1"  # jq tags are "jq-X.Y.Z", not "vX.Y.Z"
+
+_JQ_URL = "https://github.com/jqlang/jq/releases/download/{version}/jq-linux-{arch}"
+
+http_file(
+    name = "jq-amd64.bin",
+    urls = [_JQ_URL.format(version = JQ_VERSION, arch = "amd64")],
+    sha256 = "020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d",
+)
+
+http_file(
+    name = "jq-arm64.bin",
+    urls = [_JQ_URL.format(version = JQ_VERSION, arch = "arm64")],
+    sha256 = "6bc62f25981328edd3cfcfe6fe51b073f2d7e7710d7ef7fcdac28d4e384fc3d4",
+)
+
+genrule(
+    name = "jq-x86_64-linux",
+    out = "jq",
+    cmd = "cp $(location :jq-amd64.bin) $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "jq-aarch64-linux",
+    out = "jq",
+    cmd = "cp $(location :jq-arm64.bin) $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "jq",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":jq-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":jq-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# rust-code-analysis (https://github.com/weave-hand/rust-code-analysis) — Mozilla's
+# multi-language metrics CLI; drives the //loom-complexity routine. Ships `.tar.gz`
+# per-arch with a `…-<triple>/` wrapper dir holding `rust-code-analysis-cli`
+# (and -web, README); `--strip-components=1` flattens it. tar.gz ⇒ no `uses_xz`
+# label (builds on RE). To bump: replace RCA_VERSION, refresh each SHA256.
+#
+# `buck2 run //tools:rust-code-analysis -- -m -O json -p src -o <dir>`.
+
+RCA_VERSION = "v2026.06.19.00"
+
+_RCA_URL = "https://github.com/weave-hand/rust-code-analysis/releases/download/{version}/rust-code-analysis-{version}-{triple}.tar.gz"
+
+http_file(
+    name = "rca-x86_64-linux.tar.gz",
+    urls = [_RCA_URL.format(version = RCA_VERSION, triple = "x86_64-unknown-linux-gnu")],
+    sha256 = "7f7e7d88e4135b869683230aced76781c8e089d03c096e192ce49dd8eb342b84",
+)
+
+http_file(
+    name = "rca-aarch64-linux.tar.gz",
+    urls = [_RCA_URL.format(version = RCA_VERSION, triple = "aarch64-unknown-linux-gnu")],
+    sha256 = "459671ab9fb431db6e97d5dee38def443cf7cfff77f8edda3419605af6c9323e",
+)
+
+genrule(
+    name = "rust-code-analysis-x86_64-linux",
+    out = "rust-code-analysis-cli",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :rca-x86_64-linux.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/rust-code-analysis-cli $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "rust-code-analysis-aarch64-linux",
+    out = "rust-code-analysis-cli",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :rca-aarch64-linux.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/rust-code-analysis-cli $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "rust-code-analysis",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":rust-code-analysis-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":rust-code-analysis-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# lucidshark-duplo (https://github.com/toniantunovi/lucidshark-duplo) — duplicate-code
+# detector; drives the //loom-duplication routine. `.tar.gz` with the `lucidshark-duplo`
+# binary at the archive root (no wrapper dir). tar.gz ⇒ no `uses_xz` label. To bump:
+# replace DUPLO_VERSION, refresh each SHA256.
+#
+# `buck2 run //tools:lucidshark-duplo -- <file-list> --json -m 20`.
+
+DUPLO_VERSION = "v0.2.0"
+
+_DUPLO_URL = "https://github.com/toniantunovi/lucidshark-duplo/releases/download/{version}/lucidshark-duplo-linux-{arch}.tar.gz"
+
+http_file(
+    name = "duplo-x86_64-linux.tar.gz",
+    urls = [_DUPLO_URL.format(version = DUPLO_VERSION, arch = "x86_64")],
+    sha256 = "f7aecf9669eb5a1eeac3d51a9e271b9c80330e0c8f6ed7c6f00a5a04437376fc",
+)
+
+http_file(
+    name = "duplo-aarch64-linux.tar.gz",
+    urls = [_DUPLO_URL.format(version = DUPLO_VERSION, arch = "aarch64")],
+    sha256 = "1e509820936f85323c1794629f31707dcea4a7305556a126b059bec968d14d49",
+)
+
+genrule(
+    name = "lucidshark-duplo-x86_64-linux",
+    out = "lucidshark-duplo",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :duplo-x86_64-linux.tar.gz) -C $TMP/x && cp $TMP/x/lucidshark-duplo $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "lucidshark-duplo-aarch64-linux",
+    out = "lucidshark-duplo",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :duplo-aarch64-linux.tar.gz) -C $TMP/x && cp $TMP/x/lucidshark-duplo $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "lucidshark-duplo",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":lucidshark-duplo-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":lucidshark-duplo-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
