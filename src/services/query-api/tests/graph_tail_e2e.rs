@@ -7,7 +7,8 @@
 //!   - a Read row-filter (active=true) on Person prunes the recursive core (inactive person 3 is
 //!     cut, dropping its company 12),
 //!   - worksAt,knows* (the `*` is not the path prefix) -> 400,
-//!   - knows* alone (empty relational tail) -> 400.
+//!   - knows* alone (empty relational tail) -> 400,
+//!   - *,worksAt (bare `*` core with no link name) -> 400.
 //!
 //! Graph: person(id, name, active, knows_id, worksat_id) with a `knows` FK self-link (1->2, 2->3)
 //! and a `worksAt` FK link to company(id, cname, city_id), which has a `locatedIn` FK link to
@@ -444,6 +445,7 @@ async fn star_not_on_first_segment_is_400() {
     grant_read(&cp, &role, "Company").await;
 
     // `*` on the second segment -> the recursive core is not the path prefix -> 400.
+    // 400 reason: "first path segment"
     let (status, _body) = get(
         cp.clone(),
         eng.clone(),
@@ -480,5 +482,30 @@ async fn empty_tail_is_400() {
         status,
         StatusCode::BAD_REQUEST,
         "empty relational tail -> 400"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bare_star_core_is_400() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let cp = Arc::new(cp);
+    let eng = Arc::new(eng);
+
+    let (_a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "Person").await;
+
+    // `*,worksAt` has an empty recursive core (bare `*` with no link name) -> 400.
+    let (status, _body) = get(
+        cp.clone(),
+        eng.clone(),
+        "/objects/Person/graph?path=*,worksAt&depth=3&_ids=1",
+        "alice",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "bare * core is empty -> 400"
     );
 }

@@ -865,12 +865,14 @@ pub fn compile_graph_reach_union(
 /// Build the single-self-link recursive reachability CTE (`WITH RECURSIVE reach(id, depth) AS
 /// (…)`) used by the recursive-core + relational-tail compiler. The emitted CTE is the
 /// degenerate 1-step case of [`compile_graph_reach`]'s path-cycle CTE: a seed anchor governed by
-/// `seed_predicates` + `row_filters` at alias `s`, a distinct `UNION`, and a single recursive
-/// step following `backing` (the self-link, via the shared [`link_join`]) with `row_filters`
-/// applied at the landing node `nxt` under the inlined `r.depth < depth` bound. Seed then
-/// recursive params are appended to `params` in that order. This is a focused helper, NOT a
-/// refactor of `compile_graph_reach` (whose CTE generalizes over a multi-link path); the shared
-/// surface is the self-hop join, which already lives in `link_join`.
+/// `seed_predicates` + `row_filters` at alias `s`, a distinct `UNION` (not `UNION ALL`) to
+/// deduplicate across iterations, and a single recursive step following `backing` (the self-link,
+/// via the shared [`link_join`]) with `row_filters` applied at the landing node `nxt` under the
+/// inlined `r.depth < depth` bound. The `UNION`'s deduplication ensures recursion terminates and
+/// stays cycle-safe on cyclic self-links. Seed then recursive params are appended to `params` in
+/// that order. This is a focused helper, NOT a refactor of `compile_graph_reach` (whose CTE
+/// generalizes over a multi-link path); the shared surface is the self-hop join, which already
+/// lives in `link_join`.
 #[allow(clippy::too_many_arguments)]
 fn recursive_reach_cte(
     dialect: &dyn SqlDialect,

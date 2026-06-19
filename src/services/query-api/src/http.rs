@@ -428,6 +428,13 @@ async fn get_graph_path(
                 .into_response();
         }
         let core_link = path[0].trim_end_matches('*').to_string();
+        if core_link.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "recursive core link name must not be empty",
+            )
+                .into_response();
+        }
         let tail_links: Vec<String> = path[1..].to_vec();
         return graph_tail_respond(
             &st, type_name, core_link, tail_links, depth, filters, ids, subject,
