@@ -7,8 +7,9 @@ Refresh the duplication register at `docs/code-health/duplication.md` and land a
 change as a PR against `main` merged on green CI. The census is a pure function of
 `lucidshark-duplo --json` rendered by `render.jq` — do NOT hand-edit between the
 `census` markers. Accepted duplication is recorded in
-`docs/code-health/duplication-baseline.json` and suppressed at render time via
-`render.jq`'s `--slurpfile baseline`.
+`docs/code-health/duplication-baseline.json` (duplo's native baseline format) and
+suppressed natively by `duplo --baseline`; the count of accepted pairs surfaces in
+the register via `render.jq`'s `--slurpfile baseline`.
 
 ## BLOCK A — run + render + detect change (run verbatim)
 
@@ -55,18 +56,22 @@ fi
    and STOP.
 3. `DUPLICATION_RESULT=nochange`: report "duplication register already current"
    and STOP.
-4. `DUPLICATION_RESULT=changed`: assemble `docs/code-health/duplication.md` —
-   H1 `# Code duplication register`, `_As of <short-sha>._`, a
-   `<!-- preamble:begin -->`…`<!-- preamble:end -->` region with a ≤10-bullet
-   "Notable changes this run" (pairs added/resolved by file, the delta only),
-   a blank line, then `/tmp/dup-census.md` verbatim. One trailing newline, no
-   trailing whitespace. Commit SHA lives ONLY in the preamble.
+4. `DUPLICATION_RESULT=changed`: assemble `docs/code-health/duplication.md`:
+   - Read the prior census (`git show HEAD:docs/code-health/duplication.md`, if it
+     exists) and `/tmp/dup-census.md` to determine the delta.
+   - Write the file as: H1 `# Code duplication register`, `_As of <short-sha>._`, a
+     `<!-- preamble:begin -->`…`<!-- preamble:end -->` region with a ≤10-bullet
+     "Notable changes this run" (pairs added/resolved by file, the delta only;
+     first run: one line), a blank line, then `/tmp/dup-census.md` verbatim. End
+     with exactly one trailing newline, no trailing whitespace.
+   - The commit SHA lives ONLY in the preamble region, never in the census region,
+     so identical findings always re-detect as `nochange`.
 5. Write `/tmp/dup-title.txt` (`docs(code-health): <duplication change>`, ≤72 chars)
    and `/tmp/dup-body.md` (2-6 bullets). Run
    `buck2 run //tools:prek -- run --all-files`, leave any hook fixes staged for
    BLOCK B's commit, then run BLOCK B.
 
-## BLOCK B — commit, PR, watch CI, merge on green (run verbatim; only when DUPLICATION_RESULT=changed)
+## BLOCK B — commit, PR, watch CI, merge on green (run verbatim; ONLY when DUPLICATION_RESULT=changed)
 
 ```bash
 set -euo pipefail
@@ -75,6 +80,8 @@ git config --get user.email >/dev/null 2>&1 || git config user.email "code-healt
 git config --get user.name  >/dev/null 2>&1 || git config user.name  "code-health-bot"
 git switch -C "$BRANCH"
 git add docs/code-health/duplication.md
+# --no-verify: skip loom's local commit-msg/pre-push hooks (buck2-build/test would
+# stall the routine); conventional style is carried by the PR title -> squash commit.
 git commit --no-verify -m "$(cat /tmp/dup-title.txt)" -m "$(cat /tmp/dup-body.md)"
 git push --no-verify -f -u origin "$BRANCH"
 PR_STATE="$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || echo NONE)"
