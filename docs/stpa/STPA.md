@@ -156,4 +156,3 @@ flowchart TD
 - Subject identity comes from an unverified X-Loom-Subject header (authn is a later spec) — until wired, any HTTP client can impersonate any subject and bypass ACL.
 - The DataFusion serving engine registers ALL live Iceberg tables per query (serving_datafusion.rs:53); a deployment with many tables pays a per-query metadata scan that could become a latency or DoS concern.
 - The sql.rs quote_ident function panics (assert!) if an ontology property name contains a double quote; should this be an error return to prevent a handler panic?
-
