@@ -952,6 +952,10 @@ pub fn compile_graph_reach_tail(
         "tail types must be hops + 1"
     );
     debug_assert!(!tail_hops.is_empty(), "part-B tail must have >= 1 hop");
+    debug_assert!(
+        tail_types[0].row_filters.is_empty() && tail_types[0].predicates.is_empty(),
+        "tail_types[0] must carry empty row-filters and predicates: governance lives in the CTE"
+    );
     let q = |id: &str| dialect.quote_ident(id);
     let id = q(identity);
     let mut params: Vec<SqlValue> = Vec::new();
