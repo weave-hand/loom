@@ -1,0 +1,4 @@
+{"summary":{"files_analyzed":2,"total_lines":100,"duplicate_blocks":1,"duplicate_lines":20,"duplication_percent":20.0},
+ "duplicates":[
+   {"line_count":20,"file1":{"path":"src/x.rs","start_line":10,"end_line":30},"file2":{"path":"src/y.rs","start_line":40,"end_line":60},"lines":["a","b"]}
+ ]}
