@@ -299,23 +299,21 @@ fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Resu
 }
 
 impl IcebergCatalog {
-    /// Encode `table`'s live inline rows at `at` to Parquet bytes (one row group),
-    /// or `None` if there is no inline storage or no live inline rows. The serving
-    /// engine drops these into an in-memory object store and unions them with the
-    /// table's `file://` Parquet.
-    pub async fn inline_parquet(
+    /// The live inline rows of `table` at `at`, as (`table_id`, `loom_row_id`s,
+    /// arrow-57 batch), or `None` if there is no inline storage or no live rows.
+    /// The `table_id` and row ids are returned so a flush can end-cap exactly the
+    /// rows it reconstructs in the same `inline_<tid>` table. Shares the
+    /// reconstruction the read path uses.
+    pub async fn inline_live_batch(
         &self,
         table: &TableRef,
         at: SnapshotId,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
         use control_plane_core::Catalog;
-
         let mut conn = self.pool.acquire().await.map_err(backend)?;
         let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
             return Ok(None);
         };
-
-        // Inline storage may not exist (table never had an inline write).
         let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
             "select to_regclass('{}')::text",
             inline_table_name(tid)
@@ -327,7 +325,6 @@ impl IcebergCatalog {
             return Ok(None);
         }
 
-        // The column schema at `at` (logical types, in order).
         let schema = self.schema(table, at).await?;
         let col_list = schema
             .columns
@@ -337,7 +334,7 @@ impl IcebergCatalog {
             .join(", ");
 
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "select {col_list} from {} \
+            "select loom_row_id, {col_list} from {} \
              where begin_snapshot <= {} and (end_snapshot is null or end_snapshot > {}) \
              order by loom_row_id",
             inline_table_name(tid),
@@ -351,7 +348,14 @@ impl IcebergCatalog {
             return Ok(None);
         }
 
-        // Build one arrow-57 array per column from the PG rows.
+        let row_ids: Vec<i64> = rows
+            .iter()
+            .map(|r| r.try_get::<i64, _>("loom_row_id").map_err(backend))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Build arrow arrays per column. `column_array` indexes positional columns;
+        // the data columns now start at index 1 (loom_row_id is column 0), so pass
+        // `i + 1`.
         let fields = schema
             .columns
             .iter()
@@ -359,14 +363,29 @@ impl IcebergCatalog {
             .collect::<Result<Vec<_>>>()?;
         let mut arrays: Vec<ArrayRef> = Vec::with_capacity(fields.len());
         for (i, c) in schema.columns.iter().enumerate() {
-            arrays.push(column_array(&rows, i, &c.ty)?);
+            arrays.push(column_array(&rows, i + 1, &c.ty)?);
         }
         let arrow_schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(arrow_schema.clone(), arrays)
+        let batch = RecordBatch::try_new(arrow_schema, arrays)
             .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+        Ok(Some((tid, row_ids, batch)))
+    }
 
+    /// Encode `table`'s live inline rows at `at` to Parquet bytes (one row group),
+    /// or `None` if there is no inline storage or no live inline rows. The serving
+    /// engine drops these into an in-memory object store and unions them with the
+    /// table's `file://` Parquet.
+    pub async fn inline_parquet(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some((_tid, _row_ids, batch)) = self.inline_live_batch(table, at).await? else {
+            return Ok(None);
+        };
+        let schema = batch.schema();
         let mut buf: Vec<u8> = Vec::new();
-        let mut w = ArrowWriter::try_new(&mut buf, arrow_schema, None)
+        let mut w = ArrowWriter::try_new(&mut buf, schema, None)
             .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
         w.write(&batch)
             .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
