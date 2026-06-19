@@ -18,7 +18,10 @@
 set -u
 [ "${REMOTE_ENV:-}" = "true" ] || exit 0   # inert outside cloud routines
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# The hook runs from within the repo (invoked as $CLAUDE_PROJECT_DIR/tools/...), so
+# $0 resolves correctly here (unlike the setup script, which runs from /tmp). Prefer
+# the explicit project dir when the harness provides it.
+REPO="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 PROFILE="$HOME/.bashrc"
 touch "$PROFILE"
 
@@ -42,13 +45,20 @@ command -v gh    >/dev/null 2>&1 || echo "WARN: gh not found on PATH (PR landing
 [ -n "${BUILDBUDDY_API_KEY:-}" ] || echo "WARN: BUILDBUDDY_API_KEY unset (remote execution disabled)"
 [ -n "${GITHUB_TOKEN:-}" ]       || echo "WARN: GITHUB_TOKEN unset (gh PR landing will fail)"
 
+# Ensure the prelude submodule is present — any buck2 build needs it, and the setup
+# script may not have located the repo to init it. Idempotent / fast if already done.
+if [ -f "$REPO/.gitmodules" ]; then
+  git -C "$REPO" submodule update --init --recursive >/tmp/loom-submodule.log 2>&1 || \
+    echo "WARN: submodule init failed (see /tmp/loom-submodule.log)"
+fi
+
 # Activate the loom dev env (cargo/rustc/clippy + dev tools on PATH) and persist
 # its exports to the profile. With BUILDBUDDY_API_KEY now present, its buck2 builds
 # go over remote execution (fast, action-cache backed). Non-fatal: the code-health
 # routines themselves only need `buck2 run //tools:...`, which works without this —
 # so a failure here does not block the session. Remove this block (or background
 # it) if session startup is too slow for a census-only routine.
-if [ -d "$REPO/tools" ]; then
+if [ -x "$REPO/tools/env.sh" ]; then
   ( cd "$REPO" && ./tools/env.sh ) >> "$PROFILE" 2>/tmp/loom-env.log || \
     echo "WARN: tools/env.sh activation failed (non-fatal); see /tmp/loom-env.log"
 fi
