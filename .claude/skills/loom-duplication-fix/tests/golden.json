@@ -1,0 +1,88 @@
+[
+  {
+    "file": "src/x/tests/a_e2e.rs",
+    "total_lines": 65,
+    "pair_count": 2,
+    "partners": [
+      "src/x/tests/b_e2e.rs",
+      "src/x/tests/c_e2e.rs"
+    ],
+    "test_only": true,
+    "pairs": [
+      {
+        "lines": 40,
+        "a": "src/x/tests/a_e2e.rs:10-50",
+        "b": "src/x/tests/b_e2e.rs:20-60"
+      },
+      {
+        "lines": 25,
+        "a": "src/x/tests/a_e2e.rs:70-95",
+        "b": "src/x/tests/c_e2e.rs:5-30"
+      }
+    ]
+  },
+  {
+    "file": "src/x/tests/b_e2e.rs",
+    "total_lines": 40,
+    "pair_count": 1,
+    "partners": [
+      "src/x/tests/a_e2e.rs"
+    ],
+    "test_only": true,
+    "pairs": [
+      {
+        "lines": 40,
+        "a": "src/x/tests/b_e2e.rs:20-60",
+        "b": "src/x/tests/a_e2e.rs:10-50"
+      }
+    ]
+  },
+  {
+    "file": "src/x/tests/c_e2e.rs",
+    "total_lines": 25,
+    "pair_count": 1,
+    "partners": [
+      "src/x/tests/a_e2e.rs"
+    ],
+    "test_only": true,
+    "pairs": [
+      {
+        "lines": 25,
+        "a": "src/x/tests/c_e2e.rs:5-30",
+        "b": "src/x/tests/a_e2e.rs:70-95"
+      }
+    ]
+  },
+  {
+    "file": "src/y/src/prod.rs",
+    "total_lines": 22,
+    "pair_count": 1,
+    "partners": [
+      "src/y/src/prod2.rs"
+    ],
+    "test_only": false,
+    "pairs": [
+      {
+        "lines": 22,
+        "a": "src/y/src/prod.rs:1-23",
+        "b": "src/y/src/prod2.rs:1-23"
+      }
+    ]
+  },
+  {
+    "file": "src/y/src/prod2.rs",
+    "total_lines": 22,
+    "pair_count": 1,
+    "partners": [
+      "src/y/src/prod.rs"
+    ],
+    "test_only": false,
+    "pairs": [
+      {
+        "lines": 22,
+        "a": "src/y/src/prod2.rs:1-23",
+        "b": "src/y/src/prod.rs:1-23"
+      }
+    ]
+  }
+]

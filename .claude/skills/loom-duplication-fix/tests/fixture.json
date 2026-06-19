@@ -1,0 +1,5 @@
+{"duplicates":[
+  {"line_count":40,"file1":{"path":"src/x/tests/a_e2e.rs","start_line":10,"end_line":50},"file2":{"path":"src/x/tests/b_e2e.rs","start_line":20,"end_line":60}},
+  {"line_count":25,"file1":{"path":"src/x/tests/a_e2e.rs","start_line":70,"end_line":95},"file2":{"path":"src/x/tests/c_e2e.rs","start_line":5,"end_line":30}},
+  {"line_count":22,"file1":{"path":"src/y/src/prod.rs","start_line":1,"end_line":23},"file2":{"path":"src/y/src/prod2.rs","start_line":1,"end_line":23}}
+]}

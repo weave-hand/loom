@@ -1,0 +1,9 @@
+[
+  {"name":"src/a.rs","kind":"unit","spaces":[
+    {"name":"simple","kind":"function","start_line":10,"metrics":{"cyclomatic":{"sum":3.0},"cognitive":{"sum":1.0},"mi":{"mi_visual_studio":75.0},"loc":{"sloc":12.0}}},
+    {"name":"gnarly","kind":"function","start_line":40,"metrics":{"cyclomatic":{"sum":23.0},"cognitive":{"sum":31.0},"mi":{"mi_visual_studio":14.2},"loc":{"sloc":180.0}}}
+  ]},
+  {"name":"src/b.rs","kind":"unit","spaces":[
+    {"name":"waived_big","kind":"function","start_line":5,"metrics":{"cyclomatic":{"sum":40.0},"cognitive":{"sum":50.0},"mi":{"mi_visual_studio":5.0},"loc":{"sloc":300.0}}}
+  ]}
+]
