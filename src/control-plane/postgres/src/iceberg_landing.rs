@@ -64,7 +64,7 @@ pub async fn land(
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
     if bytes <= inline_byte_limit {
         let batch = concat_batches(&schema, &batches).map_err(be)?;
-        inline_append(pool, table, columns, &batch, lineage).await
+        inline_append(pool, table, columns, &batch, lineage, None).await
     } else {
         land_parquet(pool, catalog, table, columns, batches, lineage).await
     }

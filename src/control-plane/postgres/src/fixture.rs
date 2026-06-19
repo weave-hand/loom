@@ -656,7 +656,7 @@ impl IcebergWriter {
             schema: ns.into(),
             name: name.into(),
         };
-        crate::iceberg_inline::inline_append(&self.pool, &table, &specs, &batch, lineage)
+        crate::iceberg_inline::inline_append(&self.pool, &table, &specs, &batch, lineage, None)
             .await
             .expect("inline_append")
             .0

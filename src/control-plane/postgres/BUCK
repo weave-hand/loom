@@ -151,6 +151,7 @@ rust_library(
         "//third-party:arrow-schema",
         "//third-party:async-trait",
         "//third-party:iceberg",
+        "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
@@ -488,6 +489,24 @@ loom_fixture_test(
         "//third-party:iceberg",
         "//third-party:serde_json",
         "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "inline-flush-trigger",
+    crate = "inline_flush_trigger",
+    srcs = ["tests/inline_flush_trigger.rs"],
+    crate_root = "tests/inline_flush_trigger.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
