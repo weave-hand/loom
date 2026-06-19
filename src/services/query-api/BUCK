@@ -181,6 +181,25 @@ loom_fixture_test(
     ],
 )
 
+rust_library(
+    name = "e2e-support",
+    crate = "e2e_support",
+    srcs = ["tests/e2e_support.rs"],
+    crate_root = "tests/e2e_support.rs",
+    deps = [
+        ":query-api",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:uuid",
+    ],
+    visibility = ["PUBLIC"],
+)
+
 loom_fixture_test(
     name = "multi-hop-traversal-e2e",
     crate = "multi_hop_traversal_e2e",
@@ -189,6 +208,7 @@ loom_fixture_test(
     duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -305,6 +325,7 @@ loom_fixture_test(
     duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
