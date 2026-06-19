@@ -54,15 +54,65 @@ pub async fn land(
     lineage: LineageEvent,
 ) -> Result<SnapshotId> {
     let (schema, batches) = decode_ipc_57(ipc_body)?;
+    // Project the decoded columns to `columns` order, by name. Both downstream
+    // branches align columns POSITIONALLY (inline indexes `columns[c]` against
+    // batch column `c`; the Parquet branch re-wraps under the table's schema in
+    // `columns` order), but on the model-gate path `columns` is the model's
+    // declared order, which need not match the wire order — so without this
+    // realignment, same-typed reordered columns would silently swap values.
+    let (schema, batches) = align_to_columns(&schema, batches, columns)?;
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
     if bytes <= inline_byte_limit {
-        // The inline contract requires positional column alignment; `columns` and
-        // the decoded batches both derive from the same wire schema, so they match.
         let batch = concat_batches(&schema, &batches).map_err(be)?;
         inline_append(pool, table, columns, &batch, lineage).await
     } else {
         land_parquet(pool, catalog, table, columns, batches, lineage).await
     }
+}
+
+/// Project `batches` to `columns` order, matching by name, preserving the wire
+/// arrow types. Extra wire columns not named in `columns` are dropped (the model
+/// defines the landed schema). Errors if a declared column is absent from the data.
+/// Fast-paths the common inferred case (`columns` already in wire order) to a
+/// no-op clone, so that path is unchanged.
+fn align_to_columns(
+    schema: &Schema,
+    batches: Vec<RecordBatch>,
+    columns: &[ColumnSpec],
+) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
+    let already_aligned = columns.len() == schema.fields().len()
+        && columns
+            .iter()
+            .zip(schema.fields())
+            .all(|(c, f)| c.name == *f.name());
+    if already_aligned {
+        return Ok((Arc::new(schema.clone()), batches));
+    }
+
+    let indices = columns
+        .iter()
+        .map(|c| {
+            schema.index_of(&c.name).map_err(|_| {
+                ControlPlaneError::Backend(
+                    format!(
+                        "landing: column {:?} declared but absent from the data",
+                        c.name
+                    )
+                    .into(),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let fields: Vec<_> = indices.iter().map(|&i| schema.field(i).clone()).collect();
+    let projected = Arc::new(Schema::new(fields));
+    let batches = batches
+        .into_iter()
+        .map(|b| {
+            let cols: Vec<_> = indices.iter().map(|&i| b.column(i).clone()).collect();
+            RecordBatch::try_new(projected.clone(), cols).map_err(be)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((projected, batches))
 }
 
 /// The Parquet branch: ensure the namespace + table exist, then append real
@@ -95,8 +145,10 @@ async fn land_parquet(
 
     // A decoded IPC body carries a bare arrow schema; the iceberg writer chain needs
     // the table's arrow schema (which carries the iceberg field-id metadata) or it
-    // can't map columns to field ids. Re-wrap each batch's columns (positionally
-    // aligned with the table schema) under that field-id-bearing schema.
+    // can't map columns to field ids. Re-wrap each batch's columns under that
+    // field-id-bearing schema. Positional alignment is safe here because `batches`
+    // were already projected to `columns` order (= the table schema order) by
+    // `align_to_columns` upstream.
     let ice_arrow = Arc::new(
         iceberg::arrow::schema_to_arrow_schema(ice_table.metadata().current_schema())
             .map_err(be)?,

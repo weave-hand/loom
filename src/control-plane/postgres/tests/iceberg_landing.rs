@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::{Int64Array, RecordBatch};
+use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_ipc57::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
@@ -58,6 +58,49 @@ fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
         outputs: vec![DatasetId::from(&out).dataset_ref()],
         payload: serde_json::json!({ "source": "test" }),
     }
+}
+
+/// An IPC body whose wire column order — `name: string`, then `id: long` — is the
+/// REVERSE of the model order used by `reordered_columns`. With differing types,
+/// any positional (mis)alignment fails loudly rather than silently swapping.
+fn ipc_body_reordered() -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("name", DataType::Utf8, false),
+        Field::new("id", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            Arc::new(Int64Array::from(vec![1i64, 2, 3])),
+        ],
+    )
+    .expect("batch");
+    let mut buf = Vec::new();
+    {
+        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
+        w.write(&batch).expect("write");
+        w.finish().expect("finish");
+    }
+    buf
+}
+
+/// Model order — `id: long`, then `name: string` — the reverse of the wire order
+/// from `ipc_body_reordered` (simulates the gated path, where `columns` is the
+/// model's declared order, not the wire order).
+fn reordered_columns() -> Vec<ColumnSpec> {
+    vec![
+        ColumnSpec {
+            name: "id".into(),
+            ty: "long".into(),
+            nullable: false,
+        },
+        ColumnSpec {
+            name: "name".into(),
+            ty: "string".into(),
+            nullable: false,
+        },
+    ]
 }
 
 async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
@@ -154,4 +197,70 @@ async fn large_request_writes_parquet_and_emits_lineage() {
         .expect("events");
     assert_eq!(page.items.len(), 1, "one lineage event for the run");
     assert_eq!(page.items[0].outputs[0].name, "wh.big");
+}
+
+/// Regression: when `columns` (model order) differs from the wire column order —
+/// the model-gate path — the inline branch must realign by name, not index. With
+/// differing types a positional mismap would panic on the arrow downcast; this
+/// asserts the landing succeeds (the columns are reordered to match `columns`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reordered_columns_inline_align_by_name() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+
+    let run = RunId(uuid::Uuid::new_v4());
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "reorder_inline".into(),
+    };
+    let snap = land(
+        &pool,
+        &catalog,
+        &table,
+        &reordered_columns(),
+        &ipc_body_reordered(),
+        usize::MAX,
+        lineage(run, "wh", "reorder_inline"),
+    )
+    .await
+    .expect("inline land with reordered columns");
+    assert!(snap.0 > 0);
+}
+
+/// Regression: the Parquet branch must likewise realign by name. With differing
+/// types a positional mismap would fail `RecordBatch::try_new`; this asserts the
+/// landing succeeds and returns the mirror snapshot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reordered_columns_parquet_align_by_name() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+
+    let run = RunId(uuid::Uuid::new_v4());
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "reorder_parquet".into(),
+    };
+    let snap = land(
+        &pool,
+        &catalog,
+        &table,
+        &reordered_columns(),
+        &ipc_body_reordered(),
+        0,
+        lineage(run, "wh", "reorder_parquet"),
+    )
+    .await
+    .expect("parquet land with reordered columns");
+
+    let cur = IcebergCatalog::new(pool.clone())
+        .current_snapshot(&table)
+        .await
+        .expect("current");
+    assert_eq!(cur.id, snap);
 }
