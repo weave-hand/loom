@@ -30,7 +30,7 @@ use iceberg::{
 use sqlx::postgres::{PgPoolOptions, PgQueryResult, PgRow};
 use sqlx::{AssertSqlSafe, PgPool, Postgres, Row, Transaction};
 
-use control_plane_core::LineageEvent;
+use control_plane_core::{LineageEvent, SnapshotId};
 
 use crate::lineage::pg_emit;
 
@@ -198,6 +198,25 @@ pub struct SqlCatalog {
     fileio: FileIO,
 }
 
+/// Side-effects to run inside the one `do_update_table` commit tx, alongside the
+/// pointer-CAS + mirror projection. Both are optional and independent.
+#[derive(Default)]
+pub struct CommitExtras<'a> {
+    /// Emit this lineage event in the commit tx (landing / flush provenance).
+    pub lineage: Option<&'a LineageEvent>,
+    /// Retire these inline rows at the commit's snapshot (flush compaction).
+    pub end_cap: Option<InlineEndCap<'a>>,
+}
+
+/// Mark inline rows `loom_row_id = ANY(row_ids)` of `iceberg_mirror.inline_<table_id>`
+/// as ended at the commit's snapshot.
+pub struct InlineEndCap<'a> {
+    /// The `iceberg_mirror` table id (from `inline_<table_id>`).
+    pub table_id: i64,
+    /// The `loom_row_id` values to retire.
+    pub row_ids: &'a [i64],
+}
+
 impl SqlCatalog {
     /// Create new sql catalog instance
     async fn new(
@@ -334,12 +353,15 @@ impl SqlCatalog {
     /// staged Iceberg metadata: columns from the current schema (in-memory), data
     /// files from the new snapshot's manifests. The namespace key matches the read
     /// path (`TableRef.schema` == `NamespaceIdent::join(".")`).
+    ///
+    /// Returns the mirror snapshot it allocated so callers can use it for
+    /// further in-tx work (e.g. end-capping inline rows at the same snapshot).
     async fn project_mirror(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         ident: &TableIdent,
         staged: &Table,
-    ) -> control_plane_core::Result<()> {
+    ) -> control_plane_core::Result<SnapshotId> {
         use crate::iceberg_mirror::{
             added_files_of, columns_exist, columns_of, ensure_table, next_snapshot,
             project_columns, project_files,
@@ -360,17 +382,19 @@ impl SqlCatalog {
             project_columns(conn, tid, at, &columns_of(staged)).await?;
         }
         project_files(conn, tid, at, &files).await?;
-        Ok(())
+        Ok(at)
     }
 
-    /// The real commit: pointer CAS + mirror projection (+ optional lineage),
-    /// all in one Postgres transaction. `update_table` calls this with `None`;
-    /// the loom landing path passes `Some(event)` so the lineage row commits or
-    /// rolls back together with the snapshot it describes.
+    /// The real commit: pointer CAS + mirror projection (+ optional lineage and/or
+    /// inline end-cap), all in one Postgres transaction. `update_table` calls this
+    /// with `CommitExtras::default()`; the loom landing path passes a lineage event
+    /// so it commits or rolls back together with the snapshot it describes; the
+    /// flush path additionally passes an end-cap to retire inline rows at the
+    /// same snapshot the new Parquet file becomes live.
     pub(crate) async fn do_update_table(
         &self,
         commit: TableCommit,
-        lineage: Option<&LineageEvent>,
+        extras: CommitExtras<'_>,
     ) -> Result<Table> {
         let table_ident = commit.identifier().clone();
         let current_table = self.load_table(&table_ident).await?;
@@ -421,11 +445,28 @@ impl SqlCatalog {
             .with_retryable(true));
         }
 
-        self.project_mirror(&mut tx, &table_ident, &staged_table)
+        let at = self
+            .project_mirror(&mut tx, &table_ident, &staged_table)
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
-        if let Some(ev) = lineage {
+        if let Some(cap) = &extras.end_cap {
+            // Retire the flushed inline rows at the same snapshot the new data file
+            // becomes live, so reads never double-serve or drop them.
+            let sql = format!(
+                "update {} set end_snapshot = {} \
+                 where loom_row_id = any($1) and end_snapshot is null",
+                crate::iceberg_inline::inline_table_name(cap.table_id),
+                at.0,
+            );
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(cap.row_ids)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
+        }
+
+        if let Some(ev) = extras.lineage {
             pg_emit(&mut *tx, ev)
                 .await
                 .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
@@ -1035,9 +1076,9 @@ impl Catalog for SqlCatalog {
     }
 
     /// Updates an existing table within the SQL catalog. Lineage-free path:
-    /// the loom landing path uses `do_update_table(.., Some(ev))` to attach a
-    /// lineage event atomically (see `iceberg_writer::append_batches_with_lineage`).
+    /// the loom landing path uses `do_update_table(.., CommitExtras { lineage: Some(ev), .. })`
+    /// to attach a lineage event atomically (see `iceberg_writer::append_batches_with_lineage`).
     async fn update_table(&self, commit: TableCommit) -> Result<Table> {
-        self.do_update_table(commit, None).await
+        self.do_update_table(commit, CommitExtras::default()).await
     }
 }

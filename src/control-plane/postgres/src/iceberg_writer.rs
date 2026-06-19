@@ -80,7 +80,15 @@ impl Catalog for LineageEmittingCatalog<'_> {
     /// with the lineage event so it commits/rolls back atomically with the
     /// snapshot.
     async fn update_table(&self, commit: TableCommit) -> Result<Table> {
-        self.inner.do_update_table(commit, Some(self.lineage)).await
+        self.inner
+            .do_update_table(
+                commit,
+                crate::iceberg_sql_catalog::CommitExtras {
+                    lineage: Some(self.lineage),
+                    ..Default::default()
+                },
+            )
+            .await
     }
 
     // --- pure delegation below ---
