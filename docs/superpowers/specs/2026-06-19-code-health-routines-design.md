@@ -32,6 +32,7 @@ work of *fixing* findings lives in a separate remediation process (§7).
 | Cadence | On-demand now; built to be schedulable later (no cron in this spec). |
 | Register generation | **Hybrid** — deterministic mechanical census table + a small agent-written "notable changes this run" preamble. |
 | Accepted debt | A **committed waiver/allowlist** per skill suppresses team-accepted findings; waived items render in a separate "Accepted" section, not deleted. |
+| Post-processing | Complexity needs real post-processing (the tool dumps the full metric tree); **jq is the engine and is vendored hermetically** (`//tools:jq`) so the routine doesn't depend on host `jq`. |
 
 ## 3. Why these tools, and why `tools/BUCK` (not reindeer)
 
@@ -52,15 +53,34 @@ Release assets (confirmed via `gh release view`):
 - `toniantunovi/lucidshark-duplo` `v0.2.0`:
   `lucidshark-duplo-linux-x86_64.tar.gz`, `lucidshark-duplo-linux-aarch64.tar.gz`.
   Binary inside: `lucidshark-duplo`.
+- `jqlang/jq` `jq-1.8.1`: **raw static binaries** `jq-linux-amd64`,
+  `jq-linux-arm64` (no archive — `http_file` → `chmod +x` genrule, no untar).
+
+### 3.1 Why vendor jq too
+
+The registers are rendered by jq, and the **complexity** post-processing is
+non-trivial (§5.2): `rust-code-analysis-cli` emits the *entire* per-file space
+tree with full metrics, and jq is what reduces that to the actionable hotspot
+table. The existing `loom-stpa` skill shells out to **host** `jq`, which is a
+reproducibility hole for a routine meant to be schedulable/cron-driven — a cron
+runner or fresh CI box may have no `jq`, or a different version whose number
+formatting shifts the rendered bytes. So jq is vendored hermetically as
+`//tools:jq` and **both new skills invoke the pinned jq, never host `jq`.**
+(Migrating `loom-stpa` to the vendored jq is a sensible follow-up but is out of
+scope here.)
 
 ## 4. Component 1 — hermetic tools in `tools/BUCK`
 
 Mirror the `btd`/`supertd` block (version constant → per-arch `http_file` with
 pinned `sha256` → untar `genrule` per arch → `command_alias` selecting on
-`prelude//cpu/constraints`). Two new public targets:
+`prelude//cpu/constraints`). Three new public targets:
 
-- `//tools:rust-code-analysis` → runs `rust-code-analysis-cli`.
-- `//tools:lucidshark-duplo` → runs `lucidshark-duplo`.
+- `//tools:rust-code-analysis` → runs `rust-code-analysis-cli` (untar genrule).
+- `//tools:lucidshark-duplo` → runs `lucidshark-duplo` (untar genrule).
+- `//tools:jq` → runs `jq` 1.8.1. The asset is a raw binary, so the genrule is
+  just `cp $(location :jq-<arch>) $OUT && chmod +x $OUT` — no `tar`. Both skills
+  resolve it via `buck2 run //tools:jq -- …` (build output goes to stderr, so
+  captured stdout stays clean) or the dev-shell `.loom/bin/jq` symlink.
 
 Implementation notes:
 
@@ -92,27 +112,41 @@ PR. Register: `docs/code-health/complexity.md`. Waiver file:
 buck2 run //tools:rust-code-analysis -- -m -O json -p <paths> -o $TMPDIR
 ```
 
-`rust-code-analysis-cli` emits one JSON file per analyzed source file, each a
-tree of code "spaces" (functions / impls) carrying metrics: `cyclomatic`,
+`rust-code-analysis-cli` emits **one JSON file per analyzed source file**, under
+the `-o` output dir mirroring the source tree. Each file's JSON is a **deep,
+recursive tree of code "spaces"** — the file space contains nested function /
+impl / closure spaces, every one carrying a full metrics block (`cyclomatic`,
 `cognitive`, `halstead`, `mi` (maintainability index), `nargs`, `nexits`,
-`loc`/`sloc`. (Exact flag spellings verified against `--help` during
+`loc`/`sloc`, …), where each metric is itself an object (e.g.
+`cyclomatic.sum`/`.average`, `mi.mi`, `loc.sloc`). It outputs **everything** —
+that is the reason real post-processing is required, not an afterthought. (Exact
+flag and metric-field spellings verified against `--help`/sample output during
 implementation; the binary is the Mozilla CLI.)
 
-### 5.2 Normalize + render (BLOCK A, deterministic jq)
+### 5.2 Post-process + render (BLOCK A, deterministic jq)
 
-1. Flatten every file's space tree into `{file, function, start_line,
-   cyclomatic, cognitive, mi, loc}` rows (recurse nested spaces).
-2. Drop rows that match a waiver entry (`{file, function}`) — collect those
-   separately for the "Accepted" section.
-3. Keep rows exceeding **any** threshold (tunable constants at the top of the
-   jq): `cyclomatic > 15`, `cognitive > 15`, `mi < 60`, `loc > 100`.
-4. Sort by `(file, start_line)` — stable semantic order, so diffs are localized.
-5. Render `docs/code-health/complexity.md`:
+This is the substantive post-processing stage. All of it runs in the
+**hermetic** jq (`//tools:jq`), never host `jq`:
+
+1. **Slurp** every emitted per-file JSON (`jq -s` over the `-o` output glob) so
+   the whole census is one input.
+2. **Recurse + select**: walk each file's space tree (`.. | objects |
+   select(.kind == "function" or "method"…)`) and emit one row per
+   function/method, carrying its enclosing file path.
+3. **Project nested metrics** into flat `{file, function, start_line,
+   cyclomatic, cognitive, mi, loc}` rows (reaching into `.metrics.cyclomatic.sum`
+   etc.; exact paths pinned during implementation).
+4. **Waiver filter**: drop rows matching a `{file, function}` waiver entry —
+   collect those separately for the "Accepted" section.
+5. **Threshold**: keep rows exceeding **any** tunable constant declared at the
+   top of the jq: `cyclomatic > 15`, `cognitive > 15`, `mi < 60`, `loc > 100`.
+6. **Sort** by `(file, start_line)` — stable semantic order, so diffs localize.
+7. Render `docs/code-health/complexity.md`:
    - Small **agent preamble** ("Notable changes this run") — see §5.4.
    - **Actionable table**: `File · Function · Cyclomatic · Cognitive · MI · LOC`.
    - **Accepted (waived)** `<details>` section listing waived rows + reason.
    - Thresholds legend.
-6. **Change gate operates on the deterministic body only.** The mechanical
+8. **Change gate operates on the deterministic body only.** The mechanical
    table + accepted section live between fixed delimiter comments (e.g.
    `<!-- census:begin -->` … `<!-- census:end -->`); the agent preamble sits
    above, in its own delimited region. BLOCK A renders the deterministic body,
@@ -186,9 +220,12 @@ clusters, each listing its sites (`file`, start/end lines) and block size.
 
 ### 6.3 Normalize + render + modes + land
 
-- Normalize JSON → clusters of `≥2` sites; sort by `(block_size desc,
-  first_file, first_line)`; render `File-cluster table`: `Size (lines) · Sites ·
-  Locations`. Same hybrid preamble (§5.4) and `DUPLICATION_RESULT` gate.
+- Normalize JSON (hermetic `//tools:jq`) → clusters of `≥2` sites; sort by
+  `(block_size desc, first_file, first_line)`; render `File-cluster table`:
+  `Size (lines) · Sites · Locations`. duplo's JSON is already a flat cluster
+  list, so the duplication post-processing is lighter than complexity's — but it
+  uses the same vendored jq for render determinism. Same hybrid preamble (§5.4)
+  and `DUPLICATION_RESULT` gate.
 - **full**: scan all of `src/**/*.rs` → register → PR-on-green
   (`bot/code-health-duplication`).
 - **diff-scoped**: `--changed-only --baseline …` → report only *new*
@@ -219,9 +256,10 @@ focused on tooling + census.
 
 ## 9. Verification
 
-- `buck2 run //tools:rust-code-analysis -- --help` and
-  `buck2 run //tools:lucidshark-duplo -- --help` succeed (binary path inside
-  each tarball is correct) on x86_64; both targets resolve under the `aarch64`
+- `buck2 run //tools:rust-code-analysis -- --help`,
+  `buck2 run //tools:lucidshark-duplo -- --help`, and
+  `buck2 run //tools:jq -- --version` succeed (binary path inside each archive /
+  the raw jq binary is correct) on x86_64; all three resolve under the `aarch64`
   `command_alias` select.
 - End-to-end dry run of each skill in **diff-scoped** mode (terminal output, no
   PR) confirms the tool → jq → table pipeline.
@@ -232,8 +270,9 @@ focused on tooling + census.
 
 ## 10. Implementation order
 
-1. Wire both hermetic tools into `tools/BUCK` (+ dev-shell + CLAUDE.md docs);
-   verify with `--help`.
+1. Wire all three hermetic tools into `tools/BUCK` — `rust-code-analysis`,
+   `lucidshark-duplo`, and `jq` (+ dev-shell + CLAUDE.md docs); verify with
+   `--help`/`--version`.
 2. `docs/code-health/` dir + README + empty/seed waiver+baseline files.
 3. `loom-complexity` skill (BLOCK A renderer, modes, BLOCK B); first full run.
 4. `loom-duplication` skill (same); first full run.
