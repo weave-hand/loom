@@ -67,6 +67,11 @@ pub enum QueryError {
     /// the queried type), so it cannot be repeated. Use relational `/links` for fixed paths.
     #[error("path is not a cycle on the queried type: {0}")]
     NotCyclicPath(String),
+    /// `/graph` part-B: the `*`-suffixed recursive core is malformed — the core link is not a
+    /// self-link on the queried type, or the relational tail is empty. (Structural faults — a
+    /// misplaced/duplicated `*` — are rejected by the HTTP layer before the handler.)
+    #[error("malformed graph path: {0}")]
+    BadGraphPath(String),
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error(transparent)]
@@ -1015,6 +1020,200 @@ pub async fn read_graph_reach_union(
         .iter()
         .map(|name| {
             object_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    debug_assert_eq!(
+        served.columns, allowed,
+        "serving engine returned columns out of the projected order"
+    );
+    Ok(ObjectRows {
+        columns: allowed,
+        logical_types,
+        rows: served.rows,
+    })
+}
+
+/// A bounded recursive-core + relational-tail reachability read. `core_link` is a `*`-suffixed
+/// self-link on `type_name` followed transitively up to `depth` times (the recursive core);
+/// `tail_links` is a forward chain of ordinary links continuing from the depth>=1 reachable set,
+/// landing on a (possibly different) final type that is projected. `filters`/`ids` scope the SEED
+/// set (the recursion start), as in part-1/2/3.
+pub struct GraphTailQuery {
+    pub type_name: String,
+    pub core_link: String,
+    pub tail_links: Vec<String>,
+    pub depth: u32,
+    pub filters: Vec<(String, String)>,
+    pub ids: Vec<String>,
+}
+
+/// Serve a recursive-core + relational-tail read: from the seed set, follow `core_link` (a
+/// self-link) 1..`depth` times to a reachable set, then chain `tail_links` forward off that set
+/// and project the final type. Governed: Read on the queried type (whose row-filters govern the
+/// recursive core, applied at the seed and every recursive expansion) AND every tail-reached type
+/// (row-filters at each), declared identity on the queried type (the recursion's dedup key + the
+/// join key from the tail back to the reachable set). The core link must be a self-link and the
+/// tail non-empty, else `BadGraphPath`; an unknown core/tail link -> `UnknownLink`.
+pub async fn read_graph_reach_with_tail(
+    q: &GraphTailQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    let type_name = TypeName(q.type_name.clone());
+    let target = PolicyTarget::Type(type_name.clone());
+
+    // Read gate on the queried (core) type (deny-by-default, before existence is revealed).
+    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
+        return Err(QueryError::Forbidden);
+    }
+    let object_type = deps
+        .ontology
+        .get_type(&type_name)
+        .await
+        .map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
+            other => QueryError::ControlPlane(other),
+        })?;
+    let (core_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+
+    // Declared identity: the recursion's dedup key and the join key from the tail back to reach.
+    let identity = object_type
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
+
+    // The relational tail must be non-empty (a bare recursive core is `/graph/:link`).
+    if q.tail_links.is_empty() {
+        return Err(QueryError::BadGraphPath(format!(
+            "recursive core `{}*` requires a relational tail; use /graph/:link for bare reachability",
+            q.core_link
+        )));
+    }
+
+    // Resolve the recursive core link: an outbound link of the queried type whose `to` is the
+    // queried type itself (a self-link).
+    let links = deps
+        .ontology
+        .links(&type_name, PageReq::unbounded())
+        .await?;
+    let core = links
+        .items
+        .iter()
+        .find(|l| l.name == q.core_link)
+        .ok_or_else(|| QueryError::UnknownLink(q.core_link.clone()))?;
+    if core.to != type_name {
+        return Err(QueryError::BadGraphPath(format!(
+            "recursive core `{}*` must land back on `{}`",
+            q.core_link, q.type_name
+        )));
+    }
+    let core_backing = core.backing.clone();
+
+    // Resolve the forward tail. Position 0 is the queried type with EMPTY row-filters — its
+    // governance lives in the recursive CTE; the tail constrains it by reach-membership. Each
+    // tail-landed type is Read-gated and its row-filters loaded; the final landing is projected.
+    let mut tail_types: Vec<crate::sql::ChainType> = vec![crate::sql::ChainType {
+        table: object_type.table.clone(),
+        row_filters: vec![],
+        predicates: vec![],
+    }];
+    let mut tail_hops: Vec<control_plane_core::LinkBacking> =
+        Vec::with_capacity(q.tail_links.len());
+    let mut current = type_name.clone();
+    let mut final_type = object_type.clone();
+    let mut final_denied = denied.clone();
+    let mut final_masked = masked.clone();
+    for link_name in &q.tail_links {
+        let outbound = deps.ontology.links(&current, PageReq::unbounded()).await?;
+        let link = outbound
+            .items
+            .into_iter()
+            .find(|l| &l.name == link_name)
+            .ok_or_else(|| QueryError::UnknownLink(link_name.clone()))?;
+        let landed = link.to.clone();
+        let landed_target = PolicyTarget::Type(landed.clone());
+        // Read on every reached type (the leak-free guarantee).
+        if deps
+            .acl
+            .check(&subject.0, Action::Read, &landed_target)
+            .await?
+            == Decision::Deny
+        {
+            return Err(QueryError::Forbidden);
+        }
+        let landed_type = deps.ontology.get_type(&landed).await?;
+        let (l_filters, l_denied, l_masked) =
+            load_policy(deps.acl, &subject.0, &landed_target).await?;
+        tail_hops.push(link.backing.clone());
+        tail_types.push(crate::sql::ChainType {
+            table: landed_type.table.clone(),
+            row_filters: l_filters,
+            predicates: vec![],
+        });
+        final_type = landed_type;
+        final_denied = l_denied;
+        final_masked = l_masked;
+        current = landed;
+    }
+
+    // Projection: the FINAL tail type's visible columns (masked -> marker). Empty -> Forbidden.
+    let allowed = project_allowed(&final_type.properties, &final_denied);
+    if allowed.is_empty() {
+        return Err(QueryError::Forbidden);
+    }
+    let mask_cols: Vec<String> = allowed
+        .iter()
+        .filter(|c| final_masked.contains(*c))
+        .cloned()
+        .collect();
+
+    // Seed predicates scope the recursion start (alias `s` in the CTE): source filters
+    // (visibility-checked + coerced against the queried type) then the ?_ids= set.
+    let source_allowed = project_allowed(&object_type.properties, &denied);
+    let mut seed_predicates: Vec<crate::filter::CallerPredicate> = Vec::new();
+    for (col, raw) in &q.filters {
+        if !source_allowed.contains(col) || masked.contains(col) {
+            return Err(QueryError::BadFilter(col.clone()));
+        }
+        let ty = object_type
+            .properties
+            .iter()
+            .find(|p| &p.name == col)
+            .map(|p| p.ty.as_str())
+            .unwrap_or("");
+        seed_predicates.push(
+            crate::filter::coerce_predicate(col, ty, raw)
+                .map_err(|_| QueryError::BadFilter(col.clone()))?,
+        );
+    }
+    if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
+        seed_predicates.push(p);
+    }
+
+    let (sql, params) = crate::sql::compile_graph_reach_tail(
+        deps.serving.dialect(),
+        &object_type.table,
+        &identity,
+        &core_backing,
+        &seed_predicates,
+        &core_filters,
+        &tail_types,
+        &tail_hops,
+        &allowed,
+        &mask_cols,
+        q.depth,
+        DEFAULT_LIMIT,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let logical_types: Vec<String> = allowed
+        .iter()
+        .map(|name| {
+            final_type
                 .properties
                 .iter()
                 .find(|p| &p.name == name)
