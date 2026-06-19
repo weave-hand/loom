@@ -24,11 +24,11 @@ duplo() { buck2 run -v0 //tools:lucidshark-duplo -- "$@"; }
 jqh()   { buck2 run -v0 //tools:jq -- "$@"; }
 
 if [ "$MODE" = diff ]; then
-  duplo --git --changed-only --json -m 20 > /tmp/dup.json 2>/tmp/dup-err.txt || true
+  duplo --git --changed-only --json -m 20 --baseline "$ROOT$BASELINE" > /tmp/dup.json 2>/tmp/dup-err.txt || true
   [ -s /tmp/dup.json ] || echo '{"duplicates":[]}' > /tmp/dup.json
 else
   git ls-files 'src/**/*.rs' > /tmp/dup-files.txt
-  duplo /tmp/dup-files.txt --json -m 20 > /tmp/dup.json 2>/tmp/dup-err.txt || true
+  duplo /tmp/dup-files.txt --json -m 20 --baseline "$ROOT$BASELINE" > /tmp/dup.json 2>/tmp/dup-err.txt || true
   [ -s /tmp/dup.json ] || { cat /tmp/dup-err.txt >&2; exit 1; }
 fi
 
