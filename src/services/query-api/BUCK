@@ -724,6 +724,18 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "action-conformance",
+    crate = "action_conformance",
+    srcs = ["tests/action_conformance.rs"],
+    crate_root = "tests/action_conformance.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
 loom_fixture_test(
     name = "object-set-e2e",
     crate = "object_set_e2e",

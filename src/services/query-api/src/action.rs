@@ -4,8 +4,8 @@
 //! NOT fail the action).
 
 use control_plane_core::{
-    Action, ActionName, ControlPlane, ControlPlaneError, DatasetRef, Decision, EventType,
-    LineageEvent, PageReq, PolicyTarget, RunId, SubjectId,
+    Action, ActionDef, ActionName, ControlPlane, ControlPlaneError, DatasetRef, Decision,
+    EventType, LineageEvent, ObjectType, PageReq, PolicyTarget, RunId, SubjectId, resolve_logical,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -28,10 +28,82 @@ pub enum ActionError {
     Forbidden,
     #[error("bad parameters: {0}")]
     BadParams(#[from] ParamError),
+    /// The action's definition does not conform to its target type (a server-side
+    /// configuration fault). Carries a descriptive message naming every violation, surfaced
+    /// to the operator (distinct from the opaque catch-all 500) so the ActionDef can be fixed.
+    #[error("action misconfigured: {0}")]
+    Misconfigured(String),
     #[error(transparent)]
     ControlPlane(#[from] ControlPlaneError),
     #[error(transparent)]
     Serving(#[from] crate::serving::ServingError),
+}
+
+/// Validate that `action`'s parameters conform to `target`'s properties: every parameter names a
+/// real property of a compatible logical type (same `BaseType`), and every required property is
+/// covered by a required parameter. Pure; collects ALL violations into one message so an operator
+/// sees every problem at once. `Ok(())` if conformant, else `ActionError::Misconfigured`.
+pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
+    let target_name = &target.name.0;
+    let mut violations: Vec<String> = Vec::new();
+
+    // Rules 1 & 2: every param names a real property, of a compatible (same-BaseType) logical type.
+    for p in &action.parameters {
+        match target.properties.iter().find(|prop| prop.name == p.name) {
+            None => violations.push(format!(
+                "parameter `{}` matches no property of type `{}`",
+                p.name, target_name
+            )),
+            Some(prop) => {
+                let prop_base = resolve_logical(&prop.ty);
+                let param_base = resolve_logical(&p.ty);
+                if prop_base.is_none() {
+                    violations.push(format!(
+                        "property `{}` of type `{}` has unknown logical type `{}`",
+                        prop.name, target_name, prop.ty
+                    ));
+                } else if param_base.is_none() {
+                    violations.push(format!(
+                        "parameter `{}` has unknown logical type `{}`",
+                        p.name, p.ty
+                    ));
+                } else if prop_base != param_base {
+                    violations.push(format!(
+                        "parameter `{}` type `{}` is incompatible with property `{}` type `{}`",
+                        p.name, p.ty, prop.name, prop.ty
+                    ));
+                }
+            }
+        }
+    }
+
+    // Rule 3: every required property is covered by a required parameter.
+    for prop in &target.properties {
+        if prop.required {
+            match action.parameters.iter().find(|p| p.name == prop.name) {
+                None => violations.push(format!(
+                    "required property `{}` of type `{}` is not covered by any parameter",
+                    prop.name, target_name
+                )),
+                Some(p) if !p.required => violations.push(format!(
+                    "required property `{}` is covered by optional parameter `{}` (it could be omitted, writing NULL)",
+                    prop.name, p.name
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(ActionError::Misconfigured(format!(
+            "action `{}` does not conform to type `{}`: {}",
+            action.name.0,
+            target_name,
+            violations.join("; ")
+        )))
+    }
 }
 
 /// Run one action: insert a new instance of the action's target type from `body`.
