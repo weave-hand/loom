@@ -24,4 +24,31 @@ check "uppercase [X] item is validated not skipped" 1 "$(rc bash "$DOCS" validat
 miss="$(bash "$DOCS" validate "$FIX/bad-missing-area-FUTURE.md" 2>&1 | grep -c 'missing area' || true)"
 check "missing area reported clearly" 1 "$miss"
 
+out(){ "$@" 2>/dev/null; }
+G="$FIX/good-ROADMAP.md $FIX/good-FUTURE.md $FIX/good-ISSUES.md"
+
+# query runs against docs/{ROADMAP,FUTURE,ISSUES}.md by default, so copy the
+# fixtures into a temp registers dir and run from there.
+T="$(mktemp -d)"; mkdir -p "$T/docs"
+cp "$FIX/good-ROADMAP.md" "$T/docs/ROADMAP.md"
+cp "$FIX/good-FUTURE.md"  "$T/docs/FUTURE.md"
+cp "$FIX/good-ISSUES.md"  "$T/docs/ISSUES.md"
+
+open_ids="$(cd "$T" && out bash "$DOCS" query open | awk '{print $2}' | sort | tr '\n' ' ')"
+# Compare sorted-actual against the sorted expected id list.
+check "query open lists only unchecked items" "fut-lineage-closure iss-quote-ident-panic road-streaming-ingest " "$open_ids"
+
+done_ids="$(cd "$T" && out bash "$DOCS" query done | awk '{print $2}' | tr '\n' ' ')"
+check "query done lists only checked items" "road-compaction-job " "$done_ids"
+
+acl_ids="$(cd "$T" && out bash "$DOCS" query open --area lineage | awk '{print $2}' | tr '\n' ' ')"
+check "query open --area filters by area" "fut-lineage-closure " "$acl_ids"
+
+# `query links <id>` prints the file:line of each `[[id]]` reference; assert a
+# reference to road-compaction-job is found in the roadmap register.
+links_hit="$(cd "$T" && out bash "$DOCS" query links road-compaction-job | grep -c 'ROADMAP.md' || true)"
+check "query links finds a reference" 1 "$links_hit"
+
+rm -rf "$T"
+
 exit $fail

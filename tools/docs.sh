@@ -93,10 +93,42 @@ cmd_validate(){
   rm -f "$ERR"; echo "docs.sh validate: OK (${#present[@]} files)"
 }
 
+cmd_query(){
+  local kind="${1:-}"; shift || true
+  if [ "$kind" = links ]; then
+    local id="${1:-}"; [ -n "$id" ] || { echo "usage: docs.sh query links <id>" >&2; return 2; }
+    grep -nE "\[\[$id\]\]" "${REGISTERS[@]}" 2>/dev/null || echo "no references to [[$id]]"
+    return 0
+  fi
+  local area="" status=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --area)   area="${2:-}";   shift 2 ;;
+      --status) status="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  local present=() f
+  for f in "${REGISTERS[@]}"; do [ -f "$f" ] && present+=("$f"); done
+  [ ${#present[@]} -gt 0 ] || { echo "no registers found" >&2; return 1; }
+  local TSV; TSV="$(mktemp)"; _extract "${present[@]}" >"$TSV"
+  case "$kind" in
+    open|done)
+      local cb; [ "$kind" = open ] && cb=" " || cb="x"
+      awk -F'\t' -v cb="$cb" -v a="$area" -v s="$status" '
+        $3==cb && (a==""||$6==a) && (s==""||$7==s){ printf "%-9s %-26s %s\n", $4, $5, $11 }' "$TSV" ;;
+    by-area)
+      cut -f6 "$TSV" | sort | uniq -c | sort -rn ;;
+    *) echo "unknown query kind: $kind (want open|done|by-area|links)" >&2; rm -f "$TSV"; return 2 ;;
+  esac
+  rm -f "$TSV"
+}
+
 main(){
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     validate) cmd_validate "$@" ;;
+    query) cmd_query "$@" ;;
     *) usage ;;
   esac
 }
