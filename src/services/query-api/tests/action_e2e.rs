@@ -7,6 +7,7 @@ use control_plane_core::{
     Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef,
     TypeName,
 };
+use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
 use query_api::action::{ActionDeps, ActionError, run_action};
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
@@ -32,9 +33,30 @@ fn parquet_count(dir: &std::path::Path) -> usize {
     n
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn action_inserts_a_typed_object_that_reads_back() {
-    let fx = PgFixture::start();
+/// A booted fixture with a fully-granted writer over a two-column `main.widget`.
+///
+/// The caller owns `fx` (which keeps Postgres alive); `writer_fx` must be kept
+/// alive for the duration of the test — its `TempDir` holds the Parquet files
+/// the engines read.
+struct WidgetWriter {
+    cp: PgControlPlane,
+    writer_fx: DuckLakeWriter,
+    data_path: std::path::PathBuf,
+    pg_conn: String,
+    widget: TypeName,
+    subj: SubjectId,
+    role: RoleId,
+    engine: EmbeddedDuckDbWriter,
+}
+
+/// Boot a fixture, seed `main.widget(id BIGINT, name VARCHAR)`, define the
+/// `Widget` type + a `createWidget` insert action, grant Write+Read to a
+/// `writer` subject, and attach a DuckLake writer engine.
+///
+/// Shared by the two action tests that exercise a granted writer;
+/// `ungranted_subject_is_forbidden` deliberately builds its own (ungranted,
+/// id-only) setup and is left alone.
+async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
     let (cp, db) = fx.fresh_db().await;
     let writer_fx = DuckLakeWriter::new(fx.socket_path(), &db);
     writer_fx.bootstrap().await;
@@ -127,6 +149,31 @@ async fn action_inserts_a_typed_object_that_reads_back() {
     let engine = EmbeddedDuckDbWriter::attach(&pg_conn, &data_path)
         .await
         .unwrap();
+    WidgetWriter {
+        cp,
+        writer_fx,
+        data_path,
+        pg_conn,
+        widget,
+        subj,
+        role,
+        engine,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn action_inserts_a_typed_object_that_reads_back() {
+    let fx = PgFixture::start();
+    let WidgetWriter {
+        cp,
+        data_path,
+        pg_conn,
+        subj,
+        engine,
+        writer_fx: _writer,
+        widget: _,
+        role: _,
+    } = setup_widget_writer(&fx).await;
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
@@ -260,96 +307,16 @@ async fn ungranted_subject_is_forbidden() {
 #[tokio::test(flavor = "multi_thread")]
 async fn write_policy_enforces_row_filter_and_deny_column() {
     let fx = PgFixture::start();
-    let (cp, db) = fx.fresh_db().await;
-    let writer_fx = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer_fx.bootstrap().await;
-    writer_fx
-        .seed(
-            "main",
-            "widget",
-            &[
-                ("id".into(), "BIGINT".into(), false),
-                ("name".into(), "VARCHAR".into(), true),
-            ],
-            &[],
-        )
-        .await;
-    let data_path = writer_fx.data_path().to_path_buf();
-    let pg_conn = format!(
-        "dbname={db} host={} user=postgres",
-        fx.socket_path().display()
-    );
-
-    let widget = TypeName("Widget".into());
-    cp.ontology()
-        .define_type(ObjectType {
-            name: widget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "widget".into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                },
-                PropertyDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                },
-            ],
-            derived: vec![],
-            identity: None,
-        })
-        .await
-        .unwrap();
-    cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createWidget".into()),
-            target: widget.clone(),
-            parameters: vec![
-                ParamDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                },
-                ParamDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                },
-            ],
-        })
-        .await
-        .unwrap();
-
-    let subj = SubjectId("writer".into());
-    let role = RoleId("writers".into());
-    cp.define_subject(&subj).await.unwrap();
-    cp.define_role(&role).await.unwrap();
-    cp.assign_role(&subj, &role).await.unwrap();
-    cp.grant(
-        &role,
-        Action::Write,
-        PolicyTarget::Type(widget.clone()),
-        Effect::Allow,
-    )
-    .await
-    .unwrap();
-    cp.grant(
-        &role,
-        Action::Read,
-        PolicyTarget::Type(widget.clone()),
-        Effect::Allow,
-    )
-    .await
-    .unwrap();
-
-    let engine = EmbeddedDuckDbWriter::attach(&pg_conn, &data_path)
-        .await
-        .unwrap();
+    let WidgetWriter {
+        cp,
+        writer_fx,
+        widget,
+        subj,
+        role,
+        engine,
+        data_path: _,
+        pg_conn: _,
+    } = setup_widget_writer(&fx).await;
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
