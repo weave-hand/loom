@@ -18,7 +18,7 @@ _extract(){
     if (f ~ /future/)  return "future";
     if (f ~ /issues/)  return "issues";
     return "unknown" }
-  /^- \[[ xX]\] \*\*.*\*\* `\{#.*\}`[ \t]*$/ {
+  /^- \[[ xX]\] / && index($0, "`{#") && index($0, "}`") {
     line=$0
     cb=tolower(substr(line,4,1))
     s=index(line,"**"); rest=substr(line,s+2); e=index(rest,"**"); title=substr(rest,1,e-1)
@@ -44,8 +44,11 @@ cmd_validate(){
   for f in "${files[@]}"; do
     if [ ! -f "$f" ]; then echo "$f: not found" >>"$ERR"; continue; fi
     present+=("$f")
-    # Any item bullet that does NOT match the strict grammar is malformed.
-    awk '/^- \[[ xX]\] / && $0 !~ /^- \[[ xX]\] \*\*.*\*\* `\{#.*\}`[ \t]*$/ {
+    # Any item bullet lacking a well-formed `{# … }` tag block is malformed.
+    # index() string-matching (not a brace regex) — portable across awk/mawk
+    # builds, where `{`/`}` in an ERE are interval metacharacters parsed
+    # inconsistently (the cause of a CI-only false "unresolved link").
+    awk '/^- \[[ xX]\] / { if (index($0, "`{#") == 0 || index($0, "}`") == 0)
       printf "%s:%d: malformed item tag block\n", FILENAME, FNR }' "$f" >>"$ERR"
   done
   if [ ${#present[@]} -eq 0 ]; then sort -u "$ERR"; rm -f "$ERR"; return 1; fi
