@@ -764,20 +764,21 @@ g(){ git -C "$1" "${@:2}"; }
 R1="$(mktemp -d)"; g "$R1" init -q; g "$R1" config user.email t@t; g "$R1" config user.name t
 mkdir -p "$R1/docs/superpowers/plans"; echo x > "$R1/docs/superpowers/plans/p.md"
 g "$R1" add -A; g "$R1" commit -qm "init"
-o1="$(cd "$R1" && bash "$REMIND" 2>/dev/null)"; check "remind silent on main" "" "$o1"
+# The nudge prints to stderr, so capture 2>&1 in every assertion.
+o1="$(cd "$R1" && bash "$REMIND" 2>&1)"; check "remind silent on main" "" "$o1"
 
 # On a branch whose commit touched a plan but NOT a register: should nudge.
 R2="$(mktemp -d)"; g "$R2" init -q -b main; g "$R2" config user.email t@t; g "$R2" config user.name t
 mkdir -p "$R2/docs/superpowers/plans"; echo seed > "$R2/docs/seed.md"; g "$R2" add -A; g "$R2" commit -qm "seed"
 g "$R2" switch -qC feature
 echo plan > "$R2/docs/superpowers/plans/new.md"; g "$R2" add -A; g "$R2" commit -qm "add plan"
-o2="$(cd "$R2" && bash "$REMIND" 2>/dev/null | grep -c 'loom-docs-update' || true)"; check "remind nudges on plan-touch branch" 1 "$o2"
+o2="$(cd "$R2" && bash "$REMIND" 2>&1 | grep -c 'loom-docs-update' || true)"; check "remind nudges on plan-touch branch" 1 "$o2"
 
 # On a branch that touched a register too: silent.
 g "$R2" switch -qC feature2 main
-echo plan > "$R2/docs/superpowers/plans/new2.md"; mkdir -p "$R2/docs"; echo r > "$R2/docs/ROADMAP.md"
+mkdir -p "$R2/docs/superpowers/plans"; echo plan > "$R2/docs/superpowers/plans/new2.md"; echo r > "$R2/docs/ROADMAP.md"
 g "$R2" add -A; g "$R2" commit -qm "plan + register"
-o3="$(cd "$R2" && bash "$REMIND" 2>/dev/null)"; check "remind silent when register touched" "" "$o3"
+o3="$(cd "$R2" && bash "$REMIND" 2>&1)"; check "remind silent when register touched" "" "$o3"
 
 rm -rf "$R1" "$R2"
 ```
