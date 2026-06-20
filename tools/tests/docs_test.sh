@@ -18,4 +18,10 @@ check "bad area fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-area-ISSUES.md")"
 check "wrong status for register fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-status-ROADMAP.md")"
 check "unresolvable link fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-link-FUTURE.md")"
 
+# Uppercase [X] must be parsed, not silently skipped: a bad area in an [X] item must still fail.
+check "uppercase [X] item is validated not skipped" 1 "$(rc bash "$DOCS" validate "$FIX/bad-uppercase-ISSUES.md")"
+# A missing area: key must report "missing area" (not a misleading shifted-column message).
+miss="$(bash "$DOCS" validate "$FIX/bad-missing-area-FUTURE.md" 2>&1 | grep -c 'missing area' || true)"
+check "missing area reported clearly" 1 "$miss"
+
 exit $fail

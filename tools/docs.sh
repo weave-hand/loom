@@ -18,9 +18,9 @@ _extract(){
     if (f ~ /future/)  return "future";
     if (f ~ /issues/)  return "issues";
     return "unknown" }
-  /^- \[[ x]\] \*\*.*\*\* `\{#.*\}`[ \t]*$/ {
+  /^- \[[ xX]\] \*\*.*\*\* `\{#.*\}`[ \t]*$/ {
     line=$0
-    cb=substr(line,4,1)
+    cb=tolower(substr(line,4,1))
     s=index(line,"**"); rest=substr(line,s+2); e=index(rest,"**"); title=substr(rest,1,e-1)
     b1=index(line,"`{"); b2=index(line,"}`"); block=substr(line,b1+2,b2-(b1+2))
     id=""; area=""; status=""; from="-"; pr="-"; spec="-"
@@ -31,6 +31,7 @@ _extract(){
         if (k=="area") area=v; else if (k=="status") status=v;
         else if (k=="from") from=v; else if (k=="pr") pr=v; else if (k=="spec") spec=v } }
     }
+    if (id=="") id="-"; if (area=="") area="-"; if (status=="") status="-"
     printf "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
       FILENAME, FNR, cb, reg(FILENAME), id, area, status, from, pr, spec, title
   }' "$@"
@@ -44,7 +45,7 @@ cmd_validate(){
     if [ ! -f "$f" ]; then echo "$f: not found" >>"$ERR"; continue; fi
     present+=("$f")
     # Any item bullet that does NOT match the strict grammar is malformed.
-    awk '/^- \[[ x]\] / && $0 !~ /^- \[[ x]\] \*\*.*\*\* `\{#.*\}`[ \t]*$/ {
+    awk '/^- \[[ xX]\] / && $0 !~ /^- \[[ xX]\] \*\*.*\*\* `\{#.*\}`[ \t]*$/ {
       printf "%s:%d: malformed item tag block\n", FILENAME, FNR }' "$f" >>"$ERR"
   done
   if [ ${#present[@]} -eq 0 ]; then sort -u "$ERR"; rm -f "$ERR"; return 1; fi
@@ -58,10 +59,12 @@ cmd_validate(){
       issues)  want="iss-";  allowed=" open fixed wontfix ";        term=" fixed wontfix " ;;
       *) echo "$file:$ln: unknown register type (filename must contain ROADMAP/FUTURE/ISSUES)" >>"$ERR"; continue ;;
     esac
-    [ -n "$id" ] || echo "$file:$ln: missing #id" >>"$ERR"
-    case "$id" in "$want"*) : ;; *) echo "$file:$ln: id '$id' must start with '$want'" >>"$ERR" ;; esac
-    case "$AREAS"   in *" $area "*)   : ;; *) echo "$file:$ln: bad area '$area'" >>"$ERR" ;; esac
-    case "$allowed" in *" $status "*) : ;; *) echo "$file:$ln: bad status '$status' for $R register" >>"$ERR" ;; esac
+    if [ "$id" = "-" ]; then echo "$file:$ln: missing #id" >>"$ERR"
+    else case "$id" in "$want"*) : ;; *) echo "$file:$ln: id '$id' must start with '$want'" >>"$ERR" ;; esac; fi
+    if [ "$area" = "-" ]; then echo "$file:$ln: missing area" >>"$ERR"
+    else case "$AREAS" in *" $area "*) : ;; *) echo "$file:$ln: bad area '$area'" >>"$ERR" ;; esac; fi
+    if [ "$status" = "-" ]; then echo "$file:$ln: missing status" >>"$ERR"
+    else case "$allowed" in *" $status "*) : ;; *) echo "$file:$ln: bad status '$status' for $R register" >>"$ERR" ;; esac; fi
     if [ "$cb" = "x" ]; then
       case "$term" in *" $status "*) : ;; *) echo "$file:$ln: checked [x] item must have a terminal status" >>"$ERR" ;; esac
     else
