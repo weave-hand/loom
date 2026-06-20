@@ -124,11 +124,41 @@ cmd_query(){
   rm -f "$TSV"
 }
 
+cmd_shipped_open(){
+  local stale=0
+  [ "${1:-}" = "--stale" ] && stale=1
+  local present=() f
+  for f in "${REGISTERS[@]}"; do [ -f "$f" ] && present+=("$f"); done
+  [ ${#present[@]} -gt 0 ] || { echo "no registers found" >&2; return 1; }
+  local TSV; TSV="$(mktemp)"; _extract "${present[@]}" >"$TSV"
+  # if-form, not `A && have_gh=1`, so a missing gh doesn't trip set -e.
+  local have_gh=0; if command -v gh >/dev/null 2>&1; then have_gh=1; fi
+  local file ln cb R id area status from pr spec title
+  while IFS=$'\t' read -r file ln cb R id area status from pr spec title; do
+    [ "$cb" = " " ] || continue                    # open items only
+    if [ "$stale" = 1 ]; then
+      [ "$pr" = "-" ] || continue                  # --stale: open with NO pr
+      printf '%s\t%s\t(no PR linked)\n' "$id" "$title"
+    else
+      [ "$pr" != "-" ] || continue                 # default: open WITH a pr
+      local note="$pr"
+      if [ "$have_gh" = 1 ]; then
+        local n="${pr%%,*}"; n="${n#\#}"
+        local st; st="$(gh pr view "$n" --json state -q .state 2>/dev/null || echo '?')"
+        note="$pr (#$n: $st)"
+      fi
+      printf '%s\t%s\t%s\n' "$id" "$title" "$note"
+    fi
+  done <"$TSV"
+  rm -f "$TSV"
+}
+
 main(){
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     validate) cmd_validate "$@" ;;
     query) cmd_query "$@" ;;
+    shipped-open) cmd_shipped_open "$@" ;;
     *) usage ;;
   esac
 }

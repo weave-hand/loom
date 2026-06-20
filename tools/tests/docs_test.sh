@@ -51,4 +51,25 @@ check "query links finds a reference" 1 "$links_hit"
 
 rm -rf "$T"
 
+T2="$(mktemp -d)"; mkdir -p "$T2/docs"
+cp "$FIX/good-ROADMAP.md" "$T2/docs/ROADMAP.md"
+cp "$FIX/good-FUTURE.md"  "$T2/docs/FUTURE.md"
+cp "$FIX/good-ISSUES.md"  "$T2/docs/ISSUES.md"
+
+# shipped-open: open items WITH a pr ref. good-* has no open item with a pr,
+# so add one with a PR to ROADMAP.
+cat >>"$T2/docs/ROADMAP.md" <<'EOF'
+
+- [ ] **Has a PR but still open** `{#road-open-with-pr area:ingest status:planned from:x pr:#99 spec:-}`
+  candidate to reconcile
+EOF
+cand="$(cd "$T2" && PATH="/usr/bin:/bin" bash "$DOCS" shipped-open 2>/dev/null | grep -c 'road-open-with-pr' || true)"
+check "shipped-open lists open items with a pr ref" 1 "$cand"
+nostale="$(cd "$T2" && PATH="/usr/bin:/bin" bash "$DOCS" shipped-open 2>/dev/null | grep -c 'road-streaming-ingest' || true)"
+check "shipped-open omits open items without a pr" 0 "$nostale"
+stale="$(cd "$T2" && bash "$DOCS" shipped-open --stale 2>/dev/null | grep -c 'road-streaming-ingest' || true)"
+check "shipped-open --stale lists open items without a pr" 1 "$stale"
+
+rm -rf "$T2"
+
 exit $fail
