@@ -142,6 +142,12 @@ pub async fn run_action(
         return Err(ActionError::Forbidden);
     }
 
+    // 3b. Conformance: the action's parameters must mirror the target type's properties (names,
+    //     compatible logical types, required-property coverage). A misconfigured ActionDef is
+    //     surfaced here as a clear error instead of an opaque insert-time fault. Runs after the
+    //     Write gate (no definition-validity leak to unauthorized callers) and before any insert.
+    check_conformance(&action, &target)?;
+
     // 4. Parse + validate the typed params (ordered by the action's parameter list).
     let pairs = parse_params(&action.parameters, body)?;
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();

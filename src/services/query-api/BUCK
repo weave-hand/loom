@@ -736,6 +736,22 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "action-conformance-handler",
+    crate = "action_conformance_handler",
+    srcs = ["tests/action_conformance_handler.rs"],
+    crate_root = "tests/action_conformance_handler.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "object-set-e2e",
     crate = "object_set_e2e",
