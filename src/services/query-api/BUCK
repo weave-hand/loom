@@ -733,6 +733,53 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "action-conformance",
+    crate = "action_conformance",
+    srcs = ["tests/action_conformance.rs"],
+    crate_root = "tests/action_conformance.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
+    name = "action-conformance-handler",
+    crate = "action_conformance_handler",
+    srcs = ["tests/action_conformance_handler.rs"],
+    crate_root = "tests/action_conformance_handler.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "action-conformance-http",
+    crate = "action_conformance_http",
+    srcs = ["tests/action_conformance_http.rs"],
+    crate_root = "tests/action_conformance_http.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
 loom_fixture_test(
     name = "object-set-e2e",
     crate = "object_set_e2e",

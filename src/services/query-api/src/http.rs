@@ -602,6 +602,11 @@ async fn post_action(
         Err(crate::action::ActionError::BadParams(e)) => {
             (StatusCode::BAD_REQUEST, e.to_string()).into_response()
         }
+        // A misconfigured action is a server-side config fault, surfaced with detail (distinct
+        // from the opaque catch-all 500 below) so the operator can fix the ActionDef.
+        Err(crate::action::ActionError::Misconfigured(m)) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, m).into_response()
+        }
         // Opaque body for backend/serving faults (no internal detail leaked).
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     }
