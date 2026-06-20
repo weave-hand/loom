@@ -71,8 +71,9 @@ line and prose indented below:
 | `spec:` | Spec/plan basenames | comma-joined slugs (no dir, no `.md`), or `-` |
 
 **`area:` controlled vocabulary:** `lineage`, `catalog`, `ontology`, `acl`,
-`ingest`, `query`, `transform`, `iceberg`, `ui`, `ux`, `build`, `deploy`,
-`cross-cutting`. (Extend deliberately; the validator enforces the set.)
+`ingest`, `query`, `transform`, `iceberg`, `ui`, `ux`, `test`, `quality`,
+`devx`, `build`, `deploy`, `cross-cutting`. (Extend deliberately; the validator
+enforces the set.)
 
 **Cross-links:** `[[id]]` references another item by `#id`, in any of the three
 files. The validator checks they resolve.
