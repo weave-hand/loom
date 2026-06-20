@@ -1853,6 +1853,59 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "axum-0.8.9.crate",
+    sha256 = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90",
+    strip_prefix = "axum-0.8.9",
+    urls = ["https://static.crates.io/crates/axum/0.8.9/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "axum-0.8",
+    srcs = [":axum-0.8.9.crate"],
+    crate = "axum",
+    crate_root = "axum-0.8.9.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "axum",
+        "CARGO_CRATE_NAME": "axum",
+        "CARGO_MANIFEST_DIR": "axum-0.8.9.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "HTTP routing and request handling library that focuses on ergonomics and modularity",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/tokio-rs/axum",
+        "CARGO_PKG_NAME": "axum",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/tokio-rs/axum",
+        "CARGO_PKG_RUST_VERSION": "1.80",
+        "CARGO_PKG_VERSION": "0.8.9",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "8",
+        "CARGO_PKG_VERSION_PATCH": "9",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":axum-core-0.5",
+        ":bytes-1",
+        ":futures-util-0.3",
+        ":http-1",
+        ":http-body-1",
+        ":http-body-util-0.1",
+        ":itoa-1",
+        ":matchit-0.8",
+        ":memchr-2",
+        ":mime-0.3",
+        ":percent-encoding-2",
+        ":pin-project-lite-0.2",
+        ":serde_core-1",
+        ":sync_wrapper-1",
+        ":tower-0.5",
+        ":tower-layer-0.3",
+        ":tower-service-0.3",
+    ],
+)
+
+http_archive(
     name = "axum-core-0.4.5.crate",
     sha256 = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199",
     strip_prefix = "axum-core-0.4.5",
@@ -1899,6 +1952,52 @@ cargo.rust_library(
         ":tower-layer-0.3",
         ":tower-service-0.3",
         ":tracing-0.1",
+    ],
+)
+
+http_archive(
+    name = "axum-core-0.5.6.crate",
+    sha256 = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1",
+    strip_prefix = "axum-core-0.5.6",
+    urls = ["https://static.crates.io/crates/axum-core/0.5.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "axum-core-0.5",
+    srcs = [":axum-core-0.5.6.crate"],
+    crate = "axum_core",
+    crate_root = "axum-core-0.5.6.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "axum_core",
+        "CARGO_CRATE_NAME": "axum_core",
+        "CARGO_MANIFEST_DIR": "axum-core-0.5.6.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Core types and traits for axum",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/tokio-rs/axum",
+        "CARGO_PKG_NAME": "axum-core",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/tokio-rs/axum",
+        "CARGO_PKG_RUST_VERSION": "1.78",
+        "CARGO_PKG_VERSION": "0.5.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":bytes-1",
+        ":futures-core-0.3",
+        ":http-1",
+        ":http-body-1",
+        ":http-body-util-0.1",
+        ":mime-0.3",
+        ":pin-project-lite-0.2",
+        ":sync_wrapper-1",
+        ":tower-layer-0.3",
+        ":tower-service-0.3",
     ],
 )
 
@@ -1984,6 +2083,41 @@ cargo.rust_library(
         "default",
         "std",
     ],
+    visibility = [],
+)
+
+http_archive(
+    name = "beef-0.5.2.crate",
+    sha256 = "3a8241f3ebb85c056b509d4327ad0358fbbba6ffb340bf388f26350aeda225b1",
+    strip_prefix = "beef-0.5.2",
+    urls = ["https://static.crates.io/crates/beef/0.5.2/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "beef-0.5",
+    srcs = [":beef-0.5.2.crate"],
+    crate = "beef",
+    crate_root = "beef-0.5.2.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "beef",
+        "CARGO_CRATE_NAME": "beef",
+        "CARGO_MANIFEST_DIR": "beef-0.5.2.crate",
+        "CARGO_PKG_AUTHORS": "Maciej Hirsz <hello@maciej.codes>",
+        "CARGO_PKG_DESCRIPTION": "More compact Cow",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "beef",
+        "CARGO_PKG_README": "./README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/maciejhirsz/beef",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.5.2",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["default"],
     visibility = [],
 )
 
@@ -2726,23 +2860,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "cc-1.2.64.crate",
-    sha256 = "dad887fd958be91b5098c0248def011f4523ab786cd411be668777e55063501f",
-    strip_prefix = "cc-1.2.64",
-    urls = ["https://static.crates.io/crates/cc/1.2.64/download"],
+    name = "cc-1.2.65.crate",
+    sha256 = "e228eec9be7c17ccb640b59b36a5cd805ea2a564a4c5e162c2f659fea30d3b96",
+    strip_prefix = "cc-1.2.65",
+    urls = ["https://static.crates.io/crates/cc/1.2.65/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "cc-1",
-    srcs = [":cc-1.2.64.crate"],
+    srcs = [":cc-1.2.65.crate"],
     crate = "cc",
-    crate_root = "cc-1.2.64.crate/src/lib.rs",
+    crate_root = "cc-1.2.65.crate/src/lib.rs",
     edition = "2018",
     env = {
         "CARGO_BIN_NAME": "cc",
         "CARGO_CRATE_NAME": "cc",
-        "CARGO_MANIFEST_DIR": "cc-1.2.64.crate",
+        "CARGO_MANIFEST_DIR": "cc-1.2.65.crate",
         "CARGO_PKG_AUTHORS": "Alex Crichton <alex@alexcrichton.com>",
         "CARGO_PKG_DESCRIPTION": "A build-time dependency for Cargo build scripts to assist in invoking the native\nC compiler to compile native C code into a static archive to be linked into Rust\ncode.\n",
         "CARGO_PKG_HOMEPAGE": "https://github.com/rust-lang/cc-rs",
@@ -2750,10 +2884,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/rust-lang/cc-rs",
         "CARGO_PKG_RUST_VERSION": "1.63",
-        "CARGO_PKG_VERSION": "1.2.64",
+        "CARGO_PKG_VERSION": "1.2.65",
         "CARGO_PKG_VERSION_MAJOR": "1",
         "CARGO_PKG_VERSION_MINOR": "2",
-        "CARGO_PKG_VERSION_PATCH": "64",
+        "CARGO_PKG_VERSION_PATCH": "65",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = ["parallel"],
@@ -7949,6 +8083,53 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "h2-0.4.15.crate",
+    sha256 = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155",
+    strip_prefix = "h2-0.4.15",
+    urls = ["https://static.crates.io/crates/h2/0.4.15/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "h2-0.4",
+    srcs = [":h2-0.4.15.crate"],
+    crate = "h2",
+    crate_root = "h2-0.4.15.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "h2",
+        "CARGO_CRATE_NAME": "h2",
+        "CARGO_MANIFEST_DIR": "h2-0.4.15.crate",
+        "CARGO_PKG_AUTHORS": "Carl Lerche <me@carllerche.com>:Sean McArthur <sean@seanmonstar.com>",
+        "CARGO_PKG_DESCRIPTION": "An HTTP/2 client and server",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "h2",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/hyperium/h2",
+        "CARGO_PKG_RUST_VERSION": "1.63",
+        "CARGO_PKG_VERSION": "0.4.15",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "4",
+        "CARGO_PKG_VERSION_PATCH": "15",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":atomic-waker-1",
+        ":bytes-1",
+        ":fnv-1",
+        ":futures-core-0.3",
+        ":futures-sink-0.3",
+        ":http-1",
+        ":indexmap-2",
+        ":slab-0.4",
+        ":tokio-1",
+        ":tokio-util-0.7",
+        ":tracing-0.1",
+    ],
+)
+
+http_archive(
     name = "half-2.7.1.crate",
     sha256 = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b",
     strip_prefix = "half-2.7.1",
@@ -8728,6 +8909,7 @@ cargo.rust_library(
         "client",
         "default",
         "http1",
+        "http2",
         "server",
     ],
     visibility = [],
@@ -8736,6 +8918,7 @@ cargo.rust_library(
         ":bytes-1",
         ":futures-channel-0.3",
         ":futures-core-0.3",
+        ":h2-0.4",
         ":http-1",
         ":http-body-1",
         ":httparse-1",
@@ -8800,6 +8983,53 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "hyper-timeout-0.5.2.crate",
+    sha256 = "2b90d566bffbce6a75bd8b09a05aa8c2cb1fabb6cb348f8840c9e4c90a0d83b0",
+    strip_prefix = "hyper-timeout-0.5.2",
+    urls = ["https://static.crates.io/crates/hyper-timeout/0.5.2/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "hyper-timeout-0.5",
+    srcs = [":hyper-timeout-0.5.2.crate"],
+    crate = "hyper_timeout",
+    crate_root = "hyper-timeout-0.5.2.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "hyper_timeout",
+        "CARGO_CRATE_NAME": "hyper_timeout",
+        "CARGO_MANIFEST_DIR": "hyper-timeout-0.5.2.crate",
+        "CARGO_PKG_AUTHORS": "Herman J. Radtke III <herman@hermanradtke.com>",
+        "CARGO_PKG_DESCRIPTION": "A connect, read and write timeout aware connector to be used with hyper Client.",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/hjr3/hyper-timeout",
+        "CARGO_PKG_NAME": "hyper-timeout",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/hjr3/hyper-timeout",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.5.2",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":hyper-1",
+        ":hyper-util-0.1",
+        ":pin-project-lite-0.2",
+        ":tokio-1",
+        ":tower-service-0.3",
+    ],
+)
+
+alias(
+    name = "hyper-util",
+    actual = ":hyper-util-0.1",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
     name = "hyper-util-0.1.20.crate",
     sha256 = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0",
     strip_prefix = "hyper-util-0.1.20",
@@ -8836,7 +9066,9 @@ cargo.rust_library(
         "client-proxy",
         "default",
         "http1",
+        "http2",
         "server",
+        "server-auto",
         "service",
         "tokio",
     ],
@@ -10552,6 +10784,245 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "logos-0.15.1.crate",
+    sha256 = "ff472f899b4ec2d99161c51f60ff7075eeb3097069a36050d8037a6325eb8154",
+    strip_prefix = "logos-0.15.1",
+    urls = ["https://static.crates.io/crates/logos/0.15.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "logos-0.15",
+    srcs = [":logos-0.15.1.crate"],
+    crate = "logos",
+    crate_root = "logos-0.15.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "logos",
+        "CARGO_CRATE_NAME": "logos",
+        "CARGO_MANIFEST_DIR": "logos-0.15.1.crate",
+        "CARGO_PKG_AUTHORS": "Maciej Hirsz <hello@maciej.codes>:Jérome Eertmans (maintainer) <jeertmans@icloud.com>",
+        "CARGO_PKG_DESCRIPTION": "Create ridiculously fast Lexers",
+        "CARGO_PKG_HOMEPAGE": "https://logos.maciej.codes/",
+        "CARGO_PKG_NAME": "logos",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/maciejhirsz/logos",
+        "CARGO_PKG_RUST_VERSION": "1.74.0",
+        "CARGO_PKG_VERSION": "0.15.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "15",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "export_derive",
+        "logos-derive",
+        "std",
+    ],
+    visibility = [],
+    deps = [":logos-derive-0.15"],
+)
+
+http_archive(
+    name = "logos-0.16.1.crate",
+    sha256 = "eb2c55a318a87600ea870ff8c2012148b44bf18b74fad48d0f835c38c7d07c5f",
+    strip_prefix = "logos-0.16.1",
+    urls = ["https://static.crates.io/crates/logos/0.16.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "logos-0.16",
+    srcs = [":logos-0.16.1.crate"],
+    crate = "logos",
+    crate_root = "logos-0.16.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "logos",
+        "CARGO_CRATE_NAME": "logos",
+        "CARGO_MANIFEST_DIR": "logos-0.16.1.crate",
+        "CARGO_PKG_AUTHORS": "Maciej Hirsz <hello@maciej.codes>:Jérome Eertmans (maintainer) <jeertmans@icloud.com>",
+        "CARGO_PKG_DESCRIPTION": "Create ridiculously fast Lexers",
+        "CARGO_PKG_HOMEPAGE": "https://logos.maciej.codes/",
+        "CARGO_PKG_NAME": "logos",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/maciejhirsz/logos",
+        "CARGO_PKG_RUST_VERSION": "1.80.0",
+        "CARGO_PKG_VERSION": "0.16.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "16",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "export_derive",
+        "logos-derive",
+        "std",
+    ],
+    visibility = [],
+    deps = [":logos-derive-0.16"],
+)
+
+http_archive(
+    name = "logos-codegen-0.15.1.crate",
+    sha256 = "192a3a2b90b0c05b27a0b2c43eecdb7c415e29243acc3f89cc8247a5b693045c",
+    strip_prefix = "logos-codegen-0.15.1",
+    urls = ["https://static.crates.io/crates/logos-codegen/0.15.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "logos-codegen-0.15",
+    srcs = [":logos-codegen-0.15.1.crate"],
+    crate = "logos_codegen",
+    crate_root = "logos-codegen-0.15.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "logos_codegen",
+        "CARGO_CRATE_NAME": "logos_codegen",
+        "CARGO_MANIFEST_DIR": "logos-codegen-0.15.1.crate",
+        "CARGO_PKG_AUTHORS": "Maciej Hirsz <hello@maciej.codes>:Jérome Eertmans (maintainer) <jeertmans@icloud.com>",
+        "CARGO_PKG_DESCRIPTION": "Create ridiculously fast Lexers",
+        "CARGO_PKG_HOMEPAGE": "https://logos.maciej.codes/",
+        "CARGO_PKG_NAME": "logos-codegen",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/maciejhirsz/logos",
+        "CARGO_PKG_RUST_VERSION": "1.74.0",
+        "CARGO_PKG_VERSION": "0.15.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "15",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":beef-0.5",
+        ":fnv-1",
+        ":lazy_static-1",
+        ":proc-macro2-1",
+        ":quote-1",
+        ":regex-syntax-0.8",
+        ":syn-2",
+    ],
+)
+
+http_archive(
+    name = "logos-codegen-0.16.1.crate",
+    sha256 = "58b3ffaa284e1350d017a57d04ada118c4583cf260c8fb01e0fe28a2e9cf8970",
+    strip_prefix = "logos-codegen-0.16.1",
+    urls = ["https://static.crates.io/crates/logos-codegen/0.16.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "logos-codegen-0.16",
+    srcs = [":logos-codegen-0.16.1.crate"],
+    crate = "logos_codegen",
+    crate_root = "logos-codegen-0.16.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "logos_codegen",
+        "CARGO_CRATE_NAME": "logos_codegen",
+        "CARGO_MANIFEST_DIR": "logos-codegen-0.16.1.crate",
+        "CARGO_PKG_AUTHORS": "Maciej Hirsz <hello@maciej.codes>:Jérome Eertmans (maintainer) <jeertmans@icloud.com>",
+        "CARGO_PKG_DESCRIPTION": "Create ridiculously fast Lexers",
+        "CARGO_PKG_HOMEPAGE": "https://logos.maciej.codes/",
+        "CARGO_PKG_NAME": "logos-codegen",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/maciejhirsz/logos",
+        "CARGO_PKG_RUST_VERSION": "1.80.0",
+        "CARGO_PKG_VERSION": "0.16.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "16",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":fnv-1",
+        ":proc-macro2-1",
+        ":quote-1",
+        ":regex-automata-0.4",
+        ":regex-syntax-0.8",
+        ":syn-2",
+    ],
+)
+
+http_archive(
+    name = "logos-derive-0.15.1.crate",
+    sha256 = "605d9697bcd5ef3a42d38efc51541aa3d6a4a25f7ab6d1ed0da5ac632a26b470",
+    strip_prefix = "logos-derive-0.15.1",
+    urls = ["https://static.crates.io/crates/logos-derive/0.15.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "logos-derive-0.15",
+    srcs = [":logos-derive-0.15.1.crate"],
+    crate = "logos_derive",
+    crate_root = "logos-derive-0.15.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "logos_derive",
+        "CARGO_CRATE_NAME": "logos_derive",
+        "CARGO_MANIFEST_DIR": "logos-derive-0.15.1.crate",
+        "CARGO_PKG_AUTHORS": "Maciej Hirsz <hello@maciej.codes>:Jérome Eertmans (maintainer) <jeertmans@icloud.com>",
+        "CARGO_PKG_DESCRIPTION": "Create ridiculously fast Lexers",
+        "CARGO_PKG_HOMEPAGE": "https://logos.maciej.codes/",
+        "CARGO_PKG_NAME": "logos-derive",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/maciejhirsz/logos",
+        "CARGO_PKG_RUST_VERSION": "1.74.0",
+        "CARGO_PKG_VERSION": "0.15.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "15",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    proc_macro = True,
+    visibility = [],
+    deps = [":logos-codegen-0.15"],
+)
+
+http_archive(
+    name = "logos-derive-0.16.1.crate",
+    sha256 = "52d3a9855747c17eaf4383823f135220716ab49bea5fbea7dd42cc9a92f8aa31",
+    strip_prefix = "logos-derive-0.16.1",
+    urls = ["https://static.crates.io/crates/logos-derive/0.16.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "logos-derive-0.16",
+    srcs = [":logos-derive-0.16.1.crate"],
+    crate = "logos_derive",
+    crate_root = "logos-derive-0.16.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "logos_derive",
+        "CARGO_CRATE_NAME": "logos_derive",
+        "CARGO_MANIFEST_DIR": "logos-derive-0.16.1.crate",
+        "CARGO_PKG_AUTHORS": "Maciej Hirsz <hello@maciej.codes>:Jérome Eertmans (maintainer) <jeertmans@icloud.com>",
+        "CARGO_PKG_DESCRIPTION": "Create ridiculously fast Lexers",
+        "CARGO_PKG_HOMEPAGE": "https://logos.maciej.codes/",
+        "CARGO_PKG_NAME": "logos-derive",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/maciejhirsz/logos",
+        "CARGO_PKG_RUST_VERSION": "1.80.0",
+        "CARGO_PKG_VERSION": "0.16.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "16",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    proc_macro = True,
+    visibility = [],
+    deps = [":logos-codegen-0.16"],
+)
+
+http_archive(
     name = "lz4_flex-0.12.2.crate",
     sha256 = "90071f8077f8e40adfc4b7fe9cd495ce316263f19e75c2211eeff3fdf475a3d9",
     strip_prefix = "lz4_flex-0.12.2",
@@ -10700,6 +11171,41 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "matchit-0.8.4.crate",
+    sha256 = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3",
+    strip_prefix = "matchit-0.8.4",
+    urls = ["https://static.crates.io/crates/matchit/0.8.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "matchit-0.8",
+    srcs = [":matchit-0.8.4.crate"],
+    crate = "matchit",
+    crate_root = "matchit-0.8.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "matchit",
+        "CARGO_CRATE_NAME": "matchit",
+        "CARGO_MANIFEST_DIR": "matchit-0.8.4.crate",
+        "CARGO_PKG_AUTHORS": "Ibraheem Ahmed <ibraheem@ibraheem.ca>",
+        "CARGO_PKG_DESCRIPTION": "A high performance, zero-copy URL router.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "matchit",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/ibraheemdev/matchit",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.8.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "8",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["default"],
+    visibility = [],
+)
+
+http_archive(
     name = "md-5-0.11.0.crate",
     sha256 = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98",
     strip_prefix = "md-5-0.11.0",
@@ -10774,6 +11280,89 @@ cargo.rust_library(
         "std",
     ],
     visibility = [],
+)
+
+http_archive(
+    name = "miette-7.6.0.crate",
+    sha256 = "5f98efec8807c63c752b5bd61f862c165c115b0a35685bdcfd9238c7aeb592b7",
+    strip_prefix = "miette-7.6.0",
+    urls = ["https://static.crates.io/crates/miette/7.6.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "miette-7",
+    srcs = [":miette-7.6.0.crate"],
+    crate = "miette",
+    crate_root = "miette-7.6.0.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "miette",
+        "CARGO_CRATE_NAME": "miette",
+        "CARGO_MANIFEST_DIR": "miette-7.6.0.crate",
+        "CARGO_PKG_AUTHORS": "Kat Marchán <kzm@zkat.tech>",
+        "CARGO_PKG_DESCRIPTION": "Fancy diagnostic reporting library and protocol for us mere mortals who aren't compiler hackers.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "miette",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/zkat/miette",
+        "CARGO_PKG_RUST_VERSION": "1.70.0",
+        "CARGO_PKG_VERSION": "7.6.0",
+        "CARGO_PKG_VERSION_MAJOR": "7",
+        "CARGO_PKG_VERSION_MINOR": "6",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "derive",
+    ],
+    visibility = [],
+    deps = [
+        ":cfg-if-1",
+        ":miette-derive-7",
+        ":unicode-width-0.1",
+    ],
+)
+
+http_archive(
+    name = "miette-derive-7.6.0.crate",
+    sha256 = "db5b29714e950dbb20d5e6f74f9dcec4edbcc1067bb7f8ed198c097b8c1a818b",
+    strip_prefix = "miette-derive-7.6.0",
+    urls = ["https://static.crates.io/crates/miette-derive/7.6.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "miette-derive-7",
+    srcs = [":miette-derive-7.6.0.crate"],
+    crate = "miette_derive",
+    crate_root = "miette-derive-7.6.0.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "miette_derive",
+        "CARGO_CRATE_NAME": "miette_derive",
+        "CARGO_MANIFEST_DIR": "miette-derive-7.6.0.crate",
+        "CARGO_PKG_AUTHORS": "Kat Marchán <kzm@zkat.tech>",
+        "CARGO_PKG_DESCRIPTION": "Derive macros for miette. Like `thiserror` for Diagnostics.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "miette-derive",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/zkat/miette",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "7.6.0",
+        "CARGO_PKG_VERSION_MAJOR": "7",
+        "CARGO_PKG_VERSION_MINOR": "6",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":proc-macro2-1",
+        ":quote-1",
+        ":syn-2",
+    ],
 )
 
 http_archive(
@@ -10962,6 +11551,40 @@ cargo.rust_library(
         ":tagptr-0.2",
         ":uuid-1",
     ],
+)
+
+http_archive(
+    name = "multimap-0.10.1.crate",
+    sha256 = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084",
+    strip_prefix = "multimap-0.10.1",
+    urls = ["https://static.crates.io/crates/multimap/0.10.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "multimap-0.10",
+    srcs = [":multimap-0.10.1.crate"],
+    crate = "multimap",
+    crate_root = "multimap-0.10.1.crate/src/lib.rs",
+    edition = "2015",
+    env = {
+        "CARGO_BIN_NAME": "multimap",
+        "CARGO_CRATE_NAME": "multimap",
+        "CARGO_MANIFEST_DIR": "multimap-0.10.1.crate",
+        "CARGO_PKG_AUTHORS": "Håvar Nøvik <havar.novik@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "A multimap implementation.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "multimap",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/havarnov/multimap",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.10.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "10",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
 )
 
 http_archive(
@@ -12625,6 +13248,409 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "prost",
+    actual = ":prost-0.14",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "prost-0.14.4.crate",
+    sha256 = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1",
+    strip_prefix = "prost-0.14.4",
+    urls = ["https://static.crates.io/crates/prost/0.14.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "prost-0.14",
+    srcs = [":prost-0.14.4.crate"],
+    crate = "prost",
+    crate_root = "prost-0.14.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "prost",
+        "CARGO_CRATE_NAME": "prost",
+        "CARGO_MANIFEST_DIR": "prost-0.14.4.crate",
+        "CARGO_PKG_AUTHORS": "Dan Burkert <dan@danburkert.com>:Lucio Franco <luciofranco14@gmail.com>:Casper Meijn <casper@meijn.net>:Tokio Contributors <team@tokio.rs>",
+        "CARGO_PKG_DESCRIPTION": "A Protocol Buffers implementation for the Rust Language.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "prost",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/tokio-rs/prost",
+        "CARGO_PKG_RUST_VERSION": "1.85",
+        "CARGO_PKG_VERSION": "0.14.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "14",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "derive",
+        "std",
+    ],
+    visibility = [],
+    deps = [
+        ":bytes-1",
+        ":prost-derive-0.14",
+    ],
+)
+
+alias(
+    name = "prost-build",
+    actual = ":prost-build-0.14",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "prost-build-0.14.4.crate",
+    sha256 = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042",
+    strip_prefix = "prost-build-0.14.4",
+    urls = ["https://static.crates.io/crates/prost-build/0.14.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "prost-build-0.14",
+    srcs = [":prost-build-0.14.4.crate"],
+    crate = "prost_build",
+    crate_root = "prost-build-0.14.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "prost_build",
+        "CARGO_CRATE_NAME": "prost_build",
+        "CARGO_MANIFEST_DIR": "prost-build-0.14.4.crate",
+        "CARGO_PKG_AUTHORS": "Dan Burkert <dan@danburkert.com>:Lucio Franco <luciofranco14@gmail.com>:Casper Meijn <casper@meijn.net>:Tokio Contributors <team@tokio.rs>",
+        "CARGO_PKG_DESCRIPTION": "Generate Prost annotated Rust types from Protocol Buffers files.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "prost-build",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/tokio-rs/prost",
+        "CARGO_PKG_RUST_VERSION": "1.85",
+        "CARGO_PKG_VERSION": "0.14.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "14",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "cleanup-markdown",
+        "default",
+        "format",
+    ],
+    visibility = [],
+    deps = [
+        ":heck-0.5",
+        ":itertools-0.14",
+        ":log-0.4",
+        ":multimap-0.10",
+        ":petgraph-0.8",
+        ":prettyplease-0.2",
+        ":prost-0.14",
+        ":prost-types-0.14",
+        ":pulldown-cmark-0.13",
+        ":pulldown-cmark-to-cmark-22",
+        ":regex-1",
+        ":syn-2",
+        ":tempfile-3",
+    ],
+)
+
+http_archive(
+    name = "prost-derive-0.14.4.crate",
+    sha256 = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf",
+    strip_prefix = "prost-derive-0.14.4",
+    urls = ["https://static.crates.io/crates/prost-derive/0.14.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "prost-derive-0.14",
+    srcs = [":prost-derive-0.14.4.crate"],
+    crate = "prost_derive",
+    crate_root = "prost-derive-0.14.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "prost_derive",
+        "CARGO_CRATE_NAME": "prost_derive",
+        "CARGO_MANIFEST_DIR": "prost-derive-0.14.4.crate",
+        "CARGO_PKG_AUTHORS": "Dan Burkert <dan@danburkert.com>:Lucio Franco <luciofranco14@gmail.com>:Casper Meijn <casper@meijn.net>:Tokio Contributors <team@tokio.rs>",
+        "CARGO_PKG_DESCRIPTION": "Generate encoding and decoding implementations for Prost annotated types.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "prost-derive",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/tokio-rs/prost",
+        "CARGO_PKG_RUST_VERSION": "1.85",
+        "CARGO_PKG_VERSION": "0.14.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "14",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":anyhow-1",
+        ":itertools-0.14",
+        ":proc-macro2-1",
+        ":quote-1",
+        ":syn-2",
+    ],
+)
+
+http_archive(
+    name = "prost-reflect-0.16.4.crate",
+    sha256 = "590aa145fee8f7a26b5a6055365e7c5e89a5c1caae9869de76ec0ee73181a2f9",
+    strip_prefix = "prost-reflect-0.16.4",
+    urls = ["https://static.crates.io/crates/prost-reflect/0.16.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "prost-reflect-0.16",
+    srcs = [":prost-reflect-0.16.4.crate"],
+    crate = "prost_reflect",
+    crate_root = "prost-reflect-0.16.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "prost_reflect",
+        "CARGO_CRATE_NAME": "prost_reflect",
+        "CARGO_MANIFEST_DIR": "prost-reflect-0.16.4.crate",
+        "CARGO_PKG_AUTHORS": "Andrew Hickman <andrew.hickman1@sky.com>",
+        "CARGO_PKG_DESCRIPTION": "A protobuf library extending prost with reflection support and dynamic messages.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "prost-reflect",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/andrewhickman/prost-reflect",
+        "CARGO_PKG_RUST_VERSION": "1.82.0",
+        "CARGO_PKG_VERSION": "0.16.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "16",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "miette",
+        "text-format",
+    ],
+    visibility = [],
+    deps = [
+        ":logos-0.16",
+        ":miette-7",
+        ":prost-0.14",
+        ":prost-types-0.14",
+    ],
+)
+
+alias(
+    name = "prost-types",
+    actual = ":prost-types-0.14",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "prost-types-0.14.4.crate",
+    sha256 = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a",
+    strip_prefix = "prost-types-0.14.4",
+    urls = ["https://static.crates.io/crates/prost-types/0.14.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "prost-types-0.14",
+    srcs = [":prost-types-0.14.4.crate"],
+    crate = "prost_types",
+    crate_root = "prost-types-0.14.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "prost_types",
+        "CARGO_CRATE_NAME": "prost_types",
+        "CARGO_MANIFEST_DIR": "prost-types-0.14.4.crate",
+        "CARGO_PKG_AUTHORS": "Dan Burkert <dan@danburkert.com>:Lucio Franco <luciofranco14@gmail.com>:Casper Meijn <casper@meijn.net>:Tokio Contributors <team@tokio.rs>",
+        "CARGO_PKG_DESCRIPTION": "Prost definitions of Protocol Buffers well known types.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "prost-types",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/tokio-rs/prost",
+        "CARGO_PKG_RUST_VERSION": "1.85",
+        "CARGO_PKG_VERSION": "0.14.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "14",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "std",
+    ],
+    visibility = [],
+    deps = [":prost-0.14"],
+)
+
+alias(
+    name = "protox",
+    actual = ":protox-0.9",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "protox-0.9.1.crate",
+    sha256 = "4f25a07a73c6717f0b9bbbd685918f5df9815f7efba450b83d9c9dea41f0e3a1",
+    strip_prefix = "protox-0.9.1",
+    urls = ["https://static.crates.io/crates/protox/0.9.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "protox-0.9",
+    srcs = [":protox-0.9.1.crate"],
+    crate = "protox",
+    crate_root = "protox-0.9.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "protox",
+        "CARGO_CRATE_NAME": "protox",
+        "CARGO_MANIFEST_DIR": "protox-0.9.1.crate",
+        "CARGO_PKG_AUTHORS": "Andrew Hickman <andrew.hickman1@sky.com>",
+        "CARGO_PKG_DESCRIPTION": "A rust implementation of the protobuf compiler.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "protox",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/andrewhickman/protox",
+        "CARGO_PKG_RUST_VERSION": "1.74.0",
+        "CARGO_PKG_VERSION": "0.9.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "9",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":bytes-1",
+        ":miette-7",
+        ":prost-0.14",
+        ":prost-reflect-0.16",
+        ":prost-types-0.14",
+        ":protox-parse-0.9",
+        ":thiserror-2",
+    ],
+)
+
+http_archive(
+    name = "protox-parse-0.9.0.crate",
+    sha256 = "072eee358134396a4643dff81cfff1c255c9fbd3fb296be14bdb6a26f9156366",
+    strip_prefix = "protox-parse-0.9.0",
+    urls = ["https://static.crates.io/crates/protox-parse/0.9.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "protox-parse-0.9",
+    srcs = [":protox-parse-0.9.0.crate"],
+    crate = "protox_parse",
+    crate_root = "protox-parse-0.9.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "protox_parse",
+        "CARGO_CRATE_NAME": "protox_parse",
+        "CARGO_MANIFEST_DIR": "protox-parse-0.9.0.crate",
+        "CARGO_PKG_AUTHORS": "Andrew Hickman <andrew.hickman1@sky.com>",
+        "CARGO_PKG_DESCRIPTION": "Parsing of protobuf source files",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "protox-parse",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/andrewhickman/protox",
+        "CARGO_PKG_RUST_VERSION": "1.74.0",
+        "CARGO_PKG_VERSION": "0.9.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "9",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":logos-0.15",
+        ":miette-7",
+        ":prost-types-0.14",
+        ":thiserror-2",
+    ],
+)
+
+http_archive(
+    name = "pulldown-cmark-0.13.4.crate",
+    sha256 = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e",
+    strip_prefix = "pulldown-cmark-0.13.4",
+    urls = ["https://static.crates.io/crates/pulldown-cmark/0.13.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "pulldown-cmark-0.13",
+    srcs = [":pulldown-cmark-0.13.4.crate"],
+    crate = "pulldown_cmark",
+    crate_root = "pulldown-cmark-0.13.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "pulldown_cmark",
+        "CARGO_CRATE_NAME": "pulldown_cmark",
+        "CARGO_MANIFEST_DIR": "pulldown-cmark-0.13.4.crate",
+        "CARGO_PKG_AUTHORS": "Raph Levien <raph.levien@gmail.com>:Marcus Klaas de Vries <mail@marcusklaas.nl>",
+        "CARGO_PKG_DESCRIPTION": "A pull parser for CommonMark",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "pulldown-cmark",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/raphlinus/pulldown-cmark",
+        "CARGO_PKG_RUST_VERSION": "1.71.1",
+        "CARGO_PKG_VERSION": "0.13.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "13",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":bitflags-2",
+        ":memchr-2",
+        ":unicase-2",
+    ],
+)
+
+http_archive(
+    name = "pulldown-cmark-to-cmark-22.0.0.crate",
+    sha256 = "50793def1b900256624a709439404384204a5dc3a6ec580281bfaac35e882e90",
+    strip_prefix = "pulldown-cmark-to-cmark-22.0.0",
+    urls = ["https://static.crates.io/crates/pulldown-cmark-to-cmark/22.0.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "pulldown-cmark-to-cmark-22",
+    srcs = [":pulldown-cmark-to-cmark-22.0.0.crate"],
+    crate = "pulldown_cmark_to_cmark",
+    crate_root = "pulldown-cmark-to-cmark-22.0.0.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "pulldown_cmark_to_cmark",
+        "CARGO_CRATE_NAME": "pulldown_cmark_to_cmark",
+        "CARGO_MANIFEST_DIR": "pulldown-cmark-to-cmark-22.0.0.crate",
+        "CARGO_PKG_AUTHORS": "Sebastian Thiel <byronimo@gmail.com>:Dylan Owen <dyltotheo@gmail.com>:Alessandro Ogier <alessandro.ogier@gmail.com>:Zixian Cai <2891235+caizixian@users.noreply.github.com>:Andrew Lyjak <andrew.lyjak@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Convert pulldown-cmark Events back to the string they were parsed from",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/Byron/pulldown-cmark-to-cmark",
+        "CARGO_PKG_NAME": "pulldown-cmark-to-cmark",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/Byron/pulldown-cmark-to-cmark",
+        "CARGO_PKG_RUST_VERSION": "1.71.1",
+        "CARGO_PKG_VERSION": "22.0.0",
+        "CARGO_PKG_VERSION_MAJOR": "22",
+        "CARGO_PKG_VERSION_MINOR": "0",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":pulldown-cmark-0.13"],
+)
+
 http_archive(
     name = "quick-error-1.2.3.crate",
     sha256 = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0",
@@ -13030,14 +14056,18 @@ cargo.rust_library(
     },
     features = [
         "alloc",
+        "default",
+        "dfa",
         "dfa-build",
         "dfa-onepass",
         "dfa-search",
         "hybrid",
         "meta",
+        "nfa",
         "nfa-backtrack",
         "nfa-pikevm",
         "nfa-thompson",
+        "perf",
         "perf-inline",
         "perf-literal",
         "perf-literal-multisubstring",
@@ -15064,7 +16094,10 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "12",
         "CARGO_PKG_VERSION_PRE": "",
     },
-    features = ["std"],
+    features = [
+        "default",
+        "std",
+    ],
     visibility = [],
 )
 
@@ -16942,6 +17975,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "tokio-stream",
+    actual = ":tokio-stream-0.1",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "tokio-stream-0.1.18.crate",
     sha256 = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70",
@@ -16976,6 +18015,7 @@ cargo.rust_library(
     features = [
         "default",
         "fs",
+        "net",
         "sync",
         "time",
         "tokio-util",
@@ -17026,7 +18066,11 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "18",
         "CARGO_PKG_VERSION_PRE": "",
     },
-    features = ["default"],
+    features = [
+        "codec",
+        "default",
+        "io",
+    ],
     visibility = [],
     deps = [
         ":bytes-1",
@@ -17034,6 +18078,218 @@ cargo.rust_library(
         ":futures-sink-0.3",
         ":pin-project-lite-0.2",
         ":tokio-1",
+    ],
+)
+
+alias(
+    name = "tonic",
+    actual = ":tonic-0.14",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "tonic-0.14.6.crate",
+    sha256 = "ac2a5518c70fa84342385732db33fb3f44bc4cc748936eb5833d2df34d6445ef",
+    strip_prefix = "tonic-0.14.6",
+    urls = ["https://static.crates.io/crates/tonic/0.14.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "tonic-0.14",
+    srcs = [":tonic-0.14.6.crate"],
+    crate = "tonic",
+    crate_root = "tonic-0.14.6.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "tonic",
+        "CARGO_CRATE_NAME": "tonic",
+        "CARGO_MANIFEST_DIR": "tonic-0.14.6.crate",
+        "CARGO_PKG_AUTHORS": "Lucio Franco <luciofranco14@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "A gRPC over HTTP/2 implementation focused on high performance, interoperability, and flexibility.\n",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/hyperium/tonic",
+        "CARGO_PKG_NAME": "tonic",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/hyperium/tonic",
+        "CARGO_PKG_RUST_VERSION": "1.88",
+        "CARGO_PKG_VERSION": "0.14.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "14",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "channel",
+        "codegen",
+        "default",
+        "router",
+        "server",
+        "transport",
+    ],
+    visibility = [],
+    deps = [
+        ":async-trait-0.1",
+        ":axum-0.8",
+        ":base64-0.22",
+        ":bytes-1",
+        ":h2-0.4",
+        ":http-1",
+        ":http-body-1",
+        ":http-body-util-0.1",
+        ":hyper-1",
+        ":hyper-timeout-0.5",
+        ":hyper-util-0.1",
+        ":percent-encoding-2",
+        ":pin-project-1",
+        ":socket2-0.6",
+        ":sync_wrapper-1",
+        ":tokio-1",
+        ":tokio-stream-0.1",
+        ":tower-0.5",
+        ":tower-layer-0.3",
+        ":tower-service-0.3",
+        ":tracing-0.1",
+    ],
+)
+
+http_archive(
+    name = "tonic-build-0.14.6.crate",
+    sha256 = "c68f61875ac5293cf72e6c8cf0158086428c82c37229e98c840878f1706b0322",
+    strip_prefix = "tonic-build-0.14.6",
+    urls = ["https://static.crates.io/crates/tonic-build/0.14.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "tonic-build-0.14",
+    srcs = [":tonic-build-0.14.6.crate"],
+    crate = "tonic_build",
+    crate_root = "tonic-build-0.14.6.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "tonic_build",
+        "CARGO_CRATE_NAME": "tonic_build",
+        "CARGO_MANIFEST_DIR": "tonic-build-0.14.6.crate",
+        "CARGO_PKG_AUTHORS": "Lucio Franco <luciofranco14@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Codegen module of `tonic` gRPC implementation.\n",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/hyperium/tonic",
+        "CARGO_PKG_NAME": "tonic-build",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/hyperium/tonic",
+        "CARGO_PKG_RUST_VERSION": "1.88",
+        "CARGO_PKG_VERSION": "0.14.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "14",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["transport"],
+    visibility = [],
+    deps = [
+        ":prettyplease-0.2",
+        ":proc-macro2-1",
+        ":quote-1",
+        ":syn-2",
+    ],
+)
+
+alias(
+    name = "tonic-prost",
+    actual = ":tonic-prost-0.14",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "tonic-prost-0.14.6.crate",
+    sha256 = "50849f68853be452acf590cde0b146665b8d507b3b8af17261df47e02c209ea0",
+    strip_prefix = "tonic-prost-0.14.6",
+    urls = ["https://static.crates.io/crates/tonic-prost/0.14.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "tonic-prost-0.14",
+    srcs = [":tonic-prost-0.14.6.crate"],
+    crate = "tonic_prost",
+    crate_root = "tonic-prost-0.14.6.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "tonic_prost",
+        "CARGO_CRATE_NAME": "tonic_prost",
+        "CARGO_MANIFEST_DIR": "tonic-prost-0.14.6.crate",
+        "CARGO_PKG_AUTHORS": "Lucio Franco <luciofranco14@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Prost codec implementation for tonic",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/hyperium/tonic",
+        "CARGO_PKG_NAME": "tonic-prost",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/hyperium/tonic",
+        "CARGO_PKG_RUST_VERSION": "1.88",
+        "CARGO_PKG_VERSION": "0.14.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "14",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":bytes-1",
+        ":prost-0.14",
+        ":tonic-0.14",
+    ],
+)
+
+alias(
+    name = "tonic-prost-build",
+    actual = ":tonic-prost-build-0.14",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "tonic-prost-build-0.14.6.crate",
+    sha256 = "654e5643eff75d7f8c99197ce1440ed19a3474eada74c12bbac488b2cafdae27",
+    strip_prefix = "tonic-prost-build-0.14.6",
+    urls = ["https://static.crates.io/crates/tonic-prost-build/0.14.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "tonic-prost-build-0.14",
+    srcs = [":tonic-prost-build-0.14.6.crate"],
+    crate = "tonic_prost_build",
+    crate_root = "tonic-prost-build-0.14.6.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "tonic_prost_build",
+        "CARGO_CRATE_NAME": "tonic_prost_build",
+        "CARGO_MANIFEST_DIR": "tonic-prost-build-0.14.6.crate",
+        "CARGO_PKG_AUTHORS": "Lucio Franco <luciofranco14@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Prost build integration for tonic",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/hyperium/tonic",
+        "CARGO_PKG_NAME": "tonic-prost-build",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/hyperium/tonic",
+        "CARGO_PKG_RUST_VERSION": "1.88",
+        "CARGO_PKG_VERSION": "0.14.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "14",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "cleanup-markdown",
+        "default",
+        "transport",
+    ],
+    visibility = [],
+    deps = [
+        ":prettyplease-0.2",
+        ":proc-macro2-1",
+        ":prost-build-0.14",
+        ":prost-types-0.14",
+        ":quote-1",
+        ":syn-2",
+        ":tempfile-3",
+        ":tonic-build-0.14",
     ],
 )
 
@@ -17075,15 +18331,25 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "balance",
+        "buffer",
+        "discover",
         "futures-core",
         "futures-util",
+        "indexmap",
+        "limit",
+        "load",
+        "load-shed",
         "log",
         "make",
         "pin-project-lite",
+        "ready-cache",
         "retry",
+        "slab",
         "sync_wrapper",
         "timeout",
         "tokio",
+        "tokio-util",
         "tracing",
         "util",
     ],
@@ -17091,9 +18357,12 @@ cargo.rust_library(
     deps = [
         ":futures-core-0.3",
         ":futures-util-0.3",
+        ":indexmap-2",
         ":pin-project-lite-0.2",
+        ":slab-0.4",
         ":sync_wrapper-1",
         ":tokio-1",
+        ":tokio-util-0.7",
         ":tower-layer-0.3",
         ":tower-service-0.3",
         ":tracing-0.1",
@@ -17970,6 +19239,40 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "unicase-2.9.0.crate",
+    sha256 = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142",
+    strip_prefix = "unicase-2.9.0",
+    urls = ["https://static.crates.io/crates/unicase/2.9.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "unicase-2",
+    srcs = [":unicase-2.9.0.crate"],
+    crate = "unicase",
+    crate_root = "unicase-2.9.0.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "unicase",
+        "CARGO_CRATE_NAME": "unicase",
+        "CARGO_MANIFEST_DIR": "unicase-2.9.0.crate",
+        "CARGO_PKG_AUTHORS": "Sean McArthur <sean@seanmonstar.com>",
+        "CARGO_PKG_DESCRIPTION": "A case-insensitive wrapper around strings.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "unicase",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/seanmonstar/unicase",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "2.9.0",
+        "CARGO_PKG_VERSION_MAJOR": "2",
+        "CARGO_PKG_VERSION_MINOR": "9",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+http_archive(
     name = "unicode-bidi-0.3.18.crate",
     sha256 = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5",
     strip_prefix = "unicode-bidi-0.3.18",
@@ -18151,6 +19454,44 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "3",
         "CARGO_PKG_VERSION_PRE": "",
     },
+    visibility = [],
+)
+
+http_archive(
+    name = "unicode-width-0.1.14.crate",
+    sha256 = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af",
+    strip_prefix = "unicode-width-0.1.14",
+    urls = ["https://static.crates.io/crates/unicode-width/0.1.14/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "unicode-width-0.1",
+    srcs = [":unicode-width-0.1.14.crate"],
+    crate = "unicode_width",
+    crate_root = "unicode-width-0.1.14.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "unicode_width",
+        "CARGO_CRATE_NAME": "unicode_width",
+        "CARGO_MANIFEST_DIR": "unicode-width-0.1.14.crate",
+        "CARGO_PKG_AUTHORS": "kwantam <kwantam@gmail.com>:Manish Goregaokar <manishsmail@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Determine displayed width of `char` and `str` types\naccording to Unicode Standard Annex #11 rules.\n",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/unicode-rs/unicode-width",
+        "CARGO_PKG_NAME": "unicode-width",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/unicode-rs/unicode-width",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.14",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "14",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "cjk",
+        "default",
+    ],
     visibility = [],
 )
 

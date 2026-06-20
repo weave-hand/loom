@@ -1,0 +1,9 @@
+syntax = "proto3";
+package loom.ping.v1;
+
+message PingRequest { string note = 1; }
+message PingResponse { string note = 1; }
+
+service Ping {
+  rpc Ping(PingRequest) returns (PingResponse);
+}
