@@ -1,0 +1,61 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
+rust_library(
+    name = "engine",
+    crate = "engine",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:sqlx",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "engine-bin",
+    crate = "engine_bin",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        ":engine",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//src/services/runtime:runtime",
+        "//third-party:iceberg",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "wire",
+    crate = "wire",
+    srcs = ["tests/wire.rs"],
+    crate_root = "tests/wire.rs",
+    deps = [
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:async-trait",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)

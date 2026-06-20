@@ -38,6 +38,7 @@ cargo.rust_library(
         "//third-party:tokio-stream",
         "//third-party:tower",
         "//third-party:hyper-util",
+        "//third-party:async-trait",
         "//src/control-plane/core:core",
         "//third-party:serde_json",
         "//third-party:uuid",

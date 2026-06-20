@@ -7,4 +7,5 @@ pub mod pb {
     include!(concat!(env!("ENGINE_PB"), "/loom.engine.v1.rs"));
 }
 
+pub mod client;
 pub mod convert;
