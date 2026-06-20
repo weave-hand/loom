@@ -1,0 +1,35 @@
+syntax = "proto3";
+package loom.engine.v1;
+
+service EngineControl {
+  rpc Dequeue   (DequeueRequest)    returns (DequeueResponse);
+  rpc Complete  (CompleteRequest)   returns (CompleteResponse);
+  rpc Fail      (FailRequest)       returns (FailResponse);
+  rpc Heartbeat (HeartbeatRequest)  returns (HeartbeatResponse);
+  rpc AwaitJobs (AwaitJobsRequest)  returns (AwaitJobsResponse);   // unary long-poll
+  rpc FlushTable(FlushTableRequest) returns (FlushTableResponse);
+}
+
+message Job {
+  string id = 1;          // Uuid as string
+  string kind = 2;
+  string payload = 3;     // serde_json::Value as a JSON string
+  int32  attempts = 4;
+  int64  run_at = 5;      // unix microseconds
+}
+message DequeueRequest  { repeated string kinds = 1; string worker = 2; }
+message DequeueResponse { optional Job job = 1; }     // absent = no job (NOT an error)
+
+message CompleteRequest  { string id = 1; }   message CompleteResponse  {}
+message HeartbeatRequest { string id = 1; }   message HeartbeatResponse {}
+
+message FailRequest { string id = 1; string error = 2; RetryPolicy policy = 3; }
+message RetryPolicy { oneof kind { int64 retry_delay_ms = 1; Abandon abandon = 2; } }
+message Abandon {}
+message FailResponse {}
+
+message AwaitJobsRequest  { repeated string kinds = 1; uint64 timeout_ms = 2; }
+message AwaitJobsResponse {}                            // returns on notify or timeout
+
+message FlushTableRequest  { string schema = 1; string name = 2; }
+message FlushTableResponse { optional int64 snapshot_id = 1; }   // absent = None

@@ -18,14 +18,14 @@ cargo.rust_binary(
 genrule(
     name = "pb-gen",
     out = "gen",
-    srcs = ["proto/ping.proto"],
-    cmd = "mkdir -p $OUT && $(exe :codegen) $SRCDIR/proto/ping.proto $OUT",
+    srcs = ["proto/engine_control.proto"],
+    cmd = "mkdir -p $OUT && $(exe :codegen) $SRCDIR/proto/engine_control.proto $OUT",
 )
 
 cargo.rust_library(
     name = "engine-wire",
     crate = "engine_wire",
-    srcs = ["src/lib.rs"],
+    srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
     env = {"ENGINE_PB": "$(location :pb-gen)"},
@@ -39,15 +39,24 @@ cargo.rust_library(
         "//third-party:tower",
         "//third-party:hyper-util",
         "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+        "//third-party:time",
     ],
     visibility = ["PUBLIC"],
 )
 
 rust_test(
-    name = "pb-roundtrip",
-    crate = "pb_roundtrip",
-    srcs = ["tests/pb_roundtrip.rs"],
-    crate_root = "tests/pb_roundtrip.rs",
+    name = "convert",
+    crate = "convert",
+    srcs = ["tests/convert.rs"],
+    crate_root = "tests/convert.rs",
     edition = "2024",
-    deps = [":engine-wire", "//third-party:prost"],
+    deps = [
+        ":engine-wire",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+        "//third-party:time",
+    ],
 )

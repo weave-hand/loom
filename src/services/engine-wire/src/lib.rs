@@ -4,5 +4,7 @@
 
 /// Generated protobuf + tonic client/server stubs.
 pub mod pb {
-    include!(concat!(env!("ENGINE_PB"), "/loom.ping.v1.rs"));
+    include!(concat!(env!("ENGINE_PB"), "/loom.engine.v1.rs"));
 }
+
+pub mod convert;
