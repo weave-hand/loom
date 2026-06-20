@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-loom is well past the scaffold stage — there is substantial application code, and two of the three service pillars are live. The **control plane** (`src/control-plane/`: `core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`) implements all five concerns — queue, catalog, ontology, ACL, lineage — and its hardening pass is complete (concurrency test, handler-panic policy, per-concern split, pagination, proptest, committed `.sqlx`, and a `tracing` pass). Two **services** ship on top. `src/services/ingest/` has the transactional snapshot-commit primitive, the landing materializer (Arrow → inferred DuckLake schema → Parquet → snapshot+lineage commit), dataset→model binding (validated promotion of a landed dataset to an ontology type), and a DataFusion-driven multi-file write path (SessionContext → size-estimated repartition → N Snappy Parquet files → per-file DuckLake stats); `src/services/query-api/` has the governed object-read path with typed-object JSON serialization over an embedded DuckDB serving engine, plus governed link traversal (relational reads across FK- and join-table-backed links). **The networked service shells are built:** both services run as binaries on the shared `service_runtime` and expose plain-HTTP endpoints (ingest: `POST /datasets/{schema}/{table}` over Arrow IPC; query-api: `GET /objects/{type}` and `GET /objects/{from}/links/{link}`). An MVP **deploy** (apko/Wolfi OCI images + a Helm chart) ships from the `deploy//` buck2 cell. **Not built yet / deferred:** Transform workers (queue-driven DataFusion jobs deriving new snapshots — the remaining service pillar); ontology actions (typed governed write-backs); the **Quack wire** (loom as a Quack *server* that external DuckDB clients `ATTACH` as a remote catalog — deliberately deferred; a Quack-*client* `ServingEngine` impl exists, but loom-as-Quack-*server* does not, and today's binaries serve plain HTTP, not Quack); distributed DataFusion / Ballista; and richer reads (derived/aggregate properties, multi-hop traversal). The slice-by-slice status of record is [`docs/superpowers/specs/2026-06-06-loom-roadmap.md`](docs/superpowers/specs/2026-06-06-loom-roadmap.md) — consult and update it as capabilities land. The rest of this file documents the build system, which is the part most likely to bite you.
+loom is well past the scaffold stage — there is substantial application code, and two of the three service pillars are live. The **control plane** (`src/control-plane/`: `core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`) implements all five concerns — queue, catalog, ontology, ACL, lineage — and its hardening pass is complete (concurrency test, handler-panic policy, per-concern split, pagination, proptest, committed `.sqlx`, and a `tracing` pass). Two **services** ship on top. `src/services/ingest/` has the transactional snapshot-commit primitive, the landing materializer (Arrow → inferred DuckLake schema → Parquet → snapshot+lineage commit), dataset→model binding (validated promotion of a landed dataset to an ontology type), and a DataFusion-driven multi-file write path (SessionContext → size-estimated repartition → N Snappy Parquet files → per-file DuckLake stats); `src/services/query-api/` has the governed object-read path with typed-object JSON serialization over an embedded DuckDB serving engine, plus governed link traversal (relational reads across FK- and join-table-backed links). **The networked service shells are built:** both services run as binaries on the shared `service_runtime` and expose plain-HTTP endpoints (ingest: `POST /datasets/{schema}/{table}` over Arrow IPC; query-api: `GET /objects/{type}` and `GET /objects/{from}/links/{link}`). An MVP **deploy** (apko/Wolfi OCI images + a Helm chart) ships from the `deploy//` buck2 cell. **Not built yet / deferred:** Transform workers (queue-driven DataFusion jobs deriving new snapshots — the remaining service pillar); ontology actions (typed governed write-backs); the **Quack wire** (loom as a Quack *server* that external DuckDB clients `ATTACH` as a remote catalog — deliberately deferred; a Quack-*client* `ServingEngine` impl exists, but loom-as-Quack-*server* does not, and today's binaries serve plain HTTP, not Quack); distributed DataFusion / Ballista; and richer reads (derived/aggregate properties, multi-hop traversal). The slice-by-slice status of record is [`docs/ROADMAP.md`](docs/ROADMAP.md) (with deferred ideas in [`docs/FUTURE.md`](docs/FUTURE.md) and known defects in [`docs/ISSUES.md`](docs/ISSUES.md)) — consult and update them as capabilities land (see **Documentation registers** below). The rest of this file documents the build system, which is the part most likely to bite you.
 
 ## What loom is
 
@@ -108,6 +108,35 @@ wire the environment; see `docs/build-execution.md` for the RE cost model they l
   over RE). `REMOTE_ENV` is just the "this is a cloud routine" marker — RE is driven by
   the key being present. To bump buck2: change `BUCK2_RELEASE` in `cloud-setup.sh`
   alongside `ci.yml` and the submodule pin.
+
+## Documentation registers
+
+Deferred/planned/defect work is tracked in three **parsable markdown registers**,
+split by commitment level — the single source of truth for "what's deferred /
+planned / broken":
+
+- `docs/ROADMAP.md` — committed/sequenced work (`status: planned|in-progress|done`).
+- `docs/FUTURE.md` — deliberately-deferred ideas (`status: deferred|promoted|dropped`).
+- `docs/ISSUES.md` — known defects/gaps in shipped code (`status: open|fixed|wontfix`).
+
+Each item is one markdown list entry with a backtick-wrapped tag block on the
+title line and prose below:
+`- [ ] **Title** ` + "`" + `{#id area:<a> status:<s> from:<f> pr:<p> spec:<sp>}` + "`".
+`#id` prefixes `road-`/`fut-`/`iss-`; `area:` ∈ a controlled vocab; `pr:` is `-`
+or `#N[,#N...]`; `[[id]]` cross-links items. The `[ ]`/`[x]` checkbox makes
+"everything unfinished" a one-liner: `grep '^- \[ \]' docs/*.md`. Full grammar:
+`docs/superpowers/specs/2026-06-20-docs-registers-consolidation-design.md`.
+
+- **`tools/docs.sh`** — `validate` (grammar/ids/vocab/links; also the `docs-validate`
+  prek hook), `query open|done|by-area|links` (shell reading, e.g.
+  `bash tools/docs.sh query open --area acl`), and `shipped-open` (reconciliation
+  candidates). Tested by `bash tools/tests/docs_test.sh`.
+- **`loom-docs-organise`** skill — bulk mine/dedupe/render the registers, landed as
+  a PR on green CI. Run to consolidate or reconcile (or on a schedule).
+- **`loom-docs-update`** skill — at spec/plan completion, close resolved items and
+  record new deferrals, staged alongside the work. The `Stop` hook
+  (`tools/docs-remind.sh`) nudges you to run it when a branch touched a spec/plan
+  but no register.
 
 ## Cell layout
 

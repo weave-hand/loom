@@ -50,6 +50,17 @@ language = "system"
 types = ["rust"]
 pass_filenames = true
 
+# Validate the documentation registers against the tagged-item grammar
+# (unique ids, controlled area/status vocab, resolvable [[links]]). See
+# tools/docs.sh and docs/superpowers/specs/2026-06-20-docs-registers-consolidation-design.md.
+[[repos.hooks]]
+id = "docs-validate"
+name = "docs registers validate"
+entry = "bash tools/docs.sh validate"
+language = "system"
+files = "^docs/(ROADMAP|FUTURE|ISSUES)\\.md$"
+pass_filenames = false
+
 # When a Cargo manifest/lock changes, regenerate third-party/BUCK and fail if it
 # drifted — keeps reindeer's output in sync with the dependency graph.
 [[repos.hooks]]
