@@ -938,9 +938,19 @@ git commit -m "docs: document the documentation registers in CLAUDE.md"
 - Created by the skill: `docs/ROADMAP.md`, `docs/FUTURE.md`, `docs/ISSUES.md`
 - Migrated/removed by the skill: `docs/TO_BE_PLANNED.md`, `docs/spike/ICEBERG_ROADMAP.md`, `docs/superpowers/specs/2026-06-06-loom-roadmap.md`
 
-This is the one task with no code — it runs the skill built in Task 5 to populate
-the registers and perform the one-time migration. It is a real, reviewable
-artifact (the PR diff), not a unit test.
+This is the one task with no code — it runs the consolidation logic built in
+Task 5 to populate the registers and perform the one-time migration. It is a
+real, reviewable artifact (the PR diff), not a unit test.
+
+> **Branch coupling (important):** the `docs-validate` prek hook (Task 4) matches
+> `docs/FUTURE.md`, which already exists in *old prose form*. The hook and CI
+> `lint` (`prek run --all-files`) only go green once all three registers exist in
+> the grammar. So this bootstrap MUST land on the **current feature branch**
+> (`spec/docs-registers-consolidation`), in the same PR as Tasks 1–8 — NOT on the
+> skill's separate `bot/docs-registers` branch (that branch+PR flow in the skill's
+> BLOCK A is for *scheduled* runs). Run the skill's mining/dedupe/classify/
+> reconcile/render/migrate/validate STEPS, but commit the result onto this branch
+> and let `finishing-a-development-branch` open the single PR.
 
 - [ ] **Step 1: Run the consolidation in dry mode first**
 
@@ -951,10 +961,15 @@ Expected: a sensible inventory covering the items in `docs/FUTURE.md`,
 `docs/TO_BE_PLANNED.md`, the roadmap, and `ICEBERG_ROADMAP.md`, plus code/PR-mined
 items. No files written.
 
-- [ ] **Step 2: Run the full consolidation**
+- [ ] **Step 2: Run the full consolidation (committing on THIS branch)**
 
-Invoke the `loom-docs-organise` skill (no argument). It mines, renders the three
-registers, performs the first-run migration, validates, and opens the PR.
+Run the `loom-docs-organise` skill's logic through Step 6 (mine → dedupe →
+classify → reconcile → render the three registers → perform the first-run
+migration → `bash tools/docs.sh validate` until clean). Then run
+`buck2 run //tools:prek -- run --all-files` and stage the register files plus the
+migration removals/renames, and commit on `spec/docs-registers-consolidation`
+(do NOT switch to `bot/docs-registers`; skip the skill's BLOCK A). The whole
+feature lands as ONE PR at the finishing step.
 
 - [ ] **Step 3: Verify the registers validate**
 
@@ -973,13 +988,18 @@ grep -c '^- \[ \]' docs/ROADMAP.md docs/FUTURE.md docs/ISSUES.md
 ```
 Expected: `REGISTERS_OK`, `TBP_REMOVED`, `ROADMAP_ARCHIVED`, a per-area count table, and non-zero open-item counts. Manually read a sample of items to confirm prose survived and `spec:`/`pr:` links look right.
 
-- [ ] **Step 5: Confirm the PR merged on green CI**
+- [ ] **Step 5: Confirm the local full hook run is green**
 
-The skill's BLOCK A watches CI and squash-merges on green. Confirm:
+Since the bootstrap commits on this branch (not a bot-branch PR), confirm the
+whole feature is green locally before finishing:
 ```bash
-gh pr list --state merged --head bot/docs-registers --limit 1 --json url,title
+bash tools/tests/docs_test.sh
+buck2 run //tools:prek -- run --all-files > /tmp/docs-prek.log 2>&1; grep -Ei "failed|error" /tmp/docs-prek.log || echo PREK_OK
 ```
-Expected: the merged consolidation PR. If CI was not green, the PR is left open — address the failure (likely a `lint` markdown-EOF issue) and re-run BLOCK A.
+Expected: `docs_test.sh` all green, and `PREK_OK` (the `docs-validate` hook now
+passes because all three registers exist in the grammar). The feature is then
+finished as a single PR via `superpowers:finishing-a-development-branch`; CI's
+`lint` job re-runs these hooks on the PR.
 
 ---
 
