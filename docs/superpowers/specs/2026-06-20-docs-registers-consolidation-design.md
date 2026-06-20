@@ -189,7 +189,8 @@ non-blocking** (exit 0 with message) — never blocks a stop.
 - `docs/TO_BE_PLANNED.md` — items → ROADMAP (`planned`) / FUTURE (`deferred`);
   file deleted.
 - `docs/superpowers/specs/2026-06-06-loom-roadmap.md` — content → `docs/ROADMAP.md`;
-  original archived as `…-loom-roadmap.md.old` (as the prior roadmap was).
+  original kept in place with a supersession banner (NOT renamed to `.old`, to
+  preserve the ~35 historical specs/plans that link to it).
 - `docs/spike/ICEBERG_ROADMAP.md` — its tracked done/deferred items → registers
   under `area:iceberg`; the "what it is" narrative kept as prose (registers
   become the single source for *items*, spike docs stay pure prose).

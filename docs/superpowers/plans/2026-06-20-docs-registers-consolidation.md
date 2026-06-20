@@ -617,7 +617,10 @@ Item grammar (one markdown list item, prose indented below):
    the original prose. On the FIRST run also perform the migration:
    - Move `docs/TO_BE_PLANNED.md` items into ROADMAP/FUTURE, then `git rm` it.
    - Move `docs/superpowers/specs/2026-06-06-loom-roadmap.md` content into
-     `docs/ROADMAP.md`; `git mv` the original to `…-loom-roadmap.md.old`.
+     `docs/ROADMAP.md`. **As built:** the original was kept in place with a
+     supersession banner (NOT renamed to `.old`) so the ~35 historical
+     specs/plans that link to it don't dangle — link preservation beats the
+     archive rename here.
    - Move `docs/spike/ICEBERG_ROADMAP.md` tracked items into the registers;
      leave only its "what it is" narrative as prose.
    - Restructure `docs/FUTURE.md` prose into tagged items in place.
@@ -983,11 +986,11 @@ Run:
 ```bash
 test -f docs/ROADMAP.md && test -f docs/FUTURE.md && test -f docs/ISSUES.md && echo REGISTERS_OK
 test ! -f docs/TO_BE_PLANNED.md && echo TBP_REMOVED
-ls docs/superpowers/specs/2026-06-06-loom-roadmap.md.old >/dev/null 2>&1 && echo ROADMAP_ARCHIVED
+grep -q "Superseded as the live status of record" docs/superpowers/specs/2026-06-06-loom-roadmap.md && echo ROADMAP_BANNERED
 bash tools/docs.sh query by-area
 grep -c '^- \[ \]' docs/ROADMAP.md docs/FUTURE.md docs/ISSUES.md
 ```
-Expected: `REGISTERS_OK`, `TBP_REMOVED`, `ROADMAP_ARCHIVED`, a per-area count table, and non-zero open-item counts. Manually read a sample of items to confirm prose survived and `spec:`/`pr:` links look right.
+Expected: `REGISTERS_OK`, `TBP_REMOVED`, `ROADMAP_BANNERED`, a per-area count table, and non-zero open-item counts. Manually read a sample of items to confirm prose survived and `spec:`/`pr:` links look right.
 
 - [ ] **Step 5: Confirm the local full hook run is green**
 
