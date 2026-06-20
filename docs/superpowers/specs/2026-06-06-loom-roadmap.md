@@ -198,6 +198,10 @@ decomposed into a load-bearing **part 1** primitive first, mirroring how ingest 
     validated against the target type's property contract; the created object reads back
     through the existing governed read path. Best-effort type-named lineage (documented
     dangling slice). Proven by a fixture e2e.
+  - *Actions param↔property conformance* ✅ DELIVERED. `run_action` validates the
+    `ActionDef` against its target type (param↔property names, compatible logical types,
+    required-property coverage) before the insert, surfacing a misconfigured action as a
+    descriptive 500 rather than an opaque insert-time fault.
   - *Later:* update/delete actions (gated on row-supersession/compaction); custom-logic
     / multi-step actions (params differing from properties, or enqueue-downstream);
     fine-grained write governance (row-filter / deny-column on `Write`); Iceberg

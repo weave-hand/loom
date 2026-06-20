@@ -303,14 +303,13 @@ write behind an `ActionEngine` trait).
   the action's lineage event currently carries no inputs and `run_action` doesn't surface its
   `run_id`, so the event isn't easily queryable — a correlatable action-lineage handle is part
   of this follow-up.
-- **Action parameter ↔ property conformance.** Part-1 validates the request body against the
-  `ActionDef`'s declared parameters (`parse_params`), but does NOT cross-check at invoke time that
-  those parameters mirror the target type's properties (same names, `satisfies` logical types, all
-  required properties covered). So a misconfigured `ActionDef` (a param naming a column the type
-  lacks, or omitting a required property) surfaces as an opaque insert-time 500 rather than a clear
-  error. `define_action` trusts the author to mirror the type (consistent with the design's choice
-  to keep params/properties independent at define time). Follow-up: enforce conformance — at
-  `define_action` time (fail fast) or in `run_action` before the insert.
+- **Action parameter ↔ property conformance.** ✅ DELIVERED. `run_action` validates the
+  resolved `ActionDef` against its target `ObjectType` before the insert (after the coarse
+  `Action::Write` gate): every parameter must name a property of a compatible logical type
+  (same `BaseType`), and every required property must be covered by a required parameter. A
+  mismatch is surfaced as `ActionError::Misconfigured` → HTTP 500 with a descriptive body
+  naming every violation, instead of an opaque insert-time 500. Invoke-time only (validates
+  against the live ontology, so drift is caught); `define_action` fail-fast remains deferred.
 - **Update/delete actions.** Part-1 is insert-only; mutating existing objects is gated on the
   deferred row-supersession/compaction work.
 - **Custom-logic / multi-step actions.** Part-1's only action kind is "typed insert" (params
