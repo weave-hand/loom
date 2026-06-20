@@ -43,7 +43,10 @@ fn decode_ipc_57(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
 
 /// Land an Iceberg request. `inline_byte_limit` is the in-memory (uncompressed)
 /// Arrow size at/below which the request inlines (mirror-only typed rows) instead
-/// of writing real Parquet. Returns the loom mirror snapshot id either way.
+/// of writing real Parquet. `flush_byte_threshold` is the live-inline-byte total
+/// at/above which a `flush_table` job is enqueued after an inline write. Returns
+/// the loom mirror snapshot id either way.
+#[allow(clippy::too_many_arguments)]
 pub async fn land(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -51,6 +54,7 @@ pub async fn land(
     columns: &[ColumnSpec],
     ipc_body: &[u8],
     inline_byte_limit: usize,
+    flush_byte_threshold: i64,
     lineage: LineageEvent,
 ) -> Result<SnapshotId> {
     let (schema, batches) = decode_ipc_57(ipc_body)?;
@@ -64,7 +68,15 @@ pub async fn land(
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
     if bytes <= inline_byte_limit {
         let batch = concat_batches(&schema, &batches).map_err(be)?;
-        inline_append(pool, table, columns, &batch, lineage).await
+        inline_append(
+            pool,
+            table,
+            columns,
+            &batch,
+            lineage,
+            Some(flush_byte_threshold),
+        )
+        .await
     } else {
         land_parquet(pool, catalog, table, columns, batches, lineage).await
     }

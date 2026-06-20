@@ -17,7 +17,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use control_plane_core::{
-    ColumnSpec, ControlPlaneError, LineageEvent, Result, SnapshotId, TableRef,
+    ColumnSpec, ControlPlaneError, LineageEvent, NewJob, Result, SnapshotId, TableRef,
 };
 use parquet57::arrow::ArrowWriter;
 use sqlx::postgres::PgArguments;
@@ -27,7 +27,8 @@ use sqlx::{AssertSqlSafe, PgConnection, PgPool, Postgres, Row};
 use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_mirror::{
-    ProjectedColumn, columns_exist, ensure_table, live_table_id, next_snapshot, project_columns,
+    ProjectedColumn, arm_inline_trigger, bump_inline_trigger, columns_exist, ensure_table,
+    live_table_id, next_snapshot, project_columns,
 };
 use crate::iceberg_type::{iceberg_physical_type, pg_type_for};
 use crate::lineage::pg_emit;
@@ -134,6 +135,7 @@ pub async fn inline_append(
     columns: &[ColumnSpec],
     batch: &RecordBatch,
     lineage: LineageEvent,
+    flush_threshold: Option<i64>,
 ) -> Result<SnapshotId> {
     let mut tx = pool.begin().await.map_err(backend)?;
     // Transaction derefs to PgConnection; the helpers take `&mut PgConnection`.
@@ -195,6 +197,24 @@ pub async fn inline_append(
             q = bind_cell(q, cell);
         }
         q.execute(&mut *conn).await.map_err(backend)?;
+    }
+
+    // 3b. Flush trigger: accrue this batch's live bytes; on crossing the
+    // (per-table or global) threshold, enqueue one flush_table job, atomically
+    // with the rows. `None` => triggering disabled (preserves prior behaviour).
+    if let Some(threshold) = flush_threshold {
+        let add = batch.get_array_memory_size() as i64;
+        let st = bump_inline_trigger(&mut *conn, tid, add, threshold).await?;
+        if st.live_bytes >= st.effective && !st.enqueued {
+            let job = NewJob {
+                kind: crate::iceberg_flush::FLUSH_JOB_KIND.to_string(),
+                payload: serde_json::json!({ "schema": table.schema, "name": table.name }),
+                run_at: None,
+                priority: 0,
+            };
+            crate::queue::pg_insert(&mut *conn, &job).await?;
+            arm_inline_trigger(&mut *conn, tid).await?;
+        }
     }
 
     // 4. Lineage, atomic with the rows.

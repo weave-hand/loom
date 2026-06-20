@@ -96,9 +96,9 @@ pointer+mirror storage · read-path first · vendor the catalog.
   advisory lock. Inline rows are end-capped, not deleted (time-travel preserved;
   physical GC deferred). Spec/plan:
   `docs/superpowers/{specs,plans}/2026-06-19-iceberg-inline-flush*`.
-- **Remaining follow-ups:** *triggering* the flush (a worker/threshold/endpoint —
-  this slice is the callable primitive only) and *physical GC* of end-capped inline
-  rows + orphaned Parquet.
+- **Remaining follow-ups:** the *consumer* side of triggering (a worker draining
+  the queue and calling `flush_table`) and *physical GC* of end-capped inline rows
+  + orphaned Parquet. The *producer* side of triggering has landed — see below.
 
 ## Left (deferred)
 
@@ -107,9 +107,15 @@ pointer+mirror storage · read-path first · vendor the catalog.
    predicate pushdown / file skipping.
 2. **Overwrite/replace** — append-only today; the Iceberg analogue of DuckLake's
    `replace_files` (transform overwrite output mode).
-3. **Flush triggering + GC** — `flush_table` exists but nothing calls it
-   automatically (no worker/threshold/endpoint), and end-capped inline rows +
-   orphaned Parquet are never physically reclaimed.
+3. **Flush triggering + GC** — the *producer* has landed (Spec 1): a byte-size
+   trigger on `inline_append` enqueues a `flush_table` job when a table's live
+   inline bytes cross `LOOM_FLUSH_BYTE_THRESHOLD` (per-table override via
+   `iceberg_mirror.inline_trigger.threshold`), debounced and reset on flush. The
+   *consumer* — a worker that drains the queue and calls `flush_table` — is Spec 2,
+   the engine-wire flush vertical (`docs/spike/engine-wire-transport.md`), not yet
+   built. End-capped inline rows + orphaned Parquet are still never physically
+   reclaimed (GC deferred). Spec/plan:
+   `docs/superpowers/{specs,plans}/2026-06-19-inline-flush-trigger*`.
 4. **Multi-writer perf** — the atomic commit holds the Postgres tx open across
    object-store manifest reads; fine single-writer, needs optimizing for
    throughput.

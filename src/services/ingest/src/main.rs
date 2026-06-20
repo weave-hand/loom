@@ -20,6 +20,11 @@ use ingest::landing::{
 /// `LOOM_INLINE_BYTE_LIMIT`.
 const DEFAULT_INLINE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 
+/// Default live-inline-byte total that triggers a flush, overridable via
+/// `LOOM_FLUSH_BYTE_THRESHOLD`. 64 MiB = 4× the inline routing limit, so a table
+/// accrues several inline batches before compacting.
+const DEFAULT_FLUSH_BYTE_THRESHOLD: i64 = 64 * 1024 * 1024;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
@@ -39,11 +44,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
+            let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
             let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
             Arc::new(IcebergMaterializer {
                 catalog,
                 pool,
                 inline_byte_limit,
+                flush_byte_threshold,
             })
         }
     };

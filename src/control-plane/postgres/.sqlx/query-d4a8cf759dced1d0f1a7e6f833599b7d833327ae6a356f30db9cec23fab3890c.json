@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into iceberg_mirror.inline_trigger (table_id, live_bytes) values ($1, $2) on conflict (table_id) do update set live_bytes = iceberg_mirror.inline_trigger.live_bytes + excluded.live_bytes returning live_bytes as \"live_bytes!\", coalesce(threshold, $3) as \"effective!\", enqueued as \"enqueued!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "live_bytes!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.inline_trigger",
+            "name": "live_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "effective!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "enqueued!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.inline_trigger",
+            "name": "enqueued"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "d4a8cf759dced1d0f1a7e6f833599b7d833327ae6a356f30db9cec23fab3890c"
+}
