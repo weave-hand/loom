@@ -1,5 +1,12 @@
 # loom Roadmap (2026-06-06)
 
+> **Superseded as the live status of record by the documentation registers
+> ([`docs/ROADMAP.md`](../../ROADMAP.md), [`docs/FUTURE.md`](../../FUTURE.md),
+> [`docs/ISSUES.md`](../../ISSUES.md)) — 2026-06-20.** This file is kept in place
+> as the narrative as-built record of Steps 1–3 (and because many specs/plans link
+> to it); consult and update the registers for current status. See CLAUDE.md
+> ("Documentation registers").
+>
 > Supersedes the original control-plane roadmap, now archived as
 > `2026-06-03-control-plane-roadmap-design.md.old` — kept as the **as-built record
 > of Step 1** (concern statuses, durable decisions, divergences from the original

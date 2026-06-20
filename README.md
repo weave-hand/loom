@@ -92,7 +92,7 @@ For per-component detail, tradeoffs, and the list of decisions still up for deba
 
 ## Project status & roadmap
 
-Three steps, tracked in [`docs/superpowers/specs/2026-06-06-loom-roadmap.md`](./docs/superpowers/specs/2026-06-06-loom-roadmap.md). `main` stays green.
+Three steps, tracked in the documentation registers — [`docs/ROADMAP.md`](./docs/ROADMAP.md) (committed work), [`docs/FUTURE.md`](./docs/FUTURE.md) (deferred ideas), and [`docs/ISSUES.md`](./docs/ISSUES.md) (known defects); the original narrative roadmap is archived at [`docs/superpowers/specs/2026-06-06-loom-roadmap.md`](./docs/superpowers/specs/2026-06-06-loom-roadmap.md). `main` stays green.
 
 1. **Control-plane library — ✅ delivered.** Five concerns as ports-and-adapters under `src/control-plane/` (`core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`): **queue** (with a worker and `await_jobs`), **catalog** (DuckLake read surface), **ontology**, **acl**, and **lineage**. Each runs against one backend-agnostic contract on both the in-memory fake and real Postgres. A cross-concern `Tx` seam makes `emit` + `enqueue` atomic.
 2. **Harden the control plane.** Correctness and contract gaps catalogued in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) — worker heartbeat, Tx isolation contract, catalog MVCC delete/evolve coverage, typed cross-concern identity, and deciding the `Tx` seam's future before any service depends on the library. Deferred features are parked in [`docs/FUTURE.md`](./docs/FUTURE.md).
