@@ -101,3 +101,16 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "flush-job",
+    crate = "flush_job",
+    srcs = ["tests/flush_job.rs"],
+    crate_root = "tests/flush_job.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
