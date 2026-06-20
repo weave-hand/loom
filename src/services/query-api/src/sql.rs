@@ -283,6 +283,90 @@ fn caller_predicate_sql(
     }
 }
 
+/// Masked physical-column projection exprs: a column in `mask_cols` emits the constant
+/// `MASK_MARKER` aliased to the column name; otherwise it is referenced as
+/// `{alias}{quoted}` — `alias` is `""` for an unaliased table, or e.g. `"p."` when
+/// projecting a named result alias. Pushes no params.
+fn masked_col_exprs(
+    dialect: &dyn SqlDialect,
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    alias: &str,
+) -> Vec<String> {
+    allowed_cols
+        .iter()
+        .map(|c| {
+            if mask_cols.iter().any(|m| m == c) {
+                format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(c))
+            } else {
+                format!("{alias}{}", dialect.quote_ident(c))
+            }
+        })
+        .collect()
+}
+
+/// Validate the ACL filters a SELECT will build SQL from — outer `row_filters` and each
+/// derived aggregate's `target_filters` — up front, so the building arms cannot hit a
+/// `CompareOp`<->`ScalarValue` mismatch.
+fn validate_select_filters(
+    row_filters: &[RowFilter],
+    derived: &[DerivedSelect],
+) -> Result<(), CompileError> {
+    for f in row_filters {
+        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+    }
+    for d in derived {
+        if let DerivedSelect::Aggregate(a) = d {
+            for f in &a.target_filters {
+                validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// SELECT-list exprs: physical (masked) columns followed by the `derived` columns.
+/// Aggregate subquery params are pushed onto `params` here — i.e. BEFORE the WHERE
+/// params — matching their left-to-right position in the SELECT clause.
+fn select_col_exprs(
+    dialect: &dyn SqlDialect,
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    derived: &[DerivedSelect],
+    params: &mut Vec<SqlValue>,
+) -> Vec<String> {
+    let mut col_exprs = masked_col_exprs(dialect, allowed_cols, mask_cols, "");
+    for d in derived {
+        match d {
+            DerivedSelect::Masked(name) => {
+                col_exprs.push(format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(name)))
+            }
+            DerivedSelect::Aggregate(a) => {
+                col_exprs.push(derived_aggregate_sql(dialect, a, params))
+            }
+        }
+    }
+    col_exprs
+}
+
+/// WHERE conjuncts for a flat SELECT: `row_filters` then caller `predicates`, all at the
+/// unaliased table (`""`). Params are pushed in that order.
+fn select_where_conjuncts(
+    dialect: &dyn SqlDialect,
+    row_filters: &[RowFilter],
+    predicates: &[CallerPredicate],
+    params: &mut Vec<SqlValue>,
+) -> Vec<String> {
+    let mut conjuncts: Vec<String> = Vec::new();
+    for f in row_filters {
+        conjuncts.push(filter_sql(dialect, f, "", params));
+    }
+    for p in predicates {
+        conjuncts.push(caller_predicate_sql(dialect, p, "", params));
+    }
+    conjuncts
+}
+
 /// `allowed_cols` must be non-empty (caller enforces). `row_filters` and `predicates`
 /// are ANDed together as conjuncts. `derived` aggregate subqueries (if any) are appended
 /// to the SELECT list; their params precede the WHERE params. The outer table is aliased
@@ -298,69 +382,27 @@ pub fn compile_select_with(
     derived: &[DerivedSelect],
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
-    // Validate each ACL filter's shape up front — outer row filters and each derived
-    // aggregate's target filters — so the SQL-building arms below cannot hit a
-    // CompareOp<->ScalarValue mismatch.
-    for f in row_filters {
-        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
-    }
-    for d in derived {
-        if let DerivedSelect::Aggregate(a) = d {
-            for f in &a.target_filters {
-                validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
-            }
-        }
-    }
+    validate_select_filters(row_filters, derived)?;
 
     let mut params = Vec::new();
-    // Physical columns (no params).
-    let mut col_exprs: Vec<String> = allowed_cols
-        .iter()
-        .map(|c| {
-            if mask_cols.iter().any(|m| m == c) {
-                // Masked: emit the constant marker, never the column's value.
-                format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(c))
-            } else {
-                dialect.quote_ident(c)
-            }
-        })
-        .collect();
-    // Derived columns. Aggregate subquery params are pushed here — i.e. BEFORE the WHERE
-    // params below — matching their left-to-right position in the SELECT clause.
-    let has_aggregate = derived
-        .iter()
-        .any(|d| matches!(d, DerivedSelect::Aggregate(_)));
-    for d in derived {
-        match d {
-            DerivedSelect::Masked(name) => {
-                col_exprs.push(format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(name)))
-            }
-            DerivedSelect::Aggregate(a) => {
-                col_exprs.push(derived_aggregate_sql(dialect, a, &mut params))
-            }
-        }
-    }
-    let cols = col_exprs.join(", ");
+    let cols = select_col_exprs(dialect, allowed_cols, mask_cols, derived, &mut params).join(", ");
 
     let from = format!(
         "{}.{}",
         dialect.quote_ident(&table.schema),
         dialect.quote_ident(&table.name)
     );
-    // The outer table needs an alias only when a correlated subquery references it.
+    // The outer table needs an alias only when a correlated aggregate subquery references it.
+    let has_aggregate = derived
+        .iter()
+        .any(|d| matches!(d, DerivedSelect::Aggregate(_)));
     let from_clause = if has_aggregate {
         format!("{from} o")
     } else {
         from
     };
 
-    let mut conjuncts: Vec<String> = Vec::new();
-    for f in row_filters {
-        conjuncts.push(filter_sql(dialect, f, "", &mut params));
-    }
-    for p in predicates {
-        conjuncts.push(caller_predicate_sql(dialect, p, "", &mut params));
-    }
+    let conjuncts = select_where_conjuncts(dialect, row_filters, predicates, &mut params);
 
     let mut sql = format!("SELECT {cols} FROM {from_clause}");
     if !conjuncts.is_empty() {
@@ -609,6 +651,134 @@ fn link_join(
     }
 }
 
+/// Validate the ACL filters a reachability query will build SQL from: the start
+/// `row_filters` and each path step's `next_filters`.
+fn validate_reach_filters(
+    row_filters: &[RowFilter],
+    path: &[GraphStep],
+) -> Result<(), CompileError> {
+    for f in row_filters {
+        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+    }
+    for step in path {
+        for f in &step.next_filters {
+            validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
+        }
+    }
+    Ok(())
+}
+
+/// The recursive step's landing alias for path index `i`: the final landing (`i+1 == k`)
+/// is `nxt`; intermediate landings are `g1..g{k-1}`.
+fn reach_to_alias(i: usize, k: usize) -> String {
+    if i + 1 == k {
+        "nxt".to_string()
+    } else {
+        format!("g{}", i + 1)
+    }
+}
+
+/// Anchor (seed) WHERE at alias `s`: caller seed predicates, then the start ACL
+/// row-filters. Empty when there are neither (no `WHERE` emitted).
+fn reach_seed_where(
+    dialect: &dyn SqlDialect,
+    seed_predicates: &[CallerPredicate],
+    row_filters: &[RowFilter],
+    params: &mut Vec<SqlValue>,
+) -> String {
+    let mut seed_conj: Vec<String> = Vec::new();
+    for p in seed_predicates {
+        seed_conj.push(caller_predicate_sql(dialect, p, "s", params));
+    }
+    for f in row_filters {
+        seed_conj.push(filter_sql(dialect, f, "s", params));
+    }
+    if seed_conj.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", seed_conj.join(" AND "))
+    }
+}
+
+/// Recursive-step JOINs: join `cur` through every path link to `nxt`. Intermediate landings
+/// are aliased `g1..g{k-1}`; the final landing is `nxt`. A join-table step adds a per-step
+/// alias — `j` for a single-step path (byte-identical to the prior single-link form), else
+/// `j{i+1}`. Pushes no params.
+fn reach_joins(dialect: &dyn SqlDialect, path: &[GraphStep]) -> String {
+    let q = |id: &str| dialect.quote_ident(id);
+    let k = path.len();
+    let from_alias = |i: usize| {
+        if i == 0 {
+            "cur".to_string()
+        } else {
+            format!("g{i}")
+        }
+    };
+    let mut joins = String::new();
+    for (i, step) in path.iter().enumerate() {
+        let fa = from_alias(i);
+        let ta = reach_to_alias(i, k);
+        let to_tbl = format!(
+            "{}.{}",
+            q(&step.next_table.schema),
+            q(&step.next_table.name)
+        );
+        let jt_alias = if k == 1 {
+            "j".to_string()
+        } else {
+            format!("j{}", i + 1)
+        };
+        joins.push_str(&link_join(
+            dialect,
+            &step.backing,
+            &fa,
+            &ta,
+            &to_tbl,
+            &jt_alias,
+        ));
+    }
+    joins
+}
+
+/// Recursive WHERE: the depth bound, then each intermediate's filters at its alias (path
+/// order), then the start `row_filters` at the final node `nxt`.
+fn reach_recursive_where(
+    dialect: &dyn SqlDialect,
+    path: &[GraphStep],
+    row_filters: &[RowFilter],
+    depth: u32,
+    params: &mut Vec<SqlValue>,
+) -> String {
+    let k = path.len();
+    let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
+    for (i, step) in path.iter().enumerate() {
+        let ta = reach_to_alias(i, k);
+        for f in &step.next_filters {
+            rec_conj.push(filter_sql(dialect, f, &ta, params));
+        }
+    }
+    for f in row_filters {
+        rec_conj.push(filter_sql(dialect, f, "nxt", params));
+    }
+    rec_conj.join(" AND ")
+}
+
+/// Projection WHERE at alias `p`: reachable in >= 1 hop, then the start `row_filters`.
+/// `id` is the already-quoted identity column.
+fn reach_projection_where(
+    dialect: &dyn SqlDialect,
+    id: &str,
+    row_filters: &[RowFilter],
+    params: &mut Vec<SqlValue>,
+) -> String {
+    let mut proj_conj: Vec<String> =
+        vec![format!("p.{id} IN (SELECT id FROM reach WHERE depth >= 1)")];
+    for f in row_filters {
+        proj_conj.push(filter_sql(dialect, f, "p", params));
+    }
+    proj_conj.join(" AND ")
+}
+
 /// Compile a depth-bounded recursive reachability query over a PATH-CYCLE: the deduped set of
 /// `table` rows reachable from the seed set by repeating `path` (which starts and ends at
 /// `table`) up to `depth` times. Each recursive step joins `cur` through the whole path to
@@ -629,108 +799,20 @@ pub fn compile_graph_reach(
     depth: u32,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
-    for f in row_filters {
-        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
-    }
-    for step in path {
-        for f in &step.next_filters {
-            validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
-        }
-    }
+    validate_reach_filters(row_filters, path)?;
+
     let q = |id: &str| dialect.quote_ident(id);
     let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
     let id = q(identity);
     let mut params: Vec<SqlValue> = Vec::new();
 
-    // Anchor (seed) WHERE at alias `s`: caller seed predicates, then the start ACL row-filters.
-    let mut seed_conj: Vec<String> = Vec::new();
-    for p in seed_predicates {
-        seed_conj.push(caller_predicate_sql(dialect, p, "s", &mut params));
-    }
-    for f in row_filters {
-        seed_conj.push(filter_sql(dialect, f, "s", &mut params));
-    }
-    let seed_where = if seed_conj.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", seed_conj.join(" AND "))
-    };
-
-    // Recursive step: join `cur` through every path link to `nxt`. Intermediate landings are
-    // aliased g1..g{K-1}; the final landing is `nxt`. A join-table step adds a per-step `j{n}`.
-    let k = path.len();
-    let from_alias = |i: usize| {
-        if i == 0 {
-            "cur".to_string()
-        } else {
-            format!("g{i}")
-        }
-    };
-    let to_alias = |i: usize| {
-        if i + 1 == k {
-            "nxt".to_string()
-        } else {
-            format!("g{}", i + 1)
-        }
-    };
-    let mut joins = String::new();
-    for (i, step) in path.iter().enumerate() {
-        let fa = from_alias(i);
-        let ta = to_alias(i);
-        let to_tbl = format!(
-            "{}.{}",
-            q(&step.next_table.schema),
-            q(&step.next_table.name)
-        );
-        // For a single-step path use join-table alias `j` (byte-identical to the prior
-        // single-link form); multi-step paths index the alias `j{i+1}` to avoid collisions.
-        let jt_alias = if k == 1 {
-            "j".to_string()
-        } else {
-            format!("j{}", i + 1)
-        };
-        joins.push_str(&link_join(
-            dialect,
-            &step.backing,
-            &fa,
-            &ta,
-            &to_tbl,
-            &jt_alias,
-        ));
-    }
-
-    // Recursive WHERE: depth bound, each intermediate's filters at its alias (path order),
-    // then the start row_filters at the final node `nxt`.
-    let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
-    for (i, step) in path.iter().enumerate() {
-        let ta = to_alias(i);
-        for f in &step.next_filters {
-            rec_conj.push(filter_sql(dialect, f, &ta, &mut params));
-        }
-    }
-    for f in row_filters {
-        rec_conj.push(filter_sql(dialect, f, "nxt", &mut params));
-    }
-    let rec_where = rec_conj.join(" AND ");
+    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params);
+    let joins = reach_joins(dialect, path);
+    let rec_where = reach_recursive_where(dialect, path, row_filters, depth, &mut params);
 
     // Projection of `p`: visible columns (masked -> marker), reachable in >= 1 hop, governed.
-    let cols = allowed_cols
-        .iter()
-        .map(|c| {
-            if mask_cols.iter().any(|m| m == c) {
-                format!("'{MASK_MARKER}' AS {}", q(c))
-            } else {
-                format!("p.{}", q(c))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut proj_conj: Vec<String> =
-        vec![format!("p.{id} IN (SELECT id FROM reach WHERE depth >= 1)")];
-    for f in row_filters {
-        proj_conj.push(filter_sql(dialect, f, "p", &mut params));
-    }
-    let proj_where = proj_conj.join(" AND ");
+    let cols = masked_col_exprs(dialect, allowed_cols, mask_cols, "p.").join(", ");
+    let proj_where = reach_projection_where(dialect, &id, row_filters, &mut params);
 
     let sql = format!(
         "WITH RECURSIVE reach(id, depth) AS (\
