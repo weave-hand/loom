@@ -261,10 +261,15 @@ A skill (`.claude/skills/loom-work-checkout/SKILL.md`) documenting the flow:
    is set (the gate will reject the rest).
 2. **Claim** it: `bash tools/docs.sh claim <id>`. If the claim is lost, pick
    another.
-3. **Work** it on `work/<id>` using the existing skills (the spec already exists;
-   write a plan if needed, then implement). The id flows into the PR.
-4. **Open the PR** with head `work/<id>`; close the register item via
-   `loom-docs-update` in that PR (`planned → done`, add `pr:`).
+3. **Work** it on `work/<id>` through a rigid, non-optional pipeline (the spec
+   already exists, so it starts at the plan): `superpowers:writing-plans` → an
+   explicit plan-review gate against the spec (a fresh reviewer subagent) →
+   `superpowers:subagent-driven-development` (one subagent per task, two-stage
+   spec-then-code-quality review each) → its final whole-implementation review.
+   The id flows into the PR.
+4. **Finish** via `superpowers:finishing-a-development-branch`: open the PR with
+   head `work/<id>`; close the register item via `loom-docs-update` in that PR
+   (`planned → done`, add `pr:`).
 5. **Release** happens automatically when the PR merges (`claims --reap`), or run
    `bash tools/docs.sh release <id>` if abandoning.
 

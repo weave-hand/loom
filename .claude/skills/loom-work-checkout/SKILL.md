@@ -16,12 +16,29 @@ self-release when the PR lands. The claim is a server-side git mutex
    `bash tools/docs.sh claims`.
 2. **Claim** it: `bash tools/docs.sh claim <id>`. On success it prints the
    `work/<id>` branch to use. If the claim is lost or already held, pick another.
-3. **Work** it on `work/<id>` (`git switch -c work/<id>`). The spec exists by the
-   gate's precondition; write a plan if needed (writing-plans), then implement
-   (subagent-driven-development / executing-plans).
-4. **Open a PR** whose head branch is `work/<id>` — this is what binds the claim to
-   the PR. In that PR, close the register item via `loom-docs-update`
-   (`- [ ]`→`- [x]`, terminal status, add `pr:#N`).
+3. **Work it through the rigid pipeline.** `git switch -c work/<id>`, then exercise
+   these four superpowers skills **in order — none is optional, even for a
+   one-line fix** (the spec already exists by the gate's precondition, so start at
+   the plan):
+   1. **Write the plan** — `superpowers:writing-plans`: turn the spec into a
+      task-by-task implementation plan under `docs/superpowers/plans/`. (It runs
+      its own self-review at the end.)
+   2. **Review the plan** — before any code, gate the plan against the spec:
+      dispatch a fresh reviewer subagent (`superpowers:dispatching-parallel-agents`)
+      to check spec coverage, no placeholders, and type/signature consistency. Fix
+      every gap and do not start implementing until the plan passes.
+   3. **Implement with subagents** — `superpowers:subagent-driven-development`: one
+      fresh subagent per task, each followed by the mandatory two-stage review
+      (spec-compliance, then code-quality), looping until both pass. This skill
+      uses `superpowers:requesting-code-review` / `receiving-code-review` and has
+      the subagents follow `superpowers:test-driven-development`.
+   4. **Final review** — after all tasks, the whole-implementation review that
+      `superpowers:subagent-driven-development` ends with (a final code-reviewer
+      subagent) before finishing.
+4. **Finish** — `superpowers:finishing-a-development-branch`: open a PR whose head
+   branch is `work/<id>` (this is what binds the claim to the PR). In that PR,
+   close the register item via `loom-docs-update` (`- [ ]`→`- [x]`, terminal
+   status, add `pr:#N`).
 5. **Release** is automatic: once the PR merges/closes, the claim is reaped by
    `bash tools/docs.sh claims --reap` (run by routines). If you abandon before a
    PR, release explicitly: `bash tools/docs.sh release <id>`.
