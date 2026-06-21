@@ -67,9 +67,9 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Part-1 computes derived properties at read time as correlated subqueries; materializing them for hot paths is a follow-on.
 - [ ] **Derived props as filter/sort targets** `{#fut-derived-filter-sort area:query status:deferred from:derived-properties pr:- spec:2026-06-16-query-comparison-set-operators-design}`
   Caller predicates validate against physical columns only; making derived (aggregate) properties filterable/sortable is deferred.
-- [ ] **Richer filter error body** `{#fut-richer-filter-error area:query status:deferred from:typed-input-filters pr:- spec:2026-06-16-typed-input-filters-design}`
+- [ ] **Richer filter error body** `{#fut-richer-filter-error area:query status:deferred from:typed-input-filters pr:- spec:2026-06-16-query-typed-input-filters-design}`
   An uncoercible value reuses `BadFilter(col)` (body = column name); reporting the expected type plus the offending value widens the error contract, deferred.
-- [ ] **422 for body-bearing endpoints** `{#fut-422-body-endpoints area:query status:deferred from:typed-input-filters pr:- spec:2026-06-16-typed-input-filters-design}`
+- [ ] **422 for body-bearing endpoints** `{#fut-422-body-endpoints area:query status:deferred from:typed-input-filters pr:- spec:2026-06-16-query-typed-input-filters-design}`
   Typed filters are URI params on a body-less GET (correctly 400). Whether `POST /actions`'s `BadParams` should become a 422 is a separate question.
 - [ ] **or-combined caller predicates** `{#fut-or-predicates area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-query-comparison-set-operators-design}`
   All caller predicates are ANDed; a disjunction grammar (OR across predicates) is deferred.
@@ -170,7 +170,7 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## quality
 
-- [ ] **Unify the coercion taxonomy** `{#fut-coercion-taxonomy area:quality status:deferred from:typed-input-filters pr:- spec:2026-06-16-typed-input-filters-design}`
+- [ ] **Unify the coercion taxonomy** `{#fut-coercion-taxonomy area:quality status:deferred from:typed-input-filters pr:- spec:2026-06-16-query-typed-input-filters-design}`
   `params::parse_value` and `filter::coerce_filter` duplicate the short `JsonRepr` repr-match; sharing one taxonomy helper would remove the duplication (input shapes `Value` vs `&str` differ enough it wasn't worth it yet).
 - [ ] **Consolidate BindViolation / conformance Violation enums** `{#fut-conformance-enum-consolidation area:quality status:deferred from:typed-transforms pr:#59 spec:2026-06-15-typed-transforms-part1-design}`
   `ingest::BindViolation` and the typed-transform `Violation` are deliberate parallels; consolidating both into control-plane-core is a noted follow-up.
