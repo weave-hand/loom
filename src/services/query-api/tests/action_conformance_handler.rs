@@ -1,47 +1,51 @@
 //! run_action runs the conformance check after the coarse Write gate and before the insert:
 //! a misconfigured action is rejected with ActionError::Misconfigured and the engine is never
 //! called; a Write-denied subject still gets Forbidden (gate precedes conformance); a conformant
-//! action runs the happy path and calls the engine once.
+//! action runs the happy path, delivers the LineageEvent to the engine (atomic seam),
+//! and the returned run_id matches the event's run_id.
 
 use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, Effect, ObjectType, Ontology, ParamDef, PolicyTarget,
-    PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionName, ControlPlane, DatasetRef, Effect, LineageEvent, ObjectType,
+    Ontology, PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId, SnapshotId, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::action::{ActionDeps, ActionError, run_action};
 use query_api::serving::{ActionEngine, ServingError, SqlValue};
 use serde_json::json;
 
-/// An ActionEngine that records how many times insert_row was called.
+/// An ActionEngine that records every LineageEvent it is handed (the atomic seam).
 struct RecordingEngine {
-    calls: Mutex<u32>,
+    events: Mutex<Vec<LineageEvent>>,
 }
 
 impl RecordingEngine {
     fn new() -> Self {
         Self {
-            calls: Mutex::new(0),
+            events: Mutex::new(Vec::new()),
         }
     }
-    fn calls(&self) -> u32 {
-        *self.calls.lock().unwrap()
+    fn events(&self) -> Vec<LineageEvent> {
+        self.events.lock().unwrap().clone()
     }
 }
 
 #[async_trait]
 impl ActionEngine for RecordingEngine {
-    async fn insert_row(
+    async fn write_object(
         &self,
         _table: &TableRef,
         _columns: &[String],
         _values: &[SqlValue],
-    ) -> Result<(), ServingError> {
-        *self.calls.lock().unwrap() += 1;
-        Ok(())
+        _logical_types: &[String],
+        event: LineageEvent,
+    ) -> Result<SnapshotId, ServingError> {
+        self.events.lock().unwrap().push(event);
+        Ok(SnapshotId(1))
     }
 }
 
@@ -130,10 +134,9 @@ async fn misconfigured_action_is_rejected_before_insert() {
         matches!(&err, ActionError::Misconfigured(m) if m.contains("matches no property")),
         "expected Misconfigured, got {err:?}"
     );
-    assert_eq!(
-        engine.calls(),
-        0,
-        "insert must not run for a misconfigured action"
+    assert!(
+        engine.events().is_empty(),
+        "no write for a misconfigured action"
     );
 }
 
@@ -157,7 +160,7 @@ async fn write_denied_subject_is_forbidden_not_misconfigured() {
         matches!(&err, ActionError::Forbidden),
         "expected Forbidden (gate precedes conformance), got {err:?}"
     );
-    assert_eq!(engine.calls(), 0);
+    assert!(engine.events().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -169,9 +172,28 @@ async fn conformant_action_runs_the_insert() {
         action_engine: &engine,
     };
     let body = json!({"id": "42", "name": "gadget"});
-    let rows = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
+    let (rows, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
         .await
         .unwrap();
     assert_eq!(rows.columns, vec!["id".to_string(), "name".to_string()]);
-    assert_eq!(engine.calls(), 1, "conformant action inserts once");
+    let events = engine.events();
+    assert_eq!(events.len(), 1, "conformant action writes once");
+    // The returned run_id IS the run_id of the event handed to the engine (atomic seam).
+    assert_eq!(events[0].run_id, run_id);
+    assert_eq!(
+        events[0].outputs,
+        vec![DatasetRef::from(&TypeName("Widget".into()))],
+        "lineage names the target type's dataset"
+    );
+    // run_action no longer emits separately: nothing landed in the control plane's
+    // own lineage (only the engine received the event, in its atomic commit).
+    let found = cp
+        .lineage()
+        .events_for(&run_id, PageReq::unbounded())
+        .await
+        .unwrap();
+    assert!(
+        found.items.is_empty(),
+        "no separate best-effort emit on the handler path"
+    );
 }

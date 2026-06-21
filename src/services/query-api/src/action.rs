@@ -1,7 +1,7 @@
 //! Action handler logic: invoke a named ontology action to insert one new typed object.
-//! Governed by Action::Write; executes the inline write via the ActionEngine; emits
-//! best-effort type-named lineage (a documented dangling slice — a failure to emit does
-//! NOT fail the action).
+//! Governed by Action::Write; executes an ATOMIC write via the ActionEngine
+//! (`write_object`), which commits the row and its lineage event in one transaction,
+//! and returns the action's `run_id`.
 
 use control_plane_core::{
     Action, ActionDef, ActionName, ControlPlane, ControlPlaneError, DatasetRef, Decision,
@@ -107,13 +107,14 @@ pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), 
 }
 
 /// Run one action: insert a new instance of the action's target type from `body`.
-/// Returns the created object as a single-row `ObjectRows` (rendered by the caller).
+/// Returns the created object as a single-row `ObjectRows` plus the `RunId` so the
+/// caller can locate the action's lineage (committed atomically with the row).
 pub async fn run_action(
     action_name: &str,
     body: &serde_json::Map<String, Value>,
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
-) -> Result<ObjectRows, ActionError> {
+) -> Result<(ObjectRows, RunId), ActionError> {
     // 1. Resolve the action.
     let action = deps
         .cp
@@ -188,37 +189,56 @@ pub async fn run_action(
         }
     }
 
-    // 5. Inline insert via the engine.
-    deps.action_engine
-        .insert_row(&target.table, &columns, &values)
-        .await?;
+    // 5. Expand to the target type's FULL property set (declared order): the parsed
+    //    value when the action set the column, else NULL. The loom-owned Parquet
+    //    write must carry every column so the file schema matches the table (part-1
+    //    relied on DuckDB defaulting unspecified columns to NULL).
+    use std::collections::HashMap;
+    let parsed: HashMap<&str, &SqlValue> = pairs.iter().map(|(c, v)| (c.as_str(), v)).collect();
+    let mut full_columns: Vec<String> = Vec::with_capacity(target.properties.len());
+    let mut full_values: Vec<SqlValue> = Vec::with_capacity(target.properties.len());
+    let mut full_logical: Vec<String> = Vec::with_capacity(target.properties.len());
+    for p in &target.properties {
+        full_columns.push(p.name.clone());
+        full_values.push(
+            parsed
+                .get(p.name.as_str())
+                .copied()
+                .cloned()
+                .unwrap_or(SqlValue::Null),
+        );
+        full_logical.push(p.ty.clone());
+    }
 
-    // 6. Best-effort, type-named lineage. A failure here is logged, NOT fatal (the
-    //    documented dangling slice): the snapshot stands even if lineage didn't land.
-    let snapshot_id = deps
-        .cp
-        .catalog()
-        .current_snapshot(&target.table)
-        .await
-        .inspect_err(|e| {
-            tracing::warn!(action = action_name, error = %e, "snapshot lookup failed; lineage snapshot_id will be null")
-        })
-        .ok()
-        .map(|s| s.id.0);
+    // 6. Mint the run id and build the lineage event UP FRONT, so the caller owns the
+    //    run_id and hands it to the engine, which commits row + event atomically.
+    //    inputs=[] (a create-from-params action has no upstream datasets). The old
+    //    post-hoc snapshot_id payload is dropped: the event now commits WITH the
+    //    snapshot, so their linkage is structural, not a best-effort breadcrumb.
+    let run_id = RunId(Uuid::new_v4());
     let event = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
+        run_id,
         event_type: EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
         inputs: vec![],
         outputs: vec![DatasetRef::from(&action.target)],
-        payload: serde_json::json!({ "action": action_name, "snapshot_id": snapshot_id }),
+        payload: serde_json::json!({ "action": action_name }),
     };
-    if let Err(e) = deps.cp.lineage().emit(event).await {
-        tracing::warn!(action = action_name, error = %e, "action lineage emit failed (dangling)");
-    }
 
-    // 7. Return the created object: the validated columns + values, with logical types
-    //    from the target type's properties (in column order), for typed JSON rendering.
+    // 7. Atomic write: row + lineage in one transaction (no dangling slice). On any
+    //    failure the Tx rolls back — no snapshot, no lineage, no partial state.
+    deps.action_engine
+        .write_object(
+            &target.table,
+            &full_columns,
+            &full_values,
+            &full_logical,
+            event,
+        )
+        .await?;
+
+    // 8. Return the created object (action-provided columns only, as part-1 returns)
+    //    plus the run_id so the caller can locate the action's lineage.
     let logical_types = columns
         .iter()
         .map(|c| {
@@ -230,9 +250,12 @@ pub async fn run_action(
                 .unwrap_or_default()
         })
         .collect();
-    Ok(ObjectRows {
-        columns,
-        logical_types,
-        rows: vec![values],
-    })
+    Ok((
+        ObjectRows {
+            columns,
+            logical_types,
+            rows: vec![values],
+        },
+        run_id,
+    ))
 }

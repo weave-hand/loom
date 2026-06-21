@@ -2,7 +2,15 @@
 //! `EmbeddedDuckDb` runs in-process; `QuackServingEngine` forwards to a remote
 //! `quack_serve`'d DuckDB via the `quack_query` table function.
 
+use std::sync::Arc;
+
+use arrow::array::{
+    ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
+    StringArray, TimestampMicrosecondArray,
+};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use async_trait::async_trait;
+use control_plane_core::{BaseType, ColumnSpec, resolve_logical};
 
 use crate::sql::{DuckDbDialect, SqlDialect};
 
@@ -44,6 +52,128 @@ pub enum ServingError {
     Engine(String),
 }
 
+/// Build a one-row Arrow `RecordBatch` + `Schema` + loom `ColumnSpec` list from an
+/// aligned `(columns, values, logical_types)` triple. Each logical type resolves
+/// (via `resolve_logical`) to a `BaseType` that fixes BOTH the Arrow `DataType` and
+/// the loom logical `ColumnSpec.ty` (its canonical name). Every field is nullable —
+/// an action write passes `SqlValue::Null` for any property it does not set. A length
+/// mismatch, an empty input, an unknown logical type, or a value whose variant does
+/// not match its column's base type is a `ServingError::Engine`.
+pub fn build_object_batch(
+    columns: &[String],
+    values: &[SqlValue],
+    logical_types: &[String],
+) -> Result<(Arc<Schema>, RecordBatch, Vec<ColumnSpec>), ServingError> {
+    if columns.is_empty() || columns.len() != values.len() || columns.len() != logical_types.len() {
+        return Err(ServingError::Engine(format!(
+            "build_object_batch: {} columns / {} values / {} types (need >= 1, equal counts)",
+            columns.len(),
+            values.len(),
+            logical_types.len()
+        )));
+    }
+    let mut fields: Vec<Field> = Vec::with_capacity(columns.len());
+    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
+    let mut specs: Vec<ColumnSpec> = Vec::with_capacity(columns.len());
+    for ((name, value), logical) in columns.iter().zip(values).zip(logical_types) {
+        let base = resolve_logical(logical)
+            .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{logical}`")))?;
+        let (dt, array) = one_cell(base, value, name)?;
+        fields.push(Field::new(name, dt, true));
+        arrays.push(array);
+        specs.push(ColumnSpec {
+            name: name.clone(),
+            ty: base.canonical_name().to_string(),
+            nullable: true,
+        });
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema.clone(), arrays)
+        .map_err(|e| ServingError::Engine(e.to_string()))?;
+    Ok((schema, batch, specs))
+}
+
+/// One single-row Arrow array for a cell of base type `base`. `SqlValue::Null`
+/// yields a typed null; any non-null variant must match `base` (the same
+/// scalar-to-Arrow mapping `to_duck` uses) or it is a `ServingError`.
+fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayRef), ServingError> {
+    let mismatch = || {
+        ServingError::Engine(format!(
+            "value for column `{col}` does not match its {base:?} type"
+        ))
+    };
+    Ok(match base {
+        BaseType::Integer => {
+            let cell: Option<i32> = match v {
+                SqlValue::Null => None,
+                SqlValue::Int(i) => Some((*i).try_into().map_err(|_| {
+                    ServingError::Engine(format!("integer overflow for column `{col}`"))
+                })?),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Int32, Arc::new(Int32Array::from(vec![cell])))
+        }
+        BaseType::Long => {
+            let cell: Option<i64> = match v {
+                SqlValue::Null => None,
+                SqlValue::Int(i) => Some(*i),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Int64, Arc::new(Int64Array::from(vec![cell])))
+        }
+        BaseType::Double => {
+            let cell: Option<f64> = match v {
+                SqlValue::Null => None,
+                SqlValue::Double(f) => Some(*f),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Float64, Arc::new(Float64Array::from(vec![cell])))
+        }
+        BaseType::Boolean => {
+            let cell: Option<bool> = match v {
+                SqlValue::Null => None,
+                SqlValue::Bool(b) => Some(*b),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Boolean, Arc::new(BooleanArray::from(vec![cell])))
+        }
+        BaseType::String => {
+            let cell: Option<String> = match v {
+                SqlValue::Null => None,
+                SqlValue::Text(s) => Some(s.clone()),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Utf8, Arc::new(StringArray::from(vec![cell])))
+        }
+        BaseType::Date => {
+            let cell: Option<i32> = match v {
+                SqlValue::Null => None,
+                SqlValue::Date(d) => {
+                    Some((*d - time::macros::date!(1970 - 01 - 01)).whole_days() as i32)
+                }
+                _ => return Err(mismatch()),
+            };
+            (DataType::Date32, Arc::new(Date32Array::from(vec![cell])))
+        }
+        BaseType::Timestamp => {
+            let cell: Option<i64> = match v {
+                SqlValue::Null => None,
+                SqlValue::Timestamp(ts) => Some(
+                    (ts.assume_utc() - time::OffsetDateTime::UNIX_EPOCH)
+                        .whole_microseconds()
+                        .try_into()
+                        .unwrap_or(i64::MAX),
+                ),
+                _ => return Err(mismatch()),
+            };
+            (
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                Arc::new(TimestampMicrosecondArray::from(vec![cell])),
+            )
+        }
+    })
+}
+
 #[async_trait]
 pub trait ServingEngine: Send + Sync {
     /// Execute read-only `sql`, binding `params` positionally (`?` placeholders).
@@ -57,94 +187,71 @@ pub trait ServingEngine: Send + Sync {
     }
 }
 
-/// A write-capable serving engine — the seam a future Iceberg backend swaps in.
+/// A write-capable serving engine — the atomic action write-back seam. An impl
+/// writes ONE row AND commits its lineage event in the same transaction, so the
+/// snapshot and its lineage land or roll back together (no dangling slice). The
+/// seam is Arrow-free (takes `logical_types`, not a `RecordBatch`); each impl
+/// builds Arrow internally. Mirrors the Iceberg `inline_append(.., lineage) ->
+/// SnapshotId` contract.
 #[async_trait]
 pub trait ActionEngine: Send + Sync {
-    /// Insert one row of `values` into `table` (columns positionally aligned), INLINE —
-    /// low-latency, no Parquet data file. The new catalog snapshot is read separately by
-    /// the caller via `Catalog::current_snapshot`.
-    async fn insert_row(
+    async fn write_object(
         &self,
         table: &control_plane_core::TableRef,
         columns: &[String],
         values: &[SqlValue],
-    ) -> Result<(), ServingError>;
+        logical_types: &[String],
+        event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError>;
 }
 
-/// DuckLake inline writer: same ATTACH as `EmbeddedDuckDb` but with inlining ENABLED.
-pub struct EmbeddedDuckDbWriter {
-    attach_sql: String,
+use control_plane_core::{ControlPlane, LineageEvent, SnapshotId, TableRef};
+use object_store::ObjectStore;
+
+/// Action writer that routes a single-row write through loom's OWN atomic
+/// snapshot-commit primitive (`ingest::materialize::land_ducklake`): build a
+/// one-row Parquet file, then create_table (idempotent — the target table already
+/// exists) + append_files + emit(lineage) + commit, all in one Postgres
+/// transaction, returning the new `SnapshotId`. The row and its lineage land or
+/// roll back together. Replaces the inline `EmbeddedDuckDbWriter`; the part-1
+/// "inline row, no Parquet" low-latency property is retired in favor of atomicity
+/// (actions are interactive, low-frequency; small files are handled by compaction).
+pub struct DuckLakeActionWriter {
+    cp: Arc<dyn ControlPlane>,
+    store: Arc<dyn ObjectStore>,
 }
 
-impl EmbeddedDuckDbWriter {
-    /// Inlining threshold: rows per write below this land inline (no Parquet). Single-row
-    /// action writes are always well under it.
-    const INLINE_ROW_LIMIT: u32 = 1000;
-
-    pub async fn attach(pg_conn: &str, data_path: &std::path::Path) -> Result<Self, ServingError> {
-        let ext_dir = std::env::var("DUCKDB_EXTENSION_DIR")
-            .map_err(|_| ServingError::Engine("DUCKDB_EXTENSION_DIR unset".into()))?;
-        let attach_sql = format!(
-            "SET extension_directory='{}';\nLOAD ducklake;\nLOAD postgres_scanner;\n\
-             ATTACH 'ducklake:postgres:{}' AS lake \
-             (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT {});\nUSE lake;",
-            ext_dir,
-            pg_conn,
-            data_path.display(),
-            Self::INLINE_ROW_LIMIT,
-        );
-        Ok(Self { attach_sql })
+impl DuckLakeActionWriter {
+    pub fn new(cp: Arc<dyn ControlPlane>, store: Arc<dyn ObjectStore>) -> Self {
+        Self { cp, store }
     }
 }
 
 #[async_trait]
-impl ActionEngine for EmbeddedDuckDbWriter {
-    async fn insert_row(
+impl ActionEngine for DuckLakeActionWriter {
+    async fn write_object(
         &self,
-        table: &control_plane_core::TableRef,
+        table: &TableRef,
         columns: &[String],
         values: &[SqlValue],
-    ) -> Result<(), ServingError> {
-        if columns.is_empty() || columns.len() != values.len() {
-            return Err(ServingError::Engine(format!(
-                "insert_row: {} columns vs {} values (need >= 1, equal counts)",
-                columns.len(),
-                values.len()
-            )));
-        }
-        // Identifiers come from the ontology (validated table/columns), not user input;
-        // values bind as positional params. Quote identifiers to preserve case.
-        let cols = columns
-            .iter()
-            .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let placeholders = std::iter::repeat_n("?", values.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
-            table.schema.replace('"', "\"\""),
-            table.name.replace('"', "\"\""),
-            cols,
-            placeholders,
-        );
-        let attach = self.attach_sql.clone();
-        let params = values.to_vec();
-        tokio::task::spawn_blocking(move || -> Result<(), ServingError> {
-            let conn = duckdb::Connection::open_in_memory()
-                .map_err(|e| ServingError::Engine(e.to_string()))?;
-            conn.execute_batch(&attach)
-                .map_err(|e| ServingError::Engine(e.to_string()))?;
-            let bound: Vec<duckdb::types::Value> = params.iter().map(to_duck).collect();
-            let pref: Vec<&dyn duckdb::ToSql> =
-                bound.iter().map(|v| v as &dyn duckdb::ToSql).collect();
-            conn.execute(&sql, pref.as_slice())
-                .map_err(|e| ServingError::Engine(e.to_string()))?;
-            Ok(())
-        })
+        logical_types: &[String],
+        event: LineageEvent,
+    ) -> Result<SnapshotId, ServingError> {
+        let (schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
+        // Unique per action: the run id keeps each write's files in their own dir.
+        let file_prefix = format!("action-{}", event.run_id.0);
+        ingest::materialize::land_ducklake(
+            self.cp.as_ref(),
+            self.store.clone(),
+            table,
+            schema,
+            &specs,
+            std::slice::from_ref(&batch),
+            &file_prefix,
+            event,
+        )
         .await
-        .map_err(|e| ServingError::Engine(format!("join: {e}")))?
+        .map_err(|e| ServingError::Engine(e.to_string()))
     }
 }
 
