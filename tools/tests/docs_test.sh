@@ -173,4 +173,20 @@ check "unknown-PR ref survives reap" 1 "$(git -C "$WK" ls-remote origin refs/cla
 
 rm -rf "$CT"
 
+# ---- validate enforces spec-file existence (real registers only, no file args) ----
+SV="$(mktemp -d)"; mkdir -p "$SV/docs/superpowers/specs"
+printf '# Roadmap register\n\n_As of test._\n\n## ingest\n\n- [ ] **Good** `{#road-good area:ingest status:planned from:x pr:- spec:2099-01-01-present}`\n  ok.\n' > "$SV/docs/ROADMAP.md"
+printf '# Future register\n\n_As of test._\n\n## ingest\n\n- [ ] **F** `{#fut-f area:ingest status:deferred from:x pr:- spec:-}`\n  ok.\n' > "$SV/docs/FUTURE.md"
+printf '# Issues register\n\n_As of test._\n\n## ingest\n\n- [ ] **I** `{#iss-i area:ingest status:open from:x pr:- spec:-}`\n  ok.\n' > "$SV/docs/ISSUES.md"
+: > "$SV/docs/superpowers/specs/2099-01-01-present.md"
+check "validate passes when spec files exist" 0 "$(cd "$SV" && rc bash "$DOCS" validate)"
+# Point the roadmap item at a missing spec file -> validate (no args) must fail.
+sed -i 's/2099-01-01-present/2099-12-31-missing/' "$SV/docs/ROADMAP.md"
+check "validate fails on dangling spec ref" 1 "$(cd "$SV" && rc bash "$DOCS" validate)"
+specmsg="$(cd "$SV" && bash "$DOCS" validate 2>&1 | grep -c 'spec file' || true)"
+check "validate names the missing spec file" 1 "$specmsg"
+# A dangling spec passed as an explicit fixture path is NOT spec-checked (grammar-only).
+check "explicit-file validate skips spec-existence" 0 "$(rc bash "$DOCS" validate "$SV/docs/ROADMAP.md")"
+rm -rf "$SV"
+
 exit $fail
