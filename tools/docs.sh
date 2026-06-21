@@ -86,7 +86,10 @@ _pr_state(){
 }
 
 cmd_validate(){
-  local files=("$@"); [ ${#files[@]} -gt 0 ] || files=("${REGISTERS[@]}")
+  # spec-file existence is enforced only when validating the real registers (no
+  # file args) — fixture-based grammar checks pass synthetic spec slugs.
+  local files=("$@"); local check_specs=0
+  [ ${#files[@]} -gt 0 ] || { files=("${REGISTERS[@]}"); check_specs=1; }
   local ERR; ERR="$(mktemp)"
   local present=() f
   for f in "${files[@]}"; do
@@ -123,6 +126,9 @@ cmd_validate(){
     fi
     if [ "$pr" != "-" ]; then
       printf '%s' "$pr" | grep -qE '^#[0-9]+(,#[0-9]+)*$' || echo "$file:$ln: bad pr '$pr' (want '-' or '#N[,#N...]')" >>"$ERR"
+    fi
+    if [ "$check_specs" = 1 ] && [ "$spec" != "-" ] && [ ! -f "$SPECDIR/$spec.md" ]; then
+      echo "$file:$ln: spec file '$SPECDIR/$spec.md' missing" >>"$ERR"
     fi
   done <"$TSV"
 
