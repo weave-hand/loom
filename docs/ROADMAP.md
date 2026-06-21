@@ -126,8 +126,8 @@ done` items are shipped (kept as the slice-by-slice history); `planned` /
   `flush_table` drains live inline rows into a real Iceberg Parquet snapshot and end-caps them at the same snapshot — atomic, exactly-once, time-travel-correct, serialized per table by an advisory lock. See [[fut-iceberg-gc]].
 - [x] **Inline flush trigger (producer)** `{#road-iceberg-inline-flush-trigger area:iceberg status:done from:iceberg-roadmap pr:#103 spec:2026-06-19-inline-flush-trigger-design}`
   A byte-size trigger on `inline_append` enqueues a `flush_table` job when live inline bytes cross `LOOM_FLUSH_BYTE_THRESHOLD`, debounced and reset on flush.
-- [ ] **Inline flush consumer worker** `{#road-iceberg-flush-consumer area:iceberg status:planned from:iceberg-roadmap pr:- spec:2026-06-19-inline-flush-trigger-design}`
-  Next-up: a worker that drains the flush queue and calls `flush_table` (the engine-wire flush vertical). The producer trigger has landed; the consumer is not yet built.
+- [x] **Inline flush consumer worker (engine-wire flush vertical)** `{#road-iceberg-flush-consumer area:iceberg status:done from:iceberg-roadmap pr:- spec:2026-06-20-engine-wire-flush-vertical-design}`
+  Delivered. A new `engine` process owns Postgres and serves a tonic `EngineControl` over a unix socket; a new **zero-pool** `worker` binary (`src/services/worker/`, no Postgres in its dep closure) connects via `GrpcQueueClient`, runs the generic `control_plane_worker::Worker` loop, and drains `flush_table` jobs by calling `flush_table` over the wire. Control-plane only — flush moves no bulk data. Proven end to end by a fixture e2e: `inline_append` past threshold → producer enqueues → worker dequeues → flush over the wire → table file-backed. See [[fut-engine-wire-flight]], [[fut-engine-wire-multi-tls]], [[fut-awaitjobs-stream]], [[iss-flush-at-least-once-idempotency]].
 
 ## deploy
 
