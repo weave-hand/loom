@@ -137,6 +137,12 @@ or `#N[,#N...]`; `[[id]]` cross-links items. The `[ ]`/`[x]` checkbox makes
   record new deferrals, staged alongside the work. The `Stop` hook
   (`tools/docs-remind.sh`) nudges you to run it when a branch touched a spec/plan
   but no register.
+- **`loom-work-checkout`** skill + `tools/docs.sh claim|release|claims` — claim a
+  register item before building it. `claim <id>` pushes an atomic `refs/claim/<id>`
+  ref (a server-side mutex; the item must reference an on-disk spec); `claims`
+  lists live claims and `claims --reap` deletes stale ones (no open `work/<id>` PR
+  past a 60-min grace). The upstream `loom-work-plan` skill gets an item to a
+  claimable (spec-on-disk) state.
 
 ## Cell layout
 
