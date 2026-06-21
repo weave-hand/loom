@@ -128,6 +128,8 @@ items are committed-but-unshipped. Deferred ideas live in
   A byte-size trigger on `inline_append` enqueues a `flush_table` job when live inline bytes cross `LOOM_FLUSH_BYTE_THRESHOLD`, debounced and reset on flush.
 - [x] **Inline flush consumer worker (engine-wire flush vertical)** `{#road-iceberg-flush-consumer area:iceberg status:done from:iceberg-roadmap pr:#108 spec:2026-06-20-engine-wire-flush-vertical-design}`
   Delivered. A new `engine` process owns Postgres and serves a tonic `EngineControl` over a unix socket; a new **zero-pool** `worker` binary (`src/services/worker/`, no Postgres in its dep closure) connects via `GrpcQueueClient`, runs the generic `control_plane_worker::Worker` loop, and drains `flush_table` jobs by calling `flush_table` over the wire. Control-plane only — flush moves no bulk data. Proven end to end by a fixture e2e: `inline_append` past threshold → producer enqueues → worker dequeues → flush over the wire → table file-backed. See [[fut-engine-wire-flight]], [[fut-engine-wire-multi-tls]], [[fut-awaitjobs-stream]], [[iss-flush-at-least-once-idempotency]].
+- [ ] **Per-column stats + predicate pushdown** `{#road-iceberg-percolumn-stats area:iceberg status:planned from:iceberg-roadmap pr:- spec:2026-06-21-iceberg-per-column-stats-design}`
+  Record per-file, per-column statistics (lower/upper bounds, null counts) in the `iceberg_mirror` projection and surface them to the DataFusion serving engine so reads prune files by predicate (file skipping) instead of scanning every live Parquet file. The path off DuckDB's serving performance gap. Promoted from [[fut-iceberg-percolumn-stats]]; unblocks the [[fut-replace-ducklake-decision]] read-parity question.
 
 ## deploy
 

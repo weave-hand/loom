@@ -131,8 +131,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   The Iceberg write path is append-only; the analogue of DuckLake's `replace_files` (transform overwrite parity) is deferred.
 - [ ] **Physical GC of end-capped inline rows** `{#fut-iceberg-gc area:iceberg status:deferred from:iceberg-roadmap pr:- spec:2026-06-19-inline-flush-trigger-design}`
   End-capped inline rows and orphaned flush/replaced Parquet are never physically reclaimed (end-capped, not deleted, to preserve time-travel). A GC pass is outstanding.
-- [ ] **Per-column stats + predicate pushdown** `{#fut-iceberg-percolumn-stats area:iceberg status:deferred from:iceberg-roadmap pr:- spec:-}`
-  The mirror stores only `record_count`/`file_size` (no bounds/null counts), so there is no predicate pushdown or file skipping. Per-column stats would make Iceberg reads performant.
+- [x] **Per-column stats + predicate pushdown** `{#fut-iceberg-percolumn-stats area:iceberg status:promoted pr:- spec:2026-06-21-iceberg-per-column-stats-design}`
+  The mirror stores only `record_count`/`file_size` (no bounds/null counts), so there is no predicate pushdown or file skipping. Per-column stats would make Iceberg reads performant. Promoted to committed work — see [[road-iceberg-percolumn-stats]].
 - [ ] **Iceberg schema evolution** `{#fut-iceberg-schema-evolution area:iceberg status:deferred from:iceberg-roadmap pr:- spec:-}`
   Slice 2 projects columns once; the mirror's `schema_version` is reserved but unused. Schema evolution is implicit longer-term work.
 - [ ] **Schema cache for Iceberg serving engine** `{#fut-iceberg-schema-cache area:iceberg status:deferred from:iceberg-roadmap pr:#82 spec:2026-06-17-iceberg-datafusion-serving-engine-design}`
