@@ -618,8 +618,7 @@ impl IcebergWriter {
     ) -> Vec<i64> {
         let catalog = self.catalog().await;
         self.ensure_table(&catalog, ns, name, columns).await;
-        let table_ident =
-            TableIdent::new(NamespaceIdent::new(ns.to_string()), name.to_string());
+        let table_ident = TableIdent::new(NamespaceIdent::new(ns.to_string()), name.to_string());
 
         // The mirror is projected inside the catalog's update_table during each append
         // (real Parquet via the writer chain), so the seeder no longer writes mirror rows
@@ -665,8 +664,7 @@ impl IcebergWriter {
     ) -> i64 {
         let catalog = self.catalog().await;
         self.ensure_table(&catalog, ns, name, columns).await;
-        let table_ident =
-            TableIdent::new(NamespaceIdent::new(ns.to_string()), name.to_string());
+        let table_ident = TableIdent::new(NamespaceIdent::new(ns.to_string()), name.to_string());
         let table = catalog.load_table(&table_ident).await.expect("load_table");
         let current_schema = table.metadata().current_schema().clone();
         let arrow_schema = Arc::new(
