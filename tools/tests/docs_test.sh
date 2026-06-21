@@ -139,6 +139,30 @@ check "claim closed item fails"            1 "$(cd "$WK" && rc bash "$DOCS" clai
 check "claim item without spec fails"      1 "$(cd "$WK" && rc bash "$DOCS" claim road-nospec)"
 check "claim item with missing spec fails" 1 "$(cd "$WK" && rc bash "$DOCS" claim road-specmissing)"
 check "claim invalid id fails"             2 "$(cd "$WK" && rc bash "$DOCS" claim 'road-BAD!')"
-# cleanup happens in Task 3 (CT reused there); leave CT in place for now.
+# ---- claims listing + reaping (PR probe stubbed; no GitHub) ----
+# Re-claim road-ready (released in the Task-2 block) so there is a live claim.
+(cd "$WK" && bash "$DOCS" claim road-ready >/dev/null 2>&1)
+
+# With no open PR (stub 'none') and default grace, a fresh claim lists as pending.
+pending="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims | grep -c 'road-ready' || true)"
+check "claims lists a live claim" 1 "$pending"
+
+# With an open PR (stub 'open') the claim shows the 'PR open' state.
+openst="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-open.sh" out bash "$DOCS" claims | grep 'road-ready' | grep -c 'PR open' || true)"
+check "claims shows PR-open state" 1 "$openst"
+
+# A fresh claim (no PR, within grace) is NOT reaped.
+notreaped="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims --reap | grep -c 'reaped' || true)"
+check "fresh claim not reaped" 0 "$notreaped"
+
+# A backdated claim (since far in the past, no PR) IS stale and gets reaped.
+OLDTREE="$(git -C "$WK" mktree </dev/null)"
+OLD="$(printf 'claim: iss-old\n\nid: iss-old\nclaimant: ghost\nsince: 2000-01-01T00:00:00Z\nregister: issues\nspec: -\nbranch: work/iss-old\n' | git -C "$WK" commit-tree "$OLDTREE")"
+git -C "$WK" push -q origin "$OLD:refs/claim/iss-old"
+reaped="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims --reap | grep -c 'reaped iss-old' || true)"
+check "stale claim is reaped" 1 "$reaped"
+check "reap removed the stale ref" 0 "$(git -C "$WK" ls-remote origin refs/claim/iss-old | wc -l | tr -d ' ')"
+
+rm -rf "$CT"
 
 exit $fail
