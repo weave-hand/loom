@@ -3,8 +3,8 @@
 _As of edc81cb._
 
 Committed and sequenced work — the build plan and its as-built record. `status:
-done` items are shipped (kept as the slice-by-slice history); `planned` /
-`in-progress` are committed-but-unshipped. Deferred ideas live in
+done` items are shipped (kept as the slice-by-slice history); `planned`
+items are committed-but-unshipped. Deferred ideas live in
 [`FUTURE.md`](FUTURE.md); known defects in [`ISSUES.md`](ISSUES.md). Grammar:
 `docs/superpowers/specs/2026-06-20-docs-registers-consolidation-design.md`.
 
@@ -133,3 +133,8 @@ done` items are shipped (kept as the slice-by-slice history); `planned` /
 
 - [x] **Packaging / deploy MVP (apko + Helm)** `{#road-deploy-mvp area:deploy status:done from:roadmap-where-we-are pr:- spec:-}`
   The ingest + query-api binaries ship as reproducible apko/Wolfi OCI images and a Helm chart (CNPG Postgres, object-store PVC, default-deny NetworkPolicy, optional Gateway API HTTPRoute) in a `deploy//` cell, with a release workflow. See `docs/deploy.md`. See [[fut-deploy-followups]], [[fut-graceful-shutdown-tls]], [[fut-binaries-s3]].
+
+## devx
+
+- [x] **Work-item planning & checkout** `{#road-work-checkout area:devx status:done from:work-checkout pr:- spec:2026-06-21-work-item-planning-checkout-design}`
+  `tools/docs.sh claim/release/claims` give an atomic `refs/claim/<id>` mutex over register items (PR-lifecycle release, spec-exists gate); `loom-work-plan` and `loom-work-checkout` skills document the plan→checkout pipeline. Retired the `in-progress` roadmap status.

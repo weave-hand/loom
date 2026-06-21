@@ -10,7 +10,7 @@ registers use the tagged-item grammar in
 it first. Markdown is the source of truth; `tools/docs.sh validate` is the gate.
 
 Registers and their commitment level:
-- `docs/ROADMAP.md` — committed/sequenced work (`status: planned|in-progress|done`)
+- `docs/ROADMAP.md` — committed/sequenced work (`status: planned|done`)
 - `docs/FUTURE.md` — deliberately-deferred ideas (`status: deferred|promoted|dropped`)
 - `docs/ISSUES.md` — known defects/gaps in shipped code (`status: open|fixed|wontfix`)
 

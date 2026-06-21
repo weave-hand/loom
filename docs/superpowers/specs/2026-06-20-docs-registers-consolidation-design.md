@@ -34,12 +34,12 @@ committed work, a parked idea, or a known defect?
 
 | File | Holds | `status:` values |
 |---|---|---|
-| `docs/ROADMAP.md` | Committed / sequenced work — the build plan, what's next | `planned` · `in-progress` · `done` |
+| `docs/ROADMAP.md` | Committed / sequenced work — the build plan, what's next | `planned` · `done` |
 | `docs/FUTURE.md` | Deliberately-deferred ideas ("later, if a consumer needs it") | `deferred` · `promoted` · `dropped` |
 | `docs/ISSUES.md` | Known defects / gaps / footguns in shipped code | `open` · `fixed` · `wontfix` |
 
 Item flow: an idea sits in FUTURE (`deferred`); when committed it is `promoted`
-and a matching ROADMAP item appears (`planned` → `in-progress` → `done`); ISSUES
+and a matching ROADMAP item appears (`planned` → `done`); ISSUES
 is orthogonal (defects in shipped code), each `open` until `fixed`/`wontfix`.
 
 ## The tagged item grammar

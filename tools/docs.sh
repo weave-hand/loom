@@ -7,7 +7,7 @@ set -euo pipefail
 AREAS=" lineage catalog ontology acl ingest query transform iceberg ui ux test quality devx build deploy cross-cutting "
 REGISTERS=(docs/ROADMAP.md docs/FUTURE.md docs/ISSUES.md)
 
-usage(){ echo "usage: docs.sh {validate|query|shipped-open} [args]" >&2; exit 2; }
+usage(){ echo "usage: docs.sh {validate|query|shipped-open|claim|release|claims} [args]" >&2; exit 2; }
 
 # Emit a TSV of every well-formed item across the given files:
 #   file  lineno  cb  regtype  id  area  status  from  pr  spec  title
@@ -37,6 +37,54 @@ _extract(){
   }' "$@"
 }
 
+SPECDIR="docs/superpowers/specs"
+
+_claim_ref(){ printf 'refs/claim/%s' "$1"; }
+
+# True if $1 is a well-formed register id (prefixed + ref-safe).
+_valid_id(){
+  case "$1" in road-*|fut-*|iss-*) : ;; *) return 1 ;; esac
+  printf '%s' "$1" | grep -qE '^[a-z0-9-]+$'
+}
+
+# Print the TSV row(s) for item id $1 from the on-disk registers (empty if none).
+_item_row(){
+  local id="$1" present=() f tsv
+  for f in "${REGISTERS[@]}"; do [ -f "$f" ] && present+=("$f"); done
+  [ ${#present[@]} -gt 0 ] || return 0
+  tsv="$(_extract "${present[@]}")"
+  printf '%s\n' "$tsv" | awk -F'\t' -v id="$id" '$5==id'
+}
+
+# Read claimant/since from the remote claim ref and report who holds id $1.
+_print_holder(){
+  local id="$1" ref body who since
+  ref="$(_claim_ref "$id")"
+  git fetch -q origin "$ref" 2>/dev/null || true
+  body="$(git show -s --format=%B FETCH_HEAD 2>/dev/null || true)"
+  who="$(printf '%s\n' "$body" | awk -F': ' '/^claimant:/{print $2}')"
+  since="$(printf '%s\n' "$body" | awk -F': ' '/^since:/{print $2}')"
+  echo "claim: '$id' is held by ${who:-?} since ${since:-?}" >&2
+}
+
+CLAIM_GRACE_MIN="${LOOM_CLAIM_GRACE_MIN:-60}"
+
+# Epoch seconds for an ISO-8601 UTC timestamp (0 on parse failure).
+_epoch(){ date -u -d "$1" +%s 2>/dev/null || echo 0; }
+
+# Echo open|none|unknown for the work branch PR of id $1. Overridable for tests
+# via LOOM_CLAIM_PR_PROBE (a command receiving the id and echoing the state).
+_pr_state(){
+  local id="$1" n
+  if [ -n "${LOOM_CLAIM_PR_PROBE:-}" ]; then "$LOOM_CLAIM_PR_PROBE" "$id"; return; fi
+  if command -v gh >/dev/null 2>&1; then
+    n="$(gh pr list --head "work/$id" --state open --json number -q 'length' 2>/dev/null || echo 0)"
+    [ "${n:-0}" -gt 0 ] && echo open || echo none
+  else
+    echo unknown
+  fi
+}
+
 cmd_validate(){
   local files=("$@"); [ ${#files[@]} -gt 0 ] || files=("${REGISTERS[@]}")
   local ERR; ERR="$(mktemp)"
@@ -57,7 +105,7 @@ cmd_validate(){
   local file ln cb R id area status from pr spec title want allowed term
   while IFS=$'\t' read -r file ln cb R id area status from pr spec title; do
     case "$R" in
-      roadmap) want="road-"; allowed=" planned in-progress done ";  term=" done " ;;
+      roadmap) want="road-"; allowed=" planned done ";  term=" done " ;;
       future)  want="fut-";  allowed=" deferred promoted dropped "; term=" promoted dropped " ;;
       issues)  want="iss-";  allowed=" open fixed wontfix ";        term=" fixed wontfix " ;;
       *) echo "$file:$ln: unknown register type (filename must contain ROADMAP/FUTURE/ISSUES)" >>"$ERR"; continue ;;
@@ -156,12 +204,108 @@ cmd_shipped_open(){
   rm -f "$TSV"
 }
 
+cmd_claim(){
+  local id="${1:-}"
+  [ -n "$id" ] || { echo "usage: docs.sh claim <id>" >&2; return 2; }
+  _valid_id "$id" || { echo "claim: invalid id '$id' (want road-/fut-/iss- + [a-z0-9-])" >&2; return 2; }
+  local row cb reg status spec
+  row="$(_item_row "$id")"
+  row="${row%%$'\n'*}"   # first matching line only (ids are unique); no pipe → no SIGPIPE/pipefail
+  [ -n "$row" ] || { echo "claim: unknown id '$id' (not in any register)" >&2; return 1; }
+  cb="$(printf '%s' "$row" | cut -f3)"
+  reg="$(printf '%s' "$row" | cut -f4)"
+  status="$(printf '%s' "$row" | cut -f7)"
+  spec="$(printf '%s' "$row" | cut -f10)"
+  [ "$cb" = " " ] || { echo "claim: '$id' is closed ([x]); only open items are claimable" >&2; return 1; }
+  case "$reg" in
+    roadmap) [ "$status" = planned ]  || { echo "claim: '$id' status '$status' not actionable (want planned)"  >&2; return 1; } ;;
+    future)  [ "$status" = deferred ] || { echo "claim: '$id' status '$status' not actionable (want deferred)" >&2; return 1; } ;;
+    issues)  [ "$status" = open ]     || { echo "claim: '$id' status '$status' not actionable (want open)"     >&2; return 1; } ;;
+    *) echo "claim: '$id' has unknown register '$reg'" >&2; return 1 ;;
+  esac
+  [ "$spec" != "-" ] || { echo "claim: '$id' has no spec (direction not set); brainstorm a spec first" >&2; return 1; }
+  [ -f "$SPECDIR/$spec.md" ] || { echo "claim: spec file '$SPECDIR/$spec.md' missing for '$id'" >&2; return 1; }
+  local ref; ref="$(_claim_ref "$id")"
+  if [ -n "$(git ls-remote origin "$ref" 2>/dev/null)" ]; then
+    echo "claim: '$id' is already claimed" >&2; _print_holder "$id"; return 1
+  fi
+  local who ts tree commit
+  who="$(git config user.email 2>/dev/null || git config user.name 2>/dev/null || echo unknown)"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  tree="$(git mktree </dev/null)"
+  commit="$(printf 'claim: %s\n\nid: %s\nclaimant: %s\nsince: %s\nregister: %s\nspec: %s\nbranch: work/%s\n' \
+    "$id" "$id" "$who" "$ts" "$reg" "$spec" "$id" | git commit-tree "$tree")"
+  if git push --force-with-lease="$ref:" origin "$commit:$ref" >/dev/null 2>&1; then
+    echo "claimed $id by $who at $ts"
+    echo "next: git switch -c work/$id  →  implement  →  open a PR with head work/$id"
+  else
+    echo "claim: lost race for '$id'" >&2; _print_holder "$id"; return 1
+  fi
+}
+
+cmd_release(){
+  local id="${1:-}"
+  [ -n "$id" ] || { echo "usage: docs.sh release <id>" >&2; return 2; }
+  _valid_id "$id" || { echo "release: invalid id '$id'" >&2; return 2; }
+  local ref; ref="$(_claim_ref "$id")"
+  if [ -z "$(git ls-remote origin "$ref" 2>/dev/null)" ]; then
+    echo "release: no live claim for '$id' (nothing to do)"; return 0
+  fi
+  if git push origin ":$ref" >/dev/null 2>&1; then
+    git update-ref -d "$ref" 2>/dev/null || true
+    echo "released $id"
+  else
+    echo "release: failed to delete $ref" >&2; return 1
+  fi
+}
+
+cmd_claims(){
+  local reap=0; [ "${1:-}" = "--reap" ] && reap=1
+  local now grace_s lines
+  now="$(date -u +%s)"
+  grace_s=$(( CLAIM_GRACE_MIN * 60 ))
+  lines="$(git ls-remote origin 'refs/claim/*' 2>/dev/null || true)"
+  [ -n "$lines" ] || { echo "no live claims"; return 0; }
+  local sha ref id body who since since_s age pr state left
+  while read -r sha ref; do
+    [ -n "$ref" ] || continue
+    id="${ref#refs/claim/}"
+    git fetch -q origin "$ref" 2>/dev/null || true
+    body="$(git show -s --format=%B FETCH_HEAD 2>/dev/null || true)"
+    who="$(printf '%s\n' "$body" | awk -F': ' '/^claimant:/{print $2}')"
+    since="$(printf '%s\n' "$body" | awk -F': ' '/^since:/{print $2}')"
+    since_s="$(_epoch "$since")"
+    age=$(( now - since_s ))
+    pr="$(_pr_state "$id")"
+    if [ "$pr" = open ]; then
+      state="PR open"
+    elif [ "$pr" = unknown ]; then
+      state="PR unknown (gh unavailable)"   # never reaped — can't confirm no PR
+    elif [ "$age" -gt "$grace_s" ]; then
+      state="stale"
+    else
+      left=$(( (grace_s - age + 59) / 60 ))
+      state="PR pending (${left}m left)"
+    fi
+    if [ "$reap" = 1 ] && [ "$state" = stale ]; then
+      git push origin ":$ref" >/dev/null 2>&1 && echo "reaped $id (stale)"
+    else
+      printf '%s\t%s\t%dm\t%s\n' "$id" "${who:-?}" "$(( age / 60 ))" "$state"
+    fi
+  done <<EOF
+$lines
+EOF
+}
+
 main(){
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     validate) cmd_validate "$@" ;;
     query) cmd_query "$@" ;;
     shipped-open) cmd_shipped_open "$@" ;;
+    claim) cmd_claim "$@" ;;
+    release) cmd_release "$@" ;;
+    claims) cmd_claims "$@" ;;
     *) usage ;;
   esac
 }

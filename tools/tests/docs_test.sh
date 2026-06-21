@@ -17,6 +17,8 @@ check "duplicate id fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-dupid-FUTURE.
 check "bad area fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-area-ISSUES.md")"
 check "wrong status for register fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-status-ROADMAP.md")"
 check "unresolvable link fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-link-FUTURE.md")"
+# in-progress was retired from the roadmap status vocab (2026-06-21).
+check "in-progress status now rejected" 1 "$(rc bash "$DOCS" validate "$FIX/bad-inprogress-ROADMAP.md")"
 
 # Uppercase [X] must be parsed, not silently skipped: a bad area in an [X] item must still fail.
 check "uppercase [X] item is validated not skipped" 1 "$(rc bash "$DOCS" validate "$FIX/bad-uppercase-ISSUES.md")"
@@ -95,5 +97,80 @@ g "$R2" add -A; g "$R2" commit -qm "plan + register"
 o3="$(cd "$R2" && bash "$REMIND" 2>&1)"; check "remind silent when register touched" "" "$o3"
 
 rm -rf "$R1" "$R2"
+
+# ---- claim / release (git-ref mutex) ----
+# A working clone whose `origin` is a local bare repo. Registers + a spec live
+# in the working tree; claim reads the working tree and pushes refs to origin.
+CT="$(mktemp -d)"
+git init -q --bare "$CT/origin.git"
+git clone -q "$CT/origin.git" "$CT/wk" 2>/dev/null
+WK="$CT/wk"
+git -C "$WK" config user.email tester@loom
+git -C "$WK" config user.name tester
+mkdir -p "$WK/docs/superpowers/specs"
+cat > "$WK/docs/ROADMAP.md" <<'EOF'
+# Roadmap register
+
+_As of test._
+
+## ingest
+
+- [ ] **Ready item** `{#road-ready area:ingest status:planned from:x pr:- spec:2026-01-01-ready}`
+  has a spec on disk, open, planned — claimable.
+- [ ] **No spec** `{#road-nospec area:ingest status:planned from:x pr:- spec:-}`
+  direction not set — not claimable.
+- [ ] **Spec missing** `{#road-specmissing area:ingest status:planned from:x pr:- spec:2099-12-31-absent}`
+  spec referenced but not on disk — not claimable.
+- [x] **Closed item** `{#road-closed area:ingest status:done from:x pr:#1 spec:2026-01-01-ready}`
+  already done — not claimable.
+EOF
+touch "$WK/docs/superpowers/specs/2026-01-01-ready.md"
+cp "$FIX/good-FUTURE.md" "$WK/docs/FUTURE.md"
+cp "$FIX/good-ISSUES.md" "$WK/docs/ISSUES.md"
+
+check "claim ready item succeeds"          0 "$(cd "$WK" && rc bash "$DOCS" claim road-ready)"
+check "claim created the ref"              1 "$(git -C "$WK" ls-remote origin refs/claim/road-ready | wc -l | tr -d ' ')"
+check "claim already-claimed fails"        1 "$(cd "$WK" && rc bash "$DOCS" claim road-ready)"
+check "release succeeds"                   0 "$(cd "$WK" && rc bash "$DOCS" release road-ready)"
+check "release removed the ref"            0 "$(git -C "$WK" ls-remote origin refs/claim/road-ready | wc -l | tr -d ' ')"
+check "release of absent claim is ok"      0 "$(cd "$WK" && rc bash "$DOCS" release road-ready)"
+check "claim unknown id fails"             1 "$(cd "$WK" && rc bash "$DOCS" claim road-bogus)"
+check "claim closed item fails"            1 "$(cd "$WK" && rc bash "$DOCS" claim road-closed)"
+check "claim item without spec fails"      1 "$(cd "$WK" && rc bash "$DOCS" claim road-nospec)"
+check "claim item with missing spec fails" 1 "$(cd "$WK" && rc bash "$DOCS" claim road-specmissing)"
+check "claim invalid id fails"             2 "$(cd "$WK" && rc bash "$DOCS" claim 'road-BAD!')"
+# ---- claims listing + reaping (PR probe stubbed; no GitHub) ----
+# Re-claim road-ready (released in the Task-2 block) so there is a live claim.
+(cd "$WK" && bash "$DOCS" claim road-ready >/dev/null 2>&1)
+
+# With no open PR (stub 'none') and default grace, a fresh claim lists as pending.
+pending="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims | grep -c 'road-ready' || true)"
+check "claims lists a live claim" 1 "$pending"
+
+# With an open PR (stub 'open') the claim shows the 'PR open' state.
+openst="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-open.sh" out bash "$DOCS" claims | grep 'road-ready' | grep -c 'PR open' || true)"
+check "claims shows PR-open state" 1 "$openst"
+
+# A fresh claim (no PR, within grace) is NOT reaped.
+notreaped="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims --reap | grep -c 'reaped' || true)"
+check "fresh claim not reaped" 0 "$notreaped"
+
+# A backdated claim (since far in the past, no PR) IS stale and gets reaped.
+OLDTREE="$(git -C "$WK" mktree </dev/null)"
+OLD="$(printf 'claim: iss-old\n\nid: iss-old\nclaimant: ghost\nsince: 2000-01-01T00:00:00Z\nregister: issues\nspec: -\nbranch: work/iss-old\n' | git -C "$WK" commit-tree "$OLDTREE")"
+git -C "$WK" push -q origin "$OLD:refs/claim/iss-old"
+reaped="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims --reap | grep -c 'reaped iss-old' || true)"
+check "stale claim is reaped" 1 "$reaped"
+check "reap removed the stale ref" 0 "$(git -C "$WK" ls-remote origin refs/claim/iss-old | wc -l | tr -d ' ')"
+
+# When gh is unavailable (PR state 'unknown'), an old claim is NOT reaped — we
+# cannot confirm there is no open PR, so reaping must not act on it.
+OLD2="$(printf 'claim: iss-old2\n\nid: iss-old2\nclaimant: ghost\nsince: 2000-01-01T00:00:00Z\nregister: issues\nspec: -\nbranch: work/iss-old2\n' | git -C "$WK" commit-tree "$OLDTREE")"
+git -C "$WK" push -q origin "$OLD2:refs/claim/iss-old2"
+unkreap="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-unknown.sh" out bash "$DOCS" claims --reap | grep -c 'reaped iss-old2' || true)"
+check "unknown-PR claim not reaped" 0 "$unkreap"
+check "unknown-PR ref survives reap" 1 "$(git -C "$WK" ls-remote origin refs/claim/iss-old2 | wc -l | tr -d ' ')"
+
+rm -rf "$CT"
 
 exit $fail
