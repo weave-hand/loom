@@ -98,4 +98,47 @@ o3="$(cd "$R2" && bash "$REMIND" 2>&1)"; check "remind silent when register touc
 
 rm -rf "$R1" "$R2"
 
+# ---- claim / release (git-ref mutex) ----
+# A working clone whose `origin` is a local bare repo. Registers + a spec live
+# in the working tree; claim reads the working tree and pushes refs to origin.
+CT="$(mktemp -d)"
+git init -q --bare "$CT/origin.git"
+git clone -q "$CT/origin.git" "$CT/wk" 2>/dev/null
+WK="$CT/wk"
+git -C "$WK" config user.email tester@loom
+git -C "$WK" config user.name tester
+mkdir -p "$WK/docs/superpowers/specs"
+cat > "$WK/docs/ROADMAP.md" <<'EOF'
+# Roadmap register
+
+_As of test._
+
+## ingest
+
+- [ ] **Ready item** `{#road-ready area:ingest status:planned from:x pr:- spec:2026-01-01-ready}`
+  has a spec on disk, open, planned — claimable.
+- [ ] **No spec** `{#road-nospec area:ingest status:planned from:x pr:- spec:-}`
+  direction not set — not claimable.
+- [ ] **Spec missing** `{#road-specmissing area:ingest status:planned from:x pr:- spec:2099-12-31-absent}`
+  spec referenced but not on disk — not claimable.
+- [x] **Closed item** `{#road-closed area:ingest status:done from:x pr:#1 spec:2026-01-01-ready}`
+  already done — not claimable.
+EOF
+touch "$WK/docs/superpowers/specs/2026-01-01-ready.md"
+cp "$FIX/good-FUTURE.md" "$WK/docs/FUTURE.md"
+cp "$FIX/good-ISSUES.md" "$WK/docs/ISSUES.md"
+
+check "claim ready item succeeds"          0 "$(cd "$WK" && rc bash "$DOCS" claim road-ready)"
+check "claim created the ref"              1 "$(git -C "$WK" ls-remote origin refs/claim/road-ready | wc -l | tr -d ' ')"
+check "claim already-claimed fails"        1 "$(cd "$WK" && rc bash "$DOCS" claim road-ready)"
+check "release succeeds"                   0 "$(cd "$WK" && rc bash "$DOCS" release road-ready)"
+check "release removed the ref"            0 "$(git -C "$WK" ls-remote origin refs/claim/road-ready | wc -l | tr -d ' ')"
+check "release of absent claim is ok"      0 "$(cd "$WK" && rc bash "$DOCS" release road-ready)"
+check "claim unknown id fails"             1 "$(cd "$WK" && rc bash "$DOCS" claim road-bogus)"
+check "claim closed item fails"            1 "$(cd "$WK" && rc bash "$DOCS" claim road-closed)"
+check "claim item without spec fails"      1 "$(cd "$WK" && rc bash "$DOCS" claim road-nospec)"
+check "claim item with missing spec fails" 1 "$(cd "$WK" && rc bash "$DOCS" claim road-specmissing)"
+check "claim invalid id fails"             2 "$(cd "$WK" && rc bash "$DOCS" claim 'road-BAD!')"
+# cleanup happens in Task 3 (CT reused there); leave CT in place for now.
+
 exit $fail
