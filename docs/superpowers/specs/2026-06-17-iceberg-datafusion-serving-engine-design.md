@@ -58,6 +58,11 @@ non-DuckDB engine overrides this." This slice is that engine.
   (mirror-landed self-link graph → `DataFusionServingEngine`, asserting the same
   reachable sets as the DuckDB graph e2es `graph-reach-e2e` / `graph-union-e2e`).
   See `docs/FUTURE.md` (the `/graph` surface section).
+  **Update (resolved, PR #118):** the expectation that "no compiler change is
+  expected" was wrong — DataFusion ignores the `reach(id, depth)` CTE
+  column-name list, so the anchor columns had to be aliased explicitly
+  (`0 AS depth`) in all three graph compilers for `r.depth` to resolve. The
+  recursive-CTE-over-DataFusion test now passes; see `iss-recursive-cte-iceberg`.
 
 ## Architecture
 

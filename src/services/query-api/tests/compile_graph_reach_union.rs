@@ -56,6 +56,10 @@ fn two_self_links_union_with_row_filter() {
         "got: {sql}"
     );
     assert!(sql.contains("r.depth < 3"), "depth bound inlined: {sql}");
+    assert!(
+        sql.contains("0 AS depth"),
+        "anchor aliases depth explicitly (portable to DataFusion): {sql}"
+    );
     // One CTE-level UNION (anchor vs recursive step); one UNION ALL inside the edge subquery.
     // Note: " UNION " is a substring of " UNION ALL ", so count bare UNION as (UNION - UNION ALL).
     let union_all = sql.matches(" UNION ALL ").count();
