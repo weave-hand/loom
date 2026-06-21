@@ -145,11 +145,11 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   The Iceberg adapter coexists with DuckLake (the green differential oracle). "Replace DuckLake outright" is a deferred, ergonomics-driven decision still owed — not the adapter work.
 - [ ] **Iceberg ActionEngine impl** `{#fut-iceberg-actionengine area:iceberg status:deferred from:actions-part1 pr:- spec:2026-06-15-actions-part1-design}`
   The `ActionEngine` trait's reason for being — a second write backend behind the inline-write seam, for deployments that prefer Iceberg over DuckLake inline writes — is not yet implemented.
-- [ ] **Arrow Flight data plane over the engine-wire** `{#fut-engine-wire-flight area:iceberg status:deferred from:engine-wire-flush-vertical pr:- spec:2026-06-20-engine-wire-flush-vertical-design}`
+- [ ] **Arrow Flight data plane over the engine-wire** `{#fut-engine-wire-flight area:iceberg status:deferred from:engine-wire-flush-vertical pr:#108 spec:2026-06-20-engine-wire-flush-vertical-design}`
   The flush vertical is control-plane only — no bulk data crosses the wire. The `DoGet`/`DoPut` Arrow Flight data lane (the arrow-major transport that lets the engine serve/accept bulk rows over the same UDS) arrives with the read/write engine-wire vertical, not flush. See [[road-iceberg-flush-consumer]].
-- [ ] **Persistent-stream AwaitJobs** `{#fut-awaitjobs-stream area:iceberg status:deferred from:engine-wire-flush-vertical pr:- spec:2026-06-20-engine-wire-flush-vertical-design}`
+- [ ] **Persistent-stream AwaitJobs** `{#fut-awaitjobs-stream area:iceberg status:deferred from:engine-wire-flush-vertical pr:#108 spec:2026-06-20-engine-wire-flush-vertical-design}`
   `AwaitJobs` is a unary long-poll bridged to `PgControlPlane::await_jobs` (one LISTEN per call). A server-streaming form that holds a single listener across waits is an efficiency optimization, deferred until the wire carries enough job traffic to justify it.
-- [ ] **Multiple engines / pooling / TLS / auth on the engine socket** `{#fut-engine-wire-multi-tls area:iceberg status:deferred from:engine-wire-flush-vertical pr:- spec:2026-06-20-engine-wire-flush-vertical-design}`
+- [ ] **Multiple engines / pooling / TLS / auth on the engine socket** `{#fut-engine-wire-multi-tls area:iceberg status:deferred from:engine-wire-flush-vertical pr:#108 spec:2026-06-20-engine-wire-flush-vertical-design}`
   The vertical is one engine, one UDS, local trust. Multiple engines, connection pooling, TLS, and authentication on the socket are deferred until loom runs the engine/worker across a trust boundary (cf. the existing [[fut-graceful-shutdown-tls]] for the HTTP services).
 
 ## deploy
