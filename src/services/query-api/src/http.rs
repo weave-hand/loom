@@ -584,7 +584,7 @@ async fn post_action(
         action_engine: st.action_engine.as_ref(),
     };
     match crate::action::run_action(&action_name, &obj, &SubjectId(subject), &deps).await {
-        Ok((rows, _run_id)) => {
+        Ok((rows, run_id)) => {
             let body = crate::render::objects_to_json(&rows);
             // objects_to_json yields {"objects":[{...}]}; return the single created object.
             let one = body
@@ -593,7 +593,13 @@ async fn post_action(
                 .and_then(|a| a.first())
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            (StatusCode::CREATED, Json(one)).into_response()
+            // Surface the action's run_id so a caller can locate its lineage via
+            // Lineage::events_for. The body is unchanged (non-invasive).
+            let mut resp = (StatusCode::CREATED, Json(one)).into_response();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&run_id.0.to_string()) {
+                resp.headers_mut().insert("X-Loom-Run-Id", v);
+            }
+            resp
         }
         Err(crate::action::ActionError::UnknownAction(a)) => {
             (StatusCode::NOT_FOUND, a).into_response()

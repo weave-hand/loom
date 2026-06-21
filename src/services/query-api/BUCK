@@ -797,6 +797,23 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "action-run-id-http",
+    crate = "action_run_id_http",
+    srcs = ["tests/action_run_id_http.rs"],
+    crate_root = "tests/action_run_id_http.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
 loom_fixture_test(
     name = "object-set-e2e",
     crate = "object_set_e2e",
