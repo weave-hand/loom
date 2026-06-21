@@ -22,7 +22,13 @@ async fn write_object_is_rejected() {
         payload: serde_json::json!({}),
     };
     let err = engine
-        .write_object(&table, &["id".to_string()], &[SqlValue::Int(1)], &["Long".to_string()], event)
+        .write_object(
+            &table,
+            &["id".to_string()],
+            &[SqlValue::Int(1)],
+            &["Long".to_string()],
+            event,
+        )
         .await
         .expect_err("must reject");
     match err {

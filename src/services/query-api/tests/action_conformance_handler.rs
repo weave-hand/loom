@@ -134,7 +134,10 @@ async fn misconfigured_action_is_rejected_before_insert() {
         matches!(&err, ActionError::Misconfigured(m) if m.contains("matches no property")),
         "expected Misconfigured, got {err:?}"
     );
-    assert!(engine.events().is_empty(), "no write for a misconfigured action");
+    assert!(
+        engine.events().is_empty(),
+        "no write for a misconfigured action"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -189,5 +192,8 @@ async fn conformant_action_runs_the_insert() {
         .events_for(&run_id, PageReq::unbounded())
         .await
         .unwrap();
-    assert!(found.items.is_empty(), "no separate best-effort emit on the handler path");
+    assert!(
+        found.items.is_empty(),
+        "no separate best-effort emit on the handler path"
+    );
 }

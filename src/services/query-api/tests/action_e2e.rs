@@ -179,7 +179,10 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
         widget: _,
         role: _,
     } = setup_widget_writer(&fx).await;
-    let deps = ActionDeps { cp: &cp, action_engine: &engine };
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+    };
     let body = json!({ "id": "42", "name": "gadget" });
     let (created, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
         .await
@@ -194,13 +197,24 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
 
     // The loom-owned write produced a Parquet data file (the part-1 inline property
     // is retired in favor of atomicity).
-    assert!(parquet_count(&data_path) > 0, "action write produced a Parquet file");
+    assert!(
+        parquet_count(&data_path) > 0,
+        "action write produced a Parquet file"
+    );
 
     // It reads back through the governed read path.
     let reader = EmbeddedDuckDb::attach(&pg_conn, &data_path).await.unwrap();
-    let qdeps = QueryDeps { ontology: cp.ontology(), acl: cp.acl(), serving: &reader };
+    let qdeps = QueryDeps {
+        ontology: cp.ontology(),
+        acl: cp.acl(),
+        serving: &reader,
+    };
     let rows = read_object(
-        &ObjectQuery { type_name: "Widget".into(), eq_filters: vec![], ids: vec![] },
+        &ObjectQuery {
+            type_name: "Widget".into(),
+            eq_filters: vec![],
+            ids: vec![],
+        },
         &Subject(subj.clone()),
         &qdeps,
     )
@@ -215,9 +229,20 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
     // Lineage is now committed ATOMICALLY with the row and is findable by run_id —
     // exactly the assertion part-1 could not make (it skipped lineage as the dangling
     // slice). The event's outputs name the Widget dataset.
-    let events = cp.lineage().events_for(&run_id, PageReq::unbounded()).await.unwrap();
-    assert_eq!(events.items.len(), 1, "one lineage event for the action's run");
-    assert_eq!(events.items[0].outputs, vec![DatasetRef::from(&TypeName("Widget".into()))]);
+    let events = cp
+        .lineage()
+        .events_for(&run_id, PageReq::unbounded())
+        .await
+        .unwrap();
+    assert_eq!(
+        events.items.len(),
+        1,
+        "one lineage event for the action's run"
+    );
+    assert_eq!(
+        events.items[0].outputs,
+        vec![DatasetRef::from(&TypeName("Widget".into()))]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

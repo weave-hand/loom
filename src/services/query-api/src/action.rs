@@ -194,14 +194,19 @@ pub async fn run_action(
     //    write must carry every column so the file schema matches the table (part-1
     //    relied on DuckDB defaulting unspecified columns to NULL).
     use std::collections::HashMap;
-    let parsed: HashMap<&str, &SqlValue> =
-        pairs.iter().map(|(c, v)| (c.as_str(), v)).collect();
+    let parsed: HashMap<&str, &SqlValue> = pairs.iter().map(|(c, v)| (c.as_str(), v)).collect();
     let mut full_columns: Vec<String> = Vec::with_capacity(target.properties.len());
     let mut full_values: Vec<SqlValue> = Vec::with_capacity(target.properties.len());
     let mut full_logical: Vec<String> = Vec::with_capacity(target.properties.len());
     for p in &target.properties {
         full_columns.push(p.name.clone());
-        full_values.push(parsed.get(p.name.as_str()).copied().cloned().unwrap_or(SqlValue::Null));
+        full_values.push(
+            parsed
+                .get(p.name.as_str())
+                .copied()
+                .cloned()
+                .unwrap_or(SqlValue::Null),
+        );
         full_logical.push(p.ty.clone());
     }
 
@@ -223,7 +228,13 @@ pub async fn run_action(
     // 7. Atomic write: row + lineage in one transaction (no dangling slice). On any
     //    failure the Tx rolls back — no snapshot, no lineage, no partial state.
     deps.action_engine
-        .write_object(&target.table, &full_columns, &full_values, &full_logical, event)
+        .write_object(
+            &target.table,
+            &full_columns,
+            &full_values,
+            &full_logical,
+            event,
+        )
         .await?;
 
     // 8. Return the created object (action-provided columns only, as part-1 returns)

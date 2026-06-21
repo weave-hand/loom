@@ -64,10 +64,7 @@ pub fn build_object_batch(
     values: &[SqlValue],
     logical_types: &[String],
 ) -> Result<(Arc<Schema>, RecordBatch, Vec<ColumnSpec>), ServingError> {
-    if columns.is_empty()
-        || columns.len() != values.len()
-        || columns.len() != logical_types.len()
-    {
+    if columns.is_empty() || columns.len() != values.len() || columns.len() != logical_types.len() {
         return Err(ServingError::Engine(format!(
             "build_object_batch: {} columns / {} values / {} types (need >= 1, equal counts)",
             columns.len(),
@@ -99,13 +96,12 @@ pub fn build_object_batch(
 /// One single-row Arrow array for a cell of base type `base`. `SqlValue::Null`
 /// yields a typed null; any non-null variant must match `base` (the same
 /// scalar-to-Arrow mapping `to_duck` uses) or it is a `ServingError`.
-fn one_cell(
-    base: BaseType,
-    v: &SqlValue,
-    col: &str,
-) -> Result<(DataType, ArrayRef), ServingError> {
-    let mismatch =
-        || ServingError::Engine(format!("value for column `{col}` does not match its {base:?} type"));
+fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayRef), ServingError> {
+    let mismatch = || {
+        ServingError::Engine(format!(
+            "value for column `{col}` does not match its {base:?} type"
+        ))
+    };
     Ok(match base {
         BaseType::Integer => {
             let cell: Option<i32> = match v {

@@ -22,7 +22,10 @@ fn builds_one_row_batch_with_typed_null_and_specs() {
         specs.iter().map(|s| s.ty.as_str()).collect::<Vec<_>>(),
         vec!["long", "string"]
     );
-    assert!(specs.iter().all(|s| s.nullable), "action columns are nullable");
+    assert!(
+        specs.iter().all(|s| s.nullable),
+        "action columns are nullable"
+    );
 
     let id = batch
         .column(0)
@@ -66,7 +69,6 @@ fn rejects_value_type_mismatch() {
 
 #[test]
 fn rejects_length_mismatch() {
-    let err =
-        build_object_batch(&["x".to_string()], &[], &["Long".to_string()]).unwrap_err();
+    let err = build_object_batch(&["x".to_string()], &[], &["Long".to_string()]).unwrap_err();
     assert!(format!("{err}").contains("columns"), "got {err}");
 }

@@ -50,11 +50,22 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
     cp.define_type(ObjectType {
         name: TypeName("Widget".into()),
         properties: vec![
-            PropertyDef { name: "id".into(), ty: "Long".into(), required: true },
-            PropertyDef { name: "name".into(), ty: "String".into(), required: false },
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "name".into(),
+                ty: "String".into(),
+                required: false,
+            },
         ],
         derived: vec![],
-        table: TableRef { schema: "main".into(), name: "widget".into() },
+        table: TableRef {
+            schema: "main".into(),
+            name: "widget".into(),
+        },
         identity: Some("id".into()),
     })
     .await
@@ -63,8 +74,16 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
         name: ActionName("createWidget".into()),
         target: TypeName("Widget".into()),
         parameters: vec![
-            ParamDef { name: "id".into(), ty: "Long".into(), required: true },
-            ParamDef { name: "name".into(), ty: "String".into(), required: false },
+            ParamDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            ParamDef {
+                name: "name".into(),
+                ty: "String".into(),
+                required: false,
+            },
         ],
     })
     .await
@@ -74,16 +93,23 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
     cp.define_subject(&subj).await.unwrap();
     cp.define_role(&role).await.unwrap();
     cp.assign_role(&subj, &role).await.unwrap();
-    cp.grant(&role, Action::Write, PolicyTarget::Type(TypeName("Widget".into())), Effect::Allow)
-        .await
-        .unwrap();
+    cp.grant(
+        &role,
+        Action::Write,
+        PolicyTarget::Type(TypeName("Widget".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
     (cp, subj)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn created_response_carries_run_id_header() {
     let (cp, subj) = seeded().await;
-    let engine = Arc::new(CapturingEngine { run_id: Mutex::new(None) });
+    let engine = Arc::new(CapturingEngine {
+        run_id: Mutex::new(None),
+    });
     // A serving engine is required by AppState but the action path never reads it.
     let serving: Arc<dyn ServingEngine> = Arc::new(NoServing);
     let app = router(AppState {
@@ -113,5 +139,9 @@ async fn created_response_carries_run_id_header() {
         .unwrap()
         .to_string();
     let captured = engine.run_id.lock().unwrap().expect("engine saw the event");
-    assert_eq!(header, captured.0.to_string(), "header equals the action's run_id");
+    assert_eq!(
+        header,
+        captured.0.to_string(),
+        "header equals the action's run_id"
+    );
 }
