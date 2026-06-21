@@ -1883,6 +1883,80 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
     );
 }
 
+/// A commit that fails mid-apply must roll back EVERYTHING — queue, lineage, AND
+/// catalog together — exactly like the postgres single `sqlx::Transaction`. We
+/// stage an enqueue + emit alongside a compaction that will conflict (a named
+/// expire target that is not live); the failed commit must leave neither the job
+/// nor the event visible. Guards against a partial commit where queue/lineage were
+/// applied before a later catalog op errored. See iss-memory-tx-not-atomic.
+pub async fn tx_atomic_rollback_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) {
+    use control_plane_core::{DataFile, FileFormat, TableRef};
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_100).unwrap();
+    let run = RunId(uuid::Uuid::new_v4());
+    let kinds = vec!["tx-atomic".to_string()];
+
+    let mut tx = cp.begin().await.expect("begin");
+    tx.enqueue(NewJob {
+        kind: "tx-atomic".into(),
+        payload: serde_json::json!({}),
+        run_at: None,
+        priority: 0,
+    })
+    .await
+    .expect("staged enqueue");
+    tx.emit(LineageEvent {
+        run_id: run,
+        event_type: EventType::Complete,
+        event_time: ts,
+        inputs: vec![],
+        outputs: vec![DatasetRef {
+            namespace: "ducklake".into(),
+            name: "main.tx_atomic".into(),
+        }],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .expect("staged emit");
+    // A compaction whose expire target is not live -> Conflict at commit time.
+    tx.compact_files(
+        &TableRef {
+            schema: "main".into(),
+            name: "never_created".into(),
+        },
+        &["ghost.parquet".into()],
+        &[DataFile {
+            path: "d.parquet".into(),
+            path_is_relative: true,
+            file_format: FileFormat::Parquet,
+            record_count: 1,
+            file_size_bytes: 16,
+            column_stats: vec![],
+            parquet_footer_size: Some(10),
+        }],
+    )
+    .await
+    .expect("staged compaction");
+
+    let res = tx.commit().await;
+    assert!(
+        res.is_err(),
+        "commit must fail when a staged compaction conflicts"
+    );
+
+    // Nothing from the failed commit is visible — no partial commit across concerns.
+    assert!(
+        cp.dequeue(&kinds, "reader").await.unwrap().is_none(),
+        "a failed commit must not leave the staged job visible"
+    );
+    assert!(
+        cp.events_for(&run, PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
+        "a failed commit must not leave the staged event visible"
+    );
+}
+
 /// Contract for concurrent dequeue: N workers draining M jobs must claim each job
 /// **exactly once** (no double-claim, none lost) — the `SKIP LOCKED` fairness guarantee.
 /// `cp` is taken by value (`Clone + Send + Sync + 'static`) so clones move into spawned
