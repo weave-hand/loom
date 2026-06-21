@@ -26,6 +26,17 @@ fn t() -> TableRef {
 }
 
 #[test]
+fn quote_ident_escapes_embedded_double_quote() {
+    // A trusted-but-unvalidated identifier containing a `"` must not panic the
+    // request thread; it is escaped per SQL identifier rules (`"` -> `""`).
+    // See iss-quote-ident-panic.
+    let d = DuckDbDialect;
+    assert_eq!(d.quote_ident("we\"ird"), "\"we\"\"ird\"");
+    // An ordinary identifier is unchanged apart from the surrounding quotes.
+    assert_eq!(d.quote_ident("plain"), "\"plain\"");
+}
+
+#[test]
 fn default_compile_select_equals_explicit_duckdb() {
     let f = RowFilter::Compare {
         property: "status".into(),
