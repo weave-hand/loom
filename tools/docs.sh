@@ -279,6 +279,8 @@ cmd_claims(){
     pr="$(_pr_state "$id")"
     if [ "$pr" = open ]; then
       state="PR open"
+    elif [ "$pr" = unknown ]; then
+      state="PR unknown (gh unavailable)"   # never reaped — can't confirm no PR
     elif [ "$age" -gt "$grace_s" ]; then
       state="stale"
     else

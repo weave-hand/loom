@@ -163,6 +163,14 @@ reaped="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" cla
 check "stale claim is reaped" 1 "$reaped"
 check "reap removed the stale ref" 0 "$(git -C "$WK" ls-remote origin refs/claim/iss-old | wc -l | tr -d ' ')"
 
+# When gh is unavailable (PR state 'unknown'), an old claim is NOT reaped — we
+# cannot confirm there is no open PR, so reaping must not act on it.
+OLD2="$(printf 'claim: iss-old2\n\nid: iss-old2\nclaimant: ghost\nsince: 2000-01-01T00:00:00Z\nregister: issues\nspec: -\nbranch: work/iss-old2\n' | git -C "$WK" commit-tree "$OLDTREE")"
+git -C "$WK" push -q origin "$OLD2:refs/claim/iss-old2"
+unkreap="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-unknown.sh" out bash "$DOCS" claims --reap | grep -c 'reaped iss-old2' || true)"
+check "unknown-PR claim not reaped" 0 "$unkreap"
+check "unknown-PR ref survives reap" 1 "$(git -C "$WK" ls-remote origin refs/claim/iss-old2 | wc -l | tr -d ' ')"
+
 rm -rf "$CT"
 
 exit $fail
