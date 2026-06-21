@@ -15,7 +15,7 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
   The `in:` operator splits on commas, so an operand containing a comma cannot be expressed; needs an escaping or alternate-delimiter convention.
 - [ ] **Multi-file DuckLake LIMIT mis-read** `{#iss-multi-file-limit-misread area:query status:open from:cross-cutting pr:- spec:2026-06-21-multi-file-limit-guard-design}`
   A DuckLake table backed by >1 Parquet file read with a pushed-down `LIMIT` can reconstruct column values incorrectly (observed: int64 `id` corrupted by a `+ (other_id << 8)` pattern) — an upstream DuckDB/DuckLake bug. loom sidesteps it for single-file transform outputs; large multi-file outputs remain exposed. Follow-up: upstream repro + a loom-side guard.
-- [ ] **Serving faults not logged server-side** `{#iss-serving-faults-not-logged area:query status:open from:tracing-pass pr:- spec:2026-06-07-tracing-instrumentation-design}`
+- [ ] **Serving faults not logged server-side** `{#iss-serving-faults-not-logged area:query status:open from:tracing-pass pr:- spec:2026-06-21-serving-fault-logging-design}`
   `query-api` returns an opaque 500 for backend/serving faults (correctly, to avoid leaking SQL/table detail) but drops the error `e` entirely. Log `e` server-side once a tracing subscriber is wired in the binary.
 
 ## lineage
