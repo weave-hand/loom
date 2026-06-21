@@ -6,6 +6,12 @@ use control_plane_core::{
 
 use crate::{PgControlPlane, action_to_str, backend, effect_to_str, target_cols};
 
+/// Fixed advisory-lock key serializing role-inheritance edge inserts within one
+/// database, making the cycle check + insert in `add_role_inheritance` atomic
+/// against concurrent opposite-edge writes. Arbitrary but stable (ASCII "acl_inhr"),
+/// and distinct from `snapshot.rs`'s catalog lock so the two never contend.
+const ROLE_INHERITS_LOCK_KEY: i64 = 0x6163_6c5f_696e_6872u64 as i64;
+
 #[async_trait]
 impl Acl for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -86,10 +92,23 @@ impl Acl for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn add_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
+        // The cycle check and the edge insert must be one atomic unit: two concurrent
+        // calls inserting opposite edges (A->B and B->A) would each pass an independent
+        // check and both insert, forming a cycle. Serialize all edge inserts on a
+        // transaction-scoped advisory lock (auto-released on commit/rollback, including
+        // drop-on-panic, so it can never leak onto a pooled connection). The loser then
+        // observes the winner's committed edge and is rejected with Conflict. Mirrors
+        // the per-database catalog lock in snapshot.rs.
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        sqlx::query!("select pg_advisory_xact_lock($1)", ROLE_INHERITS_LOCK_KEY)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+
         for id in [&role.0, &inherits.0] {
             let exists =
                 sqlx::query_scalar!("select exists (select 1 from acl.role where id = $1)", id,)
-                    .fetch_one(&self.pool)
+                    .fetch_one(&mut *tx)
                     .await
                     .map_err(backend)?
                     .unwrap_or(false);
@@ -99,12 +118,6 @@ impl Acl for PgControlPlane {
         }
         // role -> inherits creates a cycle iff `role` is already reachable from
         // `inherits` (closure of `inherits` includes itself -> catches self-edge).
-        // NOTE: this check + the insert below are separate round-trips, not one
-        // transaction, so two concurrent add_role_inheritance calls inserting opposite
-        // edges of a cycle could both pass. Safe under today's single-writer usage, and
-        // harmless regardless: the check/policies_for closure walks dedup (SQL UNION /
-        // the memory visited-set), so a cycle merely terminates rather than looping.
-        // TODO: wrap in a SERIALIZABLE tx (or lock) if concurrent edge writes ever land.
         let creates_cycle = sqlx::query_scalar!(
             "with recursive clo(role_id) as ( \
                  select $1::text \
@@ -116,7 +129,7 @@ impl Acl for PgControlPlane {
             &inherits.0,
             &role.0,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(backend)?
         .unwrap_or(false);
@@ -132,9 +145,10 @@ impl Acl for PgControlPlane {
             &role.0,
             &inherits.0,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
         Ok(())
     }
 
