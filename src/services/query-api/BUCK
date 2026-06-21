@@ -451,6 +451,18 @@ rust_test(
 )
 
 rust_test(
+    name = "build-object-batch",
+    crate = "build_object_batch",
+    srcs = ["tests/build_object_batch.rs"],
+    crate_root = "tests/build_object_batch.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:arrow",
+    ],
+)
+
+rust_test(
     name = "unsupported-action",
     crate = "unsupported_action",
     srcs = ["tests/unsupported_action.rs"],

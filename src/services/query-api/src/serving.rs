@@ -2,7 +2,15 @@
 //! `EmbeddedDuckDb` runs in-process; `QuackServingEngine` forwards to a remote
 //! `quack_serve`'d DuckDB via the `quack_query` table function.
 
+use std::sync::Arc;
+
+use arrow::array::{
+    ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
+    StringArray, TimestampMicrosecondArray,
+};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use async_trait::async_trait;
+use control_plane_core::{BaseType, ColumnSpec, resolve_logical};
 
 use crate::sql::{DuckDbDialect, SqlDialect};
 
@@ -42,6 +50,132 @@ pub struct Rows {
 pub enum ServingError {
     #[error("serving engine: {0}")]
     Engine(String),
+}
+
+/// Build a one-row Arrow `RecordBatch` + `Schema` + loom `ColumnSpec` list from an
+/// aligned `(columns, values, logical_types)` triple. Each logical type resolves
+/// (via `resolve_logical`) to a `BaseType` that fixes BOTH the Arrow `DataType` and
+/// the loom logical `ColumnSpec.ty` (its canonical name). Every field is nullable —
+/// an action write passes `SqlValue::Null` for any property it does not set. A length
+/// mismatch, an empty input, an unknown logical type, or a value whose variant does
+/// not match its column's base type is a `ServingError::Engine`.
+pub fn build_object_batch(
+    columns: &[String],
+    values: &[SqlValue],
+    logical_types: &[String],
+) -> Result<(Arc<Schema>, RecordBatch, Vec<ColumnSpec>), ServingError> {
+    if columns.is_empty()
+        || columns.len() != values.len()
+        || columns.len() != logical_types.len()
+    {
+        return Err(ServingError::Engine(format!(
+            "build_object_batch: {} columns / {} values / {} types (need >= 1, equal counts)",
+            columns.len(),
+            values.len(),
+            logical_types.len()
+        )));
+    }
+    let mut fields: Vec<Field> = Vec::with_capacity(columns.len());
+    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
+    let mut specs: Vec<ColumnSpec> = Vec::with_capacity(columns.len());
+    for ((name, value), logical) in columns.iter().zip(values).zip(logical_types) {
+        let base = resolve_logical(logical)
+            .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{logical}`")))?;
+        let (dt, array) = one_cell(base, value, name)?;
+        fields.push(Field::new(name, dt, true));
+        arrays.push(array);
+        specs.push(ColumnSpec {
+            name: name.clone(),
+            ty: base.canonical_name().to_string(),
+            nullable: true,
+        });
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema.clone(), arrays)
+        .map_err(|e| ServingError::Engine(e.to_string()))?;
+    Ok((schema, batch, specs))
+}
+
+/// One single-row Arrow array for a cell of base type `base`. `SqlValue::Null`
+/// yields a typed null; any non-null variant must match `base` (the same
+/// scalar-to-Arrow mapping `to_duck` uses) or it is a `ServingError`.
+fn one_cell(
+    base: BaseType,
+    v: &SqlValue,
+    col: &str,
+) -> Result<(DataType, ArrayRef), ServingError> {
+    let mismatch =
+        || ServingError::Engine(format!("value for column `{col}` does not match its {base:?} type"));
+    Ok(match base {
+        BaseType::Integer => {
+            let cell: Option<i32> = match v {
+                SqlValue::Null => None,
+                SqlValue::Int(i) => Some((*i).try_into().map_err(|_| {
+                    ServingError::Engine(format!("integer overflow for column `{col}`"))
+                })?),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Int32, Arc::new(Int32Array::from(vec![cell])))
+        }
+        BaseType::Long => {
+            let cell: Option<i64> = match v {
+                SqlValue::Null => None,
+                SqlValue::Int(i) => Some(*i),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Int64, Arc::new(Int64Array::from(vec![cell])))
+        }
+        BaseType::Double => {
+            let cell: Option<f64> = match v {
+                SqlValue::Null => None,
+                SqlValue::Double(f) => Some(*f),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Float64, Arc::new(Float64Array::from(vec![cell])))
+        }
+        BaseType::Boolean => {
+            let cell: Option<bool> = match v {
+                SqlValue::Null => None,
+                SqlValue::Bool(b) => Some(*b),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Boolean, Arc::new(BooleanArray::from(vec![cell])))
+        }
+        BaseType::String => {
+            let cell: Option<String> = match v {
+                SqlValue::Null => None,
+                SqlValue::Text(s) => Some(s.clone()),
+                _ => return Err(mismatch()),
+            };
+            (DataType::Utf8, Arc::new(StringArray::from(vec![cell])))
+        }
+        BaseType::Date => {
+            let cell: Option<i32> = match v {
+                SqlValue::Null => None,
+                SqlValue::Date(d) => {
+                    Some((*d - time::macros::date!(1970 - 01 - 01)).whole_days() as i32)
+                }
+                _ => return Err(mismatch()),
+            };
+            (DataType::Date32, Arc::new(Date32Array::from(vec![cell])))
+        }
+        BaseType::Timestamp => {
+            let cell: Option<i64> = match v {
+                SqlValue::Null => None,
+                SqlValue::Timestamp(ts) => Some(
+                    (ts.assume_utc() - time::OffsetDateTime::UNIX_EPOCH)
+                        .whole_microseconds()
+                        .try_into()
+                        .unwrap_or(i64::MAX),
+                ),
+                _ => return Err(mismatch()),
+            };
+            (
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                Arc::new(TimestampMicrosecondArray::from(vec![cell])),
+            )
+        }
+    })
 }
 
 #[async_trait]
