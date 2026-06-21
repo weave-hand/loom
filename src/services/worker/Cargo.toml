@@ -1,0 +1,28 @@
+[package]
+name = "worker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+control-plane-core = { path = "../../control-plane/core" }
+control-plane-worker = { path = "../../control-plane/worker" }
+engine-wire = { path = "../engine-wire" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+# Match control-plane-worker: CancellationToken needs no extra tokio-util feature.
+tokio-util = { version = "0.7", default-features = false }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+arrow-array = "57"
+arrow-schema = "57"
+control-plane-postgres = { path = "../../control-plane/postgres" }
+engine = { path = "../engine" }
+iceberg = "0.9"
+serde_json = "1"
+tempfile = "3"
+time = "=0.3.47"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = "0.14"
+uuid = { version = "1", features = ["v4"] }

@@ -3,17 +3,6 @@
 //! no trigger policy (see the spec). Serialized per table by a session advisory
 //! lock so two flushes can't both write Parquet for the same rows.
 
-/// The queue `kind` for an inline-flush job.
-pub const FLUSH_JOB_KIND: &str = "flush_table";
-
-/// The payload of a `flush_table` job: which table to flush. Produced by the
-/// trigger (`inline_append`), consumed by the flush worker (Spec 2).
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct FlushJob {
-    pub schema: String,
-    pub name: String,
-}
-
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlaneError, DatasetId, EventType, LineageEvent, Result, RunId,
     SnapshotId, TableRef,

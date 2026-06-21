@@ -83,15 +83,32 @@ on the same release train as the `arrow`/`parquet` crates loom already pins. The
   (engine owns PG, worker is a zero-pool client), on ordinary multi-threaded
   tokio + sqlx — no `!Send` islanding, no channel bridge.
 
-## Open questions for the engine-wire spec
+## Status
 
-1. **`EngineControl` schema** — the `.proto` for the queue ops + `flush_table`;
-   the error model (gRPC `Status` vs. a typed result message).
-2. **buck2 codegen rule** — the first-party `protox`+`tonic-prost-build` codegen
-   `rust_binary` + genrule emitting generated `.rs`; reindeer the deps (tonic,
-   prost, protox, tokio — all pure Rust, no `links`/native concern).
-3. **Engine process lifecycle** — config (socket path env), graceful shutdown,
-   supervisor wiring on the one box; the worker as the first `EngineControl`
-   client (zero pool).
+**Slice 1 — flush vertical: LANDED.**
+
+- `src/services/engine-wire/` — `EngineControl` proto + tonic codegen (pure-Rust
+  protox, no protoc), `GrpcQueueClient` (impl `Queue`), UDS client connector.
+- `src/services/engine/` — `EngineControlService` (tonic server); `engine-bin`
+  binary that boots from env, binds the UDS, and serves.
+- `src/services/worker/` — zero-pool `worker-bin`: connects to the engine over
+  the UDS via `GrpcQueueClient`, runs `control_plane_worker::Worker`, drains
+  `flush_table` jobs via `handle_flush`. No Postgres in the binary dep closure.
+  Proven by `//src/services/worker:e2e` (fixture test): inline threshold triggers
+  job → client dequeues → `handle_flush` flushes over wire → table file-backed.
+
+Arrow Flight data-plane (slice 2+) remains deferred pending the read/write
+vertical design.
+
+## Resolved questions
+
+1. **`EngineControl` schema** — `engine_control.proto`; errors as gRPC `Status`.
+2. **buck2 codegen rule** — `//src/services/engine-wire:codegen` (protox +
+   tonic-prost-build rust_binary) + `pb-gen` genrule.
+3. **Engine process lifecycle** — `LOOM_ENGINE_SOCKET` env; `ctrl_c` shutdown;
+   worker as the first zero-pool `EngineControl` client.
+
+## Remaining open questions
+
 4. **Data-plane (slice 2, deferred)** — the arrow-major lane for `arrow-flight`;
    `DoGet`/`DoPut` ticket/descriptor design for reads/writes through the engine.

@@ -1,0 +1,22 @@
+[package]
+name = "engine-wire"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+prost-types = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tower = "0.5"
+hyper-util = "0.1"
+control-plane-core = { path = "../../control-plane/core" }
+# Codegen-tool deps. engine-wire has no build.rs; the `:codegen` buck binary
+# consumes these (protox + tonic-prost-build, pure-Rust, no protoc). They live in
+# [dependencies] so reindeer emits public //third-party aliases for the buck
+# codegen target; the library target itself does not depend on them.
+protox = "0.9"
+prost-build = "0.14"
+tonic-prost-build = "0.14"

@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
+use control_plane_core::FLUSH_JOB_KIND;
 use control_plane_core::{ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_flush::{FLUSH_JOB_KIND, flush_table};
+use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_inline::inline_append;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,

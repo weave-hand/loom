@@ -1,0 +1,67 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
+# The worker library exposes the flush handler so the e2e test can import it.
+rust_library(
+    name = "worker",
+    crate = "worker",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:serde_json",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Zero-pool binary: NO //src/control-plane/postgres in this dep list.
+# Structural guard (controller runs):
+#   buck2 uquery "deps(//src/services/worker:worker-bin)" | grep -i "control-plane/postgres" | head
+# Expected: empty — the binary has no postgres in its dep closure.
+rust_binary(
+    name = "worker-bin",
+    crate = "worker_bin",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/control-plane/worker:worker",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tokio-util",
+        "//third-party:uuid",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# End-to-end test: needs engine + postgres fixture to stand up the server,
+# but the worker-bin target above must NOT pull in postgres.
+loom_fixture_test(
+    name = "e2e",
+    crate = "e2e",
+    srcs = ["tests/e2e.rs"],
+    crate_root = "tests/e2e.rs",
+    edition = "2024",
+    deps = [
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/worker:worker",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)

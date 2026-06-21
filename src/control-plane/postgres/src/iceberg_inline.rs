@@ -207,7 +207,7 @@ pub async fn inline_append(
         let st = bump_inline_trigger(&mut *conn, tid, add, threshold).await?;
         if st.live_bytes >= st.effective && !st.enqueued {
             let job = NewJob {
-                kind: crate::iceberg_flush::FLUSH_JOB_KIND.to_string(),
+                kind: control_plane_core::FLUSH_JOB_KIND.to_string(),
                 payload: serde_json::json!({ "schema": table.schema, "name": table.name }),
                 run_at: None,
                 priority: 0,

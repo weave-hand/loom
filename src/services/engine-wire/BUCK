@@ -1,0 +1,63 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+# Pure-Rust codegen tool: protox + tonic-prost-build, no protoc.
+cargo.rust_binary(
+    name = "codegen",
+    crate = "engine_wire_codegen",
+    srcs = ["codegen/main.rs"],
+    crate_root = "codegen/main.rs",
+    edition = "2024",
+    deps = [
+        "//third-party:protox",
+        "//third-party:prost-build",
+        "//third-party:tonic-prost-build",
+    ],
+)
+
+# Run the codegen tool over the proto, emitting generated .rs into $OUT.
+genrule(
+    name = "pb-gen",
+    out = "gen",
+    srcs = ["proto/engine_control.proto"],
+    cmd = "mkdir -p $OUT && $(exe :codegen) $SRCDIR/proto/engine_control.proto $OUT",
+)
+
+cargo.rust_library(
+    name = "engine-wire",
+    crate = "engine_wire",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    env = {"ENGINE_PB": "$(location :pb-gen)"},
+    deps = [
+        "//third-party:tonic",
+        "//third-party:tonic-prost",
+        "//third-party:prost",
+        "//third-party:prost-types",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tower",
+        "//third-party:hyper-util",
+        "//third-party:async-trait",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+        "//third-party:time",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "convert",
+    crate = "convert",
+    srcs = ["tests/convert.rs"],
+    crate_root = "tests/convert.rs",
+    edition = "2024",
+    deps = [
+        ":engine-wire",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+        "//third-party:time",
+    ],
+)
