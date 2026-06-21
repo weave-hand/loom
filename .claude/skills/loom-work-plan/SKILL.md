@@ -1,16 +1,33 @@
 ---
 name: loom-work-plan
-description: Triage the documentation registers, promote a deferred idea into committed roadmap work, and get an item ready to build (a spec exists on disk) — the on-ramp to loom-work-checkout. Use when deciding what to work next, promoting a FUTURE idea to ROADMAP, retiring dead work, or preparing an item for checkout. For a full register rebuild use loom-docs-organise; to close items at completion use loom-docs-update.
+description: Triage the documentation registers and get ONE item ready to build — author a spec on disk and land it in main, then STOP. Use to decide what to work next, promote a FUTURE idea to ROADMAP, retire dead work, or batch-prepare items for checkout. PLANS ONLY — it never claims, writes the implementation plan, or implements; a separate work agent does that via loom-work-checkout. For a full register rebuild use loom-docs-organise; to close items at completion use loom-docs-update.
 ---
 
-Turn the backlog into a checkout-ready item — open, actionable, with a spec on
-disk — then hand off to `loom-work-checkout`. This skill is composition-only (no
-new tooling): it uses `tools/docs.sh` reads, `loom-docs-update` edit mechanics,
-`superpowers:brainstorming` for spec authoring, and the `loom-docs-organise`
-PR-on-green pattern to land. Registers + grammar:
+This is a **planning loop, not a build.** Per item you produce exactly one thing —
+a committed spec on disk, landed in `main`, with the work-item's `spec:` tag set —
+then you **stop and hand back to the operator.** The operator runs this repeatedly
+to prepare a *batch* of to-be-planned items quickly; a separate **work agent**
+later checks one out, writes the implementation plan *from the spec*, and builds
+it. Your job is direction (a landed spec), never completion.
+
+## Boundary — do NOT cross it
+
+Landing the spec is the finish line for this item. After it, do NOT:
+
+- `bash tools/docs.sh claim <id>` — claiming is the **work agent's** first step, not yours;
+- invoke `superpowers:writing-plans` or write any implementation plan;
+- start a `work/<id>` branch, implement, or touch code;
+- offer to "go ahead and build it" — that is the single most common failure here.
+
+Completing the item during planning defeats the loop and steps on the work agent.
+Plan it, land the spec, return to the operator.
+
+Composition-only (no new tooling): `tools/docs.sh` reads, `loom-docs-update` edit
+mechanics, `superpowers:brainstorming` for spec authoring, and the
+`loom-docs-organise` PR-on-green pattern to land. Registers + grammar:
 `docs/superpowers/specs/2026-06-21-work-item-planning-checkout-design.md`.
 
-## Steps
+## Per-item steps (one item per pass)
 
 1. **Triage.** Survey open work and recommend what's next:
    - `bash tools/docs.sh query open` (optionally `--area <a>`), `query by-area` for
@@ -26,17 +43,22 @@ PR-on-green pattern to land. Registers + grammar:
    `- [ ] status:planned`, carrying the same `area:`, the `spec:` slug (or `-`),
    and a `[[fut-…]]` link back. The reverse is the same mechanics: drop a dead
    FUTURE idea (`- [x] status:dropped`) or demote an abandoned ROADMAP `planned`
-   item back to a FUTURE `deferred` idea, recording why in the prose.
-   Validate edits: `bash tools/docs.sh validate`.
+   item back to a FUTURE `deferred` idea, recording why in the prose. (ISSUES
+   defects are orthogonal — they stay in ISSUES, `open` until `fixed`/`wontfix`;
+   do not move them to ROADMAP.) Validate edits: `bash tools/docs.sh validate`.
 3. **Ready (direction gate).** Checkout requires `docs/superpowers/specs/<spec>.md`
    to exist. If the chosen item has `spec:-` or the file is missing, invoke
-   `superpowers:brainstorming` to author the spec (a human sets direction); stop at
-   the committed spec (do not require the writing-plans transition here). Record the
-   produced slug on the item's `spec:` tag.
+   `superpowers:brainstorming` to author the spec (a human sets direction). **Stop
+   at the committed spec — do NOT transition to writing-plans.** Record the produced
+   slug on the item's `spec:` tag.
 4. **Land.** Bundle the promotion/retirement register edits and the new spec into a
    small `plan/<slug>` PR to `main`, merged on green (the `loom-docs-organise`
-   PR-on-green pattern, scoped to one item). After merge the checkout-ready item
-   and its direction are visible to every worker.
+   PR-on-green pattern, scoped to one item). After merge the item's direction is
+   visible and it is claimable — by a **work agent**, not by you.
 
-The item is now claimable: `bash tools/docs.sh claim <id>` (see
-`loom-work-checkout`).
+## Then loop or stop — never build
+
+The item is now ready for a work agent (`loom-work-checkout`) to claim, plan, and
+build. That is **not this session's job.** Return to the operator: if they want to
+prepare more, go back to **Triage** for the next item; otherwise stop. Do not claim
+and do not build, no matter how ready the item looks.
