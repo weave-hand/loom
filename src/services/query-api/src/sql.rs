@@ -29,11 +29,12 @@ pub struct DuckDbDialect;
 
 impl SqlDialect for DuckDbDialect {
     fn quote_ident(&self, id: &str) -> String {
-        assert!(
-            !id.contains('"'),
-            "identifier must not contain a double quote: {id}"
-        );
-        format!("\"{id}\"")
+        // Escape any embedded double-quote per SQL identifier rules (`"` -> `""`)
+        // rather than panicking. Identifiers come from trusted ontology/ACL
+        // metadata, but an unvalidated backing column containing a `"` must still
+        // render as a valid quoted identifier — not abort the request thread.
+        // See iss-quote-ident-panic and [[fut-define-link-validation]].
+        format!("\"{}\"", id.replace('"', "\"\""))
     }
     fn placeholder(&self, _one_based: usize) -> String {
         "?".to_string()
