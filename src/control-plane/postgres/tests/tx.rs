@@ -6,3 +6,10 @@ async fn postgres_passes_tx_isolation_contract() {
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::tx_isolation_contract(&cp).await;
 }
+
+#[tokio::test]
+async fn postgres_passes_tx_atomic_rollback_contract() {
+    let fixture = PgFixture::start();
+    let cp = fixture.fresh_control_plane().await;
+    control_plane_testkit::tx_atomic_rollback_contract(&cp).await;
+}
