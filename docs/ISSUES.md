@@ -55,7 +55,7 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 - [x] **Memory Tx::commit not atomic across concerns** `{#iss-memory-tx-not-atomic area:cross-cutting status:fixed from:critical-review pr:#112 spec:2026-06-06-tx-isolation-contract-design}`
   Fixed (PR #112): `Tx::commit` now holds `rows`+`lineage`+`catalog` across the whole apply (consistent lock order; readers each take one lock, so no deadlock) and validates the fallible compaction check before any mutation — so a failed commit rolls back everything across queue, lineage, and catalog, matching the pg single-`sqlx::Transaction`. (The earlier jobs-vs-events leg was closed by [[road-tx-isolation-contract]]; this closes the catalog leg + the partial-commit-on-conflict path.) `tx_atomic_rollback_contract` asserts it on both adapters.
-- [ ] **Dataset/target existence validation missing** `{#iss-existence-validation area:cross-cutting status:open from:critical-review pr:- spec:-}`
+- [ ] **Dataset/target existence validation missing** `{#iss-existence-validation area:cross-cutting status:open from:critical-review pr:- spec:2026-06-21-existence-validation-design}`
   Lineage `emit`, ACL `grant`/`set_policy`, and ontology `resolve` store without validating the referenced dataset/table/type exists. No new core seam needed (adapters co-locate concerns; `ControlPlaneError` is `#[non_exhaustive]`); same-database refs can use cross-schema FK constraints, but the in-memory fake must replicate the check and external `DatasetRef`s are un-FK-able.
 
 ## devx
