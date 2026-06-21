@@ -20,7 +20,7 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## lineage
 
-- [x] **Action lineage atomicity gap** `{#iss-action-lineage-atomicity area:lineage status:fixed from:actions-part1 pr:- spec:2026-06-21-action-lineage-atomicity-design}`
+- [x] **Action lineage atomicity gap** `{#iss-action-lineage-atomicity area:lineage status:fixed from:actions-part1 pr:#123 spec:2026-06-21-action-lineage-atomicity-design}`
   Action writes emit lineage best-effort on a separate connection after the DuckDB inline write, so a crash in the gap leaves a snapshot without its event. The event also carries no inputs and `run_action` doesn't surface its `run_id`. Fixed: action writes now route through loom's own snapshot-commit primitive (`DuckLakeActionWriter` → `ingest::materialize::land_ducklake`), committing the row and its `LineageEvent` in one Postgres transaction, and `run_action` returns the `run_id` (surfaced on the `X-Loom-Run-Id` response header).
 
 ## ontology
