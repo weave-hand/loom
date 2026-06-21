@@ -9,8 +9,8 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## query
 
-- [ ] **quote_ident panics on embedded quote** `{#iss-quote-ident-panic area:query status:open from:link-traversal pr:- spec:2026-06-14-query-governed-link-traversal-design}`
-  `sql.rs::quote_ident` `assert!`s an identifier contains no `"`; combined with deferred [[fut-define-link-validation]], a backing column containing a `"` panics the request thread instead of erroring cleanly. Harden to return a `CompileError` (or escape `"`→`""`).
+- [x] **quote_ident panics on embedded quote** `{#iss-quote-ident-panic area:query status:fixed from:link-traversal pr:#110 spec:2026-06-14-query-governed-link-traversal-design}`
+  Fixed (PR #110): `sql.rs::quote_ident` no longer `assert!`s — it escapes `"`→`""` per SQL identifier rules, so a backing column containing a `"` (reachable while [[fut-define-link-validation]] is deferred) renders as a valid quoted identifier instead of panicking the request thread. Return type stays `String`, so no ripple across call sites.
 - [ ] **Literal comma inside `in:` operand** `{#iss-literal-comma-in-in area:query status:open from:comparison-set-operators pr:- spec:2026-06-16-filter-comparison-operators-design}`
   The `in:` operator splits on commas, so an operand containing a comma cannot be expressed; needs an escaping or alternate-delimiter convention.
 - [ ] **Multi-file DuckLake LIMIT mis-read** `{#iss-multi-file-limit-misread area:query status:open from:cross-cutting pr:- spec:-}`
