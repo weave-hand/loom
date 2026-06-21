@@ -1,41 +1,58 @@
-# Work-item checkout — claiming register items (design)
+# Work-item planning & checkout — the work on-ramp (design)
 
-> Design doc. Adds a distributed-mutex "checkout" over the documentation
-> registers so two sessions/agents never work the same item, plus a skill that
-> documents the checkout → branch → PR → auto-release flow. Also retires the
-> now-meaningless `in-progress` ROADMAP status. Next step is an implementation
-> plan (writing-plans).
+> Design doc. Adds two complementary skills over the documentation registers:
+> **plan** (triage → promote → ready) turns the backlog into a checkout-ready
+> item, and **checkout** claims it with a distributed-mutex so two sessions/agents
+> never work the same item. Shared substrate: the registers, the spec-exists
+> direction gate, and `tools/docs.sh`. Also retires the now-meaningless
+> `in-progress` ROADMAP status. Next step is an implementation plan
+> (writing-plans).
 
 ## Problem
 
 The three registers (`docs/ROADMAP.md`, `docs/FUTURE.md`, `docs/ISSUES.md`,
 grammar in [`2026-06-20-docs-registers-consolidation-design.md`](2026-06-20-docs-registers-consolidation-design.md))
-say *what* work exists, but nothing says *who is working on what right now*. With
-multiple sessions — interactive plus scheduled cloud routines — two workers can
-independently pick the same open item and duplicate (or collide on) the work.
+say *what* work exists, but two ends of the work lifecycle have no support:
 
-We want a lightweight way to **claim** an item: a real "only one winner" lock that
-works across machines (separate cloud sessions, not just one host), self-releases
-when the work lands, and doesn't strand an item if the holder crashes. The claim
-must also refuse items whose *direction* a human hasn't set — an agent should not
-grab an item and invent an approach.
+- **Planning** — deciding *what to do next* and getting it ready: which open item
+  to commit to, promoting a parked FUTURE idea into committed ROADMAP work, and
+  ensuring the item has human-set direction (a spec) before anyone builds it.
+  Today this is ad-hoc; backlog items drift, and there is no on-ramp that produces
+  a "ready to build" item.
+- **Checkout** — knowing *who is working on what right now*. With multiple
+  sessions (interactive plus scheduled cloud routines), two workers can
+  independently pick the same open item and duplicate (or collide on) the work.
+
+The two are one pipeline: **plan** makes an item ready; **checkout** claims and
+works it. They share the registers, `tools/docs.sh`, and one readiness criterion —
+the item must reference an existing **spec** (a human has set direction; an agent
+should not grab an item and invent an approach).
+
+The checkout claim must be a real "only one winner" lock that works across
+machines (separate cloud sessions, not just one host), self-releases when the work
+lands, and doesn't strand an item if the holder crashes.
 
 ## Decisions (from brainstorming)
 
-1. **Purpose is collision-avoidance** — a claim/mutex primitive, not a workflow
-   orchestrator. Checkout claims; the existing brainstorm → plan → build skills do
-   the work.
-2. **Medium is an atomic git ref** — claiming pushes `refs/claim/<id>`; `git push`
-   create-if-absent is a server-side mutex, so exactly one worker wins. No GitHub
-   dependency for the lock itself, no separate state store.
-3. **Release is tied to the PR lifecycle** — a claim is held while its PR is open
+1. **Two skills, one pipeline** — `loom-work-plan` (triage → promote → ready) is
+   the upstream on-ramp; `loom-work-checkout` is the downstream claim. Neither
+   orchestrates the build itself — the existing brainstorm → plan → build skills do
+   that.
+2. **Checkout is collision-avoidance** — a claim/mutex primitive, not a workflow
+   orchestrator.
+3. **Claim medium is an atomic git ref** — claiming pushes `refs/claim/<id>`;
+   `git push` create-if-absent is a server-side mutex, so exactly one worker wins.
+   No GitHub dependency for the lock itself, no separate state store.
+4. **Release is tied to the PR lifecycle** — a claim is held while its PR is open
    and auto-released (reaped) once the PR merges/closes; a claim with no PR past a
    grace window (crashed before opening one) is reapable.
-4. **Eligible items span all three registers** but only if a human has set
-   direction: the item must reference an existing **spec**.
-5. **Surface is script primitives + a skill** — `tools/docs.sh` gains
-   `claim`/`release`/`claims`; a `loom-work-checkout` skill documents the flow.
-6. **`in-progress` is retired** — see below.
+5. **Eligible items span all three registers** but only if a human has set
+   direction: the item must reference an existing **spec**. This is both the plan
+   skill's "ready" bar and the checkout gate.
+6. **Surface is script primitives + two skills** — `tools/docs.sh` gains
+   `claim`/`release`/`claims`; `loom-work-plan` and `loom-work-checkout` document
+   the two ends of the flow.
+7. **`in-progress` is retired** — see below.
 
 ## Retiring `in-progress`
 
@@ -55,6 +72,79 @@ appears (`planned` → `done`).
 Migration is clean: no register item currently uses `in-progress` (only
 `road-iceberg-flush-consumer` is `planned`; the rest are `done`), so nothing needs
 rewriting — only the validator and the docs that describe the vocabulary change.
+
+## Planning: `loom-work-plan` (triage → promote → ready)
+
+The upstream half. Its job is to turn the backlog into a **checkout-ready** item —
+open, actionable status, with a spec on disk — then hand off to checkout. It owns
+planning *judgment* and register *promotion*; it does not build (that's the
+existing skills) and does not claim (that's checkout). It introduces no new
+`docs.sh` code: triage uses the existing read commands, promotion reuses the edit
+mechanics of `loom-docs-update`, and spec authoring delegates to
+`superpowers:brainstorming`.
+
+### 1. Triage
+
+Survey open work and recommend what to do next:
+
+- `bash tools/docs.sh query open` (optionally `--area <a>`), `query by-area` for
+  the open-work distribution, and `shipped-open` / `shipped-open --stale` to
+  reconcile claims against reality.
+- Flag the un-actionable and the in-flight: items with `spec:-` (no direction
+  yet), FUTURE ideas with no `road-` promotion, items blocked by `[[links]]` to
+  still-open items, and anything with a **live claim** (`bash tools/docs.sh
+  claims`) so you do not plan over work already checked out.
+- Output a short ranked shortlist with one-line reasons (unblocks others, area
+  balance, quick win).
+
+### 2. Promote / retire
+
+For a chosen FUTURE idea being committed to:
+
+- Set the FUTURE item terminal: `- [x]`, `status:promoted`.
+- Mint a ROADMAP item `road-<slug>`, `- [ ]`, `status:planned`, carrying the same
+  `area:`, the `spec:` slug (if one exists yet, else `-`), and a `[[fut-…]]` link
+  back to the promoted idea.
+
+The reverse direction is the same mechanics: triage surfaces dead work, and plan
+retires it — a stale FUTURE idea → `- [x] status:dropped`; an abandoned ROADMAP
+`planned` item that will not be built → demote back to a FUTURE `deferred` idea
+(or, if truly dead, drop it), recording why in the prose.
+
+Edits are validated with `bash tools/docs.sh validate`.
+
+### 3. Ready (the direction gate)
+
+Checkout requires a spec on disk (`docs/superpowers/specs/<spec>.md`). If the
+chosen item has `spec:-` or the referenced file is missing:
+
+- **Hand off to `superpowers:brainstorming`** to author the spec — this is where a
+  human sets direction. Brainstorming writes and commits the spec file; that file
+  existing is exactly the checkout readiness bar (we stop at the spec; we do not
+  require the brainstorming → writing-plans transition here).
+- Record the produced spec slug on the item's `spec:` tag.
+
+The item is now claimable via `loom-work-checkout`.
+
+### Landing
+
+Planning mutates `main`'s registers and adds a spec, and both must be visible to
+every worker *before* anyone checks the item out. So plan lands a small
+**`plan/<slug>` PR to `main`**, bundling (a) the promotion/retirement register
+edits and (b) the new spec file (from brainstorming), merged on green — the same
+PR-on-green pattern `loom-docs-organise` uses (its BLOCK A), scoped to one item.
+After merge, the checkout-ready item and its direction live on `main`.
+
+### Boundaries
+
+- vs `loom-docs-organise` — that is a bulk mine/dedupe/rebuild of all registers;
+  plan is forward planning of a few items.
+- vs `loom-docs-update` — that *closes* items at completion (end of lifecycle);
+  plan *opens/promotes* items at planning time (start of lifecycle). Shared edit
+  mechanics, opposite ends.
+- vs `loom-work-checkout` — plan makes an item ready; checkout claims and works it.
+- vs `superpowers:brainstorming` — plan delegates spec authoring to it; it does not
+  reimplement design dialogue.
 
 ## The claim primitive
 
@@ -152,6 +242,16 @@ the existing `loom-docs-update` flow — atomic with the work, on `main` only.
   (see Testing) so the listing degrades gracefully and tests can stub it.
 
 These follow the existing `main()` dispatch and `cmd_*` structure in `docs.sh`.
+`claims` (read + `--reap`) is the only addition the plan skill needs beyond the
+already-shipped read commands; plan introduces no other `docs.sh` code.
+
+### `loom-work-plan` skill
+
+A skill (`.claude/skills/loom-work-plan/SKILL.md`) documenting the triage →
+promote/retire → ready → land flow defined in **Planning** above. It composes
+existing pieces (the `docs.sh` read commands, `loom-docs-update` edit mechanics,
+`superpowers:brainstorming`, and the `loom-docs-organise` PR-on-green pattern) — no
+new script code — and ends with a checkout-ready item merged to `main`.
 
 ### `loom-work-checkout` skill
 
@@ -193,8 +293,9 @@ vocabulary):
 
 Coupled to the new capability:
 
-- `CLAUDE.md` "Documentation registers" section — a sentence on checkout
-  (`docs.sh claim/release/claims`) and the `loom-work-checkout` skill.
+- `CLAUDE.md` "Documentation registers" section — a sentence on the work pipeline:
+  `loom-work-plan` (triage → promote → ready), the `docs.sh claim/release/claims`
+  primitives, and the `loom-work-checkout` skill.
 
 ## Testing
 
@@ -217,11 +318,19 @@ The PR-state probe is one shell function reading an env override
 (e.g. `LOOM_CLAIM_PR_PROBE`) so tests inject a stub instead of calling `gh`; in
 normal use the function shells out to `gh pr list --head work/<id> --state open`.
 
+`loom-work-plan` adds no new `docs.sh` code (it composes existing read commands,
+`loom-docs-update` edits, and `brainstorming`), so it carries no unit tests of its
+own — consistent with `loom-docs-organise`, which is likewise an untested
+composition skill. Its only mechanical dependency, `claims`, is covered above.
+
 ## Non-goals
 
-- **No workflow orchestration** — checkout does not brainstorm, plan, or
-  implement; it only claims. (Out of scope: an autonomous "pick the next item and
-  build it" dispatcher.)
+- **No build orchestration** — neither skill brainstorms internals, writes plans,
+  or implements. Plan triages/promotes and *delegates* spec authoring to
+  `brainstorming`; checkout only claims. (Out of scope: an autonomous "pick the
+  next item and build it end-to-end" dispatcher.)
+- **No auto-prioritisation** — plan *recommends* a shortlist with reasons; a human
+  chooses what to promote/commit. It does not rank-and-pick unattended.
 - **No register `status:in-progress` replacement** — the claim ref *is* the live
   state; we are not adding an `owner:`/`since:` field to the tag block.
 - **No heartbeat/TTL renewal** — release is PR-driven; the only time-based rule is
