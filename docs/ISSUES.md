@@ -60,5 +60,5 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## devx
 
-- [ ] **Claim not reaped promptly after its PR merges** `{#iss-claim-reap-on-merge area:devx status:open from:work-checkout pr:- spec:2026-06-21-work-item-planning-checkout-design}`
-  `docs.sh claims --reap` only reaps a claim once the pre-PR grace window (default 60 min) has elapsed, even after the work has merged: `_pr_state` detects only an *open* `work/<id>` PR, so a *merged* or *closed* PR reads identically to "no PR yet" and the claim lingers as `PR pending` until grace expires. The design's PR-lifecycle release ("auto-released once the PR merges/closes") is therefore only honoured lazily. Fix: have the PR probe distinguish merged/closed (`gh pr list --head work/<id> --state merged,closed`) and reap such claims immediately, independent of the grace window (which should gate only the genuinely pre-PR case). Keep the probe stubbable for tests.
+- [x] **Claim not reaped promptly after its PR merges** `{#iss-claim-reap-on-merge area:devx status:fixed from:work-checkout pr:#115 spec:2026-06-21-work-item-planning-checkout-design}`
+  Fixed (PR #115): `_pr_state` now returns a `gone` state when no open `work/<id>` PR exists but one ever did (`--state all` after the open check), and `docs.sh claims --reap` reaps a `gone` (merged/closed) claim immediately, ignoring the grace window — which now gates only the genuine pre-PR `none` case. `unknown` (gh unavailable) is still never reaped. Covered by a `pr-gone.sh`-stubbed test.
