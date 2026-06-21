@@ -9,6 +9,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//src/services/ingest:ingest",
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",
@@ -36,6 +37,7 @@ rust_binary(
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:object_store",
         "//third-party:tokio",
     ],
     env = {"CARGO_PKG_VERSION": "0.1.0"},
@@ -471,7 +473,10 @@ rust_test(
     deps = [
         ":query-api",
         "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:time",
         "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 
@@ -662,20 +667,6 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
-    name = "action-engine",
-    crate = "action_engine",
-    srcs = ["tests/action_engine.rs"],
-    crate_root = "tests/action_engine.rs",
-    duckdb = True,
-    deps = [
-        ":query-api",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
     name = "inline-write-spike",
     crate = "inline_write_spike",
     srcs = ["tests/inline_write_spike.rs"],
@@ -700,6 +691,7 @@ loom_fixture_test(
         ":query-api",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:object_store",
         "//third-party:serde_json",
         "//third-party:tokio",
     ],

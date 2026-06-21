@@ -8,7 +8,7 @@ use std::sync::Arc;
 use control_plane_core::ControlPlane;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use query_api::http::{AppState, router};
-use query_api::serving::{ActionEngine, EmbeddedDuckDb, EmbeddedDuckDbWriter, ServingEngine};
+use query_api::serving::{ActionEngine, DuckLakeActionWriter, EmbeddedDuckDb, ServingEngine};
 use query_api::serving_datafusion::{
     DataFusionServingEngine, ServingBackend, UnsupportedActionEngine, parse_serving_backend,
 };
@@ -27,10 +27,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = match backend {
-        ServingBackend::DuckLake => (
-            Arc::new(EmbeddedDuckDb::attach(&cfg.db.ducklake_libpq(), &cfg.data_path).await?),
-            Arc::new(EmbeddedDuckDbWriter::attach(&cfg.db.ducklake_libpq(), &cfg.data_path).await?),
-        ),
+        ServingBackend::DuckLake => {
+            let store: Arc<dyn object_store::ObjectStore> =
+                Arc::new(service_runtime::local_store(&cfg.data_path)?);
+            (
+                Arc::new(EmbeddedDuckDb::attach(&cfg.db.ducklake_libpq(), &cfg.data_path).await?),
+                Arc::new(DuckLakeActionWriter::new(cp.clone(), store)),
+            )
+        }
         ServingBackend::Iceberg => (
             Arc::new(DataFusionServingEngine::new(IcebergCatalog::new(pool))),
             Arc::new(UnsupportedActionEngine),

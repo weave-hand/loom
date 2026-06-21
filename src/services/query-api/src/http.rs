@@ -584,7 +584,7 @@ async fn post_action(
         action_engine: st.action_engine.as_ref(),
     };
     match crate::action::run_action(&action_name, &obj, &SubjectId(subject), &deps).await {
-        Ok(rows) => {
+        Ok((rows, _run_id)) => {
             let body = crate::render::objects_to_json(&rows);
             // objects_to_json yields {"objects":[{...}]}; return the single created object.
             let one = body

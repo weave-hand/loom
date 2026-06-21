@@ -1,18 +1,23 @@
-//! Actions e2e: define a type + a named insert action, grant Write, invoke the action,
-//! and read the new object back through the governed read path. Also: an ungranted
-//! subject is forbidden. Real Postgres + DuckDB.
+//! Actions e2e: define a type + a named insert action, grant Write, invoke the action
+//! (which commits the row and its lineage event atomically), and read the new object
+//! back through the governed read path. Also: an ungranted subject is forbidden.
+//! Real Postgres + DuckDB.
+
+use std::sync::Arc;
 
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, CompareOp, ControlPlane, Effect, ObjectType, ParamDef,
-    Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef,
-    TypeName,
+    Acl, Action, ActionDef, ActionName, CompareOp, ControlPlane, DatasetRef, Effect, ObjectType,
+    PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use object_store::ObjectStore;
+use object_store::local::LocalFileSystem;
 use query_api::action::{ActionDeps, ActionError, run_action};
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
-use query_api::serving::{EmbeddedDuckDb, EmbeddedDuckDbWriter};
+use query_api::serving::{DuckLakeActionWriter, EmbeddedDuckDb};
 use serde_json::json;
 
 fn parquet_count(dir: &std::path::Path) -> usize {
@@ -46,7 +51,7 @@ struct WidgetWriter {
     widget: TypeName,
     subj: SubjectId,
     role: RoleId,
-    engine: EmbeddedDuckDbWriter,
+    engine: DuckLakeActionWriter,
 }
 
 /// Boot a fixture, seed `main.widget(id BIGINT, name VARCHAR)`, define the
@@ -108,12 +113,12 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
             name: ActionName("createWidget".into()),
             target: widget.clone(),
             parameters: vec![
-                ParamDef {
+                control_plane_core::ParamDef {
                     name: "id".into(),
                     ty: "Long".into(),
                     required: true,
                 },
-                ParamDef {
+                control_plane_core::ParamDef {
                     name: "name".into(),
                     ty: "String".into(),
                     required: false,
@@ -146,9 +151,9 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
     .await
     .unwrap();
 
-    let engine = EmbeddedDuckDbWriter::attach(&pg_conn, &data_path)
-        .await
-        .unwrap();
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(&data_path).unwrap());
+    let engine = DuckLakeActionWriter::new(Arc::new(cp.clone()), store);
     WidgetWriter {
         cp,
         writer_fx,
@@ -162,7 +167,7 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn action_inserts_a_typed_object_that_reads_back() {
+async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
     let fx = PgFixture::start();
     let WidgetWriter {
         cp,
@@ -174,59 +179,45 @@ async fn action_inserts_a_typed_object_that_reads_back() {
         widget: _,
         role: _,
     } = setup_widget_writer(&fx).await;
-    let deps = ActionDeps {
-        cp: &cp,
-        action_engine: &engine,
-    };
+    let deps = ActionDeps { cp: &cp, action_engine: &engine };
     let body = json!({ "id": "42", "name": "gadget" });
-    let created = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
+    let (created, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
         .await
         .expect("action runs");
-    // The created object is returned with typed values.
+
+    // The created object is returned with typed values (Long id as string).
     let created_json = objects_to_json(&created);
     assert_eq!(
         created_json["objects"][0],
         json!({ "id": "42", "name": "gadget" }),
-        "created object echoed as typed JSON (Long id as string)"
     );
 
-    // It inlined — no Parquet data file was written.
-    assert_eq!(
-        parquet_count(&data_path),
-        0,
-        "action write inlined, no Parquet"
-    );
+    // The loom-owned write produced a Parquet data file (the part-1 inline property
+    // is retired in favor of atomicity).
+    assert!(parquet_count(&data_path) > 0, "action write produced a Parquet file");
 
     // It reads back through the governed read path.
     let reader = EmbeddedDuckDb::attach(&pg_conn, &data_path).await.unwrap();
-    let qdeps = QueryDeps {
-        ontology: cp.ontology(),
-        acl: cp.acl(),
-        serving: &reader,
-    };
+    let qdeps = QueryDeps { ontology: cp.ontology(), acl: cp.acl(), serving: &reader };
     let rows = read_object(
-        &ObjectQuery {
-            type_name: "Widget".into(),
-            eq_filters: vec![],
-            ids: vec![],
-        },
+        &ObjectQuery { type_name: "Widget".into(), eq_filters: vec![], ids: vec![] },
         &Subject(subj.clone()),
         &qdeps,
     )
     .await
     .unwrap();
-    let read_json = objects_to_json(&rows);
     assert_eq!(
-        read_json["objects"][0],
+        objects_to_json(&rows)["objects"][0],
         json!({ "id": "42", "name": "gadget" }),
         "round-trips"
     );
 
-    // Lineage: run_action emits a best-effort, type-named LineageEvent for the write
-    // (inputs=[], outputs=[Widget]). It is intentionally NOT asserted here — the event has
-    // no inputs and run_action doesn't surface its run_id, so upstream/downstream/events_for
-    // can't locate it from the test. Emission is exercised by run_action's code path;
-    // strict, queryable action lineage is a follow-on (the dangling-slice note, Task 9).
+    // Lineage is now committed ATOMICALLY with the row and is findable by run_id —
+    // exactly the assertion part-1 could not make (it skipped lineage as the dangling
+    // slice). The event's outputs name the Widget dataset.
+    let events = cp.lineage().events_for(&run_id, PageReq::unbounded()).await.unwrap();
+    assert_eq!(events.items.len(), 1, "one lineage event for the action's run");
+    assert_eq!(events.items[0].outputs, vec![DatasetRef::from(&TypeName("Widget".into()))]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -270,7 +261,7 @@ async fn ungranted_subject_is_forbidden() {
         .define_action(ActionDef {
             name: ActionName("createWidget".into()),
             target: widget.clone(),
-            parameters: vec![ParamDef {
+            parameters: vec![control_plane_core::ParamDef {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
@@ -279,9 +270,10 @@ async fn ungranted_subject_is_forbidden() {
         .await
         .unwrap();
 
-    let engine = EmbeddedDuckDbWriter::attach(&pg_conn, writer_fx.data_path())
-        .await
-        .unwrap();
+    let data_path = writer_fx.data_path().to_path_buf();
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(&data_path).unwrap());
+    let engine = DuckLakeActionWriter::new(Arc::new(cp.clone()), store);
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
@@ -302,6 +294,9 @@ async fn ungranted_subject_is_forbidden() {
         .query_scalar("SELECT count(*) FROM lake.main.widget")
         .await;
     assert_eq!(count, "0", "forbidden action wrote nothing");
+
+    // pg_conn referenced to avoid dead-code warnings
+    let _ = pg_conn;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -37,13 +37,15 @@ struct StubAction;
 
 #[async_trait]
 impl ActionEngine for StubAction {
-    async fn insert_row(
+    async fn write_object(
         &self,
         _table: &TableRef,
         _columns: &[String],
         _values: &[SqlValue],
-    ) -> std::result::Result<(), ServingError> {
-        Ok(())
+        _logical_types: &[String],
+        _event: control_plane_core::LineageEvent,
+    ) -> std::result::Result<control_plane_core::SnapshotId, ServingError> {
+        Ok(control_plane_core::SnapshotId(0))
     }
 }
 

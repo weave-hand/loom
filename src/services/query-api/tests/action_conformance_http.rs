@@ -38,13 +38,15 @@ struct OkEngine;
 
 #[async_trait]
 impl ActionEngine for OkEngine {
-    async fn insert_row(
+    async fn write_object(
         &self,
         _table: &TableRef,
         _columns: &[String],
         _values: &[SqlValue],
-    ) -> Result<(), ServingError> {
-        Ok(())
+        _logical_types: &[String],
+        _event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        Ok(control_plane_core::SnapshotId(1))
     }
 }
 
