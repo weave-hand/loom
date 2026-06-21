@@ -498,6 +498,30 @@ pub struct IcebergWriter {
     warehouse: TempDir,
 }
 
+/// Explicit column values for [`IcebergWriter::seed_arrays`], on plain Rust data (not
+/// Arrow arrays) so callers in other crates do not cross the arrow-array version boundary.
+/// One variant per loom logical type the graph fixtures need; extend as needed.
+pub enum SeedCol<'a> {
+    /// A non-null `long` column.
+    Long(Vec<i64>),
+    /// A nullable `long` column (`None` => SQL NULL — e.g. a dangling FK).
+    NullableLong(Vec<Option<i64>>),
+    /// A non-null `string` column.
+    Str(Vec<&'a str>),
+}
+
+impl SeedCol<'_> {
+    /// Build the arrow-array-57 column for this data (kept inside `control-plane-postgres`
+    /// so the arrow-array version never leaks across a crate boundary).
+    fn to_array(&self) -> ArrayRef {
+        match self {
+            SeedCol::Long(v) => Arc::new(Int64Array::from(v.clone())),
+            SeedCol::NullableLong(v) => Arc::new(Int64Array::from(v.clone())),
+            SeedCol::Str(v) => Arc::new(StringArray::from(v.clone())),
+        }
+    }
+}
+
 impl IcebergWriter {
     pub fn new(pool: PgPool, pg_dsn: String) -> Self {
         Self {
@@ -534,21 +558,19 @@ impl IcebergWriter {
             .expect("build vendored SqlCatalog")
     }
 
-    /// Create the table (real Iceberg, via the catalog) if absent, then append one real Parquet
-    /// file of that many rows per batch via the writer chain (each append projects the mirror).
-    /// `columns`: `(name, loom-logical-type, nullable)`. Returns the per-batch loom snapshot ids.
-    pub async fn seed(
+    /// Create `(ns, name)` in the vendored catalog from `columns` if it does not yet
+    /// exist. `columns`: `(name, loom-logical-type, nullable)`. Shared by
+    /// `seed` / `seed_arrays`.
+    async fn ensure_table(
         &self,
+        catalog: &SqlCatalog,
         ns: &str,
         name: &str,
         columns: &[(String, String, bool)],
-        batches: &[usize],
-    ) -> Vec<i64> {
-        let catalog = self.catalog().await;
+    ) {
         let namespace = NamespaceIdent::new(ns.to_string());
         let _ = catalog.create_namespace(&namespace, HashMap::new()).await;
         let table_ident = TableIdent::new(namespace.clone(), name.to_string());
-
         if !catalog.table_exists(&table_ident).await.unwrap_or(false) {
             let fields: Vec<_> = columns
                 .iter()
@@ -582,6 +604,22 @@ impl IcebergWriter {
                 .await
                 .expect("create_table");
         }
+    }
+
+    /// Create the table (real Iceberg, via the catalog) if absent, then append one real Parquet
+    /// file of that many rows per batch via the writer chain (each append projects the mirror).
+    /// `columns`: `(name, loom-logical-type, nullable)`. Returns the per-batch loom snapshot ids.
+    pub async fn seed(
+        &self,
+        ns: &str,
+        name: &str,
+        columns: &[(String, String, bool)],
+        batches: &[usize],
+    ) -> Vec<i64> {
+        let catalog = self.catalog().await;
+        self.ensure_table(&catalog, ns, name, columns).await;
+        let table_ident =
+            TableIdent::new(NamespaceIdent::new(ns.to_string()), name.to_string());
 
         // The mirror is projected inside the catalog's update_table during each append
         // (real Parquet via the writer chain), so the seeder no longer writes mirror rows
@@ -609,6 +647,37 @@ impl IcebergWriter {
             snapshots.push(self.latest_snapshot_id().await);
         }
         snapshots
+    }
+
+    /// Like `seed`, but appends ONE batch of *explicit* column values (real Parquet ->
+    /// mirror projection), so tests can land arbitrary graph topologies (FK or join-table
+    /// edges with specific values). Creates `(ns, name)` from `columns` if absent. `data`
+    /// carries the column values in `columns` order as plain Rust (`SeedCol`) — NOT Arrow
+    /// arrays, so callers in other crates never cross the arrow-array version boundary; the
+    /// fixture builds the arrays here (arrow-array 57). The batch is built against the table's
+    /// own Arrow schema so nullability/types match exactly. Returns the loom snapshot id.
+    pub async fn seed_arrays(
+        &self,
+        ns: &str,
+        name: &str,
+        columns: &[(String, String, bool)],
+        data: &[SeedCol<'_>],
+    ) -> i64 {
+        let catalog = self.catalog().await;
+        self.ensure_table(&catalog, ns, name, columns).await;
+        let table_ident =
+            TableIdent::new(NamespaceIdent::new(ns.to_string()), name.to_string());
+        let table = catalog.load_table(&table_ident).await.expect("load_table");
+        let current_schema = table.metadata().current_schema().clone();
+        let arrow_schema = Arc::new(
+            iceberg::arrow::schema_to_arrow_schema(&current_schema).expect("arrow schema"),
+        );
+        let arrays: Vec<ArrayRef> = data.iter().map(SeedCol::to_array).collect();
+        let batch = RecordBatch::try_new(arrow_schema, arrays).expect("record batch");
+        crate::iceberg_writer::append_batches(&catalog, &table, vec![batch])
+            .await
+            .expect("append_batches");
+        self.latest_snapshot_id().await
     }
 
     /// Inline-append `rows` of `(id long, name string)` to `(ns, name)` via
