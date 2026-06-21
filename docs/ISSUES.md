@@ -20,7 +20,7 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## lineage
 
-- [ ] **Action lineage atomicity gap** `{#iss-action-lineage-atomicity area:lineage status:open from:actions-part1 pr:- spec:2026-06-15-actions-part1-design}`
+- [ ] **Action lineage atomicity gap** `{#iss-action-lineage-atomicity area:lineage status:open from:actions-part1 pr:- spec:2026-06-21-action-lineage-atomicity-design}`
   Action writes emit lineage best-effort on a separate connection after the DuckDB inline write, so a crash in the gap leaves a snapshot without its event. The event also carries no inputs and `run_action` doesn't surface its `run_id`. Close via a loom-owned DuckLake write (or reconciliation) plus a correlatable action-lineage handle.
 
 ## ontology
