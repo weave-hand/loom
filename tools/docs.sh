@@ -57,7 +57,7 @@ cmd_validate(){
   local file ln cb R id area status from pr spec title want allowed term
   while IFS=$'\t' read -r file ln cb R id area status from pr spec title; do
     case "$R" in
-      roadmap) want="road-"; allowed=" planned in-progress done ";  term=" done " ;;
+      roadmap) want="road-"; allowed=" planned done ";  term=" done " ;;
       future)  want="fut-";  allowed=" deferred promoted dropped "; term=" promoted dropped " ;;
       issues)  want="iss-";  allowed=" open fixed wontfix ";        term=" fixed wontfix " ;;
       *) echo "$file:$ln: unknown register type (filename must contain ROADMAP/FUTURE/ISSUES)" >>"$ERR"; continue ;;

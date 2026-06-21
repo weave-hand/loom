@@ -17,6 +17,8 @@ check "duplicate id fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-dupid-FUTURE.
 check "bad area fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-area-ISSUES.md")"
 check "wrong status for register fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-status-ROADMAP.md")"
 check "unresolvable link fails" 1 "$(rc bash "$DOCS" validate "$FIX/bad-link-FUTURE.md")"
+# in-progress was retired from the roadmap status vocab (2026-06-21).
+check "in-progress status now rejected" 1 "$(rc bash "$DOCS" validate "$FIX/bad-inprogress-ROADMAP.md")"
 
 # Uppercase [X] must be parsed, not silently skipped: a bad area in an [X] item must still fail.
 check "uppercase [X] item is validated not skipped" 1 "$(rc bash "$DOCS" validate "$FIX/bad-uppercase-ISSUES.md")"

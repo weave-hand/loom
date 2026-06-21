@@ -3,8 +3,8 @@
 _As of edc81cb._
 
 Committed and sequenced work — the build plan and its as-built record. `status:
-done` items are shipped (kept as the slice-by-slice history); `planned` /
-`in-progress` are committed-but-unshipped. Deferred ideas live in
+done` items are shipped (kept as the slice-by-slice history); `planned`
+items are committed-but-unshipped. Deferred ideas live in
 [`FUTURE.md`](FUTURE.md); known defects in [`ISSUES.md`](ISSUES.md). Grammar:
 `docs/superpowers/specs/2026-06-20-docs-registers-consolidation-design.md`.
 
