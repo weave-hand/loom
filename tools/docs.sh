@@ -72,14 +72,18 @@ CLAIM_GRACE_MIN="${LOOM_CLAIM_GRACE_MIN:-60}"
 # Epoch seconds for an ISO-8601 UTC timestamp (0 on parse failure).
 _epoch(){ date -u -d "$1" +%s 2>/dev/null || echo 0; }
 
-# Echo open|none|unknown for the work branch PR of id $1. Overridable for tests
-# via LOOM_CLAIM_PR_PROBE (a command receiving the id and echoing the state).
+# Echo open|gone|none|unknown for the work branch PR of id $1 (gone = merged/closed).
+# Overridable for tests via LOOM_CLAIM_PR_PROBE (a command receiving the id and
+# echoing the state).
 _pr_state(){
-  local id="$1" n
+  local id="$1" open_n all_n
   if [ -n "${LOOM_CLAIM_PR_PROBE:-}" ]; then "$LOOM_CLAIM_PR_PROBE" "$id"; return; fi
   if command -v gh >/dev/null 2>&1; then
-    n="$(gh pr list --head "work/$id" --state open --json number -q 'length' 2>/dev/null || echo 0)"
-    [ "${n:-0}" -gt 0 ] && echo open || echo none
+    open_n="$(gh pr list --head "work/$id" --state open --json number -q 'length' 2>/dev/null || echo 0)"
+    if [ "${open_n:-0}" -gt 0 ]; then echo open; return; fi
+    # No open PR: was there ever one (merged/closed)? If so the work is done -> gone.
+    all_n="$(gh pr list --head "work/$id" --state all --json number -q 'length' 2>/dev/null || echo 0)"
+    [ "${all_n:-0}" -gt 0 ] && echo gone || echo none
   else
     echo unknown
   fi
@@ -285,6 +289,8 @@ cmd_claims(){
     pr="$(_pr_state "$id")"
     if [ "$pr" = open ]; then
       state="PR open"
+    elif [ "$pr" = gone ]; then
+      state="merged/closed"                  # PR done -> reapable now, ignore grace
     elif [ "$pr" = unknown ]; then
       state="PR unknown (gh unavailable)"   # never reaped — can't confirm no PR
     elif [ "$age" -gt "$grace_s" ]; then
@@ -293,8 +299,8 @@ cmd_claims(){
       left=$(( (grace_s - age + 59) / 60 ))
       state="PR pending (${left}m left)"
     fi
-    if [ "$reap" = 1 ] && [ "$state" = stale ]; then
-      git push origin ":$ref" >/dev/null 2>&1 && echo "reaped $id (stale)"
+    if [ "$reap" = 1 ] && { [ "$state" = stale ] || [ "$state" = "merged/closed" ]; }; then
+      git push origin ":$ref" >/dev/null 2>&1 && echo "reaped $id ($state)"
     else
       printf '%s\t%s\t%dm\t%s\n' "$id" "${who:-?}" "$(( age / 60 ))" "$state"
     fi

@@ -171,6 +171,23 @@ unkreap="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-unknown.sh" out bash "$DOCS"
 check "unknown-PR claim not reaped" 0 "$unkreap"
 check "unknown-PR ref survives reap" 1 "$(git -C "$WK" ls-remote origin refs/claim/iss-old2 | wc -l | tr -d ' ')"
 
+# Clean slate: drop leftover claims from the earlier reap blocks so this sub-test
+# reaps exactly the ref under test (road-ready) and nothing collateral.
+(cd "$WK" && bash "$DOCS" release road-ready >/dev/null 2>&1)
+(cd "$WK" && bash "$DOCS" release iss-old2 >/dev/null 2>&1)
+
+# A claim whose PR has merged/closed (probe 'gone') is reaped IMMEDIATELY, even
+# though it is a fresh claim well within the grace window.
+(cd "$WK" && bash "$DOCS" claim road-ready >/dev/null 2>&1)
+gonereap="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-gone.sh" out bash "$DOCS" claims --reap | grep -c 'reaped road-ready' || true)"
+check "merged/closed-PR claim reaped immediately" 1 "$gonereap"
+check "reap removed the merged-PR ref" 0 "$(git -C "$WK" ls-remote origin refs/claim/road-ready | wc -l | tr -d ' ')"
+# Listing (no --reap) shows the merged/closed state.
+(cd "$WK" && bash "$DOCS" claim road-ready >/dev/null 2>&1)
+gonelist="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-gone.sh" out bash "$DOCS" claims | grep 'road-ready' | grep -c 'merged/closed' || true)"
+check "claims shows merged/closed state" 1 "$gonelist"
+(cd "$WK" && bash "$DOCS" release road-ready >/dev/null 2>&1)
+
 rm -rf "$CT"
 
 # ---- validate enforces spec-file existence (real registers only, no file args) ----
