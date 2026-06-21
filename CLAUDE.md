@@ -127,8 +127,10 @@ or `#N[,#N...]`; `[[id]]` cross-links items. The `[ ]`/`[x]` checkbox makes
 "everything unfinished" a one-liner: `grep '^- \[ \]' docs/*.md`. Full grammar:
 `docs/superpowers/specs/2026-06-20-docs-registers-consolidation-design.md`.
 
-- **`tools/docs.sh`** — `validate` (grammar/ids/vocab/links; also the `docs-validate`
-  prek hook), `query open|done|by-area|links` (shell reading, e.g.
+- **`tools/docs.sh`** — `validate` (grammar/ids/vocab/links, and — when run with no
+  file args on the real registers — that every `spec:` slug resolves to a file on
+  disk; also the `docs-validate` prek hook), `query open|done|by-area|links` (shell
+  reading, e.g.
   `bash tools/docs.sh query open --area acl`), and `shipped-open` (reconciliation
   candidates). Tested by `bash tools/tests/docs_test.sh`.
 - **`loom-docs-organise`** skill — bulk mine/dedupe/render the registers, landed as

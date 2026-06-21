@@ -65,19 +65,19 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Derived-properties part-1 is single-link and non-nested. Aggregating over a chain, or a derived property referencing another, is deferred.
 - [ ] **Derived-property materialization** `{#fut-derived-materialization area:query status:deferred from:derived-properties pr:- spec:2026-06-15-derived-properties-design}`
   Part-1 computes derived properties at read time as correlated subqueries; materializing them for hot paths is a follow-on.
-- [ ] **Derived props as filter/sort targets** `{#fut-derived-filter-sort area:query status:deferred from:derived-properties pr:- spec:2026-06-16-filter-comparison-operators-design}`
+- [ ] **Derived props as filter/sort targets** `{#fut-derived-filter-sort area:query status:deferred from:derived-properties pr:- spec:2026-06-16-query-comparison-set-operators-design}`
   Caller predicates validate against physical columns only; making derived (aggregate) properties filterable/sortable is deferred.
-- [ ] **Richer filter error body** `{#fut-richer-filter-error area:query status:deferred from:typed-input-filters pr:- spec:2026-06-16-typed-input-filters-design}`
+- [ ] **Richer filter error body** `{#fut-richer-filter-error area:query status:deferred from:typed-input-filters pr:- spec:2026-06-16-query-typed-input-filters-design}`
   An uncoercible value reuses `BadFilter(col)` (body = column name); reporting the expected type plus the offending value widens the error contract, deferred.
-- [ ] **422 for body-bearing endpoints** `{#fut-422-body-endpoints area:query status:deferred from:typed-input-filters pr:- spec:2026-06-16-typed-input-filters-design}`
+- [ ] **422 for body-bearing endpoints** `{#fut-422-body-endpoints area:query status:deferred from:typed-input-filters pr:- spec:2026-06-16-query-typed-input-filters-design}`
   Typed filters are URI params on a body-less GET (correctly 400). Whether `POST /actions`'s `BadParams` should become a 422 is a separate question.
-- [ ] **or-combined caller predicates** `{#fut-or-predicates area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-filter-comparison-operators-design}`
+- [ ] **or-combined caller predicates** `{#fut-or-predicates area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-query-comparison-set-operators-design}`
   All caller predicates are ANDed; a disjunction grammar (OR across predicates) is deferred.
-- [ ] **between:lo,hi sugar** `{#fut-between-sugar area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-filter-comparison-operators-design}`
+- [ ] **between:lo,hi sugar** `{#fut-between-sugar area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-query-comparison-set-operators-design}`
   Ranges are two predicates (`ge`+`le`) via repeated keys; a dedicated `between` operator is sugar only.
-- [ ] **Text-pattern matching operators** `{#fut-text-pattern-ops area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-filter-comparison-operators-design}`
+- [ ] **Text-pattern matching operators** `{#fut-text-pattern-ops area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-query-comparison-set-operators-design}`
   No `like`/`ilike`/`contains` `CompareOp` exists; a separate slice would add text-pattern matching with safe rendering.
-- [ ] **Rename eq_filters field** `{#fut-rename-eq-filters area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-filter-comparison-operators-design}`
+- [ ] **Rename eq_filters field** `{#fut-rename-eq-filters area:query status:deferred from:comparison-set-operators pr:- spec:2026-06-16-query-comparison-set-operators-design}`
   The request field is still `eq_filters` though it carries the full operator grammar; a rename to `filters`/`predicates` is a cosmetic follow-up touching http.rs + e2es.
 - [ ] **Inverse links inside graph path** `{#fut-inverse-in-path area:query status:deferred from:graph-path-cycle pr:- spec:2026-06-18-graph-path-cycle-design}`
   Each path link in `/graph` is followed forward; mixing backward hops into a cyclic path (e.g. `~memberOf,hasMember`) is a follow-on.
@@ -170,7 +170,7 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## quality
 
-- [ ] **Unify the coercion taxonomy** `{#fut-coercion-taxonomy area:quality status:deferred from:typed-input-filters pr:- spec:2026-06-16-typed-input-filters-design}`
+- [ ] **Unify the coercion taxonomy** `{#fut-coercion-taxonomy area:quality status:deferred from:typed-input-filters pr:- spec:2026-06-16-query-typed-input-filters-design}`
   `params::parse_value` and `filter::coerce_filter` duplicate the short `JsonRepr` repr-match; sharing one taxonomy helper would remove the duplication (input shapes `Value` vs `&str` differ enough it wasn't worth it yet).
 - [ ] **Consolidate BindViolation / conformance Violation enums** `{#fut-conformance-enum-consolidation area:quality status:deferred from:typed-transforms pr:#59 spec:2026-06-15-typed-transforms-part1-design}`
   `ingest::BindViolation` and the typed-transform `Violation` are deliberate parallels; consolidating both into control-plane-core is a noted follow-up.
