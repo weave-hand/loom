@@ -817,9 +817,9 @@ pub fn compile_graph_reach(
 
     let sql = format!(
         "WITH RECURSIVE reach(id, depth) AS (\
-           SELECT s.{id}, 0 FROM {tbl} s{seed_where} \
+           SELECT s.{id} AS id, 0 AS depth FROM {tbl} s{seed_where} \
            UNION \
-           SELECT nxt.{id}, r.depth + 1 FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
+           SELECT nxt.{id} AS id, r.depth + 1 AS depth FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
          ) \
          SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {}",
         dialect.limit_clause(limit)
@@ -911,7 +911,7 @@ pub fn compile_graph_reach_union(
     }
     let rec_where = rec_conj.join(" AND ");
     let recursive = format!(
-        "SELECT e.to_id, r.depth + 1 FROM reach r JOIN ({edges_sql}) e ON r.id = e.from_id JOIN {tbl} nxt ON e.to_id = nxt.{id} WHERE {rec_where}"
+        "SELECT e.to_id AS id, r.depth + 1 AS depth FROM reach r JOIN ({edges_sql}) e ON r.id = e.from_id JOIN {tbl} nxt ON e.to_id = nxt.{id} WHERE {rec_where}"
     );
 
     // Projection of `p`: visible columns (masked -> marker), reachable in >= 1 hop, governed.
@@ -935,7 +935,7 @@ pub fn compile_graph_reach_union(
 
     let sql = format!(
         "WITH RECURSIVE reach(id, depth) AS (\
-           SELECT s.{id}, 0 FROM {tbl} s{seed_where} \
+           SELECT s.{id} AS id, 0 AS depth FROM {tbl} s{seed_where} \
            UNION \
            {recursive}\
          ) \
@@ -997,9 +997,9 @@ fn recursive_reach_cte(
 
     Ok(format!(
         "WITH RECURSIVE reach(id, depth) AS (\
-           SELECT s.{id}, 0 FROM {tbl} s{seed_where} \
+           SELECT s.{id} AS id, 0 AS depth FROM {tbl} s{seed_where} \
            UNION \
-           SELECT nxt.{id}, r.depth + 1 FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
+           SELECT nxt.{id} AS id, r.depth + 1 AS depth FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
          )"
     ))
 }

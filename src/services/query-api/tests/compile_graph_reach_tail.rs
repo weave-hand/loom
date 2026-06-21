@@ -61,6 +61,10 @@ fn fk_core_single_tail_shape() {
         "recursive core CTE: {sql}"
     );
     assert!(sql.contains("r.depth < 3"), "depth bound inlined: {sql}");
+    assert!(
+        sql.contains("0 AS depth"),
+        "anchor aliases depth explicitly (portable to DataFusion): {sql}"
+    );
     // Core self-link join inside the CTE.
     assert!(
         sql.contains(r#"cur."knows_id" = nxt."id""#),

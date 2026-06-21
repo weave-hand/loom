@@ -43,6 +43,10 @@ fn fk_self_link_recursive_reach() {
         "got: {sql}"
     );
     assert!(sql.contains("r.depth < 3"), "depth bound inlined: {sql}");
+    assert!(
+        sql.contains("0 AS depth"),
+        "anchor aliases depth explicitly (portable to DataFusion, which ignores the CTE column list): {sql}"
+    );
     assert!(sql.contains("UNION"), "recursive union: {sql}");
     // FK hop cur -> nxt.
     assert!(
