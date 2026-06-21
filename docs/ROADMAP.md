@@ -72,7 +72,7 @@ items are committed-but-unshipped. Deferred ideas live in
   An ordered chain (`?path=l1,l2`) as a `SELECT DISTINCT` chain of governed INNER JOINs, governed at every hop, depth-capped at 4.
 - [x] **Part 6 — target/intermediate filters** `{#road-query-target-filters area:query status:done from:roadmap-step3 pr:- spec:2026-06-16-target-intermediate-filters-design}`
   A traversal caller can filter any type in a chain by typed equality, addressed `<linkname>.<column>`, visibility-checked. See [[fut-graph-filter-addressing]].
-- [x] **Part 7 — comparison/set operators** `{#road-query-comparison-ops area:query status:done from:roadmap-step3 pr:- spec:2026-06-16-filter-comparison-operators-design}`
+- [x] **Part 7 — comparison/set operators** `{#road-query-comparison-ops area:query status:done from:roadmap-step3 pr:- spec:2026-06-16-query-comparison-set-operators-design}`
   Caller filters express the full `CompareOp` surface (ne/lt/le/gt/ge/in/nin/isnull/isnotnull) via a `op:operand` grammar, reusing the ACL `CompareOp` renderer. See [[fut-or-predicates]], [[fut-between-sugar]], [[fut-text-pattern-ops]], [[fut-rename-eq-filters]].
 - [x] **Part 8 — inverse-direction hops** `{#road-query-inverse-hops area:query status:done from:roadmap-step3 pr:- spec:2026-06-16-inverse-direction-hops-design}`
   Every link traversable backwards via `Ontology::links_to` + `LinkBacking::reversed()`, governed at every hop; ambiguous inbound name → 400.
