@@ -837,9 +837,9 @@ pub fn compile_graph_reach(
 ///
 /// ```sql
 /// WITH RECURSIVE reach(id, depth) AS (
-///   SELECT s.id, 0 FROM tbl s WHERE {seed}
+///   SELECT s.id AS id, 0 AS depth FROM tbl s WHERE {seed}
 ///   UNION
-///   SELECT e.to_id, r.depth + 1
+///   SELECT e.to_id AS id, r.depth + 1 AS depth
 ///   FROM reach r
 ///   JOIN (arm0 UNION ALL arm1 ...) e ON r.id = e.from_id
 ///   JOIN tbl nxt ON e.to_id = nxt.id
