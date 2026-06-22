@@ -645,7 +645,14 @@ pub fn compile_chain_with(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
+    let order_cols: Vec<String> = order_key_cols(None, allowed_cols, mask_cols)
+        .iter()
+        .map(|c| format!("{final_alias}.{}", dialect.quote_ident(c)))
+        .collect();
+    sql.push_str(&format!(
+        " {}",
+        order_barrier_limit(dialect, &order_cols, limit)
+    ));
     Ok((sql, params))
 }
 
@@ -673,7 +680,14 @@ pub fn compile_chain_pairs(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
+    let order_cols = vec![
+        format!("t_0.{}", dialect.quote_ident(source_id)),
+        format!("t_{k}.{}", dialect.quote_ident(target_id)),
+    ];
+    sql.push_str(&format!(
+        " {}",
+        order_barrier_limit(dialect, &order_cols, limit)
+    ));
     Ok((sql, params))
 }
 

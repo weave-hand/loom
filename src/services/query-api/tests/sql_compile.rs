@@ -451,7 +451,7 @@ fn chain_two_hop_fk_compiles_to_nested_joins() {
         "SELECT DISTINCT t_2.\"id\", t_2.\"sku\" FROM \"main\".\"line_items\" t_2 \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_0.\"region\" = ?) LIMIT 100"
+         WHERE (t_0.\"region\" = ?) ORDER BY t_2.\"id\", t_2.\"sku\" LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("CA".into())]);
 }
@@ -494,7 +494,8 @@ fn chain_fk_then_jointable_adds_mapping_join_for_that_hop_only() {
         "SELECT DISTINCT t_2.\"name\" FROM \"main\".\"tags\" t_2 \
          JOIN \"main\".\"order_tag\" j2 ON j2.\"tag_id\" = t_2.\"id\" \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = j2.\"order_id\" \
-         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" LIMIT 100"
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
+         ORDER BY t_2.\"name\" LIMIT 100"
     );
     assert!(params.is_empty());
 }
@@ -538,7 +539,7 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_0.\"region\" = ?) AND (t_1.\"status\" = ?) LIMIT 100"
+         WHERE (t_0.\"region\" = ?) AND (t_1.\"status\" = ?) ORDER BY t_2.\"id\" LIMIT 100"
     );
     assert_eq!(
         params,
@@ -576,7 +577,8 @@ fn chain_single_hop_jointable_renders_j1_mapping() {
         sql,
         "SELECT DISTINCT t_1.\"name\" FROM \"main\".\"tags\" t_1 \
          JOIN \"main\".\"customer_tag\" j1 ON j1.\"tag_id\" = t_1.\"id\" \
-         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = j1.\"customer_id\" LIMIT 100"
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = j1.\"customer_id\" \
+         ORDER BY t_1.\"name\" LIMIT 100"
     );
     assert!(params.is_empty());
 }
@@ -615,7 +617,7 @@ fn chain_single_hop_reproduces_traversal_semantics() {
         sql,
         "SELECT DISTINCT t_1.\"id\", '***' AS \"secret\" FROM \"main\".\"orders\" t_1 \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_0.\"region\" = ?) LIMIT 100"
+         WHERE (t_0.\"region\" = ?) ORDER BY t_1.\"id\" LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("CA".into())]);
 }
@@ -655,7 +657,7 @@ fn chain_eq_filter_on_final_target_binds_at_t_k() {
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_2.\"sku\" = ?) LIMIT 100"
+         WHERE (t_2.\"sku\" = ?) ORDER BY t_2.\"id\" LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("A".into())]);
 }
@@ -695,7 +697,7 @@ fn chain_eq_filters_bind_per_position_in_chain_order() {
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_0.\"region\" = ?) AND (t_1.\"id\" = ?) LIMIT 100"
+         WHERE (t_0.\"region\" = ?) AND (t_1.\"id\" = ?) ORDER BY t_2.\"id\" LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("CA".into()), SqlValue::Int(10)]);
 }
@@ -844,7 +846,36 @@ fn caller_predicate_binds_at_chain_alias() {
         sql,
         "SELECT DISTINCT t_1.\"id\" FROM \"main\".\"orders\" t_1 \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_1.\"amount\" > ?) LIMIT 100"
+         WHERE (t_1.\"amount\" > ?) ORDER BY t_1.\"id\" LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Int(50)]);
+}
+
+#[test]
+fn chain_emits_order_barrier_before_limit_on_duckdb() {
+    use query_api::sql::compile_chain;
+    // 1-hop FK chain: customer -> orders (mirrors chain_single_hop_reproduces_traversal_semantics)
+    let types = vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+            predicates: vec![],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![],
+            predicates: vec![],
+        },
+    ];
+    let hops = vec![LinkBacking::ForeignKey {
+        from_column: "id".into(),
+        to_column: "customer_id".into(),
+    }];
+    let (sql, _params) =
+        compile_chain(&types, &hops, &["id".to_string(), "sku".to_string()], &[], 1000).unwrap();
+    // Chain projects the final target alias t_1; order key is its visible cols.
+    assert!(
+        sql.contains(r#"ORDER BY t_1."id", t_1."sku" LIMIT 1000"#),
+        "got: {sql}"
+    );
 }
