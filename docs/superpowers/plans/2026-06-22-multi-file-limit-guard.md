@@ -447,7 +447,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `src/services/query-api/src/sql.rs` (`compile_graph_reach` ≈L818-827; `compile_graph_reach_union` ≈L936-945; `compile_graph_reach_tail` ≈L1085-1089)
-- Test: `src/services/query-api/tests/graph_reach.rs`, `src/services/query-api/tests/graph_reach_union.rs`, `src/services/query-api/tests/graph_reach_tail.rs`
+- Test: `src/services/query-api/tests/compile_graph_reach.rs`, `src/services/query-api/tests/compile_graph_reach_union.rs`, `src/services/query-api/tests/compile_graph_reach_tail.rs` (the **compiler** unit tests — targets `compile-graph-reach[-union|-tail]`, BUCK ≈L611-644 — which assert the emitted SQL string. NOT the `graph_reach*.rs` handler tests, which run over `MemoryControlPlane` with a stub engine and never call the compilers directly.)
 
 **Interfaces:**
 - Consumes: `order_key_cols`, `order_barrier_limit` (Task 2).
@@ -455,7 +455,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing unit tests**
 
-Add to `src/services/query-api/tests/graph_reach.rs` (mirror its existing `compile_graph_reach(&DuckDbDialect, table, identity, path, seed, row_filters, allowed, mask, depth, limit)` call style):
+Add to `src/services/query-api/tests/compile_graph_reach.rs` (mirror its existing `compile_graph_reach(&DuckDbDialect, table, identity, path, seed, row_filters, allowed, mask, depth, limit)` call at ≈L23-39 — it has a `person()` table builder + inline `GraphStep` construction to reuse for `sample_self_link`):
 
 ```rust
 #[test]
@@ -500,14 +500,14 @@ fn graph_reach_orders_by_projected_cols_when_identity_masked() {
 }
 ```
 
-Add one barrier-presence assertion each to `graph_reach_union.rs` (order key `p."id"`) and `graph_reach_tail.rs` (order key qualified at the tail's final alias `t_{k}`, i.e. the projected tail-target columns — use the existing tail fixture's projection). Reuse each file's existing fixture builders; inline construction if no shared helper exists.
+Add one barrier-presence assertion each to `compile_graph_reach_union.rs` (order key `p."id"`) and `compile_graph_reach_tail.rs` (order key qualified at the tail's final alias `t_{k}`, i.e. the projected tail-target columns — use the existing tail fixture's projection). Reuse each file's existing fixture builders; inline construction if no shared helper exists.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `buck2 test //src/services/query-api:graph-reach //src/services/query-api:graph-reach-union //src/services/query-api:graph-reach-tail > /tmp/t.log 2>&1; grep -E "panicked|got:|Tests finished|FAIL" /tmp/t.log`
+Run: `buck2 test //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail > /tmp/t.log 2>&1; grep -E "panicked|got:|Tests finished|FAIL" /tmp/t.log`
 Expected: FAIL — no `ORDER BY` before `LIMIT`.
 
-(Target names follow the file names: confirm the exact target names with `grep -nE "name = \"graph-reach" src/services/query-api/BUCK`.)
+(Confirm the exact target names with `grep -nE "name = \"compile-graph-reach" src/services/query-api/BUCK`.)
 
 - [ ] **Step 3: Wire the barrier into `compile_graph_reach`**
 
@@ -553,19 +553,19 @@ and bind the trailing `{}` to `limit_clause` instead of `dialect.limit_clause(li
 
 - [ ] **Step 6: Run the tests; update broken exact-SQL assertions**
 
-Run: `buck2 test //src/services/query-api:graph-reach //src/services/query-api:graph-reach-union //src/services/query-api:graph-reach-tail > /tmp/t.log 2>&1; grep -E "assertion|left:|right:|Tests finished|FAIL" /tmp/t.log`
+Run: `buck2 test //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail > /tmp/t.log 2>&1; grep -E "assertion|left:|right:|Tests finished|FAIL" /tmp/t.log`
 
-Update every existing exact-SQL assertion in these three files (and any in `sql_compile.rs` that compiled a graph reach) to include the ` ORDER BY ...` before ` LIMIT n`. Re-run until all three PASS.
+Update every existing exact-SQL assertion in these three `compile_graph_reach*.rs` files (and any in `sql_compile.rs` that compiled a graph reach) to include the ` ORDER BY ...` before ` LIMIT n`. Re-run until all three PASS.
 
 - [ ] **Step 7: Run the full query-api unit/compiler sweep to catch any remaining string assertions**
 
-Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:sql-dialect //src/services/query-api:graph-reach //src/services/query-api:graph-reach-union //src/services/query-api:graph-reach-tail //src/services/query-api:compile-chain-pairs > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
+Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:sql-dialect //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail //src/services/query-api:compile-chain-pairs > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
 Expected: all PASS.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/services/query-api/src/sql.rs src/services/query-api/tests/graph_reach.rs src/services/query-api/tests/graph_reach_union.rs src/services/query-api/tests/graph_reach_tail.rs src/services/query-api/tests/sql_compile.rs
+git add src/services/query-api/src/sql.rs src/services/query-api/tests/compile_graph_reach.rs src/services/query-api/tests/compile_graph_reach_union.rs src/services/query-api/tests/compile_graph_reach_tail.rs src/services/query-api/tests/sql_compile.rs
 git commit -m "feat(query-api): ORDER BY barrier before LIMIT in graph-reach compilers
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
@@ -580,7 +580,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Modify: `src/services/query-api/BUCK` (add the `multi-file-limit-guard` target)
 
 **Interfaces:**
-- Consumes: the guard from Tasks 1-4; the `e2e_support` helpers `land`, `get`, `ids_i64`, and the seed/setup helpers (`tref`, `prop`) — see `src/services/query-api/tests/e2e_support.rs`.
+- Consumes: the guard from Tasks 1-4; the `e2e_support` helpers `tref` (e2e_support.rs:40), `prop` (:47), `subject_with_role` (:73), `grant_read` (:82), `get` (:94), `ids_i64` (:127); and `ingest::{MaterializeRequest, materialize}` directly for the multi-file landing (NOT `e2e_support::land`, which hardcodes one `file_prefix` — see Step 1). Build the `EmbeddedDuckDb` engine via `EmbeddedDuckDb::attach(...)` modeled on `object_set_e2e.rs:121-130`.
 - Produces: a durable regression test proving a multi-file table read under the standard `LIMIT` returns the exact source id set.
 
 This is the spec's *foundation* test. Step 1 confirms the guard does real work (reproduces the corruption, or documents the known non-determinism); Steps 4-5 are the durable regression.
@@ -590,16 +590,53 @@ This is the spec's *foundation* test. Step 1 confirms the guard does real work (
 Create `src/services/query-api/tests/multi_file_limit_guard.rs`. Model the seed/read plumbing on an existing `e2e_support`-backed fixture test (e.g. `governed_read.rs` / `object_set_e2e.rs`). The test must:
 
 1. Boot the fixture (`PgFixture` via `e2e_support`), seed ONE object type `widget` over a DuckLake table `main.widget` with an integer identity `id` and at least ~2000 rows with distinct, known `id` values (e.g. `1..=2000`).
-2. **Force a genuinely multi-file table.** Land the rows in two appends to the SAME `TableRef` (`land(...)` twice, with disjoint `id` ranges `1..=1000` and `1001..=2000`), which produces ≥2 Parquet data files. **Assert the multi-file precondition** before reading, via the catalog:
+2. **Force a genuinely multi-file table.** ⚠️ Do NOT use `e2e_support::land` twice — it hardcodes `file_prefix: "run-1"` (`e2e_support.rs:160`), and `materialize`'s post-write listing scans the whole `<schema>/<table>/run-1/` dir (`datafusion-io/src/write.rs`), so a second `land` to the same table re-lists/re-registers the first append's file rather than cleanly yielding a 2-file table. Instead, call `ingest::materialize` directly TWICE with **distinct `file_prefix` values** (`"run-1"`, `"run-2"`) and disjoint `id` ranges (`1..=1000`, `1001..=2000`) — two separate dirs ⇒ two registered Parquet files. Add a local helper in the test that mirrors `e2e_support::land` but takes the prefix:
 
 ```rust
-use control_plane_core::Catalog;
-let snap = cp.head_snapshot(&table).await.unwrap(); // confirm the exact Catalog API name in core
-let files = cp.files(&table, snap).await.unwrap();
-assert!(files.len() > 1, "test setup: expected a multi-file table, got {} file(s)", files.len());
+use ingest::{MaterializeRequest, materialize};
+use control_plane_core::{DatasetRef, EventType, LineageEvent, RunId};
+// (mirror the LineageEvent construction in e2e_support::land:139-168)
+
+async fn land_prefixed(
+    cp: &PgControlPlane,
+    store: &Arc<dyn ObjectStore>,
+    table: &TableRef,
+    schema: Arc<Schema>,
+    batch: RecordBatch,
+    file_prefix: &str,
+) {
+    let lineage = LineageEvent {
+        run_id: RunId(Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![DatasetRef::from(table)],
+        payload: serde_json::json!({}),
+    };
+    materialize(
+        cp,
+        store.clone(),
+        MaterializeRequest { table, schema, batches: &[batch], file_prefix, gate: None, lineage },
+    )
+    .await
+    .unwrap();
+}
 ```
 
-   (Confirm the exact `Catalog` method names — `head_snapshot`/`current_snapshot` and `files` — against `src/control-plane/core`. If two appends do not split into ≥2 files, fall back to landing with a small `target_file_size_bytes` write config as `datafusion-io/tests/single_file_write.rs` does, or land in more appends; the goal is `files.len() > 1`.)
+   Then call `land_prefixed(&cp, &store, &widget, schema.clone(), batch_1, "run-1").await;` and `land_prefixed(..., batch_2, "run-2").await;`. **Assert the multi-file precondition** before reading, via the catalog (exact `Catalog` API verified against `src/control-plane/core/src/catalog.rs:62,70` and the working call at `serving_datafusion.rs:85-88`):
+
+```rust
+use control_plane_core::{Catalog, PageReq};
+let snap = cp.current_snapshot(&widget).await.unwrap();
+let files = cp.files(&widget, snap.id, PageReq::unbounded()).await.unwrap();
+assert!(
+    files.items.len() > 1,
+    "test setup: expected a multi-file table, got {} file(s)",
+    files.items.len()
+);
+```
+
+   (If two prefixed appends still do not split into ≥2 files in this environment, add a third prefixed append or tune a small `target_file_size_bytes` via a custom `WriteConfig` as `datafusion-io/tests/single_file_write.rs:184-198` does; the goal is `files.items.len() > 1`.)
 
 3. Grant the subject read on `widget`, then issue the governed object read through `EmbeddedDuckDb`:
 
