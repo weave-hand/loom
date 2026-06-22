@@ -131,6 +131,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 - [ ] **Overwrite/replace write mode** `{#fut-iceberg-overwrite area:iceberg status:deferred from:iceberg-roadmap pr:- spec:-}`
   The Iceberg write path is append-only; the analogue of DuckLake's `replace_files` (transform overwrite parity) is deferred.
+- [ ] **Multi-writer CAS-conflict retry/backoff** `{#fut-iceberg-cas-conflict-retry area:iceberg status:deferred from:2026-06-22-iceberg-tx-objectstore-scope-design pr:- spec:-}`
+  The optimistic pointer CAS in `do_update_table` surfaces a lost race as a retryable `CatalogCommitConflicts` error, but neither the catalog nor the `concurrent_appends_keep_the_mirror_consistent` test harness append path retries it — so under higher contention some appends fail rather than eventually committing (bumping that test's `N` 4→8 turned it red, which is why the bump was reverted). Hoisting the object-store read out of the tx ([[iss-iceberg-tx-objectstore]]) shortened the conflict window but did not add retry. A bounded retry/backoff on `CatalogCommitConflicts` (and a contention-tolerant multi-writer test) is the follow-up; conflict-retry tuning was explicitly out of scope for the tx-scoping slice.
 - [ ] **Physical GC of end-capped inline rows** `{#fut-iceberg-gc area:iceberg status:deferred from:2026-06-19-inline-flush-trigger-design pr:- spec:-}`
   End-capped inline rows and orphaned flush/replaced Parquet are never physically reclaimed (end-capped, not deleted, to preserve time-travel). A GC pass is outstanding.
 - [x] **Per-column stats + predicate pushdown** `{#fut-iceberg-percolumn-stats area:iceberg status:promoted pr:- spec:2026-06-21-iceberg-per-column-stats-design}`
