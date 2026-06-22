@@ -102,7 +102,7 @@ items are committed-but-unshipped. Deferred ideas live in
   `acl.policy` keyed on `(role, action, target)` so a role holds independent read and write policies; the read path is Read-scoped.
 - [x] **Write enforcement (service)** `{#road-write-enforcement area:acl status:done from:roadmap-step3 pr:#72 spec:2026-06-16-write-enforcement-design}`
   `run_action` rejects an insert that sets a denied column or produces a row failing the policy's `row_filter` (new `write_filter.rs` evaluator). Fail-closed generic 403. See [[road-structured-write-denial]].
-- [ ] **Structured action write-denial reason** `{#road-structured-write-denial area:acl status:planned from:2026-06-16-write-enforcement-design pr:- spec:2026-06-22-structured-write-denial-design}`
+- [x] **Structured action write-denial reason** `{#road-structured-write-denial area:acl status:done from:2026-06-16-write-enforcement-design pr:- spec:2026-06-22-structured-write-denial-design}`
   `run_action` already computes a precise `WriteVerdict` (DenyColumn/DenyRow) but discards it to a bodyless 403 ([[road-write-enforcement]]). Surface a **caller-scoped** structured 403 body — `{error:"write_denied", reason:"column"|"row_filter", column?}` — naming the offending (caller-supplied) column and the column-vs-row-filter distinction, while keeping the row-filter predicate/policy id server-side (deliberate confidentiality). Query-api only; the verdict already exists, this stops discarding it. Promoted from [[fut-structured-write-denial]].
 
 ## transform

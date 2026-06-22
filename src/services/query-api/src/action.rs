@@ -33,10 +33,59 @@ pub enum ActionError {
     /// to the operator (distinct from the opaque catch-all 500) so the ActionDef can be fixed.
     #[error("action misconfigured: {0}")]
     Misconfigured(String),
+    /// A fine-grained Write policy denied the concrete insert (column or row-filter).
+    /// Carries the caller-scoped reason for the structured `403` body; the predicate,
+    /// policy id, and role stay server-side (logged only). Distinct from the unit
+    /// `Forbidden`, which is the coarse Write-gate denial.
+    #[error("write denied")]
+    WriteDenied(WriteDenialReason),
     #[error(transparent)]
     ControlPlane(#[from] ControlPlaneError),
     #[error(transparent)]
     Serving(#[from] crate::serving::ServingError),
+}
+
+/// The caller-scoped reason a fine-grained Write policy denied an insert, rendered
+/// into the structured `403` body. Discloses only what the caller already supplied
+/// (the offending column name) — never the `row_filter` predicate, policy id, or
+/// role, which stay server-side (logged only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteDenialReason {
+    /// An inserted column is denied by a Write policy. Names the column (the caller
+    /// supplied it, so naming it discloses nothing new).
+    Column(String),
+    /// The inserted row fails a Write policy's `row_filter`. The predicate itself
+    /// is never disclosed.
+    RowFilter,
+}
+
+impl WriteDenialReason {
+    /// Map a `WriteVerdict` to its caller-scoped reason. `Allow` has no reason
+    /// (`None`); a denying verdict maps to the matching `WriteDenialReason`.
+    pub fn from_verdict(verdict: WriteVerdict) -> Option<Self> {
+        match verdict {
+            WriteVerdict::Allow => None,
+            WriteVerdict::DenyColumn(col) => Some(WriteDenialReason::Column(col)),
+            WriteVerdict::DenyRow => Some(WriteDenialReason::RowFilter),
+        }
+    }
+
+    /// The caller-scoped `403` JSON body: a stable machine-readable
+    /// `error: "write_denied"` tag plus `reason` (`"column"` | `"row_filter"`) and,
+    /// for column denials, the offending `column`.
+    pub fn to_body(&self) -> serde_json::Value {
+        match self {
+            WriteDenialReason::Column(col) => serde_json::json!({
+                "error": "write_denied",
+                "reason": "column",
+                "column": col,
+            }),
+            WriteDenialReason::RowFilter => serde_json::json!({
+                "error": "write_denied",
+                "reason": "row_filter",
+            }),
+        }
+    }
 }
 
 /// Validate that `action`'s parameters conform to `target`'s properties: every parameter names a
@@ -156,8 +205,10 @@ pub async fn run_action(
 
     // 4b. Fine-grained Write policy: deny-write-column + row-filter-on-insert. The
     //     subject already cleared the coarse Write gate; now enforce the row/column
-    //     policy against the concrete row. Fail-closed (deny on UNKNOWN). The HTTP
-    //     body stays a generic 403; the reason is logged only.
+    //     policy against the concrete row. Fail-closed (deny on UNKNOWN). A denial
+    //     maps to a structured `WriteDenied` reason rendered into the 403 body
+    //     (caller-scoped: column name only, never the predicate), and is still
+    //     logged server-side.
     //
     //     `parse_params` materializes every optional parameter the caller OMITTED as an
     //     explicit `SqlValue::Null` pair, so `columns` carries those too. The gate must
@@ -174,19 +225,21 @@ pub async fn run_action(
         .acl()
         .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
         .await?;
-    match write_filter::check_write_policy(&write_policies.items, &set_columns, &set_values) {
-        WriteVerdict::Allow => {}
-        WriteVerdict::DenyColumn(col) => {
-            tracing::info!(action = action_name, column = %col, "write denied: policy denies column");
-            return Err(ActionError::Forbidden);
+    let verdict =
+        write_filter::check_write_policy(&write_policies.items, &set_columns, &set_values);
+    if let Some(reason) = WriteDenialReason::from_verdict(verdict) {
+        match &reason {
+            WriteDenialReason::Column(col) => {
+                tracing::info!(action = action_name, column = %col, "write denied: policy denies column");
+            }
+            WriteDenialReason::RowFilter => {
+                tracing::info!(
+                    action = action_name,
+                    "write denied: row fails write policy filter"
+                );
+            }
         }
-        WriteVerdict::DenyRow => {
-            tracing::info!(
-                action = action_name,
-                "write denied: row fails write policy filter"
-            );
-            return Err(ActionError::Forbidden);
-        }
+        return Err(ActionError::WriteDenied(reason));
     }
 
     // 5. Expand to the target type's FULL property set (declared order): the parsed
