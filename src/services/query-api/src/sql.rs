@@ -425,7 +425,8 @@ fn order_key_cols(
 /// compiles to DuckDB's TopN operator, so the `LIMIT` is NOT pushed into the
 /// multi-file Parquet scan (the corruption site, `iss-multi-file-limit-misread`).
 /// On any other dialect, or when there is no usable order key, a bare `LIMIT n`.
-/// `order_cols` are already alias-qualified and quoted by the caller.
+/// `order_cols` are already quoted (and alias-qualified where the projection uses
+/// an alias) by the caller.
 fn order_barrier_limit(dialect: &dyn SqlDialect, order_cols: &[String], limit: u32) -> String {
     if dialect.limit_needs_order_barrier() && !order_cols.is_empty() {
         format!(
