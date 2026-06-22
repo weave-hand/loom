@@ -204,3 +204,71 @@ async fn inline_threshold_enqueues_and_worker_flushes() {
         "queue must be empty after job completed"
     );
 }
+
+/// At-least-once redelivery: two workers dispatch the SAME flush_table job
+/// concurrently. The per-table advisory lock makes the duplicate a safe no-op —
+/// the rows are written exactly once. Holds under any interleaving, so non-flaky.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_dispatch_flush_is_idempotent_over_the_wire() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+    let run = RunId(uuid::Uuid::new_v4());
+
+    // Land three inline rows directly (threshold None — we drive the duplicate
+    // dispatch ourselves rather than through the queue; two flush RPCs of the same
+    // table *is* the same job delivered twice).
+    inline_append(
+        &pool,
+        &table,
+        &columns(),
+        &inline_batch(&[1, 2, 3]),
+        inline_lineage(run, &table),
+        None,
+    )
+    .await
+    .expect("inline_append");
+
+    // Two concurrent flush_table RPCs for the same table (one cloned client,
+    // tonic multiplexes; the engine runs each as its own handler task).
+    let c1 = GrpcQueueClient::connect(&sock).await.expect("connect");
+    let c2 = c1.clone();
+    let (a, b) = tokio::join!(
+        c1.flush_table("wh".into(), "t".into()),
+        c2.flush_table("wh".into(), "t".into()),
+    );
+    let a = a.expect("rpc a ok");
+    let b = b.expect("rpc b ok");
+
+    // (1) Exactly one dispatch did the work; the other was a no-op.
+    assert!(
+        a.is_some() ^ b.is_some(),
+        "exactly one flush wrote a snapshot (got {a:?}, {b:?})"
+    );
+    assert!(
+        a.is_none() || b.is_none(),
+        "the duplicate dispatch is a no-op"
+    );
+
+    // (2) Durable state == a single flush: one fileset holding exactly the 3 rows
+    //     (not 6), and the inline rows retired.
+    let ice = IcebergCatalog::new(pool.clone());
+    let cur = ice.current_snapshot(&table).await.expect("current");
+    let files = ice
+        .files(&table, cur.id, PageReq::unbounded())
+        .await
+        .expect("files");
+    let rows: i64 = files.items.iter().map(|f| f.record_count).sum();
+    assert_eq!(
+        rows, 3,
+        "rows written exactly once across both dispatches (no double-write)"
+    );
+    let inline = ice.inline_parquet(&table, cur.id).await.expect("inline");
+    assert!(inline.is_none(), "inline rows retired exactly once");
+}
