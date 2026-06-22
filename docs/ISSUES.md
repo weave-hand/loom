@@ -35,7 +35,7 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## transform
 
-- [ ] **Transform read-path edge cases** `{#iss-transform-read-edge-cases area:transform status:open from:transform-workers pr:#57 spec:2026-06-14-transform-workers-part1-design}`
+- [ ] **Transform read-path edge cases** `{#iss-transform-read-edge-cases area:transform status:open from:transform-workers pr:#57 spec:2026-06-22-transform-read-edge-cases-design}`
   Two `run_transform` edge cases: a missing input surfacing at `Catalog::files` is classified transient (Retry) instead of `UnknownInput` (Abandon); and `scan_table` over an empty file list errors inside DataFusion (Retry) rather than yielding an empty input. Tidy when the typed-transform slice builds on the primitive.
 
 ## iceberg
