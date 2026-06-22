@@ -21,7 +21,7 @@ use control_plane_core::{ControlPlane, SubjectId};
 /// Log a backend/serving fault server-side, then return the opaque 500 the client
 /// sees. The detail (`error = %e`) is for operators only — the response body
 /// carries no internal detail (SQL fragments, table/column names).
-pub fn internal_error(context: &str, e: impl Display) -> axum::response::Response {
+fn internal_error(context: &str, e: impl Display) -> axum::response::Response {
     tracing::error!(error = %e, "{context}");
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
 }
@@ -251,7 +251,7 @@ fn respond_associations(res: Result<Associations, QueryError>) -> axum::response
 }
 
 /// Shared HTTP mapping for chain/association read errors.
-pub fn chain_error(e: QueryError) -> axum::response::Response {
+fn chain_error(e: QueryError) -> axum::response::Response {
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
@@ -449,7 +449,7 @@ async fn get_graph_path(
 }
 
 /// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
-pub fn graph_error(e: QueryError) -> axum::response::Response {
+fn graph_error(e: QueryError) -> axum::response::Response {
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),

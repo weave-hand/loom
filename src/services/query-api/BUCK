@@ -717,9 +717,13 @@ rust_test(
     edition = "2024",
     deps = [
         ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
         "//third-party:axum",
         "//third-party:http-body-util",
         "//third-party:tokio",
+        "//third-party:tower",
         "//third-party:tracing",
         "//third-party:tracing-test",
     ],
