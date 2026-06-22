@@ -102,10 +102,10 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## acl
 
-- [ ] **ACL deny-override + column masking + role hierarchy** `{#fut-acl-deny-masking-roles area:acl status:deferred from:2026-06-10-acl-deny-override-design pr:- spec:-}`
-  Full ACL semantics — deny-override, column masking on reads, role hierarchy — beyond the delivered baseline. (`mask_columns` is currently ignored on writes.)
-- [ ] **Structured action write-denial reason** `{#fut-structured-write-denial area:acl status:deferred from:2026-06-16-write-enforcement-design pr:#72 spec:-}`
-  `run_action` surfaces a logs-only generic 403 on a denied write; surfacing a structured reason (which column / which row-filter failed) is an open follow-up.
+- [x] **ACL deny-override + column masking + role hierarchy** `{#fut-acl-deny-masking-roles area:acl status:dropped from:2026-06-10-acl-deny-override-design pr:- spec:-}`
+  Dropped (2026-06-22): already implemented — this deferred idea predates the work that shipped it. Deny-override (`Effect` enum + deny-wins `check`, spec `2026-06-10-acl-deny-override-design`), column masking on reads (`Policy.mask_columns` → `'***'` SQL emission, spec `2026-06-11-acl-column-masking-design`), and role hierarchy (`add/remove_role_inheritance` + recursive-CTE closure + atomic cycle check, see [[iss-acl-role-cycle-atomic]]) are all live and contract-tested. `mask_columns` being ignored on **writes** is by design (a read-render concept, `write_filter.rs`), not a gap.
+- [x] **Structured action write-denial reason** `{#fut-structured-write-denial area:acl status:promoted from:2026-06-16-write-enforcement-design pr:#72 spec:-}`
+  Promoted to committed work — see [[road-structured-write-denial]]. `run_action` already computes a precise `WriteVerdict` (DenyColumn/DenyRow) but discards it to a bodyless 403; surface a caller-scoped structured reason (column name + column-vs-row-filter distinction, predicate kept server-side).
 - [ ] **loom user model and authentication** `{#fut-loom-auth area:acl status:deferred from:to-be-planned pr:- spec:-}`
   A loom user/identity model and authentication (the `Unauthorized` reservation is the seam).
 
