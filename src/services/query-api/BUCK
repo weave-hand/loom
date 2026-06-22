@@ -512,6 +512,25 @@ rust_test(
 )
 
 rust_test(
+    name = "iceberg-mirror-provider",
+    crate = "iceberg_mirror_provider",
+    srcs = ["tests/iceberg_mirror_provider.rs"],
+    crate_root = "tests/iceberg_mirror_provider.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:object_store",
+        "//third-party:parquet",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "filter-coerce",
     crate = "filter_coerce",
     srcs = ["tests/filter_coerce.rs"],

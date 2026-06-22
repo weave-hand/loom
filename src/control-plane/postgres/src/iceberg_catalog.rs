@@ -5,8 +5,22 @@ use control_plane_core::{
 };
 use sqlx::PgPool;
 
+use control_plane_core::snapshot::ColumnStat;
+
 use crate::backend;
 use crate::iceberg_type::logical_from_iceberg;
+
+/// A live data file plus its per-column stats, for the pruning-aware serving
+/// provider. Concrete to Iceberg — the shared `Catalog`/`FileRef` must not grow a
+/// stats field (DuckLake uses them too). `column_stats` is empty for files written
+/// before per-column stats landed (always kept by the pruner).
+#[derive(Clone, Debug)]
+pub struct FileWithStats {
+    pub path: String,
+    pub record_count: i64,
+    pub file_size_bytes: i64,
+    pub column_stats: Vec<ColumnStat>,
+}
 
 /// Read adapter serving `core::Catalog` from the loom-owned `iceberg_mirror.*` projection.
 ///

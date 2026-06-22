@@ -11,7 +11,7 @@ mod logical_type;
 mod ontology;
 mod page;
 mod queue;
-mod snapshot;
+pub mod snapshot;
 mod transaction;
 
 pub use acl::{
