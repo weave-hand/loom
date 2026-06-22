@@ -149,8 +149,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Slice 2 projects columns once; the mirror's `schema_version` is reserved but unused. Schema evolution is implicit longer-term work.
 - [ ] **Schema cache for Iceberg serving engine** `{#fut-iceberg-schema-cache area:iceberg status:deferred from:2026-06-17-iceberg-datafusion-serving-engine-design pr:#82 spec:-}`
   `DataFusionServingEngine` registers all live tables per query (PG read + footer inference); a cache keyed by `(table, snapshot)` is a noted perf follow-up (YAGNI for now).
-- [ ] **DataFusion Postgres TableProvider** `{#fut-df-postgres-tableprovider area:iceberg status:deferred from:2026-06-18-iceberg-inline-writes-design pr:#86 spec:-}`
-  The inline-read union rebuilds rows into ephemeral in-memory Parquet rather than a native PG `TableProvider` (the published crate targets DataFusion 53; loom is on 54). Revisit for transforms/compaction.
+- [x] **DataFusion Postgres TableProvider** `{#fut-df-postgres-tableprovider area:iceberg status:promoted from:2026-06-18-iceberg-inline-writes-design pr:#86 spec:-}`
+  Promoted to [[road-df-postgres-tableprovider]] — committed to as the fix for [[iss-iceberg-inline-reparse]] (serve inline rows directly from Postgres instead of rebuilding ephemeral Parquet per query). The original deferral was a DataFusion-version mismatch (the published `datafusion-table-providers` crate targets DF 52; loom is on 54), surmountable by vendoring + adapting the provider rather than importing it.
 - [ ] **Real object store (S3/MinIO) for Iceberg** `{#fut-iceberg-real-object-store area:iceberg status:deferred from:iceberg-roadmap pr:- spec:-}`
   Tests use `file://`/LocalFsStorage; the vendored catalog supports S3 FileIO but loom hasn't exercised it.
 - [ ] **Replace-DuckLake-with-Iceberg decision** `{#fut-replace-ducklake-decision area:iceberg status:deferred from:2026-06-16-iceberg-adapter-read-path-design pr:#76 spec:-}`
