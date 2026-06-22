@@ -398,6 +398,46 @@ fn select_where_conjuncts(
     conjuncts
 }
 
+/// The order-key column NAMES for the stable `ORDER BY` barrier: the `identity`
+/// alone when it is a visible (projected, unmasked) column; otherwise every visible
+/// projected column. A masked column is never an order key (its projected value is
+/// the `MASK_MARKER`, not the real value). Returns raw (unquoted, unqualified) names;
+/// the caller qualifies + quotes them with its projection alias. An empty result
+/// (everything masked) makes the caller emit a bare `LIMIT`.
+fn order_key_cols(
+    identity: Option<&str>,
+    allowed_cols: &[String],
+    mask_cols: &[String],
+) -> Vec<String> {
+    let visible: Vec<String> = allowed_cols
+        .iter()
+        .filter(|c| !mask_cols.iter().any(|m| m == *c))
+        .cloned()
+        .collect();
+    match identity {
+        Some(id) if visible.iter().any(|c| c == id) => vec![id.to_string()],
+        _ => visible,
+    }
+}
+
+/// The trailing clause after the WHERE. On a dialect that needs the multi-file
+/// `LIMIT` order barrier (DuckDB), emit `ORDER BY <order_cols> LIMIT n` — which
+/// compiles to DuckDB's TopN operator, so the `LIMIT` is NOT pushed into the
+/// multi-file Parquet scan (the corruption site, `iss-multi-file-limit-misread`).
+/// On any other dialect, or when there is no usable order key, a bare `LIMIT n`.
+/// `order_cols` are already alias-qualified and quoted by the caller.
+fn order_barrier_limit(dialect: &dyn SqlDialect, order_cols: &[String], limit: u32) -> String {
+    if dialect.limit_needs_order_barrier() && !order_cols.is_empty() {
+        format!(
+            "ORDER BY {} {}",
+            order_cols.join(", "),
+            dialect.limit_clause(limit)
+        )
+    } else {
+        dialect.limit_clause(limit)
+    }
+}
+
 /// `allowed_cols` must be non-empty (caller enforces). `row_filters` and `predicates`
 /// are ANDed together as conjuncts. `derived` aggregate subqueries (if any) are appended
 /// to the SELECT list; their params precede the WHERE params. The outer table is aliased
@@ -440,7 +480,14 @@ pub fn compile_select_with(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
+    let order_cols: Vec<String> = order_key_cols(None, allowed_cols, mask_cols)
+        .iter()
+        .map(|c| dialect.quote_ident(c))
+        .collect();
+    sql.push_str(&format!(
+        " {}",
+        order_barrier_limit(dialect, &order_cols, limit)
+    ));
     Ok((sql, params))
 }
 

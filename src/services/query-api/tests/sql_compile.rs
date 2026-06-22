@@ -32,7 +32,7 @@ fn projects_allowed_columns_and_quotes_identifiers() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id", "status" FROM "main"."orders" LIMIT 100"#
+        r#"SELECT "id", "status" FROM "main"."orders" ORDER BY "id", "status" LIMIT 100"#
     );
     assert!(params.is_empty());
 }
@@ -56,7 +56,7 @@ fn compiles_acl_compare_leaf_as_bound_param() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 100"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) ORDER BY "id" LIMIT 100"#
     );
     assert_eq!(params, vec![SqlValue::Text("open".into())]);
 }
@@ -94,7 +94,7 @@ fn compiles_and_or_not_tree() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "a" FROM "main"."orders" WHERE (("a" = ?) AND (("b" > ?) OR (NOT ("c" IS NULL)))) LIMIT 10"#
+        r#"SELECT "a" FROM "main"."orders" WHERE (("a" = ?) AND (("b" > ?) OR (NOT ("c" IS NULL)))) ORDER BY "a" LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Int(1), SqlValue::Int(2)]);
 }
@@ -121,7 +121,7 @@ fn expands_in_list_into_placeholders() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("region" IN (?, ?)) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("region" IN (?, ?)) ORDER BY "id" LIMIT 10"#
     );
     assert_eq!(
         params,
@@ -149,7 +149,7 @@ fn ands_acl_filter_with_request_equality_filter() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("tenant" = ?) AND ("status" = ?) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("tenant" = ?) AND ("status" = ?) ORDER BY "id" LIMIT 10"#
     );
     assert_eq!(
         params,
@@ -179,7 +179,7 @@ fn expands_not_in_list_into_placeholders() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("region" NOT IN (?, ?)) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("region" NOT IN (?, ?)) ORDER BY "id" LIMIT 10"#
     );
     assert_eq!(
         params,
@@ -207,7 +207,7 @@ fn compiles_is_not_null_without_a_param() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) ORDER BY "id" LIMIT 10"#
     );
     assert!(params.is_empty());
 }
@@ -220,7 +220,7 @@ fn eq_filters_only_form_the_where_clause() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) ORDER BY "id" LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Text("open".into())]);
 }
@@ -239,7 +239,7 @@ fn masks_a_column_with_marker() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id", '***' AS "secret" FROM "main"."orders" LIMIT 100"#
+        r#"SELECT "id", '***' AS "secret" FROM "main"."orders" ORDER BY "id" LIMIT 100"#
     );
     assert!(
         params.is_empty(),
@@ -261,7 +261,7 @@ fn masking_preserves_projection_order_and_other_columns() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "a", '***' AS "b", "c" FROM "main"."orders" LIMIT 10"#
+        r#"SELECT "a", '***' AS "b", "c" FROM "main"."orders" ORDER BY "a", "c" LIMIT 10"#
     );
 }
 
@@ -320,7 +320,7 @@ fn derived_fk_count_compiles_to_a_correlated_subquery() {
         sql,
         "SELECT \"id\", (SELECT COUNT(*) FROM \"main\".\"orders\" sub \
          WHERE sub.\"customer_id\" = o.\"id\") AS \"orderCount\" \
-         FROM \"main\".\"customer\" o LIMIT 100"
+         FROM \"main\".\"customer\" o ORDER BY \"id\" LIMIT 100"
     );
     assert!(params.is_empty());
 }
@@ -368,7 +368,7 @@ fn derived_jointable_sum_with_target_filter_orders_params_first() {
         "SELECT \"id\", (SELECT COALESCE(SUM(sub.\"amount\"), 0) FROM \"main\".\"orders\" sub \
          JOIN \"main\".\"customer_order\" j ON j.\"order_id\" = sub.\"id\" \
          WHERE j.\"customer_id\" = o.\"id\" AND (sub.\"status\" = ?)) AS \"totalSpend\" \
-         FROM \"main\".\"customer\" o WHERE (\"region\" = ?) LIMIT 100"
+         FROM \"main\".\"customer\" o WHERE (\"region\" = ?) ORDER BY \"id\" LIMIT 100"
     );
     assert_eq!(
         params,
@@ -397,7 +397,7 @@ fn masked_derived_emits_marker_no_subquery_no_alias() {
     .unwrap();
     assert_eq!(
         sql,
-        "SELECT \"id\", '***' AS \"orderCount\" FROM \"main\".\"customer\" LIMIT 100"
+        "SELECT \"id\", '***' AS \"orderCount\" FROM \"main\".\"customer\" ORDER BY \"id\" LIMIT 100"
     );
     assert!(params.is_empty());
 }
@@ -710,7 +710,7 @@ fn caller_predicate_gt_renders_with_param() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" > ?) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" > ?) ORDER BY "id" LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Int(100)]);
 }
@@ -725,7 +725,7 @@ fn caller_predicate_in_expands_placeholders() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("status" IN (?, ?)) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("status" IN (?, ?)) ORDER BY "id" LIMIT 10"#
     );
     assert_eq!(
         params,
@@ -743,7 +743,7 @@ fn caller_predicate_isnotnull_no_param() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) ORDER BY "id" LIMIT 10"#
     );
     assert!(params.is_empty());
 }
@@ -765,9 +765,56 @@ fn caller_predicate_range_two_same_column_ands() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" >= ?) AND ("amount" <= ?) LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" >= ?) AND ("amount" <= ?) ORDER BY "id" LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Int(100), SqlValue::Int(200)]);
+}
+
+#[test]
+fn select_emits_order_barrier_before_limit_on_duckdb() {
+    use control_plane_core::TableRef;
+    use query_api::sql::compile_select;
+    let table = TableRef {
+        schema: "main".into(),
+        name: "t".into(),
+    };
+    let (sql, _params) = compile_select(
+        &table,
+        &["id".to_string(), "name".to_string()],
+        &[], // mask_cols
+        &[], // row_filters
+        &[], // predicates
+        &[], // derived
+        1000,
+    )
+    .unwrap();
+    // The barrier orders by the projected visible columns, before the LIMIT.
+    assert!(
+        sql.contains(r#"ORDER BY "id", "name" LIMIT 1000"#),
+        "expected ORDER BY barrier before LIMIT, got: {sql}"
+    );
+}
+
+#[test]
+fn select_order_key_excludes_masked_columns() {
+    use control_plane_core::TableRef;
+    use query_api::sql::compile_select;
+    let table = TableRef {
+        schema: "main".into(),
+        name: "t".into(),
+    };
+    let (sql, _params) = compile_select(
+        &table,
+        &["id".to_string(), "secret".to_string()],
+        &["secret".to_string()], // mask "secret"
+        &[],
+        &[],
+        &[],
+        1000,
+    )
+    .unwrap();
+    // Masked column is not an order key; only the visible "id" is.
+    assert!(sql.contains(r#"ORDER BY "id" LIMIT 1000"#), "got: {sql}");
 }
 
 #[test]
