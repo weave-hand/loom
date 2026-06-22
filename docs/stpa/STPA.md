@@ -161,4 +161,3 @@ flowchart TD
 - Subject identity comes from an unverified X-Loom-Subject header (authn is a later spec) — until wired, any HTTP client can impersonate any subject and bypass ACL.
 - The DataFusion serving engine registers ALL live Iceberg tables per query (serving_datafusion.rs:53); a deployment with many tables pays a per-query metadata scan that could become a latency or DoS concern.
 - The engine gRPC service trusts the UDS filesystem boundary for all queue and flush operations — is process-level isolation (container, namespace) sufficient, or should application-level authentication be added before multi-tenant deployment?
-
