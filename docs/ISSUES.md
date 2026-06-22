@@ -30,8 +30,8 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## acl
 
-- [ ] **Role-inheritance cycle check not atomic** `{#iss-acl-role-cycle-atomic area:acl status:open from:acl-role-hierarchy pr:- spec:2026-06-11-acl-role-hierarchy-design}`
-  `add_role_inheritance` does the cycle check and the edge insert as two round-trips, so two concurrent calls inserting opposite edges of a cycle could both pass. Safe single-writer; wrap in a SERIALIZABLE tx (or lock) if concurrent edge writes land.
+- [x] **Role-inheritance cycle check not atomic** `{#iss-acl-role-cycle-atomic area:acl status:fixed from:acl-role-hierarchy pr:#125 spec:2026-06-11-acl-role-hierarchy-design}`
+  Fixed (PR #125): `add_role_inheritance` now runs its existence check, recursive-CTE cycle check, and edge insert in one transaction guarded by a transaction-scoped advisory lock (`pg_advisory_xact_lock`, the same pattern as `snapshot.rs`'s catalog lock, on a distinct key). Concurrent opposite-edge inserts serialize on that lock, so the loser observes the winner's committed edge through the same cycle CTE and is rejected with `Conflict` rather than both committing and forming a cycle. The lock auto-releases on commit/rollback (incl. drop-on-panic). A fixture-backed concurrency test (`acl-inheritance-concurrency`) asserts two racing `A->B`/`B->A` calls yield exactly one commit and one conflict.
 
 ## transform
 

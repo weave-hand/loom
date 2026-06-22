@@ -214,6 +214,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "acl-inheritance-concurrency",
+    crate = "acl_inheritance_concurrency",
+    srcs = ["tests/acl_inheritance_concurrency.rs"],
+    crate_root = "tests/acl_inheritance_concurrency.rs",
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "lineage",
     crate = "lineage",
     srcs = ["tests/lineage.rs"],
