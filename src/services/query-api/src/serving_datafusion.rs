@@ -13,8 +13,8 @@ use arrow::array::{
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use async_trait::async_trait;
+use control_plane_core::TableRef;
 use control_plane_core::snapshot::StatValue;
-use control_plane_core::{PageReq, TableRef};
 use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
@@ -92,20 +92,17 @@ pub async fn register_iceberg_table(
     );
 
     let snap = catalog.current_snapshot(table).await.map_err(to_serving)?;
-    let files = catalog
-        .files(table, snap.id, PageReq::unbounded())
+    // File-backed data: the pruning-aware provider over the mirror's per-column
+    // stats. A drop-in for the old `ListingTable` (same Parquet inference), but its
+    // `scan` skips files a query's predicates provably cannot match.
+    let files_with_stats = catalog
+        .files_with_stats(table, snap.id)
         .await
         .map_err(to_serving)?;
-    let file_urls: Vec<ListingTableUrl> = files
-        .items
-        .iter()
-        .map(|f| ListingTableUrl::parse(&f.path))
-        .collect::<Result<_, _>>()
-        .map_err(to_serving)?;
-    let file_provider = if file_urls.is_empty() {
+    let file_provider = if files_with_stats.is_empty() {
         None
     } else {
-        Some(listing_table(ctx, file_urls).await?)
+        Some(IcebergMirrorTableProvider::try_new(ctx, files_with_stats).await?)
     };
 
     // Inline rows (mirror-only typed rows) are encoded to in-memory Parquet under a
@@ -145,8 +142,9 @@ pub async fn register_iceberg_table(
     let provider: Arc<dyn datafusion::catalog::TableProvider> =
         match (file_provider, inline_provider) {
             (Some(f), Some(i)) => {
+                let file_view: Arc<dyn TableProvider> = Arc::new(f);
                 let df = ctx
-                    .read_table(Arc::new(f))
+                    .read_table(file_view)
                     .map_err(to_serving)?
                     .union(ctx.read_table(Arc::new(i)).map_err(to_serving)?)
                     .map_err(to_serving)?;
