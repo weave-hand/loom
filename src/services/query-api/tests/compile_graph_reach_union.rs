@@ -144,3 +144,26 @@ fn single_self_link_with_seed_predicate() {
     assert_eq!(params.len(), 1, "seed id only; got {params:?}");
     assert_eq!(params[0], SqlValue::Int(7));
 }
+
+#[test]
+fn graph_reach_union_order_barrier_present() {
+    // Single FK self-link; identity = "id" visible -> ORDER BY p."id" before LIMIT.
+    let fk = LinkBacking::ForeignKey {
+        from_column: "parent_id".into(),
+        to_column: "id".into(),
+    };
+    let (sql, _params) = compile_graph_reach_union(
+        &DuckDbDialect,
+        &person(),
+        "id",
+        &[fk],
+        &[],
+        &[],
+        &["id".to_string(), "name".to_string()],
+        &[],
+        2,
+        500,
+    )
+    .unwrap();
+    assert!(sql.contains(r#"ORDER BY p."id" LIMIT 500"#), "got: {sql}");
+}

@@ -43,3 +43,36 @@ fn pairs_project_source_and_target_identity() {
     );
     assert!(sql.contains("JOIN"), "joins present: {sql}");
 }
+
+#[test]
+fn chain_pairs_orders_by_both_identity_columns_before_limit() {
+    // 1-hop FK chain: customer -> order (mirrors pairs_project_source_and_target_identity)
+    let types = vec![
+        ChainType {
+            table: control_plane_core::TableRef {
+                schema: "main".into(),
+                name: "customer".into(),
+            },
+            row_filters: vec![],
+            predicates: vec![],
+        },
+        ChainType {
+            table: control_plane_core::TableRef {
+                schema: "main".into(),
+                name: "order".into(),
+            },
+            row_filters: vec![],
+            predicates: vec![],
+        },
+    ];
+    let hops = vec![LinkBacking::ForeignKey {
+        from_column: "id".into(),
+        to_column: "customer_id".into(),
+    }];
+    let (sql, _params) =
+        compile_chain_pairs(&DuckDbDialect, &types, &hops, "cust_id", "ord_id", 1000).unwrap();
+    assert!(
+        sql.contains(r#"ORDER BY t_0."cust_id", t_1."ord_id" LIMIT 1000"#),
+        "got: {sql}"
+    );
+}
