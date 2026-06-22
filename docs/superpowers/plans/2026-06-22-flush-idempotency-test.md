@@ -29,7 +29,7 @@
 - API shapes (verified): `inline_append(&pool, &TableRef, &[ColumnSpec], &RecordBatch, LineageEvent, Option<i64>) -> Result<...>`; `GrpcQueueClient::flush_table(&self, schema: String, name: String) -> Result<Option<i64>>` (`&self`, type is `Clone`); file entry from `files(...).items` has `record_count: i64`; `inline_parquet(...) -> Result<Option<...>>`.
 - Produces: nothing other tasks rely on (terminal task).
 
-- [ ] **Step 1: Add the test function**
+- [x] **Step 1: Add the test function**
 
 Append to `src/services/worker/tests/e2e.rs` (after the existing test):
 
@@ -103,7 +103,7 @@ async fn duplicate_dispatch_flush_is_idempotent_over_the_wire() {
 }
 ```
 
-- [ ] **Step 2: Run the test and verify it PASSES**
+- [x] **Step 2: Run the test and verify it PASSES**
 
 This is a regression that pins existing behavior — there is no production change to make, so the test must pass against the current code on first run (the advisory lock already provides exactly-once). It is the inverse of normal red-green TDD: the deliverable is the assertion, and a *failure* here would mean the idempotency guarantee is actually broken (a real finding, not an expected red).
 
@@ -117,11 +117,11 @@ Expected: `duplicate_dispatch_flush_is_idempotent_over_the_wire` PASSES, and the
 
 If it fails, do NOT weaken the assertions — debug the idempotency guarantee (systematic-debugging); a genuine failure is a defect in `flush_table`, which would change the scope of this work and must be surfaced.
 
-- [ ] **Step 3: Close the register item in `docs/ISSUES.md`**
+- [x] **Step 3: Close the register item in `docs/ISSUES.md`**
 
 Change the `iss-flush-at-least-once-idempotency` entry from `- [ ]` to `- [x]`, set `status:fixed`, and set `pr:#<n>` (the PR number once known — leave a placeholder to fill at finish; it can also be done in the finishing step). Add a one-line "Fixed (PR #<n>):" note to the body summarizing the added test. Use `loom-docs-update` at finish to apply this consistently.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/services/worker/tests/e2e.rs docs/ISSUES.md docs/superpowers/plans/2026-06-22-flush-idempotency-test.md
