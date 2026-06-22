@@ -871,8 +871,14 @@ fn chain_emits_order_barrier_before_limit_on_duckdb() {
         from_column: "id".into(),
         to_column: "customer_id".into(),
     }];
-    let (sql, _params) =
-        compile_chain(&types, &hops, &["id".to_string(), "sku".to_string()], &[], 1000).unwrap();
+    let (sql, _params) = compile_chain(
+        &types,
+        &hops,
+        &["id".to_string(), "sku".to_string()],
+        &[],
+        1000,
+    )
+    .unwrap();
     // Chain projects the final target alias t_1; order key is its visible cols.
     assert!(
         sql.contains(r#"ORDER BY t_1."id", t_1."sku" LIMIT 1000"#),

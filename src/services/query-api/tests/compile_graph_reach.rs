@@ -253,5 +253,8 @@ fn graph_reach_orders_by_projected_cols_when_identity_masked() {
         1000,
     )
     .unwrap();
-    assert!(sql.contains(r#"ORDER BY p."label" LIMIT 1000"#), "got: {sql}");
+    assert!(
+        sql.contains(r#"ORDER BY p."label" LIMIT 1000"#),
+        "got: {sql}"
+    );
 }
