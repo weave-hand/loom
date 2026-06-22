@@ -206,4 +206,27 @@ check "validate names the missing spec file" 1 "$specmsg"
 check "explicit-file validate skips spec-existence" 0 "$(rc bash "$DOCS" validate "$SV/docs/ROADMAP.md")"
 rm -rf "$SV"
 
+# ---- API-fallback pure helpers (sourced, no network) ----
+# Source the script to expose helpers; the guarded `main` makes this safe.
+# shellcheck source=/dev/null
+( set +u; source "$DOCS"
+  # _repo_slug parses owner/repo from various remote URL forms.
+  cd "$(mktemp -d)" && git init -q
+  git remote add origin 'http://local_proxy@127.0.0.1:4000/git/weave-hand/loom'
+  check "_repo_slug parses proxy http url" "weave-hand/loom" "$(_repo_slug)"
+  git remote set-url origin 'git@github.com:weave-hand/loom.git'
+  check "_repo_slug parses scp url (strips .git)" "weave-hand/loom" "$(_repo_slug)"
+
+  # _json_field extracts the first top-level string field.
+  check "_json_field reads first sha" "abc123" "$(printf '{"sha":"abc123","tree":{"sha":"def456"}}' | _json_field sha)"
+
+  # _claim_message produces a JSON-ready body with literal \n separators and escaping.
+  msg="$(_claim_message road-x 'a"b\c' 2026-01-01T00:00:00Z roadmap 2099-spec)"
+  check "_claim_message uses literal \\n separators"   1 "$(printf '%s' "$msg" | grep -c 'claim: road-x\\n\\nid: road-x')"
+  check "_claim_message escapes quotes/backslashes"    1 "$(printf '%s' "$msg" | grep -c 'claimant: a\\"b\\\\c')"
+
+  exit $fail
+)
+fail=$(( fail | $? ))
+
 exit $fail

@@ -102,10 +102,10 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## acl
 
-- [ ] **ACL deny-override + column masking + role hierarchy** `{#fut-acl-deny-masking-roles area:acl status:deferred from:2026-06-10-acl-deny-override-design pr:- spec:-}`
-  Full ACL semantics — deny-override, column masking on reads, role hierarchy — beyond the delivered baseline. (`mask_columns` is currently ignored on writes.)
-- [ ] **Structured action write-denial reason** `{#fut-structured-write-denial area:acl status:deferred from:2026-06-16-write-enforcement-design pr:#72 spec:-}`
-  `run_action` surfaces a logs-only generic 403 on a denied write; surfacing a structured reason (which column / which row-filter failed) is an open follow-up.
+- [x] **ACL deny-override + column masking + role hierarchy** `{#fut-acl-deny-masking-roles area:acl status:dropped from:2026-06-10-acl-deny-override-design pr:- spec:-}`
+  Dropped (2026-06-22): already implemented — this deferred idea predates the work that shipped it. Deny-override (`Effect` enum + deny-wins `check`, spec `2026-06-10-acl-deny-override-design`), column masking on reads (`Policy.mask_columns` → `'***'` SQL emission, spec `2026-06-11-acl-column-masking-design`), and role hierarchy (`add/remove_role_inheritance` + recursive-CTE closure + atomic cycle check, see [[iss-acl-role-cycle-atomic]]) are all live and contract-tested. `mask_columns` being ignored on **writes** is by design (a read-render concept, `write_filter.rs`), not a gap.
+- [x] **Structured action write-denial reason** `{#fut-structured-write-denial area:acl status:promoted from:2026-06-16-write-enforcement-design pr:#72 spec:-}`
+  Promoted to committed work — see [[road-structured-write-denial]]. `run_action` already computes a precise `WriteVerdict` (DenyColumn/DenyRow) but discards it to a bodyless 403; surface a caller-scoped structured reason (column name + column-vs-row-filter distinction, predicate kept server-side).
 - [ ] **loom user model and authentication** `{#fut-loom-auth area:acl status:deferred from:to-be-planned pr:- spec:-}`
   A loom user/identity model and authentication (the `Unauthorized` reservation is the seam).
 
@@ -129,8 +129,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## iceberg
 
-- [ ] **Overwrite/replace write mode** `{#fut-iceberg-overwrite area:iceberg status:deferred from:iceberg-roadmap pr:- spec:-}`
-  The Iceberg write path is append-only; the analogue of DuckLake's `replace_files` (transform overwrite parity) is deferred.
+- [x] **Overwrite/replace write mode** `{#fut-iceberg-overwrite area:iceberg status:promoted from:iceberg-roadmap pr:- spec:-}`
+  Promoted to committed work — see [[road-iceberg-overwrite-mode]]. Mirror-faithful replace (end-cap all live data files + project new, atomic, time-travel-preserving) matching DuckLake's `replace_files`. Second parity gap on the path to [[fut-replace-ducklake-decision]]; a dependency of the transform-output-to-Iceberg slice (planned next).
 - [ ] **Multi-writer CAS-conflict retry/backoff** `{#fut-iceberg-cas-conflict-retry area:iceberg status:deferred from:2026-06-22-iceberg-tx-objectstore-scope-design pr:- spec:-}`
   The optimistic pointer CAS in `do_update_table` surfaces a lost race as a retryable `CatalogCommitConflicts` error, but neither the catalog nor the `concurrent_appends_keep_the_mirror_consistent` test harness append path retries it — so under higher contention some appends fail rather than eventually committing (bumping that test's `N` 4→8 turned it red, which is why the bump was reverted). Hoisting the object-store read out of the tx ([[iss-iceberg-tx-objectstore]]) shortened the conflict window but did not add retry. A bounded retry/backoff on `CatalogCommitConflicts` (and a contention-tolerant multi-writer test) is the follow-up; conflict-retry tuning was explicitly out of scope for the tx-scoping slice.
 - [ ] **Physical GC of end-capped inline rows** `{#fut-iceberg-gc area:iceberg status:deferred from:2026-06-19-inline-flush-trigger-design pr:- spec:-}`
@@ -154,7 +154,7 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 - [ ] **Real object store (S3/MinIO) for Iceberg** `{#fut-iceberg-real-object-store area:iceberg status:deferred from:iceberg-roadmap pr:- spec:-}`
   Tests use `file://`/LocalFsStorage; the vendored catalog supports S3 FileIO but loom hasn't exercised it.
 - [ ] **Replace-DuckLake-with-Iceberg decision** `{#fut-replace-ducklake-decision area:iceberg status:deferred from:2026-06-16-iceberg-adapter-read-path-design pr:#76 spec:-}`
-  The Iceberg adapter coexists with DuckLake (the green differential oracle). Direction set (2026-06-22): **Iceberg-default, DuckLake kept** — flip the `LOOM_LANDING_BACKEND`/`LOOM_SERVING_BACKEND` boot defaults to Iceberg, keeping DuckLake selectable as a fallback and as the test oracle (not "replace outright"). Three production parity gaps gate the flip, sequenced as their own slices: governed action writes ([[road-iceberg-actionengine]], in progress), transform output to Iceberg, and overwrite/replace mode ([[fut-iceberg-overwrite]]). This umbrella tracks the final default-flip once those land.
+  The Iceberg adapter coexists with DuckLake (the green differential oracle). Direction set (2026-06-22): **Iceberg-default, DuckLake kept** — flip the `LOOM_LANDING_BACKEND`/`LOOM_SERVING_BACKEND` boot defaults to Iceberg, keeping DuckLake selectable as a fallback and as the test oracle (not "replace outright"). Three production parity gaps gate the flip, sequenced as their own slices: governed action writes ([[road-iceberg-actionengine]]), overwrite/replace mode ([[road-iceberg-overwrite-mode]]), and transform output to Iceberg ([[road-iceberg-transform-writes]]). This umbrella tracks the final default-flip once those land.
 - [x] **Iceberg ActionEngine impl** `{#fut-iceberg-actionengine area:iceberg status:promoted from:2026-06-15-actions-part1-design pr:- spec:-}`
   Promoted to committed work — see [[road-iceberg-actionengine]]. The `ActionEngine` trait's reason for being: a second write backend behind the inline-write seam, routing governed object writes through `iceberg_landing::land` so the row and its lineage commit in one Postgres transaction. First parity gap on the path to [[fut-replace-ducklake-decision]].
 - [ ] **Arrow Flight data plane over the engine-wire** `{#fut-engine-wire-flight area:iceberg status:deferred from:2026-06-20-engine-wire-flush-vertical-design pr:#108 spec:-}`
