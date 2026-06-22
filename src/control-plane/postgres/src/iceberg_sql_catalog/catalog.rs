@@ -32,6 +32,7 @@ use sqlx::{AssertSqlSafe, PgPool, Postgres, Row, Transaction};
 
 use control_plane_core::{LineageEvent, SnapshotId};
 
+use crate::iceberg_mirror::{ProjectedColumn, ProjectedFile};
 use crate::lineage::pg_emit;
 
 use super::error::{
@@ -347,41 +348,37 @@ impl SqlCatalog {
         }
     }
 
-    /// Project the loom `iceberg_mirror.*` rows for a just-committed table state,
-    /// enlisted in the caller's transaction so they commit atomically with the
-    /// pointer CAS. The mirror is a deterministic projection of the canonical
-    /// staged Iceberg metadata: columns from the current schema (in-memory), data
-    /// files from the new snapshot's manifests. The namespace key matches the read
-    /// path (`TableRef.schema` == `NamespaceIdent::join(".")`).
+    /// Write the mirror rows for an already-committed table state, in the caller's
+    /// tx, from **precomputed** inputs only. Takes no `&Table` / `FileIO`, so it is
+    /// type-level incapable of reading object storage inside the transaction — the
+    /// property `iss-iceberg-tx-objectstore` requires (enforced by the signature,
+    /// not by convention). The object-store read (`added_files_of`) and schema read
+    /// (`columns_of`) are done by the caller before `begin()`.
     ///
-    /// Returns the mirror snapshot it allocated so callers can use it for
-    /// further in-tx work (e.g. end-capping inline rows at the same snapshot).
-    async fn project_mirror(
+    /// Returns the mirror snapshot it allocated so callers can use it for further
+    /// in-tx work (e.g. end-capping inline rows at the same snapshot).
+    async fn write_mirror(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         ident: &TableIdent,
-        staged: &Table,
+        staged_snap: Option<i64>,
+        columns: &[ProjectedColumn],
+        files: &[ProjectedFile],
     ) -> control_plane_core::Result<SnapshotId> {
         use crate::iceberg_mirror::{
-            added_files_of, columns_exist, columns_of, ensure_table, next_snapshot,
-            project_columns, project_files,
+            columns_exist, ensure_table, next_snapshot, project_columns, project_files,
         };
 
         let ns = ident.namespace().join(".");
         let name = ident.name();
-        let iceberg_snap = staged
-            .metadata()
-            .current_snapshot()
-            .map(|s| s.snapshot_id());
-        let files = added_files_of(staged).await?;
 
         let conn = &mut **tx;
-        let at = next_snapshot(conn, iceberg_snap).await?;
+        let at = next_snapshot(conn, staged_snap).await?;
         let tid = ensure_table(conn, &ns, name, at).await?;
         if !columns_exist(conn, tid).await? {
-            project_columns(conn, tid, at, &columns_of(staged)).await?;
+            project_columns(conn, tid, at, columns).await?;
         }
-        project_files(conn, tid, at, &files).await?;
+        project_files(conn, tid, at, files).await?;
         Ok(at)
     }
 
@@ -407,6 +404,21 @@ impl SqlCatalog {
             .metadata()
             .write_to(staged_table.file_io(), &staged_metadata_location)
             .await?;
+
+        // Object-store reads happen here, BEFORE begin(): load the new snapshot's
+        // manifests + Parquet footers and snapshot the staged schema. The manifests
+        // are immutable and already persisted (fast_append wrote them; write_to wrote
+        // the staged metadata above), so reading them pre-tx is identical to reading
+        // them in-tx — no read-after-write hazard, and the CAS still guards the
+        // pointer. The transaction below therefore holds only fast local PG work.
+        let mirror_files = crate::iceberg_mirror::added_files_of(&staged_table)
+            .await
+            .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
+        let mirror_columns = crate::iceberg_mirror::columns_of(&staged_table);
+        let staged_snap = staged_table
+            .metadata()
+            .current_snapshot()
+            .map(|s| s.snapshot_id());
 
         let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
 
@@ -446,7 +458,13 @@ impl SqlCatalog {
         }
 
         let at = self
-            .project_mirror(&mut tx, &table_ident, &staged_table)
+            .write_mirror(
+                &mut tx,
+                &table_ident,
+                staged_snap,
+                &mirror_columns,
+                &mirror_files,
+            )
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
