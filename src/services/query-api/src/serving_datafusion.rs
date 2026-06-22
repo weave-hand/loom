@@ -13,16 +13,25 @@ use arrow::array::{
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use async_trait::async_trait;
-use control_plane_core::{PageReq, TableRef};
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use datafusion::catalog::MemorySchemaProvider;
-use datafusion::common::TableReference;
+use control_plane_core::TableRef;
+use control_plane_core::snapshot::StatValue;
+use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
+use datafusion::common::{Column, DFSchema, TableReference};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
-    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl, PartitionedFile,
 };
-use datafusion::execution::context::SessionContext;
+use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource};
+use datafusion::datasource::source::DataSourceExec;
+use datafusion::execution::context::{ExecutionProps, SessionContext};
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion::physical_expr::create_physical_expr;
+use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistics};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::scalar::ScalarValue;
 use object_store::ObjectStoreExt;
 use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
@@ -68,10 +77,11 @@ impl ServingEngine for DataFusionServingEngine {
     }
 }
 
-/// Register `table`'s live data files (at its current snapshot) as a DataFusion
-/// `ListingTable` under the schema-qualified name `"schema"."table"`, so the
-/// compiled read SQL resolves it. Files are registered by their ABSOLUTE `file://`
-/// paths as stored in the mirror (`iceberg_mirror.data_file.path`).
+/// Register `table`'s live data files (at its current snapshot) via the pruning-aware
+/// `IcebergMirrorTableProvider` under the schema-qualified name `"schema"."table"`, so
+/// the compiled read SQL resolves it. Files are registered by their ABSOLUTE `file://`
+/// paths as stored in the mirror (`iceberg_mirror.data_file.path`); the provider's
+/// `scan` skips files a query's predicates provably cannot match.
 pub async fn register_iceberg_table(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,
@@ -87,20 +97,17 @@ pub async fn register_iceberg_table(
     );
 
     let snap = catalog.current_snapshot(table).await.map_err(to_serving)?;
-    let files = catalog
-        .files(table, snap.id, PageReq::unbounded())
+    // File-backed data: the pruning-aware provider over the mirror's per-column
+    // stats. A drop-in for the old `ListingTable` (same Parquet inference), but its
+    // `scan` skips files a query's predicates provably cannot match.
+    let files_with_stats = catalog
+        .files_with_stats(table, snap.id)
         .await
         .map_err(to_serving)?;
-    let file_urls: Vec<ListingTableUrl> = files
-        .items
-        .iter()
-        .map(|f| ListingTableUrl::parse(&f.path))
-        .collect::<Result<_, _>>()
-        .map_err(to_serving)?;
-    let file_provider = if file_urls.is_empty() {
+    let file_provider = if files_with_stats.is_empty() {
         None
     } else {
-        Some(listing_table(ctx, file_urls).await?)
+        Some(IcebergMirrorTableProvider::try_new(ctx, files_with_stats).await?)
     };
 
     // Inline rows (mirror-only typed rows) are encoded to in-memory Parquet under a
@@ -140,8 +147,9 @@ pub async fn register_iceberg_table(
     let provider: Arc<dyn datafusion::catalog::TableProvider> =
         match (file_provider, inline_provider) {
             (Some(f), Some(i)) => {
+                let file_view: Arc<dyn TableProvider> = Arc::new(f);
                 let df = ctx
-                    .read_table(Arc::new(f))
+                    .read_table(file_view)
                     .map_err(to_serving)?
                     .union(ctx.read_table(Arc::new(i)).map_err(to_serving)?)
                     .map_err(to_serving)?;
@@ -189,6 +197,207 @@ async fn listing_table(
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque serving error.
 fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
     ServingError::Engine(e.to_string())
+}
+
+/// A pruning-aware `TableProvider` over an explicit set of Iceberg data files
+/// plus their per-column stats. Unlike `ListingTable`, this skips opening files a
+/// query's predicates provably cannot match: `scan` prunes the file set with a
+/// `PruningPredicate` over the mirror stats, then builds a `DataSourceExec` over
+/// only the survivors. Schema is inferred from the file set up front (same Parquet
+/// inference `listing_table` uses), so the served schema matches the listing path.
+#[derive(Debug)]
+pub struct IcebergMirrorTableProvider {
+    schema: SchemaRef,
+    files: Vec<FileWithStats>,
+}
+
+impl IcebergMirrorTableProvider {
+    /// Infer the arrow schema from `files` (the same `ParquetFormat` inference
+    /// `listing_table` uses) and store it alongside the file set. The
+    /// local-filesystem object store must already be registered on `ctx`.
+    pub async fn try_new(
+        ctx: &SessionContext,
+        files: Vec<FileWithStats>,
+    ) -> Result<Self, ServingError> {
+        let urls: Vec<ListingTableUrl> = files
+            .iter()
+            .map(|f| ListingTableUrl::parse(&f.path))
+            .collect::<Result<_, _>>()
+            .map_err(to_serving)?;
+        let format = ParquetFormat::default().with_force_view_types(false);
+        let opts = ListingOptions::new(Arc::new(format));
+        let cfg = ListingTableConfig::new_with_multi_paths(urls)
+            .with_listing_options(opts)
+            .infer_schema(&ctx.state())
+            .await
+            .map_err(to_serving)?;
+        let schema = ListingTable::try_new(cfg).map_err(to_serving)?.schema();
+        Ok(Self { schema, files })
+    }
+}
+
+/// Map a mirror `StatValue` to a typed `ScalarValue` of the arrow `data_type`.
+/// The variant is chosen by the column's arrow type (not the StatValue tag) so the
+/// bound matches the schema the pruner compares against; a mismatch falls back to a
+/// `Null` of the column type (unprunable on that column). `Task 4 reuses this.`
+pub(crate) fn stat_to_scalar(v: &StatValue, data_type: &DataType) -> ScalarValue {
+    match (data_type, v) {
+        (DataType::Boolean, StatValue::Bool(b)) => ScalarValue::Boolean(Some(*b)),
+        (DataType::Int32, StatValue::I32(i)) => ScalarValue::Int32(Some(*i)),
+        (DataType::Int32, StatValue::I64(i)) => ScalarValue::Int32(Some(*i as i32)),
+        (DataType::Int64, StatValue::I64(i)) => ScalarValue::Int64(Some(*i)),
+        (DataType::Int64, StatValue::I32(i)) => ScalarValue::Int64(Some(*i as i64)),
+        (DataType::Float64, StatValue::F64(f)) => ScalarValue::Float64(Some(*f)),
+        (DataType::Utf8, StatValue::Str(s)) => ScalarValue::Utf8(Some(s.clone())),
+        // Tag/type mismatch (or a type we don't prune on): unknown bound.
+        _ => ScalarValue::try_from(data_type).unwrap_or(ScalarValue::Null),
+    }
+}
+
+/// A `PruningStatistics` over a set of files (one container per file). Each column's
+/// min/max array carries a row per file; a file with no stat for that column gets a
+/// `null` bound (so the pruner cannot prune it on that column — it is kept).
+struct FileSetStatistics<'a> {
+    schema: SchemaRef,
+    files: &'a [FileWithStats],
+}
+
+impl<'a> FileSetStatistics<'a> {
+    /// Build the per-file min (or max) array for `column` as a typed arrow array,
+    /// one row per file with `null` where a file lacks the stat. Returns `None` if
+    /// the column is unknown to the schema (the pruner then skips it).
+    fn bounds(&self, column: &Column, want_max: bool) -> Option<arrow::array::ArrayRef> {
+        let field = self.schema.field_with_name(&column.name).ok()?;
+        let dt = field.data_type();
+        let scalars: Vec<ScalarValue> = self
+            .files
+            .iter()
+            .map(|f| {
+                let stat = f.column_stats.iter().find(|c| c.column_name == column.name);
+                let bound = stat.and_then(|s| {
+                    if want_max {
+                        s.max.as_ref()
+                    } else {
+                        s.min.as_ref()
+                    }
+                });
+                match bound {
+                    Some(v) => stat_to_scalar(v, dt),
+                    None => ScalarValue::try_from(dt).unwrap_or(ScalarValue::Null),
+                }
+            })
+            .collect();
+        ScalarValue::iter_to_array(scalars).ok()
+    }
+}
+
+impl<'a> PruningStatistics for FileSetStatistics<'a> {
+    fn min_values(&self, column: &Column) -> Option<arrow::array::ArrayRef> {
+        self.bounds(column, false)
+    }
+    fn max_values(&self, column: &Column) -> Option<arrow::array::ArrayRef> {
+        self.bounds(column, true)
+    }
+    fn num_containers(&self) -> usize {
+        self.files.len()
+    }
+    fn null_counts(&self, _column: &Column) -> Option<arrow::array::ArrayRef> {
+        None
+    }
+    fn row_counts(&self) -> Option<arrow::array::ArrayRef> {
+        None
+    }
+    fn contained(
+        &self,
+        _column: &Column,
+        _values: &std::collections::HashSet<ScalarValue>,
+    ) -> Option<arrow::array::BooleanArray> {
+        None
+    }
+}
+
+/// Keep a file unless its stats prove it cannot match the conjunction of `filters`.
+/// No filters, no usable stats, or an un-prunable predicate -> kept. Never fails: a
+/// pruning limitation must never drop a file that might match (correctness over
+/// efficiency).
+pub fn prune_files<'a>(
+    schema: &SchemaRef,
+    filters: &[Expr],
+    files: &'a [FileWithStats],
+) -> Vec<&'a FileWithStats> {
+    let keep_all = || files.iter().collect::<Vec<_>>();
+    // Fold the filters into one conjunction; nothing to prune on -> keep all.
+    let Some(predicate) = datafusion::logical_expr::utils::conjunction(filters.iter().cloned())
+    else {
+        return keep_all();
+    };
+    // Build the physical pruning predicate over the table schema. Any construction
+    // failure (unsupported expr, planning error) -> keep all files, never fail.
+    let Ok(df_schema) = DFSchema::try_from(schema.clone()) else {
+        return keep_all();
+    };
+    let props = ExecutionProps::new();
+    let Ok(phys) = create_physical_expr(&predicate, &df_schema, &props) else {
+        return keep_all();
+    };
+    let Ok(pruner) = PruningPredicate::try_new(phys, schema.clone()) else {
+        return keep_all();
+    };
+    let stats = FileSetStatistics {
+        schema: schema.clone(),
+        files,
+    };
+    // `prune` yields one bool per file: true = MAY match (keep), false = proven
+    // non-matching (drop). On any pruning error, keep all.
+    match pruner.prune(&stats) {
+        Ok(mask) if mask.len() == files.len() => files
+            .iter()
+            .zip(mask)
+            .filter_map(|(f, keep)| keep.then_some(f))
+            .collect(),
+        _ => keep_all(),
+    }
+}
+
+#[async_trait]
+impl TableProvider for IcebergMirrorTableProvider {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
+        // Inexact: we use filters to prune whole files, but the survivors are not
+        // row-filtered here, so DataFusion must still re-apply every predicate.
+        Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
+    }
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let kept = prune_files(&self.schema, filters, &self.files);
+        let source = Arc::new(ParquetSource::new(self.schema.clone()));
+        let mut builder = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
+            .with_limit(limit);
+        for f in &kept {
+            // Reuse the listing path's exact object-store path derivation so the
+            // registered local-filesystem store resolves the absolute warehouse path.
+            let url = ListingTableUrl::parse(&f.path)?;
+            let pf = PartitionedFile::new(url.prefix().as_ref(), f.file_size_bytes as u64);
+            builder = builder.with_file(pf);
+        }
+        let config = builder
+            .with_projection_indices(projection.cloned())?
+            .build();
+        Ok(DataSourceExec::from_data_source(config))
+    }
 }
 
 /// The `ActionEngine` for the iceberg serving backend: governed action write-backs
