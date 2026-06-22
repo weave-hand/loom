@@ -73,10 +73,11 @@ impl ServingEngine for DataFusionServingEngine {
     // produces is valid DataFusion SQL, so no override is needed.
 }
 
-/// Register `table`'s live data files (at its current snapshot) as a DataFusion
-/// `ListingTable` under the schema-qualified name `"schema"."table"`, so the
-/// compiled read SQL resolves it. Files are registered by their ABSOLUTE `file://`
-/// paths as stored in the mirror (`iceberg_mirror.data_file.path`).
+/// Register `table`'s live data files (at its current snapshot) via the pruning-aware
+/// `IcebergMirrorTableProvider` under the schema-qualified name `"schema"."table"`, so
+/// the compiled read SQL resolves it. Files are registered by their ABSOLUTE `file://`
+/// paths as stored in the mirror (`iceberg_mirror.data_file.path`); the provider's
+/// `scan` skips files a query's predicates provably cannot match.
 pub async fn register_iceberg_table(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,

@@ -8,6 +8,7 @@ use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::{col, lit};
+use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
 use query_api::serving::SqlValue;
 use query_api::serving_datafusion::{
@@ -108,6 +109,41 @@ async fn pruning_skips_files_and_preserves_governed_results() {
     assert!(
         min <= v && v <= max,
         "survivor is file A: id range [{min},{max}] contains {v}"
+    );
+
+    // --- (2b) Execution-layer proof: the plan `scan()` actually builds reads ONLY the
+    // survivor file. This guards the headline file-skip claim at the layer that matters
+    // — a regression where `scan` stopped pruning (or scanned all files) would still
+    // return correct rows (filters are re-applied per row) and pass every assertion
+    // above, but would render both files here. We assert against the executed
+    // `DataSourceExec`'s `file_groups`, not fragile post-run metric APIs.
+    let plan = provider
+        .scan(&ctx.state(), None, &[col("id").eq(lit(v))], None)
+        .await
+        .expect("scan");
+    let rendered = displayable(plan.as_ref()).indent(true).to_string();
+    let basename = |p: &str| {
+        std::path::Path::new(p)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("file basename")
+            .to_string()
+    };
+    let survivor = basename(&kept[0].path);
+    let dropped = basename(
+        &files
+            .iter()
+            .find(|f| f.path != kept[0].path)
+            .expect("a dropped file exists")
+            .path,
+    );
+    assert!(
+        rendered.contains(&survivor),
+        "executed plan reads the survivor file ({survivor}):\n{rendered}"
+    );
+    assert!(
+        !rendered.contains(&dropped),
+        "executed plan must NOT read the pruned file ({dropped}):\n{rendered}"
     );
 
     // --- (3) Governance invariance: an extra ANDed caller filter (as the governed
