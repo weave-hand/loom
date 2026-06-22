@@ -96,6 +96,25 @@ fn dialect_controls_quoting_and_placeholders() {
 }
 
 #[test]
+fn duckdb_dialect_requests_order_barrier() {
+    use query_api::sql::{DuckDbDialect, SqlDialect};
+    assert!(DuckDbDialect.limit_needs_order_barrier());
+}
+
+#[test]
+fn datafusion_dialect_keeps_bare_limit_and_renders_like_duckdb() {
+    use query_api::sql::{DataFusionDialect, DuckDbDialect, SqlDialect};
+    let df = DataFusionDialect;
+    let duck = DuckDbDialect;
+    // No barrier on the DataFusion path (it has no multi-file LIMIT bug).
+    assert!(!df.limit_needs_order_barrier());
+    // Identical rendering to DuckDB: the compiled SQL is valid for both engines.
+    assert_eq!(df.quote_ident("a\"b"), duck.quote_ident("a\"b"));
+    assert_eq!(df.placeholder(3), duck.placeholder(3));
+    assert_eq!(df.limit_clause(1000), duck.limit_clause(1000));
+}
+
+#[test]
 fn positional_indices_span_select_derived_then_where() {
     let derived = vec![DerivedSelect::Aggregate(Box::new(DerivedAggregate {
         name: "totalSpend".into(),

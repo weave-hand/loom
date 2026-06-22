@@ -22,6 +22,13 @@ pub trait SqlDialect: Send + Sync {
     fn placeholder(&self, one_based: usize) -> String;
     /// The trailing row-limit clause (no leading space added by the dialect).
     fn limit_clause(&self, limit: u32) -> String;
+    /// Whether this dialect needs a stable `ORDER BY` barrier before a pushed-down
+    /// `LIMIT` to avoid the multi-file Parquet `LIMIT` corruption (an upstream
+    /// DuckDB/DuckLake bug — `iss-multi-file-limit-misread`). Defaulted `false`;
+    /// only `DuckDbDialect` opts in. An engine without the bug keeps the bare `LIMIT`.
+    fn limit_needs_order_barrier(&self) -> bool {
+        false
+    }
 }
 
 /// The DuckDB dialect — loom's only serving dialect today.
@@ -42,6 +49,29 @@ impl SqlDialect for DuckDbDialect {
     fn limit_clause(&self, limit: u32) -> String {
         format!("LIMIT {limit}")
     }
+    fn limit_needs_order_barrier(&self) -> bool {
+        true
+    }
+}
+
+/// The DataFusion serving dialect. Renders identifiers, placeholders, and the
+/// `LIMIT` clause exactly like `DuckDbDialect` (the compiled SQL is valid for both
+/// engines), but does NOT request the `LIMIT` order barrier: DataFusion has no
+/// multi-file `LIMIT` corruption bug, so it keeps the bare `LIMIT`
+/// (`iss-multi-file-limit-misread`).
+pub struct DataFusionDialect;
+
+impl SqlDialect for DataFusionDialect {
+    fn quote_ident(&self, id: &str) -> String {
+        DuckDbDialect.quote_ident(id)
+    }
+    fn placeholder(&self, one_based: usize) -> String {
+        DuckDbDialect.placeholder(one_based)
+    }
+    fn limit_clause(&self, limit: u32) -> String {
+        DuckDbDialect.limit_clause(limit)
+    }
+    // limit_needs_order_barrier(): inherits the trait default (false).
 }
 
 /// The value substituted for a masked column. A compile-time constant (never caller

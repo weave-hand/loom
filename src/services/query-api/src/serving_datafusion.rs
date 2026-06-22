@@ -29,6 +29,7 @@ use object_store::memory::InMemory;
 use object_store::path::Path as ObjPath;
 
 use crate::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue, inline_params};
+use crate::sql::SqlDialect;
 
 /// loom-native serving engine: serves governed reads for file-backed Iceberg
 /// tables from the mirror via DataFusion. Holds only the mirror reader; the
@@ -60,8 +61,11 @@ impl ServingEngine for DataFusionServingEngine {
         let batches = df.collect().await.map_err(to_serving)?;
         Ok(batches_to_rows(batches))
     }
-    // dialect(): inherit the trait default (DuckDbDialect). The compiled SQL it
-    // produces is valid DataFusion SQL, so no override is needed.
+    fn dialect(&self) -> &'static dyn SqlDialect {
+        // DataFusion has no multi-file `LIMIT` corruption bug, so it keeps the bare
+        // `LIMIT` (no order barrier). Rendering is otherwise DuckDB-identical.
+        &crate::sql::DataFusionDialect
+    }
 }
 
 /// Register `table`'s live data files (at its current snapshot) as a DataFusion
