@@ -1,0 +1,137 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.data_file_id as \"data_file_id!\", f.path as \"path!\", f.record_count as \"record_count!\", f.file_size_bytes as \"file_size_bytes!\", cs.column_name as \"column_name?\", cs.null_count as \"null_count?\", cs.column_size_bytes as \"column_size_bytes?\", cs.min_value as \"min_value?\", cs.max_value as \"max_value?\", c.column_type as \"column_type?\" from iceberg_mirror.data_file f left join iceberg_mirror.data_file_column_stat cs on cs.data_file_id = f.data_file_id left join iceberg_mirror.column c on c.table_id = f.table_id and c.column_name = cs.column_name and c.begin_snapshot <= $2 and (c.end_snapshot is null or c.end_snapshot > $2) where f.table_id = $1 and f.begin_snapshot <= $2 and (f.end_snapshot is null or f.end_snapshot > $2) order by f.data_file_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "data_file_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "data_file_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "path!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "record_count!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "record_count"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "file_size_bytes!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "file_size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "column_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file_column_stat",
+            "name": "column_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "null_count?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file_column_stat",
+            "name": "null_count"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "column_size_bytes?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file_column_stat",
+            "name": "column_size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "min_value?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file_column_stat",
+            "name": "min_value"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "max_value?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file_column_stat",
+            "name": "max_value"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "column_type?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.\"column\"",
+            "name": "column_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "b2a6ddce44f6bde064655cca8d20de0036789d8ff0f6544086e9f9522a87e1a8"
+}
