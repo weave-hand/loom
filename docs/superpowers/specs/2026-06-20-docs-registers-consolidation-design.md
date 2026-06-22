@@ -50,10 +50,11 @@ item is one markdown list entry with a backtick-wrapped tag block on the title
 line and prose indented below:
 
 ```
-- [ ] **Transitive provenance closure** `{#fut-lineage-closure area:lineage status:deferred from:phase-5 pr:- spec:2026-06-05-control-plane-lineage}`
+- [ ] **Transitive provenance closure** `{#fut-lineage-closure area:lineage status:deferred from:2026-06-05-control-plane-lineage-design pr:- spec:-}`
   `upstream`/`downstream` return one hop. Full closure needs a cycle guard and a
   depth/visited bound. Kept out of P5 so the one-hop queries stay flat.
-  Related: [[fut-lineage-stitching]]
+  `spec:-` because no dedicated design exists yet; the originating spec it was
+  deferred *within* is recorded in `from:`. Related: [[fut-lineage-stitching]]
 
 - [x] **File supersession / compaction** `{#fut-catalog-compaction area:catalog status:done pr:#... spec:2026-06-17-compaction}`
   Delivered via `Tx::compact_files`…
@@ -66,9 +67,9 @@ line and prose indented below:
 | `#id` | Unique slug | prefixed `road-` / `fut-` / `iss-`, kebab-case |
 | `area:` | Subsystem | controlled vocab (below) |
 | `status:` | Lifecycle state | controlled per register (table above) |
-| `from:` | Provenance — what it arose from | freeform token, e.g. `phase-5`, `critical-review`, a spec slug |
+| `from:` | Provenance — where it arose / was deferred from | freeform token; for a deferral, the **originating spec slug** it was deferred within (e.g. `2026-06-05-control-plane-lineage-design`) |
 | `pr:` | PR refs | comma-joined `#32,#78`, or `-` |
-| `spec:` | Spec/plan basenames | comma-joined slugs (no dir, no `.md`), or `-` |
+| `spec:` | **Dedicated** spec/plan that designs/builds THIS item — the readiness signal the claim gate keys on | comma-joined slugs (no dir, no `.md`), or `-`. A spec the item was only *deferred within* is provenance → that slug goes in `from:`, **not** here. So an open `fut-*`/`iss-*` with no design of its own is `spec:-` |
 
 **`area:` controlled vocabulary:** `lineage`, `catalog`, `ontology`, `acl`,
 `ingest`, `query`, `transform`, `iceberg`, `ui`, `ux`, `test`, `quality`,
@@ -166,7 +167,10 @@ Given the just-completed spec/plan (or a free-form description):
 1. Read the completed spec/plan.
 2. **Close** the items it resolved: set `[x]`, terminal `status:`, add the `pr:`.
 3. **Add** any newly-deferred items the spec introduced (its "deferred" / "out
-   of scope" section) as new FUTURE/ISSUES entries with `from:<spec-slug>`.
+   of scope" section) as new FUTURE/ISSUES entries with `from:<spec-slug>` (the
+   originating spec) and `spec:-` — a deferral has no dedicated design of its own,
+   so it must not borrow the originating spec into `spec:` (that would falsely
+   mark it checkout-ready). It earns a `spec:` only when one is authored for it.
 4. If it satisfied a committed ROADMAP item, mark that `done`.
 5. `docs.sh validate`, then stage the register edits alongside the work (no
    separate PR — rides the feature branch). No agentic fan-out.
