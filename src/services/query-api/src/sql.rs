@@ -906,14 +906,19 @@ pub fn compile_graph_reach(
     let cols = masked_col_exprs(dialect, allowed_cols, mask_cols, "p.").join(", ");
     let proj_where = reach_projection_where(dialect, &id, row_filters, &mut params);
 
+    let order_cols: Vec<String> = order_key_cols(Some(identity), allowed_cols, mask_cols)
+        .iter()
+        .map(|c| format!("p.{}", q(c)))
+        .collect();
+    let limit_clause = order_barrier_limit(dialect, &order_cols, limit);
+
     let sql = format!(
         "WITH RECURSIVE reach(id, depth) AS (\
            SELECT s.{id} AS id, 0 AS depth FROM {tbl} s{seed_where} \
            UNION \
            SELECT nxt.{id} AS id, r.depth + 1 AS depth FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
          ) \
-         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {}",
-        dialect.limit_clause(limit)
+         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
     );
     Ok((sql, params))
 }
@@ -1024,14 +1029,19 @@ pub fn compile_graph_reach_union(
     }
     let proj_where = proj_conj.join(" AND ");
 
+    let order_cols: Vec<String> = order_key_cols(Some(identity), allowed_cols, mask_cols)
+        .iter()
+        .map(|c| format!("p.{}", q(c)))
+        .collect();
+    let limit_clause = order_barrier_limit(dialect, &order_cols, limit);
+
     let sql = format!(
         "WITH RECURSIVE reach(id, depth) AS (\
            SELECT s.{id} AS id, 0 AS depth FROM {tbl} s{seed_where} \
            UNION \
            {recursive}\
          ) \
-         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {}",
-        dialect.limit_clause(limit)
+         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
     );
     Ok((sql, params))
 }
@@ -1173,10 +1183,13 @@ pub fn compile_graph_reach_tail(
     where_conj.extend(conjuncts);
     let where_sql = where_conj.join(" AND ");
 
-    let sql = format!(
-        "{cte} SELECT DISTINCT {cols} FROM {from} WHERE {where_sql} {}",
-        dialect.limit_clause(limit)
-    );
+    let order_cols: Vec<String> = order_key_cols(None, allowed_cols, mask_cols)
+        .iter()
+        .map(|c| format!("{final_alias}.{}", q(c)))
+        .collect();
+    let limit_clause = order_barrier_limit(dialect, &order_cols, limit);
+
+    let sql = format!("{cte} SELECT DISTINCT {cols} FROM {from} WHERE {where_sql} {limit_clause}");
     Ok((sql, params))
 }
 
