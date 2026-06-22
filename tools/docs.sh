@@ -67,6 +67,72 @@ _print_holder(){
   echo "claim: '$id' is held by ${who:-?} since ${since:-?}" >&2
 }
 
+# ---- GitHub API fallback for ref writes -------------------------------------
+# The claim mutex pushes/deletes refs under refs/claim/*. Some git remotes
+# forbid that — notably the Claude Code on the web cloud session's git proxy,
+# which 403s any push to a non-refs/heads namespace and any ref deletion. When
+# the proxy push fails and a $GITHUB_TOKEN is present, we fall back to GitHub's
+# git-database REST API, which authenticates with the token directly (bypassing
+# the proxy). Atomicity is preserved: POST /git/refs is create-only (422 if the
+# ref already exists), the same compare-and-swap the --force-with-lease push gives.
+
+# The well-known empty-tree object id (present in every git repo). GitHub rejects
+# creating an empty tree via the API, but accepts referencing this sha directly.
+EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+
+# True when the REST fallback is usable.
+_have_api(){ [ -n "${GITHUB_TOKEN:-}" ] && command -v curl >/dev/null 2>&1; }
+
+# owner/repo parsed from the origin remote URL (handles http(s) and scp forms).
+_repo_slug(){
+  local url; url="$(git config --get remote.origin.url 2>/dev/null || true)"
+  url="${url%.git}"
+  printf '%s' "$url" | sed -E 's#.*[/:]([^/]+/[^/]+)$#\1#'
+}
+
+# Extract the first (document-order) JSON string field named $1 from stdin.
+# grep -o yields each "key":"value" hit on its own line so head -1 picks the
+# first — robust whether the JSON is pretty-printed or single-line.
+_json_field(){
+  grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 \
+    | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/'
+}
+
+# _api METHOD PATH [BODY]; sets _API_CODE (HTTP status) and _API_OUT (body).
+_API_CODE=""
+_API_OUT=""
+_api(){
+  local method="$1" path="$2" body="${3:-}" slug out a
+  slug="$(_repo_slug)"
+  out="$(mktemp)"
+  a=(-s -o "$out" -w '%{http_code}' -X "$method"
+     -H "Authorization: Bearer ${GITHUB_TOKEN:-}"
+     -H "Accept: application/vnd.github+json"
+     "https://api.github.com/repos/$slug$path")
+  [ -n "$body" ] && a+=(-d "$body")
+  _API_CODE="$(curl "${a[@]}" || true)"
+  _API_OUT="$(cat "$out")"; rm -f "$out"
+}
+
+# JSON-escaped one-line claim commit message (literal \n separators, matching the
+# multi-line body git commit-tree produces on the native path).
+_claim_message(){
+  local id="$1" who="$2" ts="$3" reg="$4" spec="$5"
+  who="${who//\\/\\\\}"; who="${who//\"/\\\"}"   # escape \ and " for JSON
+  printf 'claim: %s\\n\\nid: %s\\nclaimant: %s\\nsince: %s\\nregister: %s\\nspec: %s\\nbranch: work/%s' \
+    "$id" "$id" "$who" "$ts" "$reg" "$spec" "$id"
+}
+
+# Delete a remote ref ($1), preferring a proxy push and falling back to the API.
+# 0 = ref gone (deleted or already absent); 1 = could not delete.
+_delete_ref_remote(){
+  local ref="$1"
+  git push origin ":$ref" >/dev/null 2>&1 && return 0
+  _have_api || return 1
+  _api DELETE "/git/refs/${ref#refs/}"
+  case "$_API_CODE" in 204|422) return 0 ;; *) return 1 ;; esac   # 422 = already gone
+}
+
 CLAIM_GRACE_MIN="${LOOM_CLAIM_GRACE_MIN:-60}"
 
 # Epoch seconds for an ISO-8601 UTC timestamp (0 on parse failure).
@@ -246,11 +312,31 @@ cmd_claim(){
   commit="$(printf 'claim: %s\n\nid: %s\nclaimant: %s\nsince: %s\nregister: %s\nspec: %s\nbranch: work/%s\n' \
     "$id" "$id" "$who" "$ts" "$reg" "$spec" "$id" | git commit-tree "$tree")"
   if git push --force-with-lease="$ref:" origin "$commit:$ref" >/dev/null 2>&1; then
-    echo "claimed $id by $who at $ts"
-    echo "next: git switch -c work/$id  →  implement  →  open a PR with head work/$id"
-  else
-    echo "claim: lost race for '$id'" >&2; _print_holder "$id"; return 1
+    _claim_success "$id" "$who" "$ts"; return 0
   fi
+  # Native push failed (e.g. the cloud git proxy forbids custom-ref writes).
+  # Fall back to the GitHub API if a token is available; the create is atomic.
+  if _have_api; then
+    local body sha
+    body="$(_claim_message "$id" "$who" "$ts" "$reg" "$spec")"
+    _api POST /git/commits "$(printf '{"message":"%s","tree":"%s","parents":[]}' "$body" "$EMPTY_TREE")"
+    [ "$_API_CODE" = 201 ] || { echo "claim: API commit-create failed (HTTP $_API_CODE)" >&2; return 1; }
+    sha="$(printf '%s' "$_API_OUT" | _json_field sha || true)"
+    [ -n "$sha" ] || { echo "claim: could not parse commit sha from API response" >&2; return 1; }
+    _api POST /git/refs "$(printf '{"ref":"%s","sha":"%s"}' "$ref" "$sha")"
+    case "$_API_CODE" in
+      201) _claim_success "$id" "$who" "$ts"; return 0 ;;
+      422) echo "claim: lost race for '$id'" >&2; _print_holder "$id"; return 1 ;;   # ref already exists
+      *)   echo "claim: API ref-create failed (HTTP $_API_CODE)" >&2; return 1 ;;
+    esac
+  fi
+  echo "claim: lost race for '$id'" >&2; _print_holder "$id"; return 1
+}
+
+# Print the success banner for a freshly minted claim (id who ts).
+_claim_success(){
+  echo "claimed $1 by $2 at $3"
+  echo "next: git switch -c work/$1  →  implement  →  open a PR with head work/$1"
 }
 
 cmd_release(){
@@ -261,7 +347,7 @@ cmd_release(){
   if [ -z "$(git ls-remote origin "$ref" 2>/dev/null)" ]; then
     echo "release: no live claim for '$id' (nothing to do)"; return 0
   fi
-  if git push origin ":$ref" >/dev/null 2>&1; then
+  if _delete_ref_remote "$ref"; then
     git update-ref -d "$ref" 2>/dev/null || true
     echo "released $id"
   else
@@ -300,7 +386,7 @@ cmd_claims(){
       state="PR pending (${left}m left)"
     fi
     if [ "$reap" = 1 ] && { [ "$state" = stale ] || [ "$state" = "merged/closed" ]; }; then
-      git push origin ":$ref" >/dev/null 2>&1 && echo "reaped $id ($state)"
+      _delete_ref_remote "$ref" && echo "reaped $id ($state)"
     else
       printf '%s\t%s\t%dm\t%s\n' "$id" "${who:-?}" "$(( age / 60 ))" "$state"
     fi
@@ -321,4 +407,6 @@ main(){
     *) usage ;;
   esac
 }
-main "$@"
+# Run only when executed directly; `source`-ing exposes helpers for unit tests.
+# Use an if-block (not `&&`) so a sourced script ends with status 0 under set -e.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi
