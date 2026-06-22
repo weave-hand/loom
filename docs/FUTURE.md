@@ -97,6 +97,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Wiring serving-engine selection (`EmbeddedDuckDb` vs Quack-client) into the HTTP service, plus production serving-process supervision, is a later slice.
 - [ ] **Multi-type queries / joins & schema sidecar** `{#fut-query-multitype-joins area:query status:deferred from:roadmap-where-we-are pr:- spec:-}`
   Rich ontology reads: multi-type queries/joins, a schema sidecar, and timezone-aware timestamps are deferred query follow-ups.
+- [ ] **Upstream DuckDB multi-file LIMIT fix + workaround removal** `{#fut-multi-file-limit-upstream area:query status:deferred from:multi-file-limit-guard pr:- spec:2026-06-21-multi-file-limit-guard-design}`
+  loom works around an upstream DuckDB/DuckLake bug — a pushed-down `LIMIT` over a multi-file Parquet scan corrupts column values — with a serving-side `ORDER BY` barrier ([[iss-multi-file-limit-misread]]). File the upstream bug with a minimal multi-file + `LIMIT` reproduction; when loom's pinned `duckdb` crate (currently `1.10503.1`, bundled) is bumped to a fixed version, remove the barrier and its `SqlDialect::limit_needs_order_barrier()` gate. A DuckDB `SET`/`PRAGMA` disabling the offending optimization, if found, is an acceptable alternative removal path.
 
 ## acl
 
