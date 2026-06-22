@@ -46,6 +46,11 @@ parquet57 = { package = "parquet", version = "57", default-features = false, fea
 # (arrow-57 IPC decode + multi-batch concat).
 arrow-ipc57 = { package = "arrow-ipc", version = "57", default-features = false }
 arrow-select57 = { package = "arrow-select", version = "57", default-features = false }
+# iceberg's InputFile::read() yields `bytes::Bytes`, which is also a parquet57
+# `ChunkReader` — the write path reads file bytes and feeds them straight to the
+# footer-stats reader (src/iceberg_stats.rs). Same `bytes` 1.x the rest of the
+# graph resolves to (iceberg/parquet/reqwest all depend on it), so no new version.
+bytes = "1"
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }

@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into iceberg_mirror.data_file (table_id, path, file_format, record_count, file_size_bytes, begin_snapshot) values ($1, $2, $3, $4, $5, $6) returning data_file_id as \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "data_file_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b4ebbe2d8ad2adc1af2efa67f3ee159e274e8826e636a4edc47ce433508396d2"
+}

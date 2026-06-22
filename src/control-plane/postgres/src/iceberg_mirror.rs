@@ -23,6 +23,9 @@ pub struct ProjectedFile {
     pub file_format: String,
     pub record_count: i64,
     pub file_size_bytes: i64,
+    /// Per-column min/max/null-count merged from the file's Parquet footer, in
+    /// table schema order. Persisted alongside the data-file row by `project_files`.
+    pub column_stats: Vec<control_plane_core::ColumnStat>,
 }
 
 /// A neutral column definition (name, Iceberg primitive type name, nullability), in order.
@@ -126,10 +129,10 @@ pub async fn project_files(
     files: &[ProjectedFile],
 ) -> Result<()> {
     for f in files {
-        sqlx::query!(
+        let data_file_id = sqlx::query_scalar!(
             "insert into iceberg_mirror.data_file \
              (table_id, path, file_format, record_count, file_size_bytes, begin_snapshot) \
-             values ($1, $2, $3, $4, $5, $6)",
+             values ($1, $2, $3, $4, $5, $6) returning data_file_id as \"id!\"",
             table_id,
             f.path,
             f.file_format,
@@ -137,9 +140,30 @@ pub async fn project_files(
             f.file_size_bytes,
             at.0,
         )
-        .execute(&mut *conn)
+        .fetch_one(&mut *conn)
         .await
         .map_err(backend)?;
+
+        // Per-column footer stats, in the same transaction as the data-file row so
+        // a written file always carries its stats (no second pass to backfill).
+        for s in &f.column_stats {
+            let min = s.min.as_ref().map(crate::iceberg_stats::stat_to_text);
+            let max = s.max.as_ref().map(crate::iceberg_stats::stat_to_text);
+            sqlx::query!(
+                "insert into iceberg_mirror.data_file_column_stat \
+                 (data_file_id, column_name, null_count, column_size_bytes, min_value, max_value) \
+                 values ($1, $2, $3, $4, $5, $6)",
+                data_file_id,
+                s.column_name,
+                s.null_count,
+                s.column_size_bytes,
+                min,
+                max,
+            )
+            .execute(&mut *conn)
+            .await
+            .map_err(backend)?;
+        }
     }
     Ok(())
 }
@@ -235,6 +259,9 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
         .load_manifest_list(table.file_io(), table.metadata())
         .await
         .map_err(iceberg_err)?;
+    // Column names in table schema order — the same order Iceberg writes columns to
+    // the Parquet file, so `column_stats_from_parquet` records each by name.
+    let names: Vec<String> = columns_of(table).into_iter().map(|c| c.name).collect();
     let mut files = Vec::new();
     for manifest_file in manifest_list.entries() {
         let manifest = manifest_file
@@ -244,11 +271,22 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
         for entry in manifest.entries() {
             if entry.snapshot_id() == Some(snapshot.snapshot_id()) {
                 let df = entry.data_file();
+                // Read the file's bytes and merge per-column Parquet-footer stats in the
+                // same projection that records the file row (atomic with the snapshot commit).
+                let bytes = table
+                    .file_io()
+                    .new_input(df.file_path())
+                    .map_err(iceberg_err)?
+                    .read()
+                    .await
+                    .map_err(iceberg_err)?;
+                let column_stats = crate::iceberg_stats::column_stats_from_parquet(bytes, &names)?;
                 files.push(ProjectedFile {
                     path: df.file_path().to_string(),
                     file_format: "parquet".to_string(),
                     record_count: df.record_count() as i64,
                     file_size_bytes: df.file_size_in_bytes() as i64,
+                    column_stats,
                 });
             }
         }

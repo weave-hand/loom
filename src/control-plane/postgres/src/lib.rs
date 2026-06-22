@@ -29,6 +29,7 @@ pub mod iceberg_inline;
 pub mod iceberg_landing;
 pub mod iceberg_mirror;
 pub mod iceberg_sql_catalog;
+pub mod iceberg_stats;
 pub mod iceberg_type;
 pub mod iceberg_writer;
 mod lineage;
