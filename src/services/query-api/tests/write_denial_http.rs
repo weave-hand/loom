@@ -154,8 +154,13 @@ async fn column_denial_body_names_the_column() {
     )
     .await
     .unwrap();
-    let (status, body) =
-        post_json(cp, "analyst", "createWidget", json!({"id": "1", "name": "x"})).await;
+    let (status, body) = post_json(
+        cp,
+        "analyst",
+        "createWidget",
+        json!({"id": "1", "name": "x"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
     assert_eq!(
         body,
@@ -182,10 +187,18 @@ async fn row_filter_denial_body_discloses_no_predicate() {
     )
     .await
     .unwrap();
-    let (status, body) =
-        post_json(cp, "analyst", "createWidget", json!({"id": "1", "name": "widget"})).await;
+    let (status, body) = post_json(
+        cp,
+        "analyst",
+        "createWidget",
+        json!({"id": "1", "name": "widget"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
-    assert_eq!(body, json!({ "error": "write_denied", "reason": "row_filter" }));
+    assert_eq!(
+        body,
+        json!({ "error": "write_denied", "reason": "row_filter" })
+    );
     assert!(
         body.get("column").is_none(),
         "no column on a row-filter denial"
@@ -216,8 +229,13 @@ async fn allowed_write_is_201() {
     )
     .await
     .unwrap();
-    let (status, _body) =
-        post_json(cp, "analyst", "createWidget", json!({"id": "1", "name": "gadget"})).await;
+    let (status, _body) = post_json(
+        cp,
+        "analyst",
+        "createWidget",
+        json!({"id": "1", "name": "gadget"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
 }
 
@@ -228,8 +246,17 @@ async fn coarse_gate_denial_is_bodyless_403() {
     let (cp, _writer) = seed().await;
     let stranger = SubjectId("stranger".into());
     cp.define_subject(&stranger).await.unwrap();
-    let (status, body) =
-        post_json(cp, "stranger", "createWidget", json!({"id": "1", "name": "gadget"})).await;
+    let (status, body) = post_json(
+        cp,
+        "stranger",
+        "createWidget",
+        json!({"id": "1", "name": "gadget"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body, serde_json::Value::Null, "coarse-gate 403 stays bodyless");
+    assert_eq!(
+        body,
+        serde_json::Value::Null,
+        "coarse-gate 403 stays bodyless"
+    );
 }

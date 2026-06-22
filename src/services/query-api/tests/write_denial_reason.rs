@@ -27,7 +27,10 @@ fn deny_row_maps_to_row_filter_reason_and_body() {
         .expect("a row-filter denial has a reason");
     assert_eq!(reason, WriteDenialReason::RowFilter);
     let body = reason.to_body();
-    assert_eq!(body, json!({ "error": "write_denied", "reason": "row_filter" }));
+    assert_eq!(
+        body,
+        json!({ "error": "write_denied", "reason": "row_filter" })
+    );
     // The row-filter body discloses no column (and never the predicate).
     assert!(
         body.get("column").is_none(),
