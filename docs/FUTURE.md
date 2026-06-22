@@ -129,8 +129,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## iceberg
 
-- [ ] **Overwrite/replace write mode** `{#fut-iceberg-overwrite area:iceberg status:deferred from:iceberg-roadmap pr:- spec:-}`
-  The Iceberg write path is append-only; the analogue of DuckLake's `replace_files` (transform overwrite parity) is deferred.
+- [x] **Overwrite/replace write mode** `{#fut-iceberg-overwrite area:iceberg status:promoted from:iceberg-roadmap pr:- spec:-}`
+  Promoted to committed work — see [[road-iceberg-overwrite-mode]]. Mirror-faithful replace (end-cap all live data files + project new, atomic, time-travel-preserving) matching DuckLake's `replace_files`. Second parity gap on the path to [[fut-replace-ducklake-decision]]; a dependency of the transform-output-to-Iceberg slice (planned next).
 - [ ] **Physical GC of end-capped inline rows** `{#fut-iceberg-gc area:iceberg status:deferred from:2026-06-19-inline-flush-trigger-design pr:- spec:-}`
   End-capped inline rows and orphaned flush/replaced Parquet are never physically reclaimed (end-capped, not deleted, to preserve time-travel). A GC pass is outstanding.
 - [x] **Per-column stats + predicate pushdown** `{#fut-iceberg-percolumn-stats area:iceberg status:promoted pr:- spec:2026-06-21-iceberg-per-column-stats-design}`
