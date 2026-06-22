@@ -12,6 +12,7 @@ rust_library(
         "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:tokio",
+        "//third-party:tracing-subscriber",
     ],
     visibility = ["PUBLIC"],
 )
@@ -21,6 +22,15 @@ rust_test(
     crate = "config",
     srcs = ["tests/config.rs"],
     crate_root = "tests/config.rs",
+    edition = "2024",
+    deps = [":runtime"],
+)
+
+rust_test(
+    name = "init-tracing",
+    crate = "init_tracing",
+    srcs = ["tests/init_tracing.rs"],
+    crate_root = "tests/init_tracing.rs",
     edition = "2024",
     deps = [":runtime"],
 )

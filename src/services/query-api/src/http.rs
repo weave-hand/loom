@@ -1,6 +1,7 @@
 //! Thin axum surface. All logic is in handler::read_object; this layer only maps
 //! HTTP <-> the core and serializes Rows to JSON.
 
+use std::fmt::Display;
 use std::sync::Arc;
 
 use crate::handler::{
@@ -16,6 +17,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use control_plane_core::{ControlPlane, SubjectId};
+
+/// Log a backend/serving fault server-side, then return the opaque 500 the client
+/// sees. The detail (`error = %e`) is for operators only — the response body
+/// carries no internal detail (SQL fragments, table/column names).
+pub fn internal_error(context: &str, e: impl Display) -> axum::response::Response {
+    tracing::error!(error = %e, "{context}");
+    (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+}
 
 /// Shared, owned dependencies. Holds the control plane as one object-safe facade
 /// (`Arc<dyn ControlPlane>`) and hands its narrow concern objects to the read path.
@@ -89,11 +98,7 @@ async fn get_object(
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
         Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-        // Return an opaque body for backend/serving faults: a governance-fronted
-        // service must not echo internal error detail (SQL fragments, table/column
-        // names) to the client. TODO(serving-tier): log `e` server-side once a
-        // tracing subscriber is wired in the binary.
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+        Err(e) => internal_error("object read serving fault", e),
     }
 }
 
@@ -246,7 +251,7 @@ fn respond_associations(res: Result<Associations, QueryError>) -> axum::response
 }
 
 /// Shared HTTP mapping for chain/association read errors.
-fn chain_error(e: QueryError) -> axum::response::Response {
+pub fn chain_error(e: QueryError) -> axum::response::Response {
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
@@ -255,8 +260,7 @@ fn chain_error(e: QueryError) -> axum::response::Response {
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        // Opaque body for backend/serving faults (no internal detail leaked).
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+        other => internal_error("chain/association read serving fault", other),
     }
 }
 
@@ -445,7 +449,7 @@ async fn get_graph_path(
 }
 
 /// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
-fn graph_error(e: QueryError) -> axum::response::Response {
+pub fn graph_error(e: QueryError) -> axum::response::Response {
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
@@ -454,8 +458,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
-        // Opaque body for backend/serving faults (no internal detail leaked).
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+        other => internal_error("graph read serving fault", other),
     }
 }
 
@@ -613,7 +616,6 @@ async fn post_action(
         Err(crate::action::ActionError::Misconfigured(m)) => {
             (StatusCode::INTERNAL_SERVER_ERROR, m).into_response()
         }
-        // Opaque body for backend/serving faults (no internal detail leaked).
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+        Err(e) => internal_error("action serving fault", e),
     }
 }

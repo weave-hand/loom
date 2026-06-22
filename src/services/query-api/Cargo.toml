@@ -25,6 +25,10 @@ object_store = "0.13"
 # build (control-plane-postgres is a transitive dep). `formatting`/`macros` features
 # are already enabled workspace-wide; they render Date/Timestamp as ISO-8601.
 time = { version = "=0.3.47", features = ["formatting", "macros"] }
+# Subscriber installer for the binary. Declared as normal dep (not dev) so reindeer
+# emits the //third-party:tracing-subscriber alias (reindeer skips dev-only in
+# non-vendored mode).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }

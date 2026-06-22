@@ -709,6 +709,22 @@ rust_test(
     deps = [":query-api", "//src/control-plane/core:core", "//third-party:time"],
 )
 
+rust_test(
+    name = "serving-fault-logging",
+    crate = "serving_fault_logging",
+    srcs = ["tests/serving_fault_logging.rs"],
+    crate_root = "tests/serving_fault_logging.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:tokio",
+        "//third-party:tracing",
+        "//third-party:tracing-test",
+    ],
+)
+
 loom_fixture_test(
     name = "spike-duckdb",
     crate = "spike_duckdb",
