@@ -176,3 +176,12 @@ pub async fn serve(bind_addr: SocketAddr, router: Router) -> Result<(), RuntimeE
         .await
         .map_err(RuntimeError::Serve)
 }
+
+/// Install a `tracing-subscriber` for the process. Uses `RUST_LOG` env (default
+/// `info`). Idempotent — a second call from a test harness or re-entrant path does
+/// not panic.
+pub fn init_tracing() {
+    use tracing_subscriber::{EnvFilter, fmt};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = fmt().with_env_filter(filter).try_init();
+}

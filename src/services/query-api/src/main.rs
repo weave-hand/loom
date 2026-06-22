@@ -15,6 +15,7 @@ use query_api::serving_datafusion::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    service_runtime::init_tracing();
     let cfg = service_runtime::Config::from_env()?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
     let backend = parse_serving_backend(std::env::var("LOOM_SERVING_BACKEND").ok().as_deref())

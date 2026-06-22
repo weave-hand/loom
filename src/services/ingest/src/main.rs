@@ -27,6 +27,7 @@ const DEFAULT_FLUSH_BYTE_THRESHOLD: i64 = 64 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    service_runtime::init_tracing();
     let cfg = service_runtime::Config::from_env()?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
 
