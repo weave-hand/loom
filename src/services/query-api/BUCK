@@ -183,6 +183,28 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "multi-file-limit-guard",
+    crate = "multi_file_limit_guard",
+    srcs = ["tests/multi_file_limit_guard.rs"],
+    crate_root = "tests/multi_file_limit_guard.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:axum",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 rust_library(
     name = "e2e-support",
     crate = "e2e_support",
