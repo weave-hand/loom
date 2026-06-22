@@ -25,8 +25,11 @@ the spec/plan just finished and the PR number(s) for the work.
 3. **Record new deferrals.** Read the completed spec's "deferred" / "out of
    scope" / "non-goals" section. For each genuinely-deferred follow-up, add a new
    item to FUTURE (an idea) or ISSUES (a defect/gap) with `status: deferred`/`open`,
-   `from:<spec-slug>`, a fresh prefixed `#id`, and a one-paragraph prose note. Add
-   `[[id]]` links to related items.
+   `from:<spec-slug>` (the originating spec it was deferred within), **`spec:-`**,
+   a fresh prefixed `#id`, and a one-paragraph prose note. Add `[[id]]` links to
+   related items. **Never put the originating spec in `spec:`** — `spec:` means a
+   *dedicated* design exists (the claim/readiness signal); a deferral has none
+   until `loom-work-plan` authors one, so it stays `spec:-`.
 4. **Promote if applicable.** If the work fulfilled a committed ROADMAP item, mark
    it `done`; if it began a `deferred` FUTURE item, set that item `promoted` and add
    the matching `road-…` item.

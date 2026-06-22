@@ -20,6 +20,14 @@ Item grammar (one markdown list item, prose indented below):
 `lineage catalog ontology acl ingest query transform iceberg ui ux test quality devx build deploy cross-cutting`;
 `pr:` is `-` or `#N[,#N...]`; `spec:` is `-` or spec/plan slugs; `[[id]]` cross-links.
 
+**`spec:` vs `from:` (readiness invariant):** `spec:` is set only when a
+**dedicated** spec designs/builds *this* item — it's the checkout-readiness signal
+the claim gate keys on. A spec the item was merely *deferred within* is provenance:
+its slug goes in `from:`, and the item stays `spec:-`. So when mining a deferral
+from a shipped feature's "out of scope" section, record `from:<that-spec-slug>`
+and `spec:-` — never copy the originating spec into `spec:` (that falsely marks an
+undesigned idea as buildable). Open `fut-*` are `spec:-` until promoted.
+
 ## Steps
 
 1. **Mine (agentic).** Use the `superpowers:dispatching-parallel-agents` skill to
