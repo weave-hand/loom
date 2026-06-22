@@ -62,3 +62,8 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 - [x] **Claim not reaped promptly after its PR merges** `{#iss-claim-reap-on-merge area:devx status:fixed from:work-checkout pr:#115 spec:2026-06-21-work-item-planning-checkout-design}`
   Fixed (PR #115): `_pr_state` now returns a `gone` state when no open `work/<id>` PR exists but one ever did (`--state all` after the open check), and `docs.sh claims --reap` reaps a `gone` (merged/closed) claim immediately, ignoring the grace window — which now gates only the genuine pre-PR `none` case. `unknown` (gh unavailable) is still never reaped. Covered by a `pr-gone.sh`-stubbed test.
+
+## test
+
+- [ ] **Hermetic-Postgres fixture boot storm exhausts kernel resources** `{#iss-fixture-boot-contention area:test status:open from:postgres-fixture pr:- spec:2026-06-22-fixture-boot-throttle-design}`
+  A full `buck2 test //src/...` boots every `loom_fixture_test` target's Postgres cluster at once (~60 `initdb` in one window) and they fail en masse at initdb's bootstrap backend (`fixture.rs:88`, `initdb failed`) — kernel-resource exhaustion (SysV semaphore sets; Linux `SEMMNI`=128) under mass-concurrent cluster boot. Single targets and small batches pass, so it manifests only on the whole-suite sweep (and intermittently trips the pre-push `buck2-test` hook with a shifting failure set). Fix: a cross-process+cross-thread `flock` slot semaphore in `PgFixture::start` bounding live clusters to `K` (default 8, `LOOM_PG_FIXTURE_SLOTS`), no build/dependency change.
