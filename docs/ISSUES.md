@@ -35,8 +35,8 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## transform
 
-- [ ] **Transform read-path edge cases** `{#iss-transform-read-edge-cases area:transform status:open from:transform-workers pr:#57 spec:2026-06-22-transform-read-edge-cases-design}`
-  Two `run_transform` edge cases: a missing input surfacing at `Catalog::files` is classified transient (Retry) instead of `UnknownInput` (Abandon); and `scan_table` over an empty file list errors inside DataFusion (Retry) rather than yielding an empty input. Tidy when the typed-transform slice builds on the primitive.
+- [x] **Transform read-path edge cases** `{#iss-transform-read-edge-cases area:transform status:fixed from:transform-workers pr:#147 spec:2026-06-22-transform-read-edge-cases-design}`
+  Two `run_transform` edge cases: a missing input surfacing at `Catalog::files` is classified transient (Retry) instead of `UnknownInput` (Abandon); and `scan_table` over an empty file list errors inside DataFusion (Retry) rather than yielding an empty input. Fixed: an `unknown_input` mapper applied at every input read maps `NotFound` → `UnknownInput` (Abandon); a zero-file input registers an empty relation (via `datafusion_io::logical_arrow_schema` + `register_empty_table`) so the SQL runs over an empty input.
 
 ## iceberg
 
