@@ -109,6 +109,13 @@ buck2-install logic in `tools/cloud-setup.sh`.
    `zstd -d`, `chmod +x`.
 3. **Prelude submodule:** `git submodule update --init --recursive` (pinned alongside
    the buck2 release — keep `BUCK2_RELEASE` aligned with the prelude pin).
+4. **Kill stale buck2 daemon:** `buck2 killall 2>/dev/null || true`. BuildBuddy
+   snapshots/reuses VMs **and restores running processes**, while its repo-sync runs
+   `git clean -x` which deletes `buck-out/`. A restored daemon then holds the removed
+   `buck-out/v2`, and the next `buck2 build` dies with *"Error validating working
+   directory: Failed to stat …/buck-out/v2"*. Killing it forces a fresh daemon; the
+   authoritative cache is BuildBuddy RE, not local `buck-out`, so nothing is lost. This
+   is the general remedy — it covers every action, not just `affected`.
 
 **The single buck2 pin** (`BUCK2_RELEASE`) lives in this script, carrying the existing
 "keep aligned with the prelude submodule pin" comment. (Today the pin is duplicated in
