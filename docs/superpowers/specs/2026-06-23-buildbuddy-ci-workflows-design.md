@@ -160,21 +160,34 @@ Common to all actions:
      FETCH_HEAD HEAD)`; then `git diff --name-status --no-renames "$BASE_SHA" HEAD` piped
      through the existing `awk 'NF >= 2 { print substr($1,1,1) " " $2 }'` into
      `changes.txt` (the sapling `hg status` format btd expects).
-  2. **Base-state graph:** materialize the base commit in a `git worktree`
+  2. **The supertd binary (built once):** `supertd` is a **standalone** target-graph
+     tool — it parses BUCK files directly and needs no buck2 daemon or `buck-out` to
+     run. Build it once in the healthy head checkout and reuse the binary for both
+     graphs: `supertd="$(buck2 build //tools:supertd-bin-x86_64 --show-full-simple-output)"`.
+     (Build the concrete arch binary, not the `//tools:supertd` `command_alias`, which
+     can't be exec'd against another cwd; arch is pinned `amd64`.) This is the key
+     simplification: the earlier "`buck2 run //tools:supertd` inside the worktree"
+     approach spun up a *second buck2 daemon* in the throwaway `_base`, which on
+     snapshotted/reused microVMs collided with a restored daemon's stale `buck-out`
+     (`Failed to stat _base/buck-out/v2`). Running the binary directly removes the second
+     daemon entirely.
+  3. **Head graph:** `"$supertd" targets root//... --output diff.jsonl` in the head
+     checkout.
+  4. **Base graph:** materialize the base commit in a throwaway `git worktree`
      (`git worktree prune && git worktree add --force --detach "$BB_ROOT/_base"
-     "$BASE_SHA"`, where `$BB_ROOT` = `$BUILDBUDDY_CI_RUNNER_ROOT_DIR`) — the BuildBuddy
-     equivalent of the GitHub second checkout. The `prune` + `--force` are load-bearing
-     on snapshotted/reused VMs: a prior run leaves `_base` registered in `.git/worktrees`
-     even after its dir is cleaned, so a plain `worktree add` fails "missing but already
-     registered". Because the runner doesn't populate submodules and worktrees don't
-     inherit them, run `git -C "$BB_ROOT/_base" submodule update --init --recursive`
-     (prelude is needed for graph evaluation), then `buck2 run //tools:supertd --
-     targets root//... --output "$PWD/base.jsonl"` from inside the worktree.
-  3. **Impacted targets:** in the head checkout,
-     `buck2 run //tools:btd -- --changes changes.txt --base base.jsonl --universe
-     root//... --json-lines | jq -r 'select(.target | startswith("root//src/")) |
-     .target' | sort -u > impacted.txt`.
-  4. **Build & test impacted:** if `impacted.txt` is non-empty,
+     "$BASE_SHA"`, `$BB_ROOT` = `$BUILDBUDDY_CI_RUNNER_ROOT_DIR`). `prune` + `--force`
+     are load-bearing on reused VMs (a prior run leaves `_base` registered in
+     `.git/worktrees` after its dir is cleaned → plain `worktree add` fails "missing but
+     already registered"). Re-init submodules (`git -C "$BB_ROOT/_base" submodule update
+     --init --recursive` — the runner populates none, worktrees don't inherit them, and
+     supertd parses prelude), then run the **same** binary there:
+     `( cd "$BB_ROOT/_base" && "$supertd" targets root//... --output "$HEAD_ROOT/base.jsonl" )`.
+     No buck2 runs in the worktree.
+  5. **Impacted targets:** with **both** graphs supplied, btd is pure computation (it
+     never invokes buck2/supertd itself — the README's guarantee): `buck2 run //tools:btd
+     -- --changes changes.txt --base base.jsonl --diff diff.jsonl --json-lines | jq -r
+     'select(.target | startswith("root//src/")) | .target' | sort -u > impacted.txt`.
+  6. **Build & test impacted:** if `impacted.txt` is non-empty,
      `mapfile -t targets < impacted.txt` → `buck2 build -M none "${targets[@]}"` →
      `buck2 test "${targets[@]}"`. Empty ⇒ log "nothing impacted" and exit 0.
 - **Env vars used:** none for git context — base is `main` by construction (the trigger

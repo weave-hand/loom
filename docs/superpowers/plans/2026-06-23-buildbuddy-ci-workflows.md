@@ -186,26 +186,34 @@ actions:
             | awk 'NF >= 2 { print substr($1, 1, 1) " " $2 }' > changes.txt
           echo "=== changed files ==="; cat changes.txt
 
-          # Base-state target graph, from a worktree at the base commit (the
-          # BuildBuddy equivalent of the GitHub second checkout). The runner checks
-          # out no submodules and worktrees don't inherit them, so re-init prelude.
+          # supertd is a standalone target-graph tool: it reads BUCK files directly and
+          # needs NO buck2 daemon or buck-out to run. Build the binary ONCE here in the
+          # healthy head checkout (the command_alias //tools:supertd can't be exec'd
+          # against another cwd, so build the concrete arch binary), then run it against
+          # both trees below. arch is pinned amd64 for this action.
+          supertd="$(buck2 build //tools:supertd-bin-x86_64 --show-full-simple-output)"
+
+          # Head (after) graph: run supertd in this checkout.
+          "$supertd" targets root//... --output "$head_root/diff.jsonl"
+
+          # Base (before) graph: a throwaway worktree at the base commit, then run the
+          # SAME supertd binary there — no buck2 in the worktree at all. The runner
+          # checks out no submodules and worktrees don't inherit them, so re-init
+          # prelude (supertd parses it). prune + --force keep this idempotent on reused
+          # (snapshotted) VMs, where a prior run can leave _base registered in
+          # .git/worktrees after its dir was cleaned.
           base_dir="${BUILDBUDDY_CI_RUNNER_ROOT_DIR:-$head_root}/_base"
-          # Snapshotted/reused VMs may leave _base registered in .git/worktrees even
-          # after its dir is gone; rm -rf alone leaves that record and `worktree add`
-          # then fails "missing but already registered". prune clears it; --force covers
-          # a still-registered path.
           rm -rf "$base_dir"
           git worktree prune
           git worktree add --force --detach "$base_dir" "$base_sha"
           git -C "$base_dir" submodule update --init --recursive
-          ( cd "$base_dir" && buck2 run //tools:supertd -- \
-              targets root//... --output "$head_root/base.jsonl" )
+          ( cd "$base_dir" && "$supertd" targets root//... --output "$head_root/base.jsonl" )
 
-          # Impacted first-party targets. btd computes the after-state itself via
-          # --universe in this (head) checkout. Scope to //src — that's what we
-          # build/test; third-party deps come along transitively.
+          # Impacted first-party targets. With BOTH graphs supplied (--base + --diff),
+          # btd is pure computation — it never invokes buck2/supertd itself. Scope to
+          # //src — that's what we build/test; third-party deps come along transitively.
           buck2 run //tools:btd -- \
-            --changes changes.txt --base base.jsonl --universe root//... --json-lines \
+            --changes changes.txt --base base.jsonl --diff diff.jsonl --json-lines \
             | jq -r 'select(.target | startswith("root//src/")) | .target' \
             | sort -u > impacted.txt
           echo "=== impacted targets ==="; cat impacted.txt
