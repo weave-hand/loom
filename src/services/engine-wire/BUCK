@@ -44,6 +44,9 @@ cargo.rust_library(
         "//third-party:serde_json",
         "//third-party:uuid",
         "//third-party:time",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-array",
+        "//third-party:futures",
     ],
     visibility = ["PUBLIC"],
 )
