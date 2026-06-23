@@ -18,7 +18,6 @@ use control_plane_core::snapshot::StatValue;
 use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
 use control_plane_postgres::iceberg_landing;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
-use sqlx::PgPool;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
 use datafusion::common::{Column, DFSchema, TableReference};
@@ -39,6 +38,7 @@ use object_store::ObjectStoreExt;
 use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::path::Path as ObjPath;
+use sqlx::PgPool;
 
 use crate::serving::{
     ActionEngine, Rows, ServingEngine, ServingError, SqlValue, build_object_batch, inline_params,

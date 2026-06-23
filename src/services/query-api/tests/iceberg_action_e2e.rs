@@ -178,7 +178,11 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
         .events_for(&run_id, PageReq::unbounded())
         .await
         .unwrap();
-    assert_eq!(events.items.len(), 1, "one lineage event for the action's run");
+    assert_eq!(
+        events.items.len(),
+        1,
+        "one lineage event for the action's run"
+    );
     assert_eq!(
         events.items[0].outputs,
         vec![DatasetRef::from(&TypeName("Widget".into()))]
@@ -212,7 +216,10 @@ async fn ungranted_subject_is_forbidden_and_writes_nothing() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, ActionError::Forbidden), "ungranted -> Forbidden");
+    assert!(
+        matches!(err, ActionError::Forbidden),
+        "ungranted -> Forbidden"
+    );
 
     // Nothing written: enforcement short-circuits before the engine, so no mirror
     // table was ever created.
@@ -241,7 +248,7 @@ async fn failed_write_commits_neither_row_nor_lineage() {
     };
     let run_id = control_plane_core::RunId(uuid::Uuid::new_v4());
     let event = control_plane_core::LineageEvent {
-        run_id: run_id.clone(),
+        run_id,
         event_type: control_plane_core::EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
         inputs: vec![],
