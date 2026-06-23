@@ -710,6 +710,18 @@ rust_test(
 )
 
 rust_test(
+    name = "write-denial-reason",
+    crate = "write_denial_reason",
+    srcs = ["tests/write_denial_reason.rs"],
+    crate_root = "tests/write_denial_reason.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "serving-fault-logging",
     crate = "serving_fault_logging",
     srcs = ["tests/serving_fault_logging.rs"],
@@ -860,6 +872,25 @@ rust_test(
     crate = "action_conformance_http",
     srcs = ["tests/action_conformance_http.rs"],
     crate_root = "tests/action_conformance_http.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "write-denial-http",
+    crate = "write_denial_http",
+    srcs = ["tests/write_denial_http.rs"],
+    crate_root = "tests/write_denial_http.rs",
     edition = "2024",
     deps = [
         ":query-api",

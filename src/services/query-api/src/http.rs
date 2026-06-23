@@ -607,6 +607,12 @@ async fn post_action(
         Err(crate::action::ActionError::UnknownAction(a)) => {
             (StatusCode::NOT_FOUND, a).into_response()
         }
+        // Fine-grained Write-policy denial: a caller-scoped structured body (column
+        // vs row_filter). The predicate / policy id / role stay server-side.
+        Err(crate::action::ActionError::WriteDenied(reason)) => {
+            (StatusCode::FORBIDDEN, Json(reason.to_body())).into_response()
+        }
+        // Coarse Write-gate denial (and other unit forbiddens): bodyless 403, unchanged.
         Err(crate::action::ActionError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(crate::action::ActionError::BadParams(e)) => {
             (StatusCode::BAD_REQUEST, e.to_string()).into_response()

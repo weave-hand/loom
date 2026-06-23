@@ -370,8 +370,11 @@ async fn write_policy_enforces_row_filter_and_deny_column() {
     .await
     .unwrap_err();
     assert!(
-        matches!(err, ActionError::Forbidden),
-        "row filter denies non-gadget"
+        matches!(
+            err,
+            ActionError::WriteDenied(query_api::action::WriteDenialReason::RowFilter)
+        ),
+        "row filter denies non-gadget: {err:?}"
     );
     assert_eq!(
         writer_fx
@@ -422,8 +425,11 @@ async fn write_policy_enforces_row_filter_and_deny_column() {
     .await
     .unwrap_err();
     assert!(
-        matches!(err, ActionError::Forbidden),
-        "deny-column blocks setting name"
+        matches!(
+            &err,
+            ActionError::WriteDenied(query_api::action::WriteDenialReason::Column(c)) if c == "name"
+        ),
+        "deny-column blocks setting name: {err:?}"
     );
     assert_eq!(
         writer_fx
