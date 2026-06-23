@@ -205,6 +205,18 @@ rust_test(
     deps = [":postgres"],
 )
 
+# Bound check for the hermetic-fixture boot throttle (BootThrottle). Pure flock on
+# temp files — no postgres/duckdb — so a plain rust_test (RE-eligible), NOT a
+# loom_fixture_test.
+rust_test(
+    name = "boot-throttle",
+    crate = "boot_throttle",
+    srcs = ["tests/boot_throttle.rs"],
+    crate_root = "tests/boot_throttle.rs",
+    edition = "2024",
+    deps = [":postgres", "//third-party:tempfile"],
+)
+
 loom_fixture_test(
     name = "queue",
     crate = "queue",
