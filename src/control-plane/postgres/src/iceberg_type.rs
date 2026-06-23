@@ -8,7 +8,8 @@ use control_plane_core::BaseType;
 /// Iceberg primitive type name → loom logical base type (read path, `schema()`).
 /// `None` for a type loom has no logical name for (decimal, fixed, uuid, binary, …).
 pub fn logical_from_iceberg(physical: &str) -> Option<BaseType> {
-    match physical.trim().to_ascii_lowercase().as_str() {
+    let lower = physical.trim().to_ascii_lowercase();
+    match lower.as_str() {
         "int" => Some(BaseType::Integer),
         "long" => Some(BaseType::Long),
         "double" => Some(BaseType::Double),
@@ -18,6 +19,9 @@ pub fn logical_from_iceberg(physical: &str) -> Option<BaseType> {
         // Iceberg spells microsecond timestamps "timestamp"/"timestamptz"; loom maps both to
         // its single logical `timestamp`.
         "timestamp" | "timestamptz" => Some(BaseType::Timestamp),
+        // A `list<float>` vector column is mirrored as `vector(N)` (N from the field doc,
+        // see `iceberg_mirror::columns_of`); reuse the core codec to parse the dimension.
+        v if v.starts_with("vector(") => control_plane_core::resolve_logical(v),
         _ => None,
     }
 }

@@ -124,12 +124,23 @@ converts up front rather than relying on that implicit coercion.
 > wiring. The research makes this a confirmation, not an open question — but it stays
 > the first task because it's the one place arrow/parquet-57 behavior is load-bearing.
 
-### 4. Serving
+### 4. Serving / read-back — **columnar Arrow, not per-object JSON** (rescoped 2026-06-23)
 
-`render.rs` serializes a `vector(N)` column as a JSON **array of numbers** from the
-served `List<Float32>` column (`JsonRepr::FloatArray`). No precision loss beyond f32.
-The vector is read-only data on the wire — no filtering/sorting on vector columns
-(rejected with a clear error, consistent with deferred ANN).
+The consumer reads vectors out via the **governed columnar Arrow path** (bulk/sliced
+export to hydrate an external index — agenda A4), **not** per-object JSON. That read is
+**already proven**: `read_files_as_batches` returns the `list<float>` column value-exact
+(the de-risk test), and the future bulk-export endpoint reads the same Arrow columns, so
+vectors flow through it for free. There is **no vector search** in loom (no ANN, no
+distance, no index — the external hot tier does that).
+
+Therefore per-object JSON serialization of vectors is **deferred** (`fut-vector-json-serving`)
+— nobody hydrates an index one-object-at-a-time, and a 384–1536-float array inline in
+every object's JSON is the wrong shape. The per-object JSON path (`GET /objects/{type}`)
+**gracefully skips** vector-typed properties (so a type with both scalar and embedding
+properties still serves its scalars over JSON); the embedding is available via the
+columnar export. `JsonRepr::FloatArray` exists for the future, but the serving array
+builder + `SqlValue` list variant it would need are **not** built here. Vector columns
+are non-filterable/non-sortable (storage, not search — `params`/`filter` reject them).
 
 ### 5. Ontology
 
@@ -173,17 +184,22 @@ object store):
   `List<Float32>` inference normalized to `List<Float32>`; Iceberg `list<float>` storage
   + mirror handling (stats skipped); serving JSON-array read-back; ontology `vector(N)`
   property acceptance; the tests above.
-- **Out (deferred, tracked):** the embedding-generation Transform (**A3b**, the next
-  slice); DuckLake vector storage (`fut-vector-ducklake`); non-`f32` element types;
-  ANN / distance functions / vector-predicate pushdown / vector indexes (stays in the
-  external hot tier — explicit non-goal); filtering/sorting on vector columns.
+- **Out (deferred, tracked):** **per-object JSON serialization of vectors**
+  (`fut-vector-json-serving` — needs a `SqlValue` list variant + array builder; the
+  consumer reads via columnar Arrow, not per-object JSON); the embedding-generation
+  Transform (**A3b**, the next slice); DuckLake vector storage (`fut-vector-ducklake`);
+  non-`f32` element types; ANN / distance functions / vector-predicate pushdown / vector
+  indexes (external hot tier — explicit non-goal); filtering/sorting on vector columns.
 
 ## Acceptance criteria
 
 1. A model can declare a `vector(N)` property; a dataset with a `FixedSizeList<f32,N>`
    column binds to it (width validated) and lands over the Iceberg backend.
 2. The landed vector is stored governed + lineage-tracked (rides the snapshot) and is
-   read back through the serving path as a JSON array of `N` numbers, value-exact to f32.
+   read back **value-exact (f32) via the columnar Arrow path** (`read_files_as_batches`
+   / the future bulk export). Per-object JSON serving of vectors is out of scope
+   (`fut-vector-json-serving`); a typed-object JSON read of a type that has a vector
+   property serves its scalar properties and skips the vector without error.
 3. A vector column carries no per-column stats and does not disturb file pruning or any
    primitive column's behavior.
 4. A wire vector whose per-row element count ≠ declared `N` is a deterministic

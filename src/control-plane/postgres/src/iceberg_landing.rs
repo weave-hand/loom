@@ -17,7 +17,7 @@ use control_plane_core::{
     Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, Result, SnapshotId,
     TableRef,
 };
-use iceberg::spec::{NestedField, PrimitiveType, Schema as IceSchema, Type};
+use iceberg::spec::{ListType, NestedField, PrimitiveType, Schema as IceSchema, Type};
 use iceberg::{Catalog as IceCatalog, NamespaceIdent, TableCreation, TableIdent};
 use sqlx::PgPool;
 
@@ -375,19 +375,45 @@ async fn overwrite_truncate(
     Ok(at)
 }
 
-/// Build an iceberg `Schema` from loom `ColumnSpec`s, assigning 1-based field ids.
+/// Build an iceberg `Schema` from loom `ColumnSpec`s. Field ids are assigned from a
+/// running counter (a `vector(N)` column's `list<float>` element consumes its own id),
+/// so every nested field is schema-wide unique as Iceberg requires.
 fn ice_schema(columns: &[ColumnSpec]) -> Result<IceSchema> {
+    let mut next_id = 1i32;
     let fields = columns
         .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let ty = Type::Primitive(primitive_from(&c.ty)?);
-            let id = (i + 1) as i32;
-            Ok(Arc::new(if c.nullable {
-                NestedField::optional(id, &c.name, ty)
-            } else {
-                NestedField::required(id, &c.name, ty)
-            }))
+        .map(|c| {
+            let id = next_id;
+            next_id += 1;
+            let field = match control_plane_core::resolve_logical(&c.ty) {
+                // A vector is stored as Iceberg `list<float>`; the dimension `N` rides in
+                // the field doc (`vector(N)`) since an Iceberg list is length-free.
+                Some(control_plane_core::BaseType::Vector(n)) => {
+                    let elem_id = next_id;
+                    next_id += 1;
+                    let element = Arc::new(NestedField::list_element(
+                        elem_id,
+                        Type::Primitive(PrimitiveType::Float),
+                        true,
+                    ));
+                    let list = Type::List(ListType::new(element));
+                    let f = if c.nullable {
+                        NestedField::optional(id, &c.name, list)
+                    } else {
+                        NestedField::required(id, &c.name, list)
+                    };
+                    f.with_doc(format!("vector({n})"))
+                }
+                _ => {
+                    let ty = Type::Primitive(primitive_from(&c.ty)?);
+                    if c.nullable {
+                        NestedField::optional(id, &c.name, ty)
+                    } else {
+                        NestedField::required(id, &c.name, ty)
+                    }
+                }
+            };
+            Ok(Arc::new(field))
         })
         .collect::<Result<Vec<_>>>()?;
     IceSchema::builder().with_fields(fields).build().map_err(be)
