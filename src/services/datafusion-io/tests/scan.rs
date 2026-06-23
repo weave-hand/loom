@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use control_plane_core::{FileRef, TableRef};
 use datafusion::execution::context::SessionContext;
-use datafusion_io::{WriteConfig, scan_table, write_dataset};
+use datafusion_io::{WriteConfig, register_empty_table, scan_table, write_dataset};
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
 
@@ -58,4 +58,25 @@ async fn scan_registers_written_files_for_sql() {
     let out = df.collect().await.unwrap();
     let n: usize = out.iter().map(|b| b.num_rows()).sum();
     assert_eq!(n, 2, "both rows are scannable via SQL");
+}
+
+#[tokio::test]
+async fn register_empty_table_runs_sql_over_zero_rows() {
+    let schema: SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let ctx = SessionContext::new();
+    register_empty_table(&ctx, "input", schema).unwrap();
+
+    // count(*) over an empty relation is one row of 0; SELECT * is empty.
+    let n = ctx.sql("SELECT count(*) AS n FROM input").await.unwrap();
+    let rows = n.collect().await.unwrap();
+    let total: usize = rows.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total, 1, "count(*) yields exactly one row");
+
+    let star = ctx.sql("SELECT * FROM input").await.unwrap();
+    let out = star.collect().await.unwrap();
+    let data_rows: usize = out.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(data_rows, 0, "the relation is empty");
 }

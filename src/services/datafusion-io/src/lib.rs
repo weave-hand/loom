@@ -8,8 +8,10 @@ pub mod infer;
 pub mod scan;
 pub mod write;
 
-pub use infer::{InferError, arrow_logical_type, infer_columns};
-pub use scan::{ScanError, scan_table};
+pub use infer::{
+    InferError, arrow_logical_type, infer_columns, logical_arrow_schema, logical_arrow_type,
+};
+pub use scan::{ScanError, register_empty_table, scan_table};
 pub use write::{
     WriteConfig, WriteError, WrittenFile, estimate_partitions, file_stats_from_bytes, write_dataset,
 };

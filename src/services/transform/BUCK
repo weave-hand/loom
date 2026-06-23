@@ -76,6 +76,24 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "run-unknown-input",
+    crate = "run_unknown_input",
+    srcs = ["tests/run_unknown_input.rs"],
+    crate_root = "tests/run_unknown_input.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//src/control-plane/core:core",
+        "//third-party:async-trait",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 loom_fixture_test(
     name = "transform-e2e",
     crate = "transform_e2e",
