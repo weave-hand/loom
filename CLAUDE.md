@@ -73,6 +73,18 @@ The postgres adapter (`src/control-plane/postgres`) uses sqlx **compile-time** `
 
 ## Continuous integration
 
+**BuildBuddy Workflows are the source of truth for CI.** `buildbuddy.yaml` at the
+repo root defines three actions mirroring the jobs below — `build-test` (push to
+`main`, full `buck2 build`/`test //src/...`), `affected` (PRs, btd-driven impacted
+build/test), and `lint` (prek hooks on all events). They run on BuildBuddy runners
+co-located with the RE/cache, with VMs snapshotted/reused, so the shared per-action
+setup (`tools/ci/buildbuddy-setup.sh`: pinned buck2 + zstd/bsdtar/jq + prelude
+submodule init) is near-instant on warm runs. **Prerequisite:** an org secret named
+`BUILDBUDDY_API_KEY` (BuildBuddy UI → Secrets) — `.buckconfig`'s `[buck2_re_client]`
+reads `$BUILDBUDDY_API_KEY`, which the runner does not otherwise expose to buck2. The
+GitHub Actions workflow below is being retired once the BuildBuddy workflow is proven
+green (see the plan's gated Step B).
+
 GitHub Actions, at `.github/workflows/ci.yml` (repo: `weave-hand/loom`). For the *execution model* behind these jobs — RE-vs-local placement, fixture-test local routing, and the materialization cost model (incl. why we don't cache buck-out) — see **`docs/build-execution.md`**. All jobs install the pinned buck2 release and check out the prelude submodule recursively:
 - **`build-test`** (pushes to `main` only) — full `buck2 build //src/...` + `buck2 test //src/...`; `main` must always be fully green.
 - **`affected`** (PRs only) — builds/tests just the first-party targets the diff impacts, via btd. It does a second checkout at the PR base SHA, snapshots that graph with `//tools:supertd`, then runs `//tools:btd` (`--base` + `--universe`, `--json-lines`) and feeds the impacted `root//src/...` targets into `buck2 build`/`test`. Empty impact ⇒ nothing built.
