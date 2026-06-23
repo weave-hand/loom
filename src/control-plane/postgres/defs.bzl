@@ -24,6 +24,14 @@ def loom_fixture_test(
         "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
         "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
         "LOOM_MIGRATIONS_DIR": "$(location //src/control-plane/postgres:migrations)/migrations",
+        # Host-stable shared dir so the fixture boot throttle's K slots are shared
+        # across ALL fixture-test processes (buck2's local executor may hand each
+        # action a per-action TMPDIR; keying the slot dir off that would
+        # un-throttle the cross-target axis). The fixture code defaults to this
+        # same literal, so a direct cargo test behaves identically. Override-safe:
+        # placed before fixture_env.update(env), so a per-target `env` (and ambient
+        # env) wins.
+        "LOOM_PG_FIXTURE_SLOT_DIR": "/tmp/loom-pg-fixture-slots",
     }
     if duckdb:
         fixture_env["DUCKDB_BIN"] = "$(location //src/control-plane/postgres:duckdb-cli)"

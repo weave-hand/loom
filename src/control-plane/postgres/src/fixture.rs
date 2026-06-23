@@ -134,6 +134,11 @@ pub struct PgFixture {
     server: Child,
     bin: PathBuf,
     ld_library_path: String,
+    // Declared last so it drops AFTER the server is killed/reaped (Drop runs
+    // fields in declaration order): the cluster's semaphores are freed before the
+    // boot-slot lock is released, so the next waiter only proceeds once this
+    // cluster is truly gone.
+    _slot: SlotGuard,
 }
 
 /// Build a `Command` for a pg binary, applying the shared-library search path so
@@ -152,6 +157,10 @@ impl PgFixture {
     /// for the spawned binaries' shared-library search path (the dist libs + the
     /// bundled libxml2). Panics on failure — test-only.
     pub fn start() -> Self {
+        // Gate before initdb: bounds the number of live fixture clusters so the
+        // whole-suite boot doesn't exhaust kernel SysV-semaphore resources
+        // (`iss-fixture-boot-contention`). Held for the cluster's lifetime.
+        let _slot = boot_throttle().acquire();
         let bin = PathBuf::from(
             std::env::var("POSTGRES_BIN_DIR")
                 .expect("POSTGRES_BIN_DIR must point at the postgres bin/ directory"),
@@ -194,6 +203,7 @@ impl PgFixture {
             server,
             bin,
             ld_library_path,
+            _slot,
         };
         fixture.wait_ready();
         fixture
