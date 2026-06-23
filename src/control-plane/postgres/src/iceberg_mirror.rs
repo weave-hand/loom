@@ -253,7 +253,17 @@ pub fn columns_of(table: &Table) -> Vec<ProjectedColumn> {
             name: field.name.clone(),
             iceberg_type: match field.field_type.as_ref() {
                 iceberg::spec::Type::Primitive(p) => p.to_string(),
-                other => panic!("project: non-primitive column type {other:?}"),
+                // A `list<float>` field is a loom vector column. The dimension `N` is
+                // stashed in the field doc as `vector(N)` (Iceberg lists are
+                // length-free), which the read decoder parses back to `BaseType::Vector`.
+                iceberg::spec::Type::List(_) => field
+                    .doc
+                    .clone()
+                    .filter(|d| d.starts_with("vector("))
+                    .unwrap_or_else(|| {
+                        panic!("project: list column {} lacks a vector(N) doc", field.name)
+                    }),
+                other => panic!("project: unsupported column type {other:?}"),
             },
             nullable: !field.required,
         })

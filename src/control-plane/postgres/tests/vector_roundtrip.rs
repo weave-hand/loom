@@ -20,9 +20,7 @@ use control_plane_postgres::iceberg_writer::append_batches;
 use control_plane_postgres::read_files_as_batches;
 use iceberg::io::LocalFsStorageFactory;
 use iceberg::spec::{ListType, NestedField, PrimitiveType, Schema as IceSchema, Type};
-use iceberg::{
-    Catalog as IceCatalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent,
-};
+use iceberg::{Catalog as IceCatalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 
 async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
     let mut props = std::collections::HashMap::new();
