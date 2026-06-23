@@ -22,6 +22,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Typed transforms emit type-named lineage nodes; ingest/physical transforms emit table-named nodes. The two layers don't auto-join yet (backing refs kept in the payload). A binding edge at `define_type`/bind would connect them.
 - [ ] **TableRef/TypeName → DatasetRef naming bridge** `{#fut-dataset-naming-bridge area:lineage status:deferred from:critical-review pr:- spec:-}`
   An OpenLineage-conformant `{namespace, name}` mapping needs deployment context (physical storage location), so it belongs to the Step-3 services, not `core` constants.
+- [ ] **Lineage DatasetRef validation** `{#fut-lineage-datasetref-validation area:lineage status:deferred from:2026-06-21-existence-validation-design pr:- spec:-}`
+  Carved out of [[iss-existence-validation]]: validate the `DatasetRef`s a `LineageEvent` references on `emit`. Needs an internal-vs-external namespace convention first — a `DatasetRef` is deliberately opaque and may name an external dataset, so validating naively would reject legitimate external lineage. Relates to [[fut-dataset-naming-bridge]].
 
 ## catalog
 
@@ -29,6 +31,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Prerequisite for the full atomic snapshot+lineage+enqueue commit; the read-only catalog doesn't expose a transactional write. Owned by the ingest worker, joins the flat `Tx` seam when ingest defines it.
 - [ ] **Schema-evolution test coverage** `{#fut-schema-evolution-coverage area:catalog status:deferred from:2026-06-07-catalog-delete-contract-design pr:- spec:-}`
   The delete contract covers the `end`-bound via `DROP` but not `ALTER TABLE` add/drop column across snapshots. Adds an `ALTER` op to the `CatalogSeed` seam; deferred until column-level time travel matters.
+- [ ] **Catalog-table reference validation** `{#fut-catalog-reference-validation area:catalog status:deferred from:2026-06-21-existence-validation-design pr:- spec:-}`
+  Carved out of [[iss-existence-validation]]: validate `define_type`'s backing `TableRef` and ACL `PolicyTarget::Table` targets against the DuckLake catalog. Needs a `Catalog::exists(&TableRef)` read seam — the catalog is DuckDB-owned and external to loom's Postgres, so it is not cheaply checkable today and the type-only slice deliberately left `Table` targets unvalidated.
 - [x] **Queue-driven compaction job + incremental output** `{#fut-compaction-job area:catalog status:promoted from:2026-06-17-compaction-design pr:- spec:-}`
   Promoted to committed work — see [[road-compaction-job]]. Operator-triggered, engine-wire compaction (zero-pool worker streams files over Arrow Flight, commits `compact_files` over a new `EngineControl::CompactTable` RPC). Watermark-tracked **incremental (append-delta)** output remains a deferred follow-on (slice 1 is full-rewrite of the small-file set). Compacted files get fresh row-ids — revisit if row-level deletes land.
 

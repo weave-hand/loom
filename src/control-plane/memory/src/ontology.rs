@@ -97,11 +97,14 @@ impl Ontology for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_action(&self, action: ActionDef) -> Result<()> {
-        self.ontology
-            .lock()
-            .unwrap()
-            .actions
-            .insert(action.name.0.clone(), action);
+        let mut ont = self.ontology.lock().unwrap();
+        if !ont.types.contains_key(&action.target.0) {
+            return Err(ControlPlaneError::Validation(format!(
+                "action `{}` references unknown target type `{}`",
+                action.name.0, action.target.0
+            )));
+        }
+        ont.actions.insert(action.name.0.clone(), action);
         Ok(())
     }
 

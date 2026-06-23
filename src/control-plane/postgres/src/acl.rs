@@ -184,6 +184,25 @@ impl Acl for PgControlPlane {
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
+        // A Type target must reference an existing ontology type (best-effort,
+        // non-transactional, like the role check above and set_policy). Table
+        // targets reference the DuckLake catalog and stay unvalidated (deferred).
+        if let PolicyTarget::Type(name) = &target {
+            let type_exists = sqlx::query_scalar!(
+                "select exists (select 1 from ontology.object_type where name = $1)",
+                &name.0,
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(backend)?
+            .unwrap_or(false);
+            if !type_exists {
+                return Err(ControlPlaneError::Validation(format!(
+                    "grant references unknown type `{}`",
+                    name.0
+                )));
+            }
+        }
         let (kind, a, b) = target_cols(&target);
         sqlx::query!(
             "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b, effect) \
@@ -237,23 +256,25 @@ impl Acl for PgControlPlane {
         // Best-effort, non-transactional validation (separate round-trips from the
         // insert below, like the role-exists check above): a concurrent type deletion
         // between this check and the insert is tolerated. Fine for current usage.
-        if let Some(f) = &policy.row_filter {
-            match &policy.target {
-                PolicyTarget::Type(name) => {
-                    let type_exists = sqlx::query_scalar!(
-                        "select exists (select 1 from ontology.object_type where name = $1)",
-                        &name.0,
-                    )
-                    .fetch_one(&self.pool)
-                    .await
-                    .map_err(backend)?
-                    .unwrap_or(false);
-                    if !type_exists {
-                        return Err(ControlPlaneError::Validation(format!(
-                            "policy references unknown type {}",
-                            name.0
-                        )));
-                    }
+        // A Type target's existence is checked *always* (independent of row_filter);
+        // the row-filter's columns are validated only when a row_filter is present.
+        match &policy.target {
+            PolicyTarget::Type(name) => {
+                let type_exists = sqlx::query_scalar!(
+                    "select exists (select 1 from ontology.object_type where name = $1)",
+                    &name.0,
+                )
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend)?
+                .unwrap_or(false);
+                if !type_exists {
+                    return Err(ControlPlaneError::Validation(format!(
+                        "policy references unknown type {}",
+                        name.0
+                    )));
+                }
+                if let Some(f) = &policy.row_filter {
                     let names = sqlx::query_scalar!(
                         "select name from ontology.property where type_name = $1",
                         &name.0,
@@ -264,7 +285,9 @@ impl Acl for PgControlPlane {
                     let set: std::collections::HashSet<String> = names.into_iter().collect();
                     validate_row_filter(f, Some(&set)).map_err(ControlPlaneError::Validation)?;
                 }
-                PolicyTarget::Table(_) => {
+            }
+            PolicyTarget::Table(_) => {
+                if let Some(f) = &policy.row_filter {
                     validate_row_filter(f, None).map_err(ControlPlaneError::Validation)?;
                 }
             }

@@ -23,6 +23,32 @@ fn job(kind: &str) -> NewJob {
     }
 }
 
+/// Define a minimal ontology type (all-`String`, optional properties) so a
+/// contract can reference it as a Type target. The table name is the lowercased
+/// type name. Used where a type only needs to *exist* (e.g. to satisfy the
+/// existence checks on `grant`/`set_policy`/`define_action`).
+async fn define_min_type<O: Ontology>(o: &O, name: &str, props: &[&str]) {
+    o.define_type(ObjectType {
+        name: TypeName(name.into()),
+        properties: props
+            .iter()
+            .map(|n| PropertyDef {
+                name: (*n).into(),
+                ty: "String".into(),
+                required: false,
+            })
+            .collect(),
+        derived: vec![],
+        table: TableRef {
+            schema: "main".into(),
+            name: name.to_lowercase(),
+        },
+        identity: None,
+    })
+    .await
+    .expect("define type");
+}
+
 /// Contract for the `Queue` ops including transactional `enqueue`.
 /// `cp` must be freshly empty; `lock_timeout` must match the adapter's configured
 /// value so the reclaim assertion is timed correctly.
@@ -909,6 +935,20 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         })
     };
 
+    // grant/set_policy now reject Type targets that don't exist, so every Type
+    // this contract references as a grant/policy target must be defined first.
+    // Customer carries the properties the row-filter assertions use; the rest
+    // only need to exist (their policies use row_filter: None / unvalidated cols).
+    define_min_type(
+        a,
+        "Customer",
+        &["tenant", "is_public", "owner", "region", "active"],
+    )
+    .await;
+    for t in ["Invoice", "Ticket", "Widget", "Gadget"] {
+        define_min_type(a, t, &[]).await;
+    }
+
     // --- subjects / roles / grants / check ---
     a.define_subject(&sid("alice")).await.unwrap();
     a.define_role(&rid("reader")).await.unwrap();
@@ -1029,26 +1069,7 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         Err(ControlPlaneError::NotFound(_))
     ));
 
-    // Define the Customer type so the strict Type-target policy validation passes.
-    a.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: ["tenant", "is_public", "owner", "region", "active"]
-            .iter()
-            .map(|n| PropertyDef {
-                name: (*n).into(),
-                ty: "String".into(),
-                required: false,
-            })
-            .collect(),
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "customer".into(),
-        },
-        identity: None,
-    })
-    .await
-    .expect("define Customer type");
+    // (Customer is defined up front, alongside the other Type targets.)
 
     // --- policies: nested filter + deny columns round-trip ---
     let filter = RowFilter::And(vec![
@@ -1583,6 +1604,103 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     a.set_policy(&rid("reader"), Action::Read, table_ok)
         .await
         .expect("table-target structural ok");
+}
+
+/// Both-adapter contract for type-existence validation on the three loom-owned
+/// write paths that store a reference to an ontology type: `Acl::grant`,
+/// `Acl::set_policy`, and `Ontology::define_action`. Each must reject a
+/// non-existent type with `ControlPlaneError::Validation`, identically on the
+/// Postgres adapter and the in-memory fake. `cp` must be freshly empty.
+pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
+    let rid = |s: &str| RoleId(s.to_string());
+    let tn = |s: &str| TypeName(s.to_string());
+    let ttype = |s: &str| PolicyTarget::Type(TypeName(s.to_string()));
+    let policy = |target: PolicyTarget, row_filter: Option<RowFilter>| Policy {
+        target,
+        row_filter,
+        deny_columns: vec![],
+        mask_columns: vec![],
+    };
+
+    // Seed a type `T` and a role `R`.
+    define_min_type(cp, "T", &["col"]).await;
+    cp.define_role(&rid("R")).await.unwrap();
+
+    // grant: an existing Type is accepted; an unknown Type is a Validation error.
+    cp.grant(&rid("R"), Action::Read, ttype("T"), Effect::Allow)
+        .await
+        .expect("grant on existing type");
+    assert!(
+        matches!(
+            cp.grant(&rid("R"), Action::Read, ttype("Nope"), Effect::Allow)
+                .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "grant on unknown type rejected"
+    );
+
+    // set_policy: an existing Type is accepted with and without a row_filter; an
+    // unknown Type is rejected (even with no row_filter — the always-check).
+    cp.set_policy(&rid("R"), Action::Read, policy(ttype("T"), None))
+        .await
+        .expect("set_policy on existing type, no row_filter");
+    cp.set_policy(
+        &rid("R"),
+        Action::Read,
+        policy(
+            ttype("T"),
+            Some(RowFilter::Compare {
+                property: "col".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Text("x".into()),
+            }),
+        ),
+    )
+    .await
+    .expect("set_policy on existing type, with row_filter");
+    assert!(
+        matches!(
+            cp.set_policy(&rid("R"), Action::Read, policy(ttype("Nope"), None))
+                .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "set_policy on unknown type rejected even without a row_filter"
+    );
+
+    // define_action: an existing target type is accepted; an unknown one is rejected.
+    cp.define_action(ActionDef {
+        name: ActionName("act".into()),
+        target: tn("T"),
+        parameters: vec![],
+    })
+    .await
+    .expect("define_action on existing target");
+    assert!(
+        matches!(
+            cp.define_action(ActionDef {
+                name: ActionName("actBad".into()),
+                target: tn("Nope"),
+                parameters: vec![],
+            })
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "define_action on unknown target type rejected"
+    );
+
+    // Deferred boundary: `Table` targets reference the DuckLake catalog and are
+    // NOT existence-checked, so a Table grant must still be accepted.
+    cp.grant(
+        &rid("R"),
+        Action::Read,
+        PolicyTarget::Table(TableRef {
+            schema: "main".into(),
+            name: "raw".into(),
+        }),
+        Effect::Allow,
+    )
+    .await
+    .expect("Table targets are not existence-checked");
 }
 
 /// Contract for the `Lineage` ops, including the first cross-concern atomic unit

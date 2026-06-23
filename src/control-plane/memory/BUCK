@@ -67,6 +67,19 @@ rust_test(
 )
 
 rust_test(
+    name = "existence-validation",
+    crate = "existence_validation",
+    srcs = ["tests/existence_validation.rs"],
+    crate_root = "tests/existence_validation.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "lineage",
     crate = "lineage",
     srcs = ["tests/lineage.rs"],

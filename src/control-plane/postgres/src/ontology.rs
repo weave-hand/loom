@@ -287,6 +287,23 @@ impl Ontology for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_action(&self, action: ActionDef) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(backend)?;
+        // The target type must exist. The explicit check makes the error a clear
+        // `Validation` (matching the memory fake) instead of a raw FK backend error;
+        // the FK (0009_actions.sql) stays as the atomic backstop inside this tx.
+        let target_exists = sqlx::query_scalar!(
+            "select exists (select 1 from ontology.object_type where name = $1)",
+            action.target.0,
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(backend)?
+        .unwrap_or(false);
+        if !target_exists {
+            return Err(ControlPlaneError::Validation(format!(
+                "action `{}` references unknown target type `{}`",
+                action.name.0, action.target.0
+            )));
+        }
         sqlx::query!(
             "insert into ontology.action (name, target_type) values ($1, $2) \
              on conflict (name) do update set target_type = excluded.target_type",
