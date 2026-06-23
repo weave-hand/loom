@@ -13,7 +13,7 @@ use arrow_flight::{
 use control_plane_core::TableRef;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
-use futures::TryStreamExt;
+use futures::TryStreamExt; // for `.map_err` on the FlightDataEncoder stream
 use sqlx::PgPool;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -45,6 +45,8 @@ impl FlightService for FlightDataService {
             schema: ticket.schema,
             name: ticket.name,
         };
+        // The schema is discarded here on purpose: FlightDataEncoderBuilder
+        // derives it from the batches below, so we don't pass it explicitly.
         let (_schema, batches) = read_files_as_batches(&self.catalog, &table, &ticket.files)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
