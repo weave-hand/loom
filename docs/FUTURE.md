@@ -38,12 +38,12 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## ontology
 
-- [ ] **Physical-column validation at define_link** `{#fut-define-link-validation area:ontology status:deferred from:2026-06-14-query-governed-link-traversal-design pr:- spec:-}`
-  `define_link` stores backing column names without checking they exist (keeps the ontology write path decoupled from a catalog read). A bad column surfaces at traversal time; authoring-time validation against `Catalog::schema` is deferred. See [[iss-quote-ident-panic]].
-- [ ] **Define-time derived-property validation** `{#fut-define-time-derived-validation area:ontology status:deferred from:2026-06-15-derived-properties-design pr:- spec:-}`
-  Part-1 resolves the named link at read time and omits the property if missing; there is no authoring-time validation of a derived property's link/target/column/result-type at `define_type`.
-- [ ] **Define-time chain/link validation** `{#fut-define-time-chain-validation area:ontology status:deferred from:2026-06-15-query-multi-hop-traversal-design pr:- spec:-}`
-  Multi-hop resolves the chain at read time, so a broken chain (unknown link, or a link whose `from` is not the current type) surfaces then as a 400, not at authoring.
+- [x] **Physical-column validation at define_link** `{#fut-define-link-validation area:ontology status:promoted from:2026-06-14-query-governed-link-traversal-design pr:- spec:2026-06-23-define-time-ontology-validation-design}`
+  Promoted to committed work — see [[road-define-time-ontology-validation]]. `define_link` stores backing column names without checking they exist (keeps the ontology write path decoupled from a catalog read). A bad column surfaces at traversal time; authoring-time validation against `Catalog::schema` is the committed slice (a `bind_link` seam mirroring `bind`). See [[iss-quote-ident-panic]].
+- [x] **Define-time derived-property validation** `{#fut-define-time-derived-validation area:ontology status:promoted from:2026-06-15-derived-properties-design pr:- spec:2026-06-23-define-time-ontology-validation-design}`
+  Promoted to committed work — see [[road-define-time-ontology-validation]]. Part-1 resolves the named link at read time and omits the property if missing; the committed slice validates a derived property's link/target/column/result-type at `define_type` by extending the existing `bind` conformance gate.
+- [x] **Define-time chain/link validation** `{#fut-define-time-chain-validation area:ontology status:dropped from:2026-06-15-query-multi-hop-traversal-design pr:- spec:-}`
+  Dropped (2026-06-23): subsumed by [[road-define-time-ontology-validation]]. Once every link is column-validated and endpoint-typed at define time, any chain of *defined* links is structurally sound by construction; ad-hoc multi-hop chains are caller-supplied query paths with no stored artifact to validate at authoring time, so their read-time `BadChain`/`UnknownLink` 400 is the correct surface and remains. There is no separate define-time chain artifact to validate.
 - [ ] **Update/delete actions** `{#fut-update-delete-actions area:ontology status:deferred from:2026-06-15-actions-part1-design pr:- spec:-}`
   Actions part-1 is insert-only; mutating existing objects is gated on the deferred row-supersession/compaction work.
 - [ ] **Custom-logic / multi-step actions** `{#fut-custom-logic-actions area:ontology status:deferred from:2026-06-15-actions-part1-design pr:- spec:-}`
