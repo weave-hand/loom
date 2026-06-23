@@ -2,23 +2,42 @@
 //! service_runtime, then run the queue worker loop dispatching the two transform
 //! handlers by job kind. Queue-driven — no HTTP surface.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use control_plane_core::{ControlPlane, Job, JobFailure, RetryPolicy};
+use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
+use control_plane_postgres::iceberg_sql_catalog::{
+    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
+};
 use control_plane_worker::Worker;
+use iceberg::CatalogBuilder;
+use iceberg::io::LocalFsStorageFactory;
 use object_store::ObjectStore;
 use tokio_util::sync::CancellationToken;
-use transform::{transform_handler, typed_transform_handler};
+use transform::{
+    TransformBackend, parse_transform_backend, transform_handler, typed_transform_handler,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
+    let backend = parse_transform_backend(std::env::var("LOOM_TRANSFORM_BACKEND").ok().as_deref())?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
-    let cp = service_runtime::control_plane(pool, cfg.lock_timeout);
+    // The queue is backend-neutral (same Postgres tables either way), so the Worker
+    // always dequeues through the DuckLake `PgControlPlane`; only the *handler's*
+    // `ControlPlane` (which `run.rs` commits output through) varies by backend.
+    let pg = service_runtime::control_plane(pool, cfg.lock_timeout);
     let store: Arc<dyn ObjectStore> = Arc::new(service_runtime::local_store(&cfg.data_path)?);
 
-    let cp_for_handler: Arc<dyn ControlPlane> = Arc::new(cp.clone());
-    let worker = Worker::new(cp, "transform-1", cfg.lock_timeout);
+    let cp_for_handler: Arc<dyn ControlPlane> = match backend {
+        TransformBackend::DuckLake => Arc::new(pg.clone()),
+        TransformBackend::Iceberg => {
+            let catalog = build_iceberg_catalog(&cfg).await?;
+            Arc::new(IcebergControlPlane::new(pg.clone(), catalog))
+        }
+    };
+    let worker = Worker::new(pg, "transform-1", cfg.lock_timeout);
     let shutdown = CancellationToken::new();
 
     worker
@@ -42,4 +61,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
     Ok(())
+}
+
+/// Construct the vendored Iceberg SQL catalog over the same Postgres + a `file://`
+/// warehouse rooted at the service data path (mirrors `ingest::build_iceberg_catalog`).
+async fn build_iceberg_catalog(
+    cfg: &service_runtime::Config,
+) -> Result<SqlCatalog, Box<dyn std::error::Error>> {
+    let mut props = HashMap::new();
+    props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
+    props.insert(
+        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+        format!("file://{}", cfg.data_path.display()),
+    );
+    let catalog = SqlCatalogBuilder::default()
+        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .load("loom", props)
+        .await?;
+    Ok(catalog)
 }

@@ -30,8 +30,10 @@ rust_binary(
     deps = [
         ":transform",
         "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
         "//src/control-plane/worker:worker",
         "//src/services/runtime:runtime",
+        "//third-party:iceberg",
         "//third-party:object_store",
         "//third-party:tokio",
         "//third-party:tokio-util",
@@ -62,6 +64,15 @@ rust_test(
         "//third-party:serde",
         "//third-party:serde_json",
     ],
+)
+
+rust_test(
+    name = "transform-backend",
+    crate = "transform_backend",
+    srcs = ["tests/transform_backend.rs"],
+    crate_root = "tests/transform_backend.rs",
+    edition = "2024",
+    deps = [":transform"],
 )
 
 rust_test(
