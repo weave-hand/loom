@@ -110,8 +110,20 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Dropped (2026-06-22): already implemented — this deferred idea predates the work that shipped it. Deny-override (`Effect` enum + deny-wins `check`, spec `2026-06-10-acl-deny-override-design`), column masking on reads (`Policy.mask_columns` → `'***'` SQL emission, spec `2026-06-11-acl-column-masking-design`), and role hierarchy (`add/remove_role_inheritance` + recursive-CTE closure + atomic cycle check, see [[iss-acl-role-cycle-atomic]]) are all live and contract-tested. `mask_columns` being ignored on **writes** is by design (a read-render concept, `write_filter.rs`), not a gap.
 - [x] **Structured action write-denial reason** `{#fut-structured-write-denial area:acl status:promoted from:2026-06-16-write-enforcement-design pr:#72 spec:-}`
   Promoted to committed work — see [[road-structured-write-denial]]. `run_action` already computes a precise `WriteVerdict` (DenyColumn/DenyRow) but discards it to a bodyless 403; surface a caller-scoped structured reason (column name + column-vs-row-filter distinction, predicate kept server-side).
-- [ ] **loom user model and authentication** `{#fut-loom-auth area:acl status:deferred from:to-be-planned pr:- spec:-}`
-  A loom user/identity model and authentication (the `Unauthorized` reservation is the seam).
+- [x] **loom user model and authentication** `{#fut-loom-auth area:acl status:promoted from:to-be-planned pr:- spec:2026-06-23-auth-password-session-design}`
+  Promoted to committed work — see [[road-auth-password-session]]. The umbrella for loom's identity stack. Today every handler trusts a self-asserted `X-Loom-Subject` header (`http.rs:55-59`); the `Unauthorized` reservation is the seam. Decomposed (2026-06-23) into a sequenced track: the **password + session + authn-middleware foundation** is the committed first slice ([[road-auth-password-session]]); the remaining factors plug into its credential store and session model — see [[fut-auth-totp-mfa]], [[fut-auth-passkeys]], [[fut-auth-saml]], [[fut-auth-service-tokens]], [[fut-auth-password-lifecycle]], [[fut-auth-session-refresh]].
+- [ ] **TOTP / OTP second factor** `{#fut-auth-totp-mfa area:acl status:deferred from:2026-06-23-auth-password-session-design pr:- spec:-}`
+  An MFA challenge layered onto the [[road-auth-password-session]] login flow (a TOTP enrollment + verify step gating session issuance). Reuses that slice's session model; deferred until the password foundation lands.
+- [ ] **Passkeys (WebAuthn)** `{#fut-auth-passkeys area:acl status:deferred from:2026-06-23-auth-password-session-design pr:- spec:-}`
+  A second credential *kind* alongside passwords (WebAuthn registration + assertion) plugged into the [[road-auth-password-session]] credential store + session model. Deferred follow-on.
+- [ ] **SAML bridge** `{#fut-auth-saml area:acl status:deferred from:2026-06-23-auth-password-session-design pr:- spec:-}`
+  Federated identity: map a verified SAML assertion to a loom `SubjectId` and issue a session. Builds on [[road-auth-password-session]]'s session model; deferred follow-on.
+- [ ] **Service-account API tokens** `{#fut-auth-service-tokens area:acl status:deferred from:2026-06-23-auth-password-session-design pr:- spec:-}`
+  The non-interactive machine credential (a long-lived bearer token kind) for services/workers, alongside the human session path. Reuses the [[road-auth-password-session]] credential store + authn middleware; deferred until machine identity is needed across a trust boundary (cf. [[fut-engine-wire-multi-tls]]).
+- [ ] **Password lifecycle (reset / rotation / lockout / rate-limit)** `{#fut-auth-password-lifecycle area:acl status:deferred from:2026-06-23-auth-password-session-design pr:- spec:-}`
+  Password reset, email verification, rotation, account lockout, and login rate-limiting — deliberately out of the [[road-auth-password-session]] foundation, which ships create + verify only.
+- [ ] **Session refresh / sliding expiry** `{#fut-auth-session-refresh area:acl status:deferred from:2026-06-23-auth-password-session-design pr:- spec:-}`
+  [[road-auth-password-session]] sessions have a fixed TTL; sliding renewal / refresh tokens are a deferred efficiency/ergonomics follow-on.
 
 ## ingest
 
