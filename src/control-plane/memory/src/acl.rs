@@ -73,6 +73,11 @@ impl MemoryControlPlane {
             .get(name)
             .map(|t| t.properties.iter().map(|p| p.name.clone()).collect())
     }
+
+    /// True if an ontology type with this name is defined.
+    fn type_exists(&self, name: &str) -> bool {
+        self.ontology.lock().unwrap().types.contains_key(name)
+    }
 }
 
 #[async_trait]
@@ -152,11 +157,28 @@ impl Acl for MemoryControlPlane {
         target: PolicyTarget,
         effect: Effect,
     ) -> Result<()> {
-        let mut acl = self.acl.lock().unwrap();
-        if !acl.roles.contains(&role.0) {
-            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        // role-exists check (short acl lock)
+        {
+            let acl = self.acl.lock().unwrap();
+            if !acl.roles.contains(&role.0) {
+                return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+            }
         }
-        acl.grants
+        // A Type target must reference an existing type. Read the ontology map with
+        // no acl lock held (acl->ontology order, like set_policy) to avoid a
+        // lock-ordering deadlock. Table targets stay unvalidated (deferred).
+        if let PolicyTarget::Type(name) = &target
+            && !self.type_exists(&name.0)
+        {
+            return Err(ControlPlaneError::Validation(format!(
+                "grant references unknown type `{}`",
+                name.0
+            )));
+        }
+        self.acl
+            .lock()
+            .unwrap()
+            .grants
             .insert((role.0.clone(), action, target_key(&target)), effect);
         Ok(())
     }
@@ -181,20 +203,24 @@ impl Acl for MemoryControlPlane {
             }
         }
         // validation (may lock ontology) — no acl lock held here, to avoid a
-        // lock-ordering deadlock between the acl and ontology mutexes.
-        if let Some(f) = &policy.row_filter {
-            match &policy.target {
-                PolicyTarget::Type(name) => {
-                    let props = self.type_properties(&name.0).ok_or_else(|| {
-                        ControlPlaneError::Validation(format!(
-                            "policy references unknown type {}",
-                            name.0
-                        ))
-                    })?;
+        // lock-ordering deadlock between the acl and ontology mutexes. A Type
+        // target's existence is checked *always* (independent of row_filter); the
+        // row-filter's columns are validated only when a row_filter is present.
+        match &policy.target {
+            PolicyTarget::Type(name) => {
+                let props = self.type_properties(&name.0).ok_or_else(|| {
+                    ControlPlaneError::Validation(format!(
+                        "policy references unknown type {}",
+                        name.0
+                    ))
+                })?;
+                if let Some(f) = &policy.row_filter {
                     let set: HashSet<String> = props.into_iter().collect();
                     validate_row_filter(f, Some(&set)).map_err(ControlPlaneError::Validation)?;
                 }
-                PolicyTarget::Table(_) => {
+            }
+            PolicyTarget::Table(_) => {
+                if let Some(f) = &policy.row_filter {
                     validate_row_filter(f, None).map_err(ControlPlaneError::Validation)?;
                 }
             }
