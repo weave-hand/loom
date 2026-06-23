@@ -49,6 +49,34 @@ BuildBuddy workflow is proven green (see *Cutover* below).
 - Actions are **independent runs**: there is no GitHub-style `needs:`/job-aggregation
   step. Each action reports its own status to BuildBuddy and to GitHub commit statuses.
 
+### Verified runner facts (from docs + `ci_runner` source)
+
+These were checked against `enterprise/server/cmd/ci_runner/main.go` and the
+workflows-config / secrets docs, and they shape the design below:
+
+- **No git-context env vars.** The runner injects only `BUILDBUDDY_*` vars
+  (`BUILDBUDDY_CI_RUNNER_ROOT_DIR`, `BUILDBUDDY_ARTIFACTS_DIRECTORY`,
+  `BUILDBUDDY_RUN_ID`, `BUILDBUDDY_CI_RUNNER_ABSPATH`) plus `HOME`, `USER`
+  (=`buildbuddy`), `PATH`, `TERM`, `GIT_TERMINAL_PROMPT=0`, `DEBIAN_FRONTEND`. There is
+  **no `GIT_BASE_BRANCH` / `GIT_BRANCH` / `GIT_COMMIT_SHA`** exposed to steps. The
+  affected job therefore must not depend on such a var (see below — it derives the base
+  from the trigger instead).
+- **PR HEAD is a merge commit by default.** With `merge_with_base: true` (the default)
+  the runner does `git merge --no-edit <base>` and that merged commit becomes HEAD.
+  Setting **`merge_with_base: false`** leaves HEAD at the clean PR branch head — which
+  btd's base→head diff requires.
+- **Shallow fetch by default** (depth 1). `git_fetch_depth` (int) and
+  `git_fetch_filters` (default `["blob:none"]`) are per-action config. The runner
+  deepens to full history for PRs that need a merge base, but we don't rely on that
+  implicit behavior — the affected action sets `git_fetch_depth: 0` explicitly.
+- **Submodules are not checked out by the runner.** `git submodule update --init
+  --recursive` is load-bearing (prelude) and must also run inside the base worktree.
+- **Secrets are env vars for trusted runs**, but `BUILDBUDDY_API_KEY` is **not**
+  auto-present for non-bazel tools; it must be added as an org secret named exactly
+  `BUILDBUDDY_API_KEY` (see *Secrets & RE wiring*).
+- **Default resources: 3 CPU / 8 GB / 20 GB** — so this design's `resource_requests`
+  is a deliberate override for the locally-run fixture tests.
+
 ## Files
 
 | File | Change |
@@ -110,19 +138,28 @@ Common to all actions:
 
 ### Action `affected` (PR btd port)
 
-- **Trigger:** `pull_request.branches: [main]` with **`merge_with_base: false`**.
-  Faithful port of `ci.yml`'s `affected`. `merge_with_base: false` is deliberate: btd
-  diffs base→head, so HEAD must be the clean PR head, not a base+head merge commit.
+- **Trigger:** `pull_request.branches: [main]` with **`merge_with_base: false`** and
+  **`git_fetch_depth: 0`**. Faithful port of `ci.yml`'s `affected`.
+  `merge_with_base: false` is deliberate: btd diffs base→head, so HEAD must be the clean
+  PR head, not a base+head merge commit. `git_fetch_depth: 0` guarantees the base
+  history needed for `git merge-base`.
+- **Deriving the base without an env var:** the runner exposes no `GIT_BASE_BRANCH`, but
+  this action only fires on PRs whose base branch matches `[main]`, so the base is
+  definitionally `main`. The step fetches it explicitly rather than assuming a remote
+  ref is present: `git fetch --no-tags origin main` →
+  `BASE_SHA="$(git merge-base FETCH_HEAD HEAD)"`.
 - **Steps (after setup):**
-  1. **Changes file:** ensure base history is present
-     (`git fetch --no-tags origin "$GIT_BASE_BRANCH"`), then
-     `git diff --name-status --no-renames "$BASE_SHA" HEAD` piped through the existing
-     `awk 'NF >= 2 { print substr($1,1,1) " " $2 }'` into `changes.txt` (sapling
-     `hg status` format btd expects). `BASE_SHA` = `git merge-base origin/$GIT_BASE_BRANCH HEAD`.
-  2. **Base-state graph:** check out the base commit in a `git worktree`
-     (`git worktree add ../_base "$BASE_SHA"`) — the BuildBuddy equivalent of the GitHub
-     second checkout — and run `buck2 run //tools:supertd -- targets root//... --output
-     "$PWD/base.jsonl"` from inside it.
+  1. **Changes file:** `git fetch --no-tags origin main`; `BASE_SHA=$(git merge-base
+     FETCH_HEAD HEAD)`; then `git diff --name-status --no-renames "$BASE_SHA" HEAD` piped
+     through the existing `awk 'NF >= 2 { print substr($1,1,1) " " $2 }'` into
+     `changes.txt` (the sapling `hg status` format btd expects).
+  2. **Base-state graph:** materialize the base commit in a `git worktree`
+     (`git worktree add "$BB_ROOT/_base" "$BASE_SHA"`, where `$BB_ROOT` =
+     `$BUILDBUDDY_CI_RUNNER_ROOT_DIR`) — the BuildBuddy equivalent of the GitHub second
+     checkout. Because the runner doesn't populate submodules and worktrees don't
+     inherit them, run `git -C "$BB_ROOT/_base" submodule update --init --recursive`
+     (prelude is needed for graph evaluation), then `buck2 run //tools:supertd --
+     targets root//... --output "$PWD/base.jsonl"` from inside the worktree.
   3. **Impacted targets:** in the head checkout,
      `buck2 run //tools:btd -- --changes changes.txt --base base.jsonl --universe
      root//... --json-lines | jq -r 'select(.target | startswith("root//src/")) |
@@ -130,9 +167,9 @@ Common to all actions:
   4. **Build & test impacted:** if `impacted.txt` is non-empty,
      `mapfile -t targets < impacted.txt` → `buck2 build -M none "${targets[@]}"` →
      `buck2 test "${targets[@]}"`. Empty ⇒ log "nothing impacted" and exit 0.
-- **Env vars used:** `GIT_BASE_BRANCH` (BuildBuddy-provided PR base branch). If a needed
-  var is absent at implementation time, the plan derives the base from the
-  pull-request ref instead — to be verified against a live run (see *Open items*).
+- **Env vars used:** none for git context — base is `main` by construction (the trigger
+  filter). Only `BUILDBUDDY_CI_RUNNER_ROOT_DIR` (runner-provided) is referenced, for a
+  stable worktree path.
 
 ### Action `lint`
 
@@ -145,13 +182,17 @@ Common to all actions:
 ## Secrets & RE wiring
 
 `.buckconfig`'s `[buck2_re_client]` authenticates via
-`http_headers = x-buildbuddy-api-key:$BUILDBUDDY_API_KEY`. In BuildBuddy Workflows, an
-org/repo **secret** named `BUILDBUDDY_API_KEY` is auto-injected as an env var into
-trusted runs, so RE and the remote cache work with **no per-action plumbing**.
+`http_headers = x-buildbuddy-api-key:$BUILDBUDDY_API_KEY`. BuildBuddy auto-injects
+**secrets** as env vars into trusted runs (no `env:`/`--test_env` plumbing needed for a
+bash step) — but only secrets that exist. The runner does **not** expose its internal
+BES key to non-bazel tools, so this is a hard prerequisite:
 
-This secret is configured in the **BuildBuddy UI**, which is out-of-repo setup. The
-implementation can't encode it; the plan documents it as a prerequisite (and the
-README/CLAUDE.md note, if any, is updated).
+> Add an org secret named exactly **`BUILDBUDDY_API_KEY`** (BuildBuddy UI → org
+> settings → Secrets), set to an RE-capable API key. Once present, every action's
+> `buck2` invocation authenticates to RE/cache with no per-action wiring.
+
+This is out-of-repo setup the implementation can't encode; the plan lists it as a Step A
+prerequisite and adds a one-line note to `CLAUDE.md`'s CI section.
 
 ## Cutover (two gated steps)
 
@@ -187,12 +228,23 @@ run, so CI coverage is never dropped on `main`.
   and selects a sane impacted set on a PR, and `lint` runs green. These can't be
   asserted in buck2 tests — they're release-gate checks recorded in the PR.
 
-## Open items (resolve during implementation against a live run)
+## Resolved from docs / source (was "open items")
 
-1. **Exact env var names** BuildBuddy exposes for the PR base branch / base SHA
-   (`GIT_BASE_BRANCH` is the documented name; confirm the base SHA derivation works with
-   `merge_with_base: false`).
-2. **Whether BuildBuddy's checkout includes submodules / sufficient git history** for
-   the base-graph worktree; if shallow, add an explicit `git fetch` depth bump in setup.
-3. **resource_requests sizing** — start at 8 CPU / 16GB / 50GB and adjust if fixture
-   tests OOM or the disk fills.
+1. **Base branch/SHA:** no env var exists; derived as `main` from the trigger filter +
+   explicit `git fetch origin main` + `git merge-base` (see the affected action). The
+   action sets `git_fetch_depth: 0` for history and `merge_with_base: false` for a clean
+   HEAD.
+2. **Submodules / history:** the runner checks out neither submodules nor (by default)
+   full history. Handled: setup runs `git submodule update --init --recursive`; the base
+   worktree re-inits submodules; `git_fetch_depth: 0` supplies history.
+3. **Secrets:** `BUILDBUDDY_API_KEY` must be added as an org secret (Step A prerequisite).
+4. **Resources:** runner default is 3 CPU / 8 GB / 20 GB; we override to 8 / 16 GB / 50 GB
+   for the locally-booted postgres/duckdb fixture tests.
+
+## Residual checks (only confirmable on a live run, recorded in the PR)
+
+- That `git_fetch_depth: 0` + `git fetch origin main` reliably yields a merge-base on a
+  real PR (the `affected` action selecting a sane impacted set is the green-light).
+- `resource_requests` headroom — bump if fixture tests OOM or the 50 GB disk fills.
+- Worktree-based `submodule update` succeeds under the runner's git version
+  (ubuntu-22.04 ships git ≥ 2.34, which supports worktree submodules).
