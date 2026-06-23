@@ -300,15 +300,18 @@ Expected: prints `DOC ADDED`.
 
 ---
 
-### Task 4 (GATED — Step B): Remove the GitHub Actions CI
+### Task 4 (GATED — Step B): Retire the GitHub Actions *CI* (only)
 
-> **DO NOT EXECUTE until the BuildBuddy workflow has run green** on a real push to `main` and a real PR (the `affected` action selecting a sane impacted set is the green-light). This is the cutover that removes GitHub CI; running it early leaves `main` with no CI. The reviewer must confirm the BuildBuddy runs are green before this task starts.
+> **DO NOT EXECUTE until the BuildBuddy workflow has run green** on a real push to `main` and a real PR (the `affected` action selecting a sane impacted set is the green-light). This removes the GitHub *CI*; running it early leaves `main` with no CI. The reviewer must confirm the BuildBuddy runs are green before this task starts.
+
+**Scope correction (important):** only `.github/workflows/ci.yml` is superseded by BuildBuddy. The repo also has `.github/workflows/release.yml` (image/Helm publishing — `workflow_dispatch` versioned releases, GitHub Releases, `GITHUB_TOKEN` ghcr login) and `.github/workflows/claude.yml` (the Claude bot); **both stay on GitHub Actions** — they have no clean BuildBuddy equivalent. Critically, `release.yml` still uses `./.github/actions/setup-buck2` in all three of its jobs, so **`setup-buck2` must NOT be deleted.** Only `install-bsdtar` is ci.yml-only and therefore orphaned.
 
 **Files:**
 - Delete: `.github/workflows/ci.yml`
-- Delete: `.github/actions/setup-buck2/` (directory)
-- Delete: `.github/actions/install-bsdtar/` (directory)
-- Modify: `CLAUDE.md` — trim the now-removed GitHub Actions description.
+- Delete: `.github/actions/install-bsdtar/` (directory) — ci.yml was its only user.
+- **Keep:** `.github/actions/setup-buck2/` (still used by `release.yml`).
+- **Keep:** `.github/workflows/release.yml`, `.github/workflows/claude.yml`.
+- Modify: `CLAUDE.md` — trim the now-removed CI description.
 
 **Interfaces:** none.
 
@@ -316,23 +319,35 @@ Expected: prints `DOC ADDED`.
 
 Verify (with the human reviewer) that BuildBuddy's `build-test`, `affected`, and `lint` actions have all run green. Do not proceed otherwise.
 
-- [ ] **Step 2: Delete the GitHub workflow and orphaned composite actions**
+- [ ] **Step 2: Confirm setup-buck2 is still referenced (so we don't orphan-delete it)**
+
+Run:
+```bash
+grep -rln "setup-buck2" .github/workflows/
+```
+Expected: `.github/workflows/release.yml` (and `ci.yml`, which we're about to remove). If `release.yml` no longer references it, re-evaluate before deleting — but as of this plan it does.
+
+- [ ] **Step 3: Delete the CI workflow and the install-bsdtar composite action only**
 
 Run:
 ```bash
 git rm .github/workflows/ci.yml
-git rm -r .github/actions/setup-buck2 .github/actions/install-bsdtar
+git rm -r .github/actions/install-bsdtar
 ```
+Do NOT `git rm .github/actions/setup-buck2` — `release.yml` depends on it.
 
-- [ ] **Step 3: Verify no remaining references**
+- [ ] **Step 4: Verify references are clean**
 
 Run:
 ```bash
-grep -rn "setup-buck2\|install-bsdtar\|workflows/ci.yml" .github CLAUDE.md docs 2>/dev/null || echo "NO REFS"
+# ci.yml and install-bsdtar should have no remaining referrers; setup-buck2 SHOULD still be referenced (by release.yml).
+grep -rn "install-bsdtar\|workflows/ci.yml" .github 2>/dev/null || echo "NO STALE REFS"
+echo "--- setup-buck2 (expected: release.yml only) ---"
+grep -rln "setup-buck2" .github/workflows/
 ```
-Expected: `NO REFS` (or only references inside this plan/spec, which are historical and fine to leave).
+Expected: `NO STALE REFS`, and `setup-buck2` listed only by `release.yml`.
 
-- [ ] **Step 4: Trim the GitHub Actions prose in CLAUDE.md**
+- [ ] **Step 5: Trim the GitHub Actions CI prose in CLAUDE.md**
 
 In `CLAUDE.md`'s "Continuous integration" section, edit the retired sentence added in Task 3 — change:
 
@@ -344,17 +359,18 @@ green (see the plan's gated Step B).
 to:
 
 ```markdown
-(The previous GitHub Actions workflow and its composite actions were removed once the
-BuildBuddy workflow was proven green.)
+(The previous GitHub Actions *CI* workflow `ci.yml` and the `install-bsdtar` composite
+action were removed once the BuildBuddy workflow was proven green. `release.yml` — image
+and Helm publishing — and `claude.yml` remain on GitHub Actions, so `setup-buck2` stays.)
 ```
 
-Leave the per-job descriptions (`build-test`/`affected`/`lint` behavior, RE-vs-local placement) — they still describe the BuildBuddy actions accurately. Remove any sentences that are GitHub-Actions-specific and now false (e.g. references to `actions/cache`, the `setup-buck2` composite action, or the Discord `notify-discord` job), if present in that section.
+Then remove or rewrite the per-job prose that described the *old `ci.yml` jobs* (the `build-test`/`affected`/`lint`/`notify-discord` GitHub-job descriptions, `actions/cache`, the btd second-checkout) so the section no longer documents a deleted file — the BuildBuddy paragraph from Task 3 now carries the CI description. Leave any text about `release.yml`/`claude.yml` intact.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add -A
-git commit -m "ci: remove GitHub Actions CI, superseded by BuildBuddy Workflows"
+git commit -m "ci: retire GitHub Actions CI (ci.yml), superseded by BuildBuddy Workflows"
 ```
 
 ---

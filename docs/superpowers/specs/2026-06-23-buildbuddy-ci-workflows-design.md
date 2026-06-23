@@ -83,9 +83,10 @@ workflows-config / secrets docs, and they shape the design below:
 |------|--------|
 | `buildbuddy.yaml` | **Add** — root CI config: `build-test`, `affected`, `lint` actions. |
 | `tools/ci/buildbuddy-setup.sh` | **Add** — shared, idempotent per-action setup (zstd + bsdtar + pinned buck2 + submodule init). |
-| `.github/workflows/ci.yml` | **Remove** — gated second step of the cutover. |
-| `.github/actions/setup-buck2/` | **Remove** — orphaned once `ci.yml` is gone. |
-| `.github/actions/install-bsdtar/` | **Remove** — orphaned once `ci.yml` is gone. |
+| `.github/workflows/ci.yml` | **Remove** (gated Step B) — superseded by `buildbuddy.yaml`. |
+| `.github/actions/install-bsdtar/` | **Remove** (gated Step B) — `ci.yml` was its only user. |
+| `.github/actions/setup-buck2/` | **Keep** — still used by `release.yml` (image/Helm publishing stays on GitHub Actions). |
+| `.github/workflows/release.yml`, `claude.yml` | **Keep** — out of scope; no clean BuildBuddy equivalent (`workflow_dispatch` releases, GitHub Releases, the Claude bot). |
 
 ## Component 1: shared setup script (`tools/ci/buildbuddy-setup.sh`)
 
@@ -209,9 +210,11 @@ outside this PR. Therefore:
 - **Step A (this work):** land `buildbuddy.yaml` + `tools/ci/buildbuddy-setup.sh`.
   Connect the repo in the BuildBuddy UI, add the `BUILDBUDDY_API_KEY` secret, and
   confirm all three actions run green on a real push and a real PR.
-- **Step B (gated follow-up):** once Step A is proven green, delete
-  `.github/workflows/ci.yml` and the orphaned `.github/actions/setup-buck2` +
-  `.github/actions/install-bsdtar`.
+- **Step B (gated follow-up):** once Step A is proven green, delete **only the
+  superseded CI**: `.github/workflows/ci.yml` and the now-orphaned
+  `.github/actions/install-bsdtar`. **Keep `.github/actions/setup-buck2`** — it is still
+  consumed by `release.yml`. `release.yml` (image/Helm publishing) and `claude.yml` (the
+  Claude bot) stay on GitHub Actions; only the build/test/lint CI moves to BuildBuddy.
 
 The implementation plan produces both steps but marks B as gated on a green BuildBuddy
 run, so CI coverage is never dropped on `main`.
