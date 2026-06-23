@@ -109,13 +109,10 @@ buck2-install logic in `tools/cloud-setup.sh`.
    `zstd -d`, `chmod +x`.
 3. **Prelude submodule:** `git submodule update --init --recursive` (pinned alongside
    the buck2 release — keep `BUCK2_RELEASE` aligned with the prelude pin).
-4. **Kill stale buck2 daemon:** `buck2 killall 2>/dev/null || true`. BuildBuddy
-   snapshots/reuses VMs **and restores running processes**, while its repo-sync runs
-   `git clean -x` which deletes `buck-out/`. A restored daemon then holds the removed
-   `buck-out/v2`, and the next `buck2 build` dies with *"Error validating working
-   directory: Failed to stat …/buck-out/v2"*. Killing it forces a fresh daemon; the
-   authoritative cache is BuildBuddy RE, not local `buck-out`, so nothing is lost. This
-   is the general remedy — it covers every action, not just `affected`.
+
+The setup script does **not** kill the buck2 daemon — keeping the warm daemon is the
+point of VM snapshotting. Daemon/`buck-out` consistency is instead handled by
+`git_clean_exclude` (see common config below).
 
 **The single buck2 pin** (`BUCK2_RELEASE`) lives in this script, carrying the existing
 "keep aligned with the prelude submodule pin" comment. (Today the pin is duplicated in
@@ -129,8 +126,15 @@ Common to all actions:
 
 - `os: linux`, `arch: amd64`, `container_image: ubuntu-24.04` (matches GitHub's
   `ubuntu-latest`; the prebuilt `//tools:supertd`/`//tools:btd` fork binaries are
-  linked against GLIBC_2.39, which `ubuntu-22.04`'s glibc 2.35 lacks — and `buck2 run`
-  executes them locally on the runner).
+  linked against GLIBC_2.39, which `ubuntu-22.04`'s glibc 2.35 lacks — and they run
+  locally on the runner).
+- `git_clean_exclude: ["buck-out"]` — preserves `buck-out` across runs on a reused
+  (snapshotted) VM. The runner's repo-sync runs `git clean -x`, which would delete the
+  gitignored `buck-out` while the snapshot restores the buck2 daemon, leaving the daemon
+  pointed at a missing `buck-out` (the first `buck2 build` then fails *"Failed to stat
+  …/buck-out/v2"*). Excluding it keeps the warm daemon **and** warm cache consistent —
+  the same way Bazel's output base (which lives outside the workspace) survives
+  `git clean`. This is what makes snapshot reuse actually warm for buck2.
 - **No `resource_requests`** — inherit the runner default (3 CPU / 8 GB / 20 GB). Both
   build and test run on RE (`-M none`, `BUCK_PREFER_REMOTE`; the RE workers now run as
   non-root, so the fixture tests that boot `initdb`/`postgres`/`duckdb` run remotely

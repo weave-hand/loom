@@ -16,6 +16,7 @@
 - **buck2 download URL:** `https://github.com/facebook/buck2/releases/download/<BUCK2_RELEASE>/buck2-x86_64-unknown-linux-gnu.zst` (x86_64 linux only).
 - **Container image:** `ubuntu-24.04` for every action (matches GitHub's `ubuntu-latest`; needed because the prebuilt `//tools:supertd`/`//tools:btd` fork binaries require GLIBC_2.39, absent on `ubuntu-22.04`, and `buck2 run` executes them locally on the runner; git ≥ 2.43 → worktree submodules work).
 - **No `resource_requests`:** inherit the runner default (3 CPU / 8 GB / 20 GB). Build and test both run on RE (the RE workers run as non-root, so the postgres/duckdb fixture tests run remotely too); the runner only orchestrates plus a few light local genrules (libxml2/bsdtar extract). Add `resource_requests` only if a real run shows pressure.
+- **`git_clean_exclude: ["buck-out"]`** on every action — preserves `buck-out` across runs on a reused VM (the runner's repo-sync `git clean -x` would otherwise delete it and desync the snapshot-restored buck2 daemon). Keeps the warm daemon + cache, the way Bazel's external output base does.
 - **`env: { BUCK_PREFER_REMOTE: "true" }`** on every action; builds use `-M none`.
 - **Secret prerequisite (out-of-repo, already done):** an org secret named exactly `BUILDBUDDY_API_KEY` must exist — `.buckconfig`'s `[buck2_re_client]` reads `$BUILDBUDDY_API_KEY`. The user confirmed this is added.
 - **Shell scripts are committed mode `100755`** (match `tools/cloud-setup.sh`).
@@ -84,15 +85,12 @@ sudo ln -sf "$BUCK2_BIN" /usr/local/bin/buck2
 # 3. Prelude submodule (the runner does not check it out). Idempotent.
 git submodule update --init --recursive
 
-# 4. Kill any stale buck2 daemon. BuildBuddy snapshots/reuses workflow VMs and
-#    restores running processes, but its repo-sync runs `git clean -x` which DELETES
-#    buck-out/ — so a restored daemon still holds the now-removed buck-out/v2 and the
-#    next `buck2 build` dies with "Error validating working directory: Failed to stat
-#    .../buck-out/v2: ENOENT". killall clears it (no valid buck-out needed); the next
-#    buck2 invocation spawns a fresh daemon and recreates buck-out. The real cache is
-#    BuildBuddy RE, not the local buck-out, so nothing of value is lost.
-buck2 killall 2>/dev/null || true
-
+# NOTE: buck-out is kept warm across runs via `git_clean_exclude: [buck-out]` in
+# buildbuddy.yaml — without it the runner's repo-sync `git clean -x` would delete
+# buck-out while the snapshot restores the buck2 daemon, leaving the daemon pointed
+# at a missing buck-out ("Failed to stat .../buck-out/v2"). Excluding it keeps the
+# warm daemon + cache consistent, which is the point of VM snapshotting. So we do
+# NOT kill the daemon here.
 buck2 --version
 ```
 
@@ -154,6 +152,12 @@ actions:
     os: linux
     arch: amd64
     container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -176,6 +180,12 @@ actions:
     os: linux
     arch: amd64
     container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -247,6 +257,12 @@ actions:
     os: linux
     arch: amd64
     container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:

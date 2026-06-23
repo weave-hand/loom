@@ -23,6 +23,12 @@ actions:
     os: linux
     arch: amd64
     container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -45,6 +51,12 @@ actions:
     os: linux
     arch: amd64
     container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -116,6 +128,12 @@ actions:
     os: linux
     arch: amd64
     container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:

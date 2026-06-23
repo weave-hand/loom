@@ -45,13 +45,10 @@ sudo ln -sf "$BUCK2_BIN" /usr/local/bin/buck2
 # 3. Prelude submodule (the runner does not check it out). Idempotent.
 git submodule update --init --recursive
 
-# 4. Kill any stale buck2 daemon. BuildBuddy snapshots/reuses workflow VMs and
-#    restores running processes, but its repo-sync runs `git clean -x` which DELETES
-#    buck-out/ — so a restored daemon still holds the now-removed buck-out/v2 and the
-#    next `buck2 build` dies with "Error validating working directory: Failed to stat
-#    .../buck-out/v2: ENOENT". killall clears it (no valid buck-out needed); the next
-#    buck2 invocation spawns a fresh daemon and recreates buck-out. The real cache is
-#    BuildBuddy RE, not the local buck-out, so nothing of value is lost.
-buck2 killall 2>/dev/null || true
-
+# NOTE: buck-out is kept warm across runs via `git_clean_exclude: [buck-out]` in
+# buildbuddy.yaml — without it the runner's repo-sync `git clean -x` would delete
+# buck-out while the snapshot restores the buck2 daemon, leaving the daemon pointed
+# at a missing buck-out ("Failed to stat .../buck-out/v2"). Excluding it keeps the
+# warm daemon + cache consistent, which is the point of VM snapshotting. So we do
+# NOT kill the daemon here.
 buck2 --version
