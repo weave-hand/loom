@@ -2,14 +2,13 @@
 //! `flush_table`) over the `EngineControl` tonic service via a unix-domain socket.
 
 use control_plane_core::{ControlPlaneError, Job, JobId, NewJob, Queue, Result, RetryPolicy};
-use tonic::transport::{Channel, Endpoint, Uri};
-use tower::service_fn;
+use tonic::transport::Channel;
 
 use crate::convert;
 use crate::pb;
 use crate::pb::engine_control_client::EngineControlClient;
 
-fn be<E: std::fmt::Display>(e: E) -> ControlPlaneError {
+pub(crate) fn be<E: std::fmt::Display>(e: E) -> ControlPlaneError {
     ControlPlaneError::Backend(e.to_string().into())
 }
 
@@ -24,19 +23,7 @@ pub struct GrpcQueueClient {
 impl GrpcQueueClient {
     /// Connect to the engine's `EngineControl` service at the given UDS path.
     pub async fn connect(socket: impl Into<String>) -> Result<Self> {
-        let socket = socket.into();
-        // The URI value is ignored by the connector; the connector dials the UDS.
-        let channel = Endpoint::try_from("http://[::]:50051")
-            .map_err(be)?
-            .connect_with_connector(service_fn(move |_: Uri| {
-                let socket = socket.clone();
-                async move {
-                    let stream = tokio::net::UnixStream::connect(socket).await?;
-                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
-                }
-            }))
-            .await
-            .map_err(be)?;
+        let channel = crate::uds_channel(socket.into()).await?;
         Ok(Self {
             inner: EngineControlClient::new(channel),
         })

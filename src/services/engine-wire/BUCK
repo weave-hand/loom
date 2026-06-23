@@ -40,9 +40,13 @@ cargo.rust_library(
         "//third-party:hyper-util",
         "//third-party:async-trait",
         "//src/control-plane/core:core",
+        "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:uuid",
         "//third-party:time",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-array",
+        "//third-party:futures",
     ],
     visibility = ["PUBLIC"],
 )
@@ -60,4 +64,13 @@ rust_test(
         "//third-party:uuid",
         "//third-party:time",
     ],
+)
+
+rust_test(
+    name = "flight-ticket",
+    crate = "flight_ticket",
+    srcs = ["tests/flight_ticket.rs"],
+    crate_root = "tests/flight_ticket.rs",
+    edition = "2024",
+    deps = [":engine-wire", "//third-party:serde_json"],
 )
