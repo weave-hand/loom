@@ -140,8 +140,14 @@ async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
-    // A second catalog instance for the test-side land calls (spawn_server
-    // builds its own two catalogs from the same DSN/warehouse).
+    // A separate catalog instance for the test-side `land` calls. Its warehouse
+    // tempdir differs from the server's (spawn_server builds its own pair), and
+    // that is safe: all three catalogs share the same Postgres DSN, where the
+    // iceberg mirror stores each data file as an absolute `file://` path. The
+    // server's `flight_catalog` resolves those absolute paths via `LocalFsStorage`
+    // (which ignores the configured warehouse on read), so it reads exactly the
+    // Parquet files this catalog wrote under `wh`. The warehouse only matters for
+    // *where new files are written*, never for reads.
     let wh = tempfile::tempdir().expect("warehouse dir");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
