@@ -193,8 +193,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## test
 
-- [ ] **Socket round-trip integration test for binaries** `{#fut-socket-roundtrip-test area:test status:deferred from:2026-06-13-service-runtime-and-binaries-design pr:- spec:-}`
-  The end-to-end socket round-trip test (needs an HTTP-client dep) is deferred; the binaries are exercised via config unit tests and the ingest land fixture test.
+- [x] **Socket round-trip integration test for binaries** `{#fut-socket-roundtrip-test area:test status:promoted from:2026-06-13-service-runtime-and-binaries-design pr:- spec:-}`
+  Promoted to [[road-e2e-http-client]], which adds the over-the-wire e2e layer (real `TcpListener` via `service_runtime::serve` + a `reqwest` client) the deferral was waiting on — the HTTP-client dep is now justified (`reqwest` is already vendored). The actual-binary-*subprocess* variant (exec the built binary to also cover `main.rs` + `Config::from_env`) remains out of that slice and is the residual deferral here.
 
 ## quality
 
