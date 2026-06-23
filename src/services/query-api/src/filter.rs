@@ -66,10 +66,46 @@ pub fn coerce_filter(name: &str, logical_ty: &str, raw: &str) -> Result<SqlValue
     }
 }
 
+/// Split a set-operator operand list on UNESCAPED commas, unescaping each operand.
+/// Recognized escapes: `\,` -> `,` and `\\` -> `\`. Any other escape (`\x`) or a
+/// dangling trailing `\` is a hard error - so every string is representable
+/// (double a backslash, escape a comma) and ambiguity is rejected, not mangled.
+/// Empty operands (an unescaped `,,` or a leading/trailing unescaped `,`) error,
+/// preserving the "empty operand in set" contract.
+fn split_set_operands(rest: &str) -> Result<Vec<String>, &'static str> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(',') => cur.push(','),
+                Some('\\') => cur.push('\\'),
+                Some(_) => return Err("invalid escape in set operand (use \\, or \\\\)"),
+                None => return Err("dangling escape in set operand"),
+            },
+            ',' => {
+                if cur.is_empty() {
+                    return Err("empty operand in set");
+                }
+                out.push(std::mem::take(&mut cur));
+            }
+            other => cur.push(other),
+        }
+    }
+    if cur.is_empty() {
+        return Err("empty operand in set");
+    }
+    out.push(cur);
+    Ok(out)
+}
+
 /// Parse a query-param value into a typed predicate. Grammar: split at the FIRST `:` into
 /// `head`/`rest`; if `head` is a known op token it is that operator (null ops take no
-/// operand; scalar ops take `rest` as one operand; set ops split `rest` on `,`); otherwise
-/// the whole value is an `Eq` operand. Each operand is coerced via `coerce_filter`.
+/// operand; scalar ops take `rest` as one operand; set ops split `rest` on UNESCAPED `,`,
+/// with `\,` and `\\` the only valid escapes — any other escape, or a trailing `\`, is
+/// rejected, so a string operand can carry a literal comma or backslash); otherwise the
+/// whole value is an `Eq` operand. Each operand is coerced via `coerce_filter`.
 pub fn coerce_predicate(
     column: &str,
     logical_ty: &str,
@@ -115,12 +151,10 @@ pub fn coerce_predicate(
             if r.is_empty() {
                 return Err(bad("in/nin require at least one operand"));
             }
-            let mut values = Vec::new();
-            for part in r.split(',') {
-                if part.is_empty() {
-                    return Err(bad("empty operand in set"));
-                }
-                values.push(coerce_filter(column, logical_ty, part)?);
+            let parts = split_set_operands(r).map_err(bad)?;
+            let mut values = Vec::with_capacity(parts.len());
+            for part in parts {
+                values.push(coerce_filter(column, logical_ty, &part)?);
             }
             Ok(mk(o, values))
         }

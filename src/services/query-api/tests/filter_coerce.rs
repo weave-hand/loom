@@ -169,6 +169,63 @@ fn bad_operand_is_error() {
 }
 
 #[test]
+fn set_operands_escape_commas_and_backslashes() {
+    // Headline: an escaped comma keeps "a,b" as one operand.
+    let p = coerce_predicate("tag", "String", r"in:a\,b,c").unwrap();
+    assert_eq!(p.op, CompareOp::In);
+    assert_eq!(
+        p.values,
+        vec![SqlValue::Text("a,b".into()), SqlValue::Text("c".into())]
+    );
+
+    // Escaped backslash -> a single literal backslash operand.
+    let p2 = coerce_predicate("tag", "String", r"in:a\\b").unwrap();
+    assert_eq!(p2.values, vec![SqlValue::Text(r"a\b".into())]);
+
+    // Lone escaped comma is one non-empty operand "," (NOT an empty-operand error).
+    let p3 = coerce_predicate("tag", "String", r"in:\,").unwrap();
+    assert_eq!(p3.values, vec![SqlValue::Text(",".into())]);
+
+    // Escaped comma at the END of an operand: `\,` consumes the trailing comma,
+    // so "a," is one non-empty operand (it must NOT be read as a dangling split).
+    let p5 = coerce_predicate("tag", "String", r"in:a\,").unwrap();
+    assert_eq!(p5.values, vec![SqlValue::Text("a,".into())]);
+
+    // Lone escaped backslash is one operand "\".
+    let p6 = coerce_predicate("tag", "String", r"in:\\").unwrap();
+    assert_eq!(p6.values, vec![SqlValue::Text(r"\".into())]);
+
+    // nin parity (same arm handles both).
+    let p4 = coerce_predicate("tag", "String", r"nin:x\,y,z").unwrap();
+    assert_eq!(p4.op, CompareOp::NotIn);
+    assert_eq!(
+        p4.values,
+        vec![SqlValue::Text("x,y".into()), SqlValue::Text("z".into())]
+    );
+}
+
+#[test]
+fn set_operand_escape_errors_and_unescaped_empties() {
+    // Unescaped empty segments still error (unchanged contract).
+    assert!(coerce_predicate("tag", "String", "in:a,").is_err());
+    assert!(coerce_predicate("tag", "String", "in:,a").is_err());
+    assert!(coerce_predicate("tag", "String", "in:a,,b").is_err());
+
+    // Unknown escape and dangling escape are hard errors.
+    assert!(coerce_predicate("tag", "String", r"in:a\b").is_err());
+    assert!(coerce_predicate("tag", "String", r"in:a\").is_err());
+}
+
+#[test]
+fn scalar_op_does_not_unescape() {
+    // Regression guard: escaping must NOT leak into scalar parsing.
+    // `eq:a\,b` stays the literal operand `a\,b` (rest taken whole, no split/unescape).
+    let p = coerce_predicate("name", "String", r"eq:a\,b").unwrap();
+    assert_eq!(p.op, CompareOp::Eq);
+    assert_eq!(p.values, vec![SqlValue::Text(r"a\,b".into())]);
+}
+
+#[test]
 fn predicate_edge_cases_are_pinned() {
     // Single-operand `in` stays a set op (In with a 1-element Vec), not collapsed to Eq.
     let one = coerce_predicate("id", "Long", "in:5").unwrap();
