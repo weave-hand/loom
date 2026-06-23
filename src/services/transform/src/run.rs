@@ -10,7 +10,10 @@ use control_plane_core::{
     ColumnSpec, ControlPlane, DataFile, LineageEvent, PropertyDef, SnapshotId, TableRef,
 };
 use datafusion::execution::context::SessionContext;
-use datafusion_io::{WriteConfig, infer_columns, scan_table, write_dataset};
+use datafusion_io::{
+    WriteConfig, infer_columns, logical_arrow_schema, register_empty_table, scan_table,
+    write_dataset,
+};
 use object_store::ObjectStore;
 
 use crate::conform::{Violation, check_conformance};
@@ -71,6 +74,19 @@ pub enum TransformError {
     NoSnapshot,
 }
 
+/// Map a control-plane read error during input resolution. A `NotFound` from any of
+/// `current_snapshot`/`files`/`schema` means the input is not live at that snapshot
+/// (e.g. dropped between reads) — deterministically a bad input (`UnknownInput` ->
+/// Abandon), not a transient `ControlPlane` fault (-> Retry).
+fn unknown_input(table: &TableRef, e: control_plane_core::ControlPlaneError) -> TransformError {
+    match e {
+        control_plane_core::ControlPlaneError::NotFound(_) => {
+            TransformError::UnknownInput(table.schema.clone(), table.name.clone())
+        }
+        other => TransformError::ControlPlane(other),
+    }
+}
+
 /// Run one transform. `run_id` is a caller-unique output-file prefix (e.g. a UUID).
 pub async fn run_transform(
     cp: &dyn ControlPlane,
@@ -92,19 +108,16 @@ pub async fn run_transform(
         }
     }
 
-    // 1. Resolve + register each input under its `register_as` name.
+    // 1. Resolve + register each input under its `register_as` name. A NotFound at any
+    //    read is a deterministically-bad input (UnknownInput -> Abandon). An input that
+    //    is live but has zero files registers as an empty relation so the SQL runs over
+    //    an empty input rather than failing inside DataFusion's schema inference.
     for input in req.inputs {
         let snapshot = cp
             .catalog()
             .current_snapshot(input.table)
             .await
-            .map_err(|e| match e {
-                control_plane_core::ControlPlaneError::NotFound(_) => TransformError::UnknownInput(
-                    input.table.schema.clone(),
-                    input.table.name.clone(),
-                ),
-                other => TransformError::ControlPlane(other),
-            })?;
+            .map_err(|e| unknown_input(input.table, e))?;
         let files = cp
             .catalog()
             .files(
@@ -112,15 +125,35 @@ pub async fn run_transform(
                 snapshot.id,
                 control_plane_core::PageReq::unbounded(),
             )
+            .await
+            .map_err(|e| unknown_input(input.table, e))?;
+        if files.items.is_empty() {
+            let ts = cp
+                .catalog()
+                .schema(input.table, snapshot.id)
+                .await
+                .map_err(|e| unknown_input(input.table, e))?;
+            let columns: Vec<ColumnSpec> = ts
+                .columns
+                .into_iter()
+                .map(|c| ColumnSpec {
+                    name: c.name,
+                    ty: c.ty,
+                    nullable: c.nullable,
+                })
+                .collect();
+            let schema = logical_arrow_schema(&columns)?; // InferError -> Abandon
+            register_empty_table(&ctx, input.register_as, schema)?;
+        } else {
+            scan_table(
+                &ctx,
+                store.clone(),
+                input.register_as,
+                input.table,
+                &files.items,
+            )
             .await?;
-        scan_table(
-            &ctx,
-            store.clone(),
-            input.register_as,
-            input.table,
-            &files.items,
-        )
-        .await?;
+        }
     }
 
     // 2. Run the SQL; resolve its result schema (no rows pulled yet).

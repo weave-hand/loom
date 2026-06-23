@@ -44,6 +44,19 @@ rust_test(
 )
 
 rust_test(
+    name = "logical-arrow",
+    crate = "logical_arrow",
+    srcs = ["tests/logical_arrow.rs"],
+    crate_root = "tests/logical_arrow.rs",
+    edition = "2024",
+    deps = [
+        ":datafusion-io",
+        "//src/control-plane/core:core",
+        "//third-party:arrow",
+    ],
+)
+
+rust_test(
     name = "scan",
     crate = "scan",
     srcs = ["tests/scan.rs"],

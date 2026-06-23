@@ -4,8 +4,10 @@
 
 use std::sync::Arc;
 
+use arrow::datatypes::SchemaRef;
 use control_plane_core::{FileRef, TableRef};
 use datafusion::common::TableReference;
+use datafusion::datasource::MemTable;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
@@ -62,6 +64,24 @@ pub async fn scan_table(
     // `&str -> TableReference` conversion parses + lowercase-normalizes, which would
     // register `Order` as `order` and leave a case-quoted `FROM "Order"` unresolvable.
     // `TableReference::bare` preserves the name verbatim.
+    ctx.register_table(TableReference::bare(name), Arc::new(provider))?;
+    Ok(())
+}
+
+/// Register an EMPTY DataFusion table named `name` with `schema` (zero rows) — the
+/// empty-input analog of `scan_table`, for an input table that exists at a snapshot
+/// but has no data files. Uses `TableReference::bare` to preserve the registration
+/// name verbatim (same as `scan_table`), so a `FROM "Order"` resolves identically
+/// whether the input is empty or scanned.
+pub fn register_empty_table(
+    ctx: &SessionContext,
+    name: &str,
+    schema: SchemaRef,
+) -> Result<(), ScanError> {
+    // One partition holding zero batches — `MemTable::try_new` rejects an empty
+    // partition list ("No partitions provided"), so the empty relation is a single
+    // empty partition, not zero partitions.
+    let provider = MemTable::try_new(schema, vec![vec![]])?;
     ctx.register_table(TableReference::bare(name), Arc::new(provider))?;
     Ok(())
 }
