@@ -39,14 +39,16 @@ fn columns() -> Vec<ColumnSpec> {
     ]
 }
 
-/// Arrow-57 IPC body: `id: long` + `embedding: list<float>` (non-null element, two
-/// 4-float rows).
-fn ipc_body() -> Vec<u8> {
+/// Arrow-57 IPC body: `id: long` + `embedding: list<float>` (non-null element), two
+/// rows each holding `width` floats (`width = 4` matches the declared `vector(4)`).
+fn ipc_body(width: usize) -> Vec<u8> {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
-    lb.values().append_slice(&[0.1, 0.2, 0.3, 0.4]);
+    let row0: Vec<f32> = (0..width).map(|i| 0.1 * (i + 1) as f32).collect();
+    let row1: Vec<f32> = (0..width).map(|i| 0.5 + 0.1 * i as f32).collect();
+    lb.values().append_slice(&row0);
     lb.append(true);
-    lb.values().append_slice(&[0.5, 0.6, 0.7, 0.8]);
+    lb.values().append_slice(&row1);
     lb.append(true);
     let embedding = lb.finish();
     let id = Int64Array::from(vec![1i64, 2]);
@@ -112,7 +114,7 @@ async fn lands_and_reads_back_a_vector_column() {
         &catalog,
         &t,
         &columns(),
-        &ipc_body(),
+        &ipc_body(4),
         0,
         i64::MAX,
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "chunks"),
@@ -158,4 +160,33 @@ async fn lands_and_reads_back_a_vector_column() {
         &[0.1f32, 0.2, 0.3, 0.4],
         "embedding floats are value-exact after landing + read-back"
     );
+}
+
+/// A vector whose per-row element count ≠ the declared `N` is a deterministic
+/// bad-input rejection, not a silent store (acceptance #4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn width_mismatch_is_rejected() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "bad".into(),
+    };
+    // columns() declares vector(4) but the data carries 3-element rows.
+    let r = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(3),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "bad"),
+    )
+    .await;
+    assert!(r.is_err(), "a width mismatch must be rejected, not stored");
 }
