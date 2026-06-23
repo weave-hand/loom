@@ -9,13 +9,16 @@ use std::sync::Arc;
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_ipc57::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
+use control_plane_core::Catalog;
 use control_plane_core::{
     ColumnSpec, DatasetId, EventType, Lineage, LineageEvent, PageReq, RunId, StatValue, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{land, overwrite_parquet_snapshot};
-use control_plane_postgres::iceberg_mirror::{end_cap_live_data_files, ensure_table, next_snapshot};
+use control_plane_postgres::iceberg_mirror::{
+    end_cap_live_data_files, ensure_table, next_snapshot,
+};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -279,7 +282,11 @@ async fn overwrite_emits_lineage() {
         .events_for(&run, PageReq::unbounded())
         .await
         .expect("events");
-    assert_eq!(page.items.len(), 1, "one lineage event for the overwrite run");
+    assert_eq!(
+        page.items.len(),
+        1,
+        "one lineage event for the overwrite run"
+    );
     assert_eq!(page.items[0].outputs[0].name, "wh.lin");
 }
 
