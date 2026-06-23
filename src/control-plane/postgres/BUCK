@@ -485,6 +485,20 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "iceberg-control-plane",
+    crate = "iceberg_control_plane",
+    srcs = ["tests/iceberg_control_plane.rs"],
+    crate_root = "tests/iceberg_control_plane.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:iceberg",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-write-roundtrip",
     crate = "iceberg_write_roundtrip",
     srcs = ["tests/iceberg_write_roundtrip.rs"],

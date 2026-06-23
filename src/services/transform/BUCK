@@ -30,8 +30,10 @@ rust_binary(
     deps = [
         ":transform",
         "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
         "//src/control-plane/worker:worker",
         "//src/services/runtime:runtime",
+        "//third-party:iceberg",
         "//third-party:object_store",
         "//third-party:tokio",
         "//third-party:tokio-util",
@@ -61,6 +63,37 @@ rust_test(
         ":transform",
         "//third-party:serde",
         "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "transform-backend",
+    crate = "transform_backend",
+    srcs = ["tests/transform_backend.rs"],
+    crate_root = "tests/transform_backend.rs",
+    edition = "2024",
+    deps = [":transform"],
+)
+
+loom_fixture_test(
+    name = "iceberg-backend-e2e",
+    crate = "iceberg_backend_e2e",
+    srcs = ["tests/iceberg_backend_e2e.rs"],
+    crate_root = "tests/iceberg_backend_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/datafusion-io:datafusion-io",
+        "//third-party:arrow",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 

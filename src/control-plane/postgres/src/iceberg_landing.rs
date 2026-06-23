@@ -14,7 +14,8 @@ use arrow_ipc57::reader::StreamReader;
 use arrow_schema::Schema;
 use arrow_select57::concat::concat_batches;
 use control_plane_core::{
-    Catalog, ColumnSpec, ControlPlaneError, LineageEvent, Result, SnapshotId, TableRef,
+    Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, Result, SnapshotId,
+    TableRef,
 };
 use iceberg::spec::{NestedField, PrimitiveType, Schema as IceSchema, Type};
 use iceberg::{Catalog as IceCatalog, NamespaceIdent, TableCreation, TableIdent};
@@ -22,6 +23,10 @@ use sqlx::PgPool;
 
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_inline::inline_append;
+use crate::iceberg_mirror::{
+    ProjectedColumn, ProjectedFile, columns_exist, end_cap_live_data_files, ensure_table,
+    project_columns, project_files,
+};
 use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
 use crate::iceberg_type::iceberg_physical_type;
 use crate::iceberg_writer::append_batches_with_extras;
@@ -142,21 +147,9 @@ pub(crate) async fn append_parquet_snapshot(
     end_cap: Option<InlineEndCap<'_>>,
     overwrite: bool,
 ) -> Result<SnapshotId> {
+    ensure_iceberg_table(catalog, table, columns).await?;
     let ns = NamespaceIdent::new(table.schema.clone());
-    if !catalog.namespace_exists(&ns).await.map_err(be)? {
-        catalog
-            .create_namespace(&ns, Default::default())
-            .await
-            .map_err(be)?;
-    }
-    let ident = TableIdent::new(ns.clone(), table.name.clone());
-    if !catalog.table_exists(&ident).await.map_err(be)? {
-        let creation = TableCreation::builder()
-            .name(table.name.clone())
-            .schema(ice_schema(columns)?)
-            .build();
-        catalog.create_table(&ns, creation).await.map_err(be)?;
-    }
+    let ident = TableIdent::new(ns, table.name.clone());
     let ice_table = catalog.load_table(&ident).await.map_err(be)?;
 
     // A decoded IPC body carries a bare arrow schema; the iceberg writer chain needs
@@ -182,6 +175,125 @@ pub(crate) async fn append_parquet_snapshot(
         .current_snapshot(table)
         .await?
         .id)
+}
+
+/// Create the Iceberg namespace + table for `table` if absent (idempotent), from
+/// `columns`. Writes only the Iceberg catalog pointer — it does NOT project the
+/// mirror (the mirror is projected when files are registered/appended). Shared by
+/// the landing Parquet path and the transform [`register_files`] path.
+pub(crate) async fn ensure_iceberg_table(
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+) -> Result<()> {
+    let ns = NamespaceIdent::new(table.schema.clone());
+    if !catalog.namespace_exists(&ns).await.map_err(be)? {
+        catalog
+            .create_namespace(&ns, Default::default())
+            .await
+            .map_err(be)?;
+    }
+    let ident = TableIdent::new(ns.clone(), table.name.clone());
+    if !catalog.table_exists(&ident).await.map_err(be)? {
+        let creation = TableCreation::builder()
+            .name(table.name.clone())
+            .schema(ice_schema(columns)?)
+            .build();
+        catalog.create_table(&ns, creation).await.map_err(be)?;
+    }
+    Ok(())
+}
+
+/// How [`register_files`] folds new files into the table's live set.
+#[derive(Clone, Copy)]
+pub enum WriteMode {
+    /// Add `files` to the currently-live set.
+    Append,
+    /// End-cap every currently-live data file at the new snapshot first, so `files`
+    /// become the sole live set (prior files still time-travel). The
+    /// `road-iceberg-overwrite-mode` contract, over already-written files.
+    Overwrite,
+}
+
+/// Register already-written Parquet `files` into the `iceberg_mirror.*` projection
+/// for `table` at snapshot `at`, in the caller's transaction `conn`. The caller
+/// allocated `at` (via [`crate::iceberg_mirror::next_snapshot`]) and owns commit.
+///
+/// **Mirror-only** — this drives NO Iceberg `fast_append`. loom-governed reads
+/// resolve entirely through `iceberg_mirror.*` ([`IcebergCatalog`]), so projecting
+/// the mirror rows makes the files readable; the raw Iceberg metadata not referencing
+/// them is the accepted gap class of `iss-iceberg-inline-visibility` (and is moot
+/// here — the transform worker's arrow-58 Parquet lacks the iceberg field-id footer
+/// metadata an external reader would need). The loom `DataFile`s already carry their
+/// per-column stats, so the mirror rows are a direct field map with no footer re-read.
+pub async fn register_files(
+    conn: &mut sqlx::PgConnection,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    files: &[DataFile],
+    mode: WriteMode,
+    at: SnapshotId,
+) -> Result<()> {
+    let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
+    // Overwrite: end-cap pre-existing live files BEFORE projecting the new ones, so
+    // only the prior files are retired (same ordering law as `write_mirror`).
+    if let WriteMode::Overwrite = mode {
+        end_cap_live_data_files(conn, tid, at).await?;
+    }
+    if !columns_exist(conn, tid).await? {
+        project_columns(conn, tid, at, &projected_columns(columns)?).await?;
+    }
+    project_files(conn, tid, at, &projected_files(files)?).await?;
+    Ok(())
+}
+
+/// Map loom `ColumnSpec`s to mirror `ProjectedColumn`s, storing the Iceberg primitive
+/// type name (`iceberg_physical_type`) — the exact `column_type` the normal write path
+/// records (via `columns_of`), so reads decode identically (`logical_from_iceberg`).
+fn projected_columns(columns: &[ColumnSpec]) -> Result<Vec<ProjectedColumn>> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let iceberg_type = iceberg_physical_type(&c.ty).ok_or_else(|| {
+                ControlPlaneError::Backend(
+                    format!("register: no iceberg type for {:?}", c.ty).into(),
+                )
+            })?;
+            Ok(ProjectedColumn {
+                order: (i + 1) as i64,
+                name: c.name.clone(),
+                iceberg_type: iceberg_type.to_string(),
+                nullable: c.nullable,
+            })
+        })
+        .collect()
+}
+
+/// Map already-written loom `DataFile`s to mirror `ProjectedFile`s — a direct field
+/// copy (the `DataFile` already carries path/counts/size and per-column stats).
+fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
+    files
+        .iter()
+        .map(|f| {
+            if f.file_format != FileFormat::Parquet {
+                return Err(ControlPlaneError::Backend(
+                    format!(
+                        "register: only Parquet files supported, got {:?}",
+                        f.file_format
+                    )
+                    .into(),
+                ));
+            }
+            Ok(ProjectedFile {
+                path: f.path.clone(),
+                file_format: "parquet".to_string(),
+                record_count: f.record_count,
+                file_size_bytes: f.file_size_bytes,
+                column_stats: f.column_stats.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The Parquet branch: ensure the namespace + table exist, then append real
