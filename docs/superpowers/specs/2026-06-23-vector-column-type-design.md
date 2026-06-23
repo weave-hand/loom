@@ -73,45 +73,63 @@ Every exhaustive `match BaseType` gains a `Vector` arm — this is the bounded r
 deferred), `iceberg_physical_type`/`logical_from_iceberg`, `json_repr`, and any
 stat-typing match. Each is a small, compiler-enforced addition.
 
-### 2. Physical storage — Iceberg `list<float>`
+### 2. Physical storage — Iceberg `list<float>`, written as Arrow **`List<Float32>`**
 
-Iceberg has no fixed-size-list; represent the vector as an Iceberg **`list<float>`**
-(required `float`/f32 element). `N` is a loom-level constraint, enforced at landing
-(reject a `FixedSizeList` whose width ≠ the declared `N`) and remembered in the mirror
+> **Research-grounded (see §Research).** Iceberg has **no** fixed-size-array/vector
+> type in any spec version (v1/v2/v3) — `list<float>` is the canonical, de-facto
+> community choice for embeddings. Critically for our stack: **iceberg-rust 0.9 has no
+> `FixedSizeList` handling**, **Parquet has no native fixed-size list** (a
+> `FixedSizeList` is written as a regular variable `LIST` and reads back variable), and
+> `FixedSizeList` Parquet round-trips have a documented **null-loss hazard**. So the
+> column fed to the iceberg writer is Arrow **`List<Float32>`**, not `FixedSizeList` —
+> the variable-list path iceberg-rust supports and round-trips cleanly (it preserves
+> `PARQUET:field_id` for the list element).
+
+Represent the vector as an Iceberg **`list<float>`** (an `f32` element). `N` is a
+**loom-level constraint**, not an Iceberg/Parquet one: enforced at landing (validate
+each row's list length = the declared `N`) and remembered in the mirror
 `column_type = "vector(N)"` for read-back reconstruction. So:
 
 - `ice_schema`/`primitive_from` learn to build a `Type::List(float)` field for a
-  `Vector(N)` column (the one non-primitive `NestedField`).
+  `Vector(N)` column (the one non-primitive `NestedField`). The list element is
+  `required` `float`; the column's own nullability is independent of the element's
+  (Iceberg tracks the two separately) — a `vector(N)` column is non-null with non-null
+  elements in this slice.
 - `columns_of` maps an Iceberg `list<float>` column back to `"vector(N)"` **using the
-  declared `N` from the mirror column row** rather than the (length-free) Iceberg list
-  — i.e. read the dimension from `column_type`, not the Iceberg schema. (Replaces the
-  `panic!` at `iceberg_mirror.rs:256` with explicit list handling.)
-- **No per-column stats** for vector columns (no min/max/null bound is meaningful);
-  `project_files`/the pruner already treat a column with no usable stat as
-  unprunable, so a vector column is simply skipped in stat projection.
+  declared `N` from the mirror column row** (the Iceberg list is length-free) — read
+  the dimension from `column_type`, not the Iceberg schema. (Replaces the `panic!` at
+  `iceberg_mirror.rs:256` with explicit list handling.)
+- **No per-column stats** for vector columns — confirmed by the spec: Iceberg
+  `lower_bounds`/`upper_bounds` single-value serialization is defined only for
+  primitives, so a `list<float>` column has no bound semantics. `project_files`/the
+  pruner already treat a column with no usable stat as unprunable, so a vector column
+  is simply skipped in stat projection.
 
 ### 3. Landing
 
-`infer_columns` maps arrow **`FixedSizeList(Float32, N)`** → `"vector(N)"` and
-`arrow_type_for("vector(N)")` → `FixedSizeList(Float32, N)`. The model-gate/landing
-path accepts a `vector(N)` column, validates the wire `FixedSizeList` width equals the
-model's declared `N` (a width mismatch is a deterministic bad-input error, like a
-declared-but-absent column), and the existing DataFusion/iceberg Parquet write path
-writes it (Parquet represents a fixed-size list as a `LIST` logical group).
+The wire accepts a vector column as **either** Arrow `FixedSizeList(Float32, N)` (the
+natural shape an embedding producer emits) **or** `List<Float32>`; both infer to
+`"vector(N)"`. `infer_columns` maps both, and `arrow_type_for("vector(N)")` returns
+`List<Float32>` (the storage shape). Landing validates **every row's element count =
+the declared `N`** (a width/length mismatch is a deterministic bad-input error, like a
+declared-but-absent column) and **normalizes the column to `List<Float32>`** before the
+iceberg write path. Per the research, `List<Float32>` is the path the iceberg-rust
+writer supports and Parquet round-trips cleanly; a `FixedSizeList` would be silently
+rewritten as a variable `LIST` anyway (and carries the null-loss hazard), so loom
+converts up front rather than relying on that implicit coercion.
 
-> **Risk to resolve in the plan/first task:** confirm the arrow-57 iceberg writer
-> chain (`write_parquet`) accepts a `FixedSizeList<Float32>` column mapped under an
-> Iceberg `list<float>` field and round-trips it. If the writer rejects fixed-size
-> lists, fall back to landing the column as an arrow `List<Float32>` (variable) with
-> the loom-side `N` validation still enforced. The de-risk task writes a vector to
-> real Parquet and reads it back **before** the type-system wiring.
+> **De-risk first task (downgraded from a true risk by the research):** write a
+> `List<Float32>` vector column to real Parquet through the arrow-57 iceberg writer
+> chain (`write_parquet`) and read it back value-exact, **before** the type-system
+> wiring. The research makes this a confirmation, not an open question — but it stays
+> the first task because it's the one place arrow/parquet-57 behavior is load-bearing.
 
 ### 4. Serving
 
 `render.rs` serializes a `vector(N)` column as a JSON **array of numbers** from the
-served `FixedSizeList`/`List<Float32>` column (`JsonRepr::FloatArray`). No precision
-loss beyond f32. The vector is read-only data on the wire — no filtering/sorting on
-vector columns (rejected with a clear error, consistent with deferred ANN).
+served `List<Float32>` column (`JsonRepr::FloatArray`). No precision loss beyond f32.
+The vector is read-only data on the wire — no filtering/sorting on vector columns
+(rejected with a clear error, consistent with deferred ANN).
 
 ### 5. Ontology
 
@@ -123,7 +141,7 @@ governed and lineage-tracked exactly like any other column (it rides the snapsho
 ## Surface
 
 - `core`: `BaseType::Vector(u32)`; `as_str`/`parse`/`json_repr` extended; `JsonRepr::FloatArray`.
-- `datafusion-io`: `infer.rs` handles `FixedSizeList(Float32, N)` ↔ `"vector(N)"`.
+- `datafusion-io`: `infer.rs` accepts `FixedSizeList(Float32,N)`|`List<Float32>` → `"vector(N)"`; `arrow_type_for` → `List<Float32>`; a normalize-to-`List<Float32>` + per-row length-validate helper.
 - `postgres`: `iceberg_type` + `ice_schema`/`primitive_from` build/decode `list<float>`;
   `iceberg_mirror::columns_of` handles the list column via the declared `N`; stats skipped.
 - `query-api`: `render.rs` serializes a vector column to a JSON number array.
@@ -135,9 +153,12 @@ object store):
 
 - **Type codec (pure):** `vector(384)` round-trips `as_str`/`parse`; `json_repr` is
   `FloatArray`; a malformed `vector(x)`/`vector()` errors.
-- **Inference (pure):** `FixedSizeList(Float32, 384)` ↔ `"vector(384)"` both directions.
-- **De-risk write/read (fixture):** write a `vector(4)` column to real Parquet via the
-  iceberg path and read it back as the same 4 floats (resolves the §3 risk first).
+- **Inference (pure):** both `FixedSizeList(Float32, 384)` and `List<Float32>` infer to
+  `"vector(384)"`; `arrow_type_for("vector(384)")` is `List<Float32>`; normalize converts
+  a `FixedSizeList` input to `List<Float32>`.
+- **De-risk write/read (fixture):** write a `List<Float32>` `vector(4)` column to real
+  Parquet via the iceberg path and read it back as the same 4 floats (the one
+  arrow/parquet-57-load-bearing check; do it first).
 - **Landing + serving e2e (fixture):** land a small typed object with an `embedding:
   vector(4)` column over the Iceberg backend; read it back through the serving path and
   assert the JSON row carries the embedding as a `[f32; 4]` array; lineage/snapshot
@@ -148,9 +169,10 @@ object store):
 
 ## Scope boundary
 
-- **In:** `BaseType::Vector(u32)` + codecs/`JsonRepr`; arrow `FixedSizeList<Float32,N>`
-  inference; Iceberg `list<float>` storage + mirror handling (stats skipped); serving
-  JSON-array read-back; ontology `vector(N)` property acceptance; the tests above.
+- **In:** `BaseType::Vector(u32)` + codecs/`JsonRepr`; arrow `FixedSizeList<Float32,N>`|
+  `List<Float32>` inference normalized to `List<Float32>`; Iceberg `list<float>` storage
+  + mirror handling (stats skipped); serving JSON-array read-back; ontology `vector(N)`
+  property acceptance; the tests above.
 - **Out (deferred, tracked):** the embedding-generation Transform (**A3b**, the next
   slice); DuckLake vector storage (`fut-vector-ducklake`); non-`f32` element types;
   ANN / distance functions / vector-predicate pushdown / vector indexes (stays in the
@@ -164,6 +186,38 @@ object store):
    read back through the serving path as a JSON array of `N` numbers, value-exact to f32.
 3. A vector column carries no per-column stats and does not disturb file pruning or any
    primitive column's behavior.
-4. A width mismatch (wire `FixedSizeList` width ≠ declared `N`) is a deterministic
+4. A wire vector whose per-row element count ≠ declared `N` is a deterministic
    bad-input rejection, not a silent store.
 5. `buck2 test //src/...` is green; all primitive-column behavior and defaults unchanged.
+
+## Research
+
+Findings from a multi-source, adversarially-verified research pass (2026-06-23) that
+grounded the representation choice. The headline: `list<float>` is canonical, and the
+Arrow write-boundary type must be `List<Float32>` (not `FixedSizeList`).
+
+- **No Iceberg vector type, any version.** The Iceberg primitive set (incl. v3's new
+  `variant`/`geometry`/`geography`/`unknown`/nanosecond-timestamps) has no
+  array/vector/tensor primitive; `list`/`struct`/`map` are the only nested types. A
+  dense `f32` vector is modeled as `list<float>` or a `fixed(4N)` blob — `list<float>`
+  is the de-facto community choice. (Iceberg spec; Iceberg-v3 overview.)
+- **iceberg-rust 0.9 supports variable `List` (incl. list-of-struct) and preserves
+  `PARQUET:field_id`, but has no `FixedSizeList` path.** (iceberg-rust schema-conversion
+  source / commit; PR #1928 auto-assign-ids.)
+- **Parquet has no native fixed-size list.** Arrow `FixedSizeList` is written as a
+  variable `LIST` and reads back variable, with extra conversion overhead; a
+  `FIXED_SIZE_LIST` logical type was only a May-2024 *proposal*, never shipped. (Parquet
+  dev list; arrow-rs #6733.)
+- **`FixedSizeList` Parquet round-trips have caused real null-loss** (`[[1,2],null,[3,4]]`
+  losing the null row) until a Dremel rep/def-level rewrite — a hazard `List<Float32>`
+  avoids. (Polars #16608 / #16747.)
+- **Stats undefined for list columns.** `lower_bounds`/`upper_bounds` single-value
+  serialization is primitive-only — confirms skipping per-column stats for vectors.
+  (Iceberg spec, Appendix D.)
+- **Lance is the ANN escalation path**, not an Iceberg representation: keep canonical
+  data in Iceberg, export to Lance (a distinct file/table/catalog format) for indexed
+  vector search. Reinforces loom-stores-not-searches. (LanceDB/DuckDBLab.)
+- Minor: arrow-rs names the list element `item` (legacy) vs the spec's `element`;
+  opt-in coercion exists. Irrelevant to loom's mirror-based reads; matters only for
+  raw-metadata external faithfulness (already the deferred `iss-iceberg-inline-visibility`
+  class). (arrow-rs #6733 / #6828.)
