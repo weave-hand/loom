@@ -95,6 +95,20 @@ loom_fixture_test(
 )
 
 rust_test(
+    name = "bind-memory",
+    crate = "bind_memory",
+    srcs = ["tests/bind_memory.rs"],
+    crate_root = "tests/bind_memory.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "gate",
     crate = "gate",
     srcs = ["tests/gate.rs"],

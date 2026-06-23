@@ -2,11 +2,11 @@
 //! a non-conforming type is rejected with ALL violations and nothing is persisted.
 
 use control_plane_core::{
-    Aggregation, ControlPlaneError, DerivedPropertyDef, ObjectType, Ontology, PropertyDef,
-    TableRef, TypeName,
+    Aggregation, Cardinality, ControlPlaneError, DerivedPropertyDef, LinkBacking, LinkDef,
+    ObjectType, Ontology, PropertyDef, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use ingest::{BindError, BindViolationReason, bind};
+use ingest::{BindError, BindViolationReason, bind, bind_link};
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
     PropertyDef {
@@ -301,5 +301,161 @@ async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
         v.iter()
             .any(|x| x.property == "_y" && matches!(x.reason, BindViolationReason::ReservedName)),
         "expected a ReservedName violation for '_y', got {v:?}"
+    );
+}
+
+// Seed a second table to back a link target, returning its TableRef.
+async fn seed_orders(writer: &DuckLakeWriter) -> TableRef {
+    writer
+        .seed(
+            "main",
+            "orders",
+            &[
+                ("id".into(), "BIGINT".into(), false),
+                ("customer_id".into(), "BIGINT".into(), true),
+            ],
+            &[1],
+        )
+        .await;
+    TableRef {
+        schema: "main".into(),
+        name: "orders".into(),
+    }
+}
+
+// Define the Customer + Order types (no derived) so links and re-binds can reference
+// them. Returns the orders table.
+async fn define_customer_and_order(cp: &control_plane_postgres::PgControlPlane) -> TableRef {
+    cp.define_type(ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![],
+        table: customer(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+    let orders = TableRef {
+        schema: "main".into(),
+        name: "orders".into(),
+    };
+    cp.define_type(ObjectType {
+        name: TypeName("Order".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![],
+        table: orders.clone(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+    orders
+}
+
+#[tokio::test]
+async fn bind_validates_derived_against_real_catalog() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+    let orders = seed_orders(&writer).await;
+    define_customer_and_order(&cp).await;
+    cp.define_link(LinkDef {
+        name: "customer".into(),
+        from: TypeName("Order".into()),
+        to: TypeName("Customer".into()),
+        cardinality: Cardinality::One,
+        backing: LinkBacking::ForeignKey {
+            from_column: "customer_id".into(),
+            to_column: "id".into(),
+        },
+    })
+    .await
+    .unwrap();
+
+    // A valid Count derived (no column type dependency) re-binds Order cleanly.
+    let ok = ObjectType {
+        name: TypeName("Order".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![DerivedPropertyDef {
+            name: "ct".into(),
+            ty: "Long".into(),
+            link: "customer".into(),
+            agg: Aggregation::Count,
+        }],
+        table: orders.clone(),
+        identity: None,
+    };
+    bind(&cp, &cp, ok).await.unwrap();
+
+    // A derived property over an undefined link is rejected.
+    let bad = ObjectType {
+        name: TypeName("Order".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![DerivedPropertyDef {
+            name: "ct".into(),
+            ty: "Long".into(),
+            link: "nope".into(),
+            agg: Aggregation::Count,
+        }],
+        table: orders,
+        identity: None,
+    };
+    let err = bind(&cp, &cp, bad).await.unwrap_err();
+    assert!(
+        matches!(&err, BindError::DoesNotConform(v)
+            if v.iter().any(|x| matches!(x.reason, BindViolationReason::UnknownDerivedLink(_)))),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn bind_link_validates_columns_against_real_catalog() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+    seed_orders(&writer).await;
+    define_customer_and_order(&cp).await;
+
+    // Good FK: orders.customer_id -> customer.id.
+    bind_link(
+        &cp,
+        &cp,
+        LinkDef {
+            name: "customer".into(),
+            from: TypeName("Order".into()),
+            to: TypeName("Customer".into()),
+            cardinality: Cardinality::One,
+            backing: LinkBacking::ForeignKey {
+                from_column: "customer_id".into(),
+                to_column: "id".into(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+
+    // Bad FK: a non-existent from-column is a MissingColumn naming that column.
+    let err = bind_link(
+        &cp,
+        &cp,
+        LinkDef {
+            name: "bad".into(),
+            from: TypeName("Order".into()),
+            to: TypeName("Customer".into()),
+            cardinality: Cardinality::One,
+            backing: LinkBacking::ForeignKey {
+                from_column: "ghost".into(),
+                to_column: "id".into(),
+            },
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, BindError::DoesNotConform(v)
+            if v.iter().any(|x| x.property == "ghost"
+                && matches!(x.reason, BindViolationReason::MissingColumn))),
+        "{err:?}"
     );
 }
