@@ -54,6 +54,7 @@ loom_fixture_test(
         "//src/services/engine:engine",
         "//src/services/engine-wire:engine-wire",
         "//third-party:arrow-array",
+        "//third-party:arrow-flight",
         "//third-party:arrow-schema",
         "//third-party:iceberg",
         "//third-party:serde_json",
@@ -64,4 +65,35 @@ loom_fixture_test(
         "//third-party:tonic",
         "//third-party:uuid",
     ],
+)
+
+# Flight round-trip e2e: engine serves Arrow Flight + EngineControl on the same
+# UDS; FlightTableClient (zero-pool) streams a known file set and reconstructs
+# the exact rows. Postgres is used only for seeding and path resolution.
+loom_fixture_test(
+    name = "flight-roundtrip",
+    crate = "flight_roundtrip",
+    srcs = ["tests/flight_roundtrip.rs"],
+    crate_root = "tests/flight_roundtrip.rs",
+    edition = "2024",
+    deps = [
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/worker:worker",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
 )

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
+use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, PageReq, Queue, RunId, TableRef,
@@ -21,6 +22,7 @@ use control_plane_postgres::iceberg_inline::inline_append;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
+use engine::flight::FlightDataService;
 use engine::service::EngineControlService;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
@@ -79,9 +81,19 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
 
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
-    let catalog = make_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
+    let wh_str = wh.path().display().to_string();
+    let control_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
+    let flight_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
 
-    let svc = EngineControlService { cp, catalog, pool };
+    let svc = EngineControlService {
+        cp,
+        catalog: control_catalog,
+        pool: pool.clone(),
+    };
+    let flight_svc = FlightDataService {
+        catalog: flight_catalog,
+        pool,
+    };
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
 
@@ -89,6 +101,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         let _wh = wh; // keep warehouse tempdir alive for the task lifetime
         Server::builder()
             .add_service(EngineControlServer::new(svc))
+            .add_service(FlightServiceServer::new(flight_svc))
             .serve_with_incoming(incoming)
             .await
             .ok();
