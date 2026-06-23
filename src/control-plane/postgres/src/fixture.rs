@@ -10,10 +10,12 @@
 //! This is test-support that happens to live in the library so other crates'
 //! integration tests can reuse it; it is not for production use.
 
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection};
@@ -36,6 +38,93 @@ use crate::iceberg_sql_catalog::{
 };
 
 static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Bounds the number of concurrently-alive fixture Postgres clusters across all
+/// test processes/threads. `slots` marker files live under `dir`; an acquired
+/// slot is an exclusive `flock` held for the cluster's lifetime. Test-support.
+///
+/// A full `buck2 test //src/...` sweep otherwise boots every `loom_fixture_test`
+/// target's cluster in one window (dozens of live `postgres` processes, each
+/// reserving SysV semaphore sets) and blows past the kernel's `SEMMNI` limit, so
+/// `initdb` fails en masse (`iss-fixture-boot-contention`). Capping live clusters
+/// keeps total semaphore sets far under the limit.
+pub struct BootThrottle {
+    dir: PathBuf,
+    slots: usize,
+}
+
+/// An acquired boot slot. The `flock` is released when this `File` drops (or the
+/// process exits), freeing the slot for another cluster.
+pub struct SlotGuard {
+    _file: File,
+}
+
+impl BootThrottle {
+    /// Create a throttle of `slots` (min 1) marker files under `dir`.
+    pub fn new(dir: PathBuf, slots: usize) -> Self {
+        std::fs::create_dir_all(&dir).expect("create fixture slot dir");
+        Self {
+            dir,
+            slots: slots.max(1),
+        }
+    }
+
+    /// Block until a slot is free, then return a guard holding it. Polls each of
+    /// the `K` marker files with a non-blocking exclusive `flock`; sleeps briefly
+    /// when all are busy. Panics after a generous deadline (test-only) so a wedged
+    /// suite fails loudly instead of hanging forever.
+    ///
+    /// Each attempt opens its **own** fd (own open file description), so two
+    /// threads of the same process contend correctly — `flock` via distinct fds
+    /// conflicts even within one process. Marker files are never deleted (empty,
+    /// reused across runs), which avoids a create/unlink race.
+    pub fn acquire(&self) -> SlotGuard {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            for i in 0..self.slots {
+                let path = self.dir.join(format!("slot-{i}"));
+                let file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .open(&path)
+                    .expect("open fixture slot file");
+                match file.try_lock() {
+                    Ok(()) => return SlotGuard { _file: file },
+                    Err(TryLockError::WouldBlock) => continue, // taken — try next slot
+                    Err(TryLockError::Error(e)) => panic!("flock slot {i}: {e}"),
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "could not acquire a pg fixture boot slot within 120s \
+                     (LOOM_PG_FIXTURE_SLOTS too low, or slots leaked?)"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+static THROTTLE: OnceLock<BootThrottle> = OnceLock::new();
+
+/// The process-global fixture-boot throttle. `K` slots come from
+/// `LOOM_PG_FIXTURE_SLOTS` (default 8); the slot dir from
+/// `LOOM_PG_FIXTURE_SLOT_DIR` (default the fixed `/tmp/loom-pg-fixture-slots`, so
+/// all test processes on the host share the same `K` slots — keying off a
+/// per-action `$TMPDIR` would un-throttle the cross-target axis).
+fn boot_throttle() -> &'static BootThrottle {
+    THROTTLE.get_or_init(|| {
+        let slots = std::env::var("LOOM_PG_FIXTURE_SLOTS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(8);
+        let dir = std::env::var_os("LOOM_PG_FIXTURE_SLOT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/loom-pg-fixture-slots"));
+        BootThrottle::new(dir, slots)
+    })
+}
 
 /// A running ephemeral Postgres cluster. Killed and cleaned up on drop.
 pub struct PgFixture {
