@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use control_plane_core::{
-    Catalog, ColumnSpec, ColumnStat, DataFile, FileFormat, PageReq, StatValue, TableRef, Tx,
+    Catalog, ColumnSpec, ColumnStat, ControlPlane, DataFile, FileFormat, PageReq, StatValue,
+    TableRef, Tx,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
@@ -90,7 +91,11 @@ async fn append_then_overwrite_preserves_time_travel() {
     let s1 = tx.commit().await.unwrap().expect("append snapshot");
 
     assert_eq!(cp.catalog().current_snapshot(&t).await.unwrap().id, s1);
-    let f1 = cp.catalog().files(&t, s1, PageReq::unbounded()).await.unwrap();
+    let f1 = cp
+        .catalog()
+        .files(&t, s1, PageReq::unbounded())
+        .await
+        .unwrap();
     assert_eq!(f1.items.len(), 1);
     assert_eq!(f1.items[0].record_count, 10);
 
@@ -104,12 +109,20 @@ async fn append_then_overwrite_preserves_time_travel() {
     assert!(s2.0 > s1.0);
 
     // current: only the replacement.
-    let now = cp.catalog().files(&t, s2, PageReq::unbounded()).await.unwrap();
+    let now = cp
+        .catalog()
+        .files(&t, s2, PageReq::unbounded())
+        .await
+        .unwrap();
     assert_eq!(now.items.len(), 1, "only the replacement is live");
     assert_eq!(now.items[0].record_count, 4);
 
     // prior snapshot: the original file (time travel).
-    let before = cp.catalog().files(&t, s1, PageReq::unbounded()).await.unwrap();
+    let before = cp
+        .catalog()
+        .files(&t, s1, PageReq::unbounded())
+        .await
+        .unwrap();
     assert_eq!(before.items.len(), 1, "prior snapshot retains the original");
     assert_eq!(before.items[0].record_count, 10);
 }

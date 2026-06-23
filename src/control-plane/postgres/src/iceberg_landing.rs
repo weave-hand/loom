@@ -278,8 +278,11 @@ fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
         .map(|f| {
             if f.file_format != FileFormat::Parquet {
                 return Err(ControlPlaneError::Backend(
-                    format!("register: only Parquet files supported, got {:?}", f.file_format)
-                        .into(),
+                    format!(
+                        "register: only Parquet files supported, got {:?}",
+                        f.file_format
+                    )
+                    .into(),
                 ));
             }
             Ok(ProjectedFile {

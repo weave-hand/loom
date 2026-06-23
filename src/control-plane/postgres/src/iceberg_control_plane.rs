@@ -115,7 +115,7 @@ impl Tx for IcebergTx {
             ensure_iceberg_table(&catalog, table, cols).await?;
         }
         // 2. One snapshot for this unit of work, allocated in the held tx.
-        let at = next_snapshot(&mut *tx, None).await?;
+        let at = next_snapshot(&mut tx, None).await?;
         // 3. Register staged files at `at`, in the held tx (mirror-only). `run.rs`
         //    always `create_table`s the output before registering its files, so the
         //    column lookup is present; error loudly otherwise (never hit by `run.rs`).
@@ -132,7 +132,7 @@ impl Tx for IcebergTx {
                         .into(),
                     )
                 })?;
-            register_files(&mut *tx, table, cols, files, *mode, at).await?;
+            register_files(&mut tx, table, cols, files, *mode, at).await?;
         }
         tx.commit().await.map_err(backend)?;
         Ok(Some(at))
