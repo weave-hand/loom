@@ -38,6 +38,7 @@ rust_binary(
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
         "//third-party:object_store",
         "//third-party:tokio",
     ],
@@ -512,22 +513,6 @@ rust_test(
     deps = [
         ":query-api",
         "//third-party:arrow",
-    ],
-)
-
-rust_test(
-    name = "unsupported-action",
-    crate = "unsupported_action",
-    srcs = ["tests/unsupported_action.rs"],
-    crate_root = "tests/unsupported_action.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        "//src/control-plane/core:core",
-        "//third-party:serde_json",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
     ],
 )
 

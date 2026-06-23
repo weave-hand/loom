@@ -475,29 +475,6 @@ impl ActionEngine for IcebergActionWriter {
     }
 }
 
-/// The `ActionEngine` for the iceberg serving backend: governed action write-backs
-/// are not supported, so writes are rejected. (loom now has inline writes via
-/// `iceberg_inline::inline_append`, but those are a landing/ingest path, not the
-/// single-row action-engine path this trait serves.) The action endpoint surfaces
-/// this as an opaque error.
-pub struct UnsupportedActionEngine;
-
-#[async_trait]
-impl ActionEngine for UnsupportedActionEngine {
-    async fn write_object(
-        &self,
-        _table: &TableRef,
-        _columns: &[String],
-        _values: &[SqlValue],
-        _logical_types: &[String],
-        _event: control_plane_core::LineageEvent,
-    ) -> Result<control_plane_core::SnapshotId, ServingError> {
-        Err(ServingError::Engine(
-            "actions unsupported on the iceberg serving backend".into(),
-        ))
-    }
-}
-
 /// Which table-format backend the query-api binary serves reads from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServingBackend {
