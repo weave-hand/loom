@@ -7,6 +7,12 @@
 # org settings → Secrets). .buckconfig's [buck2_re_client] reads $BUILDBUDDY_API_KEY
 # to authenticate RE/cache, and the runner does not expose its internal key to
 # non-bazel tools. Secrets are auto-injected as env vars for trusted runs.
+#
+# container_image is ubuntu-24.04 (matches GitHub's ubuntu-latest): the prebuilt
+# //tools:supertd and //tools:btd binaries (rsJames-ttrpg/buck2-change-detector
+# fork releases) are linked against GLIBC_2.39, which ubuntu-22.04 (glibc 2.35)
+# lacks. `buck2 run` executes those binaries locally on the runner, so the runner
+# image must carry the newer glibc.
 actions:
   # Full build + test on pushes to main (main must always be fully green). PRs use
   # the cheaper `affected` action below.
@@ -16,7 +22,7 @@ actions:
         branches: [main]
     os: linux
     arch: amd64
-    container_image: ubuntu-22.04
+    container_image: ubuntu-24.04
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -38,7 +44,7 @@ actions:
     git_fetch_depth: 0
     os: linux
     arch: amd64
-    container_image: ubuntu-22.04
+    container_image: ubuntu-24.04
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -96,7 +102,7 @@ actions:
         branches: [main]
     os: linux
     arch: amd64
-    container_image: ubuntu-22.04
+    container_image: ubuntu-24.04
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:

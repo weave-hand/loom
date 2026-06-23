@@ -14,7 +14,7 @@
 
 - **buck2 pin:** `BUCK2_RELEASE="2026-05-18"` — must stay aligned with the prelude submodule pin (see CLAUDE.md / `.gitmodules`). This single copy lives in `tools/ci/buildbuddy-setup.sh`.
 - **buck2 download URL:** `https://github.com/facebook/buck2/releases/download/<BUCK2_RELEASE>/buck2-x86_64-unknown-linux-gnu.zst` (x86_64 linux only).
-- **Container image:** `ubuntu-22.04` for every action (git ≥ 2.34 → worktree submodules work).
+- **Container image:** `ubuntu-24.04` for every action (matches GitHub's `ubuntu-latest`; needed because the prebuilt `//tools:supertd`/`//tools:btd` fork binaries require GLIBC_2.39, absent on `ubuntu-22.04`, and `buck2 run` executes them locally on the runner; git ≥ 2.43 → worktree submodules work).
 - **No `resource_requests`:** inherit the runner default (3 CPU / 8 GB / 20 GB). Build and test both run on RE (the RE workers run as non-root, so the postgres/duckdb fixture tests run remotely too); the runner only orchestrates plus a few light local genrules (libxml2/bsdtar extract). Add `resource_requests` only if a real run shows pressure.
 - **`env: { BUCK_PREFER_REMOTE: "true" }`** on every action; builds use `-M none`.
 - **Secret prerequisite (out-of-repo, already done):** an org secret named exactly `BUILDBUDDY_API_KEY` must exist — `.buckconfig`'s `[buck2_re_client]` reads `$BUILDBUDDY_API_KEY`. The user confirmed this is added.
@@ -144,7 +144,7 @@ actions:
         branches: [main]
     os: linux
     arch: amd64
-    container_image: ubuntu-22.04
+    container_image: ubuntu-24.04
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -166,7 +166,7 @@ actions:
     git_fetch_depth: 0
     os: linux
     arch: amd64
-    container_image: ubuntu-22.04
+    container_image: ubuntu-24.04
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -224,7 +224,7 @@ actions:
         branches: [main]
     os: linux
     arch: amd64
-    container_image: ubuntu-22.04
+    container_image: ubuntu-24.04
     env:
       BUCK_PREFER_REMOTE: "true"
     steps:
@@ -367,5 +367,5 @@ git commit -m "ci: remove GitHub Actions CI, superseded by BuildBuddy Workflows"
 ## Self-review notes
 
 - **Spec coverage:** setup script (Task 1) ↔ spec Component 1; three actions incl. `merge_with_base: false` + `git_fetch_depth: 0` + base-from-trigger derivation + worktree submodule re-init (Task 2) ↔ spec Component 2 + affected action; `BUILDBUDDY_API_KEY` prerequisite + CLAUDE.md note (Task 3) ↔ spec Secrets/Cutover Step A; gated removal (Task 4) ↔ spec Cutover Step B; Discord/actions-cache drop ↔ "What is intentionally dropped" (no task needed — they're simply absent from `buildbuddy.yaml`).
-- **jq:** added to the setup package guard because it is not guaranteed on the BuildBuddy `ubuntu-22.04` image (the affected action pipes btd output through it).
+- **jq:** added to the setup package guard because it is not guaranteed on the BuildBuddy `ubuntu-24.04` image (the affected action pipes btd output through it).
 - **No placeholders:** all file contents are given in full; verification commands have concrete expected output.

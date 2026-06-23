@@ -119,7 +119,10 @@ buck2-install logic in `tools/cloud-setup.sh`.
 
 Common to all actions:
 
-- `os: linux`, `arch: amd64`, `container_image: ubuntu-22.04`.
+- `os: linux`, `arch: amd64`, `container_image: ubuntu-24.04` (matches GitHub's
+  `ubuntu-latest`; the prebuilt `//tools:supertd`/`//tools:btd` fork binaries are
+  linked against GLIBC_2.39, which `ubuntu-22.04`'s glibc 2.35 lacks — and `buck2 run`
+  executes them locally on the runner).
 - **No `resource_requests`** — inherit the runner default (3 CPU / 8 GB / 20 GB). Both
   build and test run on RE (`-M none`, `BUCK_PREFER_REMOTE`; the RE workers now run as
   non-root, so the fixture tests that boot `initdb`/`postgres`/`duckdb` run remotely
@@ -250,4 +253,4 @@ run, so CI coverage is never dropped on `main`.
   real PR (the `affected` action selecting a sane impacted set is the green-light).
 - Default resources hold — add `resource_requests` only if a real run shows pressure.
 - Worktree-based `submodule update` succeeds under the runner's git version
-  (ubuntu-22.04 ships git ≥ 2.34, which supports worktree submodules).
+  (ubuntu-24.04 ships git ≥ 2.43, which supports worktree submodules).
