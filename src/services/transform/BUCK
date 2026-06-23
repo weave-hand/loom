@@ -75,6 +75,28 @@ rust_test(
     deps = [":transform"],
 )
 
+loom_fixture_test(
+    name = "iceberg-backend-e2e",
+    crate = "iceberg_backend_e2e",
+    srcs = ["tests/iceberg_backend_e2e.rs"],
+    crate_root = "tests/iceberg_backend_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":transform",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/datafusion-io:datafusion-io",
+        "//third-party:arrow",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 rust_test(
     name = "compact-unit",
     crate = "compact_unit",
