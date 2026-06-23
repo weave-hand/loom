@@ -266,6 +266,9 @@ Create `src/control-plane/postgres/tests/iceberg_read.rs`. Mirror the fixture se
 
 ```rust
 // imports + fixture boot mirror tests/iceberg_overwrite.rs
+// NOTE: `current_snapshot` is a method of the `control_plane_core::Catalog`
+// TRAIT (impl'd on IcebergCatalog), so the test MUST `use control_plane_core::Catalog;`
+// for the call below to resolve. `files_with_stats` is inherent and needs no trait import.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reads_landed_file_back_to_exact_rows() {
     // boot fixture: pool, SqlCatalog `catalog`, TableRef `table`
@@ -593,19 +596,24 @@ Notes for the implementer:
 
 - [ ] **Step 2: Register the Flight service on the engine's tonic server**
 
-In `src/services/engine/src/main.rs`, add the Flight service alongside `EngineControlServer` on the **same** server/socket. The catalog and pool are moved into both services, so clone the pool and (if `SqlCatalog` is `Clone`) the catalog; otherwise wrap shared state per the existing pattern. Concretely:
+In `src/services/engine/src/main.rs`, add the Flight service alongside `EngineControlServer` on the **same** server/socket. **`SqlCatalog` is NOT `Clone`** (verified — `catalog.rs:193` derives only `Debug`) and `EngineControlService` consumes its `catalog` by value, so build a **second** `SqlCatalog` for the Flight service from the same props (the same `SqlCatalogBuilder` call). `PgPool` IS `Clone`. Concretely:
 
 ```rust
 use arrow_flight::flight_service_server::FlightServiceServer;
 use engine::flight::FlightDataService;
 
-// ... after building `cp`, `catalog`, `pool` ...
+// ... after building `cp`, the first `catalog`, `pool` ...
 let control = EngineControlService {
     cp,
-    catalog: catalog.clone(),
+    catalog,                 // moved into the control service
     pool: pool.clone(),
 };
-let flight = FlightDataService { catalog, pool };
+// Build a second SqlCatalog for the Flight service (SqlCatalog is not Clone).
+let flight_catalog = SqlCatalogBuilder::default()
+    .with_storage_factory(Arc::new(LocalFsStorageFactory))
+    .load("loom", props.clone())     // same props used for the first catalog
+    .await?;
+let flight = FlightDataService { catalog: flight_catalog, pool };
 
 Server::builder()
     .add_service(EngineControlServer::new(control))
@@ -617,7 +625,7 @@ Server::builder()
 ```
 
 Notes:
-- `SqlCatalog` clonability: check whether `SqlCatalog: Clone`. If it is not, construct it twice (call the `SqlCatalogBuilder` twice with the same props) or wrap the shared engine state behind an `Arc` and have both services hold the `Arc`. Do NOT add a Postgres connection where one is not needed. Pick the lowest-drift option that compiles; document the choice in the commit message.
+- Confirm `props` (the catalog config map) is still in scope / cloneable at this point; if the existing code consumed it building the first catalog, hoist a `props.clone()` or rebuild the map. Do NOT add a Postgres connection the Flight service doesn't need beyond the one `PgPool` clone.
 
 - [ ] **Step 3: Update the engine BUCK deps**
 
@@ -671,9 +679,9 @@ use tower::service_fn;
 
 /// Dial the engine's Unix-domain socket and return a tonic `Channel`.
 /// The URI is ignored by the connector; the connector dials the UDS.
-pub(crate) async fn uds_channel(socket: String) -> crate::Result<Channel> {
+pub(crate) async fn uds_channel(socket: String) -> control_plane_core::Result<Channel> {
     Endpoint::try_from("http://[::]:50051")
-        .map_err(crate::be)?
+        .map_err(be)?
         .connect_with_connector(service_fn(move |_: Uri| {
             let socket = socket.clone();
             async move {
@@ -682,11 +690,15 @@ pub(crate) async fn uds_channel(socket: String) -> crate::Result<Channel> {
             }
         }))
         .await
-        .map_err(crate::be)
+        .map_err(be)
 }
 ```
 
-Refactor `GrpcQueueClient::connect` in `src/services/engine-wire/src/client.rs` to call `uds_channel(socket).await?` and wrap it in `EngineControlClient::new(channel)` (behaviour-preserving; the existing `e2e` flush test is the regression guard). Confirm `crate::be` and `crate::Result` are the existing error helper/alias names; adjust if they differ.
+**Known repo facts (verified — do not re-derive):**
+- There is **no** crate-level `Result` alias in `engine-wire`; modules import `Result` from `control_plane_core`. So `uds_channel` returns `control_plane_core::Result<Channel>` (as above), and so does `FlightTableClient` in Task 5 Step 2.
+- `be` is currently a **private** `fn be(...)` inside `src/services/engine-wire/src/client.rs:12` (the error-boxing helper). To call it from `lib.rs`, **promote it to `pub(crate) fn be(...)`** and either move it into `lib.rs` or `use crate::client::be;` from `lib.rs`. Do this as part of this step (it is required, not optional).
+
+Refactor `GrpcQueueClient::connect` in `src/services/engine-wire/src/client.rs` to call `crate::uds_channel(socket).await?` and wrap it in `EngineControlClient::new(channel)` (behaviour-preserving; the existing `e2e` flush test is the regression guard).
 
 - [ ] **Step 2: Write the failing client (compile-gate via Task 6)**
 
@@ -778,19 +790,23 @@ git commit -m "feat(engine-wire): zero-pool FlightTableClient; share the UDS con
 
 - [ ] **Step 1: Make the test engine serve the Flight service**
 
-In `src/services/worker/tests/e2e.rs`, find `spawn_server` (it builds an `EngineControlService` and serves it on a UDS). Add the Flight service to that same server so both this test and the new one get it:
+In `src/services/worker/tests/e2e.rs`, find `spawn_server` (it builds an `EngineControlService` and serves it on a UDS). The test already has a `make_catalog(...)` helper that builds a `SqlCatalog` from the fixture DSN — use it to build a **second** catalog for the Flight service (`SqlCatalog` is not `Clone`; see Task 4). Add the Flight service to the same server so both this test and the new one get it:
 
 ```rust
-// inside spawn_server, where the tonic Server is built:
+// inside spawn_server, where the tonic Server is built. `make_catalog`/the
+// existing builder produces each SqlCatalog; PgPool is Clone.
+let control_catalog = make_catalog(fx, db).await;   // existing first catalog
+let flight_catalog  = make_catalog(fx, db).await;   // second, for Flight
+let control = EngineControlService { cp, catalog: control_catalog, pool: pool.clone() };
 Server::builder()
     .add_service(EngineControlServer::new(control))
     .add_service(arrow_flight::flight_service_server::FlightServiceServer::new(
-        engine::flight::FlightDataService { catalog, pool },
+        engine::flight::FlightDataService { catalog: flight_catalog, pool },
     ))
     .serve_with_incoming_shutdown(incoming, shutdown_fut)
 ```
 
-(Mirror the clonability handling chosen in Task 4 Step 2. If `spawn_server` is private to `e2e.rs`, either make the new test reuse it by moving it into a shared `tests/support`-style module wired as a `rust_library` dep, or duplicate the minimal spawn in the new test. Prefer reuse if low-effort; otherwise a focused duplicate is acceptable and noted.)
+(Match the exact `make_catalog`/builder call already in `e2e.rs`. If `spawn_server` is private to `e2e.rs`, make the new test reuse it by moving it into a shared `tests/support`-style module wired as a `rust_library` dep — preferred — otherwise a focused duplicate of the minimal spawn in the new test is acceptable and should be noted in the commit.)
 
 - [ ] **Step 2: Write the round-trip test**
 
@@ -798,6 +814,8 @@ Create `src/services/worker/tests/flight_roundtrip.rs`:
 
 ```rust
 // Mirror e2e.rs fixture boot: PgFixture, fresh_db, pool_for, spawn_server.
+// MUST `use control_plane_core::Catalog;` — `current_snapshot` is a trait method.
+use control_plane_core::Catalog;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
