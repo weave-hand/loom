@@ -68,8 +68,14 @@ actions:
           # BuildBuddy equivalent of the GitHub second checkout). The runner checks
           # out no submodules and worktrees don't inherit them, so re-init prelude.
           base_dir="${BUILDBUDDY_CI_RUNNER_ROOT_DIR:-$head_root}/_base"
+          # Workflow VMs are snapshotted/reused, so a prior run may have left _base
+          # registered in .git/worktrees even after its dir was cleaned — `rm -rf`
+          # alone leaves that registration, and `worktree add` then fails with
+          # "missing but already registered". prune clears the stale record; --force
+          # covers a still-registered path.
           rm -rf "$base_dir"
-          git worktree add --detach "$base_dir" "$base_sha"
+          git worktree prune
+          git worktree add --force --detach "$base_dir" "$base_sha"
           git -C "$base_dir" submodule update --init --recursive
           ( cd "$base_dir" && buck2 run //tools:supertd -- \
               targets root//... --output "$head_root/base.jsonl" )

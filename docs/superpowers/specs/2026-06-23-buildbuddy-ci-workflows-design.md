@@ -161,9 +161,12 @@ Common to all actions:
      through the existing `awk 'NF >= 2 { print substr($1,1,1) " " $2 }'` into
      `changes.txt` (the sapling `hg status` format btd expects).
   2. **Base-state graph:** materialize the base commit in a `git worktree`
-     (`git worktree add "$BB_ROOT/_base" "$BASE_SHA"`, where `$BB_ROOT` =
-     `$BUILDBUDDY_CI_RUNNER_ROOT_DIR`) — the BuildBuddy equivalent of the GitHub second
-     checkout. Because the runner doesn't populate submodules and worktrees don't
+     (`git worktree prune && git worktree add --force --detach "$BB_ROOT/_base"
+     "$BASE_SHA"`, where `$BB_ROOT` = `$BUILDBUDDY_CI_RUNNER_ROOT_DIR`) — the BuildBuddy
+     equivalent of the GitHub second checkout. The `prune` + `--force` are load-bearing
+     on snapshotted/reused VMs: a prior run leaves `_base` registered in `.git/worktrees`
+     even after its dir is cleaned, so a plain `worktree add` fails "missing but already
+     registered". Because the runner doesn't populate submodules and worktrees don't
      inherit them, run `git -C "$BB_ROOT/_base" submodule update --init --recursive`
      (prelude is needed for graph evaluation), then `buck2 run //tools:supertd --
      targets root//... --output "$PWD/base.jsonl"` from inside the worktree.
