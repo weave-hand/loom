@@ -54,8 +54,8 @@ fn ipc_body() -> Vec<u8> {
         Field::new("id", DataType::Int64, false),
         Field::new("embedding", DataType::List(element), false),
     ]));
-    let batch =
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(id), Arc::new(embedding)]).expect("batch");
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(id), Arc::new(embedding)])
+        .expect("batch");
     let mut buf = Vec::new();
     {
         let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
