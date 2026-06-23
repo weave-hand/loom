@@ -19,6 +19,7 @@ uuid = { version = "1", features = ["v4"] }
 iceberg = "0.9"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
 async-trait = "0.1"
+arrow-flight = "=57.3.1"
 
 [dev-dependencies]
 tempfile = "3"
