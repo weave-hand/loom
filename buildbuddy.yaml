@@ -1,0 +1,141 @@
+# loom CI — BuildBuddy Workflows. Source of truth for build/test/lint, replacing
+# .github/workflows/ci.yml. Runs on BuildBuddy runners co-located with the RE/cache;
+# workflow VMs are snapshotted/reused, so the per-action setup
+# (tools/ci/buildbuddy-setup.sh) is near-instant on warm runs.
+#
+# PREREQUISITE: an org secret named BUILDBUDDY_API_KEY must exist (BuildBuddy UI →
+# org settings → Secrets). .buckconfig's [buck2_re_client] reads $BUILDBUDDY_API_KEY
+# to authenticate RE/cache, and the runner does not expose its internal key to
+# non-bazel tools. Secrets are auto-injected as env vars for trusted runs.
+#
+# container_image is ubuntu-24.04 (matches GitHub's ubuntu-latest): the prebuilt
+# //tools:supertd and //tools:btd binaries (rsJames-ttrpg/buck2-change-detector
+# fork releases) are linked against GLIBC_2.39, which ubuntu-22.04 (glibc 2.35)
+# lacks. `buck2 run` executes those binaries locally on the runner, so the runner
+# image must carry the newer glibc.
+actions:
+  # Full build + test on pushes to main (main must always be fully green). PRs use
+  # the cheaper `affected` action below.
+  - name: build-test
+    triggers:
+      push:
+        branches: [main]
+    os: linux
+    arch: amd64
+    container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
+    env:
+      BUCK_PREFER_REMOTE: "true"
+    steps:
+      - run: ./tools/ci/buildbuddy-setup.sh
+      # -M none: validate the build on RE without downloading final artifacts.
+      - run: buck2 build -M none //src/...
+      # Build and test both run on RE (incl. postgres/duckdb fixtures); no --local-only.
+      - run: buck2 test //src/...
+
+  # On PRs (base = main), build & test only the first-party targets the diff impacts,
+  # computed by btd. merge_with_base: false keeps HEAD at the clean PR head (btd diffs
+  # base->head, not a base+head merge commit); git_fetch_depth: 0 supplies the history
+  # `git merge-base` needs.
+  - name: affected
+    triggers:
+      pull_request:
+        branches: [main]
+        merge_with_base: false
+    git_fetch_depth: 0
+    os: linux
+    arch: amd64
+    container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
+    env:
+      BUCK_PREFER_REMOTE: "true"
+    steps:
+      - run: ./tools/ci/buildbuddy-setup.sh
+      - run: |
+          set -euo pipefail
+          head_root="$PWD"
+
+          # Base is `main` by construction (this action only fires on PRs based on
+          # main). The runner exposes no base-branch env var, so fetch it explicitly.
+          git fetch --no-tags origin main
+          base_sha="$(git merge-base FETCH_HEAD HEAD)"
+
+          # Changed files in the sapling/`hg status` format btd expects:
+          # one line per file, "<M|A|D> <project-relative-path>".
+          git diff --name-status --no-renames "$base_sha" HEAD \
+            | awk 'NF >= 2 { print substr($1, 1, 1) " " $2 }' > changes.txt
+          echo "=== changed files ==="; cat changes.txt
+
+          # supertd is a standalone target-graph tool: it reads BUCK files directly and
+          # needs NO buck2 daemon or buck-out to run. Build the binary ONCE here in the
+          # healthy head checkout (the command_alias //tools:supertd can't be exec'd
+          # against another cwd, so build the concrete arch binary), then run it against
+          # both trees below. arch is pinned amd64 for this action.
+          supertd="$(buck2 build //tools:supertd-bin-x86_64 --show-full-simple-output)"
+
+          # Head (after) graph: run supertd in this checkout.
+          "$supertd" targets root//... --output "$head_root/diff.jsonl"
+
+          # Base (before) graph: a throwaway worktree at the base commit, then run the
+          # SAME supertd binary there — no buck2 in the worktree at all. The runner
+          # checks out no submodules and worktrees don't inherit them, so re-init
+          # prelude (supertd parses it). prune + --force keep this idempotent on reused
+          # (snapshotted) VMs, where a prior run can leave _base registered in
+          # .git/worktrees after its dir was cleaned.
+          base_dir="${BUILDBUDDY_CI_RUNNER_ROOT_DIR:-$head_root}/_base"
+          rm -rf "$base_dir"
+          git worktree prune
+          git worktree add --force --detach "$base_dir" "$base_sha"
+          git -C "$base_dir" submodule update --init --recursive
+          ( cd "$base_dir" && "$supertd" targets root//... --output "$head_root/base.jsonl" )
+
+          # Impacted first-party targets. With BOTH graphs supplied (--base + --diff),
+          # btd is pure computation — it never invokes buck2/supertd itself. Scope to
+          # //src — that's what we build/test; third-party deps come along transitively.
+          buck2 run //tools:btd -- \
+            --changes changes.txt --base base.jsonl --diff diff.jsonl --json-lines \
+            | jq -r 'select(.target | startswith("root//src/")) | .target' \
+            | sort -u > impacted.txt
+          echo "=== impacted targets ==="; cat impacted.txt
+
+          if [ -s impacted.txt ]; then
+            mapfile -t targets < impacted.txt
+            echo "Building/testing: ${targets[*]}"
+            buck2 build -M none "${targets[@]}"
+            buck2 test "${targets[@]}"
+          else
+            echo "No first-party targets impacted by this diff — nothing to build/test."
+          fi
+
+  # prek hooks (rustfmt, clippy, file checks, reindeer-in-sync) on all events, so CI
+  # enforces exactly what local pre-commit does. Fully hermetic via buck2.
+  - name: lint
+    triggers:
+      push:
+        branches: [main]
+      pull_request:
+        branches: [main]
+    os: linux
+    arch: amd64
+    container_image: ubuntu-24.04
+    # Keep buck-out across runs on a reused VM. The runner's repo-sync runs
+    # `git clean -x` (which would delete the gitignored buck-out) while the snapshot
+    # restores the buck2 daemon; excluding buck-out keeps the warm daemon + cache
+    # consistent (otherwise the daemon points at a missing buck-out and the first
+    # `buck2 build` fails "Failed to stat .../buck-out/v2").
+    git_clean_exclude: ["buck-out"]
+    env:
+      BUCK_PREFER_REMOTE: "true"
+    steps:
+      - run: ./tools/ci/buildbuddy-setup.sh
+      - run: buck2 run //tools:prek -- run --all-files --show-diff-on-failure
