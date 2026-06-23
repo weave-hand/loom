@@ -95,6 +95,8 @@ items are committed-but-unshipped. Deferred ideas live in
 
 - [x] **Actions part 1 — governed typed insert** `{#road-actions-typed-insert area:ontology status:done from:roadmap-step3 pr:- spec:2026-06-15-actions-part1-design}`
   Named `ActionDef` invoked via `POST /actions/{name}`; first live `Action::Write` enforcement. Insert-only DuckLake inline write behind an `ActionEngine` trait, validated against the type contract. See [[fut-update-delete-actions]], [[fut-custom-logic-actions]], [[iss-action-param-conformance]], [[iss-action-lineage-atomicity]].
+- [ ] **Define-time ontology validation** `{#road-define-time-ontology-validation area:ontology status:planned from:2026-06-14-query-governed-link-traversal-design pr:- spec:2026-06-23-define-time-ontology-validation-design}`
+  Reject bad ontology references at authoring time instead of at read/traversal time, through the existing `bind` seam (`&dyn Catalog` + `&dyn Ontology`), keeping the `Ontology` trait decoupled from the catalog. Two parts: extend `bind` to validate each `define_type` derived property's link/target/agg-column/result-type, and add a sibling `bind_link` that checks `define_link` physical backing columns (FK + join-table) exist. Promoted from [[fut-define-link-validation]] + [[fut-define-time-derived-validation]]; folds [[fut-define-time-chain-validation]].
 
 ## acl
 
