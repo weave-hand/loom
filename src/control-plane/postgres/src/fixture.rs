@@ -86,6 +86,9 @@ impl BootThrottle {
                 let file = OpenOptions::new()
                     .create(true)
                     .write(true)
+                    // The marker file is only a lock target — never written to,
+                    // never truncated (it stays empty and is reused across runs).
+                    .truncate(false)
                     .open(&path)
                     .expect("open fixture slot file");
                 match file.try_lock() {
