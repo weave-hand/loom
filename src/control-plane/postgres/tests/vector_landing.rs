@@ -66,16 +66,16 @@ fn ipc_body() -> Vec<u8> {
 }
 
 fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
+    let out = TableRef {
+        schema: schema.into(),
+        name: name.into(),
+    };
     LineageEvent {
         run_id: run,
         event_type: EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
         inputs: vec![],
-        outputs: vec![DatasetId::from(&TableRef {
-            schema: schema.into(),
-            name: name.into(),
-        })
-        .dataset_ref()],
+        outputs: vec![DatasetId::from(&out).dataset_ref()],
         payload: serde_json::json!({ "source": "test" }),
     }
 }
@@ -129,7 +129,10 @@ async fn lands_and_reads_back_a_vector_column() {
         .iter()
         .find(|c| c.name == "embedding")
         .expect("embedding column");
-    assert_eq!(emb.ty, "vector(4)", "vector dimension recovered from the mirror");
+    assert_eq!(
+        emb.ty, "vector(4)",
+        "vector dimension recovered from the mirror"
+    );
 
     // The embedding reads back value-exact via the columnar Arrow path.
     let files = ice.files_with_stats(&t, snap).await.expect("files");

@@ -9,9 +9,9 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
+use arrow_array::{Array, ArrayRef, ListArray, RecordBatch};
 use arrow_ipc57::reader::StreamReader;
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Schema};
 use arrow_select57::concat::concat_batches;
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, Result, SnapshotId,
@@ -164,7 +164,7 @@ pub(crate) async fn append_parquet_snapshot(
     );
     let batches = batches
         .into_iter()
-        .map(|b| RecordBatch::try_new(ice_arrow.clone(), b.columns().to_vec()).map_err(be))
+        .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
         .collect::<Result<Vec<_>>>()?;
 
     append_batches_with_extras(catalog, &ice_table, batches, lineage, end_cap, overwrite)
@@ -175,6 +175,56 @@ pub(crate) async fn append_parquet_snapshot(
         .current_snapshot(table)
         .await?
         .id)
+}
+
+/// Re-wrap `batch` under the iceberg-derived arrow schema `ice_arrow`. Primitive
+/// columns pass through; a `vector(N)` (`list<float>`) column is **rebuilt under
+/// Iceberg's exact element field** (name `element` + `PARQUET:field_id`) — the wire
+/// list's element field (`item`, no field id) would otherwise be rejected by
+/// `RecordBatch::try_new`, which compares the full nested field. Same data, relabeled
+/// element field. Also validates each row's element count equals the declared `N`.
+fn coerce_batch_to_ice(
+    batch: &RecordBatch,
+    ice_arrow: &Arc<Schema>,
+    columns: &[ColumnSpec],
+) -> Result<RecordBatch> {
+    let cols = ice_arrow
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, ice_field)| match ice_field.data_type() {
+            DataType::List(child) => {
+                let col = batch.column(i);
+                let list = col.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        format!("landing: column {:?} expected a list", ice_field.name()).into(),
+                    )
+                })?;
+                if let Some(control_plane_core::BaseType::Vector(n)) =
+                    control_plane_core::resolve_logical(&columns[i].ty)
+                {
+                    for r in 0..list.len() {
+                        let len = list.value_length(r);
+                        if !list.is_null(r) && i64::from(len) != i64::from(n) {
+                            let nm = ice_field.name();
+                            return Err(ControlPlaneError::Backend(
+                                format!("landing: vector {nm:?} row {r}: {len} elements, want {n}")
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+                Ok(Arc::new(ListArray::new(
+                    child.clone(),
+                    list.offsets().clone(),
+                    list.values().clone(),
+                    list.nulls().cloned(),
+                )) as ArrayRef)
+            }
+            _ => Ok(batch.column(i).clone()),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    RecordBatch::try_new(ice_arrow.clone(), cols).map_err(be)
 }
 
 /// Create the Iceberg namespace + table for `table` if absent (idempotent), from
