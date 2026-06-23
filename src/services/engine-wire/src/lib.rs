@@ -9,3 +9,4 @@ pub mod pb {
 
 pub mod client;
 pub mod convert;
+pub mod flight;
