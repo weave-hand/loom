@@ -131,6 +131,7 @@ fn align_to_columns(
 /// `batches` (bare arrow-57 — re-wrapped under the table's field-id schema) as a
 /// real Parquet snapshot running `extras` in the commit tx, and return the mirror
 /// snapshot id. Shared by the landing Parquet path and the flush path.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn append_parquet_snapshot(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -139,6 +140,7 @@ pub(crate) async fn append_parquet_snapshot(
     batches: Vec<RecordBatch>,
     lineage: Option<&LineageEvent>,
     end_cap: Option<InlineEndCap<'_>>,
+    overwrite: bool,
 ) -> Result<SnapshotId> {
     let ns = NamespaceIdent::new(table.schema.clone());
     if !catalog.namespace_exists(&ns).await.map_err(be)? {
@@ -172,7 +174,7 @@ pub(crate) async fn append_parquet_snapshot(
         .map(|b| RecordBatch::try_new(ice_arrow.clone(), b.columns().to_vec()).map_err(be))
         .collect::<Result<Vec<_>>>()?;
 
-    append_batches_with_extras(catalog, &ice_table, batches, lineage, end_cap)
+    append_batches_with_extras(catalog, &ice_table, batches, lineage, end_cap, overwrite)
         .await
         .map_err(be)?;
 
@@ -194,7 +196,71 @@ async fn land_parquet(
     batches: Vec<RecordBatch>,
     lineage: LineageEvent,
 ) -> Result<SnapshotId> {
-    append_parquet_snapshot(pool, catalog, table, columns, batches, Some(&lineage), None).await
+    append_parquet_snapshot(
+        pool,
+        catalog,
+        table,
+        columns,
+        batches,
+        Some(&lineage),
+        None,
+        false,
+    )
+    .await
+}
+
+/// Replace `table`'s live data with `batches` in one Postgres transaction — the
+/// Iceberg twin of DuckLake's `Tx::replace_files`. End-caps every currently-live
+/// `iceberg_mirror.data_file` row at the new snapshot, projects the new files (with
+/// per-column stats), appends them on the Iceberg side (`fast_append`), and emits
+/// `lineage` atomically; prior files stay reachable by time travel. The insert side
+/// mirrors [`append_parquet_snapshot`] — only the live-file end-cap differs.
+///
+/// Overwrite semantics live entirely in the mirror end-cap (loom-governed reads
+/// resolve through the mirror); the raw Iceberg metadata still references the
+/// replaced files until GC — the accepted gap class of `iss-iceberg-inline-visibility`.
+///
+/// A **zero-file** overwrite is a truncation: the Iceberg writer cannot produce a
+/// snapshot from an empty file set, so this takes a mirror-only branch that allocates
+/// a snapshot, end-caps all live files, and emits lineage — making the empty set the
+/// sole live set while preserving time travel.
+pub async fn overwrite_parquet_snapshot(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batches: Vec<RecordBatch>,
+    lineage: Option<&LineageEvent>,
+) -> Result<SnapshotId> {
+    if batches.iter().all(|b| b.num_rows() == 0) {
+        return overwrite_truncate(pool, table, lineage).await;
+    }
+    append_parquet_snapshot(pool, catalog, table, columns, batches, lineage, None, true).await
+}
+
+/// The zero-file branch of [`overwrite_parquet_snapshot`]: in one Postgres tx allocate
+/// a mirror snapshot, ensure the table row, end-cap every live data file at that
+/// snapshot, and emit `lineage`. Touches no object storage and no Iceberg metadata —
+/// loom reads resolve `current_snapshot` through `iceberg_mirror.snapshot`, so the
+/// truncation is immediately visible and prior snapshots still time-travel.
+async fn overwrite_truncate(
+    pool: &PgPool,
+    table: &TableRef,
+    lineage: Option<&LineageEvent>,
+) -> Result<SnapshotId> {
+    use crate::iceberg_mirror::{end_cap_live_data_files, ensure_table, next_snapshot};
+    use crate::lineage::pg_emit;
+
+    let mut tx = pool.begin().await.map_err(be)?;
+    let conn = &mut *tx;
+    let at = next_snapshot(conn, None).await?;
+    let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
+    end_cap_live_data_files(conn, tid, at).await?;
+    if let Some(ev) = lineage {
+        pg_emit(&mut *conn, ev).await?;
+    }
+    tx.commit().await.map_err(be)?;
+    Ok(at)
 }
 
 /// Build an iceberg `Schema` from loom `ColumnSpec`s, assigning 1-based field ids.
