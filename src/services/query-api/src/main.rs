@@ -3,15 +3,27 @@
 //! (DuckLake-on-DuckDB by default, or the loom-native DataFusion engine over the
 //! Iceberg mirror) — and serve the HTTP API.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use control_plane_core::ControlPlane;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_sql_catalog::{
+    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
+};
+use iceberg::CatalogBuilder;
+use iceberg::io::LocalFsStorageFactory;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, DuckLakeActionWriter, EmbeddedDuckDb, ServingEngine};
 use query_api::serving_datafusion::{
-    DataFusionServingEngine, ServingBackend, UnsupportedActionEngine, parse_serving_backend,
+    DataFusionServingEngine, IcebergActionWriter, ServingBackend, parse_serving_backend,
 };
+
+/// Inline routing threshold (in-memory uncompressed Arrow). Below this an action row
+/// inlines (mirror-only); tunable via `LOOM_INLINE_BYTE_LIMIT`. Matches ingest.
+const DEFAULT_INLINE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
+/// Live-inline-byte total that triggers a flush, via `LOOM_FLUSH_BYTE_THRESHOLD`.
+const DEFAULT_FLUSH_BYTE_THRESHOLD: i64 = 64 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,10 +48,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arc::new(DuckLakeActionWriter::new(cp.clone(), store)),
             )
         }
-        ServingBackend::Iceberg => (
-            Arc::new(DataFusionServingEngine::new(IcebergCatalog::new(pool))),
-            Arc::new(UnsupportedActionEngine),
-        ),
+        ServingBackend::Iceberg => {
+            let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
+            let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
+            let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
+            // Clone the pool for the action writer before the bare `pool` moves into
+            // the serving engine's `IcebergCatalog`.
+            let action: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
+                catalog,
+                pool.clone(),
+                inline_byte_limit,
+                flush_byte_threshold,
+            ));
+            (
+                Arc::new(DataFusionServingEngine::new(IcebergCatalog::new(pool))),
+                action,
+            )
+        }
     };
 
     let app = router(AppState {
@@ -49,4 +80,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     service_runtime::serve(cfg.bind_addr, app).await?;
     Ok(())
+}
+
+/// Construct the vendored Iceberg SQL catalog over the same Postgres + a `file://`
+/// warehouse rooted at the service data path. Mirrors ingest's helper.
+async fn build_iceberg_catalog(
+    cfg: &service_runtime::Config,
+) -> Result<SqlCatalog, Box<dyn std::error::Error>> {
+    let mut props = HashMap::new();
+    props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
+    props.insert(
+        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+        format!("file://{}", cfg.data_path.display()),
+    );
+    let catalog = SqlCatalogBuilder::default()
+        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .load("loom", props)
+        .await?;
+    Ok(catalog)
 }

@@ -16,6 +16,8 @@ use async_trait::async_trait;
 use control_plane_core::TableRef;
 use control_plane_core::snapshot::StatValue;
 use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
+use control_plane_postgres::iceberg_landing;
+use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
 use datafusion::common::{Column, DFSchema, TableReference};
@@ -36,8 +38,11 @@ use object_store::ObjectStoreExt;
 use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::path::Path as ObjPath;
+use sqlx::PgPool;
 
-use crate::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue, inline_params};
+use crate::serving::{
+    ActionEngine, Rows, ServingEngine, ServingError, SqlValue, build_object_batch, inline_params,
+};
 use crate::sql::SqlDialect;
 
 /// loom-native serving engine: serves governed reads for file-backed Iceberg
@@ -197,6 +202,20 @@ async fn listing_table(
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque serving error.
 fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
     ServingError::Engine(e.to_string())
+}
+
+/// Encode a (one-row) arrow-58 `RecordBatch` to an Arrow IPC *stream* body — the
+/// bytes `iceberg_landing::land` decodes in arrow-57 (the established cross-major IPC
+/// boundary ingest already crosses). Any writer error maps to an opaque serving error.
+pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
+    let mut buf = Vec::new();
+    {
+        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &batch.schema())
+            .map_err(to_serving)?;
+        w.write(batch).map_err(to_serving)?;
+        w.finish().map_err(to_serving)?;
+    }
+    Ok(buf)
 }
 
 /// A pruning-aware `TableProvider` over an explicit set of Iceberg data files
@@ -400,26 +419,59 @@ impl TableProvider for IcebergMirrorTableProvider {
     }
 }
 
-/// The `ActionEngine` for the iceberg serving backend: governed action write-backs
-/// are not supported, so writes are rejected. (loom now has inline writes via
-/// `iceberg_inline::inline_append`, but those are a landing/ingest path, not the
-/// single-row action-engine path this trait serves.) The action endpoint surfaces
-/// this as an opaque error.
-pub struct UnsupportedActionEngine;
+/// The `ActionEngine` for the Iceberg serving backend: a governed typed-insert is
+/// built into the same one-row batch the DuckLake writer uses, encoded to Arrow IPC,
+/// and forwarded to the atomic inline-write seam `iceberg_landing::land`. A single
+/// action row inlines (mirror-only typed rows): one Postgres transaction committing
+/// the row and its lineage together, drained to real Parquet later by the flush
+/// vertical. Holds the same dependencies as ingest's `IcebergMaterializer`.
+pub struct IcebergActionWriter {
+    catalog: Arc<SqlCatalog>,
+    pool: PgPool,
+    inline_byte_limit: usize,
+    flush_byte_threshold: i64,
+}
+
+impl IcebergActionWriter {
+    pub fn new(
+        catalog: Arc<SqlCatalog>,
+        pool: PgPool,
+        inline_byte_limit: usize,
+        flush_byte_threshold: i64,
+    ) -> Self {
+        Self {
+            catalog,
+            pool,
+            inline_byte_limit,
+            flush_byte_threshold,
+        }
+    }
+}
 
 #[async_trait]
-impl ActionEngine for UnsupportedActionEngine {
+impl ActionEngine for IcebergActionWriter {
     async fn write_object(
         &self,
-        _table: &TableRef,
-        _columns: &[String],
-        _values: &[SqlValue],
-        _logical_types: &[String],
-        _event: control_plane_core::LineageEvent,
+        table: &TableRef,
+        columns: &[String],
+        values: &[SqlValue],
+        logical_types: &[String],
+        event: control_plane_core::LineageEvent,
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
-        Err(ServingError::Engine(
-            "actions unsupported on the iceberg serving backend".into(),
-        ))
+        let (_schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
+        let ipc_body = encode_ipc_stream(&batch)?;
+        iceberg_landing::land(
+            &self.pool,
+            &self.catalog,
+            table,
+            &specs,
+            &ipc_body,
+            self.inline_byte_limit,
+            self.flush_byte_threshold,
+            event,
+        )
+        .await
+        .map_err(|e| ServingError::Engine(e.to_string()))
     }
 }
 

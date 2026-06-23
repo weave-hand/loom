@@ -17,6 +17,7 @@ rust_library(
         "//third-party:duckdb",
         "//third-party:object_store",
         "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
@@ -37,6 +38,7 @@ rust_binary(
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
         "//third-party:object_store",
         "//third-party:tokio",
     ],
@@ -503,15 +505,29 @@ rust_test(
 )
 
 rust_test(
-    name = "unsupported-action",
-    crate = "unsupported_action",
-    srcs = ["tests/unsupported_action.rs"],
-    crate_root = "tests/unsupported_action.rs",
+    name = "iceberg-action-ipc",
+    crate = "iceberg_action_ipc",
+    srcs = ["tests/iceberg_action_ipc.rs"],
+    crate_root = "tests/iceberg_action_ipc.rs",
     edition = "2024",
     deps = [
         ":query-api",
+        "//third-party:arrow",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-action-e2e",
+    crate = "iceberg_action_e2e",
+    srcs = ["tests/iceberg_action_e2e.rs"],
+    crate_root = "tests/iceberg_action_e2e.rs",
+    deps = [
+        ":query-api",
         "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
         "//third-party:serde_json",
+        "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
