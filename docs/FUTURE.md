@@ -56,6 +56,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Segment/partition reads by ontology version.
 - [ ] **Model constraints** `{#fut-model-constraints area:ontology status:deferred from:to-be-planned pr:- spec:-}`
   Support constraints on models.
+- [ ] **DuckLake vector storage** `{#fut-vector-ducklake area:ontology status:deferred from:2026-06-23-vector-column-type-design pr:- spec:-}`
+  [[road-vector-column-type]] scopes the `vector(N)` type to the Iceberg path (`list<float>`). DuckLake/DuckDB storage of the same logical type (as `FLOAT[N]`, the DuckDB fixed-size array) is deferred — the Grimoire consumer is Iceberg-only, and the Iceberg-default direction makes a DuckLake vector path low-priority. `ducklake_physical_type` returns unsupported for `BaseType::Vector` until this lands.
 
 ## query
 
