@@ -34,8 +34,15 @@ Write every comment FOR Joe. He knows software, just not this stack. So:
 - **Tone:** generous and concrete, never condescending. Short paragraphs. Real code
   references. It's fine for a single comment to be several sentences when the block
   earns it — Joe asked for *detailed*.
-- **Anchor small.** One comment per coherent block (a function, a tricky expression,
-  a buck2 target), not one giant comment per file.
+- **Anchor small, and post MANY.** Prefer lots of small inline comments — roughly
+  one per coherent block, tricky expression, signature, or buck2 target — over a few
+  fat ones. Each is pinned to the exact line it explains (`{path, line, side:
+  RIGHT}`), so the explanation sits *directly under that code* in the diff. Err
+  toward more comments: if a hunk has three teachable ideas, that's three pins, not
+  one paragraph covering all three. Density is the point — Joe is reading to learn,
+  so the explanation should always be next to the thing it describes, never collected
+  elsewhere. (The single review in step 3 is just the delivery envelope; it still
+  renders every comment inline on its own line.)
 
 This codebase's `CLAUDE.md` is rich on buck2/sqlx/arrow-version/test-layout specifics
 — lean on it for accurate rationale (e.g. why tests are separate `rust_test` targets,
@@ -98,11 +105,14 @@ When using the **Agent tool**, request that exact JSON and parse it from each
 result. When using the **Workflow tool**, pass that JSON shape as the `schema` so
 each agent returns a validated object, and collect the array.
 
-### 3. Post ONE consolidated review
+### 3. Post the inline comments (one review envelope, many inline pins)
 
-Build a single review payload from all subagents' comments and post it. Each comment
-needs `path`, `line`, `side: "RIGHT"`, `body` (and `start_line` + `start_side:
-"RIGHT"` for a range). Write the payload to a temp JSON file and submit:
+Collect every comment from every subagent and post them as **inline diff comments**.
+The default is to deliver them in a **single review** — a GitHub review is just an
+envelope that holds many inline comments; each still renders on its own line, so you
+get the dense inline teaching Joe wants plus a single notification (not 40). Each
+comment needs `path`, `line`, `side: "RIGHT"`, `body` (and `start_line` +
+`start_side: "RIGHT"` for a range). Write the payload to a temp JSON file and submit:
 
 ```bash
 # review.json — assembled from the subagents' returned comments:
@@ -125,6 +135,13 @@ Robustness:
   error names the path/line) and re-submit; as a last resort post the survivors and
   report which blocks couldn't be anchored (fold those explanations into the review
   `body` instead).
+- **Alternative — individual comments.** If Joe prefers each note to post
+  independently (or a PR has so many comments that one bad anchor sinking the batch
+  is annoying), post each inline comment on its own via
+  `gh api repos/$REPO/pulls/$PR/comments -f commit_id=$HEAD_SHA -f path=… -F line=… -f side=RIGHT -f body=…`.
+  Same inline rendering, but each survives or fails on its own (at the cost of N
+  notifications). Default to the single review; switch to this when asked or when the
+  batch keeps tripping on un-anchorable lines.
 - Keep the review `body` itself useful on its own: a plain-language overview of the
   PR plus a one-line "what changed and why" per file, so Joe gets the narrative even
   before reading the inline pins.
