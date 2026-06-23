@@ -74,8 +74,8 @@ workflows-config / secrets docs, and they shape the design below:
 - **Secrets are env vars for trusted runs**, but `BUILDBUDDY_API_KEY` is **not**
   auto-present for non-bazel tools; it must be added as an org secret named exactly
   `BUILDBUDDY_API_KEY` (see *Secrets & RE wiring*).
-- **Default resources: 3 CPU / 8 GB / 20 GB** — so this design's `resource_requests`
-  is a deliberate override for the locally-run fixture tests.
+- **Default resources: 3 CPU / 8 GB / 20 GB** — ample here, since build and test both
+  run on RE and the runner only orchestrates (no `resource_requests` override).
 
 ## Files
 
@@ -120,9 +120,12 @@ buck2-install logic in `tools/cloud-setup.sh`.
 Common to all actions:
 
 - `os: linux`, `arch: amd64`, `container_image: ubuntu-22.04`.
-- `resource_requests: { cpu: "8", memory: "16GB", disk: "50GB" }` — RE does the heavy
-  lifting, but fixture tests (`loom_fixture_test`) boot `initdb`/`postgres`/`duckdb`
-  **locally** on the runner, so the runner needs real headroom.
+- **No `resource_requests`** — inherit the runner default (3 CPU / 8 GB / 20 GB). Both
+  build and test run on RE (`-M none`, `BUCK_PREFER_REMOTE`; the RE workers now run as
+  non-root, so the fixture tests that boot `initdb`/`postgres`/`duckdb` run remotely
+  too). The workflow runner is a thin orchestrator — its only local work is a few light
+  genrules (e.g. the control-plane-postgres libxml2/bsdtar extract), so the default is
+  ample. Add `resource_requests` only if a real run shows pressure.
 - `env: { BUCK_PREFER_REMOTE: "true" }` — keep everything that can run on RE on RE
   (same rationale as today: avoid materializing the multi-GiB toolchain locally).
 - First step runs the shared setup script.
@@ -133,8 +136,8 @@ Common to all actions:
 
 - **Trigger:** `push.branches: [main]`. Mirrors today's "main must always be fully green".
 - **Steps:** setup → `buck2 build -M none //src/...` → `buck2 test //src/...`.
-- `-M none` validates the build on RE without downloading final artifacts.
-- Fixture tests self-pin local via `loom_fixture_test`; no `--local-only` needed.
+- `-M none` validates the build on RE without downloading final artifacts. Tests
+  (including the postgres/duckdb fixtures) run on RE; no `--local-only` needed.
 
 ### Action `affected` (PR btd port)
 
@@ -238,13 +241,13 @@ run, so CI coverage is never dropped on `main`.
    full history. Handled: setup runs `git submodule update --init --recursive`; the base
    worktree re-inits submodules; `git_fetch_depth: 0` supplies history.
 3. **Secrets:** `BUILDBUDDY_API_KEY` must be added as an org secret (Step A prerequisite).
-4. **Resources:** runner default is 3 CPU / 8 GB / 20 GB; we override to 8 / 16 GB / 50 GB
-   for the locally-booted postgres/duckdb fixture tests.
+4. **Resources:** runner default (3 CPU / 8 GB / 20 GB) is kept — build and test both
+   run on RE, so the runner only orchestrates; no override.
 
 ## Residual checks (only confirmable on a live run, recorded in the PR)
 
 - That `git_fetch_depth: 0` + `git fetch origin main` reliably yields a merge-base on a
   real PR (the `affected` action selecting a sane impacted set is the green-light).
-- `resource_requests` headroom — bump if fixture tests OOM or the 50 GB disk fills.
+- Default resources hold — add `resource_requests` only if a real run shows pressure.
 - Worktree-based `submodule update` succeeds under the runner's git version
   (ubuntu-22.04 ships git ≥ 2.34, which supports worktree submodules).
