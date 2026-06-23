@@ -369,8 +369,12 @@ Create `src/services/query-api/tests/iceberg_action_e2e.rs`:
 use std::collections::HashMap;
 use std::sync::Arc;
 
+// `Acl` is needed in scope to call `define_subject`/`define_role`/`assign_role`/
+// `grant` on the concrete `PgControlPlane`. `IcebergCatalog::live_tables` is an
+// inherent method, so the `Catalog` trait is intentionally NOT imported (importing
+// it unused fails the clippy/lint gate).
 use control_plane_core::{
-    Action, ActionDef, ActionName, Catalog, ControlPlane, DatasetRef, Effect, ObjectType,
+    Acl, Action, ActionDef, ActionName, ControlPlane, DatasetRef, Effect, ObjectType,
     PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;

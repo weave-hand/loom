@@ -17,6 +17,7 @@ rust_library(
         "//third-party:duckdb",
         "//third-party:object_store",
         "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
@@ -495,6 +496,18 @@ rust_test(
     crate = "build_object_batch",
     srcs = ["tests/build_object_batch.rs"],
     crate_root = "tests/build_object_batch.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:arrow",
+    ],
+)
+
+rust_test(
+    name = "iceberg-action-ipc",
+    crate = "iceberg_action_ipc",
+    srcs = ["tests/iceberg_action_ipc.rs"],
+    crate_root = "tests/iceberg_action_ipc.rs",
     edition = "2024",
     deps = [
         ":query-api",
