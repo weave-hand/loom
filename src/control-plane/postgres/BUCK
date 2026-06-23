@@ -622,3 +622,24 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "iceberg-read",
+    crate = "iceberg_read",
+    srcs = ["tests/iceberg_read.rs"],
+    crate_root = "tests/iceberg_read.rs",
+    edition = "2024",
+    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
