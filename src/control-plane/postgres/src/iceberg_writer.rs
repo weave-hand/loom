@@ -72,6 +72,7 @@ struct CommitExtrasCatalog<'a> {
     inner: &'a SqlCatalog,
     lineage: Option<&'a LineageEvent>,
     end_cap: Option<InlineEndCap<'a>>,
+    overwrite: bool,
 }
 
 impl std::fmt::Debug for CommitExtrasCatalog<'_> {
@@ -79,6 +80,7 @@ impl std::fmt::Debug for CommitExtrasCatalog<'_> {
         f.debug_struct("CommitExtrasCatalog")
             .field("lineage", &self.lineage.is_some())
             .field("end_cap", &self.end_cap.is_some())
+            .field("overwrite", &self.overwrite)
             .finish()
     }
 }
@@ -97,6 +99,7 @@ impl Catalog for CommitExtrasCatalog<'_> {
                         table_id: c.table_id,
                         row_ids: c.row_ids,
                     }),
+                    overwrite: self.overwrite,
                 },
             )
             .await
@@ -169,6 +172,7 @@ pub async fn append_batches_with_extras(
     batches: Vec<RecordBatch>,
     lineage: Option<&LineageEvent>,
     end_cap: Option<InlineEndCap<'_>>,
+    overwrite: bool,
 ) -> Result<Vec<WrittenFile>> {
     let data_files = write_parquet(table, batches).await?;
     let summaries: Vec<WrittenFile> = data_files
@@ -184,6 +188,7 @@ pub async fn append_batches_with_extras(
         inner: catalog,
         lineage,
         end_cap,
+        overwrite,
     };
     let tx = Transaction::new(table);
     let action = tx.fast_append().add_data_files(data_files);
@@ -204,7 +209,7 @@ pub async fn append_batches_with_lineage(
     batches: Vec<RecordBatch>,
     lineage: &LineageEvent,
 ) -> Result<Vec<WrittenFile>> {
-    append_batches_with_extras(catalog, table, batches, Some(lineage), None).await
+    append_batches_with_extras(catalog, table, batches, Some(lineage), None, false).await
 }
 
 async fn write_parquet(table: &Table, batches: Vec<RecordBatch>) -> Result<Vec<DataFile>> {

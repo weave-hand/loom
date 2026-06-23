@@ -184,6 +184,27 @@ pub async fn live_table_id(conn: &mut PgConnection, ns: &str, name: &str) -> Res
     .map_err(backend)
 }
 
+/// End-cap (set `end_snapshot = at`) every currently-live `iceberg_mirror.data_file`
+/// row for `table_id`, leaving its `table`/`column` rows untouched. This is the
+/// data-file leg of a drop ([`mark_dropped`]) and the whole "expire old files" step
+/// of an overwrite/replace (the Iceberg twin of DuckLake's `Tx::replace_files`).
+/// Old rows keep their `begin_snapshot < at`, so prior snapshots still time-travel.
+pub async fn end_cap_live_data_files(
+    conn: &mut PgConnection,
+    table_id: i64,
+    at: SnapshotId,
+) -> Result<()> {
+    sqlx::query!(
+        "update iceberg_mirror.data_file set end_snapshot = $2 where table_id = $1 and end_snapshot is null",
+        table_id,
+        at.0,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
 /// Mark a table (and its live columns/files) dropped at `at` — sets `end_snapshot = at` on every
 /// currently-live row. Drives `CatalogSeed::drop_table` and the MVCC `end`-bound the delete
 /// contract exercises.
@@ -212,14 +233,7 @@ pub async fn mark_dropped(
     .execute(&mut *conn)
     .await
     .map_err(backend)?;
-    sqlx::query!(
-        "update iceberg_mirror.data_file set end_snapshot = $2 where table_id = $1 and end_snapshot is null",
-        tid,
-        at.0,
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(backend)?;
+    end_cap_live_data_files(conn, tid, at).await?;
     Ok(())
 }
 

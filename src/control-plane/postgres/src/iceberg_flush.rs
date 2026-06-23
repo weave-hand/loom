@@ -107,6 +107,7 @@ async fn flush_locked(
         vec![batch],
         Some(&lineage),
         Some(end_cap),
+        false,
     )
     .await?;
 

@@ -207,6 +207,11 @@ pub struct CommitExtras<'a> {
     pub lineage: Option<&'a LineageEvent>,
     /// Retire these inline rows at the commit's snapshot (flush compaction).
     pub end_cap: Option<InlineEndCap<'a>>,
+    /// Overwrite/replace mode: end-cap every currently-live data file for the table
+    /// at the commit's snapshot (before projecting the new files), so the new set is
+    /// the sole live set while prior files stay reachable by time travel. The Iceberg
+    /// twin of DuckLake's `Tx::replace_files`. `false` (the `Default`) is append.
+    pub overwrite: bool,
 }
 
 /// Mark inline rows `loom_row_id = ANY(row_ids)` of `iceberg_mirror.inline_<table_id>`
@@ -364,9 +369,11 @@ impl SqlCatalog {
         staged_snap: Option<i64>,
         columns: &[ProjectedColumn],
         files: &[ProjectedFile],
+        overwrite: bool,
     ) -> control_plane_core::Result<SnapshotId> {
         use crate::iceberg_mirror::{
-            columns_exist, ensure_table, next_snapshot, project_columns, project_files,
+            columns_exist, end_cap_live_data_files, ensure_table, next_snapshot, project_columns,
+            project_files,
         };
 
         let ns = ident.namespace().join(".");
@@ -375,6 +382,14 @@ impl SqlCatalog {
         let conn = &mut **tx;
         let at = next_snapshot(conn, staged_snap).await?;
         let tid = ensure_table(conn, &ns, name, at).await?;
+        // Overwrite/replace: end-cap the pre-existing live files at `at` BEFORE
+        // projecting the new ones. The new `project_files` rows are written after this
+        // (also `end_snapshot is null`, also `table_id = tid`), so they stay live; only
+        // the prior files get `end_snapshot = at`. Ordering is load-bearing — end-capping
+        // after `project_files` would wrongly retire the just-projected files too.
+        if overwrite {
+            end_cap_live_data_files(conn, tid, at).await?;
+        }
         if !columns_exist(conn, tid).await? {
             project_columns(conn, tid, at, columns).await?;
         }
@@ -464,6 +479,7 @@ impl SqlCatalog {
                 staged_snap,
                 &mirror_columns,
                 &mirror_files,
+                extras.overwrite,
             )
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
