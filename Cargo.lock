@@ -3899,7 +3899,6 @@ dependencies = [
  "control-plane-core",
  "control-plane-postgres",
  "duckdb",
- "engine-serving",
  "engine-wire",
  "http-body-util",
  "object_store",

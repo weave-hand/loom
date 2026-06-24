@@ -25,13 +25,17 @@ use control_plane_core::{
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use engine_serving::execute_query;
 use http_body_util::BodyExt;
 use ingest::{MaterializeRequest, materialize};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use query_api::http::{AppState, router};
 use query_api::render::objects_to_json;
-use query_api::serving::{ActionEngine, EmbeddedDuckDb, ServingError, SqlValue};
+use query_api::serving::{ActionEngine, EmbeddedDuckDb, ServingError, SqlValue, inline_params};
+use query_api::serving_datafusion::batches_to_rows;
+use query_api::sql::DataFusionDialect;
 use time::OffsetDateTime;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -67,6 +71,36 @@ impl ActionEngine for StubAction {
         _event: control_plane_core::LineageEvent,
     ) -> std::result::Result<control_plane_core::SnapshotId, ServingError> {
         Ok(control_plane_core::SnapshotId(0))
+    }
+}
+
+/// In-process `ServingEngine` backed by `engine_serving::execute_query`. Used by
+/// tests that need a `dyn ServingEngine` over an `IcebergCatalog` without a gRPC hop.
+pub struct InProcessServingEngine {
+    catalog: IcebergCatalog,
+}
+
+impl InProcessServingEngine {
+    pub fn new(catalog: IcebergCatalog) -> Self {
+        Self { catalog }
+    }
+}
+
+#[async_trait]
+impl query_api::serving::ServingEngine for InProcessServingEngine {
+    async fn fetch_rows(
+        &self,
+        sql: &str,
+        params: &[SqlValue],
+    ) -> Result<query_api::serving::Rows, ServingError> {
+        let inlined = inline_params(sql, params);
+        let batches = execute_query(&self.catalog, &inlined)
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))?;
+        Ok(batches_to_rows(batches))
+    }
+    fn dialect(&self) -> &'static dyn query_api::sql::SqlDialect {
+        &DataFusionDialect
     }
 }
 

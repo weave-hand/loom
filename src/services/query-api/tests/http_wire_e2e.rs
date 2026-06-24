@@ -19,13 +19,13 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
 };
+use e2e_support::InProcessServingEngine;
 use e2e_support::{grant_read, ids_i64, prop, spawn_http, subject_with_role, tref};
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use ingest::landing::{DuckLakeMaterializer, IcebergMaterializer};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-use query_api::engine_client::InProcessServingEngine;
 use query_api::serving::{DuckLakeActionWriter, EmbeddedDuckDb};
 use query_api::serving_datafusion::IcebergActionWriter;
 

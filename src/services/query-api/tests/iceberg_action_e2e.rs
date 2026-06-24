@@ -20,10 +20,10 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
+use e2e_support::InProcessServingEngine;
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use query_api::action::{ActionDeps, ActionError, run_action};
-use query_api::engine_client::InProcessServingEngine;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
 use query_api::serving::ActionEngine;
