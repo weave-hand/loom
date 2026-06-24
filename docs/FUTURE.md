@@ -58,6 +58,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Support constraints on models.
 - [ ] **DuckLake vector storage** `{#fut-vector-ducklake area:ontology status:deferred from:2026-06-23-vector-column-type-design pr:- spec:-}`
   [[road-vector-column-type]] scopes the `vector(N)` type to the Iceberg path (`list<float>`). DuckLake/DuckDB storage of the same logical type (as `FLOAT[N]`, the DuckDB fixed-size array) is deferred — the Grimoire consumer is Iceberg-only, and the Iceberg-default direction makes a DuckLake vector path low-priority. `ducklake_physical_type` returns unsupported for `BaseType::Vector` until this lands.
+- [ ] **Semantic description fields across the ontology** `{#fut-ontology-semantic-descriptions area:ontology status:deferred from:to-be-planned pr:- spec:-}`
+  Optional human-readable description/documentation strings on ontology entities — object types, properties, and **links** — carried through the ontology store (a nullable column on each `define_*` row) and surfaced on reads. Foundry-style semantic metadata: nothing in the engine consumes it, so it is pure annotation today, but it is the substrate for [[fut-autogen-api-specs]] (richer generated API docs), a future ontology-browsing UI, and LLM/semantic search over the schema. A link carries its own description (the relationship's meaning), distinct from its endpoint types'. Deferred until a consumer needs it: it touches the `core` type/property/link domain structs, the postgres ontology schema (new nullable columns + a migration), and the JSON read serialization, all for metadata no current read path uses.
 
 ## query
 
