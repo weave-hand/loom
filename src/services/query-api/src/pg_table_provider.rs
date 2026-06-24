@@ -5,15 +5,10 @@
 //! type is relation-agnostic and reusable for any "DataFusion scans Postgres"
 //! need. See docs/superpowers/specs/2026-06-22-iceberg-inline-pg-tableprovider-design.md.
 
-// Task 2 adds the TableProvider impl that uses all of the imports below;
-// allow the interim unused-import/dead-code lint until that lands.
-#![allow(unused_imports, dead_code)]
-
-use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
+use arrow::datatypes::{Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::datasource::MemTable;
@@ -112,4 +107,182 @@ pub fn build_scan_sql(
     };
     let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
     format!("SELECT {select_list} FROM {relation}{where_clause}{limit_clause}")
+}
+
+/// Decode `rows` to one arrow-58 array per column, typed by `logical_types[i]`
+/// (positional — the SELECT list order). Mirrors `iceberg_inline::column_array`,
+/// but arrow-58-native (the postgres crate is arrow-57; types do not cross that
+/// boundary). sqlx decodes to plain Rust types, so only the arrow side differs.
+fn pg_rows_to_arrays(
+    rows: &[sqlx::postgres::PgRow],
+    logical_types: &[String],
+) -> Result<Vec<ArrayRef>, ServingError> {
+    use arrow::array::builder::{
+        BooleanBuilder, Date32Builder, Float64Builder, Int32Builder, Int64Builder, StringBuilder,
+        TimestampMicrosecondBuilder,
+    };
+
+    let map_err = |e: sqlx::Error| ServingError::Engine(e.to_string());
+    macro_rules! get {
+        ($ty:ty, $i:expr) => {
+            rows.iter()
+                .map(|r| r.try_get::<Option<$ty>, _>($i))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_err)?
+        };
+    }
+
+    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(logical_types.len());
+    for (i, logical) in logical_types.iter().enumerate() {
+        let array: ArrayRef = match logical.as_str() {
+            "integer" => {
+                let mut b = Int32Builder::new();
+                for v in get!(i32, i) {
+                    b.append_option(v);
+                }
+                Arc::new(b.finish())
+            }
+            "long" => {
+                let mut b = Int64Builder::new();
+                for v in get!(i64, i) {
+                    b.append_option(v);
+                }
+                Arc::new(b.finish())
+            }
+            "double" => {
+                let mut b = Float64Builder::new();
+                for v in get!(f64, i) {
+                    b.append_option(v);
+                }
+                Arc::new(b.finish())
+            }
+            "boolean" => {
+                let mut b = BooleanBuilder::new();
+                for v in get!(bool, i) {
+                    b.append_option(v);
+                }
+                Arc::new(b.finish())
+            }
+            "string" => {
+                let mut b = StringBuilder::new();
+                for v in get!(String, i) {
+                    b.append_option(v);
+                }
+                Arc::new(b.finish())
+            }
+            "date" => {
+                let mut b = Date32Builder::new();
+                let epoch = time::macros::date!(1970 - 01 - 01);
+                for v in get!(time::Date, i) {
+                    b.append_option(v.map(|d| (d - epoch).whole_days() as i32));
+                }
+                Arc::new(b.finish())
+            }
+            "timestamp" => {
+                let mut b = TimestampMicrosecondBuilder::new();
+                for v in get!(time::PrimitiveDateTime, i) {
+                    b.append_option(v.map(|t| {
+                        (t.assume_utc() - time::OffsetDateTime::UNIX_EPOCH)
+                            .whole_microseconds()
+                            .try_into()
+                            .unwrap_or(i64::MAX)
+                    }));
+                }
+                Arc::new(b.finish())
+            }
+            other => {
+                return Err(ServingError::Engine(format!(
+                    "inline PG provider: unsupported logical type {other:?}"
+                )));
+            }
+        };
+        arrays.push(array);
+    }
+    Ok(arrays)
+}
+
+impl PgTableProvider {
+    /// Run `sql`, decode the projected columns (`proj_logicals`, in SELECT order)
+    /// into one batch with `proj_schema`. For an empty SELECT list (`SELECT 1`),
+    /// `proj_schema` is empty and the batch carries only the row count.
+    async fn fetch_batch(
+        &self,
+        sql: String,
+        proj_schema: SchemaRef,
+        proj_logicals: &[String],
+    ) -> Result<RecordBatch, ServingError> {
+        let rows = sqlx::query(AssertSqlSafe(sql))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))?;
+
+        if proj_schema.fields().is_empty() {
+            // Empty projection (e.g. COUNT(*)): a 0-column batch with the row count.
+            let opts = RecordBatchOptions::new().with_row_count(Some(rows.len()));
+            return RecordBatch::try_new_with_options(proj_schema, vec![], &opts)
+                .map_err(|e| ServingError::Engine(e.to_string()));
+        }
+        let arrays = pg_rows_to_arrays(&rows, proj_logicals)?;
+        RecordBatch::try_new(proj_schema, arrays).map_err(|e| ServingError::Engine(e.to_string()))
+    }
+}
+
+#[async_trait]
+impl TableProvider for PgTableProvider {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
+        // Inexact: we push what unparses into the SQL, but DataFusion must still
+        // re-apply every predicate (an unparseable filter is silently skipped in
+        // `build_scan_sql`, so the SQL is never *more* restrictive than asked).
+        Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
+    }
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        // Empty projection is pushed as `SELECT 1` (handled in build_scan_sql); we
+        // then materialize a 0-column batch and let MemTable surface the row count.
+        let sql = build_scan_sql(
+            &self.relation,
+            self.schema.as_ref(),
+            self.base_filter.as_deref(),
+            projection,
+            filters,
+            limit,
+        );
+
+        // Projected schema + parallel logical types for the decode.
+        let (proj_schema, proj_logicals): (SchemaRef, Vec<String>) = match projection {
+            Some(idx) if idx.is_empty() => (Arc::new(Schema::empty()), Vec::new()),
+            Some(idx) => {
+                let s = self.schema.project(idx).map_err(|e| {
+                    datafusion::error::DataFusionError::ArrowError(Box::new(e), None)
+                })?;
+                let l = idx.iter().map(|&i| self.logical_types[i].clone()).collect();
+                (Arc::new(s), l)
+            }
+            None => (self.schema.clone(), self.logical_types.clone()),
+        };
+
+        let batch = self
+            .fetch_batch(sql, proj_schema.clone(), &proj_logicals)
+            .await
+            .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+
+        // The SQL already applied projection/filter/limit, so the MemTable scan
+        // adds nothing on top.
+        let mem = MemTable::try_new(proj_schema, vec![vec![batch]])?;
+        mem.scan(state, None, &[], None).await
+    }
 }

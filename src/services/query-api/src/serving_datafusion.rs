@@ -34,10 +34,7 @@ use datafusion::physical_expr::create_physical_expr;
 use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistics};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
-use object_store::ObjectStoreExt;
 use object_store::local::LocalFileSystem;
-use object_store::memory::InMemory;
-use object_store::path::Path as ObjPath;
 use sqlx::PgPool;
 
 use crate::serving::{
@@ -123,33 +120,12 @@ pub async fn register_iceberg_table(
         ))
     };
 
-    // Inline rows (mirror-only typed rows) are encoded to in-memory Parquet under a
-    // memory:// store. A ListingTable can't span two object stores, so inline is a
-    // SEPARATE provider, unioned with the file provider below.
-    let inline_provider = if let Some(bytes) = catalog
-        .inline_parquet(table, snap.id)
-        .await
-        .map_err(to_serving)?
-    {
-        let mem = Arc::new(InMemory::new());
-        let key = format!(
-            "inline/{}_{}_{}.parquet",
-            table.schema, table.name, snap.id.0
-        );
-        mem.put(&ObjPath::from(key.clone()), bytes.into())
-            .await
-            .map_err(to_serving)?;
-        ctx.register_object_store(
-            ObjectStoreUrl::parse("memory://")
-                .map_err(to_serving)?
-                .as_ref(),
-            mem,
-        );
-        let url = ListingTableUrl::parse(format!("memory:///{key}")).map_err(to_serving)?;
-        Some(listing_table(ctx, vec![url]).await?)
-    } else {
-        None
-    };
+    // Inline rows (mirror-only typed rows) are served DIRECTLY from Postgres via
+    // a PG TableProvider that pushes filter/limit/projection into a per-query
+    // SELECT — no Arrow->Parquet->Arrow round-trip. The snapshot is baked into a
+    // base predicate so MVCC visibility matches `inline_live_batch`.
+    let inline_provider =
+        build_inline_provider(catalog, table, &schema, &table_schema.columns, snap.id).await?;
 
     // Combine: file-only, inline-only, or a UNION ALL view of both. The two
     // providers infer schema independently from their own Parquet, so a column's
@@ -190,21 +166,50 @@ pub async fn register_iceberg_table(
     Ok(())
 }
 
-/// Build a `ListingTable` over `urls` (all in one object store). Keeps string/binary
-/// as canonical Utf8/Binary (not the `*View` variants) so `arrow_to_sqlvalue` maps
-/// them — same choice as `datafusion_io::scan_table`.
-async fn listing_table(
-    ctx: &SessionContext,
-    urls: Vec<ListingTableUrl>,
-) -> Result<ListingTable, ServingError> {
-    let format = ParquetFormat::default().with_force_view_types(false);
-    let opts = ListingOptions::new(Arc::new(format));
-    let cfg = ListingTableConfig::new_with_multi_paths(urls)
-        .with_listing_options(opts)
-        .infer_schema(&ctx.state())
+/// Build the inline PG provider for `table` at `at`, or `None` when there is no
+/// inline storage or no live inline rows (preserving the prior `inline_parquet`
+/// `None` behavior). `schema` is the table's authoritative arrow schema (already
+/// built by the caller); `cols` are the mirror column defs (for logical types).
+async fn build_inline_provider(
+    catalog: &IcebergCatalog,
+    table: &TableRef,
+    schema: &SchemaRef,
+    cols: &[control_plane_core::ColumnDef],
+    at: control_plane_core::SnapshotId,
+) -> Result<Option<crate::pg_table_provider::PgTableProvider>, ServingError> {
+    use control_plane_postgres::iceberg_inline::{has_live_inline_rows, inline_table_name};
+    use control_plane_postgres::iceberg_mirror::live_table_id;
+
+    let mut conn = catalog.pool.acquire().await.map_err(to_serving)?;
+    let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name)
         .await
-        .map_err(to_serving)?;
-    ListingTable::try_new(cfg).map_err(to_serving)
+        .map_err(to_serving)?
+    else {
+        return Ok(None);
+    };
+    if !has_live_inline_rows(&mut conn, table, at)
+        .await
+        .map_err(to_serving)?
+    {
+        return Ok(None);
+    }
+    drop(conn);
+
+    // MVCC base predicate over the inline storage's snapshot columns. `at.0` is a
+    // trusted integer; spliced via AssertSqlSafe in the provider (iceberg_inline
+    // precedent).
+    let base = format!(
+        "begin_snapshot <= {0} and (end_snapshot is null or end_snapshot > {0})",
+        at.0
+    );
+    let logical_types: Vec<String> = cols.iter().map(|c| c.ty.clone()).collect();
+    Ok(Some(crate::pg_table_provider::PgTableProvider::new(
+        catalog.pool.clone(),
+        inline_table_name(tid),
+        schema.clone(),
+        logical_types,
+        Some(base),
+    )))
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque serving error.

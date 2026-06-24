@@ -2,8 +2,6 @@
 //! (`build_scan_sql`): projection, limit, the base (MVCC) predicate, and pushed
 //! filter fragments via DataFusion's Unparser. No Postgres needed.
 
-use std::sync::Arc;
-
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::prelude::{col, lit};
 use query_api::pg_table_provider::build_scan_sql;
@@ -52,7 +50,8 @@ fn projection_limits_select_list() {
 
 #[test]
 fn pushed_filter_is_anded_after_base() {
-    // id > 50  ->  unparser renders `"id" > 50`, ANDed after the base predicate.
+    // id > 50  ->  DataFusion 54's unparser renders `("id" > 50)` (with parens);
+    // our outer wrapper in build_scan_sql makes it `(("id" > 50))` in the SQL.
     let filters = vec![col("id").gt(lit(50_i64))];
     let sql = build_scan_sql(
         "iceberg_mirror.inline_7",
@@ -91,10 +90,4 @@ fn empty_projection_selects_constant() {
 fn no_base_filter_no_where() {
     let sql = build_scan_sql("iceberg_mirror.inline_7", &schema(), None, None, &[], None);
     assert_eq!(sql, "SELECT \"id\", \"name\" FROM iceberg_mirror.inline_7");
-}
-
-// Keep an unused Arc import from being a hard error if a later refactor drops it.
-#[allow(dead_code)]
-fn _arc_marker() -> Option<Arc<()>> {
-    None
 }
