@@ -2,7 +2,7 @@
 //! a per-table `iceberg_mirror.inline_<table_id>` table (created on the fly), NOT a
 //! Parquet object — a mirror-only commit (snapshot + rows + lineage in one tx). The
 //! serving engine unions them with the table's Parquet files at read time via
-//! `IcebergCatalog::inline_parquet`. External Iceberg clients don't see inline rows
+//! `IcebergCatalog::inline_live_batch`. External Iceberg clients don't see inline rows
 //! until a future flush. See the slice-A design doc.
 
 use std::sync::Arc;
@@ -19,7 +19,6 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use control_plane_core::{
     ColumnSpec, ControlPlaneError, LineageEvent, NewJob, Result, SnapshotId, TableRef,
 };
-use parquet57::arrow::ArrowWriter;
 use sqlx::postgres::PgArguments;
 use sqlx::query::Query;
 use sqlx::{AssertSqlSafe, PgConnection, PgPool, Postgres, Row};
@@ -436,28 +435,5 @@ impl IcebergCatalog {
         let batch = RecordBatch::try_new(arrow_schema, arrays)
             .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
         Ok(Some((tid, row_ids, batch)))
-    }
-
-    /// Encode `table`'s live inline rows at `at` to Parquet bytes (one row group),
-    /// or `None` if there is no inline storage or no live inline rows. The serving
-    /// engine drops these into an in-memory object store and unions them with the
-    /// table's `file://` Parquet.
-    pub async fn inline_parquet(
-        &self,
-        table: &TableRef,
-        at: SnapshotId,
-    ) -> Result<Option<Vec<u8>>> {
-        let Some((_tid, _row_ids, batch)) = self.inline_live_batch(table, at).await? else {
-            return Ok(None);
-        };
-        let schema = batch.schema();
-        let mut buf: Vec<u8> = Vec::new();
-        let mut w = ArrowWriter::try_new(&mut buf, schema, None)
-            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-        w.write(&batch)
-            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-        w.close()
-            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-        Ok(Some(buf))
     }
 }
