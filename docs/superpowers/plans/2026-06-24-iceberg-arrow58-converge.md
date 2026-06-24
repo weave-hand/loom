@@ -23,20 +23,25 @@
 
 ## File-change map
 
+**iceberg-consuming crates (which need the git dep vs. only an API-delta build).** Only three crates declare `iceberg` in their `Cargo.toml` (`grep -rn 'iceberg = ' --include=Cargo.toml src` → worker, postgres, engine); those drive reindeer to emit the iceberg git source. **But** `ingest`, `runtime`, `transform`, and `query-api` also `use iceberg::` in source — they dep on `//third-party:iceberg` directly in their hand-written BUCK (no Cargo.toml entry needed for a first-party buck2 dep). They take whatever iceberg version reindeer emits, so they need **no manifest edit** but **do** need an API-delta compile pass (Task 4).
+
 **Manifests (Cargo.toml):**
 - `src/control-plane/postgres/Cargo.toml` — iceberg→git; drop arrow-57 renames (`parquet57`/`arrow-ipc57`/`arrow-select57`) → bare 58; `arrow-array`/`arrow-schema` 57→58; rewrite the explanatory comment block (lines ~29-61).
-- `src/services/engine/Cargo.toml` — iceberg→git; `arrow-flight = "=57.3.1"` → `"58"`.
-- `src/services/engine-wire/Cargo.toml` — `arrow-flight = "=57.3.1"` → `"58"` (does not depend on iceberg directly).
-- `src/services/worker/Cargo.toml` — iceberg→git; dev-deps `arrow-array`/`arrow-schema` 57→58.
+- `src/services/engine/Cargo.toml` — iceberg→git (line 19); `arrow-flight = "=57.3.1"` → `"58"` (line 22); **dev-deps `arrow-array = "57"`/`arrow-schema = "57"` → `"58"` (lines 27-28)**.
+- `src/services/engine-wire/Cargo.toml` — `arrow-flight = "=57.3.1"` → `"58"` (line 23; does not depend on iceberg directly).
+- `src/services/worker/Cargo.toml` — iceberg→git (line 21); dev-deps `arrow-array`/`arrow-schema` 57→58 (lines 17-18).
 
 **Generated:**
 - `Cargo.lock` — git source for iceberg, single arrow 58.
 - `third-party/BUCK` — `git_fetch` iceberg; `arrow-*-57` / `parquet-57` families gone; bare aliases (`arrow-array`, `arrow-schema`, `arrow-flight`, `parquet`, `arrow-ipc`, `arrow-select`) all resolve to 58.
 
 **First-party BUCK:**
-- `src/control-plane/postgres/BUCK` — remove all `named_deps` entries referencing `parquet57`/`arrow_ipc57`/`arrow_select57` (main lib lines ~183-191 + ~12 test targets); add bare `//third-party:parquet` / `//third-party:arrow-ipc` / `//third-party:arrow-select` to the relevant `deps` where the source now `use`s the bare crate.
-- `src/services/worker/BUCK` — remove the `arrow_ipc57` named_dep on the `flight-roundtrip` test (line ~98); add bare `//third-party:arrow-ipc` to its deps.
+- `src/control-plane/postgres/BUCK` — remove all `named_deps` entries referencing `parquet57`/`arrow_ipc57`/`arrow_select57` (main lib lines ~183-191 + ~12 test targets); add the bare third-party dep to the relevant `deps` where the source now `use`s the bare crate (the exact alias reindeer emits is verified in Task 2 — expected `//third-party:parquet`, `//third-party:arrow-ipc`, `//third-party:arrow-select`, but these bare aliases do **not** exist today and are only emitted once postgres declares the deps bare).
+- `src/services/query-api/BUCK` — remove the `arrow_ipc57` named_dep on the `iceberg-schema-evolution-read` test (line ~526); add the bare arrow-ipc alias to its deps.
+- `src/services/worker/BUCK` — remove the `arrow_ipc57` named_dep on the `flight-roundtrip` test (line ~98); add the bare arrow-ipc alias to its deps.
 - `src/services/engine/BUCK` — unchanged in wiring (already uses bare `arrow-array`/`arrow-flight`, which now resolve to 58).
+
+**Source (query-api):** `src/services/query-api/tests/iceberg_schema_evolution_read.rs:10` — `arrow_ipc57` → `arrow_ipc`.
 
 **Source (import rewrites — bare alias replaces `*57`):**
 - `parquet57` → `parquet` (12 refs): `iceberg_stats.rs` (5), `iceberg_writer.rs`, `iceberg_read.rs`, `iceberg_inline.rs`, `tests/iceberg_inline.rs`, `tests/iceberg_writer.rs`, `tests/iceberg_column_stats_unit.rs` (2).
@@ -92,7 +97,7 @@ In `src/services/engine/Cargo.toml` and `src/services/engine-wire/Cargo.toml`, c
 arrow-flight = "58"
 ```
 
-In `src/services/worker/Cargo.toml`, change the dev-deps `arrow-array = "57"` / `arrow-schema = "57"` to `"58"`.
+In **both** `src/services/engine/Cargo.toml` (lines 27-28) and `src/services/worker/Cargo.toml` (lines 17-18), change the dev-deps `arrow-array = "57"` / `arrow-schema = "57"` to `"58"`. (Missing the engine dev-deps would keep the `arrow-array-57`/`arrow-schema-57` families alive and fail the collapse check.)
 
 - [ ] **Step 3: Regenerate the lockfile under the hermetic toolchain**
 
@@ -106,19 +111,22 @@ Expected: `Cargo.lock` gains `source = "git+https://github.com/apache/iceberg-ru
 
 - [ ] **Step 4: Guard the duckdb pin**
 
-Run:
+A lock downgrade changes only the `version = "..."` line, not the `name = "duckdb"` line (lock ordering is stable/alphabetical), so assert the version directly rather than diffing the `name` line:
 
 ```bash
-cd /workspace && git diff origin/main -- Cargo.lock | grep -E '^\-.*name = "(duckdb|libduckdb-sys|zstd-sys|ring)"' -A2 || echo "no native-crate downgrade"
+cd /workspace
+grep -A1 'name = "duckdb"' Cargo.lock | grep -q 'version = "1.10503.1"' && echo "duckdb pin OK" || echo "DUCKDB MOVED — fix"
+# Also eyeball the other native/links crates for churn:
+git diff origin/main -- Cargo.lock | grep -E '^[+-]version' -B1 | grep -iE 'duckdb|zstd-sys|ring' && echo "(review the above)" || echo "no native-crate version churn"
 ```
 
-If `duckdb` moved off `1.10503.1`:
+If duckdb is not pinned at `1.10503.1`:
 
 ```bash
-eval "$(./tools/env.sh)" && cargo update -p duckdb --precise 1.10503.1
+eval "$(./tools/env.sh)" && cargo update -p duckdb --precise 1.10503.1 && ./tools/buckify.sh
 ```
 
-Expected: `duckdb` stays at `1.10503.1`.
+Expected: `duckdb pin OK`.
 
 - [ ] **Step 5: Regenerate third-party/BUCK**
 
@@ -143,10 +151,20 @@ echo "--- bare arrow aliases now point to 58? ---"; grep -nE 'name = "arrow-arra
 
 Expected: a `git_fetch` rule referencing iceberg-rust exists; the `-57` family count is **0**; the bare `arrow-array`/`parquet`/`arrow-flight` aliases resolve to `-58` targets. If any `-57` target remains, a first-party crate still pins 57 — fix its manifest and re-buckify before proceeding.
 
+Also confirm reindeer's native rule-priority sort placed the iceberg `git_fetch` ahead of any iceberg `buildscript_run` (iceberg-rust members may carry build scripts — the spec flagged this as a risk):
+
+```bash
+cd /workspace && awk '/git_fetch|buildscript_run/{print NR": "$0}' third-party/BUCK | grep -iE 'iceberg' || echo "(no iceberg buildscript_run — nothing to order)"
+```
+
+If a `buildscript_run` for an iceberg member appears *before* its `git_fetch`, that's the ordering bug the spec warned about — extend `tools/buckify.sh` with the reorder. (Expected: none, or git_fetch first.)
+
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /workspace && git add Cargo.toml Cargo.lock third-party/BUCK src/*/*/Cargo.toml src/control-plane/postgres/Cargo.toml src/services/*/Cargo.toml
+cd /workspace && git add Cargo.lock third-party/BUCK \
+  src/control-plane/postgres/Cargo.toml \
+  src/services/engine/Cargo.toml src/services/engine-wire/Cargo.toml src/services/worker/Cargo.toml
 git commit -m "build(iceberg): source iceberg from main @148afc50, flip deps to arrow 58"
 ```
 
@@ -178,12 +196,18 @@ Then read each touched file to confirm the rewrite is sane (no `parquet` already
 
 - [ ] **Step 2: Drop the `*57` named_deps in postgres/BUCK and add bare deps**
 
-In `src/control-plane/postgres/BUCK`, remove every `named_deps` map entry keyed `parquet57` / `arrow_ipc57` / `arrow_select57` (the main lib map at ~183-191 plus each test target listed in Files). Where removing leaves a target with no access to the crate it now `use`s by bare name, add the bare third-party dep to that target's `deps`:
+First, confirm the exact bare alias names reindeer emitted once postgres declares the deps bare (these aliases did not exist while the renames were in place):
+
+```bash
+cd /workspace && grep -nE 'name = "arrow-ipc"|name = "arrow-select"|name = "parquet"' third-party/BUCK
+```
+
+Then, in `src/control-plane/postgres/BUCK`, remove every `named_deps` map entry keyed `parquet57` / `arrow_ipc57` / `arrow_select57` (the main lib map at ~183-191 plus each test target listed in Files). Where removing leaves a target with no access to the crate it now `use`s by bare name, add the bare third-party dep (using the exact alias from the grep above) to that target's `deps`:
 - targets whose source uses `parquet::` → add `"//third-party:parquet"`
 - targets whose source uses `arrow_ipc::` → add `"//third-party:arrow-ipc"`
 - targets whose source uses `arrow_select::` → add `"//third-party:arrow-select"`
 
-(If `//third-party:arrow-ipc` / `//third-party:arrow-select` aliases don't exist in the regenerated `third-party/BUCK`, use whatever bare alias reindeer emitted — check with `grep -nE 'name = "arrow-ipc"|name = "arrow-select"|name = "parquet"' third-party/BUCK`.)
+If reindeer did not emit a bare `arrow-ipc`/`arrow-select` alias, it means those deps are not declared as direct bare deps — re-check Task 1 Step 2 dropped the `package = ...` renames so postgres asks for plain `arrow-ipc = "58"` / `arrow-select = "58"`.
 
 - [ ] **Step 3: Verify no `*57` identifiers remain in postgres**
 
@@ -202,19 +226,22 @@ git commit -m "refactor(iceberg): bare arrow/parquet 58 imports in postgres (dro
 
 ---
 
-### Task 3: Worker + engine arrow-flight/arrow-58 wiring
+### Task 3: Worker + query-api + engine arrow-flight/arrow-58 wiring
 
 **Files:**
-- Modify: `src/services/worker/BUCK` (`flight-roundtrip` test ~98), `src/services/worker/tests/flight_roundtrip.rs`
+- Modify: `src/services/worker/BUCK` (`flight-roundtrip` test ~98), `src/services/worker/tests/flight_roundtrip.rs:45`
+- Modify: `src/services/query-api/BUCK` (`iceberg-schema-evolution-read` test ~526), `src/services/query-api/tests/iceberg_schema_evolution_read.rs:10`
 - Modify (if needed): `src/services/engine/BUCK`, `src/services/engine-wire/` Flight codec sources
 
 **Interfaces:**
-- Consumes: `//third-party:arrow-flight` (now 58), bare `//third-party:arrow-ipc` (Task 1).
-- Produces: worker/engine/engine-wire crates compiling against arrow-flight 58.
+- Consumes: `//third-party:arrow-flight` (now 58), the bare arrow-ipc alias (Task 1/2).
+- Produces: worker/query-api/engine/engine-wire crates compiling against arrow 58.
 
-- [ ] **Step 1: Rewrite the worker flight test import + BUCK**
+- [ ] **Step 1: Rewrite the worker + query-api flight/IPC test imports + BUCK**
 
-In `src/services/worker/tests/flight_roundtrip.rs`, rewrite `arrow_ipc57` → `arrow_ipc`. In `src/services/worker/BUCK`, remove the `named_deps = {"arrow_ipc57": ...}` on the `flight-roundtrip` test and add `"//third-party:arrow-ipc"` to its `deps`.
+In `src/services/worker/tests/flight_roundtrip.rs:45`, rewrite `arrow_ipc57` → `arrow_ipc`. In `src/services/worker/BUCK`, remove the `named_deps = {"arrow_ipc57": ...}` on the `flight-roundtrip` test and add the bare arrow-ipc alias to its `deps`.
+
+In `src/services/query-api/tests/iceberg_schema_evolution_read.rs:10`, rewrite `arrow_ipc57` → `arrow_ipc`. In `src/services/query-api/BUCK`, remove the `named_deps = {"arrow_ipc57": ...}` on the `iceberg-schema-evolution-read` test (line ~526) and add the bare arrow-ipc alias to its `deps`.
 
 - [ ] **Step 2: Build the engine/engine-wire/worker crates, fix arrow-flight-58 churn**
 
@@ -227,8 +254,8 @@ For each compile error, fix the Flight encode/decode call site per the arrow-fli
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /workspace && git add src/services/worker src/services/engine src/services/engine-wire
-git commit -m "build(engine): arrow-flight 58 wiring (worker flight test, codec churn)"
+cd /workspace && git add src/services/worker src/services/query-api src/services/engine src/services/engine-wire
+git commit -m "build(engine): arrow-flight 58 wiring (worker/query-api flight tests, codec churn)"
 ```
 
 ---
@@ -239,10 +266,11 @@ The iceberg API delta is **discovered by compiling**, not predicted — main's w
 
 **Files:**
 - Modify (as compile errors dictate): `src/control-plane/postgres/src/iceberg_writer.rs`, `iceberg_landing.rs`, `iceberg_mirror.rs`, `iceberg_read.rs`, `iceberg_stats.rs`, `iceberg_inline.rs`, `iceberg_flush.rs`, `iceberg_catalog.rs`, `iceberg_control_plane.rs`, `iceberg_schema_evolution.rs`, `iceberg_type.rs`, `iceberg_sql_catalog/{catalog.rs,s3_storage.rs,error.rs,mod.rs}`
+- Modify (Step 3, as compile errors dictate): any `iceberg::`-using source in `src/services/{ingest,runtime,transform,query-api}`
 
 **Interfaces:**
 - Consumes: iceberg `main` API at SHA `148afc50`.
-- Produces: `//src/control-plane/postgres:postgres` compiles clean.
+- Produces: `//src/control-plane/postgres:postgres` and the other iceberg-consuming crates compile clean.
 
 **Call-site inventory to verify against the new API** (from the codebase map — check each compiles, fix per the new signature if not):
 - **Writer chain** (`iceberg_writer.rs:14-20, 229-250`): `DataFileWriterBuilder::new(rolling).build(None)`, `ParquetWriterBuilder::new(WriterProperties::default(), schema)`, `RollingFileWriterBuilder::new_with_default_file_size(...)`, `DefaultLocationGenerator::new(table.metadata().clone())`, `DefaultFileNameGenerator::new(prefix, None, DataFileFormat::Parquet)`, `IcebergWriter::{write,close}`.
@@ -265,18 +293,28 @@ cd /workspace && buck2 build //src/control-plane/postgres:postgres > /tmp/pg.log
 
 For each `error[...]`, open the named file/line and adjust the call to the iceberg-`main` signature. Authoritative source for the new signatures: the iceberg-rust checkout at the pinned SHA (`buck2`'s git_fetch materializes it under buck-out; or read on GitHub at `apache/iceberg-rust` @ `148afc50`), and `https://docs.rs` is NOT valid here (unpublished) — use the repo source. Keep each fix minimal and behavior-preserving. Re-run Step 1 until `BUILD SUCCEEDED`.
 
-- [ ] **Step 3: Clippy-clean postgres**
+- [ ] **Step 3: Build the other iceberg-consuming crates and fix their delta**
+
+`ingest`, `runtime`, `transform`, and `query-api` `use iceberg::` (via `//third-party:iceberg` in their BUCK, no Cargo.toml entry) and so face the same API delta — build them and absorb any break with the same compile-driven approach against the pinned-SHA source:
 
 ```bash
-cd /workspace && buck2 build '//src/control-plane/postgres:postgres[clippy.txt]' --show-output > /tmp/cl.log 2>&1; OUT=$(grep -oE '/[^ ]+clippy.txt' /tmp/cl.log | head -1); test -s "$OUT" && cat "$OUT" || echo "clippy clean"
+cd /workspace && buck2 build //src/services/ingest:ingest //src/services/runtime:runtime //src/services/transform:transform //src/services/query-api:query-api > /tmp/rest.log 2>&1; grep -E "BUILD (SUCCEEDED|FAILED)|error\[|error:" /tmp/rest.log | head -40
 ```
 
-Expected: `clippy clean` (empty `clippy.txt`). Fix any lint the API churn introduced.
+Most of these consume iceberg only through postgres's public surface, so breaks are likely few or none — but do not assume; drive to `BUILD SUCCEEDED`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Clippy-clean the touched crates**
 
 ```bash
-cd /workspace && git add src/control-plane/postgres
+cd /workspace && for t in '//src/control-plane/postgres:postgres' '//src/services/ingest:ingest' '//src/services/transform:transform' '//src/services/query-api:query-api'; do buck2 build "${t}[clippy.txt]" --show-output > /tmp/cl.log 2>&1; OUT=$(grep -oE '/[^ ]+clippy.txt' /tmp/cl.log | head -1); test -s "$OUT" && { echo "LINT in $t:"; cat "$OUT"; } || echo "clippy clean: $t"; done
+```
+
+Expected: `clippy clean` for each. Fix any lint the API churn introduced.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd /workspace && git add src/control-plane/postgres src/services/ingest src/services/runtime src/services/transform src/services/query-api
 git commit -m "fix(iceberg): absorb iceberg main API delta (0.9.1 -> 148afc50)"
 ```
 
@@ -344,16 +382,24 @@ cd /workspace && bash tools/docs.sh validate && git add CLAUDE.md docs/ROADMAP.m
 
 ## Self-Review
 
+This plan was gated by an adversarial plan-review subagent; the findings below (F1 query-api, F2 engine dev-deps, F3 duckdb-guard grep, F4 ingest/runtime/transform delta, F5 non-existent bare aliases) were all confirmed against the repo and folded in before implementation.
+
+**Authoritative `*57` inventory** (every hit must map to a task; verified via `grep -rnE 'parquet57|arrow_ipc57|arrow_select57|arrow-array = "57"|arrow-schema = "57"|arrow-flight = "=?57' src --include=*.rs --include=Cargo.toml --include=BUCK`):
+- postgres: manifest renames + ~13 source/test files + ~13 BUCK named_deps → Tasks 1, 2, 4. ✓
+- engine: `arrow-flight`, dev-deps `arrow-array`/`arrow-schema` → Task 1 Step 2. ✓
+- engine-wire: `arrow-flight` → Task 1 Step 2. ✓
+- worker: dev-deps + `flight_roundtrip.rs:45` `arrow_ipc57` + `BUCK:98` → Tasks 1, 3. ✓
+- query-api: `tests/iceberg_schema_evolution_read.rs:10` `arrow_ipc57` + `BUCK:526` → Task 3. ✓
+
 **Spec coverage:**
-- Sourcing via pinned git dep → Task 1 (Steps 1, 3, 5). ✓
-- Pin a specific SHA, no floating branch → Global Constraints + Task 1 Step 1. ✓
-- Arrow 57→58 converge across `control-plane-postgres`/`engine`/`worker` (+`engine-wire`, found during mapping) → Tasks 1–4. ✓
+- Sourcing via pinned git dep (no floating branch) → Global Constraints + Task 1 (Steps 1, 3, 5). ✓
+- Arrow 57→58 converge across all consumers (postgres/engine/engine-wire/worker/query-api) → Tasks 1–4. ✓
 - `arrow-flight` pin comes off → Task 1 Step 2, Task 3. ✓
-- Flight codec, stats footer reader, iceberg 0.9→main API delta → Task 3 Step 2, Task 4. ✓
+- Flight codec, stats footer reader, iceberg 0.9→main API delta (incl. ingest/runtime/transform/query-api) → Task 3, Task 4. ✓
 - `arrow-*-57`/`parquet-57` families collapse → Task 1 Step 6, Task 5 Step 2. ✓
-- Full-suite gate, duckdb pin guard, sqlx freshness, clippy → Global Constraints + Task 5. ✓
+- Full-suite gate, duckdb pin guard (version-keyed), sqlx freshness, clippy → Global Constraints + Task 5. ✓
 - Exit-when-published note → Task 6 Step 1. ✓
 
-**Placeholder scan:** Task 4 is deliberately compile-error-driven — this is correct for a dependency-major bump where signatures are discovered at build time, not a placeholder; it ships the full call-site inventory and the authoritative-source instruction so the implementer never guesses. No "TBD"/"handle edge cases"/vague-validation steps elsewhere.
+**Placeholder scan:** Task 4 is deliberately compile-error-driven — correct for a dependency-major bump where signatures are discovered at build time; it ships the full call-site inventory and the authoritative-source instruction (the pinned-SHA repo source, not docs.rs) so the implementer never guesses. No "TBD"/"handle edge cases"/vague-validation steps elsewhere.
 
-**Type consistency:** The rename removals are consistent (`parquet57`→`parquet`, `arrow_ipc57`→`arrow_ipc`, `arrow_select57`→`arrow_select`) across manifest, BUCK, and source tasks. The git-dep form is identical in every place it appears. The pinned SHA `148afc50ee950b2cd8d99c0243242ef45f3948c5` is used verbatim throughout.
+**Type consistency:** The rename removals are consistent (`parquet57`→`parquet`, `arrow_ipc57`→`arrow_ipc`, `arrow_select57`→`arrow_select`) across manifest, BUCK, and source tasks, and the bare third-party alias names are *verified by grep* (Task 2 Step 2) rather than assumed, since they are only emitted after the renames drop. The git-dep form is identical everywhere; the pinned SHA `148afc50ee950b2cd8d99c0243242ef45f3948c5` is used verbatim throughout.
