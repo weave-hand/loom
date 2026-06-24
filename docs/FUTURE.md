@@ -63,6 +63,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## query
 
+- [ ] **Per-object JSON serving of vector columns** `{#fut-vector-json-serving area:query status:deferred from:2026-06-23-vector-column-type-design pr:- spec:-}`
+  [[road-vector-column-type]] serves vectors via the columnar Arrow path only; the per-object JSON read (`GET /objects/{type}`) skips vector-typed properties. Rendering a `vector(N)` as a JSON number array needs a list-bearing `SqlValue` variant + a `List<Float32>` serving-array builder (`JsonRepr::FloatArray` already exists). Deferred until a consumer actually reads embeddings one-object-at-a-time as JSON — the Grimoire/KG use case hydrates an external index via bulk columnar export, not per-object JSON, so this is currently unneeded.
 - [ ] **Object-identity dedup for traversal** `{#fut-object-identity-dedup area:query status:deferred from:2026-06-17-object-identity-association-design pr:- spec:-}`
   Many-to-many traversal dedups with `SELECT DISTINCT` over the visible projection (the target key may be ACL-denied). `ObjectType.identity` now exists; reworking dedup to key on the visible identity is the remaining follow-up.
 - [ ] **Scalar/expression derived properties** `{#fut-scalar-derived-props area:query status:deferred from:2026-06-15-derived-properties-design pr:- spec:-}`

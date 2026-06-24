@@ -284,6 +284,12 @@ fn base_to_arrow(b: BaseType) -> DataType {
         BaseType::String => DataType::Utf8,
         BaseType::Date => DataType::Date32,
         BaseType::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
+        // A vector column is `list<float>` (a non-null f32 element). Per-object JSON
+        // serving of vectors is deferred (`fut-vector-json-serving`); the column is
+        // read via the columnar Arrow path, so this only fixes its schema presence.
+        BaseType::Vector(_) => {
+            DataType::List(Arc::new(Field::new("element", DataType::Float32, false)))
+        }
     }
 }
 

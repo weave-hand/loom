@@ -14,6 +14,10 @@ pub fn ducklake_physical_type(base: BaseType) -> &'static str {
         BaseType::String => "varchar",
         BaseType::Date => "date",
         BaseType::Timestamp => "timestamp",
+        // DuckLake vector storage (`FLOAT[N]`) is deferred (`fut-vector-ducklake`);
+        // vectors are Iceberg-only, so the landing/bind path rejects a DuckLake vector
+        // before it can reach here. Guard the unreachable mapping explicitly.
+        BaseType::Vector(_) => panic!("DuckLake vector storage is deferred (fut-vector-ducklake)"),
     }
 }
 

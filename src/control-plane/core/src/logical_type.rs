@@ -11,7 +11,9 @@
 //! the actual serde_json construction lives at the query-api boundary where the
 //! scalar values are, so core stays JSON-free.
 
-/// A loom base scalar logical type.
+/// A loom base scalar logical type. `Vector(N)` is the one parameterized,
+/// non-primitive member — a dense `FixedSizeList<f32, N>` embedding stored as Iceberg
+/// `list<float>`; the `u32` is the dimension `N`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BaseType {
     Integer,
@@ -21,6 +23,8 @@ pub enum BaseType {
     String,
     Date,
     Timestamp,
+    /// A dense `f32` vector of fixed dimension `N`. Logical name `vector(N)`.
+    Vector(u32),
 }
 
 /// A logical type loom does not recognize (neither a base type nor a known alias).
@@ -44,19 +48,24 @@ pub enum JsonRepr {
     IsoDate,
     /// Timestamp -> ISO-8601 datetime string (YYYY-MM-DDThh:mm:ss).
     IsoTimestamp,
+    /// Vector -> JSON array of numbers (f32 elements).
+    FloatArray,
 }
 
 impl BaseType {
-    /// The canonical lowercase logical name (inverse of `resolve_logical` for base names).
-    pub fn canonical_name(self) -> &'static str {
+    /// The canonical lowercase logical name (inverse of `resolve_logical`). A `String`
+    /// because `Vector(N)` renders the dynamic `vector(N)` form; the primitives are
+    /// fixed names.
+    pub fn canonical_name(self) -> String {
         match self {
-            BaseType::Integer => "integer",
-            BaseType::Long => "long",
-            BaseType::Double => "double",
-            BaseType::Boolean => "boolean",
-            BaseType::String => "string",
-            BaseType::Date => "date",
-            BaseType::Timestamp => "timestamp",
+            BaseType::Integer => "integer".to_string(),
+            BaseType::Long => "long".to_string(),
+            BaseType::Double => "double".to_string(),
+            BaseType::Boolean => "boolean".to_string(),
+            BaseType::String => "string".to_string(),
+            BaseType::Date => "date".to_string(),
+            BaseType::Timestamp => "timestamp".to_string(),
+            BaseType::Vector(n) => format!("vector({n})"),
         }
     }
 
@@ -69,14 +78,25 @@ impl BaseType {
             BaseType::String => JsonRepr::PlainString,
             BaseType::Date => JsonRepr::IsoDate,
             BaseType::Timestamp => JsonRepr::IsoTimestamp,
+            BaseType::Vector(_) => JsonRepr::FloatArray,
         }
     }
+}
+
+/// Parse the parameterized `vector(N)` logical form (case-insensitive) to its
+/// dimension. `None` if `s` is not a well-formed `vector(<u32>)` (e.g. `vector()`,
+/// `vector(x)`, a negative, or overflow).
+fn parse_vector(s: &str) -> Option<u32> {
+    let inner = s.strip_prefix("vector(")?.strip_suffix(')')?;
+    let n: u32 = inner.trim().parse().ok()?;
+    Some(n)
 }
 
 /// Resolve a logical type name (a base name or a known semantic alias,
 /// case-insensitively) to its BaseType. `None` if loom does not recognize it.
 pub fn resolve_logical(ty: &str) -> Option<BaseType> {
-    match ty.trim().to_ascii_lowercase().as_str() {
+    let lower = ty.trim().to_ascii_lowercase();
+    match lower.as_str() {
         "integer" => Some(BaseType::Integer),
         "long" => Some(BaseType::Long),
         "double" => Some(BaseType::Double),
@@ -88,6 +108,8 @@ pub fn resolve_logical(ty: &str) -> Option<BaseType> {
         "emailaddress" => Some(BaseType::String),
         "url" => Some(BaseType::String),
         "phonenumber" => Some(BaseType::String),
+        // parameterized: vector(N)
+        other if other.starts_with("vector(") => parse_vector(other).map(BaseType::Vector),
         _ => None,
     }
 }
