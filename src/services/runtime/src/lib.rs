@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
@@ -238,6 +239,48 @@ pub enum RuntimeError {
     Bind(std::io::Error),
     #[error("serve: {0}")]
     Serve(std::io::Error),
+}
+
+/// Build the Iceberg `StorageFactory` the SQL catalog uses for metadata/data I/O.
+pub fn build_storage_factory(
+    cfg: &ObjectStoreConfig,
+) -> Result<Arc<dyn iceberg::io::StorageFactory>, ConfigError> {
+    use control_plane_postgres::iceberg_sql_catalog::S3StorageFactory;
+    use iceberg::io::LocalFsStorageFactory;
+    match &cfg.backend {
+        ObjectStoreBackend::Local => Ok(Arc::new(LocalFsStorageFactory)),
+        ObjectStoreBackend::S3(s) => Ok(Arc::new(S3StorageFactory::new(
+            s.bucket.clone(),
+            s.endpoint.clone(),
+            s.region.clone(),
+            s.access_key_id.clone(),
+            s.secret_access_key.clone(),
+            s.path_style,
+        ))),
+    }
+}
+
+/// Build the DataFusion serving read store for `s3://` warehouses. Returns the bucket
+/// name (for the `ObjectStoreUrl`) + the store, or `None` for local-filesystem reads.
+pub fn build_serving_object_store(
+    cfg: &ObjectStoreConfig,
+) -> Result<Option<(String, Arc<dyn object_store::ObjectStore>)>, RuntimeError> {
+    match &cfg.backend {
+        ObjectStoreBackend::Local => Ok(None),
+        ObjectStoreBackend::S3(s) => {
+            let mut b = object_store::aws::AmazonS3Builder::new()
+                .with_bucket_name(&s.bucket)
+                .with_region(&s.region)
+                .with_access_key_id(&s.access_key_id)
+                .with_secret_access_key(&s.secret_access_key)
+                .with_virtual_hosted_style_request(!s.path_style);
+            if let Some(ep) = &s.endpoint {
+                b = b.with_endpoint(ep).with_allow_http(true);
+            }
+            let store = b.build().map_err(RuntimeError::Store)?;
+            Ok(Some((s.bucket.clone(), Arc::new(store))))
+        }
+    }
 }
 
 /// Connect a control-plane pool from the DB config.

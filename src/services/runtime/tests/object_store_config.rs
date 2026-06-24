@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use service_runtime::{Config, ObjectStoreBackend};
+use service_runtime::{Config, ObjectStoreBackend, build_serving_object_store, build_storage_factory};
 
 fn base() -> HashMap<String, String> {
     let mut m = HashMap::new();
@@ -61,4 +61,26 @@ fn unknown_scheme_is_invalid() {
     let mut m = base();
     m.insert("LOOM_WAREHOUSE_URI".into(), "gs://bucket/x".into());
     assert!(Config::from_map(&m).is_err());
+}
+
+#[test]
+fn build_storage_factory_local_for_file_backend() {
+    let cfg = Config::from_map(&base()).unwrap();
+    let f = build_storage_factory(&cfg.object_store).unwrap();
+    assert!(format!("{f:?}").contains("LocalFsStorageFactory"));
+    assert!(build_serving_object_store(&cfg.object_store).unwrap().is_none());
+}
+
+#[test]
+fn build_storage_factory_s3_for_s3_backend() {
+    let mut m = base();
+    m.insert("LOOM_WAREHOUSE_URI".into(), "s3://warehouse/loom".into());
+    m.insert("AWS_ENDPOINT_URL".into(), "http://127.0.0.1:9000".into());
+    m.insert("AWS_ACCESS_KEY_ID".into(), "ak".into());
+    m.insert("AWS_SECRET_ACCESS_KEY".into(), "sk".into());
+    let cfg = Config::from_map(&m).unwrap();
+    let f = build_storage_factory(&cfg.object_store).unwrap();
+    assert!(format!("{f:?}").contains("S3StorageFactory"));
+    let (bucket, _store) = build_serving_object_store(&cfg.object_store).unwrap().unwrap();
+    assert_eq!(bucket, "warehouse");
 }
