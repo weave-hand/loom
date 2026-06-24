@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
-use arrow_ipc57::writer::StreamWriter;
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, DatasetId, EventType, Lineage, LineageEvent, PageReq, RunId, TableRef,
@@ -20,7 +20,7 @@ use control_plane_postgres::iceberg_sql_catalog::{
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 
-/// Build an Arrow-57 IPC stream body of `rows` rows with a single `id: long` column.
+/// Build an Arrow IPC stream body of `rows` rows with a single `id: long` column.
 fn ipc_body(rows: i64) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(

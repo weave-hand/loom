@@ -24,9 +24,9 @@ fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
     ServingError::Engine(e.to_string())
 }
 
-/// Encode a (one-row) arrow-58 `RecordBatch` to an Arrow IPC *stream* body — the
-/// bytes `iceberg_landing::land` decodes in arrow-57 (the established cross-major IPC
-/// boundary ingest already crosses). Any writer error maps to an opaque serving error.
+/// Encode a (one-row) `RecordBatch` to an Arrow IPC *stream* body — the bytes
+/// `iceberg_landing::land` re-decodes in the postgres crate (which owns the Iceberg
+/// writer chain). Any writer error maps to an opaque serving error.
 pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
     let mut buf = Vec::new();
     {

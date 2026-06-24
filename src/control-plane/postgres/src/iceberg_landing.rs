@@ -1,18 +1,20 @@
-//! The Iceberg landing entrypoint: decode an Arrow IPC body (arrow-57), route by
+//! The Iceberg landing entrypoint: decode an Arrow IPC body, route by
 //! in-memory size between an inline (mirror-only) write and a real Parquet write,
 //! and return the loom mirror snapshot id. Both branches emit lineage atomically.
 //!
-//! This lives in the postgres crate (not ingest) because the iceberg writer chain
-//! is arrow-57 and the ingest crate is arrow-58 — the ingest `IcebergMaterializer`
-//! forwards the raw IPC body so the cross-major boundary stays inside this crate.
+//! This lives in the postgres crate (not ingest) because it owns the iceberg
+//! writer chain and the mirror projection; the ingest `IcebergMaterializer`
+//! forwards the raw IPC body here. (Historically this crate was arrow-57 while
+//! ingest was arrow-58; the arrow-58 converge removed that split — the whole tree
+//! now shares one arrow major — but the landing path stays here by ownership.)
 
 use std::io::Cursor;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, ListArray, RecordBatch};
-use arrow_ipc57::reader::StreamReader;
+use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType, Schema};
-use arrow_select57::concat::concat_batches;
+use arrow_select::concat::concat_batches;
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, Result, SnapshotId,
     TableRef,
@@ -37,8 +39,8 @@ fn be<E: std::error::Error + Send + Sync + 'static>(e: E) -> ControlPlaneError {
     ControlPlaneError::Backend(Box::new(e))
 }
 
-/// Decode an Arrow IPC stream body into its (arrow-57) schema + batches.
-fn decode_ipc_57(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
+/// Decode an Arrow IPC stream body into its arrow schema + batches.
+fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
     let reader = StreamReader::try_new(Cursor::new(body), None).map_err(be)?;
     let schema = reader.schema();
     let batches = reader
@@ -63,7 +65,7 @@ pub async fn land(
     flush_byte_threshold: i64,
     lineage: LineageEvent,
 ) -> Result<SnapshotId> {
-    let (schema, batches) = decode_ipc_57(ipc_body)?;
+    let (schema, batches) = decode_ipc(ipc_body)?;
     // Project the decoded columns to `columns` order, by name. Both downstream
     // branches align columns POSITIONALLY (inline indexes `columns[c]` against
     // batch column `c`; the Parquet branch re-wraps under the table's schema in
@@ -134,7 +136,7 @@ fn align_to_columns(
 }
 
 /// Ensure the iceberg table exists (create-if-absent from `columns`), append
-/// `batches` (bare arrow-57 — re-wrapped under the table's field-id schema) as a
+/// `batches` (bare arrow — re-wrapped under the table's field-id schema) as a
 /// real Parquet snapshot running `extras` in the commit tx, and return the mirror
 /// snapshot id. Shared by the landing Parquet path and the flush path.
 #[allow(clippy::too_many_arguments)]

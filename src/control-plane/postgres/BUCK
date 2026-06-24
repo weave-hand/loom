@@ -180,19 +180,12 @@ rust_library(
         "SQLX_OFFLINE": "true",
         "SQLX_OFFLINE_DIR": "$(location :sqlx-cache)/.sqlx",
     },
-    # parquet/arrow-ipc/arrow-select are renamed to `<crate>57` in Cargo.toml (two
-    # public majors each); named_deps sets the matching buck2 extern crate name so
-    # `use parquet57`/`arrow_ipc57`/`arrow_select57` resolve the same under buck2 and
-    # cargo (the bare `:<crate>57` aliases' crate attr is the unsuffixed name).
-    named_deps = {
-        "parquet57": "//third-party:parquet57",
-        "arrow_ipc57": "//third-party:arrow-ipc57",
-        "arrow_select57": "//third-party:arrow-select57",
-    },
     deps = [
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
         "//third-party:arrow-schema",
+        "//third-party:arrow-select",
         "//third-party:async-trait",
         "//third-party:bytes",
         "//third-party:futures",
@@ -200,6 +193,7 @@ rust_library(
         "//third-party:hmac",
         "//third-party:iceberg",
         "//third-party:object_store",
+        "//third-party:parquet",
         "//third-party:reqwest",
         "//third-party:serde",
         "//third-party:serde_json",
@@ -248,8 +242,8 @@ rust_test(
     crate = "iceberg_column_stats_unit",
     srcs = ["tests/iceberg_column_stats_unit.rs"],
     crate_root = "tests/iceberg_column_stats_unit.rs",
-    named_deps = {"parquet57": "//third-party:parquet57"},
     deps = [
+        "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -503,8 +497,8 @@ loom_fixture_test(
     crate = "iceberg_writer",
     srcs = ["tests/iceberg_writer.rs"],
     crate_root = "tests/iceberg_writer.rs",
-    named_deps = {"parquet57": "//third-party:parquet57"},
     deps = [
+        "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -522,8 +516,8 @@ loom_fixture_test(
     crate = "iceberg_landing",
     srcs = ["tests/iceberg_landing.rs"],
     crate_root = "tests/iceberg_landing.rs",
-    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
     deps = [
+        "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -543,8 +537,8 @@ loom_fixture_test(
     crate = "iceberg_overwrite",
     srcs = ["tests/iceberg_overwrite.rs"],
     crate_root = "tests/iceberg_overwrite.rs",
-    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
     deps = [
+        "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -564,8 +558,8 @@ loom_fixture_test(
     crate = "iceberg_schema_evolution_land",
     srcs = ["tests/iceberg_schema_evolution_land.rs"],
     crate_root = "tests/iceberg_schema_evolution_land.rs",
-    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
     deps = [
+        "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -599,8 +593,8 @@ loom_fixture_test(
     crate = "vector_landing",
     srcs = ["tests/vector_landing.rs"],
     crate_root = "tests/vector_landing.rs",
-    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
     deps = [
+        "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -635,8 +629,8 @@ loom_fixture_test(
     crate = "iceberg_inline",
     srcs = ["tests/iceberg_inline.rs"],
     crate_root = "tests/iceberg_inline.rs",
-    named_deps = {"parquet57": "//third-party:parquet57"},
     deps = [
+        "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:bytes",
@@ -675,8 +669,8 @@ loom_fixture_test(
     crate = "iceberg_flush",
     srcs = ["tests/iceberg_flush.rs"],
     crate_root = "tests/iceberg_flush.rs",
-    named_deps = {"parquet57": "//third-party:parquet57"},
     deps = [
+        "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -695,8 +689,8 @@ loom_fixture_test(
     crate = "iceberg_column_stats",
     srcs = ["tests/iceberg_column_stats.rs"],
     crate_root = "tests/iceberg_column_stats.rs",
-    named_deps = {"parquet57": "//third-party:parquet57"},
     deps = [
+        "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -716,8 +710,8 @@ loom_fixture_test(
     crate = "iceberg_files_with_stats",
     srcs = ["tests/iceberg_files_with_stats.rs"],
     crate_root = "tests/iceberg_files_with_stats.rs",
-    named_deps = {"parquet57": "//third-party:parquet57"},
     deps = [
+        "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -750,8 +744,8 @@ loom_fixture_test(
     crate = "inline_flush_trigger",
     srcs = ["tests/inline_flush_trigger.rs"],
     crate_root = "tests/inline_flush_trigger.rs",
-    named_deps = {"parquet57": "//third-party:parquet57"},
     deps = [
+        "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -803,8 +797,8 @@ loom_fixture_test(
     srcs = ["tests/iceberg_read.rs"],
     crate_root = "tests/iceberg_read.rs",
     edition = "2024",
-    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
     deps = [
+        "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",

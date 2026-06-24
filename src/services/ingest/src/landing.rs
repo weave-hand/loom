@@ -40,17 +40,17 @@ pub fn parse_landing_backend(v: Option<&str>) -> Result<LandingBackend, String> 
 
 /// One landing request: the model gate has already passed, `columns` is the
 /// resolved physical schema, and `lineage` is built. Backends consume the fields
-/// they need — DuckLake uses `schema`/`batches`; Iceberg uses `ipc_body` (it
-/// decodes the same bytes in arrow-57, the cross-major boundary).
+/// they need — DuckLake uses `schema`/`batches`; Iceberg uses `ipc_body` (the
+/// postgres crate, which owns the Iceberg writer chain, re-decodes it there).
 pub struct LandRequest<'a> {
     pub table: &'a TableRef,
-    /// arrow-58 schema of the decoded batches (DuckLake path).
+    /// arrow schema of the decoded batches (DuckLake path).
     pub schema: Arc<Schema>,
     /// Resolved physical schema (model-supplied or inferred).
     pub columns: &'a [ColumnSpec],
-    /// arrow-58 batches (DuckLake path).
+    /// arrow batches (DuckLake path).
     pub batches: &'a [RecordBatch],
-    /// Raw Arrow IPC body (Iceberg path; decoded again in arrow-57).
+    /// Raw Arrow IPC body (Iceberg path; re-decoded in the postgres crate).
     pub ipc_body: &'a [u8],
     /// Caller-unique prefix (subdirectory) for this call's files, e.g. a run id.
     pub file_prefix: &'a str,
@@ -89,8 +89,8 @@ impl LandingMaterializer for DuckLakeMaterializer {
 }
 
 /// Lands to Iceberg via the loom-native landing path. A thin forwarder: it passes
-/// the raw IPC body (decoded in arrow-57 inside the postgres crate, the cross-major
-/// boundary), the resolved columns, the byte limit, and the lineage event. Small
+/// the raw IPC body (re-decoded inside the postgres crate, which owns the Iceberg
+/// writer chain), the resolved columns, the byte limit, and the lineage event. Small
 /// requests inline (mirror-only rows); large requests write real Parquet — both
 /// emit lineage atomically and return the loom mirror snapshot id.
 pub struct IcebergMaterializer {

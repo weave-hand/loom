@@ -281,8 +281,11 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
     let Some(snapshot) = table.metadata().current_snapshot() else {
         return Ok(Vec::new());
     };
-    let manifest_list = snapshot
-        .load_manifest_list(table.file_io(), table.metadata())
+    // iceberg main replaced `Snapshot::load_manifest_list(file_io, metadata)` with
+    // `Table::manifest_list_reader(snapshot).load()`.
+    let manifest_list = table
+        .manifest_list_reader(snapshot)
+        .load()
         .await
         .map_err(iceberg_err)?;
     // Column names in table schema order — the same order Iceberg writes columns to

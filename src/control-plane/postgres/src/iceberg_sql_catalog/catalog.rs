@@ -71,6 +71,7 @@ static TEST_BEFORE_ACQUIRE: bool = true; // Default the health-check of each con
 pub struct SqlCatalogBuilder {
     config: SqlCatalogConfig,
     storage_factory: Option<Arc<dyn StorageFactory>>,
+    runtime: Option<iceberg::Runtime>,
 }
 
 impl Default for SqlCatalogBuilder {
@@ -83,6 +84,7 @@ impl Default for SqlCatalogBuilder {
                 props: HashMap::new(),
             },
             storage_factory: None,
+            runtime: None,
         }
     }
 }
@@ -137,6 +139,15 @@ impl CatalogBuilder for SqlCatalogBuilder {
         self
     }
 
+    /// iceberg main added an explicit `Runtime` (separate IO/CPU tokio handles) that
+    /// `Table::builder().build()` now *requires*. Store it; `load` defaults a caller
+    /// who never sets one to `Runtime::current()` (the ambient tokio runtime), so loom's
+    /// behaviour is unchanged from pre-`main`.
+    fn with_runtime(mut self, runtime: iceberg::Runtime) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
     fn load(
         mut self,
         name: impl Into<String>,
@@ -169,7 +180,8 @@ impl CatalogBuilder for SqlCatalogBuilder {
                 ))
             } else {
                 self.config.name = name;
-                SqlCatalog::new(self.config, self.storage_factory).await
+                let runtime = self.runtime.unwrap_or_else(iceberg::Runtime::current);
+                SqlCatalog::new(self.config, self.storage_factory, runtime).await
             }
         }
     }
@@ -197,6 +209,9 @@ pub struct SqlCatalog {
     connection: PgPool,
     warehouse_location: String,
     fileio: FileIO,
+    /// iceberg main requires a `Runtime` on every `Table::builder()`; threaded in here
+    /// from the builder (defaulting to `Runtime::current()`).
+    runtime: iceberg::Runtime,
 }
 
 /// Side-effects to run inside the one `do_update_table` commit tx, alongside the
@@ -228,6 +243,7 @@ impl SqlCatalog {
     async fn new(
         config: SqlCatalogConfig,
         storage_factory: Option<Arc<dyn StorageFactory>>,
+        runtime: iceberg::Runtime,
     ) -> Result<Self> {
         let factory = storage_factory.ok_or_else(|| {
             Error::new(
@@ -292,6 +308,7 @@ impl SqlCatalog {
             connection: pool,
             warehouse_location: config.warehouse_location,
             fileio,
+            runtime,
         })
     }
 
@@ -413,10 +430,14 @@ impl SqlCatalog {
 
         let staged_table = commit.apply(current_table)?;
         let staged_metadata_location = staged_table.metadata_location_result()?;
+        // iceberg main's `TableMetadata::write_to` takes a typed `&MetadataLocation`
+        // (was `&str`); parse the location string commit.apply already computed. The
+        // string itself is still used below as the CAS pointer value.
+        let staged_ml: MetadataLocation = staged_metadata_location.parse()?;
 
         staged_table
             .metadata()
-            .write_to(staged_table.file_io(), &staged_metadata_location)
+            .write_to(staged_table.file_io(), &staged_ml)
             .await?;
 
         // Object-store reads happen here, BEFORE begin(): load the new snapshot's
@@ -962,6 +983,7 @@ impl Catalog for SqlCatalog {
 
         Ok(Table::builder()
             .file_io(self.fileio.clone())
+            .runtime(self.runtime.clone())
             .identifier(identifier.clone())
             .metadata_location(tbl_metadata_location)
             .metadata(metadata)
@@ -1016,12 +1038,14 @@ impl Catalog for SqlCatalog {
         let tbl_metadata = TableMetadataBuilder::from_table_creation(tbl_creation)?
             .build()?
             .metadata;
-        let tbl_metadata_location =
-            MetadataLocation::new_with_table_location(location.clone()).to_string();
+        // iceberg main's `write_to` takes a typed `&MetadataLocation`, and
+        // `new_with_table_location` is deprecated in favour of `new_with_metadata`
+        // (which derives the compression codec from table properties). Build it once;
+        // the string form is reused for the SQL insert + the Table builder below.
+        let tbl_ml = MetadataLocation::new_with_metadata(location.clone(), &tbl_metadata);
+        let tbl_metadata_location = tbl_ml.to_string();
 
-        tbl_metadata
-            .write_to(&self.fileio, &tbl_metadata_location)
-            .await?;
+        tbl_metadata.write_to(&self.fileio, &tbl_ml).await?;
 
         self.execute(&format!(
             "INSERT INTO {CATALOG_TABLE_NAME}
@@ -1031,6 +1055,7 @@ impl Catalog for SqlCatalog {
 
         Ok(Table::builder()
             .file_io(self.fileio.clone())
+            .runtime(self.runtime.clone())
             .metadata_location(tbl_metadata_location)
             .identifier(tbl_ident)
             .metadata(tbl_metadata)
@@ -1105,6 +1130,7 @@ impl Catalog for SqlCatalog {
             .metadata_location(metadata_location)
             .metadata(metadata)
             .file_io(self.fileio.clone())
+            .runtime(self.runtime.clone())
             .build()?)
     }
 
@@ -1113,5 +1139,13 @@ impl Catalog for SqlCatalog {
     /// to attach a lineage event atomically (see `iceberg_writer::append_batches_with_lineage`).
     async fn update_table(&self, commit: TableCommit) -> Result<Table> {
         self.do_update_table(commit, CommitExtras::default()).await
+    }
+
+    /// iceberg main added `purge_table` (drop + physically delete data files) to the
+    /// `Catalog` trait. loom reclaims physical bytes through its own mirror-driven GC
+    /// (see road-iceberg-gc), not through the catalog, so purge here drops the catalog
+    /// entry exactly like `drop_table` — data files are reclaimed by GC, not inline.
+    async fn purge_table(&self, identifier: &TableIdent) -> Result<()> {
+        self.drop_table(identifier).await
     }
 }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Float32Array, Int64Array, ListArray, RecordBatch};
-use arrow_ipc57::writer::StreamWriter;
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef,
@@ -39,7 +39,7 @@ fn columns() -> Vec<ColumnSpec> {
     ]
 }
 
-/// Arrow-57 IPC body: `id: long` + `embedding: list<float>` (non-null element), two
+/// Arrow IPC body: `id: long` + `embedding: list<float>` (non-null element), two
 /// rows each holding `width` floats (`width = 4` matches the declared `vector(4)`).
 fn ipc_body(width: usize) -> Vec<u8> {
     let element = Arc::new(Field::new("item", DataType::Float32, false));

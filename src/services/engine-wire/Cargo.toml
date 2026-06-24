@@ -20,4 +20,4 @@ control-plane-core = { path = "../../control-plane/core" }
 protox = "0.9"
 prost-build = "0.14"
 tonic-prost-build = "0.14"
-arrow-flight = "=57.3.1"
+arrow-flight = "58"

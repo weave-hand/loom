@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_ipc57::writer::StreamWriter;
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::Catalog;
 use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, TableRef};
@@ -26,7 +26,7 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// An Arrow-57 IPC body of `rows` rows, single `id: long` column (ids `0..rows`).
+/// An Arrow IPC body of `rows` rows, single `id: long` column (ids `0..rows`).
 fn ipc_body(rows: i64) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
