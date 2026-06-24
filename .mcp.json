@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "buildbuddy": {
+      "type": "http",
+      "url": "https://loom.buildbuddy.io/mcp",
+      "headers": {
+        "x-buildbuddy-api-key": "${BUILDBUDDY_API_KEY}"
+      }
+    }
+  }
+}
