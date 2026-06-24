@@ -1,11 +1,13 @@
 ---
 name: loom-work-checkout
-description: Claim a documentation-register work item before building it, so two sessions/agents never work the same item. Uses an atomic refs/claim/<id> git ref as a distributed mutex. Use when starting work on a ROADMAP/FUTURE/ISSUES item, when picking up the next planned item, or in a scheduled session that builds register items. The item must already reference an on-disk spec (use loom-work-plan to get an item to that state).
+description: Claim a documentation-register work item before building it, so two sessions/agents never work the same item. Claiming atomically creates the work/<id> branch (the branch the PR is opened from) as a distributed mutex. Use when starting work on a ROADMAP/FUTURE/ISSUES item, when picking up the next planned item, or in a scheduled session that builds register items. The item must already reference an on-disk spec (use loom-work-plan to get an item to that state).
 ---
 
 Claim a register item, work it on a conventional branch, and let the claim
-self-release when the PR lands. The claim is a server-side git mutex
-(`refs/claim/<id>`); the registers and grammar are defined in
+self-release when the PR lands. The claim is a server-side git mutex: it
+atomically creates the `work/<id>` branch (`refs/heads/work/<id>`) — the very
+branch the eventual PR is opened from — so claiming and starting the branch are
+one step. The registers and grammar are defined in
 `docs/superpowers/specs/2026-06-21-work-item-planning-checkout-design.md`.
 
 ## Steps
@@ -14,9 +16,11 @@ self-release when the PR lands. The claim is a server-side git mutex
    has a `spec:` set (the claim gate rejects `spec:-`); if nothing is ready, use
    `loom-work-plan` first. Avoid items already listed by
    `bash tools/docs.sh claims`.
-2. **Claim** it: `bash tools/docs.sh claim <id>`. On success it prints the
-   `work/<id>` branch to use. If the claim is lost or already held, pick another.
-3. **Work it through the rigid pipeline.** `git switch -c work/<id>`, then exercise
+2. **Claim** it: `bash tools/docs.sh claim <id>`. On success it has created the
+   `work/<id>` branch on `origin`. If the claim is lost or already held, pick
+   another.
+3. **Work it through the rigid pipeline.** Check out the branch the claim created
+   (`git fetch origin work/<id> && git switch work/<id>`), then exercise
    these four superpowers skills **in order — none is optional, even for a
    one-line fix** (the spec already exists by the gate's precondition, so start at
    the plan):
@@ -48,6 +52,10 @@ self-release when the PR lands. The claim is a server-side git mutex
 - A claim with no PR older than the grace window (default 60 min,
   `LOOM_CLAIM_GRACE_MIN`) is reapable — open the PR promptly, or re-run
   `claim <id>` to refresh it.
+- Cloud sessions can **acquire** claims (a `refs/heads/*` create, which the web
+  git proxy allows) but cannot `release`/`claims --reap` (the proxy forbids ref
+  deletion). That is fine: a cloud session only needs to claim; the branch is
+  deleted when its PR merges (reap-on-merge) or by a local `release`/`--reap`.
 - `claim` refuses items that are closed, non-actionable, already claimed, or whose
   `spec:` is `-` / missing on disk. A direction-less item is not claimable; give it
   a spec first via `loom-work-plan`.
