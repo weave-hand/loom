@@ -4,7 +4,7 @@
 
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::prelude::{col, lit};
-use query_api::pg_table_provider::build_scan_sql;
+use engine_serving::provider::build_scan_sql;
 
 fn schema() -> Schema {
     Schema::new(vec![

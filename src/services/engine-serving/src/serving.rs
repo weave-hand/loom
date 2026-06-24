@@ -1,4 +1,4 @@
-//! loom-native, DataFusion-backed serving engine for file-backed Iceberg tables.
+//! loom-native, DataFusion-backed execution for file-backed Iceberg tables.
 //! Reads the `iceberg_mirror` projection (via `IcebergCatalog`), registers each
 //! live table's Parquet files (absolute `file://` paths) as a DataFusion table,
 //! and runs the governed/compiled SQL through DataFusion — no DuckDB in the path.
@@ -6,18 +6,12 @@
 
 use std::sync::Arc;
 
-use arrow::array::{
-    Array, BooleanArray, Date32Array, Float32Array, Float64Array, Int8Array, Int16Array,
-    Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray, TimestampMicrosecondArray,
-};
+use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::util::display::{ArrayFormatter, FormatOptions};
 use async_trait::async_trait;
 use control_plane_core::snapshot::StatValue;
 use control_plane_core::{BaseType, TableRef, resolve_logical};
 use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
-use control_plane_postgres::iceberg_landing;
-use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
 use datafusion::common::{Column, DFSchema, TableReference};
@@ -35,48 +29,19 @@ use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistic
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use object_store::local::LocalFileSystem;
-use sqlx::PgPool;
 
-use crate::serving::{
-    ActionEngine, Rows, ServingEngine, ServingError, SqlValue, build_object_batch, inline_params,
-};
-use crate::sql::SqlDialect;
+use crate::provider::PgTableProvider;
 
-/// loom-native serving engine: serves governed reads for file-backed Iceberg
-/// tables from the mirror via DataFusion. Holds only the mirror reader; the
-/// `file://` object store and table registrations are built per query.
-pub struct DataFusionServingEngine {
-    catalog: IcebergCatalog,
+/// Any execution/mirror/DataFusion error → opaque engine-serving error.
+#[derive(Debug, thiserror::Error)]
+pub enum EngineServingError {
+    #[error("engine serving: {0}")]
+    Engine(String),
 }
 
-impl DataFusionServingEngine {
-    pub fn new(catalog: IcebergCatalog) -> Self {
-        Self { catalog }
-    }
-}
-
-#[async_trait]
-impl ServingEngine for DataFusionServingEngine {
-    async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
-        let ctx = SessionContext::new();
-        // Register every live table so the compiled SQL's table refs resolve.
-        // (Approach A: pre-register; the per-query mirror read is cheap. A schema
-        // cache is a noted perf follow-up, not implemented here.)
-        for table in self.catalog.live_tables().await.map_err(to_serving)? {
-            register_iceberg_table(&ctx, &self.catalog, &table).await?;
-        }
-        // DataFusion has no positional bind slot here; inline params with the same
-        // injection-safe renderer the Quack engine uses (`?` -> SQL literal).
-        let inlined = inline_params(sql, params);
-        let df = ctx.sql(&inlined).await.map_err(to_serving)?;
-        let batches = df.collect().await.map_err(to_serving)?;
-        Ok(batches_to_rows(batches))
-    }
-    fn dialect(&self) -> &'static dyn SqlDialect {
-        // DataFusion has no multi-file `LIMIT` corruption bug, so it keeps the bare
-        // `LIMIT` (no order barrier). Rendering is otherwise DuckDB-identical.
-        &crate::sql::DataFusionDialect
-    }
+/// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.
+pub(crate) fn to_serving<E: std::fmt::Display>(e: E) -> EngineServingError {
+    EngineServingError::Engine(e.to_string())
 }
 
 /// Register `table`'s live data files (at its current snapshot) via the pruning-aware
@@ -88,7 +53,7 @@ pub async fn register_iceberg_table(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,
     table: &TableRef,
-) -> Result<(), ServingError> {
+) -> Result<(), EngineServingError> {
     use control_plane_core::Catalog;
 
     // A non-prefixed local store for the absolute warehouse paths (a prefixed store
@@ -153,7 +118,7 @@ pub async fn register_iceberg_table(
     // schema-qualified so `"schema"."table"` references resolve.
     let cat = ctx
         .catalog("datafusion")
-        .ok_or_else(|| ServingError::Engine("no default datafusion catalog".into()))?;
+        .ok_or_else(|| EngineServingError::Engine("no default datafusion catalog".into()))?;
     if cat.schema(&table.schema).is_none() {
         cat.register_schema(&table.schema, Arc::new(MemorySchemaProvider::new()))
             .map_err(to_serving)?;
@@ -176,7 +141,7 @@ async fn build_inline_provider(
     schema: &SchemaRef,
     cols: &[control_plane_core::ColumnDef],
     at: control_plane_core::SnapshotId,
-) -> Result<Option<engine_serving::PgTableProvider>, ServingError> {
+) -> Result<Option<PgTableProvider>, EngineServingError> {
     use control_plane_postgres::iceberg_inline::{has_live_inline_rows, inline_table_name};
     use control_plane_postgres::iceberg_mirror::live_table_id;
 
@@ -203,78 +168,13 @@ async fn build_inline_provider(
         at.0
     );
     let logical_types: Vec<String> = cols.iter().map(|c| c.ty.clone()).collect();
-    Ok(Some(engine_serving::PgTableProvider::new(
+    Ok(Some(PgTableProvider::new(
         catalog.pool.clone(),
         inline_table_name(tid),
         schema.clone(),
         logical_types,
         Some(base),
     )))
-}
-
-/// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque serving error.
-fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
-    ServingError::Engine(e.to_string())
-}
-
-/// Encode a (one-row) arrow-58 `RecordBatch` to an Arrow IPC *stream* body — the
-/// bytes `iceberg_landing::land` decodes in arrow-57 (the established cross-major IPC
-/// boundary ingest already crosses). Any writer error maps to an opaque serving error.
-pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
-    let mut buf = Vec::new();
-    {
-        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &batch.schema())
-            .map_err(to_serving)?;
-        w.write(batch).map_err(to_serving)?;
-        w.finish().map_err(to_serving)?;
-    }
-    Ok(buf)
-}
-
-/// A pruning-aware `TableProvider` over an explicit set of Iceberg data files
-/// plus their per-column stats. Unlike `ListingTable`, this skips opening files a
-/// query's predicates provably cannot match: `scan` prunes the file set with a
-/// `PruningPredicate` over the mirror stats, then builds a `DataSourceExec` over
-/// only the survivors. The schema is fixed up front: `try_new` infers it from the
-/// file set (same Parquet inference `listing_table` uses), while
-/// `try_new_with_schema` takes the mirror's authoritative schema so an evolved
-/// table's superset is served and files missing a newer column are null-filled.
-#[derive(Debug)]
-pub struct IcebergMirrorTableProvider {
-    schema: SchemaRef,
-    files: Vec<FileWithStats>,
-}
-
-impl IcebergMirrorTableProvider {
-    /// Infer the arrow schema from `files` (the same `ParquetFormat` inference
-    /// `listing_table` uses) and store it alongside the file set. The
-    /// local-filesystem object store must already be registered on `ctx`.
-    pub async fn try_new(
-        ctx: &SessionContext,
-        files: Vec<FileWithStats>,
-    ) -> Result<Self, ServingError> {
-        let urls: Vec<ListingTableUrl> = files
-            .iter()
-            .map(|f| ListingTableUrl::parse(&f.path))
-            .collect::<Result<_, _>>()
-            .map_err(to_serving)?;
-        let format = ParquetFormat::default().with_force_view_types(false);
-        let opts = ListingOptions::new(Arc::new(format));
-        let cfg = ListingTableConfig::new_with_multi_paths(urls)
-            .with_listing_options(opts)
-            .infer_schema(&ctx.state())
-            .await
-            .map_err(to_serving)?;
-        let schema = ListingTable::try_new(cfg).map_err(to_serving)?.schema();
-        Ok(Self { schema, files })
-    }
-
-    /// Build a provider whose authoritative schema is the mirror's (not inferred from
-    /// Parquet footers), so an evolved table's superset schema is presented and files
-    /// missing a newer column are null-filled by DataFusion's default schema adapter.
-    pub fn try_new_with_schema(files: Vec<FileWithStats>, schema: SchemaRef) -> Self {
-        Self { schema, files }
-    }
 }
 
 /// Map a loom logical `BaseType` to the canonical arrow `DataType` the serving path
@@ -299,15 +199,16 @@ fn base_to_arrow(b: BaseType) -> DataType {
 /// provider presents, so an additively-evolved table reads as its superset.
 fn arrow_schema_from_mirror(
     cols: &[control_plane_core::ColumnDef],
-) -> Result<SchemaRef, ServingError> {
+) -> Result<SchemaRef, EngineServingError> {
     let fields = cols
         .iter()
         .map(|c| {
-            let base = resolve_logical(&c.ty)
-                .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{}`", c.ty)))?;
+            let base = resolve_logical(&c.ty).ok_or_else(|| {
+                EngineServingError::Engine(format!("unknown logical type `{}`", c.ty))
+            })?;
             Ok(Field::new(&c.name, base_to_arrow(base), c.nullable))
         })
-        .collect::<Result<Vec<_>, ServingError>>()?;
+        .collect::<Result<Vec<_>, EngineServingError>>()?;
     Ok(Arc::new(Schema::new(fields)))
 }
 
@@ -475,149 +376,83 @@ impl TableProvider for IcebergMirrorTableProvider {
     }
 }
 
-/// The `ActionEngine` for the Iceberg serving backend: a governed typed-insert is
-/// built into the same one-row batch the DuckLake writer uses, encoded to Arrow IPC,
-/// and forwarded to the atomic inline-write seam `iceberg_landing::land`. A single
-/// action row inlines (mirror-only typed rows): one Postgres transaction committing
-/// the row and its lineage together, drained to real Parquet later by the flush
-/// vertical. Holds the same dependencies as ingest's `IcebergMaterializer`.
-pub struct IcebergActionWriter {
-    catalog: Arc<SqlCatalog>,
-    pool: PgPool,
-    inline_byte_limit: usize,
-    flush_byte_threshold: i64,
+/// A pruning-aware `TableProvider` over an explicit set of Iceberg data files
+/// plus their per-column stats. Unlike `ListingTable`, this skips opening files a
+/// query's predicates provably cannot match: `scan` prunes the file set with a
+/// `PruningPredicate` over the mirror stats, then builds a `DataSourceExec` over
+/// only the survivors. The schema is fixed up front: `try_new` infers it from the
+/// file set (same Parquet inference `listing_table` uses), while
+/// `try_new_with_schema` takes the mirror's authoritative schema so an evolved
+/// table's superset is served and files missing a newer column are null-filled.
+#[derive(Debug)]
+pub struct IcebergMirrorTableProvider {
+    schema: SchemaRef,
+    files: Vec<FileWithStats>,
 }
 
-impl IcebergActionWriter {
-    pub fn new(
-        catalog: Arc<SqlCatalog>,
-        pool: PgPool,
-        inline_byte_limit: usize,
-        flush_byte_threshold: i64,
-    ) -> Self {
-        Self {
-            catalog,
-            pool,
-            inline_byte_limit,
-            flush_byte_threshold,
+impl IcebergMirrorTableProvider {
+    /// Infer the arrow schema from `files` (the same `ParquetFormat` inference
+    /// `listing_table` uses) and store it alongside the file set. The
+    /// local-filesystem object store must already be registered on `ctx`.
+    pub async fn try_new(
+        ctx: &SessionContext,
+        files: Vec<FileWithStats>,
+    ) -> Result<Self, EngineServingError> {
+        let urls: Vec<ListingTableUrl> = files
+            .iter()
+            .map(|f| ListingTableUrl::parse(&f.path))
+            .collect::<Result<_, _>>()
+            .map_err(to_serving)?;
+        let format = ParquetFormat::default().with_force_view_types(false);
+        let opts = ListingOptions::new(Arc::new(format));
+        let cfg = ListingTableConfig::new_with_multi_paths(urls)
+            .with_listing_options(opts)
+            .infer_schema(&ctx.state())
+            .await
+            .map_err(to_serving)?;
+        let schema = ListingTable::try_new(cfg).map_err(to_serving)?.schema();
+        Ok(Self { schema, files })
+    }
+
+    /// Build a provider whose authoritative schema is the mirror's (not inferred from
+    /// Parquet footers), so an evolved table's superset schema is presented and files
+    /// missing a newer column are null-filled by DataFusion's default schema adapter.
+    pub fn try_new_with_schema(files: Vec<FileWithStats>, schema: SchemaRef) -> Self {
+        Self { schema, files }
+    }
+}
+
+/// Execute already-compiled, param-inlined read-only `sql` against all live Iceberg
+/// tables and return the result batches. (This is the body of the old
+/// `DataFusionServingEngine::fetch_rows` minus the `Rows` flattening.)
+pub async fn execute_query(
+    catalog: &IcebergCatalog,
+    sql: &str,
+) -> Result<Vec<RecordBatch>, EngineServingError> {
+    let ctx = SessionContext::new();
+    for table in catalog.live_tables().await.map_err(to_serving)? {
+        register_iceberg_table(&ctx, catalog, &table).await?;
+    }
+    let df = ctx.sql(sql).await.map_err(to_serving)?;
+    df.collect().await.map_err(to_serving)
+}
+
+/// Execute `sql` and return the full result as one Arrow-58 IPC *stream* (schema
+/// message + all batches). Bounded by the compiled query's LIMIT, so a single blob
+/// is fine. Empty result → empty `Vec<u8>` (the client reads it as zero rows).
+pub async fn execute_query_to_ipc(
+    catalog: &IcebergCatalog,
+    sql: &str,
+) -> Result<Vec<u8>, EngineServingError> {
+    let batches = execute_query(catalog, sql).await?;
+    let mut buf = Vec::new();
+    if let Some(first) = batches.first() {
+        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &first.schema())
+            .map_err(to_serving)?;
+        for b in &batches {
+            w.write(b).map_err(to_serving)?;
         }
+        w.finish().map_err(to_serving)?;
     }
-}
-
-#[async_trait]
-impl ActionEngine for IcebergActionWriter {
-    async fn write_object(
-        &self,
-        table: &TableRef,
-        columns: &[String],
-        values: &[SqlValue],
-        logical_types: &[String],
-        event: control_plane_core::LineageEvent,
-    ) -> Result<control_plane_core::SnapshotId, ServingError> {
-        let (_schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
-        let ipc_body = encode_ipc_stream(&batch)?;
-        iceberg_landing::land(
-            &self.pool,
-            &self.catalog,
-            table,
-            &specs,
-            &ipc_body,
-            self.inline_byte_limit,
-            self.flush_byte_threshold,
-            event,
-        )
-        .await
-        .map_err(|e| ServingError::Engine(e.to_string()))
-    }
-}
-
-/// Which table-format backend the query-api binary serves reads from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServingBackend {
-    /// DuckLake via embedded DuckDB (default; today's behavior).
-    DuckLake,
-    /// File-backed Iceberg via the loom-native DataFusion engine.
-    Iceberg,
-}
-
-/// Parse `LOOM_SERVING_BACKEND`. Unset -> DuckLake. Case-insensitive.
-pub fn parse_serving_backend(v: Option<&str>) -> Result<ServingBackend, String> {
-    match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("") | Some("ducklake") => Ok(ServingBackend::DuckLake),
-        Some("iceberg") => Ok(ServingBackend::Iceberg),
-        Some(other) => Err(format!(
-            "LOOM_SERVING_BACKEND must be 'ducklake' or 'iceberg', got {other:?}"
-        )),
-    }
-}
-
-/// Flatten DataFusion result batches into the engine-neutral `Rows`. Columns come
-/// from the first batch's schema (DataFusion preserves projection order, satisfying
-/// the handler's column-order contract); an empty result yields empty `Rows`.
-pub fn batches_to_rows(batches: Vec<RecordBatch>) -> Rows {
-    let Some(first) = batches.first() else {
-        return Rows::default();
-    };
-    let columns: Vec<String> = first
-        .schema()
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .collect();
-    let mut rows = Vec::new();
-    for batch in &batches {
-        for r in 0..batch.num_rows() {
-            let mut cells = Vec::with_capacity(batch.num_columns());
-            for c in 0..batch.num_columns() {
-                cells.push(arrow_to_sqlvalue(batch.column(c), r));
-            }
-            rows.push(cells);
-        }
-    }
-    Rows { columns, rows }
-}
-
-/// One Arrow cell -> `SqlValue`. Covers the scalar set loom serves; an unmapped
-/// Arrow type falls back to a debug `Text` so a read never panics (mirrors the
-/// DuckDB engine's `from_duck` fallback).
-fn arrow_to_sqlvalue(array: &dyn Array, row: usize) -> SqlValue {
-    if array.is_null(row) {
-        return SqlValue::Null;
-    }
-    macro_rules! dc {
-        ($ty:ty) => {
-            array
-                .as_any()
-                .downcast_ref::<$ty>()
-                .expect("arrow downcast")
-        };
-    }
-    match array.data_type() {
-        DataType::Utf8 => SqlValue::Text(dc!(StringArray).value(row).to_string()),
-        DataType::LargeUtf8 => SqlValue::Text(dc!(LargeStringArray).value(row).to_string()),
-        DataType::Boolean => SqlValue::Bool(dc!(BooleanArray).value(row)),
-        DataType::Int8 => SqlValue::Int(dc!(Int8Array).value(row) as i64),
-        DataType::Int16 => SqlValue::Int(dc!(Int16Array).value(row) as i64),
-        DataType::Int32 => SqlValue::Int(dc!(Int32Array).value(row) as i64),
-        DataType::Int64 => SqlValue::Int(dc!(Int64Array).value(row)),
-        DataType::Float32 => SqlValue::Double(dc!(Float32Array).value(row) as f64),
-        DataType::Float64 => SqlValue::Double(dc!(Float64Array).value(row)),
-        DataType::Date32 => {
-            let days = dc!(Date32Array).value(row);
-            SqlValue::Date(time::macros::date!(1970 - 01 - 01) + time::Duration::days(days as i64))
-        }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            let micros = dc!(TimestampMicrosecondArray).value(row);
-            let odt = time::OffsetDateTime::from_unix_timestamp_nanos(micros as i128 * 1_000)
-                .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
-            SqlValue::Timestamp(time::PrimitiveDateTime::new(odt.date(), odt.time()))
-        }
-        // Defensive: a type loom doesn't serve as a first-class scalar. Render the
-        // single cell (not the whole array) so the fallback is bounded and
-        // row-correct; mirrors the DuckDB engine's per-value `from_duck` fallback.
-        _ => match ArrayFormatter::try_new(array, &FormatOptions::default()) {
-            Ok(fmt) => SqlValue::Text(fmt.value(row).to_string()),
-            Err(_) => SqlValue::Null,
-        },
-    }
+    Ok(buf)
 }

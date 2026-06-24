@@ -1,0 +1,49 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
+rust_library(
+    name = "engine-serving",
+    crate = "engine_serving",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:async-trait",
+        "//third-party:datafusion",
+        "//third-party:object_store",
+        "//third-party:sqlx",
+        "//third-party:thiserror",
+        "//third-party:time",
+        "//third-party:tokio",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "pg-scan-sql",
+    crate = "pg_scan_sql",
+    srcs = ["tests/pg_scan_sql.rs"],
+    crate_root = "tests/pg_scan_sql.rs",
+    edition = "2024",
+    deps = [
+        ":engine-serving",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+    ],
+)
+
+loom_fixture_test(
+    name = "execute-query-e2e",
+    crate = "execute_query_e2e",
+    srcs = ["tests/execute_query_e2e.rs"],
+    crate_root = "tests/execute_query_e2e.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)

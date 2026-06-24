@@ -18,7 +18,7 @@ use datafusion::sql::unparser::Unparser;
 use datafusion::sql::unparser::dialect::PostgreSqlDialect;
 use sqlx::{AssertSqlSafe, PgPool, Row};
 
-use crate::serving::ServingError;
+use crate::serving::EngineServingError as ServingError;
 
 /// Serves a Postgres relation as a DataFusion table. `scan` generates
 /// `SELECT <proj> FROM <relation> WHERE <base_filter> [AND <pushed>] [LIMIT n]`,

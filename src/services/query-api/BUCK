@@ -9,6 +9,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
         "//src/services/ingest:ingest",
         "//third-party:arrow",
         "//third-party:async-trait",
@@ -861,19 +862,6 @@ loom_fixture_test(
         "//third-party:object_store",
         "//third-party:serde_json",
         "//third-party:tokio",
-    ],
-)
-
-rust_test(
-    name = "pg-scan-sql",
-    crate = "pg_scan_sql",
-    srcs = ["tests/pg_scan_sql.rs"],
-    crate_root = "tests/pg_scan_sql.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        "//third-party:arrow",
-        "//third-party:datafusion",
     ],
 )
 

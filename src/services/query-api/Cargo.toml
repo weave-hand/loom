@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 control-plane-core = { path = "../../control-plane/core" }
 control-plane-postgres = { path = "../../control-plane/postgres" }
+engine-serving = { path = "../engine-serving" }
 async-trait = "0.1"
 axum = "0.7"
 serde_json = "1"
