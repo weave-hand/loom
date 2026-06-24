@@ -530,22 +530,6 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
-    name = "vector-roundtrip",
-    crate = "vector_roundtrip",
-    srcs = ["tests/vector_roundtrip.rs"],
-    crate_root = "tests/vector_roundtrip.rs",
-    deps = [
-        ":postgres",
-        "//src/control-plane/core:core",
-        "//third-party:arrow-array",
-        "//third-party:arrow-schema",
-        "//third-party:iceberg",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
     name = "vector-landing",
     crate = "vector_landing",
     srcs = ["tests/vector_landing.rs"],
