@@ -1037,3 +1037,17 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "inline-pg-provider-e2e",
+    crate = "inline_pg_provider_e2e",
+    srcs = ["tests/inline_pg_provider_e2e.rs"],
+    crate_root = "tests/inline_pg_provider_e2e.rs",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
