@@ -26,7 +26,7 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// An Arrow-57 IPC body of `rows` rows, single `id: long` column (ids `0..rows`).
+/// An Arrow IPC body of `rows` rows, single `id: long` column (ids `0..rows`).
 fn ipc_body(rows: i64) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(

@@ -20,7 +20,7 @@ use control_plane_postgres::iceberg_sql_catalog::{
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 
-/// Build an Arrow-57 IPC stream body of `rows` rows with a single `id: long` column.
+/// Build an Arrow IPC stream body of `rows` rows with a single `id: long` column.
 fn ipc_body(rows: i64) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(

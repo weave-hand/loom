@@ -33,7 +33,7 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// An Arrow-57 IPC body of `rows` rows, single `id: long` column (ids `0..rows`) —
+/// An Arrow IPC body of `rows` rows, single `id: long` column (ids `0..rows`) —
 /// used to seed the initial append via `land` (limit 0 forces real Parquet).
 fn ipc_body(rows: i64) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
