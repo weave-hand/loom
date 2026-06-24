@@ -76,11 +76,12 @@ actions:
             | awk 'NF >= 2 { print substr($1, 1, 1) " " $2 }' > changes.txt
           echo "=== changed files ==="; cat changes.txt
 
-          # supertd is a standalone target-graph tool: it reads BUCK files directly and
-          # needs NO buck2 daemon or buck-out to run. Build the binary ONCE here in the
-          # healthy head checkout (the command_alias //tools:supertd can't be exec'd
-          # against another cwd, so build the concrete arch binary), then run it against
-          # both trees below. arch is pinned amd64 for this action.
+          # supertd is a standalone target-graph tool: it reads BUCK files directly to
+          # emit the target graph. It still spins up (or reconnects to) a buck2 daemon,
+          # which validates the working directory and requires its buck-out/v2 to exist.
+          # Build the binary ONCE here in the healthy head checkout (the command_alias
+          # //tools:supertd can't be exec'd against another cwd, so build the concrete
+          # arch binary), then run it against both trees below. arch is pinned amd64.
           supertd="$(buck2 build //tools:supertd-bin-x86_64 --show-full-simple-output)"
 
           # Head (after) graph: run supertd in this checkout.
@@ -97,6 +98,14 @@ actions:
           git worktree prune
           git worktree add --force --detach "$base_dir" "$base_sha"
           git -C "$base_dir" submodule update --init --recursive
+          # The rm -rf above deletes _base's buck-out every run, but a snapshot-
+          # restored buck2 daemon for this root can survive and still point at it, so
+          # supertd's working-directory validation dies "Failed to stat
+          # _base/buck-out/v2" (the same warm-daemon/missing-buck-out desync the other
+          # actions avoid by KEEPING buck-out). Recreate an empty buck-out/v2 so the
+          # stat passes — a fresh supertd daemon would create it anyway; a reconnected
+          # stale one just re-reads the BUCK files for the `targets` query.
+          mkdir -p "$base_dir/buck-out/v2"
           ( cd "$base_dir" && "$supertd" targets root//... --output "$head_root/base.jsonl" )
 
           # Impacted first-party targets. With BOTH graphs supplied (--base + --diff),
