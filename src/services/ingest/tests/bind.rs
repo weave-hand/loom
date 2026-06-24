@@ -2,11 +2,11 @@
 //! a non-conforming type is rejected with ALL violations and nothing is persisted.
 
 use control_plane_core::{
-    Aggregation, ControlPlaneError, DerivedPropertyDef, ObjectType, Ontology, PropertyDef,
-    TableRef, TypeName,
+    Aggregation, Cardinality, ControlPlaneError, DerivedPropertyDef, LinkBacking, LinkDef,
+    ObjectType, Ontology, PageReq, PropertyDef, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use ingest::{BindError, BindViolationReason, bind};
+use ingest::{BindError, BindViolationReason, bind, bind_link};
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
     PropertyDef {
@@ -301,5 +301,217 @@ async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
         v.iter()
             .any(|x| x.property == "_y" && matches!(x.reason, BindViolationReason::ReservedName)),
         "expected a ReservedName violation for '_y', got {v:?}"
+    );
+}
+
+// ---- postgres parity: derived-property + bind_link over the real DuckLake catalog ----
+//
+// The exhaustive violation matrix lives in the in-memory `bind_validation` suite;
+// these cases prove the SAME validators run against the real catalog, whose adapter
+// maps physical DuckLake types to loom logical types that feed the validator.
+
+fn purchase_table() -> TableRef {
+    TableRef {
+        schema: "main".into(),
+        name: "purchase".into(),
+    }
+}
+
+// Seed main.purchase: id BIGINT NOT NULL, customer_id BIGINT NULL, cost INTEGER NULL.
+async fn seed_purchase(writer: &DuckLakeWriter) {
+    writer
+        .seed(
+            "main",
+            "purchase",
+            &[
+                ("id".into(), "BIGINT".into(), false),
+                ("customer_id".into(), "BIGINT".into(), true),
+                ("cost".into(), "INTEGER".into(), true),
+            ],
+            &[2],
+        )
+        .await;
+}
+
+// Define the base Customer + Purchase types and a `Customer.purchases -> Purchase`
+// FK link (`customer.id = purchase.customer_id`), so a derived property over
+// `purchases` resolves.
+async fn define_purchase_graph(cp: &impl Ontology) {
+    cp.define_type(ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![],
+        table: customer(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+    cp.define_type(ObjectType {
+        name: TypeName("Purchase".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![],
+        table: purchase_table(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+    cp.define_link(LinkDef {
+        name: "purchases".into(),
+        from: TypeName("Customer".into()),
+        to: TypeName("Purchase".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn bind_accepts_valid_derived_properties_over_the_real_catalog() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+    seed_purchase(&writer).await;
+    define_purchase_graph(&cp).await;
+
+    // Count -> Long, and Sum over the INTEGER `cost` column -> Long (numeric). The
+    // DuckLake adapter maps BIGINT/INTEGER to loom logical types the validator reads.
+    let derived = vec![
+        DerivedPropertyDef {
+            name: "purchaseCount".into(),
+            ty: "Long".into(),
+            link: "purchases".into(),
+            agg: Aggregation::Count,
+        },
+        DerivedPropertyDef {
+            name: "totalCost".into(),
+            ty: "Long".into(),
+            link: "purchases".into(),
+            agg: Aggregation::Sum("cost".into()),
+        },
+    ];
+    let type_def = ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: derived.clone(),
+        table: customer(),
+        identity: None,
+    };
+    bind(&cp, &cp, type_def).await.unwrap();
+
+    let got = cp.get_type(&TypeName("Customer".into())).await.unwrap();
+    assert_eq!(got.derived, derived);
+}
+
+#[tokio::test]
+async fn bind_rejects_a_bad_derived_reference_over_the_real_catalog() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+    seed_purchase(&writer).await;
+    define_purchase_graph(&cp).await;
+
+    // `cost` is INTEGER -> Sum is applicable, but "ghost" is not a column on
+    // purchase -> MissingAggColumn; and "noSuchLink" is undefined -> UnknownDerivedLink.
+    let type_def = ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![
+            DerivedPropertyDef {
+                name: "ghostSum".into(),
+                ty: "Long".into(),
+                link: "purchases".into(),
+                agg: Aggregation::Sum("ghost".into()),
+            },
+            DerivedPropertyDef {
+                name: "dangler".into(),
+                ty: "Long".into(),
+                link: "noSuchLink".into(),
+                agg: Aggregation::Count,
+            },
+        ],
+        table: customer(),
+        identity: None,
+    };
+    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let BindError::DoesNotConform(v) = err else {
+        panic!("expected DoesNotConform, got {err:?}");
+    };
+    assert!(
+        v.iter().any(|x| x.property == "ghostSum"
+            && matches!(x.reason, BindViolationReason::MissingAggColumn))
+    );
+    assert!(v.iter().any(|x| x.property == "dangler"
+        && matches!(&x.reason, BindViolationReason::UnknownDerivedLink(l) if l == "noSuchLink")));
+}
+
+#[tokio::test]
+async fn bind_link_validates_backing_columns_over_the_real_catalog() {
+    let fx = PgFixture::start();
+    let (cp, db) = fx.fresh_db().await;
+    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    seed_customer(&writer).await;
+    seed_purchase(&writer).await;
+    // Endpoint types only (no link yet — bind_link creates it).
+    cp.define_type(ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![],
+        table: customer(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+    cp.define_type(ObjectType {
+        name: TypeName("Purchase".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![],
+        table: purchase_table(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+
+    let good = LinkDef {
+        name: "purchases".into(),
+        from: TypeName("Customer".into()),
+        to: TypeName("Purchase".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+    };
+    bind_link(&cp, &cp, good).await.unwrap();
+    let links = cp
+        .links(&TypeName("Customer".into()), PageReq::unbounded())
+        .await
+        .unwrap();
+    assert!(links.items.iter().any(|l| l.name == "purchases"));
+
+    // A backing column that does not exist on the to-table -> MissingColumn.
+    let bad = LinkDef {
+        name: "broken".into(),
+        from: TypeName("Customer".into()),
+        to: TypeName("Purchase".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "nope".into(),
+        },
+    };
+    let err = bind_link(&cp, &cp, bad).await.unwrap_err();
+    let BindError::DoesNotConform(v) = err else {
+        panic!("expected DoesNotConform, got {err:?}");
+    };
+    assert!(
+        v.iter()
+            .any(|x| x.property == "nope"
+                && matches!(x.reason, BindViolationReason::MissingColumn))
     );
 }

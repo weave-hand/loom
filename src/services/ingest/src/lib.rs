@@ -8,7 +8,7 @@ pub mod http;
 pub mod landing;
 pub mod materialize;
 
-pub use bind::{BindError, BindViolation, BindViolationReason, bind};
+pub use bind::{BindError, BindViolation, BindViolationReason, bind, bind_link};
 pub use gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 pub use materialize::{MaterializeRequest, materialize};
 
