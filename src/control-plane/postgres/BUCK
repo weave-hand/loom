@@ -759,6 +759,29 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "iceberg-s3-roundtrip",
+    crate = "iceberg_s3_roundtrip",
+    srcs = ["tests/iceberg_s3_roundtrip.rs"],
+    crate_root = "tests/iceberg_s3_roundtrip.rs",
+    minio = True,
+    named_deps = {"parquet57": "//third-party:parquet57"},
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/services/runtime:runtime",
+        "//third-party:arrow-array",
+        "//third-party:datafusion",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-read",
     crate = "iceberg_read",
     srcs = ["tests/iceberg_read.rs"],

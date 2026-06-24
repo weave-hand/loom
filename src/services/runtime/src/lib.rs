@@ -118,6 +118,27 @@ pub struct S3Backend {
 }
 
 impl ObjectStoreConfig {
+    /// Construct an S3 config directly (test helper for fixtures that know the endpoint).
+    pub fn for_s3_test(
+        warehouse_uri: String,
+        bucket: String,
+        endpoint: String,
+        access_key_id: String,
+        secret_access_key: String,
+    ) -> ObjectStoreConfig {
+        ObjectStoreConfig {
+            warehouse_uri,
+            backend: ObjectStoreBackend::S3(S3Backend {
+                bucket,
+                endpoint: Some(endpoint),
+                region: "us-east-1".into(),
+                access_key_id,
+                secret_access_key,
+                path_style: true,
+            }),
+        }
+    }
+
     /// Parse from the env map. `data_path` is the back-compat default warehouse root.
     fn parse(
         vars: &HashMap<String, String>,
