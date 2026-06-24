@@ -151,7 +151,9 @@ rust_library(
         "//third-party:arrow-schema",
         "//third-party:async-trait",
         "//third-party:bytes",
+        "//third-party:futures",
         "//third-party:iceberg",
+        "//third-party:object_store",
         "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:sqlx",
@@ -160,6 +162,7 @@ rust_library(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tracing",
+        "//third-party:typetag",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
@@ -213,6 +216,19 @@ rust_test(
     srcs = ["tests/iceberg_inline_types.rs"],
     crate_root = "tests/iceberg_inline_types.rs",
     deps = [":postgres"],
+)
+
+rust_test(
+    name = "s3-storage",
+    crate = "s3_storage",
+    srcs = ["tests/s3_storage.rs"],
+    crate_root = "tests/s3_storage.rs",
+    edition = "2024",
+    deps = [
+        ":postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+    ],
 )
 
 # Bound check for the hermetic-fixture boot throttle (BootThrottle). Pure flock on

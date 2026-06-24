@@ -24,4 +24,6 @@
 
 mod catalog;
 mod error;
+pub mod s3_storage;
 pub use catalog::*;
+pub use s3_storage::S3StorageFactory;
