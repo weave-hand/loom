@@ -71,6 +71,7 @@ static TEST_BEFORE_ACQUIRE: bool = true; // Default the health-check of each con
 pub struct SqlCatalogBuilder {
     config: SqlCatalogConfig,
     storage_factory: Option<Arc<dyn StorageFactory>>,
+    runtime: Option<iceberg::Runtime>,
 }
 
 impl Default for SqlCatalogBuilder {
@@ -83,6 +84,7 @@ impl Default for SqlCatalogBuilder {
                 props: HashMap::new(),
             },
             storage_factory: None,
+            runtime: None,
         }
     }
 }
@@ -137,10 +139,12 @@ impl CatalogBuilder for SqlCatalogBuilder {
         self
     }
 
-    /// iceberg main added an explicit `Runtime` (separate IO/CPU tokio handles) to the
-    /// builder. loom has no custom-runtime needs — its async runs on the ambient tokio
-    /// runtime exactly as it did pre-`main` — so this is intentionally a no-op.
-    fn with_runtime(self, _runtime: iceberg::Runtime) -> Self {
+    /// iceberg main added an explicit `Runtime` (separate IO/CPU tokio handles) that
+    /// `Table::builder().build()` now *requires*. Store it; `load` defaults a caller
+    /// who never sets one to `Runtime::current()` (the ambient tokio runtime), so loom's
+    /// behaviour is unchanged from pre-`main`.
+    fn with_runtime(mut self, runtime: iceberg::Runtime) -> Self {
+        self.runtime = Some(runtime);
         self
     }
 
@@ -176,7 +180,8 @@ impl CatalogBuilder for SqlCatalogBuilder {
                 ))
             } else {
                 self.config.name = name;
-                SqlCatalog::new(self.config, self.storage_factory).await
+                let runtime = self.runtime.unwrap_or_else(iceberg::Runtime::current);
+                SqlCatalog::new(self.config, self.storage_factory, runtime).await
             }
         }
     }
@@ -204,6 +209,9 @@ pub struct SqlCatalog {
     connection: PgPool,
     warehouse_location: String,
     fileio: FileIO,
+    /// iceberg main requires a `Runtime` on every `Table::builder()`; threaded in here
+    /// from the builder (defaulting to `Runtime::current()`).
+    runtime: iceberg::Runtime,
 }
 
 /// Side-effects to run inside the one `do_update_table` commit tx, alongside the
@@ -235,6 +243,7 @@ impl SqlCatalog {
     async fn new(
         config: SqlCatalogConfig,
         storage_factory: Option<Arc<dyn StorageFactory>>,
+        runtime: iceberg::Runtime,
     ) -> Result<Self> {
         let factory = storage_factory.ok_or_else(|| {
             Error::new(
@@ -299,6 +308,7 @@ impl SqlCatalog {
             connection: pool,
             warehouse_location: config.warehouse_location,
             fileio,
+            runtime,
         })
     }
 
@@ -973,6 +983,7 @@ impl Catalog for SqlCatalog {
 
         Ok(Table::builder()
             .file_io(self.fileio.clone())
+            .runtime(self.runtime.clone())
             .identifier(identifier.clone())
             .metadata_location(tbl_metadata_location)
             .metadata(metadata)
@@ -1044,6 +1055,7 @@ impl Catalog for SqlCatalog {
 
         Ok(Table::builder()
             .file_io(self.fileio.clone())
+            .runtime(self.runtime.clone())
             .metadata_location(tbl_metadata_location)
             .identifier(tbl_ident)
             .metadata(tbl_metadata)
@@ -1118,6 +1130,7 @@ impl Catalog for SqlCatalog {
             .metadata_location(metadata_location)
             .metadata(metadata)
             .file_io(self.fileio.clone())
+            .runtime(self.runtime.clone())
             .build()?)
     }
 
