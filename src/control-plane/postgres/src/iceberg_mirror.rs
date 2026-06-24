@@ -5,11 +5,12 @@
 //! adapter (`iceberg_catalog`) serves from the rows they write. Shared with the slice-2 write
 //! path, which folds these into the catalog's `update_table` transaction.
 
-use control_plane_core::{ControlPlaneError, Result, SnapshotId};
+use control_plane_core::{ControlPlaneError, Result, SnapshotId, TableRef};
 use iceberg::table::Table;
 use sqlx::PgConnection;
 
 use crate::backend;
+use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 
 /// Map an `iceberg` error into the control-plane backend error.
 fn iceberg_err(e: iceberg::Error) -> ControlPlaneError {
@@ -29,6 +30,7 @@ pub struct ProjectedFile {
 }
 
 /// A neutral column definition (name, Iceberg primitive type name, nullability), in order.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedColumn {
     pub order: i64,
     pub name: String,
@@ -387,5 +389,121 @@ pub async fn reset_inline_trigger(conn: &mut PgConnection, table_id: i64) -> Res
     .execute(&mut *conn)
     .await
     .map_err(backend)?;
+    Ok(())
+}
+
+/// Return the columns that were live at snapshot `at` for `table_id`, in column order.
+///
+/// Uses the same MVCC predicate as `IcebergCatalog::schema` (`begin_snapshot <= $2`)
+/// so the two views are byte-for-byte consistent. Callers pass the snapshot to read
+/// as-of directly; no `at + 1` arithmetic is performed anywhere.
+pub async fn live_columns(
+    conn: &mut PgConnection,
+    table_id: i64,
+    at: SnapshotId,
+) -> Result<Vec<ProjectedColumn>> {
+    let rows = sqlx::query!(
+        "select column_order as \"column_order!\", column_name as \"column_name!\", \
+               column_type as \"column_type!\", nulls_allowed as \"nulls_allowed!\" \
+         from iceberg_mirror.column \
+         where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) \
+         order by column_order",
+        table_id,
+        at.0,
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ProjectedColumn {
+            order: r.column_order,
+            name: r.column_name,
+            iceberg_type: r.column_type,
+            nullable: r.nulls_allowed,
+        })
+        .collect())
+}
+
+/// Return the live columns for the named table at `at`, resolving the `table_id` by
+/// looking up the currently-live `iceberg_mirror.table` row.
+///
+/// Returns `Vec::new()` if no live table row exists, which causes
+/// `reconcile_and_project` to treat the incoming write as a table creation.
+pub async fn live_columns_for(
+    conn: &mut PgConnection,
+    table: &TableRef,
+    at: SnapshotId,
+) -> Result<Vec<ProjectedColumn>> {
+    let tid: Option<i64> = sqlx::query_scalar!(
+        "select table_id as \"id!\" from iceberg_mirror.table \
+         where table_namespace = $1 and table_name = $2 and end_snapshot is null",
+        table.schema,
+        table.name,
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(backend)?;
+    match tid {
+        Some(tid) => live_columns(conn, tid, at).await,
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Stamp the `schema_version` on an `iceberg_mirror.snapshot` row.
+///
+/// The per-table schema generation is defined as the count of distinct
+/// `begin_snapshot` values visible at `at` in `iceberg_mirror.column`. Creation
+/// yields generation 1; each additive evolution increments it; a no-change append
+/// leaves it unchanged.
+pub async fn stamp_schema_version(
+    conn: &mut PgConnection,
+    table_id: i64,
+    at: SnapshotId,
+) -> Result<()> {
+    sqlx::query!(
+        "update iceberg_mirror.snapshot set schema_version = (\
+             select count(distinct begin_snapshot) from iceberg_mirror.column \
+             where table_id = $1 and begin_snapshot <= $2\
+         ) where snapshot_id = $2",
+        table_id,
+        at.0,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Shared policy entry point: compare the incoming column set against the live mirror
+/// and project only the delta (additive) or all columns (creation).
+///
+/// - If `live_columns` is empty (first write for this table), all `incoming` columns
+///   are projected regardless of nullability — the landing validator has already
+///   accepted them.
+/// - If `Identical`, nothing is written.
+/// - If `Additive`, only the new nullable columns are projected.
+/// - Any other change (drop, rename, reorder, type change) is rejected with
+///   `ControlPlaneError::Validation`.
+pub async fn reconcile_and_project(
+    conn: &mut PgConnection,
+    table_id: i64,
+    at: SnapshotId,
+    incoming: &[ProjectedColumn],
+) -> Result<()> {
+    let live = live_columns(conn, table_id, at).await?;
+    if live.is_empty() {
+        // First write (table creation): project all columns regardless of nullability.
+        project_columns(conn, table_id, at, incoming).await?;
+        return Ok(());
+    }
+    match classify_schema_change(&live, incoming)
+        .map_err(|e| ControlPlaneError::Validation(e.to_string()))?
+    {
+        SchemaPlan::Identical => {}
+        SchemaPlan::Additive { new_columns } => {
+            project_columns(conn, table_id, at, &new_columns).await?;
+        }
+    }
     Ok(())
 }

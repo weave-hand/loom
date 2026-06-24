@@ -518,6 +518,29 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "iceberg-schema-evolution-read",
+    crate = "iceberg_schema_evolution_read",
+    srcs = ["tests/iceberg_schema_evolution_read.rs"],
+    crate_root = "tests/iceberg_schema_evolution_read.rs",
+    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:datafusion",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 rust_test(
     name = "datafusion-value-map",
     crate = "datafusion_value_map",

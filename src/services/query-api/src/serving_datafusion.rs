@@ -10,11 +10,11 @@ use arrow::array::{
     Array, BooleanArray, Date32Array, Float32Array, Float64Array, Int8Array, Int16Array,
     Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray, TimestampMicrosecondArray,
 };
-use arrow::datatypes::{DataType, TimeUnit};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use async_trait::async_trait;
-use control_plane_core::TableRef;
 use control_plane_core::snapshot::StatValue;
+use control_plane_core::{BaseType, TableRef, resolve_logical};
 use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
 use control_plane_postgres::iceberg_landing;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
@@ -102,9 +102,14 @@ pub async fn register_iceberg_table(
     );
 
     let snap = catalog.current_snapshot(table).await.map_err(to_serving)?;
-    // File-backed data: the pruning-aware provider over the mirror's per-column
-    // stats. A drop-in for the old `ListingTable` (same Parquet inference), but its
-    // `scan` skips files a query's predicates provably cannot match.
+    // The MIRROR is authoritative for the served schema (not per-file Parquet
+    // footers): an additively-evolved table presents its superset, and files written
+    // before a newer column existed are null-filled by DataFusion's default schema
+    // adapter (the column is nullable). File-backed data uses the pruning-aware
+    // provider over the mirror's per-column stats; its `scan` skips files a query's
+    // predicates provably cannot match.
+    let table_schema = catalog.schema(table, snap.id).await.map_err(to_serving)?;
+    let schema = arrow_schema_from_mirror(&table_schema.columns)?;
     let files_with_stats = catalog
         .files_with_stats(table, snap.id)
         .await
@@ -112,7 +117,10 @@ pub async fn register_iceberg_table(
     let file_provider = if files_with_stats.is_empty() {
         None
     } else {
-        Some(IcebergMirrorTableProvider::try_new(ctx, files_with_stats).await?)
+        Some(IcebergMirrorTableProvider::try_new_with_schema(
+            files_with_stats,
+            schema.clone(),
+        ))
     };
 
     // Inline rows (mirror-only typed rows) are encoded to in-memory Parquet under a
@@ -222,8 +230,10 @@ pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
 /// plus their per-column stats. Unlike `ListingTable`, this skips opening files a
 /// query's predicates provably cannot match: `scan` prunes the file set with a
 /// `PruningPredicate` over the mirror stats, then builds a `DataSourceExec` over
-/// only the survivors. Schema is inferred from the file set up front (same Parquet
-/// inference `listing_table` uses), so the served schema matches the listing path.
+/// only the survivors. The schema is fixed up front: `try_new` infers it from the
+/// file set (same Parquet inference `listing_table` uses), while
+/// `try_new_with_schema` takes the mirror's authoritative schema so an evolved
+/// table's superset is served and files missing a newer column are null-filled.
 #[derive(Debug)]
 pub struct IcebergMirrorTableProvider {
     schema: SchemaRef,
@@ -253,6 +263,47 @@ impl IcebergMirrorTableProvider {
         let schema = ListingTable::try_new(cfg).map_err(to_serving)?.schema();
         Ok(Self { schema, files })
     }
+
+    /// Build a provider whose authoritative schema is the mirror's (not inferred from
+    /// Parquet footers), so an evolved table's superset schema is presented and files
+    /// missing a newer column are null-filled by DataFusion's default schema adapter.
+    pub fn try_new_with_schema(files: Vec<FileWithStats>, schema: SchemaRef) -> Self {
+        Self { schema, files }
+    }
+}
+
+/// Map a loom logical `BaseType` to the canonical arrow `DataType` the serving path
+/// reads (mirrors the mirror `one_cell` mapping in `serving.rs`): string/int stay
+/// Utf8/Int*, never the `*View` variants, so `arrow_to_sqlvalue` maps them.
+fn base_to_arrow(b: BaseType) -> DataType {
+    match b {
+        BaseType::Integer => DataType::Int32,
+        BaseType::Long => DataType::Int64,
+        BaseType::Double => DataType::Float64,
+        BaseType::Boolean => DataType::Boolean,
+        BaseType::String => DataType::Utf8,
+        BaseType::Date => DataType::Date32,
+        BaseType::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
+    }
+}
+
+/// Build the authoritative arrow schema for a table from the mirror's column
+/// definitions (in column order). Each column's loom logical type resolves to an
+/// arrow `DataType`; an unrecognized logical type is a hard error (the mirror should
+/// never hold one). This schema — not the per-file Parquet footers — is what the
+/// provider presents, so an additively-evolved table reads as its superset.
+fn arrow_schema_from_mirror(
+    cols: &[control_plane_core::ColumnDef],
+) -> Result<SchemaRef, ServingError> {
+    let fields = cols
+        .iter()
+        .map(|c| {
+            let base = resolve_logical(&c.ty)
+                .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{}`", c.ty)))?;
+            Ok(Field::new(&c.name, base_to_arrow(base), c.nullable))
+        })
+        .collect::<Result<Vec<_>, ServingError>>()?;
+    Ok(Arc::new(Schema::new(fields)))
 }
 
 /// Map a mirror `StatValue` to a typed `ScalarValue` of the arrow `data_type`.
