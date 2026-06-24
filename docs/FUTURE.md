@@ -198,7 +198,9 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 ## test
 
 - [x] **Socket round-trip integration test for binaries** `{#fut-socket-roundtrip-test area:test status:promoted from:2026-06-13-service-runtime-and-binaries-design pr:- spec:-}`
-  Promoted to [[road-e2e-http-client]], which adds the over-the-wire e2e layer (real `TcpListener` via `service_runtime::serve` + a `reqwest` client) the deferral was waiting on — the HTTP-client dep is now justified (`reqwest` is already vendored). The actual-binary-*subprocess* variant (exec the built binary to also cover `main.rs` + `Config::from_env`) remains out of that slice and is the residual deferral here.
+  Promoted to [[road-e2e-http-client]], which adds the over-the-wire e2e layer (real `TcpListener` via `service_runtime::serve` + a `reqwest` client) the deferral was waiting on — the HTTP-client dep is now justified (`reqwest` is already vendored). The actual-binary-*subprocess* variant (exec the built binary to also cover `main.rs` + `Config::from_env`) remains out of that slice and is the residual deferral, tracked as [[fut-binary-subprocess-smoke]].
+- [ ] **Actual-binary subprocess smoke** `{#fut-binary-subprocess-smoke area:test status:deferred from:2026-06-23-e2e-http-client-design pr:- spec:-}`
+  The over-the-wire e2e ([[road-e2e-http-client]]) spawns the routers in-process via `service_runtime::serve`, covering `serve()` + the routers over a real socket. Booting the built `ingest-bin`/`query-api-bin` as a subprocess to also cover `main.rs` + `Config::from_env` over a spawned process stays deferred — those paths are covered today by the `runtime` config unit test + the `runtime_land` fixture.
 
 ## quality
 

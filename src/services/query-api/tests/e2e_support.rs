@@ -366,3 +366,42 @@ pub fn ids(rows: &query_api::handler::ObjectRows) -> Vec<String> {
     out.sort_unstable();
     out
 }
+
+/// A spawned in-process HTTP server bound to an ephemeral `127.0.0.1` port.
+/// Holds the serving task; dropping the guard aborts the server, so the caller
+/// must keep it alive for the duration of the test.
+pub struct ServeGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for ServeGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Bind an ephemeral local port, spawn `service_runtime::serve` on it (the real
+/// `TcpListener` bind that the binaries use), and wait until the listener
+/// accepts connections before returning.
+///
+/// Returns the base URL (no trailing slash) and a guard that keeps the serving
+/// task alive. A short probe-bind discovers a free port, which `serve` then
+/// re-claims; the readiness poll below closes the (tiny) re-bind race.
+pub async fn spawn_http(router: axum::Router) -> (String, ServeGuard) {
+    let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("probe-bind ephemeral port");
+    let addr = probe.local_addr().expect("probe local_addr");
+    drop(probe);
+
+    let handle = tokio::spawn(async move {
+        let _ = service_runtime::serve(addr, router).await;
+    });
+
+    // Readiness: poll-connect until the server accepts (or give up clearly).
+    for _ in 0..100 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            return (format!("http://{addr}"), ServeGuard(handle));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("spawn_http: server never became ready at {addr}");
+}
