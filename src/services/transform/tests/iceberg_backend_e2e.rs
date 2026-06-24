@@ -10,8 +10,8 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, FileFormat, LineageEvent,
-    PageReq, RunId, SnapshotId, TableRef, Tx,
+    ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, FileFormat, LineageEvent, PageReq,
+    RunId, SnapshotId, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
