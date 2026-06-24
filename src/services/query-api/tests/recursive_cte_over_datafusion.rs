@@ -1,5 +1,5 @@
 //! Recursive-CTE reachability (WITH RECURSIVE, emitted by compile_graph_reach /
-//! compile_graph_reach_union) executed through DataFusionServingEngine over
+//! compile_graph_reach_union) executed through engine_serving::execute_query over
 //! Iceberg-mirror-backed tables — closing iss-recursive-cte-iceberg. The DuckDB
 //! graph e2es (graph-reach-e2e / graph-union-e2e) prove the same reachable sets
 //! against the DuckLake/DuckDB engine; this proves them against loom's own engine.
@@ -8,8 +8,8 @@ use control_plane_core::{CompareOp, LinkBacking, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use query_api::filter::CallerPredicate;
-use query_api::serving::{Rows, ServingEngine, SqlValue};
-use query_api::serving_datafusion::DataFusionServingEngine;
+use query_api::serving::{Rows, SqlValue};
+use query_api::serving_datafusion::batches_to_rows;
 use query_api::sql::{DuckDbDialect, GraphStep, compile_graph_reach, compile_graph_reach_union};
 
 /// Sorted `id` column values from a `Rows` whose projection is `("id", "name")`.
@@ -67,8 +67,6 @@ async fn fk_self_link_recursive_reach_over_datafusion() {
         )
         .await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool), None);
-
     let step = GraphStep {
         backing: LinkBacking::ForeignKey {
             from_column: "knows_id".into(),
@@ -100,10 +98,14 @@ async fn fk_self_link_recursive_reach_over_datafusion() {
         "sanity: recursive CTE compiled: {sql}"
     );
 
-    let rows = engine
-        .fetch_rows(&sql, &params)
-        .await
-        .expect("fetch_rows over iceberg");
+    // was: DataFusionServingEngine::new(IcebergCatalog::new(pool)).fetch_rows(&sql, &params)
+    let catalog = IcebergCatalog::new(pool);
+    let inlined = query_api::serving::inline_params(&sql, &params);
+    let rows = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined, None)
+            .await
+            .expect("execute_query"),
+    );
 
     assert_eq!(rows.columns, vec!["id", "name"]);
     assert_eq!(
@@ -162,8 +164,6 @@ async fn union_self_links_recursive_reach_over_datafusion() {
         )
         .await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool), None);
-
     let backings = vec![
         LinkBacking::ForeignKey {
             from_column: "knows_id".into(),
@@ -203,10 +203,14 @@ async fn union_self_links_recursive_reach_over_datafusion() {
         "sanity: recursive union CTE compiled: {sql}"
     );
 
-    let rows = engine
-        .fetch_rows(&sql, &params)
-        .await
-        .expect("fetch_rows over iceberg");
+    // was: DataFusionServingEngine::new(IcebergCatalog::new(pool)).fetch_rows(&sql, &params)
+    let catalog = IcebergCatalog::new(pool);
+    let inlined = query_api::serving::inline_params(&sql, &params);
+    let rows = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined, None)
+            .await
+            .expect("execute_query"),
+    );
 
     assert_eq!(rows.columns, vec!["id", "name"]);
     assert_eq!(

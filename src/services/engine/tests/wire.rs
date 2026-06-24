@@ -317,9 +317,9 @@ async fn flush_over_wire() {
 
     // And no live inline rows remain.
     let inline = ice
-        .inline_parquet(&table, snap)
+        .inline_live_batch(&table, snap)
         .await
-        .expect("inline_parquet");
+        .expect("inline_live_batch");
     assert!(
         inline.is_none(),
         "flush_over_wire: inline rows must be retired after flush"

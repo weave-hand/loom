@@ -114,9 +114,9 @@ async fn flush_inline_only_makes_rows_file_backed_exactly_once() {
 
     // No live inline rows remain — they were end-capped at the flush snapshot.
     let inline = ice
-        .inline_parquet(&table, cur.id)
+        .inline_live_batch(&table, cur.id)
         .await
-        .expect("inline_parquet");
+        .expect("inline_live_batch");
     assert!(inline.is_none(), "inline rows retired at current snapshot");
 }
 
@@ -227,7 +227,7 @@ async fn flush_preserves_time_travel() {
 
     // At snap0: inline rows are still live (the end-cap is at snap1, not snap0).
     let inline_at_snap0 = ice
-        .inline_parquet(&table, snap0)
+        .inline_live_batch(&table, snap0)
         .await
         .expect("inline @ snap0");
     assert!(
@@ -257,7 +257,7 @@ async fn flush_preserves_time_travel() {
 
     // At snap1: no live inline rows (they were end-capped at snap1).
     let inline_at_snap1 = ice
-        .inline_parquet(&table, snap1)
+        .inline_live_batch(&table, snap1)
         .await
         .expect("inline @ snap1");
     assert!(
@@ -316,7 +316,7 @@ async fn flush_leaves_later_inline_rows_live() {
 
     // B is still live inline.
     let inline_after_b = ice
-        .inline_parquet(&table, cur.id)
+        .inline_live_batch(&table, cur.id)
         .await
         .expect("inline after B");
     assert!(
@@ -335,7 +335,7 @@ async fn flush_leaves_later_inline_rows_live() {
         .await
         .expect("current after flush 2");
     let inline_after_flush2 = ice
-        .inline_parquet(&table, cur2.id)
+        .inline_live_batch(&table, cur2.id)
         .await
         .expect("inline after second flush");
     assert!(

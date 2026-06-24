@@ -10,6 +10,7 @@
 
 pub mod action;
 pub mod chain_filter;
+pub mod engine_client;
 pub mod filter;
 pub mod handler;
 pub mod http;

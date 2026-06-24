@@ -6,8 +6,9 @@ use control_plane_core::TableRef;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use datafusion::prelude::SessionContext;
+use engine_serving::register_iceberg_table;
 use query_api::serving::SqlValue;
-use query_api::serving_datafusion::{batches_to_rows, register_iceberg_table};
+use query_api::serving_datafusion::batches_to_rows;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn registers_and_selects_back() {

@@ -1,0 +1,16 @@
+[package]
+name = "engine-serving"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+control-plane-core = { path = "../../control-plane/core" }
+control-plane-postgres = { path = "../../control-plane/postgres" }
+arrow = "58"
+datafusion = { version = "54", default-features = false, features = ["parquet", "sql"] }
+object_store = "0.13"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
+async-trait = "0.1"
+thiserror = "1"
+time = "=0.3.47"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

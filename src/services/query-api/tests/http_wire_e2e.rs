@@ -19,6 +19,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
 };
+use e2e_support::InProcessServingEngine;
 use e2e_support::{grant_read, ids_i64, prop, spawn_http, subject_with_role, tref};
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
@@ -26,7 +27,7 @@ use ingest::landing::{DuckLakeMaterializer, IcebergMaterializer};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use query_api::serving::{DuckLakeActionWriter, EmbeddedDuckDb};
-use query_api::serving_datafusion::{DataFusionServingEngine, IcebergActionWriter};
+use query_api::serving_datafusion::IcebergActionWriter;
 
 const INLINE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 
@@ -142,10 +143,9 @@ async fn iceberg_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
 
     let query = query_api::http::router(query_api::http::AppState {
         cp: cp.clone() as Arc<dyn ControlPlane>,
-        serving: Arc::new(DataFusionServingEngine::new(
-            IcebergCatalog::new(pool.clone()),
-            None,
-        )),
+        serving: Arc::new(InProcessServingEngine::new(IcebergCatalog::new(
+            pool.clone(),
+        ))),
         action_engine: Arc::new(IcebergActionWriter::new(
             catalog.clone(),
             pool,

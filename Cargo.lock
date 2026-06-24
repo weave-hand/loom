@@ -2030,8 +2030,10 @@ dependencies = [
  "async-trait",
  "control-plane-core",
  "control-plane-postgres",
+ "engine-serving",
  "engine-wire",
  "iceberg",
+ "object_store",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -2040,6 +2042,22 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "uuid",
+]
+
+[[package]]
+name = "engine-serving"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "control-plane-core",
+ "control-plane-postgres",
+ "datafusion",
+ "object_store",
+ "sqlx",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
 ]
 
 [[package]]
@@ -3847,8 +3865,8 @@ dependencies = [
  "axum 0.7.9",
  "control-plane-core",
  "control-plane-postgres",
- "datafusion",
  "duckdb",
+ "engine-wire",
  "http-body-util",
  "object_store",
  "reqwest",

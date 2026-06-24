@@ -33,3 +33,11 @@ message AwaitJobsResponse {}                            // returns on notify or 
 
 message FlushTableRequest  { string schema = 1; string name = 2; }
 message FlushTableResponse { optional int64 snapshot_id = 1; }   // absent = None
+
+// Read-query execution. query-api inlines params and sends ready-to-run SQL;
+// the engine runs DataFusion and returns the full result as Arrow IPC bytes.
+service EngineQuery {
+  rpc ExecuteQuery (ExecuteQueryRequest) returns (ExecuteQueryResponse);
+}
+message ExecuteQueryRequest  { string sql = 1; }
+message ExecuteQueryResponse { bytes  ipc = 1; }   // Arrow IPC stream (schema + batches)

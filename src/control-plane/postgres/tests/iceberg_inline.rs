@@ -59,9 +59,8 @@ async fn inline_append_writes_rows_snapshot_and_lineage() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn inline_parquet_encodes_live_rows() {
+async fn inline_live_batch_reconstructs_live_rows() {
     use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     let fx = PgFixture::start();
     let (_cp, db) = fx.fresh_db().await;
@@ -89,18 +88,13 @@ async fn inline_parquet_encodes_live_rows() {
         schema: "sales".into(),
         name: "orders".into(),
     };
-    let bytes = catalog
-        .inline_parquet(&table, control_plane_core::SnapshotId(snap))
+    let (_tid, row_ids, batch) = catalog
+        .inline_live_batch(&table, control_plane_core::SnapshotId(snap))
         .await
-        .expect("inline_parquet")
-        .expect("Some bytes when inline rows exist");
-
-    let reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes))
-        .unwrap()
-        .build()
-        .unwrap();
-    let total: usize = reader.map(|b| b.unwrap().num_rows()).sum();
-    assert_eq!(total, 2, "two inline rows encoded to parquet");
+        .expect("inline_live_batch")
+        .expect("Some batch when inline rows exist");
+    assert_eq!(batch.num_rows(), 2, "two live inline rows reconstructed");
+    assert_eq!(row_ids.len(), 2, "two row ids returned");
 
     // A table that was never inline-written yields None at its seed snapshot.
     let other = control_plane_core::TableRef {
@@ -108,8 +102,8 @@ async fn inline_parquet_encodes_live_rows() {
         name: "orders".into(),
     };
     let none = catalog
-        .inline_parquet(&other, control_plane_core::SnapshotId(1))
+        .inline_live_batch(&other, control_plane_core::SnapshotId(1))
         .await
-        .expect("inline_parquet at snapshot 1");
+        .expect("inline_live_batch at snapshot 1");
     assert!(none.is_none(), "no inline rows live at the seed snapshot");
 }

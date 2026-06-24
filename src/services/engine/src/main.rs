@@ -4,12 +4,15 @@
 use std::collections::HashMap;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
 };
 use engine::flight::FlightDataService;
+use engine::query::EngineQueryService;
 use engine::service::EngineControlService;
 use engine_wire::pb::engine_control_server::EngineControlServer;
+use engine_wire::pb::engine_query_server::EngineQueryServer;
 use iceberg::CatalogBuilder;
 use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
@@ -51,6 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         catalog,
         pool: pool.clone(),
     };
+    let query = EngineQueryService {
+        catalog: IcebergCatalog::new(pool.clone()),
+        serving_store: service_runtime::build_serving_object_store(&cfg.object_store)?,
+    };
     let flight = FlightDataService {
         catalog: flight_catalog,
         pool,
@@ -58,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(EngineControlServer::new(control))
+        .add_service(EngineQueryServer::new(query))
         .add_service(FlightServiceServer::new(flight))
         .serve_with_incoming_shutdown(incoming, async {
             tokio::signal::ctrl_c().await.ok();

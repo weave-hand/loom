@@ -1,22 +1,20 @@
 //! query-api binary: build the read AppState from env config via service_runtime —
 //! a Postgres control plane plus a serving engine selected by LOOM_SERVING_BACKEND
 //! (DuckLake-on-DuckDB by default, or the loom-native DataFusion engine over the
-//! Iceberg mirror) — and serve the HTTP API.
+//! Iceberg mirror via the engine wire) — and serve the HTTP API.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use control_plane_core::ControlPlane;
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
 use iceberg::CatalogBuilder;
+use query_api::engine_client::EngineServingClient;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, DuckLakeActionWriter, EmbeddedDuckDb, ServingEngine};
-use query_api::serving_datafusion::{
-    DataFusionServingEngine, IcebergActionWriter, ServingBackend, parse_serving_backend,
-};
+use query_api::serving_datafusion::{IcebergActionWriter, ServingBackend, parse_serving_backend};
 
 /// Inline routing threshold (in-memory uncompressed Arrow). Below this an action row
 /// inlines (mirror-only); tunable via `LOOM_INLINE_BYTE_LIMIT`. Matches ingest.
@@ -56,9 +54,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok()
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
+            let engine_socket =
+                std::env::var("LOOM_ENGINE_SOCKET").map_err(|_| -> Box<dyn std::error::Error> {
+                    "LOOM_ENGINE_SOCKET must be set for the Iceberg serving backend".into()
+                })?;
             let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
-            // Clone the pool for the action writer before the bare `pool` moves into
-            // the serving engine's `IcebergCatalog`.
             let action: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
                 catalog,
                 pool.clone(),
@@ -66,10 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 flush_byte_threshold,
             ));
             (
-                Arc::new(DataFusionServingEngine::new(
-                    IcebergCatalog::new(pool),
-                    service_runtime::build_serving_object_store(&cfg.object_store)?,
-                )),
+                Arc::new(EngineServingClient::connect(engine_socket).await?),
                 action,
             )
         }

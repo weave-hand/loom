@@ -196,9 +196,9 @@ async fn inline_threshold_enqueues_and_worker_flushes() {
 
     // No live inline rows remain.
     let inline = ice
-        .inline_parquet(&table, cur.id)
+        .inline_live_batch(&table, cur.id)
         .await
-        .expect("inline_parquet");
+        .expect("inline_live_batch");
     assert!(
         inline.is_none(),
         "inline rows must be retired after worker flush"
@@ -282,6 +282,9 @@ async fn duplicate_dispatch_flush_is_idempotent_over_the_wire() {
         rows, 3,
         "rows written exactly once across both dispatches (no double-write)"
     );
-    let inline = ice.inline_parquet(&table, cur.id).await.expect("inline");
+    let inline = ice
+        .inline_live_batch(&table, cur.id)
+        .await
+        .expect("inline_live_batch");
     assert!(inline.is_none(), "inline rows retired exactly once");
 }
