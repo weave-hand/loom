@@ -10,6 +10,7 @@ edition = "2024"
 
 [dependencies]
 engine-wire = { path = "../engine-wire" }
+engine-serving = { path = "../engine-serving" }
 control-plane-core = { path = "../../control-plane/core" }
 control-plane-postgres = { path = "../../control-plane/postgres" }
 tonic = "0.14"

@@ -2097,6 +2097,7 @@ dependencies = [
  "async-trait",
  "control-plane-core",
  "control-plane-postgres",
+ "engine-serving",
  "engine-wire",
  "iceberg",
  "serde_json",

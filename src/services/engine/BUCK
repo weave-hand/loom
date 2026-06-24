@@ -9,6 +9,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
         "//src/services/engine-wire:engine-wire",
         "//third-party:arrow-array",
         "//third-party:arrow-flight",
@@ -29,6 +30,7 @@ rust_binary(
     deps = [
         ":engine",
         "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
         "//src/services/engine-wire:engine-wire",
         "//src/services/runtime:runtime",
         "//third-party:arrow-flight",
