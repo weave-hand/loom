@@ -118,9 +118,14 @@ physical-column gate, then persists via `define_link` only when clean:
   its table, check `from_column` exists in that schema; resolve `link.to` → its
   table, check `to_column` exists.
 - **`LinkBacking::JoinTable { table, from_key, from_column, to_column, to_key }`** —
-  the join `table` must be live in the catalog; `from_column` exists on the
-  from-type's table, `to_column` on the to-type's table, and `from_key`/`to_key`
-  exist on the join table.
+  the join `table` must be live in the catalog; then, per the read-time join
+  condition (`from_table.from_key = table.from_column AND table.to_column =
+  to_table.to_key`, see `query-api/src/sql.rs` and the `LinkBacking::JoinTable`
+  doc comment): `from_key` exists on the from-type's table, `from_column` and
+  `to_column` on the join `table`, and `to_key` on the to-type's table.
+  (Corrected 2026-06-24: an earlier draft swapped the `*_key`/`*_column` roles;
+  the implementation follows the column→table mapping above, which the read path
+  is authoritative for.)
 
 Reuses `BindViolation`/`BindError::DoesNotConform`; a missing backing column is a
 `MissingColumn` violation whose `property` names the offending column. A join
