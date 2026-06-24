@@ -914,3 +914,154 @@ impl IcebergWriter {
         self.latest_snapshot_id().await
     }
 }
+
+/// A running ephemeral MinIO server. Killed and cleaned up on drop. Booted from the
+/// vendored `minio` binary (path via `MINIO_BIN`); like `initdb` it won't run as root
+/// on RE, so consumers must be `loom_fixture_test` targets.
+pub struct MinioFixture {
+    _data_dir: TempDir,
+    server: std::process::Child,
+    endpoint: String,
+}
+
+impl MinioFixture {
+    /// Boot an ephemeral MinIO server. Requires `MINIO_BIN` to point at the minio
+    /// binary. Panics on failure — test-only.
+    pub fn start() -> Self {
+        let bin =
+            std::env::var("MINIO_BIN").expect("MINIO_BIN must point at the minio binary");
+        let data_dir = tempfile::tempdir().expect("minio data tempdir");
+        // Reserve a free port, then release it for minio to claim.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
+            l.local_addr().unwrap().port()
+        };
+        let addr = format!("127.0.0.1:{port}");
+        let server = std::process::Command::new(&bin)
+            .arg("server")
+            .arg(data_dir.path())
+            .args(["--address", &addr])
+            .env("MINIO_ROOT_USER", "minioadmin")
+            .env("MINIO_ROOT_PASSWORD", "minioadmin")
+            // Quiet, no update checks, no console.
+            .env("MINIO_UPDATE", "off")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn minio");
+        let endpoint = format!("http://{addr}");
+        let fixture = Self {
+            _data_dir: data_dir,
+            server,
+            endpoint,
+        };
+        fixture.wait_ready(port);
+        fixture
+    }
+
+    pub fn endpoint(&self) -> String {
+        self.endpoint.clone()
+    }
+
+    pub fn access_key(&self) -> &str {
+        "minioadmin"
+    }
+
+    pub fn secret_key(&self) -> &str {
+        "minioadmin"
+    }
+
+    /// Poll readiness via a raw TCP connect to the port (avoids reqwest::blocking).
+    /// Polls up to ~15s in 50ms steps.
+    fn wait_ready(&self, port: u16) {
+        let addr = format!("127.0.0.1:{port}");
+        for _ in 0..300 {
+            if std::net::TcpStream::connect(&addr).is_ok() {
+                // Give MinIO a moment to finish binding after accepting TCP.
+                std::thread::sleep(Duration::from_millis(200));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("minio did not become ready within ~15s");
+    }
+
+    /// Create `bucket` via a SigV4-signed `PUT /{bucket}` (no `mc` binary).
+    pub async fn create_bucket(&self, bucket: &str) {
+        use hmac::{Hmac, Mac};
+        use sha2::{Digest, Sha256};
+        type HmacSha256 = Hmac<Sha256>;
+
+        let region = "us-east-1";
+        let service = "s3";
+        let host = self.endpoint.strip_prefix("http://").unwrap().to_string();
+        // Timestamps: YYYYMMDDtHHMMSSZ and YYYYMMDD (UTC). `time` is already a dep.
+        let now = time::OffsetDateTime::now_utc();
+        let amz_date = now
+            .format(
+                &time::format_description::parse("[year][month][day]T[hour][minute][second]Z")
+                    .unwrap(),
+            )
+            .unwrap();
+        let date = now
+            .format(&time::format_description::parse("[year][month][day]").unwrap())
+            .unwrap();
+
+        let payload_hash = hex::encode(Sha256::digest(b""));
+        let canonical_uri = format!("/{bucket}");
+        let canonical_headers = format!(
+            "host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+        );
+        let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+        let canonical_request = format!(
+            "PUT\n{canonical_uri}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+        );
+        let scope = format!("{date}/{region}/{service}/aws4_request");
+        let string_to_sign = format!(
+            "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
+            hex::encode(Sha256::digest(canonical_request.as_bytes()))
+        );
+
+        let mac = |key: &[u8], msg: &str| {
+            let mut m = HmacSha256::new_from_slice(key).unwrap();
+            m.update(msg.as_bytes());
+            m.finalize().into_bytes()
+        };
+        let k_date = mac(format!("AWS4{}", self.secret_key()).as_bytes(), &date);
+        let k_region = mac(&k_date, region);
+        let k_service = mac(&k_region, service);
+        let k_signing = mac(&k_service, "aws4_request");
+        let mut sig = HmacSha256::new_from_slice(&k_signing).unwrap();
+        sig.update(string_to_sign.as_bytes());
+        let signature = hex::encode(sig.finalize().into_bytes());
+
+        let authorization = format!(
+            "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
+            self.access_key()
+        );
+
+        let resp = reqwest::Client::new()
+            .put(format!("{}/{bucket}", self.endpoint))
+            .header("Host", &host)
+            .header("x-amz-content-sha256", &payload_hash)
+            .header("x-amz-date", &amz_date)
+            .header("Authorization", authorization)
+            .send()
+            .await
+            .expect("PUT bucket");
+        // 200 = created; MinIO returns 409 BucketAlreadyOwnedByYou on re-create.
+        assert!(
+            resp.status().is_success() || resp.status().as_u16() == 409,
+            "create_bucket failed: {}",
+            resp.status()
+        );
+    }
+}
+
+impl Drop for MinioFixture {
+    fn drop(&mut self) {
+        let _ = self.server.kill();
+        let _ = self.server.wait();
+        // TempDir removes itself on drop.
+    }
+}

@@ -62,12 +62,13 @@ object_store = { version = "0.13", features = ["aws"] }
 typetag = "0.2"
 # Async S3 ObjectStore methods return futures::stream for list(); pull StreamExt.
 futures = "0.3"
-
-[dev-dependencies]
-control-plane-testkit = { path = "../testkit" }
-tokio = { version = "1", features = ["macros", "rt"] }
-# AWS SigV4 PUT-bucket in the MinIO fixture (no vendored `mc`). Test/fixture only.
+# AWS SigV4 PUT-bucket in the MinIO fixture (fixture.rs is compiled into the lib,
+# not test code). reqwest async client for create_bucket; hmac/sha2/hex for SigV4.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+
+[dev-dependencies]
+control-plane-testkit = { path = "../testkit" }
+tokio = { version = "1", features = ["macros", "rt"] }

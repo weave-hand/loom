@@ -6206,12 +6206,15 @@ cargo.rust_library(
         "block-buffer",
         "core-api",
         "default",
+        "mac",
         "std",
+        "subtle",
     ],
     visibility = [],
     deps = [
         ":block-buffer-0.10",
         ":crypto-common-0.1",
+        ":subtle-2",
     ],
 )
 
@@ -8616,6 +8619,47 @@ cargo.rust_library(
     },
     visibility = [],
     deps = [":hmac-0.13"],
+)
+
+alias(
+    name = "hmac",
+    actual = ":hmac-0.12",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "hmac-0.12.1.crate",
+    sha256 = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e",
+    strip_prefix = "hmac-0.12.1",
+    urls = ["https://static.crates.io/crates/hmac/0.12.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "hmac-0.12",
+    srcs = [":hmac-0.12.1.crate"],
+    crate = "hmac",
+    crate_root = "hmac-0.12.1.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "hmac",
+        "CARGO_CRATE_NAME": "hmac",
+        "CARGO_MANIFEST_DIR": "hmac-0.12.1.crate",
+        "CARGO_PKG_AUTHORS": "RustCrypto Developers",
+        "CARGO_PKG_DESCRIPTION": "Generic implementation of Hash-based Message Authentication Code (HMAC)",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hmac",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/RustCrypto/MACs",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.12.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "12",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":digest-0.10"],
 )
 
 http_archive(
