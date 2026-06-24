@@ -1,7 +1,7 @@
-//! loom-native, DataFusion-backed serving engine for file-backed Iceberg tables.
+//! loom-native, DataFusion-backed serving engine for Iceberg tables.
 //! Reads the `iceberg_mirror` projection (via `IcebergCatalog`), registers each
-//! live table's Parquet files (absolute `file://` paths) as a DataFusion table,
-//! and runs the governed/compiled SQL through DataFusion — no DuckDB in the path.
+//! live table's Parquet files (absolute paths: `file://` or `s3://`) as a DataFusion
+//! table, and runs the governed/compiled SQL through DataFusion — no DuckDB in the path.
 //! See docs/superpowers/specs/2026-06-17-iceberg-datafusion-serving-engine-design.md.
 
 use std::sync::Arc;
@@ -104,9 +104,9 @@ impl ServingEngine for DataFusionServingEngine {
 
 /// Register `table`'s live data files (at its current snapshot) via the pruning-aware
 /// `IcebergMirrorTableProvider` under the schema-qualified name `"schema"."table"`, so
-/// the compiled read SQL resolves it. Files are registered by their ABSOLUTE `file://`
-/// paths as stored in the mirror (`iceberg_mirror.data_file.path`); the provider's
-/// `scan` skips files a query's predicates provably cannot match.
+/// the compiled read SQL resolves it. Files are registered by their absolute paths
+/// (`file://` or `s3://`) as stored in the mirror (`iceberg_mirror.data_file.path`);
+/// the provider's `scan` skips files a query's predicates provably cannot match.
 pub async fn register_iceberg_table(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,

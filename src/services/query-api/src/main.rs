@@ -84,8 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Construct the vendored Iceberg SQL catalog over the same Postgres + a `file://`
-/// warehouse rooted at the service data path. Mirrors ingest's helper.
+/// Construct the vendored Iceberg SQL catalog over the same Postgres using the
+/// configured warehouse URI (scheme-selected: `file://` for local, `s3://` for S3).
+/// Mirrors ingest's helper.
 async fn build_iceberg_catalog(
     cfg: &service_runtime::Config,
 ) -> Result<SqlCatalog, Box<dyn std::error::Error>> {

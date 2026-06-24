@@ -50,7 +50,26 @@ fn s3_uri_with_creds_and_endpoint_parses_path_style() {
             assert_eq!(s.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
             assert_eq!(s.region, "us-east-1"); // default when endpoint set
             assert_eq!(s.access_key_id, "ak");
+            assert_eq!(s.secret_access_key, "sk");
             assert!(s.path_style); // endpoint set => path-style
+        }
+        _ => panic!("expected S3 backend"),
+    }
+}
+
+#[test]
+fn s3_uri_with_creds_no_endpoint_uses_virtual_hosted() {
+    let mut m = base();
+    m.insert("LOOM_WAREHOUSE_URI".into(), "s3://warehouse/loom".into());
+    m.insert("AWS_ACCESS_KEY_ID".into(), "ak".into());
+    m.insert("AWS_SECRET_ACCESS_KEY".into(), "sk".into());
+    // no AWS_ENDPOINT_URL — exercises the virtual-hosted branch
+    let cfg = Config::from_map(&m).unwrap();
+    match cfg.object_store.backend {
+        ObjectStoreBackend::S3(s) => {
+            assert_eq!(s.bucket, "warehouse");
+            assert!(!s.path_style); // no endpoint => virtual-hosted
+            assert!(s.endpoint.is_none());
         }
         _ => panic!("expected S3 backend"),
     }
