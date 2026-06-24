@@ -19,7 +19,7 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use control_plane_core::{
     ColumnSpec, ControlPlaneError, LineageEvent, NewJob, Result, SnapshotId, TableRef,
 };
-use parquet57::arrow::ArrowWriter;
+use parquet::arrow::ArrowWriter;
 use sqlx::postgres::PgArguments;
 use sqlx::query::Query;
 use sqlx::{AssertSqlSafe, PgConnection, PgPool, Postgres, Row};
@@ -74,7 +74,7 @@ pub async fn has_live_inline_rows(
     Ok(any)
 }
 
-/// One typed inline cell — the bridge between an arrow-57 array and a Postgres bind.
+/// One typed inline cell — the bridge between an arrow array and a Postgres bind.
 #[derive(Clone, Debug)]
 pub(crate) enum Cell {
     I32(Option<i32>),
@@ -86,7 +86,7 @@ pub(crate) enum Cell {
     Ts(Option<time::PrimitiveDateTime>),
 }
 
-/// Pull cell `(col, row)` out of an arrow-57 batch, typed per the logical column.
+/// Pull cell `(col, row)` out of an arrow batch, typed per the logical column.
 fn cell_from_arrow(batch: &RecordBatch, col: usize, row: usize, logical: &str) -> Result<Cell> {
     let a = batch.column(col);
     let null = a.is_null(row);
@@ -291,7 +291,7 @@ fn arrow_field(name: &str, logical: &str, nullable: bool) -> Result<Field> {
     Ok(Field::new(name, dt, nullable))
 }
 
-/// Build an arrow-57 array for column `i` (typed `logical`) from PG rows.
+/// Build an arrow array for column `i` (typed `logical`) from PG rows.
 fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Result<ArrayRef> {
     macro_rules! get {
         ($ty:ty) => {
@@ -367,7 +367,7 @@ fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Resu
 
 impl IcebergCatalog {
     /// The live inline rows of `table` at `at`, as (`table_id`, `loom_row_id`s,
-    /// arrow-57 batch), or `None` if there is no inline storage or no live rows.
+    /// arrow batch), or `None` if there is no inline storage or no live rows.
     /// The `table_id` and row ids are returned so a flush can end-cap exactly the
     /// rows it reconstructs in the same `inline_<tid>` table. Shares the
     /// reconstruction the read path uses.

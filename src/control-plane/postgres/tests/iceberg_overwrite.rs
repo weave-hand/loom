@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_ipc57::writer::StreamWriter;
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::Catalog;
 use control_plane_core::{

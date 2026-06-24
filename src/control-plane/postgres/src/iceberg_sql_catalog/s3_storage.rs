@@ -1,6 +1,6 @@
 //! S3-compatible Iceberg storage backend.
 //!
-//! iceberg 0.9 ships only `file://`/`memory://` `Storage` impls (its `config/s3.rs`
+//! iceberg upstream ships only `file://`/`memory://` `Storage` impls (its `config/s3.rs`
 //! is config types only). This module supplies an `s3://` backend over
 //! `object_store::aws::AmazonS3`, injected via `SqlCatalogBuilder::with_storage_factory`.
 //! Paths flow in as full `s3://{bucket}/{key}` URLs (the warehouse location prefix);

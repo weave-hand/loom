@@ -19,7 +19,7 @@ use iceberg::writer::file_writer::location_generator::{
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, Namespace, NamespaceIdent, Result, TableCommit, TableCreation, TableIdent};
-use parquet57::file::properties::WriterProperties;
+use parquet::file::properties::WriterProperties;
 
 use control_plane_core::LineageEvent;
 
