@@ -495,6 +495,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "iceberg-schema-evolution-land",
+    crate = "iceberg_schema_evolution_land",
+    srcs = ["tests/iceberg_schema_evolution_land.rs"],
+    crate_root = "tests/iceberg_schema_evolution_land.rs",
+    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-control-plane",
     crate = "iceberg_control_plane",
     srcs = ["tests/iceberg_control_plane.rs"],

@@ -213,6 +213,19 @@ pub async fn append_batches_with_lineage(
 }
 
 async fn write_parquet(table: &Table, batches: Vec<RecordBatch>) -> Result<Vec<DataFile>> {
+    write_parquet_with_schema(table, table.metadata().current_schema().clone(), batches).await
+}
+
+/// Like [`write_parquet`], but stamps `schema` (rather than the table's current
+/// schema) into the Parquet `ParquetWriterBuilder`. The additive landing path passes
+/// the SUPERSET schema (incl. the newly-added columns) so the written Parquet carries
+/// every column's field id, even though the real Iceberg metadata schema is not evolved.
+/// `location`/`file_io` still come from the table.
+pub async fn write_parquet_with_schema(
+    table: &Table,
+    schema: iceberg::spec::SchemaRef,
+    batches: Vec<RecordBatch>,
+) -> Result<Vec<DataFile>> {
     let location_generator = DefaultLocationGenerator::new(table.metadata().clone())?;
     // Unique per-append prefix: DefaultFileNameGenerator restarts its counter at 0
     // each call, so a fixed prefix would emit the same `<prefix>-00000.parquet` path
@@ -223,10 +236,7 @@ async fn write_parquet(table: &Table, batches: Vec<RecordBatch>) -> Result<Vec<D
         None,
         iceberg::spec::DataFileFormat::Parquet,
     );
-    let parquet_builder = ParquetWriterBuilder::new(
-        WriterProperties::default(),
-        table.metadata().current_schema().clone(),
-    );
+    let parquet_builder = ParquetWriterBuilder::new(WriterProperties::default(), schema);
     let rolling = RollingFileWriterBuilder::new_with_default_file_size(
         parquet_builder,
         table.file_io().clone(),
