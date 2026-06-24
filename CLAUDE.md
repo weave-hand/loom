@@ -163,17 +163,25 @@ or `#N[,#N...]`; `[[id]]` cross-links items. The `[ ]`/`[x]` checkbox makes
   failure, falls back to the GitHub git-database REST API using `$GITHUB_TOKEN`
   against `api.github.com`; the API `POST /git/refs` create is atomic
   create-only, preserving the mutex. Reads (`claims` listing) use `ls-remote`,
-  which the proxy allows. **Caveat (current cloud proxy):** the egress proxy now
-  brokers *all* authenticated github access through the Claude GitHub App, so a
-  raw `$GITHUB_TOKEN` is no longer a usable bearer — `api.github.com` returns
-  `403 "GitHub access is not enabled for this session. An org admin must connect
-  the Claude GitHub App for this organization."`. Until an org admin connects the
-  Claude GitHub App for the `weave-hand` org, the REST fallback fails and the
-  claim mutex is unavailable in cloud sessions (the git-proxy push half was
-  already blocked, so both paths are down). Once connected, the existing fallback
-  works again with no code change. Verify with
-  `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/weave-hand/loom`
-  returning `200` rather than `403`.
+  which the proxy allows. **Caveat (current cloud proxy):** in cloud sessions the
+  egress proxy brokers github, and the Claude GitHub App IS connected — the MCP
+  github tools reach `weave-hand/loom` and `api.github.com/user` brokers to `200`.
+  But three proxy policies still sink the claim mutex: (1) **direct**
+  `api.github.com` calls to the `weave-hand` *org* repo return
+  `403 "GitHub access is not enabled for this session..."` (the direct-api
+  brokering channel doesn't carry the org installation the MCP tools use; a raw
+  `$GITHUB_TOKEN` is not a usable bearer either), so the REST fallback fails; (2)
+  pushes to non-`refs/heads/*` namespaces are `403`, so the native `refs/claim/*`
+  push fails; and (3) *all* ref deletions are `403`. A cloud session only needs to
+  **acquire** a claim (a create); `release`/`claims --reap` are deletions it can't
+  perform but doesn't need to — those run locally or via reap-on-merge. The catch
+  is that the one ref-creation channel the proxy allows in cloud is `refs/heads/*`
+  (git push, or `mcp__github__create_branch`), not the `refs/claim/*` namespace.
+  So **as currently coded (`refs/claim/*`), claims can't be acquired in a cloud
+  session**; relocating the claim ref under `refs/heads/` (single global namespace
+  — it can't be cloud-only or the mutex splits) would let cloud sessions claim via
+  the same `--force-with-lease` create-only push. This is a proxy/session
+  limitation, not a missing app. Reads (`claims` listing) still work via `ls-remote`.
 
 ## Cell layout
 
