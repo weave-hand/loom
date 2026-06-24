@@ -161,9 +161,19 @@ or `#N[,#N...]`; `[[id]]` cross-links items. The `[ ]`/`[x]` checkbox makes
   `claim`/`release`/`claims --reap` (which write/delete `refs/claim/*`) would
   otherwise fail there. `docs.sh` tries the native git push first and, on
   failure, falls back to the GitHub git-database REST API using `$GITHUB_TOKEN`
-  (which bypasses the proxy); the API `POST /git/refs` create is atomic
+  against `api.github.com`; the API `POST /git/refs` create is atomic
   create-only, preserving the mutex. Reads (`claims` listing) use `ls-remote`,
-  which the proxy allows.
+  which the proxy allows. **Caveat (current cloud proxy):** the egress proxy now
+  brokers *all* authenticated github access through the Claude GitHub App, so a
+  raw `$GITHUB_TOKEN` is no longer a usable bearer — `api.github.com` returns
+  `403 "GitHub access is not enabled for this session. An org admin must connect
+  the Claude GitHub App for this organization."`. Until an org admin connects the
+  Claude GitHub App for the `weave-hand` org, the REST fallback fails and the
+  claim mutex is unavailable in cloud sessions (the git-proxy push half was
+  already blocked, so both paths are down). Once connected, the existing fallback
+  works again with no code change. Verify with
+  `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/weave-hand/loom`
+  returning `200` rather than `403`.
 
 ## Cell layout
 
