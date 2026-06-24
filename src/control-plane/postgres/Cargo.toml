@@ -13,7 +13,7 @@ uuid = { version = "1", features = ["v4"] }
 # Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
 # blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
 # Keep exact-pinned until sqlx-core ships a fix. See the ingest materializer PR.
-time = "=0.3.47"
+time = { version = "=0.3.47", features = ["formatting"] }
 serde_json = "1"
 # Used by the test fixture (src/fixture.rs) for ephemeral data/socket dirs.
 tempfile = "3"
