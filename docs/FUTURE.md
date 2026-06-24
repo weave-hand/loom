@@ -190,12 +190,16 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 - [ ] **Persistent-stream AwaitJobs** `{#fut-awaitjobs-stream area:iceberg status:deferred from:2026-06-20-engine-wire-flush-vertical-design pr:#108 spec:-}`
   `AwaitJobs` is a unary long-poll bridged to `PgControlPlane::await_jobs` (one LISTEN per call). A server-streaming form that holds a single listener across waits is an efficiency optimization, deferred until the wire carries enough job traffic to justify it.
 - [ ] **Multiple engines / pooling / TLS / auth on the engine socket** `{#fut-engine-wire-multi-tls area:iceberg status:deferred from:2026-06-20-engine-wire-flush-vertical-design pr:#108 spec:-}`
-  The vertical is one engine, one UDS, local trust. Multiple engines, connection pooling, TLS, and authentication on the socket are deferred until loom runs the engine/worker across a trust boundary (cf. the existing [[fut-graceful-shutdown-tls]] for the HTTP services).
+  The vertical is one engine, one UDS, local trust — now carrying both `EngineControl` (flush/queue) and `EngineQuery` (DataFusion reads, see [[road-engine-serving-wire]]) and Arrow Flight. Multiple engines, connection pooling, TLS, and authentication on the socket are deferred until loom runs the engine/worker/query-api across a trust boundary (cf. the existing [[fut-graceful-shutdown-tls]] for the HTTP services).
+- [ ] **Relocate IcebergActionWriter and inline writes to engine-serving** `{#fut-engine-serving-write-relocation area:iceberg status:deferred from:2026-06-24-engine-serving-execution-wire-design pr:#181 spec:-}`
+  The DataFusion read tier is now in `engine-serving` (see [[road-engine-serving-wire]]), but `IcebergActionWriter` (governed object writes) and `iceberg_landing::land` (inline-write seam) remain in query-api. Relocating them to engine-serving (with a corresponding write RPC on the engine wire) would unify all DataFusion/Iceberg I/O in the engine and make query-api a fully thin client, but is deferred until there is a concrete need (e.g. multi-tenant write isolation or zero-Postgres query-api).
+- [ ] **Move DuckLake serving path to engine-serving** `{#fut-engine-serving-ducklake-relocation area:iceberg status:deferred from:2026-06-24-engine-serving-execution-wire-design pr:#181 spec:-}`
+  `EmbeddedDuckDb` (`ServingEngine` backed by DuckDB) remains in query-api; it is structurally parallel to `EngineServingClient` (also a `ServingEngine`). Relocating it to engine-serving (as a second `EngineQuery` backend behind a feature flag) is deferred until the DuckLake-vs-Iceberg default decision ([[fut-replace-ducklake-decision]]) resolves.
 
 ## deploy
 
-- [ ] **Deploy follow-ups (migration Job, real object store)** `{#fut-deploy-followups area:deploy status:deferred from:roadmap-where-we-are pr:- spec:-}`
-  A schema-migration Job (the chart provisions PG but doesn't migrate) and replacing the LocalFileSystem PVC with a real S3/MinIO store (removing the RWX-for-multi-pod constraint).
+- [ ] **Deploy follow-ups (migration Job, real object store, engine binary)** `{#fut-deploy-followups area:deploy status:deferred from:roadmap-where-we-are pr:- spec:-}`
+  A schema-migration Job (the chart provisions PG but doesn't migrate), replacing the LocalFileSystem PVC with a real S3/MinIO store (removing the RWX-for-multi-pod constraint), and wiring the engine binary into the Helm chart (the engine UDS and `LOOM_ENGINE_SOCKET` env are set only in local dev; the chart currently omits the engine sidecar).
 - [ ] **Graceful shutdown, signal handling, TLS** `{#fut-graceful-shutdown-tls area:deploy status:deferred from:2026-06-13-service-runtime-and-binaries-design pr:- spec:-}`
   The binaries ship as a minimal `serve` with no graceful shutdown/signal handling, no TLS, and no connection-pool tuning knobs.
 - [ ] **S3 / remote object store for binaries** `{#fut-binaries-s3 area:deploy status:deferred from:2026-06-13-service-runtime-and-binaries-design pr:- spec:-}`

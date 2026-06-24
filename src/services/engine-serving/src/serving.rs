@@ -215,7 +215,7 @@ fn arrow_schema_from_mirror(
 /// Map a mirror `StatValue` to a typed `ScalarValue` of the arrow `data_type`.
 /// The variant is chosen by the column's arrow type (not the StatValue tag) so the
 /// bound matches the schema the pruner compares against; a mismatch falls back to a
-/// `Null` of the column type (unprunable on that column). `Task 4 reuses this.`
+/// `Null` of the column type (unprunable on that column).
 pub(crate) fn stat_to_scalar(v: &StatValue, data_type: &DataType) -> ScalarValue {
     match (data_type, v) {
         (DataType::Boolean, StatValue::Bool(b)) => ScalarValue::Boolean(Some(*b)),

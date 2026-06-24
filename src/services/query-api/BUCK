@@ -452,6 +452,25 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "engine-wire-serving-e2e",
+    crate = "engine_wire_serving_e2e",
+    srcs = ["tests/engine_wire_serving_e2e.rs"],
+    crate_root = "tests/engine_wire_serving_e2e.rs",
+    deps = [
+        ":query-api",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "datafusion-inline-union",
     crate = "datafusion_inline_union",
     srcs = ["tests/datafusion_inline_union.rs"],
