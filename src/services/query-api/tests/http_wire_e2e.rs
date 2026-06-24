@@ -222,14 +222,21 @@ async fn run_wire_vertical(backend: WireBackend) {
         .unwrap();
     assert_eq!(resp.status(), 400, "garbage-arrow status");
 
-    // Malformed 2/2 — unknown type to query-api -> 404.
+    // Malformed 2/2 — unknown type to query-api -> 4xx. The `reader` subject is
+    // not granted on `Nope`, so governance denies (403, hiding type existence)
+    // before the UnknownType 404 mapping; either way the wire maps it to a
+    // client error, which is what this smoke asserts.
     let resp = client
         .get(format!("{query_url}/objects/Nope"))
         .header("X-Loom-Subject", "reader")
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 404, "unknown-type status");
+    assert!(
+        resp.status().is_client_error(),
+        "unknown-type status: {}",
+        resp.status()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
