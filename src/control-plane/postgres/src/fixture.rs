@@ -857,6 +857,53 @@ impl IcebergWriter {
         m.expect("at least one snapshot")
     }
 
+    /// Attempt an inline append whose declared `columns` diverge from the live mirror
+    /// schema, returning the error string. The batch itself stays `(id long, name string)`
+    /// so only the declared schema diverges — exercising the detect+reject path. Test-only.
+    pub async fn inline_expect_err(
+        &self,
+        ns: &str,
+        name: &str,
+        columns: &[(String, String, bool)],
+    ) -> String {
+        let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
+            arrow_schema::Field::new("name", arrow_schema::DataType::Utf8, false),
+        ]));
+        let batch = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                std::sync::Arc::new(arrow_array::Int64Array::from(vec![9i64])),
+                std::sync::Arc::new(arrow_array::StringArray::from(vec!["z"])),
+            ],
+        )
+        .expect("inline batch");
+        let specs: Vec<control_plane_core::ColumnSpec> = columns
+            .iter()
+            .map(|(n, t, nullable)| control_plane_core::ColumnSpec {
+                name: n.clone(),
+                ty: t.clone(),
+                nullable: *nullable,
+            })
+            .collect();
+        let lineage = control_plane_core::LineageEvent {
+            run_id: control_plane_core::RunId(uuid::Uuid::from_u128(99)),
+            event_type: control_plane_core::EventType::Complete,
+            event_time: time::OffsetDateTime::now_utc(),
+            inputs: vec![],
+            outputs: vec![],
+            payload: serde_json::json!({ "source": "inline-evolution-test" }),
+        };
+        let table = control_plane_core::TableRef {
+            schema: ns.into(),
+            name: name.into(),
+        };
+        crate::iceberg_inline::inline_append(&self.pool, &table, &specs, &batch, lineage, None)
+            .await
+            .expect_err("expected schema-evolution rejection")
+            .to_string()
+    }
+
     /// Drop the table via the vendored catalog; the mirror is marked dropped in the same
     /// transaction (see `SqlCatalog::drop_table`). Returns the loom snapshot id at which it
     /// was dropped. The delete contract exercises the mirror's MVCC `end`-bound.

@@ -661,6 +661,19 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "iceberg-schema-evolution-inline",
+    crate = "iceberg_schema_evolution_inline",
+    srcs = ["tests/iceberg_schema_evolution_inline.rs"],
+    crate_root = "tests/iceberg_schema_evolution_inline.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-read",
     crate = "iceberg_read",
     srcs = ["tests/iceberg_read.rs"],

@@ -27,9 +27,10 @@ use sqlx::{AssertSqlSafe, PgConnection, PgPool, Postgres, Row};
 use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_mirror::{
-    ProjectedColumn, arm_inline_trigger, bump_inline_trigger, columns_exist, ensure_table,
+    ProjectedColumn, arm_inline_trigger, bump_inline_trigger, ensure_table, live_columns,
     live_table_id, next_snapshot, project_columns,
 };
+use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_type::{iceberg_physical_type, pg_type_for};
 use crate::lineage::pg_emit;
 
@@ -144,26 +145,37 @@ pub async fn inline_append(
     // 1. Snapshot (no Iceberg backing) + ensure mirror table/columns exist.
     let at = next_snapshot(conn, None).await?;
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
-    if !columns_exist(conn, tid).await? {
-        let pcols = columns
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                Ok(ProjectedColumn {
-                    order: i as i64,
-                    name: c.name.clone(),
-                    iceberg_type: iceberg_physical_type(&c.ty)
-                        .ok_or_else(|| {
-                            ControlPlaneError::Backend(
-                                format!("inline: no iceberg type for {:?}", c.ty).into(),
-                            )
-                        })?
-                        .to_string(),
-                    nullable: c.nullable,
-                })
+    let pcols = columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            Ok(ProjectedColumn {
+                order: i as i64,
+                name: c.name.clone(),
+                iceberg_type: iceberg_physical_type(&c.ty)
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            format!("inline: no iceberg type for {:?}", c.ty).into(),
+                        )
+                    })?
+                    .to_string(),
+                nullable: c.nullable,
             })
-            .collect::<Result<Vec<_>>>()?;
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let live = live_columns(conn, tid, at).await?;
+    if live.is_empty() {
         project_columns(conn, tid, at, &pcols).await?;
+    } else {
+        match classify_schema_change(&live, &pcols) {
+            Ok(SchemaPlan::Identical) => {}
+            Ok(SchemaPlan::Additive { .. }) => {
+                return Err(ControlPlaneError::Validation(
+                    "schema evolution unsupported: additive evolution on the inline path is deferred".into(),
+                ));
+            }
+            Err(e) => return Err(ControlPlaneError::Validation(e.to_string())),
+        }
     }
 
     // 2. Ensure inline storage exists (transactional DDL).
