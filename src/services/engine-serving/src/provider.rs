@@ -110,9 +110,9 @@ pub fn build_scan_sql(
 }
 
 /// Decode `rows` to one arrow-58 array per column, typed by `logical_types[i]`
-/// (positional — the SELECT list order). Mirrors `iceberg_inline::column_array`,
-/// but arrow-58-native (the postgres crate is arrow-57; types do not cross that
-/// boundary). sqlx decodes to plain Rust types, so only the arrow side differs.
+/// (positional — the SELECT list order). Mirrors `iceberg_inline::column_array`
+/// (the whole tree is arrow 58). sqlx decodes to plain Rust types, so only the
+/// arrow side differs.
 fn pg_rows_to_arrays(
     rows: &[sqlx::postgres::PgRow],
     logical_types: &[String],
