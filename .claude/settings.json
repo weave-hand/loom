@@ -1,15 +1,4 @@
 {
-  "extraKnownMarketplaces": {
-    "claude-plugins-official": {
-      "source": {
-        "source": "github",
-        "repo": "anthropics/claude-plugins-official"
-      }
-    }
-  },
-  "enabledPlugins": {
-    "superpowers@claude-plugins-official": true
-  },
   "enabledMcpjsonServers": [
     "buildbuddy"
   ],
@@ -20,6 +9,15 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/tools/cloud-session-start.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/tools/superpowers-session-start.sh\""
           }
         ]
       }
