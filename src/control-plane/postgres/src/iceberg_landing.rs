@@ -24,9 +24,10 @@ use sqlx::PgPool;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_inline::inline_append;
 use crate::iceberg_mirror::{
-    ProjectedColumn, ProjectedFile, columns_exist, end_cap_live_data_files, ensure_table,
-    project_columns, project_files,
+    ProjectedColumn, ProjectedFile, end_cap_live_data_files, ensure_table, live_columns_for,
+    next_snapshot, project_files, reconcile_and_project, stamp_schema_version,
 };
+use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
 use crate::iceberg_type::iceberg_physical_type;
 use crate::iceberg_writer::append_batches_with_extras;
@@ -148,6 +149,53 @@ pub(crate) async fn append_parquet_snapshot(
     overwrite: bool,
 ) -> Result<SnapshotId> {
     ensure_iceberg_table(catalog, table, columns).await?;
+
+    // Decide identical/create vs additive vs reject against the live mirror. We need a
+    // snapshot to read live columns "as of"; live columns have begin_snapshot <= the
+    // current snapshot, so the current snapshot is the read point — or an empty set if
+    // there is no snapshot yet (a fresh creation).
+    let incoming = projected_columns(columns)?;
+    let icb = IcebergCatalog::new(pool.clone());
+    let (live, current) = match icb.current_snapshot(table).await {
+        Ok(snap) => {
+            let mut conn = pool.acquire().await.map_err(be)?;
+            // `live_columns_for` resolves the tid internally and reads columns live at
+            // `snap.id` (its predicate is `begin_snapshot <= $2`, no +1).
+            (
+                live_columns_for(&mut conn, table, snap.id).await?,
+                Some(snap.id),
+            )
+        }
+        Err(_) => (Vec::new(), None), // no snapshot yet — creation
+    };
+    if !live.is_empty() {
+        match classify_schema_change(&live, &incoming) {
+            // Identical → fall through to the existing fast_append path below.
+            Ok(SchemaPlan::Identical) => {}
+            // Additive → mirror-only superset Parquet + reconcile/project. NO fast_append.
+            Ok(SchemaPlan::Additive { .. }) => {
+                // Guard the cross-task seam: an additive land projects a new column into the
+                // mirror, but the physical `inline_<tid>` table is NOT altered. If live inline
+                // rows exist, inline reconstruction (read AND flush) would then select a column
+                // the table lacks and fail. Refuse before writing any Parquet — the caller must
+                // let the flush job run first, so mirror and inline table never diverge. Until
+                // additive-on-inline is implemented (`fut-iceberg-additive-inline`).
+                if let Some(at) = current {
+                    let mut conn = pool.acquire().await.map_err(be)?;
+                    if crate::iceberg_inline::has_live_inline_rows(&mut conn, table, at).await? {
+                        return Err(ControlPlaneError::Validation(
+                            "schema evolution unsupported: flush inline rows before an additive land"
+                                .into(),
+                        ));
+                    }
+                }
+                return land_additive(pool, catalog, table, columns, batches, lineage, end_cap)
+                    .await;
+            }
+            Err(e) => return Err(ControlPlaneError::Validation(e.to_string())),
+        }
+    }
+
     let ns = NamespaceIdent::new(table.schema.clone());
     let ident = TableIdent::new(ns, table.name.clone());
     let ice_table = catalog.load_table(&ident).await.map_err(be)?;
@@ -227,6 +275,98 @@ fn coerce_batch_to_ice(
     RecordBatch::try_new(ice_arrow.clone(), cols).map_err(be)
 }
 
+/// The additive landing path (mirror-only). Writes the landing `batches` as Parquet
+/// stamped with the SUPERSET arrow schema (incl. the newly-added nullable columns), then
+/// projects the new columns + files into the `iceberg_mirror.*` projection in one
+/// transaction — exactly the transform worker's [`register_files`] flow. Drives NO
+/// Iceberg `fast_append`: iceberg-rust 0.9 has no schema-evolution transaction action, so
+/// the real Iceberg metadata schema is intentionally not evolved (external `ATTACH`
+/// clients not seeing the new column is the accepted `iss-iceberg-inline-visibility` gap).
+/// loom-governed reads resolve entirely through the mirror, so the new columns/files are
+/// immediately visible. Returns the mirror snapshot id.
+#[allow(clippy::too_many_arguments)]
+async fn land_additive(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batches: Vec<RecordBatch>,
+    lineage: Option<&LineageEvent>,
+    end_cap: Option<InlineEndCap<'_>>,
+) -> Result<SnapshotId> {
+    use crate::lineage::pg_emit;
+
+    // Load the table and build the SUPERSET arrow schema from the landing `columns`
+    // (field-ids 1..N), so the writer chain stamps every column (incl. the new ones)
+    // into the Parquet footer.
+    let ns = NamespaceIdent::new(table.schema.clone());
+    let ident = TableIdent::new(ns, table.name.clone());
+    let ice_table = catalog.load_table(&ident).await.map_err(be)?;
+    let superset = ice_schema(columns)?;
+    let ice_arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&superset).map_err(be)?);
+    let batches = batches
+        .into_iter()
+        .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
+        .collect::<Result<Vec<_>>>()?;
+
+    // Write Parquet with the superset schema (no fast_append).
+    let ice_files =
+        crate::iceberg_writer::write_parquet_with_schema(&ice_table, superset.into(), batches)
+            .await
+            .map_err(be)?;
+
+    // Convert iceberg DataFiles -> loom DataFiles, computing per-column stats from each
+    // written file's bytes (exactly like `iceberg_mirror::added_files_of`).
+    let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+    let mut loom_files = Vec::with_capacity(ice_files.len());
+    for df in &ice_files {
+        let bytes = ice_table
+            .file_io()
+            .new_input(df.file_path())
+            .map_err(be)?
+            .read()
+            .await
+            .map_err(be)?;
+        let column_stats = crate::iceberg_stats::column_stats_from_parquet(bytes, &names)?;
+        loom_files.push(DataFile {
+            path: df.file_path().to_string(),
+            path_is_relative: false,
+            file_format: FileFormat::Parquet,
+            record_count: df.record_count() as i64,
+            file_size_bytes: df.file_size_in_bytes() as i64,
+            column_stats,
+            parquet_footer_size: None,
+        });
+    }
+
+    // One snapshot: project new columns (reconcile gate) + files, end-cap any flushed
+    // inline rows, emit lineage, stamp schema_version (the last inside `register_files`).
+    // `WriteMode::Append` so the prior files stay live (additive does not end-cap data).
+    let mut tx = pool.begin().await.map_err(be)?;
+    let at = next_snapshot(&mut tx, None).await?;
+    register_files(&mut tx, table, columns, &loom_files, WriteMode::Append, at).await?;
+    if let Some(cap) = end_cap {
+        // Retire the flushed inline rows at the same snapshot the new files become live
+        // (faithful to `do_update_table`'s inline end-cap).
+        let sql = format!(
+            "update {} set end_snapshot = {} \
+             where loom_row_id = any($1) and end_snapshot is null",
+            crate::iceberg_inline::inline_table_name(cap.table_id),
+            at.0,
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(cap.row_ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
+    }
+    if let Some(ev) = lineage {
+        pg_emit(&mut *tx, ev).await?;
+    }
+    tx.commit().await.map_err(be)?;
+    Ok(at)
+}
+
 /// Create the Iceberg namespace + table for `table` if absent (idempotent), from
 /// `columns`. Writes only the Iceberg catalog pointer — it does NOT project the
 /// mirror (the mirror is projected when files are registered/appended). Shared by
@@ -290,10 +430,9 @@ pub async fn register_files(
     if let WriteMode::Overwrite = mode {
         end_cap_live_data_files(conn, tid, at).await?;
     }
-    if !columns_exist(conn, tid).await? {
-        project_columns(conn, tid, at, &projected_columns(columns)?).await?;
-    }
+    reconcile_and_project(conn, tid, at, &projected_columns(columns)?).await?;
     project_files(conn, tid, at, &projected_files(files)?).await?;
+    stamp_schema_version(conn, tid, at).await?;
     Ok(())
 }
 
@@ -305,15 +444,22 @@ fn projected_columns(columns: &[ColumnSpec]) -> Result<Vec<ProjectedColumn>> {
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let iceberg_type = iceberg_physical_type(&c.ty).ok_or_else(|| {
-                ControlPlaneError::Backend(
-                    format!("register: no iceberg type for {:?}", c.ty).into(),
-                )
-            })?;
+            // A vector column's mirror type is `vector(N)` (matching `columns_of`'s decode
+            // of the list field doc); every other type maps to its iceberg primitive name.
+            let iceberg_type = match control_plane_core::resolve_logical(&c.ty) {
+                Some(control_plane_core::BaseType::Vector(n)) => format!("vector({n})"),
+                _ => iceberg_physical_type(&c.ty)
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            format!("register: no iceberg type for {:?}", c.ty).into(),
+                        )
+                    })?
+                    .to_string(),
+            };
             Ok(ProjectedColumn {
                 order: (i + 1) as i64,
                 name: c.name.clone(),
-                iceberg_type: iceberg_type.to_string(),
+                iceberg_type,
                 nullable: c.nullable,
             })
         })

@@ -14227,6 +14227,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "reqwest",
+    actual = ":reqwest-0.12",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "reqwest-0.12.28.crate",
     sha256 = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147",

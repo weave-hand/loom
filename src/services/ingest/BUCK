@@ -94,6 +94,22 @@ loom_fixture_test(
     ],
 )
 
+# Define-time validation (derived properties + bind_link) over the in-memory
+# fakes — pure logic, RE-eligible (no fixture).
+rust_test(
+    name = "bind-validation",
+    crate = "bind_validation",
+    srcs = ["tests/bind_validation.rs"],
+    crate_root = "tests/bind_validation.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "gate",
     crate = "gate",

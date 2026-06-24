@@ -1,0 +1,17 @@
+# superpowers skills vendored into .claude/skills/ — managed by tools/vendor-superpowers.sh
+# source: weave-hand/superpowers@main (896224c4b1879920ab573417e68fd51d2ccc9072)
+# refreshed: 2026-06-24T10:33:59Z
+brainstorming
+dispatching-parallel-agents
+executing-plans
+finishing-a-development-branch
+receiving-code-review
+requesting-code-review
+subagent-driven-development
+systematic-debugging
+test-driven-development
+using-git-worktrees
+using-superpowers
+verification-before-completion
+writing-plans
+writing-skills

@@ -27,15 +27,51 @@ use sqlx::{AssertSqlSafe, PgConnection, PgPool, Postgres, Row};
 use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_mirror::{
-    ProjectedColumn, arm_inline_trigger, bump_inline_trigger, columns_exist, ensure_table,
+    ProjectedColumn, arm_inline_trigger, bump_inline_trigger, ensure_table, live_columns,
     live_table_id, next_snapshot, project_columns,
 };
+use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_type::{iceberg_physical_type, pg_type_for};
 use crate::lineage::pg_emit;
 
 /// The Postgres name of a table's inline storage. `table_id` is an internal i64.
 pub fn inline_table_name(table_id: i64) -> String {
     format!("iceberg_mirror.inline_{table_id}")
+}
+
+/// True if `table` has any live inline row at `at`. Used to refuse an additive
+/// Parquet land while un-flushed inline rows exist: such a land would project a
+/// new column into the mirror that the physical `inline_<tid>` table lacks, so
+/// inline reconstruction (read AND flush) would fail. The caller must flush first.
+pub async fn has_live_inline_rows(
+    conn: &mut PgConnection,
+    table: &TableRef,
+    at: SnapshotId,
+) -> Result<bool> {
+    let Some(tid) = live_table_id(conn, &table.schema, &table.name).await? else {
+        return Ok(false);
+    };
+    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "select to_regclass('{}')::text",
+        inline_table_name(tid)
+    )))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if exists.is_none() {
+        return Ok(false);
+    }
+    let any: bool = sqlx::query_scalar(AssertSqlSafe(format!(
+        "select exists(select 1 from {} \
+         where begin_snapshot <= {} and (end_snapshot is null or end_snapshot > {}))",
+        inline_table_name(tid),
+        at.0,
+        at.0,
+    )))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(any)
 }
 
 /// One typed inline cell — the bridge between an arrow-57 array and a Postgres bind.
@@ -144,26 +180,37 @@ pub async fn inline_append(
     // 1. Snapshot (no Iceberg backing) + ensure mirror table/columns exist.
     let at = next_snapshot(conn, None).await?;
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
-    if !columns_exist(conn, tid).await? {
-        let pcols = columns
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                Ok(ProjectedColumn {
-                    order: i as i64,
-                    name: c.name.clone(),
-                    iceberg_type: iceberg_physical_type(&c.ty)
-                        .ok_or_else(|| {
-                            ControlPlaneError::Backend(
-                                format!("inline: no iceberg type for {:?}", c.ty).into(),
-                            )
-                        })?
-                        .to_string(),
-                    nullable: c.nullable,
-                })
+    let pcols = columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            Ok(ProjectedColumn {
+                order: i as i64,
+                name: c.name.clone(),
+                iceberg_type: iceberg_physical_type(&c.ty)
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            format!("inline: no iceberg type for {:?}", c.ty).into(),
+                        )
+                    })?
+                    .to_string(),
+                nullable: c.nullable,
             })
-            .collect::<Result<Vec<_>>>()?;
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let live = live_columns(conn, tid, at).await?;
+    if live.is_empty() {
         project_columns(conn, tid, at, &pcols).await?;
+    } else {
+        match classify_schema_change(&live, &pcols) {
+            Ok(SchemaPlan::Identical) => {}
+            Ok(SchemaPlan::Additive { .. }) => {
+                return Err(ControlPlaneError::Validation(
+                    "schema evolution unsupported: additive evolution on the inline path is deferred".into(),
+                ));
+            }
+            Err(e) => return Err(ControlPlaneError::Validation(e.to_string())),
+        }
     }
 
     // 2. Ensure inline storage exists (transactional DDL).

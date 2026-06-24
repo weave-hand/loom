@@ -39,7 +39,13 @@ _extract(){
 
 SPECDIR="docs/superpowers/specs"
 
-_claim_ref(){ printf 'refs/claim/%s' "$1"; }
+# A claim IS the work branch the eventual PR is opened from: refs/heads/work/<id>.
+# Using the refs/heads/* namespace (rather than a hidden refs/claim/*) means the
+# create-only mutex push is accepted by every remote, including the Claude Code on
+# the web cloud git proxy, which 403s pushes to any other namespace. Acquisition
+# therefore works in cloud sessions with no REST fallback; release/reap are
+# deletions, which the proxy forbids but a cloud session never needs to do.
+_claim_ref(){ printf 'refs/heads/work/%s' "$1"; }
 
 # True if $1 is a well-formed register id (prefixed + ref-safe).
 _valid_id(){
@@ -67,70 +73,13 @@ _print_holder(){
   echo "claim: '$id' is held by ${who:-?} since ${since:-?}" >&2
 }
 
-# ---- GitHub API fallback for ref writes -------------------------------------
-# The claim mutex pushes/deletes refs under refs/claim/*. Some git remotes
-# forbid that — notably the Claude Code on the web cloud session's git proxy,
-# which 403s any push to a non-refs/heads namespace and any ref deletion. When
-# the proxy push fails and a $GITHUB_TOKEN is present, we fall back to GitHub's
-# git-database REST API, which authenticates with the token directly (bypassing
-# the proxy). Atomicity is preserved: POST /git/refs is create-only (422 if the
-# ref already exists), the same compare-and-swap the --force-with-lease push gives.
-
-# The well-known empty-tree object id (present in every git repo). GitHub rejects
-# creating an empty tree via the API, but accepts referencing this sha directly.
-EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
-
-# True when the REST fallback is usable.
-_have_api(){ [ -n "${GITHUB_TOKEN:-}" ] && command -v curl >/dev/null 2>&1; }
-
-# owner/repo parsed from the origin remote URL (handles http(s) and scp forms).
-_repo_slug(){
-  local url; url="$(git config --get remote.origin.url 2>/dev/null || true)"
-  url="${url%.git}"
-  printf '%s' "$url" | sed -E 's#.*[/:]([^/]+/[^/]+)$#\1#'
-}
-
-# Extract the first (document-order) JSON string field named $1 from stdin.
-# grep -o yields each "key":"value" hit on its own line so head -1 picks the
-# first — robust whether the JSON is pretty-printed or single-line.
-_json_field(){
-  grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 \
-    | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/'
-}
-
-# _api METHOD PATH [BODY]; sets _API_CODE (HTTP status) and _API_OUT (body).
-_API_CODE=""
-_API_OUT=""
-_api(){
-  local method="$1" path="$2" body="${3:-}" slug out a
-  slug="$(_repo_slug)"
-  out="$(mktemp)"
-  a=(-s -o "$out" -w '%{http_code}' -X "$method"
-     -H "Authorization: Bearer ${GITHUB_TOKEN:-}"
-     -H "Accept: application/vnd.github+json"
-     "https://api.github.com/repos/$slug$path")
-  [ -n "$body" ] && a+=(-d "$body")
-  _API_CODE="$(curl "${a[@]}" || true)"
-  _API_OUT="$(cat "$out")"; rm -f "$out"
-}
-
-# JSON-escaped one-line claim commit message (literal \n separators, matching the
-# multi-line body git commit-tree produces on the native path).
-_claim_message(){
-  local id="$1" who="$2" ts="$3" reg="$4" spec="$5"
-  who="${who//\\/\\\\}"; who="${who//\"/\\\"}"   # escape \ and " for JSON
-  printf 'claim: %s\\n\\nid: %s\\nclaimant: %s\\nsince: %s\\nregister: %s\\nspec: %s\\nbranch: work/%s' \
-    "$id" "$id" "$who" "$ts" "$reg" "$spec" "$id"
-}
-
-# Delete a remote ref ($1), preferring a proxy push and falling back to the API.
-# 0 = ref gone (deleted or already absent); 1 = could not delete.
+# Delete a remote ref ($1). 0 = deleted (or already absent). Claims live under
+# refs/heads/work/* now, a branch namespace every remote accepts, so a plain push
+# deletion is all that is needed — local dev deletes fine. A cloud session can't
+# delete (the git proxy forbids deletions) but never needs to: it only ACQUIRES
+# claims; release/reap run locally or via reap-on-merge.
 _delete_ref_remote(){
-  local ref="$1"
-  git push origin ":$ref" >/dev/null 2>&1 && return 0
-  _have_api || return 1
-  _api DELETE "/git/refs/${ref#refs/}"
-  case "$_API_CODE" in 204|422) return 0 ;; *) return 1 ;; esac   # 422 = already gone
+  git push origin ":$1" >/dev/null 2>&1
 }
 
 CLAIM_GRACE_MIN="${LOOM_CLAIM_GRACE_MIN:-60}"
@@ -305,38 +254,37 @@ cmd_claim(){
   if [ -n "$(git ls-remote origin "$ref" 2>/dev/null)" ]; then
     echo "claim: '$id' is already claimed" >&2; _print_holder "$id"; return 1
   fi
-  local who ts tree commit
+  local who ts tree commit base body
   who="$(git config user.email 2>/dev/null || git config user.name 2>/dev/null || echo unknown)"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  tree="$(git mktree </dev/null)"
-  commit="$(printf 'claim: %s\n\nid: %s\nclaimant: %s\nsince: %s\nregister: %s\nspec: %s\nbranch: work/%s\n' \
-    "$id" "$id" "$who" "$ts" "$reg" "$spec" "$id" | git commit-tree "$tree")"
+  body="$(printf 'claim: %s\n\nid: %s\nclaimant: %s\nsince: %s\nregister: %s\nspec: %s\nbranch: work/%s\n' \
+    "$id" "$id" "$who" "$ts" "$reg" "$spec" "$id")"
+  # The claim IS the work branch (refs/heads/work/<id>) — the branch the eventual
+  # PR is opened from. Base its first commit on origin/main so it is immediately a
+  # usable PR branch (the claimant just adds commits, no force-push); when there is
+  # no main yet (fresh repo / test fixture) fall back to a parentless empty-tree
+  # marker. Either way the metadata lives in that first commit. The push is an
+  # atomic, create-only compare-and-swap (--force-with-lease expect-absent): it
+  # wins the mutex, or is rejected if another session already holds the branch.
+  if git fetch -q origin main 2>/dev/null; then
+    base="$(git rev-parse FETCH_HEAD)"
+    commit="$(printf '%s' "$body" | git commit-tree "$(git rev-parse 'FETCH_HEAD^{tree}')" -p "$base")"
+  else
+    tree="$(git mktree </dev/null)"
+    commit="$(printf '%s' "$body" | git commit-tree "$tree")"
+  fi
   if git push --force-with-lease="$ref:" origin "$commit:$ref" >/dev/null 2>&1; then
     _claim_success "$id" "$who" "$ts"; return 0
-  fi
-  # Native push failed (e.g. the cloud git proxy forbids custom-ref writes).
-  # Fall back to the GitHub API if a token is available; the create is atomic.
-  if _have_api; then
-    local body sha
-    body="$(_claim_message "$id" "$who" "$ts" "$reg" "$spec")"
-    _api POST /git/commits "$(printf '{"message":"%s","tree":"%s","parents":[]}' "$body" "$EMPTY_TREE")"
-    [ "$_API_CODE" = 201 ] || { echo "claim: API commit-create failed (HTTP $_API_CODE)" >&2; return 1; }
-    sha="$(printf '%s' "$_API_OUT" | _json_field sha || true)"
-    [ -n "$sha" ] || { echo "claim: could not parse commit sha from API response" >&2; return 1; }
-    _api POST /git/refs "$(printf '{"ref":"%s","sha":"%s"}' "$ref" "$sha")"
-    case "$_API_CODE" in
-      201) _claim_success "$id" "$who" "$ts"; return 0 ;;
-      422) echo "claim: lost race for '$id'" >&2; _print_holder "$id"; return 1 ;;   # ref already exists
-      *)   echo "claim: API ref-create failed (HTTP $_API_CODE)" >&2; return 1 ;;
-    esac
   fi
   echo "claim: lost race for '$id'" >&2; _print_holder "$id"; return 1
 }
 
-# Print the success banner for a freshly minted claim (id who ts).
+# Print the success banner for a freshly minted claim (id who ts). The claim ref
+# IS the work branch, so it already exists on origin — check it out rather than
+# create it.
 _claim_success(){
   echo "claimed $1 by $2 at $3"
-  echo "next: git switch -c work/$1  →  implement  →  open a PR with head work/$1"
+  echo "next: git fetch origin work/$1 && git switch work/$1  →  implement  →  open a PR with head work/$1"
 }
 
 cmd_release(){
@@ -360,17 +308,21 @@ cmd_claims(){
   local now grace_s lines
   now="$(date -u +%s)"
   grace_s=$(( CLAIM_GRACE_MIN * 60 ))
-  lines="$(git ls-remote origin 'refs/claim/*' 2>/dev/null || true)"
+  lines="$(git ls-remote origin 'refs/heads/work/*' 2>/dev/null || true)"
   [ -n "$lines" ] || { echo "no live claims"; return 0; }
   local sha ref id body who since since_s age pr state left
   while read -r sha ref; do
     [ -n "$ref" ] || continue
-    id="${ref#refs/claim/}"
+    id="${ref#refs/heads/work/}"
     git fetch -q origin "$ref" 2>/dev/null || true
     body="$(git show -s --format=%B FETCH_HEAD 2>/dev/null || true)"
     who="$(printf '%s\n' "$body" | awk -F': ' '/^claimant:/{print $2}')"
     since="$(printf '%s\n' "$body" | awk -F': ' '/^since:/{print $2}')"
     since_s="$(_epoch "$since")"
+    # Once real work commits land, the branch tip is no longer the claim marker
+    # (no `since:` line), so fall back to the tip commit's own date — an active
+    # branch then reads as recent activity, not an ancient (reapable) claim.
+    [ "$since_s" = 0 ] && since_s="$(git show -s --format=%ct FETCH_HEAD 2>/dev/null || echo "$now")"
     age=$(( now - since_s ))
     pr="$(_pr_state "$id")"
     if [ "$pr" = open ]; then

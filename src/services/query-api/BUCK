@@ -215,6 +215,7 @@ rust_library(
     deps = [
         ":query-api",
         "//src/services/ingest:ingest",
+        "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:arrow",
@@ -224,10 +225,48 @@ rust_library(
         "//third-party:object_store",
         "//third-party:serde_json",
         "//third-party:time",
+        "//third-party:tokio",
         "//third-party:tower",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "wire-harness-smoke",
+    crate = "wire_harness_smoke",
+    srcs = ["tests/wire_harness_smoke.rs"],
+    crate_root = "tests/wire_harness_smoke.rs",
+    edition = "2024",
+    deps = [
+        ":e2e-support",
+        "//third-party:axum",
+        "//third-party:reqwest",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "http-wire-e2e",
+    crate = "http_wire_e2e",
+    srcs = ["tests/http_wire_e2e.rs"],
+    crate_root = "tests/http_wire_e2e.rs",
+    duckdb = True,
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/services/ingest:ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:axum",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:reqwest",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
 )
 
 loom_fixture_test(
@@ -476,6 +515,29 @@ loom_fixture_test(
         "//third-party:datafusion",
         "//third-party:object_store",
         "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-schema-evolution-read",
+    crate = "iceberg_schema_evolution_read",
+    srcs = ["tests/iceberg_schema_evolution_read.rs"],
+    crate_root = "tests/iceberg_schema_evolution_read.rs",
+    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:datafusion",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 

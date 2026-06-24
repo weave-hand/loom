@@ -1,7 +1,7 @@
 {
-  "enabledPlugins": {
-    "superpowers@claude-plugins-official": true
-  },
+  "enabledMcpjsonServers": [
+    "buildbuddy"
+  ],
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +9,15 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/tools/cloud-session-start.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/tools/superpowers-session-start.sh\""
           }
         ]
       }
