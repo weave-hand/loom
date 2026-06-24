@@ -19,7 +19,7 @@ use iceberg::writer::file_writer::location_generator::{
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, Namespace, NamespaceIdent, Result, TableCommit, TableCreation, TableIdent};
-use parquet57::file::properties::WriterProperties;
+use parquet::file::properties::WriterProperties;
 
 use control_plane_core::LineageEvent;
 
@@ -160,6 +160,9 @@ impl Catalog for CommitExtrasCatalog<'_> {
     async fn register_table(&self, table: &TableIdent, metadata_location: String) -> Result<Table> {
         self.inner.register_table(table, metadata_location).await
     }
+    async fn purge_table(&self, table: &TableIdent) -> Result<()> {
+        self.inner.purge_table(table).await
+    }
 }
 
 /// Append `batches` as real Parquet and commit, running `extras` (lineage and/or
@@ -226,7 +229,7 @@ pub async fn write_parquet_with_schema(
     schema: iceberg::spec::SchemaRef,
     batches: Vec<RecordBatch>,
 ) -> Result<Vec<DataFile>> {
-    let location_generator = DefaultLocationGenerator::new(table.metadata().clone())?;
+    let location_generator = DefaultLocationGenerator::new(table.metadata())?;
     // Unique per-append prefix: DefaultFileNameGenerator restarts its counter at 0
     // each call, so a fixed prefix would emit the same `<prefix>-00000.parquet` path
     // for every append — and iceberg's fast_append rejects re-adding an already-

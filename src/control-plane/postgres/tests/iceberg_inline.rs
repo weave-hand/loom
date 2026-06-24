@@ -61,7 +61,7 @@ async fn inline_append_writes_rows_snapshot_and_lineage() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inline_parquet_encodes_live_rows() {
     use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-    use parquet57::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     let fx = PgFixture::start();
     let (_cp, db) = fx.fresh_db().await;

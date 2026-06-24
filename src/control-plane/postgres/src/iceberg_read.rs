@@ -11,7 +11,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use control_plane_core::{ControlPlaneError, Result, TableRef};
 use iceberg::{Catalog, TableIdent};
-use parquet57::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use crate::iceberg_sql_catalog::SqlCatalog;
 

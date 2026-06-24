@@ -1,5 +1,5 @@
 //! Unit: column_stats_from_parquet merges typed min/max across row groups, and the
-//! StatValue<->text codec round-trips per iceberg type. parquet57/arrow-57.
+//! StatValue<->text codec round-trips per iceberg type. parquet/arrow 58.
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -7,7 +7,7 @@ use control_plane_core::snapshot::StatValue;
 use control_plane_postgres::iceberg_stats::{
     column_stats_from_parquet, stat_from_text, stat_to_text,
 };
-use parquet57::arrow::ArrowWriter;
+use parquet::arrow::ArrowWriter;
 use std::sync::Arc;
 
 #[test]

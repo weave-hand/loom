@@ -91,9 +91,9 @@ loom_fixture_test(
         "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:arrow-ipc",
         "//third-party:tokio-stream",
         "//third-party:tonic",
         "//third-party:uuid",
     ],
-    named_deps = {"arrow_ipc57": "//third-party:arrow-ipc57"},
 )

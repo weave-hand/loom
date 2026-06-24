@@ -1,6 +1,6 @@
 //! S3-compatible Iceberg storage backend.
 //!
-//! iceberg 0.9 ships only `file://`/`memory://` `Storage` impls (its `config/s3.rs`
+//! iceberg upstream ships only `file://`/`memory://` `Storage` impls (its `config/s3.rs`
 //! is config types only). This module supplies an `s3://` backend over
 //! `object_store::aws::AmazonS3`, injected via `SqlCatalogBuilder::with_storage_factory`.
 //! Paths flow in as full `s3://{bucket}/{key}` URLs (the warehouse location prefix);
@@ -17,6 +17,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use iceberg::io::{
     FileMetadata, FileRead, FileWrite, InputFile, OutputFile, Storage, StorageConfig,
     StorageFactory,
@@ -201,6 +202,16 @@ impl Storage for S3Storage {
         while let Some(item) = stream.next().await {
             let meta = item.map_err(Self::obj_err)?;
             store.delete(&meta.location).await.map_err(Self::obj_err)?;
+        }
+        Ok(())
+    }
+
+    // iceberg main added `delete_stream` to the `Storage` trait. Delete each path in
+    // turn (mirrors upstream's LocalFs/Memory impls); `delete` already treats a missing
+    // object as success.
+    async fn delete_stream(&self, mut paths: BoxStream<'static, String>) -> Result<()> {
+        while let Some(path) = paths.next().await {
+            self.delete(&path).await?;
         }
         Ok(())
     }

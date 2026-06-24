@@ -1,15 +1,17 @@
 //! Per-column Parquet-footer stats for the Iceberg mirror, computed against
-//! parquet57 (iceberg 0.9's parquet). This DUPLICATES the merge logic in
-//! datafusion_io::write::file_stats_from_bytes by necessity: that crate is on
-//! parquet 58 and the parquet `Statistics` enum is a distinct type per major, so
-//! the function cannot be shared across the version boundary. Output is the
-//! version-neutral core::snapshot::{ColumnStat, StatValue}.
+//! `parquet` 58 — the single arrow/parquet major now shared across the tree.
+//! This still DUPLICATES the merge logic in `datafusion_io::write::file_stats_from_bytes`;
+//! that duplication was once forced by a parquet 57↔58 type split, which the
+//! arrow-58 converge removed — both readers now share the parquet 58 `Statistics`
+//! type, so this and `file_stats_from_bytes` could be unified into one helper.
+//! Deferred (see FUTURE: fut-iceberg-stats-dedup). Output is the version-neutral
+//! core::snapshot::{ColumnStat, StatValue}.
 
-use bytes::Bytes; // impl parquet57 ChunkReader; the type iceberg's InputFile::read() yields
+use bytes::Bytes; // impl parquet ChunkReader; the type iceberg's InputFile::read() yields
 use control_plane_core::snapshot::{ColumnStat, StatValue};
 use control_plane_core::{ControlPlaneError, Result};
-use parquet57::file::reader::{FileReader, SerializedFileReader};
-use parquet57::file::statistics::Statistics;
+use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::file::statistics::Statistics;
 
 /// Typed lower bound of a row-group column's `Statistics`, as a neutral `StatValue`.
 /// Only the primitive types loom prunes on carry a bound; others -> `None`.
@@ -58,7 +60,7 @@ fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<std::cmp::Ordering> 
 }
 
 /// Merge typed min/max + null/size counts across ALL row groups for each column
-/// index, mirroring `datafusion_io::write::file_stats_from_bytes` against parquet57.
+/// index, mirroring `datafusion_io::write::file_stats_from_bytes` against parquet.
 /// `column_names[i]` is the name recorded for row-group column `i` (Iceberg writes
 /// columns in schema order, so pass `columns_of(table)`-ordered names). Takes the
 /// `Bytes` by value so it feeds `SerializedFileReader::new` directly.
