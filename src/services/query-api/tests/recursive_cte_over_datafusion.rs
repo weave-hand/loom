@@ -67,7 +67,7 @@ async fn fk_self_link_recursive_reach_over_datafusion() {
         )
         .await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool), None);
 
     let step = GraphStep {
         backing: LinkBacking::ForeignKey {
@@ -162,7 +162,7 @@ async fn union_self_links_recursive_reach_over_datafusion() {
         )
         .await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool), None);
 
     let backings = vec![
         LinkBacking::ForeignKey {

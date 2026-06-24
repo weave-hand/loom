@@ -149,7 +149,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     );
 
     // Read back through the Iceberg DataFusion serving engine (inline+file union).
-    let serving = DataFusionServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let serving = DataFusionServingEngine::new(IcebergCatalog::new(pool.clone()), None);
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),

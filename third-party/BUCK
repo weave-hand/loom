@@ -3094,6 +3094,7 @@ cargo.rust_library(
         "js-sys",
         "now",
         "oldtime",
+        "serde",
         "std",
         "wasm-bindgen",
         "wasmbind",
@@ -3121,7 +3122,10 @@ cargo.rust_library(
         ),
     },
     visibility = [],
-    deps = [":num-traits-0.2"],
+    deps = [
+        ":num-traits-0.2",
+        ":serde-1",
+    ],
 )
 
 http_archive(
@@ -3332,6 +3336,48 @@ cargo.rust_library(
     features = ["std"],
     visibility = [],
     deps = [":crossbeam-utils-0.8"],
+)
+
+http_archive(
+    name = "core-foundation-0.10.1.crate",
+    sha256 = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6",
+    strip_prefix = "core-foundation-0.10.1",
+    urls = ["https://static.crates.io/crates/core-foundation/0.10.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "core-foundation-0.10",
+    srcs = [":core-foundation-0.10.1.crate"],
+    crate = "core_foundation",
+    crate_root = "core-foundation-0.10.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "core_foundation",
+        "CARGO_CRATE_NAME": "core_foundation",
+        "CARGO_MANIFEST_DIR": "core-foundation-0.10.1.crate",
+        "CARGO_PKG_AUTHORS": "The Servo Project Developers",
+        "CARGO_PKG_DESCRIPTION": "Bindings to Core Foundation for macOS",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "core-foundation",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "https://github.com/servo/core-foundation-rs",
+        "CARGO_PKG_RUST_VERSION": "1.65",
+        "CARGO_PKG_VERSION": "0.10.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "10",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "link",
+    ],
+    visibility = [],
+    deps = [
+        ":core-foundation-sys-0.8",
+        ":libc-0.2",
+    ],
 )
 
 http_archive(
@@ -6160,12 +6206,15 @@ cargo.rust_library(
         "block-buffer",
         "core-api",
         "default",
+        "mac",
         "std",
+        "subtle",
     ],
     visibility = [],
     deps = [
         ":block-buffer-0.10",
         ":crypto-common-0.1",
+        ":subtle-2",
     ],
 )
 
@@ -8492,6 +8541,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "hex",
+    actual = ":hex-0.4",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "hex-0.4.3.crate",
     sha256 = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70",
@@ -8564,6 +8619,47 @@ cargo.rust_library(
     },
     visibility = [],
     deps = [":hmac-0.13"],
+)
+
+alias(
+    name = "hmac",
+    actual = ":hmac-0.12",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "hmac-0.12.1.crate",
+    sha256 = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e",
+    strip_prefix = "hmac-0.12.1",
+    urls = ["https://static.crates.io/crates/hmac/0.12.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "hmac-0.12",
+    srcs = [":hmac-0.12.1.crate"],
+    crate = "hmac",
+    crate_root = "hmac-0.12.1.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "hmac",
+        "CARGO_CRATE_NAME": "hmac",
+        "CARGO_MANIFEST_DIR": "hmac-0.12.1.crate",
+        "CARGO_PKG_AUTHORS": "RustCrypto Developers",
+        "CARGO_PKG_DESCRIPTION": "Generic implementation of Hash-based Message Authentication Code (HMAC)",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "hmac",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/RustCrypto/MACs",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.12.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "12",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":digest-0.10"],
 )
 
 http_archive(
@@ -9015,7 +9111,10 @@ cargo.rust_library(
     },
     features = [
         "http1",
+        "http2",
+        "native-tokio",
         "ring",
+        "rustls-native-certs",
         "tls12",
         "webpki-roots",
         "webpki-tokio",
@@ -9026,6 +9125,7 @@ cargo.rust_library(
         ":hyper-1",
         ":hyper-util-0.1",
         ":rustls-0.23",
+        ":rustls-native-certs-0.8",
         ":tokio-1",
         ":tokio-rustls-0.26",
         ":tower-service-0.3",
@@ -11257,6 +11357,44 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "md-5-0.10.6.crate",
+    sha256 = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf",
+    strip_prefix = "md-5-0.10.6",
+    urls = ["https://static.crates.io/crates/md-5/0.10.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "md-5-0.10",
+    srcs = [":md-5-0.10.6.crate"],
+    crate = "md5",
+    crate_root = "md-5-0.10.6.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "md5",
+        "CARGO_CRATE_NAME": "md5",
+        "CARGO_MANIFEST_DIR": "md-5-0.10.6.crate",
+        "CARGO_PKG_AUTHORS": "RustCrypto Developers",
+        "CARGO_PKG_DESCRIPTION": "MD5 hash function",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "md-5",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/RustCrypto/hashes",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.10.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "10",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":cfg-if-1",
+        ":digest-0.10",
+    ],
+)
+
+http_archive(
     name = "md-5-0.11.0.crate",
     sha256 = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98",
     strip_prefix = "md-5-0.11.0",
@@ -12014,23 +12152,49 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "aws",
+        "base64",
+        "cloud",
         "default",
+        "form_urlencoded",
         "fs",
+        "http-body-util",
+        "hyper",
+        "md-5",
+        "quick-xml",
+        "rand",
+        "reqwest",
+        "ring",
+        "serde",
+        "serde_json",
+        "serde_urlencoded",
         "tokio",
         "walkdir",
     ],
     visibility = [],
     deps = [
         ":async-trait-0.1",
+        ":base64-0.22",
         ":bytes-1",
         ":chrono-0.4",
+        ":form_urlencoded-1",
         ":futures-core-0.3",
         ":futures-util-0.3",
         ":http-1",
+        ":http-body-util-0.1",
         ":humantime-2",
+        ":hyper-1",
         ":itertools-0.14",
+        ":md-5-0.10",
         ":parking_lot-0.12",
         ":percent-encoding-2",
+        ":quick-xml-0.39",
+        ":rand-0.10",
+        ":reqwest-0.12",
+        ":ring-0.17",
+        ":serde-1",
+        ":serde_json-1",
+        ":serde_urlencoded-0.7",
         ":thiserror-2",
         ":tokio-1",
         ":tracing-0.1",
@@ -12076,6 +12240,40 @@ cargo.rust_library(
         "race",
         "std",
     ],
+    visibility = [],
+)
+
+http_archive(
+    name = "openssl-probe-0.2.1.crate",
+    sha256 = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe",
+    strip_prefix = "openssl-probe-0.2.1",
+    urls = ["https://static.crates.io/crates/openssl-probe/0.2.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "openssl-probe-0.2",
+    srcs = [":openssl-probe-0.2.1.crate"],
+    crate = "openssl_probe",
+    crate_root = "openssl-probe-0.2.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "openssl_probe",
+        "CARGO_CRATE_NAME": "openssl_probe",
+        "CARGO_MANIFEST_DIR": "openssl-probe-0.2.1.crate",
+        "CARGO_PKG_AUTHORS": "Alex Crichton <alex@alexcrichton.com>",
+        "CARGO_PKG_DESCRIPTION": "A library for helping to find system-wide trust anchor (\"root\") certificate\nlocations based on paths typically used by `openssl`.\n",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/rustls/openssl-probe",
+        "CARGO_PKG_NAME": "openssl-probe",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/rustls/openssl-probe",
+        "CARGO_PKG_RUST_VERSION": "1.60.0",
+        "CARGO_PKG_VERSION": "0.2.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
     visibility = [],
 )
 
@@ -13737,6 +13935,50 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "quick-xml-0.39.4.crate",
+    sha256 = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e",
+    strip_prefix = "quick-xml-0.39.4",
+    urls = ["https://static.crates.io/crates/quick-xml/0.39.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "quick-xml-0.39",
+    srcs = [":quick-xml-0.39.4.crate"],
+    crate = "quick_xml",
+    crate_root = "quick-xml-0.39.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "quick_xml",
+        "CARGO_CRATE_NAME": "quick_xml",
+        "CARGO_MANIFEST_DIR": "quick-xml-0.39.4.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "High performance xml reader and writer",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "quick-xml",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/tafia/quick-xml",
+        "CARGO_PKG_RUST_VERSION": "1.56",
+        "CARGO_PKG_VERSION": "0.39.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "39",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "overlapped-lists",
+        "serde",
+        "serialize",
+    ],
+    visibility = [],
+    deps = [
+        ":memchr-2",
+        ":serde-1",
+    ],
+)
+
+http_archive(
     name = "quote-1.0.45.crate",
     sha256 = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924",
     strip_prefix = "quote-1.0.45",
@@ -14269,10 +14511,15 @@ cargo.rust_library(
         "__rustls-ring",
         "__tls",
         "blocking",
+        "h2",
+        "http2",
         "json",
         "rustls-tls",
+        "rustls-tls-native-roots",
+        "rustls-tls-native-roots-no-provider",
         "rustls-tls-webpki-roots",
         "rustls-tls-webpki-roots-no-provider",
+        "stream",
     ],
     visibility = [],
     deps = [
@@ -14281,6 +14528,7 @@ cargo.rust_library(
         ":futures-channel-0.3",
         ":futures-core-0.3",
         ":futures-util-0.3",
+        ":h2-0.4",
         ":http-1",
         ":http-body-1",
         ":http-body-util-0.1",
@@ -14291,6 +14539,7 @@ cargo.rust_library(
         ":percent-encoding-2",
         ":pin-project-lite-0.2",
         ":rustls-0.23",
+        ":rustls-native-certs-0.8",
         ":rustls-pki-types-1",
         ":serde-1",
         ":serde_json-1",
@@ -14298,6 +14547,7 @@ cargo.rust_library(
         ":sync_wrapper-1",
         ":tokio-1",
         ":tokio-rustls-0.26",
+        ":tokio-util-0.7",
         ":tower-0.5",
         ":tower-http-0.6",
         ":tower-service-0.3",
@@ -14342,6 +14592,7 @@ cargo.rust_library(
         "alloc",
         "default",
         "dev_urandom_fallback",
+        "std",
     ],
     platform = {
         "linux-arm64": dict(
@@ -14387,6 +14638,7 @@ cargo.rust_binary(
         "alloc",
         "default",
         "dev_urandom_fallback",
+        "std",
     ],
     visibility = [],
     deps = [":cc-1"],
@@ -14413,6 +14665,7 @@ buildscript_run(
         "alloc",
         "default",
         "dev_urandom_fallback",
+        "std",
     ],
     rustc_link_lib = True,
     rustc_link_search = True,
@@ -14855,6 +15108,63 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "rustls-native-certs-0.8.4.crate",
+    sha256 = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d",
+    strip_prefix = "rustls-native-certs-0.8.4",
+    urls = ["https://static.crates.io/crates/rustls-native-certs/0.8.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "rustls-native-certs-0.8",
+    srcs = [":rustls-native-certs-0.8.4.crate"],
+    crate = "rustls_native_certs",
+    crate_root = "rustls-native-certs-0.8.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "rustls_native_certs",
+        "CARGO_CRATE_NAME": "rustls_native_certs",
+        "CARGO_MANIFEST_DIR": "rustls-native-certs-0.8.4.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "rustls-native-certs allows rustls to use the platform native certificate store",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/rustls/rustls-native-certs",
+        "CARGO_PKG_NAME": "rustls-native-certs",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/rustls/rustls-native-certs",
+        "CARGO_PKG_RUST_VERSION": "1.71",
+        "CARGO_PKG_VERSION": "0.8.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "8",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    named_deps = {
+        "pki_types": ":rustls-pki-types-1",
+    },
+    platform = {
+        "linux-arm64": dict(
+            deps = [":openssl-probe-0.2"],
+        ),
+        "linux-x86_64": dict(
+            deps = [":openssl-probe-0.2"],
+        ),
+        "macos-arm64": dict(
+            deps = [":security-framework-3"],
+        ),
+        "macos-x86_64": dict(
+            deps = [":security-framework-3"],
+        ),
+        "windows-gnu": dict(
+            deps = [":schannel-0.1"],
+        ),
+        "windows-msvc": dict(
+            deps = [":schannel-0.1"],
+        ),
+    },
+    visibility = [],
+)
+
+http_archive(
     name = "rustls-pki-types-1.14.1.crate",
     sha256 = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9",
     strip_prefix = "rustls-pki-types-1.14.1",
@@ -15143,6 +15453,41 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "schannel-0.1.29.crate",
+    sha256 = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939",
+    strip_prefix = "schannel-0.1.29",
+    urls = ["https://static.crates.io/crates/schannel/0.1.29/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "schannel-0.1",
+    srcs = [":schannel-0.1.29.crate"],
+    crate = "schannel",
+    crate_root = "schannel-0.1.29.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "schannel",
+        "CARGO_CRATE_NAME": "schannel",
+        "CARGO_MANIFEST_DIR": "schannel-0.1.29.crate",
+        "CARGO_PKG_AUTHORS": "Steven Fackler <sfackler@gmail.com>:Steffen Butzer <steffen.butzer@outlook.com>",
+        "CARGO_PKG_DESCRIPTION": "Schannel bindings for rust, allowing SSL/TLS (e.g. https) without openssl",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "schannel",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/steffengy/schannel-rs",
+        "CARGO_PKG_RUST_VERSION": "1.71.0",
+        "CARGO_PKG_VERSION": "0.1.29",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "29",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":windows-sys-0.61"],
+)
+
+http_archive(
     name = "scopeguard-1.2.0.crate",
     sha256 = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49",
     strip_prefix = "scopeguard-1.2.0",
@@ -15174,6 +15519,91 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
+)
+
+http_archive(
+    name = "security-framework-3.7.0.crate",
+    sha256 = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d",
+    strip_prefix = "security-framework-3.7.0",
+    urls = ["https://static.crates.io/crates/security-framework/3.7.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "security-framework-3",
+    srcs = [":security-framework-3.7.0.crate"],
+    crate = "security_framework",
+    crate_root = "security-framework-3.7.0.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "security_framework",
+        "CARGO_CRATE_NAME": "security_framework",
+        "CARGO_MANIFEST_DIR": "security-framework-3.7.0.crate",
+        "CARGO_PKG_AUTHORS": "Steven Fackler <sfackler@gmail.com>:Kornel <kornel@geekhood.net>",
+        "CARGO_PKG_DESCRIPTION": "Security.framework bindings for macOS and iOS",
+        "CARGO_PKG_HOMEPAGE": "https://lib.rs/crates/security_framework",
+        "CARGO_PKG_NAME": "security-framework",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/kornelski/rust-security-framework",
+        "CARGO_PKG_RUST_VERSION": "1.85",
+        "CARGO_PKG_VERSION": "3.7.0",
+        "CARGO_PKG_VERSION_MAJOR": "3",
+        "CARGO_PKG_VERSION_MINOR": "7",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "OSX_10_14",
+        "alpn",
+        "default",
+        "session-tickets",
+    ],
+    visibility = [],
+    deps = [
+        ":bitflags-2",
+        ":core-foundation-0.10",
+        ":core-foundation-sys-0.8",
+        ":libc-0.2",
+        ":security-framework-sys-2",
+    ],
+)
+
+http_archive(
+    name = "security-framework-sys-2.17.0.crate",
+    sha256 = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3",
+    strip_prefix = "security-framework-sys-2.17.0",
+    urls = ["https://static.crates.io/crates/security-framework-sys/2.17.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "security-framework-sys-2",
+    srcs = [":security-framework-sys-2.17.0.crate"],
+    crate = "security_framework_sys",
+    crate_root = "security-framework-sys-2.17.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "security_framework_sys",
+        "CARGO_CRATE_NAME": "security_framework_sys",
+        "CARGO_MANIFEST_DIR": "security-framework-sys-2.17.0.crate",
+        "CARGO_PKG_AUTHORS": "Steven Fackler <sfackler@gmail.com>:Kornel <kornel@geekhood.net>",
+        "CARGO_PKG_DESCRIPTION": "Apple `Security.framework` low-level FFI bindings",
+        "CARGO_PKG_HOMEPAGE": "https://lib.rs/crates/security-framework-sys",
+        "CARGO_PKG_NAME": "security-framework-sys",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/kornelski/rust-security-framework",
+        "CARGO_PKG_RUST_VERSION": "1.70",
+        "CARGO_PKG_VERSION": "2.17.0",
+        "CARGO_PKG_VERSION_MAJOR": "2",
+        "CARGO_PKG_VERSION_MINOR": "17",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":core-foundation-sys-0.8",
+        ":libc-0.2",
+    ],
 )
 
 http_archive(
@@ -15855,6 +16285,12 @@ cargo.rust_library(
         ":quote-1",
         ":syn-2",
     ],
+)
+
+alias(
+    name = "sha2",
+    actual = ":sha2-0.10",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -19191,6 +19627,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "typetag",
+    actual = ":typetag-0.2",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "typetag-0.2.22.crate",
     sha256 = "c5a897b12c6c1151ad0b138b8db50252dc301f93bc3b027db05eec82aeed298c",
@@ -20272,12 +20714,18 @@ cargo.rust_library(
         "Win32_Networking",
         "Win32_Networking_WinSock",
         "Win32_Security",
+        "Win32_Security_Authentication",
+        "Win32_Security_Authentication_Identity",
+        "Win32_Security_Credentials",
+        "Win32_Security_Cryptography",
         "Win32_Storage",
         "Win32_Storage_FileSystem",
         "Win32_System",
         "Win32_System_Com",
         "Win32_System_Console",
         "Win32_System_IO",
+        "Win32_System_LibraryLoader",
+        "Win32_System_Memory",
         "Win32_System_Pipes",
         "Win32_System_SystemInformation",
         "Win32_System_SystemServices",

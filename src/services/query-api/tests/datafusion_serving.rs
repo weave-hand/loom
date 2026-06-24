@@ -21,7 +21,7 @@ async fn fetch_rows_over_iceberg() {
     ];
     writer.seed("sales", "orders", &cols, &[3]).await; // ids 0,1,2 ; names row0,row1,row2
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool), None);
 
     // The compiled-read shape: quoted idents, a bound `?`, LIMIT.
     let sql = "SELECT \"id\", \"name\" FROM \"sales\".\"orders\" WHERE (\"id\" = ?) LIMIT 100";
@@ -59,7 +59,7 @@ async fn fetch_rows_joins_two_tables() {
     writer.seed("sales", "orders", &cols, &[3]).await;
     writer.seed("sales", "customers", &cols, &[3]).await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool), None);
 
     // Join the two schema-qualified tables on id; both are registered from the
     // mirror in one fetch_rows call.

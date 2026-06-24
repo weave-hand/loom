@@ -71,6 +71,50 @@ genrule(
     visibility = ["PUBLIC"],
 )
 
+# Pinned MinIO server binary (raw static ELF, per-arch). Used by the round-trip
+# test (Task 9) to boot a real S3-compatible object store. The binary is published
+# as a plain file (no archive), so the genrule is a bare cp+chmod — same pattern
+# as jq in tools/BUCK. To bump: update MINIO_RELEASE and refresh both sha256s from
+# the matching archive URLs at dl.min.io.
+MINIO_RELEASE = "RELEASE.2025-04-22T22-12-26Z"
+
+_MINIO_URL = "https://dl.min.io/server/minio/release/linux-{arch}/archive/minio.{rel}"
+
+http_file(
+    name = "minio-amd64.bin",
+    urls = [_MINIO_URL.format(arch = "amd64", rel = MINIO_RELEASE)],
+    sha256 = "53e2a2cb16c5366ea6fbbc479c19ddb4c6a0948273e752f740fb1fbf27bb817c",
+)
+
+http_file(
+    name = "minio-arm64.bin",
+    urls = [_MINIO_URL.format(arch = "arm64", rel = MINIO_RELEASE)],
+    sha256 = "6c2f3142c94240206123177f4ba1e360daa5d1e0a4962e90757ef4f92c3ab57c",
+)
+
+genrule(
+    name = "minio-x86_64-linux",
+    out = "minio",
+    cmd = "cp $(location :minio-amd64.bin) $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "minio-aarch64-linux",
+    out = "minio",
+    cmd = "cp $(location :minio-arm64.bin) $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "minio-bin",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":minio-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":minio-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
 http_file(
     name = "ducklake-ext.gz",
     urls = ["http://extensions.duckdb.org/{}/linux_amd64/ducklake.duckdb_extension.gz".format(DUCKDB_VERSION)],
@@ -151,15 +195,22 @@ rust_library(
         "//third-party:arrow-schema",
         "//third-party:async-trait",
         "//third-party:bytes",
+        "//third-party:futures",
+        "//third-party:hex",
+        "//third-party:hmac",
         "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:reqwest",
         "//third-party:serde",
         "//third-party:serde_json",
+        "//third-party:sha2",
         "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tracing",
+        "//third-party:typetag",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
@@ -213,6 +264,20 @@ rust_test(
     srcs = ["tests/iceberg_inline_types.rs"],
     crate_root = "tests/iceberg_inline_types.rs",
     deps = [":postgres"],
+)
+
+rust_test(
+    name = "s3-storage",
+    crate = "s3_storage",
+    srcs = ["tests/s3_storage.rs"],
+    crate_root = "tests/s3_storage.rs",
+    edition = "2024",
+    deps = [
+        ":postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:typetag",
+    ],
 )
 
 # Bound check for the hermetic-fixture boot throttle (BootThrottle). Pure flock on
@@ -711,6 +776,24 @@ loom_fixture_test(
         "//src/control-plane/core:core",
         "//third-party:tokio",
         "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-s3-roundtrip",
+    crate = "iceberg_s3_roundtrip",
+    srcs = ["tests/iceberg_s3_roundtrip.rs"],
+    crate_root = "tests/iceberg_s3_roundtrip.rs",
+    minio = True,
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/services/runtime:runtime",
+        "//third-party:arrow-array",
+        "//third-party:datafusion",
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tokio",
     ],
 )
 

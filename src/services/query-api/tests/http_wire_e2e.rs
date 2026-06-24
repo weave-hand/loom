@@ -142,9 +142,10 @@ async fn iceberg_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
 
     let query = query_api::http::router(query_api::http::AppState {
         cp: cp.clone() as Arc<dyn ControlPlane>,
-        serving: Arc::new(DataFusionServingEngine::new(IcebergCatalog::new(
-            pool.clone(),
-        ))),
+        serving: Arc::new(DataFusionServingEngine::new(
+            IcebergCatalog::new(pool.clone()),
+            None,
+        )),
         action_engine: Arc::new(IcebergActionWriter::new(
             catalog.clone(),
             pool,
