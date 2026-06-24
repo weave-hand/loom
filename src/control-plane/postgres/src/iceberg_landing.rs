@@ -24,8 +24,8 @@ use sqlx::PgPool;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_inline::inline_append;
 use crate::iceberg_mirror::{
-    ProjectedColumn, ProjectedFile, columns_exist, end_cap_live_data_files, ensure_table,
-    project_columns, project_files,
+    ProjectedColumn, ProjectedFile, end_cap_live_data_files, ensure_table, project_files,
+    reconcile_and_project, stamp_schema_version,
 };
 use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
 use crate::iceberg_type::iceberg_physical_type;
@@ -240,10 +240,9 @@ pub async fn register_files(
     if let WriteMode::Overwrite = mode {
         end_cap_live_data_files(conn, tid, at).await?;
     }
-    if !columns_exist(conn, tid).await? {
-        project_columns(conn, tid, at, &projected_columns(columns)?).await?;
-    }
+    reconcile_and_project(conn, tid, at, &projected_columns(columns)?).await?;
     project_files(conn, tid, at, &projected_files(files)?).await?;
+    stamp_schema_version(conn, tid, at).await?;
     Ok(())
 }
 

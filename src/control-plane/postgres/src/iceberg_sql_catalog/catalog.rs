@@ -372,8 +372,8 @@ impl SqlCatalog {
         overwrite: bool,
     ) -> control_plane_core::Result<SnapshotId> {
         use crate::iceberg_mirror::{
-            columns_exist, end_cap_live_data_files, ensure_table, next_snapshot, project_columns,
-            project_files,
+            end_cap_live_data_files, ensure_table, next_snapshot, project_files,
+            reconcile_and_project, stamp_schema_version,
         };
 
         let ns = ident.namespace().join(".");
@@ -390,10 +390,9 @@ impl SqlCatalog {
         if overwrite {
             end_cap_live_data_files(conn, tid, at).await?;
         }
-        if !columns_exist(conn, tid).await? {
-            project_columns(conn, tid, at, columns).await?;
-        }
+        reconcile_and_project(conn, tid, at, columns).await?;
         project_files(conn, tid, at, files).await?;
+        stamp_schema_version(conn, tid, at).await?;
         Ok(at)
     }
 
