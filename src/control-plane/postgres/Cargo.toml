@@ -28,25 +28,19 @@ proptest = "1"
 # Iceberg table-format adapter (read path): canonical metadata machinery. loom serves reads
 # from its own iceberg_mirror.* projection; iceberg is used only in the test seeder + the
 # vendored SQL catalog (src/iceberg_sql_catalog/, ported from iceberg-catalog-sql to sqlx 0.9).
-iceberg = "0.9"
-# Writer chain (slice 2 write path). iceberg 0.9 pins arrow/parquet 57 and does NOT re-export the
-# construction types the writer names (RecordBatch, WriterProperties), so postgres depends on 57
-# directly. ingest/datafusion-io depend on parquet 58 (datafusion 54), so `parquet` has two public
-# majors — `parquet` is RENAMED to `parquet57` so reindeer emits a distinct `//third-party:parquet57`
-# alias (→ parquet 57) alongside the bare `parquet` (→ 58), no collision. This works because loom's
-# reindeer fork honours workspace-member dep renames (reindeer#1). arrow-array/arrow-schema have no
-# other direct dep, so their bare aliases already resolve to 57 — no rename needed.
-arrow-array = "57"
-arrow-schema = "57"
-parquet57 = { package = "parquet", version = "57", default-features = false, features = ["arrow"] }
-# arrow-ipc / arrow-select are also pulled in at 58 transitively (the arrow umbrella,
-# datafusion 54), so a bare direct 57 dep would collide on the shared alias the same
-# way parquet did. Rename to <crate>57 (the parquet57 precedent) so reindeer emits a
-# distinct versioned target consumed via named_deps in BUCK. Used by iceberg_landing
-# (arrow-57 IPC decode + multi-batch concat).
-arrow-ipc57 = { package = "arrow-ipc", version = "57", default-features = false }
-arrow-select57 = { package = "arrow-select", version = "57", default-features = false }
-# iceberg's InputFile::read() yields `bytes::Bytes`, which is also a parquet57
+# Pinned to iceberg-rust `main` (carrying the arrow/parquet 58 migration) ahead of the
+# post-0.9.1 crates.io release — see CLAUDE.md (Third-party Rust deps) for the bump/exit path.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950b2cd8d99c0243242ef45f3948c5" }
+# Writer chain (slice 2 write path). iceberg `main` is on arrow/parquet 58, matching
+# DataFusion 54 / DuckDB / ingest — one arrow major across the whole tree — so these are
+# plain 58 deps with no rename trick (there is no second public major to disambiguate).
+arrow-array = "58"
+arrow-schema = "58"
+parquet = { version = "58", default-features = false, features = ["arrow"] }
+# arrow-ipc (IPC decode) + arrow-select (multi-batch concat) for iceberg_landing.
+arrow-ipc = { version = "58", default-features = false }
+arrow-select = { version = "58", default-features = false }
+# iceberg's InputFile::read() yields `bytes::Bytes`, which is also a parquet
 # `ChunkReader` — the write path reads file bytes and feeds them straight to the
 # footer-stats reader (src/iceberg_stats.rs). Same `bytes` 1.x the rest of the
 # graph resolves to (iceberg/parquet/reqwest all depend on it), so no new version.
