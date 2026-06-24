@@ -17,6 +17,7 @@ def loom_fixture_test(
         crate_root,
         deps,
         duckdb = False,
+        minio = False,
         edition = "2024",
         env = {},
         **kwargs):
@@ -36,6 +37,8 @@ def loom_fixture_test(
     if duckdb:
         fixture_env["DUCKDB_BIN"] = "$(location //src/control-plane/postgres:duckdb-cli)"
         fixture_env["DUCKDB_EXTENSION_DIR"] = "$(location //src/control-plane/postgres:duckdb-extensions)"
+    if minio:
+        fixture_env["MINIO_BIN"] = "$(location //src/control-plane/postgres:minio-bin)"
     fixture_env.update(env)
     native.rust_test(
         name = name,
