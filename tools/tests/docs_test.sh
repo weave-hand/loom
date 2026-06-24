@@ -129,10 +129,10 @@ cp "$FIX/good-FUTURE.md" "$WK/docs/FUTURE.md"
 cp "$FIX/good-ISSUES.md" "$WK/docs/ISSUES.md"
 
 check "claim ready item succeeds"          0 "$(cd "$WK" && rc bash "$DOCS" claim road-ready)"
-check "claim created the ref"              1 "$(git -C "$WK" ls-remote origin refs/claim/road-ready | wc -l | tr -d ' ')"
+check "claim created the ref"              1 "$(git -C "$WK" ls-remote origin refs/heads/work/road-ready | wc -l | tr -d ' ')"
 check "claim already-claimed fails"        1 "$(cd "$WK" && rc bash "$DOCS" claim road-ready)"
 check "release succeeds"                   0 "$(cd "$WK" && rc bash "$DOCS" release road-ready)"
-check "release removed the ref"            0 "$(git -C "$WK" ls-remote origin refs/claim/road-ready | wc -l | tr -d ' ')"
+check "release removed the ref"            0 "$(git -C "$WK" ls-remote origin refs/heads/work/road-ready | wc -l | tr -d ' ')"
 check "release of absent claim is ok"      0 "$(cd "$WK" && rc bash "$DOCS" release road-ready)"
 check "claim unknown id fails"             1 "$(cd "$WK" && rc bash "$DOCS" claim road-bogus)"
 check "claim closed item fails"            1 "$(cd "$WK" && rc bash "$DOCS" claim road-closed)"
@@ -158,18 +158,18 @@ check "fresh claim not reaped" 0 "$notreaped"
 # A backdated claim (since far in the past, no PR) IS stale and gets reaped.
 OLDTREE="$(git -C "$WK" mktree </dev/null)"
 OLD="$(printf 'claim: iss-old\n\nid: iss-old\nclaimant: ghost\nsince: 2000-01-01T00:00:00Z\nregister: issues\nspec: -\nbranch: work/iss-old\n' | git -C "$WK" commit-tree "$OLDTREE")"
-git -C "$WK" push -q origin "$OLD:refs/claim/iss-old"
+git -C "$WK" push -q origin "$OLD:refs/heads/work/iss-old"
 reaped="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims --reap | grep -c 'reaped iss-old' || true)"
 check "stale claim is reaped" 1 "$reaped"
-check "reap removed the stale ref" 0 "$(git -C "$WK" ls-remote origin refs/claim/iss-old | wc -l | tr -d ' ')"
+check "reap removed the stale ref" 0 "$(git -C "$WK" ls-remote origin refs/heads/work/iss-old | wc -l | tr -d ' ')"
 
 # When gh is unavailable (PR state 'unknown'), an old claim is NOT reaped — we
 # cannot confirm there is no open PR, so reaping must not act on it.
 OLD2="$(printf 'claim: iss-old2\n\nid: iss-old2\nclaimant: ghost\nsince: 2000-01-01T00:00:00Z\nregister: issues\nspec: -\nbranch: work/iss-old2\n' | git -C "$WK" commit-tree "$OLDTREE")"
-git -C "$WK" push -q origin "$OLD2:refs/claim/iss-old2"
+git -C "$WK" push -q origin "$OLD2:refs/heads/work/iss-old2"
 unkreap="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-unknown.sh" out bash "$DOCS" claims --reap | grep -c 'reaped iss-old2' || true)"
 check "unknown-PR claim not reaped" 0 "$unkreap"
-check "unknown-PR ref survives reap" 1 "$(git -C "$WK" ls-remote origin refs/claim/iss-old2 | wc -l | tr -d ' ')"
+check "unknown-PR ref survives reap" 1 "$(git -C "$WK" ls-remote origin refs/heads/work/iss-old2 | wc -l | tr -d ' ')"
 
 # Clean slate: drop leftover claims from the earlier reap blocks so this sub-test
 # reaps exactly the ref under test (road-ready) and nothing collateral.
@@ -181,7 +181,7 @@ check "unknown-PR ref survives reap" 1 "$(git -C "$WK" ls-remote origin refs/cla
 (cd "$WK" && bash "$DOCS" claim road-ready >/dev/null 2>&1)
 gonereap="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-gone.sh" out bash "$DOCS" claims --reap | grep -c 'reaped road-ready' || true)"
 check "merged/closed-PR claim reaped immediately" 1 "$gonereap"
-check "reap removed the merged-PR ref" 0 "$(git -C "$WK" ls-remote origin refs/claim/road-ready | wc -l | tr -d ' ')"
+check "reap removed the merged-PR ref" 0 "$(git -C "$WK" ls-remote origin refs/heads/work/road-ready | wc -l | tr -d ' ')"
 # Listing (no --reap) shows the merged/closed state.
 (cd "$WK" && bash "$DOCS" claim road-ready >/dev/null 2>&1)
 gonelist="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-gone.sh" out bash "$DOCS" claims | grep 'road-ready' | grep -c 'merged/closed' || true)"
@@ -205,28 +205,5 @@ check "validate names the missing spec file" 1 "$specmsg"
 # A dangling spec passed as an explicit fixture path is NOT spec-checked (grammar-only).
 check "explicit-file validate skips spec-existence" 0 "$(rc bash "$DOCS" validate "$SV/docs/ROADMAP.md")"
 rm -rf "$SV"
-
-# ---- API-fallback pure helpers (sourced, no network) ----
-# Source the script to expose helpers; the guarded `main` makes this safe.
-# shellcheck source=/dev/null
-( set +u; source "$DOCS"
-  # _repo_slug parses owner/repo from various remote URL forms.
-  cd "$(mktemp -d)" && git init -q
-  git remote add origin 'http://local_proxy@127.0.0.1:4000/git/weave-hand/loom'
-  check "_repo_slug parses proxy http url" "weave-hand/loom" "$(_repo_slug)"
-  git remote set-url origin 'git@github.com:weave-hand/loom.git'
-  check "_repo_slug parses scp url (strips .git)" "weave-hand/loom" "$(_repo_slug)"
-
-  # _json_field extracts the first top-level string field.
-  check "_json_field reads first sha" "abc123" "$(printf '{"sha":"abc123","tree":{"sha":"def456"}}' | _json_field sha)"
-
-  # _claim_message produces a JSON-ready body with literal \n separators and escaping.
-  msg="$(_claim_message road-x 'a"b\c' 2026-01-01T00:00:00Z roadmap 2099-spec)"
-  check "_claim_message uses literal \\n separators"   1 "$(printf '%s' "$msg" | grep -c 'claim: road-x\\n\\nid: road-x')"
-  check "_claim_message escapes quotes/backslashes"    1 "$(printf '%s' "$msg" | grep -c 'claimant: a\\"b\\\\c')"
-
-  exit $fail
-)
-fail=$(( fail | $? ))
 
 exit $fail

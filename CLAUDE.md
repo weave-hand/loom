@@ -152,36 +152,27 @@ or `#N[,#N...]`; `[[id]]` cross-links items. The `[ ]`/`[x]` checkbox makes
   (`tools/docs-remind.sh`) nudges you to run it when a branch touched a spec/plan
   but no register.
 - **`loom-work-checkout`** skill + `tools/docs.sh claim|release|claims` — claim a
-  register item before building it. `claim <id>` pushes an atomic `refs/claim/<id>`
-  ref (a server-side mutex; the item must reference an on-disk spec); `claims`
-  lists live claims and `claims --reap` deletes stale ones (no open `work/<id>` PR
-  past a 60-min grace). The upstream `loom-work-plan` skill gets an item to a
-  claimable (spec-on-disk) state. **Cloud sessions:** the web/cloud git proxy
-  403s any push to a non-`refs/heads/*` namespace and any ref deletion, so
-  `claim`/`release`/`claims --reap` (which write/delete `refs/claim/*`) would
-  otherwise fail there. `docs.sh` tries the native git push first and, on
-  failure, falls back to the GitHub git-database REST API using `$GITHUB_TOKEN`
-  against `api.github.com`; the API `POST /git/refs` create is atomic
-  create-only, preserving the mutex. Reads (`claims` listing) use `ls-remote`,
-  which the proxy allows. **Caveat (current cloud proxy):** in cloud sessions the
-  egress proxy brokers github, and the Claude GitHub App IS connected — the MCP
-  github tools reach `weave-hand/loom` and `api.github.com/user` brokers to `200`.
-  But three proxy policies still sink the claim mutex: (1) **direct**
-  `api.github.com` calls to the `weave-hand` *org* repo return
-  `403 "GitHub access is not enabled for this session..."` (the direct-api
-  brokering channel doesn't carry the org installation the MCP tools use; a raw
-  `$GITHUB_TOKEN` is not a usable bearer either), so the REST fallback fails; (2)
-  pushes to non-`refs/heads/*` namespaces are `403`, so the native `refs/claim/*`
-  push fails; and (3) *all* ref deletions are `403`. A cloud session only needs to
-  **acquire** a claim (a create); `release`/`claims --reap` are deletions it can't
-  perform but doesn't need to — those run locally or via reap-on-merge. The catch
-  is that the one ref-creation channel the proxy allows in cloud is `refs/heads/*`
-  (git push, or `mcp__github__create_branch`), not the `refs/claim/*` namespace.
-  So **as currently coded (`refs/claim/*`), claims can't be acquired in a cloud
-  session**; relocating the claim ref under `refs/heads/` (single global namespace
-  — it can't be cloud-only or the mutex splits) would let cloud sessions claim via
-  the same `--force-with-lease` create-only push. This is a proxy/session
-  limitation, not a missing app. Reads (`claims` listing) still work via `ls-remote`.
+  register item before building it. `claim <id>` atomically **creates the
+  `work/<id>` branch** (`refs/heads/work/<id>`) — the very branch the eventual PR
+  is opened from — as a server-side mutex via a create-only `--force-with-lease`
+  push (rejected if another session already holds it; the item must reference an
+  on-disk spec). The branch's first commit carries the claim metadata
+  (claimant/since), based on `origin/main` when present (so it is a ready PR
+  branch the claimant just adds commits to) or a parentless empty-tree marker
+  otherwise. `claims` lists live claims (`refs/heads/work/*`) and `claims --reap`
+  deletes stale ones (no open `work/<id>` PR past a 60-min grace); `release <id>`
+  deletes the branch. The upstream `loom-work-plan` skill gets an item to a
+  claimable (spec-on-disk) state. **Cloud sessions:** the `refs/heads/*` namespace
+  is deliberate. The web/cloud git proxy 403s pushes to any *other* namespace and
+  *all* ref deletions, but accepts `refs/heads/*` creates — so a cloud session can
+  **acquire** a claim (the only thing it needs) over the same native push that
+  works locally. It cannot `release`/`--reap` (deletions), but never needs to: the
+  branch is deleted when its PR merges (reap-on-merge) or by a local
+  `release`/`--reap`. This scheme **retired the old `refs/claim/*` hidden ref and
+  its GitHub-REST fallback** — the proxy now brokers github and 403s direct
+  `api.github.com` to the org repo (while the MCP github tools and `ls-remote`
+  reach it fine), so that fallback no longer worked anyway. Reads (`claims`
+  listing) use `ls-remote`, which the proxy allows.
 
 ## Cell layout
 
