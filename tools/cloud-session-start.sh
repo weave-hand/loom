@@ -40,6 +40,21 @@ if ! grep -q 'LOOM_CLOUD_ENV' "$PROFILE" 2>/dev/null; then
     [ -n "${BUILDBUDDY_API_KEY:-}" ] && printf 'export BUILDBUDDY_API_KEY=%q\n' "$BUILDBUDDY_API_KEY"
     [ -n "${GITHUB_TOKEN:-}" ]       && printf 'export GITHUB_TOKEN=%q\n' "$GITHUB_TOKEN"
     [ -n "${GITHUB_TOKEN:-}" ]       && printf 'export GH_TOKEN=%q\n' "$GITHUB_TOKEN"
+    # Bypass the egress proxy for github asset hosts so buck2 can fetch toolchains.
+    # buck2's http_archive lowers to a `download_file` action that ALWAYS runs on the
+    # local daemon (never on RE — it can't be offloaded), and toolchains/BUCK pulls the
+    # hermetic LLVM (:78) and CPython (:115) toolchains from github releases. The cloud
+    # proxy now brokers all authenticated github access (the Claude GitHub App layer):
+    # github.com 302s to release-assets.githubusercontent.com, where buck2's redirect
+    # gets a 401, so every native `buck2 build //src/...` fails on the toolchain fetch.
+    # Direct egress to github works for these public, sha256-pinned tarballs, so route
+    # them around the proxy. The same applies to the //tools:* github-release binaries.
+    # NOTE: git is unaffected — its url.insteadOf rewrites github.com to the git proxy on
+    # 127.0.0.1 (already no_proxy), so this only diverts buck2/curl-style direct HTTPS.
+    # Written single-quoted so each shell APPENDS to the live NO_PROXY rather than baking
+    # a stale snapshot of it.
+    echo 'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"'
+    echo 'export no_proxy="$NO_PROXY"'
     echo '# --- end LOOM_CLOUD_ENV ---'
   } >> "$PROFILE"
 fi
