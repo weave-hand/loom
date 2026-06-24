@@ -51,6 +51,8 @@ arrow-select57 = { package = "arrow-select", version = "57", default-features = 
 # footer-stats reader (src/iceberg_stats.rs). Same `bytes` 1.x the rest of the
 # graph resolves to (iceberg/parquet/reqwest all depend on it), so no new version.
 bytes = "1"
+# Used by iceberg_schema_evolution: SchemaEvolutionError derive.
+thiserror = "1"
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }

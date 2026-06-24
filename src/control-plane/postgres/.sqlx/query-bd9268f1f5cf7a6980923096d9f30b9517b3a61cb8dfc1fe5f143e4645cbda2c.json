@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update iceberg_mirror.snapshot set schema_version = (select count(distinct begin_snapshot) from iceberg_mirror.column where table_id = $1 and begin_snapshot <= $2) where snapshot_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bd9268f1f5cf7a6980923096d9f30b9517b3a61cb8dfc1fe5f143e4645cbda2c"
+}
