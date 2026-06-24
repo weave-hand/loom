@@ -156,6 +156,7 @@ rust_library(
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
+        "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tracing",
@@ -180,6 +181,15 @@ rust_test(
     crate_root = "tests/iceberg_type.rs",
     edition = "2024",
     deps = [":postgres", "//src/control-plane/core:core", "//third-party:iceberg"],
+)
+
+rust_test(
+    name = "iceberg-schema-evolution",
+    crate = "iceberg_schema_evolution",
+    srcs = ["tests/iceberg_schema_evolution.rs"],
+    crate_root = "tests/iceberg_schema_evolution.rs",
+    edition = "2024",
+    deps = [":postgres"],
 )
 
 rust_test(

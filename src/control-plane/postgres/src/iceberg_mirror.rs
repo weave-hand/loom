@@ -29,6 +29,7 @@ pub struct ProjectedFile {
 }
 
 /// A neutral column definition (name, Iceberg primitive type name, nullability), in order.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedColumn {
     pub order: i64,
     pub name: String,
