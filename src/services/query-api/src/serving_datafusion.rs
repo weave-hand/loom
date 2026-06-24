@@ -127,12 +127,12 @@ pub async fn register_iceberg_table(
     let inline_provider =
         build_inline_provider(catalog, table, &schema, &table_schema.columns, snap.id).await?;
 
-    // Combine: file-only, inline-only, or a UNION ALL view of both. The two
-    // providers infer schema independently from their own Parquet, so a column's
-    // nullability may differ (Parquet writers often mark columns nullable
-    // regardless of the logical `required` flag); `DataFrame::union` widens
-    // nullability, so this is fine — names + datatypes match because both derive
-    // from the same table schema.
+    // Combine: file-only, inline-only, or a UNION ALL view of both. The inline
+    // provider carries the authoritative mirror schema, while the file provider's
+    // schema is Parquet-footer-inferred, so a column's nullability may differ
+    // (Parquet writers often mark columns nullable regardless of the logical
+    // `required` flag); `DataFrame::union` widens nullability, so this is fine —
+    // names + datatypes match because both derive from the same table schema.
     let provider: Arc<dyn datafusion::catalog::TableProvider> =
         match (file_provider, inline_provider) {
             (Some(f), Some(i)) => {
