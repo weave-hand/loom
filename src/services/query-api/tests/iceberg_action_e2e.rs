@@ -23,10 +23,11 @@ use control_plane_postgres::iceberg_sql_catalog::{
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use query_api::action::{ActionDeps, ActionError, run_action};
+use query_api::engine_client::InProcessServingEngine;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
 use query_api::serving::ActionEngine;
-use query_api::serving_datafusion::{DataFusionServingEngine, IcebergActionWriter};
+use query_api::serving_datafusion::IcebergActionWriter;
 use serde_json::json;
 
 /// Build a vendored SqlCatalog over `dsn` + a `file://warehouse` (the action writer
@@ -148,8 +149,8 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
         json!({ "id": "42", "name": "gadget" })
     );
 
-    // Read back through the Iceberg DataFusion serving engine (inline+file union).
-    let serving = DataFusionServingEngine::new(IcebergCatalog::new(pool.clone()));
+    // Read back through the in-process serving engine (inline+file union).
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),

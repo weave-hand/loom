@@ -4,8 +4,8 @@
 use control_plane_core::{SnapshotId, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use query_api::serving::{ServingEngine, SqlValue};
-use query_api::serving_datafusion::DataFusionServingEngine;
+use query_api::serving::SqlValue;
+use query_api::serving_datafusion::batches_to_rows;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unions_file_and_inline_rows() {
@@ -35,9 +35,15 @@ async fn unions_file_and_inline_rows() {
         )
         .await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    // was: DataFusionServingEngine::new(IcebergCatalog::new(pool)).fetch_rows(sql, &[])
+    let catalog = IcebergCatalog::new(pool);
     let sql = "SELECT \"id\", \"name\" FROM \"sales\".\"orders\" ORDER BY \"id\"";
-    let rows = engine.fetch_rows(sql, &[]).await.expect("fetch_rows");
+    let inlined = query_api::serving::inline_params(sql, &[]);
+    let rows = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined)
+            .await
+            .expect("execute_query"),
+    );
 
     // 3 file rows (0,1,2) + 1 inline row (200), unioned.
     let ids: Vec<i64> = rows
@@ -171,14 +177,17 @@ async fn pushdown_where_and_limit_return_correct_rows() {
         )
         .await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    // was: DataFusionServingEngine::new(IcebergCatalog::new(pool)).fetch_rows(sql, &[])
+    let catalog = IcebergCatalog::new(pool);
 
     // WHERE id > 3 ORDER BY id -> {4, 5}
     let sql_where = "SELECT \"id\" FROM \"push\".\"data\" WHERE \"id\" > 3 ORDER BY \"id\"";
-    let rows_where = engine
-        .fetch_rows(sql_where, &[])
-        .await
-        .expect("fetch_rows WHERE");
+    let inlined_where = query_api::serving::inline_params(sql_where, &[]);
+    let rows_where = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined_where)
+            .await
+            .expect("fetch_rows WHERE"),
+    );
     let ids_where: Vec<i64> = rows_where
         .rows
         .iter()
@@ -195,10 +204,12 @@ async fn pushdown_where_and_limit_return_correct_rows() {
 
     // WHERE id > 3 LIMIT 1 -> exactly one row
     let sql_limit = "SELECT \"id\" FROM \"push\".\"data\" WHERE \"id\" > 3 ORDER BY \"id\" LIMIT 1";
-    let rows_limit = engine
-        .fetch_rows(sql_limit, &[])
-        .await
-        .expect("fetch_rows LIMIT");
+    let inlined_limit = query_api::serving::inline_params(sql_limit, &[]);
+    let rows_limit = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined_limit)
+            .await
+            .expect("fetch_rows LIMIT"),
+    );
     assert_eq!(
         rows_limit.rows.len(),
         1,

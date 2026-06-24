@@ -1,11 +1,11 @@
-//! DataFusionServingEngine::fetch_rows over a seeded Iceberg table returns correct
+//! engine_serving::execute_query over a seeded Iceberg table returns correct
 //! Rows for the handler's compiled-SQL shape. loom_fixture_test (Postgres +
 //! LocalFsStorage; no DuckDB).
 
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use query_api::serving::{ServingEngine, SqlValue};
-use query_api::serving_datafusion::DataFusionServingEngine;
+use query_api::serving::SqlValue;
+use query_api::serving_datafusion::batches_to_rows;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fetch_rows_over_iceberg() {
@@ -21,14 +21,16 @@ async fn fetch_rows_over_iceberg() {
     ];
     writer.seed("sales", "orders", &cols, &[3]).await; // ids 0,1,2 ; names row0,row1,row2
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
-
-    // The compiled-read shape: quoted idents, a bound `?`, LIMIT.
+    // was: DataFusionServingEngine::new(IcebergCatalog::new(pool)).fetch_rows(sql, &params)
+    let catalog = IcebergCatalog::new(pool);
     let sql = "SELECT \"id\", \"name\" FROM \"sales\".\"orders\" WHERE (\"id\" = ?) LIMIT 100";
-    let rows = engine
-        .fetch_rows(sql, &[SqlValue::Int(1)])
-        .await
-        .expect("fetch_rows");
+    let params = &[SqlValue::Int(1)];
+    let inlined = query_api::serving::inline_params(sql, params);
+    let rows = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined)
+            .await
+            .expect("execute_query"),
+    );
 
     assert_eq!(rows.columns, vec!["id", "name"]);
     assert_eq!(
@@ -59,17 +61,18 @@ async fn fetch_rows_joins_two_tables() {
     writer.seed("sales", "orders", &cols, &[3]).await;
     writer.seed("sales", "customers", &cols, &[3]).await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
-
-    // Join the two schema-qualified tables on id; both are registered from the
-    // mirror in one fetch_rows call.
+    // was: DataFusionServingEngine::new(IcebergCatalog::new(pool)).fetch_rows(sql, &params)
+    let catalog = IcebergCatalog::new(pool);
     let sql = "SELECT o.\"id\", c.\"name\" FROM \"sales\".\"orders\" o \
                JOIN \"sales\".\"customers\" c ON o.\"id\" = c.\"id\" \
                WHERE (o.\"id\" = ?) LIMIT 100";
-    let rows = engine
-        .fetch_rows(sql, &[SqlValue::Int(2)])
-        .await
-        .expect("fetch_rows");
+    let params = &[SqlValue::Int(2)];
+    let inlined = query_api::serving::inline_params(sql, params);
+    let rows = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined)
+            .await
+            .expect("execute_query"),
+    );
 
     assert_eq!(rows.columns, vec!["id", "name"]);
     assert_eq!(

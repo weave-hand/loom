@@ -7,6 +7,7 @@ edition = "2024"
 control-plane-core = { path = "../../control-plane/core" }
 control-plane-postgres = { path = "../../control-plane/postgres" }
 engine-serving = { path = "../engine-serving" }
+engine-wire = { path = "../engine-wire" }
 async-trait = "0.1"
 axum = "0.7"
 serde_json = "1"
@@ -15,11 +16,9 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Embedded DuckDB serving engine. `bundled` compiles DuckDB from source so no system
 # lib is needed; this task verifies the bundled version loads loom's 1.5.3 ducklake extension.
 duckdb = { version = "1", features = ["bundled"] }
-# loom-native serving engine (serving_datafusion.rs): DataFusion reads the Iceberg
-# mirror's Parquet files directly — no DuckDB. arrow 58 / object_store 0.13 match
-# datafusion 54 (same as the ingest/datafusion-io stack).
+# arrow 58 for IPC encode/decode (encode_ipc_stream, engine_client IPC decode).
+# object_store for DuckLake local_store (DuckLake backend).
 arrow = "58"
-datafusion = { version = "54", default-features = false, features = ["parquet", "sql"] }
 object_store = "0.13"
 # Pinned =0.3.47: time 0.3.48 adds a trait impl that conflicts with sqlx-core 0.9's
 # blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the postgres

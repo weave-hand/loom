@@ -10,10 +10,9 @@ use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::{col, lit};
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
+use engine_serving::{IcebergMirrorTableProvider, prune_files, register_iceberg_table};
 use query_api::serving::SqlValue;
-use query_api::serving_datafusion::{
-    IcebergMirrorTableProvider, batches_to_rows, prune_files, register_iceberg_table,
-};
+use query_api::serving_datafusion::batches_to_rows;
 
 /// Seed `"s"."t"` spanning TWO files with disjoint `id` ranges, register it, and prove
 /// the pruning path: correctness, an actual file skip, and governance invariance.

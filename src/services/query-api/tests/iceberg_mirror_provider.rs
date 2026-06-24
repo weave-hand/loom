@@ -11,10 +11,11 @@ use control_plane_postgres::iceberg_catalog::FileWithStats;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{col, lit};
 use datafusion::prelude::SessionContext;
+use engine_serving::{IcebergMirrorTableProvider, prune_files};
 use object_store::local::LocalFileSystem;
 use parquet::arrow::ArrowWriter;
 use query_api::serving::SqlValue;
-use query_api::serving_datafusion::{IcebergMirrorTableProvider, batches_to_rows, prune_files};
+use query_api::serving_datafusion::batches_to_rows;
 
 fn schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![

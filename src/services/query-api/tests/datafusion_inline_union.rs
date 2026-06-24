@@ -3,8 +3,8 @@
 
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use query_api::serving::{ServingEngine, SqlValue};
-use query_api::serving_datafusion::DataFusionServingEngine;
+use query_api::serving::SqlValue;
+use query_api::serving_datafusion::batches_to_rows;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fetch_rows_unions_file_and_inline() {
@@ -29,9 +29,15 @@ async fn fetch_rows_unions_file_and_inline() {
         )
         .await; // inline row id 100
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    // was: DataFusionServingEngine::new(IcebergCatalog::new(pool)).fetch_rows(sql, &[])
+    let catalog = IcebergCatalog::new(pool);
     let sql = "SELECT \"id\", \"name\" FROM \"sales\".\"orders\" ORDER BY \"id\"";
-    let rows = engine.fetch_rows(sql, &[]).await.expect("fetch_rows");
+    let inlined = query_api::serving::inline_params(sql, &[]);
+    let rows = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined)
+            .await
+            .expect("execute_query"),
+    );
 
     // 3 file rows (0,1,2) + 1 inline row (100), unioned.
     let ids: Vec<i64> = rows
@@ -74,14 +80,16 @@ async fn fetch_rows_inline_only_table() {
         )
         .await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
-    let rows = engine
-        .fetch_rows(
-            "SELECT \"id\", \"name\" FROM \"events\".\"audit\" WHERE (\"id\" = ?)",
-            &[SqlValue::Int(7)],
-        )
-        .await
-        .expect("fetch_rows");
+    // was: DataFusionServingEngine::new(IcebergCatalog::new(pool)).fetch_rows(sql, &params)
+    let catalog = IcebergCatalog::new(pool);
+    let sql = "SELECT \"id\", \"name\" FROM \"events\".\"audit\" WHERE (\"id\" = ?)";
+    let params = &[SqlValue::Int(7)];
+    let inlined = query_api::serving::inline_params(sql, params);
+    let rows = batches_to_rows(
+        engine_serving::execute_query(&catalog, &inlined)
+            .await
+            .expect("execute_query"),
+    );
     assert_eq!(
         rows.rows,
         vec![vec![SqlValue::Int(7), SqlValue::Text("seven".into())]],

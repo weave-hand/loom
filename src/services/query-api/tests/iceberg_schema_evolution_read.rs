@@ -17,10 +17,11 @@ use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
 use datafusion::prelude::SessionContext;
+use engine_serving::register_iceberg_table;
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use query_api::serving::SqlValue;
-use query_api::serving_datafusion::{batches_to_rows, register_iceberg_table};
+use query_api::serving_datafusion::batches_to_rows;
 
 fn col(name: &str, ty: &str, nullable: bool) -> ColumnSpec {
     ColumnSpec {
