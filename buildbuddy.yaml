@@ -87,24 +87,36 @@ actions:
           # Head (after) graph: run supertd in this checkout.
           "$supertd" targets root//... --output "$head_root/diff.jsonl"
 
-          # Base (before) graph: a throwaway worktree at the base commit, then run the
-          # SAME supertd binary there — no buck2 in the worktree at all. The runner
-          # checks out no submodules and worktrees don't inherit them, so re-init
-          # prelude (supertd parses it). prune + --force keep this idempotent on reused
-          # (snapshotted) VMs, where a prior run can leave _base registered in
-          # .git/worktrees after its dir was cleaned.
+          # Base (before) graph: a PERSISTENT worktree at the base commit, run through
+          # the SAME supertd binary. supertd reads BUCK files but still (re)starts a
+          # buck2 daemon, which validates the working dir and requires its buck-out/v2.
+          # We must KEEP _base/buck-out warm across runs so that daemon stays consistent
+          # — exactly the warm-daemon design the other actions rely on, and which the
+          # `buck-out` exclude in git_clean_exclude already grants _base (the pattern
+          # matches at any depth, so the runner's `git clean -x` preserves _base/buck-out
+          # too). The old `rm -rf "$base_dir"` defeated that: it deleted the very buck-out
+          # the exclude preserved, leaving the snapshot-restored daemon pointed at a
+          # missing buck-out ("Failed to stat _base/buck-out/v2"). So REUSE the worktree
+          # instead — just move it to the new base commit, keeping buck-out — and only
+          # recreate it when it is genuinely absent.
           base_dir="${BUILDBUDDY_CI_RUNNER_ROOT_DIR:-$head_root}/_base"
-          rm -rf "$base_dir"
           git worktree prune
-          git worktree add --force --detach "$base_dir" "$base_sha"
+          # `git clean -x` wipes the worktree's tracked files while the exclude keeps
+          # _base/buck-out, which severs the _base/.git link; repair restores it so the
+          # worktree (and its warm buck-out) is reusable rather than recreated.
+          git worktree repair "$base_dir" 2>/dev/null || true
+          if git -C "$base_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git -C "$base_dir" checkout --force --detach "$base_sha"
+          else
+            rm -rf "$base_dir"
+            git worktree add --force --detach "$base_dir" "$base_sha"
+          fi
+          # The runner checks out no submodules and worktrees don't inherit them, so
+          # re-init prelude (supertd parses it) every run.
           git -C "$base_dir" submodule update --init --recursive
-          # The rm -rf above deletes _base's buck-out every run, but a snapshot-
-          # restored buck2 daemon for this root can survive and still point at it, so
-          # supertd's working-directory validation dies "Failed to stat
-          # _base/buck-out/v2" (the same warm-daemon/missing-buck-out desync the other
-          # actions avoid by KEEPING buck-out). Recreate an empty buck-out/v2 so the
-          # stat passes — a fresh supertd daemon would create it anyway; a reconnected
-          # stale one just re-reads the BUCK files for the `targets` query.
+          # Guard the recreate path: a stale daemon surviving the VM snapshot would die
+          # statting the empty buck-out of a freshly re-added worktree. Ensuring the dir
+          # exists makes supertd's validation pass; in the warm path it already exists.
           mkdir -p "$base_dir/buck-out/v2"
           ( cd "$base_dir" && "$supertd" targets root//... --output "$head_root/base.jsonl" )
 
