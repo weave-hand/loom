@@ -137,6 +137,13 @@ impl CatalogBuilder for SqlCatalogBuilder {
         self
     }
 
+    /// iceberg main added an explicit `Runtime` (separate IO/CPU tokio handles) to the
+    /// builder. loom has no custom-runtime needs — its async runs on the ambient tokio
+    /// runtime exactly as it did pre-`main` — so this is intentionally a no-op.
+    fn with_runtime(self, _runtime: iceberg::Runtime) -> Self {
+        self
+    }
+
     fn load(
         mut self,
         name: impl Into<String>,
@@ -413,10 +420,14 @@ impl SqlCatalog {
 
         let staged_table = commit.apply(current_table)?;
         let staged_metadata_location = staged_table.metadata_location_result()?;
+        // iceberg main's `TableMetadata::write_to` takes a typed `&MetadataLocation`
+        // (was `&str`); parse the location string commit.apply already computed. The
+        // string itself is still used below as the CAS pointer value.
+        let staged_ml: MetadataLocation = staged_metadata_location.parse()?;
 
         staged_table
             .metadata()
-            .write_to(staged_table.file_io(), &staged_metadata_location)
+            .write_to(staged_table.file_io(), &staged_ml)
             .await?;
 
         // Object-store reads happen here, BEFORE begin(): load the new snapshot's
@@ -1016,12 +1027,14 @@ impl Catalog for SqlCatalog {
         let tbl_metadata = TableMetadataBuilder::from_table_creation(tbl_creation)?
             .build()?
             .metadata;
-        let tbl_metadata_location =
-            MetadataLocation::new_with_table_location(location.clone()).to_string();
+        // iceberg main's `write_to` takes a typed `&MetadataLocation`, and
+        // `new_with_table_location` is deprecated in favour of `new_with_metadata`
+        // (which derives the compression codec from table properties). Build it once;
+        // the string form is reused for the SQL insert + the Table builder below.
+        let tbl_ml = MetadataLocation::new_with_metadata(location.clone(), &tbl_metadata);
+        let tbl_metadata_location = tbl_ml.to_string();
 
-        tbl_metadata
-            .write_to(&self.fileio, &tbl_metadata_location)
-            .await?;
+        tbl_metadata.write_to(&self.fileio, &tbl_ml).await?;
 
         self.execute(&format!(
             "INSERT INTO {CATALOG_TABLE_NAME}
@@ -1113,5 +1126,13 @@ impl Catalog for SqlCatalog {
     /// to attach a lineage event atomically (see `iceberg_writer::append_batches_with_lineage`).
     async fn update_table(&self, commit: TableCommit) -> Result<Table> {
         self.do_update_table(commit, CommitExtras::default()).await
+    }
+
+    /// iceberg main added `purge_table` (drop + physically delete data files) to the
+    /// `Catalog` trait. loom reclaims physical bytes through its own mirror-driven GC
+    /// (see road-iceberg-gc), not through the catalog, so purge here drops the catalog
+    /// entry exactly like `drop_table` — data files are reclaimed by GC, not inline.
+    async fn purge_table(&self, identifier: &TableIdent) -> Result<()> {
+        self.drop_table(identifier).await
     }
 }
