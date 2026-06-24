@@ -1,5 +1,7 @@
+use service_runtime::{
+    Config, ObjectStoreBackend, build_serving_object_store, build_storage_factory,
+};
 use std::collections::HashMap;
-use service_runtime::{Config, ObjectStoreBackend, build_serving_object_store, build_storage_factory};
 
 fn base() -> HashMap<String, String> {
     let mut m = HashMap::new();
@@ -17,7 +19,10 @@ fn base() -> HashMap<String, String> {
 fn unset_warehouse_defaults_to_file_uri_and_local_backend() {
     let cfg = Config::from_map(&base()).unwrap();
     assert_eq!(cfg.object_store.warehouse_uri, "file:///data");
-    assert!(matches!(cfg.object_store.backend, ObjectStoreBackend::Local));
+    assert!(matches!(
+        cfg.object_store.backend,
+        ObjectStoreBackend::Local
+    ));
 }
 
 #[test]
@@ -25,7 +30,10 @@ fn explicit_file_uri_is_local() {
     let mut m = base();
     m.insert("LOOM_WAREHOUSE_URI".into(), "file:///warehouse".into());
     let cfg = Config::from_map(&m).unwrap();
-    assert!(matches!(cfg.object_store.backend, ObjectStoreBackend::Local));
+    assert!(matches!(
+        cfg.object_store.backend,
+        ObjectStoreBackend::Local
+    ));
 }
 
 #[test]
@@ -68,7 +76,11 @@ fn build_storage_factory_local_for_file_backend() {
     let cfg = Config::from_map(&base()).unwrap();
     let f = build_storage_factory(&cfg.object_store).unwrap();
     assert!(format!("{f:?}").contains("LocalFsStorageFactory"));
-    assert!(build_serving_object_store(&cfg.object_store).unwrap().is_none());
+    assert!(
+        build_serving_object_store(&cfg.object_store)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -81,6 +93,8 @@ fn build_storage_factory_s3_for_s3_backend() {
     let cfg = Config::from_map(&m).unwrap();
     let f = build_storage_factory(&cfg.object_store).unwrap();
     assert!(format!("{f:?}").contains("S3StorageFactory"));
-    let (bucket, _store) = build_serving_object_store(&cfg.object_store).unwrap().unwrap();
+    let (bucket, _store) = build_serving_object_store(&cfg.object_store)
+        .unwrap()
+        .unwrap();
     assert_eq!(bucket, "warehouse");
 }

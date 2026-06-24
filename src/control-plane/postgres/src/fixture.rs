@@ -928,8 +928,7 @@ impl MinioFixture {
     /// Boot an ephemeral MinIO server. Requires `MINIO_BIN` to point at the minio
     /// binary. Panics on failure — test-only.
     pub fn start() -> Self {
-        let bin =
-            std::env::var("MINIO_BIN").expect("MINIO_BIN must point at the minio binary");
+        let bin = std::env::var("MINIO_BIN").expect("MINIO_BIN must point at the minio binary");
         let data_dir = tempfile::tempdir().expect("minio data tempdir");
         // Reserve a free port, then release it for minio to claim.
         let port = {
@@ -1009,9 +1008,8 @@ impl MinioFixture {
 
         let payload_hash = hex::encode(Sha256::digest(b""));
         let canonical_uri = format!("/{bucket}");
-        let canonical_headers = format!(
-            "host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
-        );
+        let canonical_headers =
+            format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
         let signed_headers = "host;x-amz-content-sha256;x-amz-date";
         let canonical_request = format!(
             "PUT\n{canonical_uri}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"

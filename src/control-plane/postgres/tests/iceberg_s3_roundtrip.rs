@@ -42,7 +42,10 @@ async fn s3_write_and_read_roundtrip() {
     // Build the Iceberg SQL catalog over S3.
     let mut props = HashMap::new();
     props.insert(SQL_CATALOG_PROP_URI.to_string(), pg_dsn.clone());
-    props.insert(SQL_CATALOG_PROP_WAREHOUSE.to_string(), warehouse_uri.clone());
+    props.insert(
+        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+        warehouse_uri.clone(),
+    );
     let catalog = SqlCatalogBuilder::default()
         .with_storage_factory(build_storage_factory(&os_cfg).unwrap())
         .load("loom", props)
@@ -105,12 +108,11 @@ async fn s3_write_and_read_roundtrip() {
         .connect(pg_dsn.as_str())
         .await
         .expect("connect pool");
-    let paths: Vec<String> = sqlx::query_scalar(
-        "select path from iceberg_mirror.data_file where end_snapshot is null",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("query data_file paths");
+    let paths: Vec<String> =
+        sqlx::query_scalar("select path from iceberg_mirror.data_file where end_snapshot is null")
+            .fetch_all(&pool)
+            .await
+            .expect("query data_file paths");
 
     assert!(!paths.is_empty(), "at least one data file in the mirror");
     for path in &paths {

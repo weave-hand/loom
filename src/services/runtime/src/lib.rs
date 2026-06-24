@@ -281,11 +281,14 @@ pub fn build_storage_factory(
     }
 }
 
+/// Bucket name + object store handle returned by [`build_serving_object_store`].
+type ServingStore = (String, Arc<dyn object_store::ObjectStore>);
+
 /// Build the DataFusion serving read store for `s3://` warehouses. Returns the bucket
 /// name (for the `ObjectStoreUrl`) + the store, or `None` for local-filesystem reads.
 pub fn build_serving_object_store(
     cfg: &ObjectStoreConfig,
-) -> Result<Option<(String, Arc<dyn object_store::ObjectStore>)>, RuntimeError> {
+) -> Result<Option<ServingStore>, RuntimeError> {
     match &cfg.backend {
         ObjectStoreBackend::Local => Ok(None),
         ObjectStoreBackend::S3(s) => {

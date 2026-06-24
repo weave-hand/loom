@@ -36,7 +36,12 @@ fn factory_builds_storage_via_typetag_trait() {
 fn factory_serde_roundtrips_via_typetag() {
     // The trait is #[typetag::serde]; a boxed factory must serialize with a "type" tag.
     let f: Arc<dyn StorageFactory> = Arc::new(S3StorageFactory::new(
-        "wh".into(), None, "us-east-1".into(), "ak".into(), "sk".into(), false,
+        "wh".into(),
+        None,
+        "us-east-1".into(),
+        "ak".into(),
+        "sk".into(),
+        false,
     ));
     let json = serde_json::to_string(&f).unwrap();
     assert!(json.contains("S3StorageFactory"));

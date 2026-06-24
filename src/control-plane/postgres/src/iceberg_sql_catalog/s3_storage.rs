@@ -152,9 +152,7 @@ impl Storage for S3Storage {
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
         let key = Self::key_of(path)?;
         let meta = self.store()?.head(&key).await.map_err(Self::obj_err)?;
-        Ok(FileMetadata {
-            size: meta.size,
-        })
+        Ok(FileMetadata { size: meta.size })
     }
 
     async fn read(&self, path: &str) -> Result<Bytes> {
