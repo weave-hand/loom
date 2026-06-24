@@ -230,8 +230,10 @@ pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
 /// plus their per-column stats. Unlike `ListingTable`, this skips opening files a
 /// query's predicates provably cannot match: `scan` prunes the file set with a
 /// `PruningPredicate` over the mirror stats, then builds a `DataSourceExec` over
-/// only the survivors. Schema is inferred from the file set up front (same Parquet
-/// inference `listing_table` uses), so the served schema matches the listing path.
+/// only the survivors. The schema is fixed up front: `try_new` infers it from the
+/// file set (same Parquet inference `listing_table` uses), while
+/// `try_new_with_schema` takes the mirror's authoritative schema so an evolved
+/// table's superset is served and files missing a newer column are null-filled.
 #[derive(Debug)]
 pub struct IcebergMirrorTableProvider {
     schema: SchemaRef,
