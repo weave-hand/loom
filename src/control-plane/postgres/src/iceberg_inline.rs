@@ -39,6 +39,41 @@ pub fn inline_table_name(table_id: i64) -> String {
     format!("iceberg_mirror.inline_{table_id}")
 }
 
+/// True if `table` has any live inline row at `at`. Used to refuse an additive
+/// Parquet land while un-flushed inline rows exist: such a land would project a
+/// new column into the mirror that the physical `inline_<tid>` table lacks, so
+/// inline reconstruction (read AND flush) would fail. The caller must flush first.
+pub async fn has_live_inline_rows(
+    conn: &mut PgConnection,
+    table: &TableRef,
+    at: SnapshotId,
+) -> Result<bool> {
+    let Some(tid) = live_table_id(conn, &table.schema, &table.name).await? else {
+        return Ok(false);
+    };
+    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "select to_regclass('{}')::text",
+        inline_table_name(tid)
+    )))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if exists.is_none() {
+        return Ok(false);
+    }
+    let any: bool = sqlx::query_scalar(AssertSqlSafe(format!(
+        "select exists(select 1 from {} \
+         where begin_snapshot <= {} and (end_snapshot is null or end_snapshot > {}))",
+        inline_table_name(tid),
+        at.0,
+        at.0,
+    )))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(any)
+}
+
 /// One typed inline cell — the bridge between an arrow-57 array and a Postgres bind.
 #[derive(Clone, Debug)]
 pub(crate) enum Cell {

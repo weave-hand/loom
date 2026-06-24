@@ -8,8 +8,8 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_ipc57::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::Catalog;
-use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, TableRef};
-use control_plane_postgres::fixture::PgFixture;
+use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, SnapshotId, TableRef};
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::land;
 use control_plane_postgres::iceberg_sql_catalog::{
@@ -85,6 +85,30 @@ fn ipc_a(rows: i64) -> Vec<u8> {
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
+    )
+    .unwrap();
+    encode(&schema, &batch)
+}
+
+/// IPC body for (id long, name string, extra long-nullable) of `rows` rows — the
+/// additive superset over the inline `(id, name)` schema.
+fn ipc_id_name_extra(rows: i64) -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("extra", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>())),
+            Arc::new(StringArray::from(
+                (0..rows).map(|i| format!("name{i}")).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int64Array::from(
+                (0..rows).map(|i| i + 1000).collect::<Vec<_>>(),
+            )),
+        ],
     )
     .unwrap();
     encode(&schema, &batch)
@@ -306,4 +330,87 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
          where tb.table_namespace='s' and tb.table_name='t' and tb.end_snapshot is null and c.end_snapshot is null",
     ).fetch_one(&pool).await.unwrap();
     assert_eq!(n, 2, "still exactly columns a, b");
+}
+
+/// An additive Parquet land is rejected while un-flushed live inline rows exist: such a
+/// land would project a new column into the mirror that the physical `inline_<tid>`
+/// table lacks, so inline reconstruction (read AND flush) would later fail. The caller
+/// must let the flush job run first. Guards the cross-task seam find-1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn additive_land_rejected_while_live_inline_rows_exist() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().unwrap();
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let t = TableRef {
+        schema: "s".into(),
+        name: "t".into(),
+    };
+
+    // Seed live inline rows for (id long, name string) — these accumulate in the physical
+    // `inline_<tid>` table, which has DDL columns id,name only.
+    let writer = IcebergWriter::new(pool.clone(), fx.pg_dsn(&db));
+    let id_name = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("name".to_string(), "string".to_string(), false),
+    ];
+    let snap = writer
+        .inline(
+            "s",
+            "t",
+            &id_name,
+            &[(1, "one"), (2, "two")],
+            uuid::Uuid::new_v4(),
+        )
+        .await;
+    let s1 = SnapshotId(snap);
+
+    // Attempt an ADDITIVE (id, name, extra) Parquet land while those inline rows are live.
+    let abc = vec![
+        col("id", "long", false),
+        col("name", "string", false),
+        col("extra", "long", true),
+    ];
+    let err = land(
+        &pool,
+        &catalog,
+        &t,
+        &abc,
+        &ipc_id_name_extra(2),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4())),
+    )
+    .await
+    .expect_err("additive land while live inline rows exist must be rejected");
+    assert!(
+        err.to_string().contains("schema evolution unsupported"),
+        "got: {err}"
+    );
+
+    // Mirror unchanged: current snapshot did not advance and the inline rows are still live.
+    let ice = IcebergCatalog::new(pool.clone());
+    assert_eq!(
+        ice.current_snapshot(&t).await.unwrap().id,
+        s1,
+        "rejected additive land did not advance the snapshot"
+    );
+    let tid: i64 = sqlx::query_scalar(
+        "select table_id from iceberg_mirror.table where table_namespace='s' and table_name='t' and end_snapshot is null",
+    ).fetch_one(&pool).await.unwrap();
+    let live_inline: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select count(*) from iceberg_mirror.inline_{tid} where end_snapshot is null"
+    )))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(live_inline, 2, "inline rows still live after the rejection");
+    // The physical inline table still has only id,name (no `extra` column projected).
+    let n_cols: i64 = sqlx::query_scalar(
+        "select count(*) from iceberg_mirror.column c \
+         join iceberg_mirror.table tb on c.table_id = tb.table_id \
+         where tb.table_namespace='s' and tb.table_name='t' and tb.end_snapshot is null and c.end_snapshot is null",
+    ).fetch_one(&pool).await.unwrap();
+    assert_eq!(n_cols, 2, "still exactly columns id, name");
 }

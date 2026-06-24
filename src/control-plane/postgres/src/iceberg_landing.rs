@@ -156,14 +156,17 @@ pub(crate) async fn append_parquet_snapshot(
     // there is no snapshot yet (a fresh creation).
     let incoming = projected_columns(columns)?;
     let icb = IcebergCatalog::new(pool.clone());
-    let live = match icb.current_snapshot(table).await {
+    let (live, current) = match icb.current_snapshot(table).await {
         Ok(snap) => {
             let mut conn = pool.acquire().await.map_err(be)?;
             // `live_columns_for` resolves the tid internally and reads columns live at
             // `snap.id` (its predicate is `begin_snapshot <= $2`, no +1).
-            live_columns_for(&mut conn, table, snap.id).await?
+            (
+                live_columns_for(&mut conn, table, snap.id).await?,
+                Some(snap.id),
+            )
         }
-        Err(_) => Vec::new(), // no snapshot yet — creation
+        Err(_) => (Vec::new(), None), // no snapshot yet — creation
     };
     if !live.is_empty() {
         match classify_schema_change(&live, &incoming) {
@@ -171,6 +174,21 @@ pub(crate) async fn append_parquet_snapshot(
             Ok(SchemaPlan::Identical) => {}
             // Additive → mirror-only superset Parquet + reconcile/project. NO fast_append.
             Ok(SchemaPlan::Additive { .. }) => {
+                // Guard the cross-task seam: an additive land projects a new column into the
+                // mirror, but the physical `inline_<tid>` table is NOT altered. If live inline
+                // rows exist, inline reconstruction (read AND flush) would then select a column
+                // the table lacks and fail. Refuse before writing any Parquet — the caller must
+                // let the flush job run first, so mirror and inline table never diverge. Until
+                // additive-on-inline is implemented (`fut-iceberg-additive-inline`).
+                if let Some(at) = current {
+                    let mut conn = pool.acquire().await.map_err(be)?;
+                    if crate::iceberg_inline::has_live_inline_rows(&mut conn, table, at).await? {
+                        return Err(ControlPlaneError::Validation(
+                            "schema evolution unsupported: flush inline rows before an additive land"
+                                .into(),
+                        ));
+                    }
+                }
                 return land_additive(pool, catalog, table, columns, batches, lineage, end_cap)
                     .await;
             }
