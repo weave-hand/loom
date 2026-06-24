@@ -1,7 +1,7 @@
-//! loom-native, DataFusion-backed execution for file-backed Iceberg tables.
+//! loom-native, DataFusion-backed execution for Iceberg tables.
 //! Reads the `iceberg_mirror` projection (via `IcebergCatalog`), registers each
-//! live table's Parquet files (absolute `file://` paths) as a DataFusion table,
-//! and runs the governed/compiled SQL through DataFusion — no DuckDB in the path.
+//! live table's Parquet files (absolute paths: `file://` or `s3://`) as a DataFusion
+//! table, and runs the governed/compiled SQL through DataFusion — no DuckDB in the path.
 //! See docs/superpowers/specs/2026-06-17-iceberg-datafusion-serving-engine-design.md.
 
 use std::sync::Arc;
@@ -44,24 +44,41 @@ pub(crate) fn to_serving<E: std::fmt::Display>(e: E) -> EngineServingError {
     EngineServingError::Engine(e.to_string())
 }
 
+/// The object-store URL a data file's absolute path resolves against. `s3://bucket/...`
+/// => `s3://bucket`; everything else (absolute `file://`/local paths) => local filesystem.
+fn object_store_url_for(path: &str) -> datafusion::error::Result<ObjectStoreUrl> {
+    if let Some(rest) = path.strip_prefix("s3://") {
+        let bucket = rest.split('/').next().unwrap_or("");
+        ObjectStoreUrl::parse(format!("s3://{bucket}"))
+    } else {
+        Ok(ObjectStoreUrl::local_filesystem())
+    }
+}
+
 /// Register `table`'s live data files (at its current snapshot) via the pruning-aware
 /// `IcebergMirrorTableProvider` under the schema-qualified name `"schema"."table"`, so
-/// the compiled read SQL resolves it. Files are registered by their ABSOLUTE `file://`
-/// paths as stored in the mirror (`iceberg_mirror.data_file.path`); the provider's
-/// `scan` skips files a query's predicates provably cannot match.
+/// the compiled read SQL resolves it. Files are registered by their absolute paths
+/// (`file://` or `s3://`) as stored in the mirror (`iceberg_mirror.data_file.path`);
+/// the provider's `scan` skips files a query's predicates provably cannot match.
 pub async fn register_iceberg_table(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,
     table: &TableRef,
+    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
 ) -> Result<(), EngineServingError> {
     use control_plane_core::Catalog;
 
-    // A non-prefixed local store for the absolute warehouse paths (a prefixed store
-    // could not reach files outside data_path). Idempotent across calls on one ctx.
+    // Local store for absolute file:// warehouse paths (back-compat default).
+    // Idempotent across calls on one ctx.
     ctx.register_object_store(
         ObjectStoreUrl::local_filesystem().as_ref(),
         Arc::new(LocalFileSystem::new()),
     );
+    // S3 store for s3:// warehouse paths, registered under s3://{bucket}.
+    if let Some((bucket, store)) = serving_store {
+        let url = ObjectStoreUrl::parse(format!("s3://{bucket}")).map_err(to_serving)?;
+        ctx.register_object_store(url.as_ref(), store.clone());
+    }
 
     let snap = catalog.current_snapshot(table).await.map_err(to_serving)?;
     // The MIRROR is authoritative for the served schema (not per-file Parquet
@@ -189,6 +206,12 @@ fn base_to_arrow(b: BaseType) -> DataType {
         BaseType::String => DataType::Utf8,
         BaseType::Date => DataType::Date32,
         BaseType::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
+        // A vector column is `list<float>` (a non-null f32 element). Per-object JSON
+        // serving of vectors is deferred (`fut-vector-json-serving`); the column is
+        // read via the columnar Arrow path, so this only fixes its schema presence.
+        BaseType::Vector(_) => {
+            DataType::List(Arc::new(Field::new("element", DataType::Float32, false)))
+        }
     }
 }
 
@@ -360,8 +383,11 @@ impl TableProvider for IcebergMirrorTableProvider {
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
         let kept = prune_files(&self.schema, filters, &self.files);
         let source = Arc::new(ParquetSource::new(self.schema.clone()));
-        let mut builder = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
-            .with_limit(limit);
+        let store_url = match kept.first() {
+            Some(f) => object_store_url_for(&f.path)?,
+            None => ObjectStoreUrl::local_filesystem(),
+        };
+        let mut builder = FileScanConfigBuilder::new(store_url, source).with_limit(limit);
         for f in &kept {
             // Reuse the listing path's exact object-store path derivation so the
             // registered local-filesystem store resolves the absolute warehouse path.
@@ -428,10 +454,11 @@ impl IcebergMirrorTableProvider {
 pub async fn execute_query(
     catalog: &IcebergCatalog,
     sql: &str,
+    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
 ) -> Result<Vec<RecordBatch>, EngineServingError> {
     let ctx = SessionContext::new();
     for table in catalog.live_tables().await.map_err(to_serving)? {
-        register_iceberg_table(&ctx, catalog, &table).await?;
+        register_iceberg_table(&ctx, catalog, &table, serving_store).await?;
     }
     let df = ctx.sql(sql).await.map_err(to_serving)?;
     df.collect().await.map_err(to_serving)
@@ -443,8 +470,9 @@ pub async fn execute_query(
 pub async fn execute_query_to_ipc(
     catalog: &IcebergCatalog,
     sql: &str,
+    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
 ) -> Result<Vec<u8>, EngineServingError> {
-    let batches = execute_query(catalog, sql).await?;
+    let batches = execute_query(catalog, sql, serving_store).await?;
     let mut buf = Vec::new();
     if let Some(first) = batches.first() {
         let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &first.schema())

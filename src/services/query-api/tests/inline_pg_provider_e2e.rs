@@ -40,7 +40,7 @@ async fn unions_file_and_inline_rows() {
     let sql = "SELECT \"id\", \"name\" FROM \"sales\".\"orders\" ORDER BY \"id\"";
     let inlined = query_api::serving::inline_params(sql, &[]);
     let rows = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined)
+        engine_serving::execute_query(&catalog, &inlined, None)
             .await
             .expect("execute_query"),
     );
@@ -184,7 +184,7 @@ async fn pushdown_where_and_limit_return_correct_rows() {
     let sql_where = "SELECT \"id\" FROM \"push\".\"data\" WHERE \"id\" > 3 ORDER BY \"id\"";
     let inlined_where = query_api::serving::inline_params(sql_where, &[]);
     let rows_where = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined_where)
+        engine_serving::execute_query(&catalog, &inlined_where, None)
             .await
             .expect("fetch_rows WHERE"),
     );
@@ -206,7 +206,7 @@ async fn pushdown_where_and_limit_return_correct_rows() {
     let sql_limit = "SELECT \"id\" FROM \"push\".\"data\" WHERE \"id\" > 3 ORDER BY \"id\" LIMIT 1";
     let inlined_limit = query_api::serving::inline_params(sql_limit, &[]);
     let rows_limit = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined_limit)
+        engine_serving::execute_query(&catalog, &inlined_limit, None)
             .await
             .expect("fetch_rows LIMIT"),
     );

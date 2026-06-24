@@ -94,7 +94,7 @@ impl query_api::serving::ServingEngine for InProcessServingEngine {
         params: &[SqlValue],
     ) -> Result<query_api::serving::Rows, ServingError> {
         let inlined = inline_params(sql, params);
-        let batches = execute_query(&self.catalog, &inlined)
+        let batches = execute_query(&self.catalog, &inlined, None)
             .await
             .map_err(|e| ServingError::Engine(e.to_string()))?;
         Ok(batches_to_rows(batches))

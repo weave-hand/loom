@@ -93,5 +93,7 @@ fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, Para
                 .map(SqlValue::Timestamp)
                 .map_err(|_| bad("invalid ISO timestamp"))
         }
+        // Vectors are stored data, not action/query inputs (road-vector-column-type).
+        JsonRepr::FloatArray => Err(bad("vector parameters are not supported")),
     }
 }

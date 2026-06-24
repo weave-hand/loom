@@ -35,6 +35,7 @@ async fn execute_query_unions_file_and_inline() {
     let batches = engine_serving::execute_query(
         &catalog,
         "SELECT \"id\" FROM \"sales\".\"orders\" ORDER BY \"id\"",
+        None,
     )
     .await
     .expect("execute_query");
@@ -80,7 +81,7 @@ async fn execute_query_inline_only() {
 
     let catalog = IcebergCatalog::new(pool);
     let batches =
-        engine_serving::execute_query(&catalog, "SELECT \"id\" FROM \"events\".\"audit\"")
+        engine_serving::execute_query(&catalog, "SELECT \"id\" FROM \"events\".\"audit\"", None)
             .await
             .expect("execute_query");
 

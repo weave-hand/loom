@@ -27,7 +27,7 @@ async fn fetch_rows_over_iceberg() {
     let params = &[SqlValue::Int(1)];
     let inlined = query_api::serving::inline_params(sql, params);
     let rows = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined)
+        engine_serving::execute_query(&catalog, &inlined, None)
             .await
             .expect("execute_query"),
     );
@@ -69,7 +69,7 @@ async fn fetch_rows_joins_two_tables() {
     let params = &[SqlValue::Int(2)];
     let inlined = query_api::serving::inline_params(sql, params);
     let rows = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined)
+        engine_serving::execute_query(&catalog, &inlined, None)
             .await
             .expect("execute_query"),
     );

@@ -102,7 +102,7 @@ async fn fk_self_link_recursive_reach_over_datafusion() {
     let catalog = IcebergCatalog::new(pool);
     let inlined = query_api::serving::inline_params(&sql, &params);
     let rows = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined)
+        engine_serving::execute_query(&catalog, &inlined, None)
             .await
             .expect("execute_query"),
     );
@@ -207,7 +207,7 @@ async fn union_self_links_recursive_reach_over_datafusion() {
     let catalog = IcebergCatalog::new(pool);
     let inlined = query_api::serving::inline_params(&sql, &params);
     let rows = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined)
+        engine_serving::execute_query(&catalog, &inlined, None)
             .await
             .expect("execute_query"),
     );

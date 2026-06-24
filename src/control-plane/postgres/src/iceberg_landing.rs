@@ -9,15 +9,15 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
+use arrow_array::{Array, ArrayRef, ListArray, RecordBatch};
 use arrow_ipc57::reader::StreamReader;
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Schema};
 use arrow_select57::concat::concat_batches;
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, Result, SnapshotId,
     TableRef,
 };
-use iceberg::spec::{NestedField, PrimitiveType, Schema as IceSchema, Type};
+use iceberg::spec::{ListType, NestedField, PrimitiveType, Schema as IceSchema, Type};
 use iceberg::{Catalog as IceCatalog, NamespaceIdent, TableCreation, TableIdent};
 use sqlx::PgPool;
 
@@ -212,7 +212,7 @@ pub(crate) async fn append_parquet_snapshot(
     );
     let batches = batches
         .into_iter()
-        .map(|b| RecordBatch::try_new(ice_arrow.clone(), b.columns().to_vec()).map_err(be))
+        .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
         .collect::<Result<Vec<_>>>()?;
 
     append_batches_with_extras(catalog, &ice_table, batches, lineage, end_cap, overwrite)
@@ -223,6 +223,56 @@ pub(crate) async fn append_parquet_snapshot(
         .current_snapshot(table)
         .await?
         .id)
+}
+
+/// Re-wrap `batch` under the iceberg-derived arrow schema `ice_arrow`. Primitive
+/// columns pass through; a `vector(N)` (`list<float>`) column is **rebuilt under
+/// Iceberg's exact element field** (name `element` + `PARQUET:field_id`) — the wire
+/// list's element field (`item`, no field id) would otherwise be rejected by
+/// `RecordBatch::try_new`, which compares the full nested field. Same data, relabeled
+/// element field. Also validates each row's element count equals the declared `N`.
+fn coerce_batch_to_ice(
+    batch: &RecordBatch,
+    ice_arrow: &Arc<Schema>,
+    columns: &[ColumnSpec],
+) -> Result<RecordBatch> {
+    let cols = ice_arrow
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, ice_field)| match ice_field.data_type() {
+            DataType::List(child) => {
+                let col = batch.column(i);
+                let list = col.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        format!("landing: column {:?} expected a list", ice_field.name()).into(),
+                    )
+                })?;
+                if let Some(control_plane_core::BaseType::Vector(n)) =
+                    control_plane_core::resolve_logical(&columns[i].ty)
+                {
+                    for r in 0..list.len() {
+                        let len = list.value_length(r);
+                        if !list.is_null(r) && i64::from(len) != i64::from(n) {
+                            let nm = ice_field.name();
+                            return Err(ControlPlaneError::Backend(
+                                format!("landing: vector {nm:?} row {r}: {len} elements, want {n}")
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+                Ok(Arc::new(ListArray::new(
+                    child.clone(),
+                    list.offsets().clone(),
+                    list.values().clone(),
+                    list.nulls().cloned(),
+                )) as ArrayRef)
+            }
+            _ => Ok(batch.column(i).clone()),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    RecordBatch::try_new(ice_arrow.clone(), cols).map_err(be)
 }
 
 /// The additive landing path (mirror-only). Writes the landing `batches` as Parquet
@@ -256,7 +306,7 @@ async fn land_additive(
     let ice_arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&superset).map_err(be)?);
     let batches = batches
         .into_iter()
-        .map(|b| RecordBatch::try_new(ice_arrow.clone(), b.columns().to_vec()).map_err(be))
+        .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
         .collect::<Result<Vec<_>>>()?;
 
     // Write Parquet with the superset schema (no fast_append).
@@ -394,15 +444,22 @@ fn projected_columns(columns: &[ColumnSpec]) -> Result<Vec<ProjectedColumn>> {
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let iceberg_type = iceberg_physical_type(&c.ty).ok_or_else(|| {
-                ControlPlaneError::Backend(
-                    format!("register: no iceberg type for {:?}", c.ty).into(),
-                )
-            })?;
+            // A vector column's mirror type is `vector(N)` (matching `columns_of`'s decode
+            // of the list field doc); every other type maps to its iceberg primitive name.
+            let iceberg_type = match control_plane_core::resolve_logical(&c.ty) {
+                Some(control_plane_core::BaseType::Vector(n)) => format!("vector({n})"),
+                _ => iceberg_physical_type(&c.ty)
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            format!("register: no iceberg type for {:?}", c.ty).into(),
+                        )
+                    })?
+                    .to_string(),
+            };
             Ok(ProjectedColumn {
                 order: (i + 1) as i64,
                 name: c.name.clone(),
-                iceberg_type: iceberg_type.to_string(),
+                iceberg_type,
                 nullable: c.nullable,
             })
         })
@@ -514,19 +571,45 @@ async fn overwrite_truncate(
     Ok(at)
 }
 
-/// Build an iceberg `Schema` from loom `ColumnSpec`s, assigning 1-based field ids.
+/// Build an iceberg `Schema` from loom `ColumnSpec`s. Field ids are assigned from a
+/// running counter (a `vector(N)` column's `list<float>` element consumes its own id),
+/// so every nested field is schema-wide unique as Iceberg requires.
 fn ice_schema(columns: &[ColumnSpec]) -> Result<IceSchema> {
+    let mut next_id = 1i32;
     let fields = columns
         .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let ty = Type::Primitive(primitive_from(&c.ty)?);
-            let id = (i + 1) as i32;
-            Ok(Arc::new(if c.nullable {
-                NestedField::optional(id, &c.name, ty)
-            } else {
-                NestedField::required(id, &c.name, ty)
-            }))
+        .map(|c| {
+            let id = next_id;
+            next_id += 1;
+            let field = match control_plane_core::resolve_logical(&c.ty) {
+                // A vector is stored as Iceberg `list<float>`; the dimension `N` rides in
+                // the field doc (`vector(N)`) since an Iceberg list is length-free.
+                Some(control_plane_core::BaseType::Vector(n)) => {
+                    let elem_id = next_id;
+                    next_id += 1;
+                    let element = Arc::new(NestedField::list_element(
+                        elem_id,
+                        Type::Primitive(PrimitiveType::Float),
+                        true,
+                    ));
+                    let list = Type::List(ListType::new(element));
+                    let f = if c.nullable {
+                        NestedField::optional(id, &c.name, list)
+                    } else {
+                        NestedField::required(id, &c.name, list)
+                    };
+                    f.with_doc(format!("vector({n})"))
+                }
+                _ => {
+                    let ty = Type::Primitive(primitive_from(&c.ty)?);
+                    if c.nullable {
+                        NestedField::optional(id, &c.name, ty)
+                    } else {
+                        NestedField::required(id, &c.name, ty)
+                    }
+                }
+            };
+            Ok(Arc::new(field))
         })
         .collect::<Result<Vec<_>>>()?;
     IceSchema::builder().with_fields(fields).build().map_err(be)

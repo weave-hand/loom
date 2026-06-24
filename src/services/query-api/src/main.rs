@@ -11,7 +11,6 @@ use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
 use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use query_api::engine_client::EngineServingClient;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, DuckLakeActionWriter, EmbeddedDuckDb, ServingEngine};
@@ -82,8 +81,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Construct the vendored Iceberg SQL catalog over the same Postgres + a `file://`
-/// warehouse rooted at the service data path. Mirrors ingest's helper.
+/// Construct the vendored Iceberg SQL catalog over the same Postgres using the
+/// configured warehouse URI (scheme-selected: `file://` for local, `s3://` for S3).
+/// Mirrors ingest's helper.
 async fn build_iceberg_catalog(
     cfg: &service_runtime::Config,
 ) -> Result<SqlCatalog, Box<dyn std::error::Error>> {
@@ -91,10 +91,10 @@ async fn build_iceberg_catalog(
     props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
     props.insert(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", cfg.data_path.display()),
+        cfg.object_store.warehouse_uri.clone(),
     );
     let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props)
         .await?;
     Ok(catalog)

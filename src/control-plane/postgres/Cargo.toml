@@ -13,7 +13,7 @@ uuid = { version = "1", features = ["v4"] }
 # Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
 # blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
 # Keep exact-pinned until sqlx-core ships a fix. See the ingest materializer PR.
-time = "=0.3.47"
+time = { version = "=0.3.47", features = ["formatting"] }
 serde_json = "1"
 # Used by the test fixture (src/fixture.rs) for ephemeral data/socket dirs.
 tempfile = "3"
@@ -53,6 +53,21 @@ arrow-select57 = { package = "arrow-select", version = "57", default-features = 
 bytes = "1"
 # Used by iceberg_schema_evolution: SchemaEvolutionError derive.
 thiserror = "1"
+# S3/MinIO Iceberg storage (src/iceberg_sql_catalog/s3_storage.rs). The `aws`
+# feature pulls object_store's AmazonS3 client. reindeer unions features across the
+# workspace, so this also enables `aws` on the shared //third-party:object_store the
+# services already depend on (the serving S3 read path needs it too).
+object_store = { version = "0.13", features = ["aws"] }
+# iceberg's Storage/StorageFactory traits are #[typetag::serde]; impls need the attr.
+typetag = "0.2"
+# Async S3 ObjectStore methods return futures::stream for list(); pull StreamExt.
+futures = "0.3"
+# AWS SigV4 PUT-bucket in the MinIO fixture (fixture.rs is compiled into the lib,
+# not test code). reqwest async client for create_bucket; hmac/sha2/hex for SigV4.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }

@@ -63,6 +63,8 @@ pub fn coerce_filter(name: &str, logical_ty: &str, raw: &str) -> Result<SqlValue
                 .map(SqlValue::Timestamp)
                 .map_err(|_| bad("invalid ISO timestamp"))
         }
+        // Vector columns are not filterable (storage, not search — road-vector-column-type).
+        JsonRepr::FloatArray => Err(bad("vector columns cannot be filtered")),
     }
 }
 

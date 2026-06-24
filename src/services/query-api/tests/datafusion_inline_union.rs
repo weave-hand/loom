@@ -34,7 +34,7 @@ async fn fetch_rows_unions_file_and_inline() {
     let sql = "SELECT \"id\", \"name\" FROM \"sales\".\"orders\" ORDER BY \"id\"";
     let inlined = query_api::serving::inline_params(sql, &[]);
     let rows = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined)
+        engine_serving::execute_query(&catalog, &inlined, None)
             .await
             .expect("execute_query"),
     );
@@ -86,7 +86,7 @@ async fn fetch_rows_inline_only_table() {
     let params = &[SqlValue::Int(7)];
     let inlined = query_api::serving::inline_params(sql, params);
     let rows = batches_to_rows(
-        engine_serving::execute_query(&catalog, &inlined)
+        engine_serving::execute_query(&catalog, &inlined, None)
             .await
             .expect("execute_query"),
     );

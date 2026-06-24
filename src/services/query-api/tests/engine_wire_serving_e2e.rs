@@ -25,7 +25,10 @@ async fn spawn_query_server(pool: sqlx::PgPool) -> (tempfile::TempDir, String) {
     let sock_str = sock_path.to_string_lossy().to_string();
 
     let catalog = IcebergCatalog::new(pool);
-    let svc = EngineQueryService { catalog };
+    let svc = EngineQueryService {
+        catalog,
+        serving_store: None,
+    };
 
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = UnixListenerStream::new(listener);

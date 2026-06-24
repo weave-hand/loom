@@ -83,7 +83,7 @@ pub fn build_object_batch(
         arrays.push(array);
         specs.push(ColumnSpec {
             name: name.clone(),
-            ty: base.canonical_name().to_string(),
+            ty: base.canonical_name(),
             nullable: true,
         });
     }
@@ -170,6 +170,13 @@ fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayR
                 DataType::Timestamp(TimeUnit::Microsecond, None),
                 Arc::new(TimestampMicrosecondArray::from(vec![cell])),
             )
+        }
+        // Serving a vector cell needs a list-bearing `SqlValue` variant + a
+        // `List<Float32>` array builder — wired in road-vector-column-type task 4.
+        BaseType::Vector(_) => {
+            return Err(ServingError::Engine(format!(
+                "serving a vector column (`{col}`) is not yet implemented"
+            )));
         }
     })
 }

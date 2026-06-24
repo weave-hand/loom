@@ -2,7 +2,6 @@
 //! it over a unix-domain socket.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -15,7 +14,6 @@ use engine::service::EngineControlService;
 use engine_wire::pb::engine_control_server::EngineControlServer;
 use engine_wire::pb::engine_query_server::EngineQueryServer;
 use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
@@ -30,16 +28,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
     props.insert(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", cfg.data_path.display()),
+        cfg.object_store.warehouse_uri.clone(),
     );
 
     // Build two SqlCatalog instances from the same props — SqlCatalog is not Clone.
     let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props.clone())
         .await?;
     let flight_catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props)
         .await?;
 
@@ -58,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let query = EngineQueryService {
         catalog: IcebergCatalog::new(pool.clone()),
+        serving_store: service_runtime::build_serving_object_store(&cfg.object_store)?,
     };
     let flight = FlightDataService {
         catalog: flight_catalog,

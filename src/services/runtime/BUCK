@@ -8,6 +8,7 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:axum",
+        "//third-party:iceberg",
         "//third-party:object_store",
         "//third-party:sqlx",
         "//third-party:thiserror",
@@ -31,6 +32,15 @@ rust_test(
     crate = "init_tracing",
     srcs = ["tests/init_tracing.rs"],
     crate_root = "tests/init_tracing.rs",
+    edition = "2024",
+    deps = [":runtime"],
+)
+
+rust_test(
+    name = "object-store-config",
+    crate = "object_store_config",
+    srcs = ["tests/object_store_config.rs"],
+    crate_root = "tests/object_store_config.rs",
     edition = "2024",
     deps = [":runtime"],
 )
