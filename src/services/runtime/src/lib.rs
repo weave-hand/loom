@@ -78,6 +78,7 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub db: DbConfig,
     pub data_path: PathBuf,
+    pub object_store: ObjectStoreConfig,
     pub lock_timeout: Duration,
 }
 
@@ -87,6 +88,92 @@ pub enum ConfigError {
     MissingVar(String),
     #[error("invalid value for {var}: {detail}")]
     Invalid { var: String, detail: String },
+}
+
+/// Object-store backend for the Iceberg warehouse, selected by `LOOM_WAREHOUSE_URI`'s
+/// scheme. `file://` (or unset) => local disk; `s3://bucket/prefix` => S3/MinIO.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectStoreConfig {
+    /// Base warehouse URI passed to the Iceberg catalog (the `warehouse` prop).
+    pub warehouse_uri: String,
+    pub backend: ObjectStoreBackend,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ObjectStoreBackend {
+    Local,
+    S3(S3Backend),
+}
+
+/// Resolved S3/MinIO connection settings (from `AWS_*` env + the `s3://` URI's bucket).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S3Backend {
+    pub bucket: String,
+    pub endpoint: Option<String>,
+    pub region: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub path_style: bool,
+}
+
+impl ObjectStoreConfig {
+    /// Parse from the env map. `data_path` is the back-compat default warehouse root.
+    fn parse(
+        vars: &HashMap<String, String>,
+        data_path: &Path,
+    ) -> Result<ObjectStoreConfig, ConfigError> {
+        let warehouse_uri = vars
+            .get("LOOM_WAREHOUSE_URI")
+            .cloned()
+            .unwrap_or_else(|| format!("file://{}", data_path.display()));
+
+        let backend = if warehouse_uri.starts_with("file://") {
+            ObjectStoreBackend::Local
+        } else if let Some(rest) = warehouse_uri.strip_prefix("s3://") {
+            let bucket = rest
+                .split('/')
+                .next()
+                .filter(|b| !b.is_empty())
+                .ok_or_else(|| ConfigError::Invalid {
+                    var: "LOOM_WAREHOUSE_URI".into(),
+                    detail: "s3:// URI must include a bucket (s3://bucket/prefix)".into(),
+                })?
+                .to_string();
+            let req = |k: &str| {
+                vars.get(k)
+                    .cloned()
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| ConfigError::MissingVar(k.to_string()))
+            };
+            let endpoint = vars
+                .get("AWS_ENDPOINT_URL")
+                .cloned()
+                .filter(|v| !v.is_empty());
+            let region = vars
+                .get("AWS_REGION")
+                .cloned()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "us-east-1".to_string());
+            ObjectStoreBackend::S3(S3Backend {
+                bucket,
+                // Path-style is required by MinIO; implied whenever an endpoint is set.
+                path_style: endpoint.is_some(),
+                endpoint,
+                region,
+                access_key_id: req("AWS_ACCESS_KEY_ID")?,
+                secret_access_key: req("AWS_SECRET_ACCESS_KEY")?,
+            })
+        } else {
+            return Err(ConfigError::Invalid {
+                var: "LOOM_WAREHOUSE_URI".into(),
+                detail: format!("unsupported scheme in {warehouse_uri}; use file:// or s3://"),
+            });
+        };
+        Ok(ObjectStoreConfig {
+            warehouse_uri,
+            backend,
+        })
+    }
 }
 
 impl Config {
@@ -116,6 +203,9 @@ impl Config {
             None => Duration::from_millis(5000),
         };
 
+        let data_path = PathBuf::from(req("LOOM_DATA_PATH")?);
+        let object_store = ObjectStoreConfig::parse(vars, &data_path)?;
+
         Ok(Config {
             bind_addr,
             db: DbConfig {
@@ -125,7 +215,8 @@ impl Config {
                 password: req("LOOM_DB_PASSWORD")?,
                 dbname: req("LOOM_DB_NAME")?,
             },
-            data_path: PathBuf::from(req("LOOM_DATA_PATH")?),
+            data_path,
+            object_store,
             lock_timeout,
         })
     }

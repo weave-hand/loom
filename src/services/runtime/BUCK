@@ -34,3 +34,12 @@ rust_test(
     edition = "2024",
     deps = [":runtime"],
 )
+
+rust_test(
+    name = "object-store-config",
+    crate = "object_store_config",
+    srcs = ["tests/object_store_config.rs"],
+    crate_root = "tests/object_store_config.rs",
+    edition = "2024",
+    deps = [":runtime"],
+)
