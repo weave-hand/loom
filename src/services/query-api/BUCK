@@ -865,6 +865,19 @@ loom_fixture_test(
 )
 
 rust_test(
+    name = "pg-scan-sql",
+    crate = "pg_scan_sql",
+    srcs = ["tests/pg_scan_sql.rs"],
+    crate_root = "tests/pg_scan_sql.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+    ],
+)
+
+rust_test(
     name = "params",
     crate = "params",
     srcs = ["tests/params.rs"],
