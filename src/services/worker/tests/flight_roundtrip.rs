@@ -42,7 +42,7 @@ fn columns() -> Vec<ColumnSpec> {
 
 /// Encode `ids` as an Arrow-57 IPC stream body (single `id: Int64` column).
 fn ipc_body(ids: &[i64]) -> Vec<u8> {
-    use arrow_ipc57::writer::StreamWriter;
+    use arrow_ipc::writer::StreamWriter;
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
