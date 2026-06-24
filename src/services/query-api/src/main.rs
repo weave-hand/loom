@@ -12,7 +12,6 @@ use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
 use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, DuckLakeActionWriter, EmbeddedDuckDb, ServingEngine};
 use query_api::serving_datafusion::{
@@ -91,10 +90,10 @@ async fn build_iceberg_catalog(
     props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
     props.insert(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", cfg.data_path.display()),
+        cfg.object_store.warehouse_uri.clone(),
     );
     let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props)
         .await?;
     Ok(catalog)
