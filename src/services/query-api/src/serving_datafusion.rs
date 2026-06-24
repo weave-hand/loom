@@ -47,14 +47,33 @@ use crate::sql::SqlDialect;
 
 /// loom-native serving engine: serves governed reads for file-backed Iceberg
 /// tables from the mirror via DataFusion. Holds only the mirror reader; the
-/// `file://` object store and table registrations are built per query.
+/// object store and table registrations are built per query.
 pub struct DataFusionServingEngine {
     catalog: IcebergCatalog,
+    /// `Some((bucket, store))` for an S3 warehouse; `None` => local filesystem.
+    serving_store: Option<(String, Arc<dyn object_store::ObjectStore>)>,
 }
 
 impl DataFusionServingEngine {
-    pub fn new(catalog: IcebergCatalog) -> Self {
-        Self { catalog }
+    pub fn new(
+        catalog: IcebergCatalog,
+        serving_store: Option<(String, Arc<dyn object_store::ObjectStore>)>,
+    ) -> Self {
+        Self {
+            catalog,
+            serving_store,
+        }
+    }
+}
+
+/// The object-store URL a data file's absolute path resolves against. `s3://bucket/...`
+/// => `s3://bucket`; everything else (absolute `file://`/local paths) => local filesystem.
+fn object_store_url_for(path: &str) -> datafusion::error::Result<ObjectStoreUrl> {
+    if let Some(rest) = path.strip_prefix("s3://") {
+        let bucket = rest.split('/').next().unwrap_or("");
+        ObjectStoreUrl::parse(format!("s3://{bucket}"))
+    } else {
+        Ok(ObjectStoreUrl::local_filesystem())
     }
 }
 
@@ -66,7 +85,8 @@ impl ServingEngine for DataFusionServingEngine {
         // (Approach A: pre-register; the per-query mirror read is cheap. A schema
         // cache is a noted perf follow-up, not implemented here.)
         for table in self.catalog.live_tables().await.map_err(to_serving)? {
-            register_iceberg_table(&ctx, &self.catalog, &table).await?;
+            register_iceberg_table(&ctx, &self.catalog, &table, self.serving_store.as_ref())
+                .await?;
         }
         // DataFusion has no positional bind slot here; inline params with the same
         // injection-safe renderer the Quack engine uses (`?` -> SQL literal).
@@ -91,15 +111,20 @@ pub async fn register_iceberg_table(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,
     table: &TableRef,
+    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
 ) -> Result<(), ServingError> {
     use control_plane_core::Catalog;
 
-    // A non-prefixed local store for the absolute warehouse paths (a prefixed store
-    // could not reach files outside data_path). Idempotent across calls on one ctx.
+    // Local store for absolute file:// warehouse paths (back-compat default).
     ctx.register_object_store(
         ObjectStoreUrl::local_filesystem().as_ref(),
         Arc::new(LocalFileSystem::new()),
     );
+    // S3 store for s3:// warehouse paths, registered under s3://{bucket}.
+    if let Some((bucket, store)) = serving_store {
+        let url = ObjectStoreUrl::parse(format!("s3://{bucket}")).map_err(to_serving)?;
+        ctx.register_object_store(url.as_ref(), store.clone());
+    }
 
     let snap = catalog.current_snapshot(table).await.map_err(to_serving)?;
     // The MIRROR is authoritative for the served schema (not per-file Parquet
@@ -454,8 +479,11 @@ impl TableProvider for IcebergMirrorTableProvider {
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
         let kept = prune_files(&self.schema, filters, &self.files);
         let source = Arc::new(ParquetSource::new(self.schema.clone()));
-        let mut builder = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
-            .with_limit(limit);
+        let store_url = match kept.first() {
+            Some(f) => object_store_url_for(&f.path)?,
+            None => ObjectStoreUrl::local_filesystem(),
+        };
+        let mut builder = FileScanConfigBuilder::new(store_url, source).with_limit(limit);
         for f in &kept {
             // Reuse the listing path's exact object-store path derivation so the
             // registered local-filesystem store resolves the absolute warehouse path.

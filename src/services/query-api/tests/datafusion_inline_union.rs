@@ -29,7 +29,7 @@ async fn fetch_rows_unions_file_and_inline() {
         )
         .await; // inline row id 100
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool), None);
     let sql = "SELECT \"id\", \"name\" FROM \"sales\".\"orders\" ORDER BY \"id\"";
     let rows = engine.fetch_rows(sql, &[]).await.expect("fetch_rows");
 
@@ -74,7 +74,7 @@ async fn fetch_rows_inline_only_table() {
         )
         .await;
 
-    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool));
+    let engine = DataFusionServingEngine::new(IcebergCatalog::new(pool), None);
     let rows = engine
         .fetch_rows(
             "SELECT \"id\", \"name\" FROM \"events\".\"audit\" WHERE (\"id\" = ?)",

@@ -63,7 +63,7 @@ async fn pruning_skips_files_and_preserves_governed_results() {
     // --- (1) Correctness: a predicate only file A satisfies returns exactly A's row.
     let v: i64 = 2; // lives only in file A ([1,3]); never in file B ([100,102]).
     let ctx = SessionContext::new();
-    register_iceberg_table(&ctx, &catalog, &table)
+    register_iceberg_table(&ctx, &catalog, &table, None)
         .await
         .expect("register");
     let df = ctx

@@ -66,7 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 flush_byte_threshold,
             ));
             (
-                Arc::new(DataFusionServingEngine::new(IcebergCatalog::new(pool))),
+                Arc::new(DataFusionServingEngine::new(
+                    IcebergCatalog::new(pool),
+                    service_runtime::build_serving_object_store(&cfg.object_store)?,
+                )),
                 action,
             )
         }
