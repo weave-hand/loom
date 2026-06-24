@@ -20,7 +20,7 @@
 
 set -u
 START_PWD="$PWD"
-BUCK2_RELEASE="2026-05-18"   # keep aligned with .github/workflows/ci.yml + prelude pin
+BUCK2_RELEASE="2026-05-18"   # keep aligned with tools/ci/buildbuddy-setup.sh + prelude pin
 GH_VERSION="2.62.0"          # fallback gh (apt's gh is unreliable on a base image)
 echo "loom cloud setup starting (pwd=$START_PWD, buck2=$BUCK2_RELEASE)"
 

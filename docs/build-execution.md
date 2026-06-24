@@ -91,15 +91,16 @@ the run executor, not the build platform.
 
 ## The CI jobs
 
-GitHub Actions, `.github/workflows/ci.yml`. All jobs install the pinned buck2
-release (`BUCK2_RELEASE`, kept aligned with the vendored prelude submodule) and
+BuildBuddy Workflows, `buildbuddy.yaml`. Each action's first step is the shared
+`tools/ci/buildbuddy-setup.sh`, which installs the pinned buck2 release
+(`BUCK2_RELEASE`, kept aligned with the vendored prelude submodule); the actions
 set `BUCK_PREFER_REMOTE: "true"`.
 
-| Job | Trigger | What it runs | Placement |
+| Action | Trigger | What it runs | Placement |
 | --- | --- | --- | --- |
 | `build-test` | pushes to `main` | `buck2 build -M none //src/...` then `buck2 test //src/...` | build on RE (no download); fixture tests local, logic tests RE |
-| `affected` | PRs | `//tools:supertd` snapshots the base-SHA graph, `//tools:btd` maps the diff to impacted targets, then `buck2 build -M none` + `buck2 test` on just those | same as above, scoped to impacted targets |
-| `lint` | all events | `buck2 run //tools:prek -- run --all-files` (rustfmt, clippy, file hygiene, reindeer-in-sync) | hermetic via buck2 |
+| `affected` | PRs | `//tools:supertd` snapshots the base graph from a persistent `_base` worktree, `//tools:btd` maps the diff to impacted targets, then `buck2 build -M none` + `buck2 test` on just those | same as above, scoped to impacted targets |
+| `lint` | push + PR | `buck2 run //tools:prek -- run --all-files` (rustfmt, clippy, file hygiene, reindeer-in-sync) | hermetic via buck2 |
 
 Scope is `//src/...` (first-party + their third-party deps). The `//tools`
 targets are dev-only — some are local-only genrules — and are deliberately not

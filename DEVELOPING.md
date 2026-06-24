@@ -18,7 +18,7 @@ git submodule update --init --recursive
 
 loom pins a specific dated buck2 release that **must match the vendored prelude**
 (see `.gitmodules`); mismatched versions break in obscure ways. CI installs the
-same version via the `BUCK2_RELEASE` env in `.github/workflows/ci.yml` — keep
+same version via the `BUCK2_RELEASE` in `tools/ci/buildbuddy-setup.sh` — keep
 them aligned. Requires `zstd` and `gh` on PATH.
 
 ```sh
@@ -148,7 +148,7 @@ adding crates or dependencies.
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`): `build-test` (full, on `main`
+BuildBuddy Workflows (`buildbuddy.yaml`): `build-test` (full, on `main`
 pushes), `affected` (btd-scoped build/test on PRs), and `lint` (the prek hooks).
 See the *Continuous integration* section of `CLAUDE.md` for the job details, and
 `docs/build-execution.md` for the execution model (RE-vs-local placement,

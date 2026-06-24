@@ -81,19 +81,22 @@ co-located with the RE/cache, with VMs snapshotted/reused, so the shared per-act
 setup (`tools/ci/buildbuddy-setup.sh`: pinned buck2 + zstd/bsdtar/jq + prelude
 submodule init) is near-instant on warm runs. **Prerequisite:** an org secret named
 `BUILDBUDDY_API_KEY` (BuildBuddy UI → Secrets) — `.buckconfig`'s `[buck2_re_client]`
-reads `$BUILDBUDDY_API_KEY`, which the runner does not otherwise expose to buck2. The
-GitHub Actions workflow below is being retired once the BuildBuddy workflow is proven
-green (see the plan's gated Step B).
+reads `$BUILDBUDDY_API_KEY`, which the runner does not otherwise expose to buck2.
 
-GitHub Actions, at `.github/workflows/ci.yml` (repo: `weave-hand/loom`). For the *execution model* behind these jobs — RE-vs-local placement, fixture-test local routing, and the materialization cost model (incl. why we don't cache buck-out) — see **`docs/build-execution.md`**. All jobs install the pinned buck2 release and check out the prelude submodule recursively:
+(The previous GitHub Actions *CI* workflow `ci.yml` and the `install-bsdtar` composite
+action were removed once the BuildBuddy workflow was proven green. `release.yml` — image
+and Helm publishing — and `claude.yml` (the Claude bot) remain on GitHub Actions, so
+`setup-buck2` stays.)
+
+For the *execution model* behind these actions — RE-vs-local placement, fixture-test local routing, and the materialization cost model (incl. why we don't cache buck-out) — see **`docs/build-execution.md`**. The three actions run, respectively:
 - **`build-test`** (pushes to `main` only) — full `buck2 build //src/...` + `buck2 test //src/...`; `main` must always be fully green.
-- **`affected`** (PRs only) — builds/tests just the first-party targets the diff impacts, via btd. It does a second checkout at the PR base SHA, snapshots that graph with `//tools:supertd`, then runs `//tools:btd` (`--base` + `--universe`, `--json-lines`) and feeds the impacted `root//src/...` targets into `buck2 build`/`test`. Empty impact ⇒ nothing built.
-- **`lint`** (all events) — `buck2 run //tools:prek -- run --all-files`, so CI enforces exactly the pre-commit hooks defined in `prek.toml` (rustfmt, clippy, file checks, reindeer-in-sync) with no duplicated config. Fully hermetic via buck2 — no host Rust install (the `reindeer-check` hook's `cargo metadata` uses loom's own toolchain cargo; see `tools/buckify.sh`).
+- **`affected`** (PRs only) — builds/tests just the first-party targets the diff impacts, via btd: it snapshots the base graph with `//tools:supertd` from a persistent `_base` worktree, then runs `//tools:btd` (`--base` + `--diff`, `--json-lines`) and feeds the impacted `root//src/...` targets into `buck2 build`/`test`. Empty impact ⇒ nothing built.
+- **`lint`** (push + PR) — `buck2 run //tools:prek -- run --all-files`, so CI enforces exactly the pre-commit hooks defined in `prek.toml` (rustfmt, clippy, file checks, reindeer-in-sync) with no duplicated config. Fully hermetic via buck2 — no host Rust install (the `reindeer-check` hook's `cargo metadata` uses loom's own toolchain cargo; see `tools/buckify.sh`).
 
 - **buck2 is pinned** via the `BUCK2_RELEASE` env (currently `2026-05-18`) to the dated [facebook/buck2 release](https://github.com/facebook/buck2/releases) — keep it aligned with the prelude submodule pin, or builds break in obscure ways. Bump both together.
 - **Remote execution** runs on BuildBuddy just like local dev; the key comes from the `BUILDBUDDY_API_KEY` repo secret. (loom's executor falls back to pure-local when `[project] remote_enabled` is unset — e.g. `buck2 build --config project.remote_enabled= //…` — so a secretless local-only CI is possible if ever needed.)
 - **Scope** is `//src/...` (first-party + their third-party deps). The `//tools` targets are dev-only and some are local-only genrules, so they're deliberately not built in CI.
-- **buck2 install** is the local composite action `.github/actions/setup-buck2`, shared by all jobs. It restores the binary from an `actions/cache` keyed on the release tag (so only the first run per release downloads/decompresses) and adds it to `PATH`. Bump the version via the `BUCK2_RELEASE` env in `ci.yml`.
+- **buck2 install** in CI is done by the shared, idempotent `tools/ci/buildbuddy-setup.sh` (pinned buck2 + zstd/bsdtar/jq + prelude submodule init), run as each action's first step; the reused VM snapshot makes it near-instant on warm runs. (`release.yml` still installs buck2 via the `.github/actions/setup-buck2` composite action — that's why it isn't deleted.) Bump the version via the `BUCK2_RELEASE` in `tools/ci/buildbuddy-setup.sh` (kept aligned with `tools/cloud-setup.sh` + the prelude pin).
 - **Avoid per-run toolchain downloads.** The workflow sets `BUCK_PREFER_REMOTE: "true"` and builds with `-M none`. Compute is already cached on BuildBuddy (~95% action-cache hits), but on a fresh runner any action that runs *locally* must materialize its inputs (LLVM, rustc, std — multiple GiB) from CAS. Preferring remote keeps those actions on RE so nothing is pulled down; `-M none` skips downloading final artifacts too. The toolchain's `assemble_sysroot` action (in `toolchains/rust_dist.bzl`) is also RE-eligible (not `local_only`) for the same reason — otherwise it forces the rustc/std dists local on every build. Net effect: a cached CI build downloads single-digit MiB (`local: 0`), versus ~4 GiB before. Keep any new `local_only`/`uses_local_*` actions off the common build path, or CI pays to materialize their inputs every run.
 
 ## Cloud routines (scheduled code-health runs)
