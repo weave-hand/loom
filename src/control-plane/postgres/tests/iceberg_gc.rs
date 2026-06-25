@@ -13,7 +13,9 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use std::time::Duration;
 
-use control_plane_core::{Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef};
+use control_plane_core::{
+    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef,
+};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
@@ -213,12 +215,18 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
     // (c) live read at current (s3) unchanged: file C, 2 rows.
     let cur = ice.current_snapshot(&t).await.expect("current");
     assert_eq!(cur.id, s3);
-    let now = ice.files_with_stats(&t, s3).await.expect("files@s3 post-gc");
+    let now = ice
+        .files_with_stats(&t, s3)
+        .await
+        .expect("files@s3 post-gc");
     assert_eq!(now.len(), 1);
     assert_eq!(now[0].record_count, 2);
 
     // (b) structural: B still resolvable via the mirror at s2 (end=s3 > H).
-    let at_s2 = ice.files_with_stats(&t, s2).await.expect("files@s2 post-gc");
+    let at_s2 = ice
+        .files_with_stats(&t, s2)
+        .await
+        .expect("files@s2 post-gc");
     assert_eq!(at_s2.len(), 1, "B retained in the mirror");
     assert_eq!(at_s2[0].record_count, 4);
 }
@@ -240,9 +248,16 @@ async fn gc_reclaims_aged_inline_rows() {
     };
     let run = RunId(uuid::Uuid::new_v4());
 
-    inline_append(&pool, &t, &columns(), &batch(3), lineage(run, "wh", "inl"), None)
-        .await
-        .expect("inline_append");
+    inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &batch(3),
+        lineage(run, "wh", "inl"),
+        None,
+    )
+    .await
+    .expect("inline_append");
     let sf = flush_table(&catalog, &pool, &t, run)
         .await
         .expect("flush")
@@ -335,9 +350,16 @@ async fn gc_serializes_with_concurrent_flush() {
         .await
         .expect("ow");
     age_snapshot(&pool, s2.0).await;
-    inline_append(&pool, &t, &columns(), &batch(2), lineage(run, "wh", "race"), None)
-        .await
-        .expect("inline_append");
+    inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &batch(2),
+        lineage(run, "wh", "race"),
+        None,
+    )
+    .await
+    .expect("inline_append");
 
     let flush = tokio::spawn({
         let pool_f = pool.clone();
@@ -357,5 +379,8 @@ async fn gc_serializes_with_concurrent_flush() {
     // Final state is readable and consistent (no half-applied corruption).
     let ice = IcebergCatalog::new(pool.clone());
     let cur = ice.current_snapshot(&t).await.expect("current");
-    let _ = ice.files_with_stats(&t, cur.id).await.expect("files readable");
+    let _ = ice
+        .files_with_stats(&t, cur.id)
+        .await
+        .expect("files readable");
 }

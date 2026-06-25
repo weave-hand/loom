@@ -27,12 +27,15 @@ pub async fn handle_gc(engine: GrpcQueueClient, job: Job) -> std::result::Result
         error: format!("bad gc payload: {e}"),
         policy: RetryPolicy::Abandon,
     })?;
-    engine.gc_table(schema, name).await.map_err(|e| JobFailure {
-        error: e.to_string(),
-        policy: RetryPolicy::Retry {
-            delay: backoff(job.attempts),
-        },
-    })?;
+    engine
+        .gc_table(schema, name)
+        .await
+        .map_err(|e| JobFailure {
+            error: e.to_string(),
+            policy: RetryPolicy::Retry {
+                delay: backoff(job.attempts),
+            },
+        })?;
     Ok(())
 }
 

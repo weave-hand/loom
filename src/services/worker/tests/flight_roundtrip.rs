@@ -101,6 +101,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         cp,
         catalog: control_catalog,
         pool: pool.clone(),
+        retention: Duration::from_secs(7 * 24 * 3600),
     };
     let flight_svc = FlightDataService {
         catalog: flight_catalog,

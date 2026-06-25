@@ -401,7 +401,10 @@ async fn gc_job_flows_through_worker_and_reclaims_object() {
     client.complete(job_id).await.expect("complete");
 
     // Aged object A reclaimed over the wire; current data intact; queue drained.
-    assert!(!a_path.exists(), "aged object A deleted by gc over the wire");
+    assert!(
+        !a_path.exists(),
+        "aged object A deleted by gc over the wire"
+    );
     let cur = ice.current_snapshot(&table).await.expect("current");
     assert_eq!(cur.id, s2);
     let files = ice.files_with_stats(&table, s2).await.expect("files@s2");
