@@ -31,16 +31,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
 
-    // Build the control plane before the `match backend` — the DuckLake branch
-    // moves `pool` into its own materializer cp, and the Iceberg branch moves it
-    // into the catalog, so we must clone here while `pool` is still owned.
-    let cp: Arc<dyn ControlPlane> = Arc::new(service_runtime::control_plane(
+    // One concrete control plane, built before the `match backend` (the DuckLake
+    // branch moves `pool` into its own materializer cp and the Iceberg branch moves
+    // it into the catalog, so we clone here while `pool` is still owned). It serves
+    // both the `ControlPlane` surface (the compact endpoint's queue) and `Auth`.
+    let pg = Arc::new(service_runtime::control_plane(
         pool.clone(),
         cfg.lock_timeout,
     ));
+    let cp: Arc<dyn ControlPlane> = pg.clone();
 
     let backend = parse_landing_backend(std::env::var("LOOM_LANDING_BACKEND").ok().as_deref())
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let auth_state = service_runtime::AuthState {
+        auth: pg.clone(),
+        session_ttl: service_runtime::session_ttl_from_env(),
+    };
+    if let (Ok(user), Ok(pass)) = (
+        std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME"),
+        std::env::var("LOOM_BOOTSTRAP_ADMIN_PASSWORD"),
+    ) {
+        service_runtime::bootstrap_admin(pg.as_ref(), &user, &pass).await?;
+    }
 
     let materializer: Arc<dyn LandingMaterializer> = match backend {
         LandingBackend::DuckLake => {
@@ -67,7 +80,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let app = router(AppState { materializer, cp });
+    let app = service_runtime::protect(router(AppState { materializer, cp }), auth_state.clone())
+        .merge(service_runtime::login_routes(auth_state.clone()))
+        .merge(service_runtime::session_routes(auth_state));
     service_runtime::serve(cfg.bind_addr, app).await?;
     Ok(())
 }

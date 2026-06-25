@@ -126,3 +126,16 @@ rust_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "auth",
+    crate = "auth",
+    srcs = ["tests/auth.rs"],
+    crate_root = "tests/auth.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tokio",
+    ],
+)

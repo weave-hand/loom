@@ -2,6 +2,15 @@
 //! control plane + object store, and serve an axum router. Used by the ingest and
 //! query-api binaries so each `main` stays thin.
 
+mod auth;
+pub use auth::{
+    AuthState, BootstrapError, Subject, bootstrap_admin, login_routes, protect, require_auth,
+    session_routes, session_ttl_from_env, status_for,
+};
+
+mod crypto;
+pub use crypto::{AuthError, generate_session_token, hash_password, token_sha256, verify_password};
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;

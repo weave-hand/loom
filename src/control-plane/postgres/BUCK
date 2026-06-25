@@ -311,6 +311,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "auth",
+    crate = "auth",
+    srcs = ["tests/auth.rs"],
+    crate_root = "tests/auth.rs",
+    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "existence-validation",
     crate = "existence_validation",
     srcs = ["tests/existence_validation.rs"],

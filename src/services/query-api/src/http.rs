@@ -6,17 +6,18 @@ use std::sync::Arc;
 
 use crate::handler::{
     Associations, ChainQuery, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop, ObjectQuery,
-    QueryDeps, QueryError, Subject, read_associations, read_graph_reach, read_graph_reach_union,
+    QueryDeps, QueryError, read_associations, read_graph_reach, read_graph_reach_union,
     read_graph_reach_with_tail, read_linked_chain, read_object,
 };
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
 use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
-use control_plane_core::{ControlPlane, GC_JOB_KIND, NewJob, SubjectId};
+use control_plane_core::{ControlPlane, GC_JOB_KIND, NewJob};
+use service_runtime::Subject;
 
 /// Log a backend/serving fault server-side, then return the opaque 500 the client
 /// sees. The detail (`error = %e`) is for operators only — the response body
@@ -74,13 +75,8 @@ async fn get_object(
     State(st): State<AppState>,
     Path(type_name): Path<String>,
     Query(params): Query<Vec<(String, String)>>,
-    headers: HeaderMap,
+    subject: Subject,
 ) -> impl IntoResponse {
-    let subject = headers
-        .get("X-Loom-Subject")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
     // Pull the `_ids` object-set input out of the params; the rest are filters. Repeated
     // filter keys are preserved (a column may carry several predicates, e.g. a range); the
     // handler parses each value's operator and coerces it.
@@ -112,7 +108,7 @@ async fn get_object(
             eq_filters,
             ids,
         },
-        &Subject(SubjectId(subject)),
+        &subject,
         &deps,
     )
     .await
@@ -130,13 +126,8 @@ async fn get_linked(
     State(st): State<AppState>,
     Path((from_type, link_name)): Path<(String, String)>,
     Query(params): Query<Vec<(String, String)>>,
-    headers: HeaderMap,
+    subject: Subject,
 ) -> impl IntoResponse {
-    let subject = headers
-        .get("X-Loom-Subject")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
     // Pull `_direction` (single-hop knob), `_shape`, and `_ids` out of the params; the rest
     // are filters.
     let mut direction_raw: Option<String> = None;
@@ -189,10 +180,11 @@ async fn get_linked(
         filters,
         ids,
     };
-    let subj = Subject(SubjectId(subject));
     match shape.as_deref() {
-        None | Some("objects") => respond_objects(read_linked_chain(&query, &subj, &deps).await),
-        Some("association") => respond_associations(read_associations(&query, &subj, &deps).await),
+        None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
+        Some("association") => {
+            respond_associations(read_associations(&query, &subject, &deps).await)
+        }
         Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
     }
 }
@@ -201,13 +193,8 @@ async fn get_linked_chain(
     State(st): State<AppState>,
     Path(from_type): Path<String>,
     Query(params): Query<Vec<(String, String)>>,
-    headers: HeaderMap,
+    subject: Subject,
 ) -> impl IntoResponse {
-    let subject = headers
-        .get("X-Loom-Subject")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
     // `_path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
     // every other pair is a filter. Repeated filter keys are preserved (e.g. a range).
     let mut hops: Vec<Hop> = Vec::new();
@@ -250,10 +237,11 @@ async fn get_linked_chain(
         filters,
         ids,
     };
-    let subj = Subject(SubjectId(subject));
     match shape.as_deref() {
-        None | Some("objects") => respond_objects(read_linked_chain(&query, &subj, &deps).await),
-        Some("association") => respond_associations(read_associations(&query, &subj, &deps).await),
+        None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
+        Some("association") => {
+            respond_associations(read_associations(&query, &subject, &deps).await)
+        }
         Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
     }
 }
@@ -295,13 +283,8 @@ async fn get_graph(
     State(st): State<AppState>,
     Path((type_name, link_name)): Path<(String, String)>,
     Query(params): Query<Vec<(String, String)>>,
-    headers: HeaderMap,
+    subject: Subject,
 ) -> impl IntoResponse {
-    let subject = headers
-        .get("X-Loom-Subject")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
     // Pull `depth` and `_ids` out; the rest are seed filters.
     let mut depth = DEFAULT_GRAPH_DEPTH;
     let mut ids: Vec<String> = Vec::new();
@@ -344,7 +327,7 @@ async fn get_graph(
         depth,
         filters,
         ids,
-        subject,
+        &subject,
     )
     .await
 }
@@ -356,13 +339,8 @@ async fn get_graph_path(
     State(st): State<AppState>,
     Path(type_name): Path<String>,
     Query(params): Query<Vec<(String, String)>>,
-    headers: HeaderMap,
+    subject: Subject,
 ) -> impl IntoResponse {
-    let subject = headers
-        .get("X-Loom-Subject")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
     let mut depth = DEFAULT_GRAPH_DEPTH;
     let mut ids: Vec<String> = Vec::new();
     let mut ids_present = false;
@@ -423,7 +401,7 @@ async fn get_graph_path(
             .into_response();
     }
     if !links.is_empty() {
-        return graph_union_respond(&st, type_name, links, depth, filters, ids, subject).await;
+        return graph_union_respond(&st, type_name, links, depth, filters, ids, &subject).await;
     }
     if path.is_empty() {
         return (
@@ -465,11 +443,11 @@ async fn get_graph_path(
         }
         let tail_links: Vec<String> = path[1..].to_vec();
         return graph_tail_respond(
-            &st, type_name, core_link, tail_links, depth, filters, ids, subject,
+            &st, type_name, core_link, tail_links, depth, filters, ids, &subject,
         )
         .await;
     }
-    graph_respond(&st, type_name, path, depth, filters, ids, subject).await
+    graph_respond(&st, type_name, path, depth, filters, ids, &subject).await
 }
 
 /// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
@@ -495,7 +473,7 @@ async fn graph_respond(
     depth: u32,
     filters: Vec<(String, String)>,
     ids: Vec<String>,
-    subject: String,
+    subject: &Subject,
 ) -> axum::response::Response {
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
@@ -510,7 +488,7 @@ async fn graph_respond(
             filters,
             ids,
         },
-        &Subject(SubjectId(subject)),
+        subject,
         &deps,
     )
     .await
@@ -529,7 +507,7 @@ async fn graph_union_respond(
     depth: u32,
     filters: Vec<(String, String)>,
     ids: Vec<String>,
-    subject: String,
+    subject: &Subject,
 ) -> axum::response::Response {
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
@@ -544,7 +522,7 @@ async fn graph_union_respond(
             filters,
             ids,
         },
-        &Subject(SubjectId(subject)),
+        subject,
         &deps,
     )
     .await
@@ -565,7 +543,7 @@ async fn graph_tail_respond(
     depth: u32,
     filters: Vec<(String, String)>,
     ids: Vec<String>,
-    subject: String,
+    subject: &Subject,
 ) -> axum::response::Response {
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
@@ -581,7 +559,7 @@ async fn graph_tail_respond(
             filters,
             ids,
         },
-        &Subject(SubjectId(subject)),
+        subject,
         &deps,
     )
     .await
@@ -594,14 +572,9 @@ async fn graph_tail_respond(
 async fn post_action(
     State(st): State<AppState>,
     Path(action_name): Path<String>,
-    headers: HeaderMap,
+    subject: Subject,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let subject = headers
-        .get("X-Loom-Subject")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
     let obj = match body.as_object() {
         Some(m) => m.clone(),
         None => return (StatusCode::BAD_REQUEST, "body must be a JSON object").into_response(),
@@ -610,7 +583,7 @@ async fn post_action(
         cp: st.cp.as_ref(),
         action_engine: st.action_engine.as_ref(),
     };
-    match crate::action::run_action(&action_name, &obj, &SubjectId(subject), &deps).await {
+    match crate::action::run_action(&action_name, &obj, &subject.0, &deps).await {
         Ok((rows, run_id)) => {
             let body = crate::render::objects_to_json(&rows);
             // objects_to_json yields {"objects":[{...}]}; return the single created object.

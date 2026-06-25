@@ -19,9 +19,9 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, Cardinality, ControlPlane, DatasetRef, Effect, EventType, LineageEvent,
-    LinkBacking, LinkDef, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, RunId,
-    SubjectId, TableRef, TypeName,
+    Acl, Action, Auth, Cardinality, ControlPlane, ControlPlaneError, DatasetRef, Effect, EventType,
+    LineageEvent, LinkBacking, LinkDef, NewUser, ObjectType, Ontology, PolicyTarget, PropertyDef,
+    RoleId, RunId, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
@@ -33,12 +33,15 @@ use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use query_api::http::{AppState, router};
 use query_api::render::objects_to_json;
-use query_api::serving::{ActionEngine, EmbeddedDuckDb, ServingError, SqlValue, inline_params};
+use query_api::serving::{ActionEngine, ServingError, SqlValue, inline_params};
 use query_api::serving_datafusion::batches_to_rows;
 use query_api::sql::DataFusionDialect;
+use service_runtime::{AuthState, protect, token_sha256};
 use time::OffsetDateTime;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+pub use query_api::serving::EmbeddedDuckDb;
 
 /// Convenience constructor for a `TableRef`.
 pub fn tref(s: &str, n: &str) -> TableRef {
@@ -124,23 +127,54 @@ pub async fn grant_read(cp: &PgControlPlane, role: &RoleId, type_name: &str) {
     .unwrap();
 }
 
-/// Drive the HTTP router and return (status, parsed JSON body).
+/// Ensure `subject` has an auth.user (the session FK target) and mint a live
+/// session token for it. Lets the existing e2e tests authenticate without
+/// driving the password flow.
+pub async fn session_token(cp: &PgControlPlane, subject: &str) -> String {
+    let phc = service_runtime::hash_password("e2e-password").expect("hash");
+    match cp
+        .create_user(&NewUser {
+            subject_id: SubjectId(subject.into()),
+            username: subject.into(),
+            password_phc: phc,
+        })
+        .await
+    {
+        Ok(()) | Err(ControlPlaneError::Conflict(_)) => {}
+        Err(e) => panic!("create_user({subject}): {e}"),
+    }
+    let token = service_runtime::generate_session_token();
+    let expires = OffsetDateTime::now_utc() + time::Duration::hours(1);
+    cp.create_session(&SubjectId(subject.into()), &token_sha256(&token), expires)
+        .await
+        .expect("create_session");
+    token
+}
+
+/// Drive the HTTP router (behind the auth gate) and return (status, parsed JSON body).
 pub async fn get(
     cp: Arc<PgControlPlane>,
     eng: Arc<EmbeddedDuckDb>,
     uri: &str,
     subject: &str,
 ) -> (StatusCode, serde_json::Value) {
-    let app = router(AppState {
-        cp: cp as Arc<dyn ControlPlane>,
-        serving: eng,
-        action_engine: Arc::new(StubAction),
-    });
+    let token = session_token(&cp, subject).await;
+    let app = protect(
+        router(AppState {
+            cp: cp.clone() as Arc<dyn ControlPlane>,
+            serving: eng,
+            action_engine: Arc::new(StubAction),
+        }),
+        AuthState {
+            auth: cp.clone(),
+            session_ttl: std::time::Duration::from_secs(3600),
+        },
+    );
     let res = app
         .oneshot(
             Request::builder()
                 .uri(uri)
-                .header("X-Loom-Subject", subject)
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

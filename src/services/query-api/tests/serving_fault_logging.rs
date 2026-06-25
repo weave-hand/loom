@@ -17,6 +17,7 @@ use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue};
+use service_runtime::Subject;
 use tower::ServiceExt;
 use tracing_test::traced_test;
 
@@ -87,16 +88,13 @@ async fn build_faulting_app() -> axum::Router {
 #[traced_test]
 async fn serving_fault_logs_detail_and_returns_opaque_500() {
     let app = build_faulting_app().await;
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/objects/FaultType")
-                .header("X-Loom-Subject", "alice")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .uri("/objects/FaultType")
+        .body(Body::empty())
         .unwrap();
+    req.extensions_mut()
+        .insert(Subject(SubjectId("alice".into())));
+    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let body_str = std::str::from_utf8(&body).unwrap();

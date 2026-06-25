@@ -513,6 +513,71 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "argon2",
+    actual = ":argon2-0.5",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "argon2-0.5.3.crate",
+    sha256 = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072",
+    strip_prefix = "argon2-0.5.3",
+    urls = ["https://static.crates.io/crates/argon2/0.5.3/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "argon2-0.5",
+    srcs = [":argon2-0.5.3.crate"],
+    crate = "argon2",
+    crate_root = "argon2-0.5.3.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "argon2",
+        "CARGO_CRATE_NAME": "argon2",
+        "CARGO_MANIFEST_DIR": "argon2-0.5.3.crate",
+        "CARGO_PKG_AUTHORS": "RustCrypto Developers",
+        "CARGO_PKG_DESCRIPTION": "Pure Rust implementation of the Argon2 password hashing function with support\nfor the Argon2d, Argon2i, and Argon2id algorithmic variants\n",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "argon2",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/RustCrypto/password-hashes/tree/master/argon2",
+        "CARGO_PKG_RUST_VERSION": "1.65",
+        "CARGO_PKG_VERSION": "0.5.3",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "3",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "alloc",
+        "default",
+        "password-hash",
+        "rand",
+    ],
+    platform = {
+        "linux-x86_64": dict(
+            deps = [":cpufeatures-0.2"],
+        ),
+        "macos-x86_64": dict(
+            deps = [":cpufeatures-0.2"],
+        ),
+        "windows-gnu": dict(
+            deps = [":cpufeatures-0.2"],
+        ),
+        "windows-msvc": dict(
+            deps = [":cpufeatures-0.2"],
+        ),
+    },
+    visibility = [],
+    deps = [
+        ":base64ct-1",
+        ":blake2-0.10",
+        ":password-hash-0.5",
+    ],
+)
+
 http_archive(
     name = "array-init-2.1.0.crate",
     sha256 = "3d62b7694a562cdf5a74227903507c56ab2cc8bdd1f781ed5cb4cf9c9f810bfc",
@@ -1873,6 +1938,41 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "base64ct-1.8.3.crate",
+    sha256 = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06",
+    strip_prefix = "base64ct-1.8.3",
+    urls = ["https://static.crates.io/crates/base64ct/1.8.3/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "base64ct-1",
+    srcs = [":base64ct-1.8.3.crate"],
+    crate = "base64ct",
+    crate_root = "base64ct-1.8.3.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "base64ct",
+        "CARGO_CRATE_NAME": "base64ct",
+        "CARGO_MANIFEST_DIR": "base64ct-1.8.3.crate",
+        "CARGO_PKG_AUTHORS": "RustCrypto Developers",
+        "CARGO_PKG_DESCRIPTION": "Pure Rust implementation of Base64 (RFC 4648) which avoids any usages of\ndata-dependent branches/LUTs and thereby provides portable \"best effort\"\nconstant-time operation and embedded-friendly no_std support\n",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/RustCrypto/formats/tree/master/base64ct",
+        "CARGO_PKG_NAME": "base64ct",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/RustCrypto/formats",
+        "CARGO_PKG_RUST_VERSION": "1.85",
+        "CARGO_PKG_VERSION": "1.8.3",
+        "CARGO_PKG_VERSION_MAJOR": "1",
+        "CARGO_PKG_VERSION_MINOR": "8",
+        "CARGO_PKG_VERSION_PATCH": "3",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["alloc"],
+    visibility = [],
+)
+
+http_archive(
     name = "beef-0.5.2.crate",
     sha256 = "3a8241f3ebb85c056b509d4327ad0358fbbba6ffb340bf388f26350aeda225b1",
     strip_prefix = "beef-0.5.2",
@@ -2177,6 +2277,41 @@ cargo.rust_library(
     },
     visibility = [],
     deps = [":serde_core-1"],
+)
+
+http_archive(
+    name = "blake2-0.10.6.crate",
+    sha256 = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe",
+    strip_prefix = "blake2-0.10.6",
+    urls = ["https://static.crates.io/crates/blake2/0.10.6/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "blake2-0.10",
+    srcs = [":blake2-0.10.6.crate"],
+    crate = "blake2",
+    crate_root = "blake2-0.10.6.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "blake2",
+        "CARGO_CRATE_NAME": "blake2",
+        "CARGO_MANIFEST_DIR": "blake2-0.10.6.crate",
+        "CARGO_PKG_AUTHORS": "RustCrypto Developers",
+        "CARGO_PKG_DESCRIPTION": "BLAKE2 hash functions",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "blake2",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/RustCrypto/hashes",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.10.6",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "10",
+        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":digest-0.10"],
 )
 
 http_archive(
@@ -12501,6 +12636,50 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "password-hash-0.5.0.crate",
+    sha256 = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166",
+    strip_prefix = "password-hash-0.5.0",
+    urls = ["https://static.crates.io/crates/password-hash/0.5.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "password-hash-0.5",
+    srcs = [":password-hash-0.5.0.crate"],
+    crate = "password_hash",
+    crate_root = "password-hash-0.5.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "password_hash",
+        "CARGO_CRATE_NAME": "password_hash",
+        "CARGO_MANIFEST_DIR": "password-hash-0.5.0.crate",
+        "CARGO_PKG_AUTHORS": "RustCrypto Developers",
+        "CARGO_PKG_DESCRIPTION": "Traits which describe the functionality of password hashing algorithms,\nas well as a `no_std`-friendly implementation of the PHC string format\n(a well-defined subset of the Modular Crypt Format a.k.a. MCF)\n",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "password-hash",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/RustCrypto/traits/tree/master/password-hash",
+        "CARGO_PKG_RUST_VERSION": "1.60",
+        "CARGO_PKG_VERSION": "0.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "alloc",
+        "default",
+        "rand_core",
+    ],
+    visibility = [],
+    deps = [
+        ":base64ct-1",
+        ":rand_core-0.6",
+        ":subtle-2",
+    ],
+)
+
+http_archive(
     name = "paste-1.0.15.crate",
     sha256 = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a",
     strip_prefix = "paste-1.0.15",
@@ -16791,6 +16970,8 @@ cargo.rust_library(
     },
     features = [
         "_rt-tokio",
+        "any",
+        "default",
         "derive",
         "json",
         "macros",
@@ -17041,6 +17222,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "any",
         "json",
         "migrate",
         "offline",

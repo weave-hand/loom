@@ -15,6 +15,7 @@ use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue};
+use service_runtime::Subject;
 use tower::ServiceExt;
 
 struct StubServing;
@@ -91,16 +92,13 @@ async fn get_objects_returns_json_rows() {
         serving: Arc::new(StubServing),
         action_engine: Arc::new(StubAction),
     });
-    let res = app
-        .oneshot(
-            Request::builder()
-                .uri("/objects/Order")
-                .header("X-Loom-Subject", "analyst")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .uri("/objects/Order")
+        .body(Body::empty())
         .unwrap();
+    req.extensions_mut()
+        .insert(Subject(SubjectId("analyst".into())));
+    let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();

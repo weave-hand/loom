@@ -21,6 +21,7 @@ use sqlx::PgPool;
 pub mod fixture;
 
 mod acl;
+mod auth;
 mod catalog;
 pub mod ducklake_type;
 pub mod iceberg_catalog;

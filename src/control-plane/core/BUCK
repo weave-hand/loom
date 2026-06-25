@@ -116,6 +116,16 @@ rust_test(
 )
 
 rust_test(
+    name = "auth-types",
+    crate = "auth_types",
+    srcs = ["tests/auth_types.rs"],
+    crate_root = "tests/auth_types.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "gc-job",
     crate = "gc_job",
     srcs = ["tests/gc_job.rs"],
