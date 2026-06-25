@@ -1,73 +1,66 @@
-//! Object-set input (`?_ids=`) e2e over the real HTTP router backed by a DuckDB serving
-//! engine reading a DuckLake-on-Postgres catalog. Proves `?_ids=1,2` scopes a plain read
-//! to those source objects by declared identity; a traversal `…/links/orders?_ids=1`
-//! scopes the source before the hop; `?_ids=` + `?_shape=association` scopes the
-//! association's source; `?_ids=` on a no-identity type -> HTTP 400; and a present-but-empty
-//! `?_ids=` -> HTTP 400.
+//! Object-set input (`?_ids=`) e2e over the real HTTP router backed by an Iceberg/DataFusion
+//! serving engine. Proves `?_ids=1,2` scopes a plain read to those source objects by declared
+//! identity; a traversal `…/links/orders?_ids=1` scopes the source before the hop; `?_ids=` +
+//! `?_shape=association` scopes the association's source; `?_ids=` on a no-identity type ->
+//! HTTP 400; and a present-but-empty `?_ids=` -> HTTP 400.
 
 use std::sync::Arc;
 
-use arrow::array::{Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use axum::http::StatusCode;
 use control_plane_core::{Cardinality, LinkBacking, LinkDef, ObjectType, Ontology, TypeName};
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use e2e_support::{get, grant_read, land, prop, subject_with_role, tref};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
-use query_api::serving::EmbeddedDuckDb;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::{InProcessServingEngine, get, grant_read, prop, subject_with_role, tref};
 
-/// Seed customer(id, region) ids {1,2,3} and orders(id, customer_id, status) FK-linked.
-/// Define Customer (identity `id`), Order (identity `order_id`... here `id`), the FK link
-/// `orders`, and a `Plain` type backed by the same table but with NO declared identity (to
-/// drive the no-identity -> 400 path). Caller MUST keep the `DuckLakeWriter` alive.
-async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter) {
+/// Seed customer(id, region) ids {1,2,3} and orders(order_id, customer_id, status) FK-linked.
+/// Define Customer (identity `id`), Order (identity `order_id`), the FK link `orders`, and a
+/// `Plain` type backed by the same table but with NO declared identity (to drive the
+/// no-identity -> 400 path). Caller MUST keep the `IcebergWriter` alive.
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
 
     // customer(id, region): (1,'CA'), (2,'CA'), (3,'NY')
     let cust = tref("main", "customer");
-    let cust_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("region", DataType::Utf8, true),
-    ]));
-    let cust_batch = RecordBatch::try_new(
-        cust_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec![Some("CA"), Some("CA"), Some("NY")])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &cust, cust_schema, cust_batch).await;
+    let cust_cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("region".to_string(), "string".to_string(), true),
+    ];
+    writer
+        .seed_arrays(
+            "main",
+            "customer",
+            &cust_cols,
+            &[
+                SeedCol::Long(vec![1, 2, 3]),
+                SeedCol::Str(vec!["CA", "CA", "NY"]),
+            ],
+        )
+        .await;
 
     // orders(order_id, customer_id, status):
     //   (10,1,'shipped'),(11,1,'pending'),(20,2,'shipped'),(30,3,'shipped')
     let ord = tref("main", "orders");
-    let ord_schema = Arc::new(Schema::new(vec![
-        Field::new("order_id", DataType::Int64, false),
-        Field::new("customer_id", DataType::Int64, false),
-        Field::new("status", DataType::Utf8, true),
-    ]));
-    let ord_batch = RecordBatch::try_new(
-        ord_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![10, 11, 20, 30])),
-            Arc::new(Int64Array::from(vec![1, 1, 2, 3])),
-            Arc::new(StringArray::from(vec![
-                Some("shipped"),
-                Some("pending"),
-                Some("shipped"),
-                Some("shipped"),
-            ])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &ord, ord_schema, ord_batch).await;
+    let ord_cols = vec![
+        ("order_id".to_string(), "long".to_string(), false),
+        ("customer_id".to_string(), "long".to_string(), false),
+        ("status".to_string(), "string".to_string(), true),
+    ];
+    writer
+        .seed_arrays(
+            "main",
+            "orders",
+            &ord_cols,
+            &[
+                SeedCol::Long(vec![10, 11, 20, 30]),
+                SeedCol::Long(vec![1, 1, 2, 3]),
+                SeedCol::Str(vec!["shipped", "pending", "shipped", "shipped"]),
+            ],
+        )
+        .await;
 
     // Customer declares identity `id`.
     cp.define_type(ObjectType {
@@ -118,16 +111,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
     (cp, eng, writer)
 }
 

@@ -25,11 +25,14 @@ use service_runtime::{
 use tower::ServiceExt;
 
 use e2e_support::{
-    EmbeddedDuckDb, StubAction, grant_read, session_token, setup, subject_with_role,
+    StubAction, grant_read, session_token, setup_iceberg, subject_with_role,
 };
 
 /// Build the full query-api app: protected object routes + public /auth/login.
-fn app(cp: Arc<PgControlPlane>, eng: Arc<EmbeddedDuckDb>) -> axum::Router {
+fn app(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
+) -> axum::Router {
     let auth = AuthState {
         auth: cp.clone() as Arc<dyn Auth + Send + Sync>,
         session_ttl: Duration::from_secs(3600),
@@ -49,9 +52,8 @@ fn app(cp: Arc<PgControlPlane>, eng: Arc<EmbeddedDuckDb>) -> axum::Router {
 #[tokio::test]
 async fn valid_token_read_200() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let cp = Arc::new(cp);
-    let eng = Arc::new(eng);
 
     // Give "alice" a read grant on Customer and mint a session.
     let (_, role) = subject_with_role(&cp, "alice").await;
@@ -76,9 +78,8 @@ async fn valid_token_read_200() {
 #[tokio::test]
 async fn missing_token_401() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let cp = Arc::new(cp);
-    let eng = Arc::new(eng);
 
     let (_, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -100,9 +101,8 @@ async fn missing_token_401() {
 #[tokio::test]
 async fn bad_password_login_401() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let cp = Arc::new(cp);
-    let eng = Arc::new(eng);
 
     // Seed the user with a known password so there IS a user to authenticate.
     let phc = hash_password("correct-password").expect("hash");
@@ -137,9 +137,8 @@ async fn bad_password_login_401() {
 #[tokio::test]
 async fn revoked_session_401() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let cp = Arc::new(cp);
-    let eng = Arc::new(eng);
 
     let (_, role) = subject_with_role(&cp, "carol").await;
     grant_read(&cp, &role, "Customer").await;
@@ -180,9 +179,8 @@ async fn revoked_session_401() {
 #[tokio::test]
 async fn authn_ok_acl_denied_403() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let cp = Arc::new(cp);
-    let eng = Arc::new(eng);
 
     // "dave" has a valid session (session_token also creates the ACL subject via
     // create_user) but has NOT been granted read on Customer.
