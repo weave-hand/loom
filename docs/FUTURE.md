@@ -225,8 +225,10 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   The binaries ship as a minimal `serve` with no graceful shutdown/signal handling, no TLS, and no connection-pool tuning knobs.
 - [ ] **S3 / remote object store for binaries** `{#fut-binaries-s3 area:deploy status:deferred from:2026-06-13-service-runtime-and-binaries-design pr:- spec:-}`
   `service_runtime` wires LocalFileSystem only; S3/remote object store is a later store slice.
-- [ ] **Config and deployment ergonomics** `{#fut-config-deploy-ergonomics area:deploy status:deferred from:to-be-planned pr:- spec:-}`
-  Broad improvements to configuration and deployment ergonomics.
+- [ ] **YAML config-file format** `{#fut-config-yaml-format area:deploy status:deferred from:2026-06-25-config-seam-unification-design pr:- spec:-}`
+  [[road-config-seam-unification]] loads the structured config file as JSON (`serde_json`, already vendored). Adding YAML authoring is purely additive (JSON ⊂ YAML) but needs a *maintained* YAML crate — the de-facto `serde_yaml` is archived upstream — so the crate choice is its own decision, deferred until a deployment actually wants to hand-author YAML ConfigMaps.
+- [x] **Config and deployment ergonomics** `{#fut-config-deploy-ergonomics area:deploy status:promoted from:to-be-planned pr:- spec:-}`
+  Promoted to [[road-config-seam-unification]], which takes the configuration half — consolidating loom's scattered operational tuning knobs onto one typed, validated env→config seam (per-domain sub-structs, fail-fast on bad input). The deployment-ergonomics half (Helm `values.yaml` wiring of those knobs) stays with [[fut-deploy-followups]].
 
 ## test
 

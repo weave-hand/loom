@@ -171,6 +171,8 @@ items are committed-but-unshipped. Deferred ideas live in
 
 - [x] **Packaging / deploy MVP (apko + Helm)** `{#road-deploy-mvp area:deploy status:done from:roadmap-where-we-are pr:- spec:-}`
   The ingest + query-api binaries ship as reproducible apko/Wolfi OCI images and a Helm chart (CNPG Postgres, object-store PVC, default-deny NetworkPolicy, optional Gateway API HTTPRoute) in a `deploy//` cell, with a release workflow. See `docs/deploy.md`. See [[fut-deploy-followups]], [[fut-graceful-shutdown-tls]], [[fut-binaries-s3]].
+- [ ] **Configuration seam unification** `{#road-config-seam-unification area:deploy status:planned from:fut-config-deploy-ergonomics pr:- spec:2026-06-25-config-seam-unification-design}`
+  Consolidate loom's scattered operational tuning knobs (inline/flush byte limits, Parquet write tuning, worker poll/backoff, serving page limit, DB pool size) onto one typed, validated env→config seam: per-domain sub-structs with `Default` + `from_map`, parsed once from a single env snapshot, fail-fast on bad input (fixes today's lossy `.ok()` reads). Safety guardrails (`MAX_*_DEPTH`) and domain invariants (namespaces, `loom://data`, job-kind) stay `const`. No default-value behavior change; Helm wiring deferred to [[fut-deploy-followups]]. Promoted from [[fut-config-deploy-ergonomics]].
 
 ## devx
 
