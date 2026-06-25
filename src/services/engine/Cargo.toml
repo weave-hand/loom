@@ -21,7 +21,8 @@ iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950
 object_store = "0.13"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
 async-trait = "0.1"
-arrow-flight = "58"
+arrow-flight = { version = "58", features = ["flight-sql"] }
+prost = "0.14"
 
 [dev-dependencies]
 tempfile = "3"
