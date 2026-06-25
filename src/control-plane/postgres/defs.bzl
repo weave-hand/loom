@@ -1,15 +1,21 @@
 # Shared macro for hermetic-fixture rust_test targets.
 #
 # Fixture tests boot real initdb/postgres/duckdb processes, which refuse to run as
-# root. This macro sets no `remote_execution` profile, so the test command runs with
-# buck2's default (local) test executor — fine on a non-root host (dev machines, the
-# non-root BuildBuddy CI runners), where it passes and its result is cached remotely.
-# Builds still go to RE: the RE platform runs as the non-root `buildbuddy` user
-# (`dockerUser` in platforms/defs.bzl), so a fixture's *build* on RE is unaffected by
-# the root constraint; only the local *test run* is. A warm session (incl. cloud)
-# hits that remote test-result cache instead of re-running, so it never executes the
-# fixture locally. NOTE: a root-only session that misses the cache will run the test
-# locally and fail at `initdb` — that is a property of the host user, not this macro.
+# root. buck2/tpx runs the test-RUN action on the LOCAL executor by default (it only
+# dispatches to RE when told, via --unstable-allow-all-tests-on-re — there is no
+# buckconfig key and NO remote test-result cache; tests re-run every invocation). So
+# WHERE a fixture runs, and whether root rejects it, is decided by the INVOCATION's
+# environment, not by this macro:
+#   - dev machines / the non-root BuildBuddy CI runners: local executor, non-root → pass;
+#   - a root host (e.g. a cloud session): local executor would run initdb as root → fail,
+#     so the test run must be routed to RE (non-root `buildbuddy` worker) instead. The
+#     cloud buck2 shim injects that flag for `buck2 test`; CI passes it explicitly in
+#     buildbuddy.yaml.
+# Builds always go to RE regardless (the RE platform's `dockerUser` is `buildbuddy`, a
+# non-root user — see platforms/defs.bzl), so a fixture's *build* is never the problem;
+# only the local *test run* is. This macro deliberately sets no per-target
+# `remote_execution` profile: that would force RE for fixtures in EVERY environment and
+# break local dev without an RE backend. Placement stays an invocation-level choice.
 # Centralising the env here means a new fixture test gets correct wiring by
 # construction — there is no separate lint to forget.
 #

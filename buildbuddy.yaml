@@ -35,8 +35,12 @@ actions:
       - run: ./tools/ci/buildbuddy-setup.sh
       # -M none: validate the build on RE without downloading final artifacts.
       - run: buck2 build -M none //src/...
-      # Build and test both run on RE (incl. postgres/duckdb fixtures); no --local-only.
-      - run: buck2 test //src/...
+      # Builds run on RE. Test-RUN actions default to the LOCAL executor (buck2/tpx),
+      # so the postgres/duckdb fixtures only run as the runner user unless routed to RE
+      # — green today only because the runner is non-root. --unstable-allow-all-tests-on-re
+      # dispatches the test runs to RE (non-root `buildbuddy` worker) explicitly, so this
+      # no longer depends on the runner's user. (No buckconfig key for it; no result cache.)
+      - run: buck2 test //src/... --unstable-allow-all-tests-on-re
 
   # On PRs (base = main), build & test only the first-party targets the diff impacts,
   # computed by btd. merge_with_base: false keeps HEAD at the clean PR head (btd diffs
@@ -133,7 +137,9 @@ actions:
             mapfile -t targets < impacted.txt
             echo "Building/testing: ${targets[*]}"
             buck2 build -M none "${targets[@]}"
-            buck2 test "${targets[@]}"
+            # --unstable-allow-all-tests-on-re: route test runs to RE so fixtures run
+            # as the non-root `buildbuddy` worker, not the runner user. See build-test.
+            buck2 test "${targets[@]}" --unstable-allow-all-tests-on-re
           else
             echo "No first-party targets impacted by this diff — nothing to build/test."
           fi

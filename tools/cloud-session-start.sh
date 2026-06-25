@@ -66,11 +66,13 @@ fi
 # snapshot/profile alone do not cover. See
 # docs/superpowers/specs/2026-06-25-cloud-session-cold-build-reliability-design.md.
 
-# (1) buck2 proxy shim. The authoritative fix for the GitHub `download_file` HEAD-401
-# ("the head issue"): /usr/local/sbin precedes /usr/local/bin on PATH, so this shim
-# shadows the real binary and exports the github NO_PROXY bypass before exec-ing it —
-# guaranteeing the daemon inherits the bypass regardless of how the harness injects
-# env into non-interactive tool shells. Idempotent copy.
+# (1) buck2 shim. /usr/local/sbin precedes /usr/local/bin on PATH, so this shim shadows
+# the real binary. It does two things before exec-ing it: (a) exports the github
+# NO_PROXY bypass so the daemon (which runs `download_file`) can fetch toolchains
+# regardless of how the harness injects env into non-interactive tool shells — the
+# authoritative fix for the "head issue"; and (b) injects --unstable-allow-all-tests-on-re
+# for `buck2 test`, so fixture test RUNS go to RE (non-root `buildbuddy`) instead of the
+# local executor, which here is root and would fail their initdb. Idempotent copy.
 SHIM_SRC="$REPO/tools/ci/buck2-proxy-shim.sh"
 SHIM_DST="/usr/local/sbin/buck2"
 if [ -f "$SHIM_SRC" ]; then
