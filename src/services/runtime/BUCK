@@ -96,3 +96,17 @@ rust_test(
         "//third-party:tower",
     ],
 )
+
+rust_test(
+    name = "bootstrap",
+    crate = "bootstrap",
+    srcs = ["tests/bootstrap.rs"],
+    crate_root = "tests/bootstrap.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:tokio",
+    ],
+)

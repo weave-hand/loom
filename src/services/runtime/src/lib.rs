@@ -3,7 +3,10 @@
 //! query-api binaries so each `main` stays thin.
 
 mod auth;
-pub use auth::{AuthState, Subject, login_routes, protect, require_auth, session_routes, status_for};
+pub use auth::{
+    AuthState, BootstrapError, Subject, bootstrap_admin, login_routes, protect, require_auth,
+    session_routes, status_for,
+};
 
 mod crypto;
 pub use crypto::{AuthError, generate_session_token, hash_password, token_sha256, verify_password};

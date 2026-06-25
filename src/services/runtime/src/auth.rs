@@ -14,7 +14,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use control_plane_core::{Auth, ControlPlaneError, SubjectId};
+use control_plane_core::{Auth, ControlPlaneError, NewUser, SubjectId};
 use time::OffsetDateTime;
 
 use crate::token_sha256;
@@ -114,10 +114,7 @@ struct LoginResp {
 /// `POST /auth/login` — public. Verify the password, mint a session token,
 /// return it once. A uniform 401 on unknown user OR bad password (and a
 /// dummy hash on unknown user keeps login timing uniform).
-async fn login(
-    State(st): State<AuthState>,
-    axum::Json(req): axum::Json<LoginReq>,
-) -> Response {
+async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq>) -> Response {
     match st.auth.find_password_credential(&req.username).await {
         Ok(Some(cred)) => {
             if crate::verify_password(&req.password, &cred.password_phc) {
@@ -126,10 +123,12 @@ async fn login(
                 let expires = OffsetDateTime::now_utc()
                     + time::Duration::try_from(st.session_ttl)
                         .expect("session_ttl fits in time::Duration");
-                match st.auth.create_session(&cred.subject_id, &hash, expires).await {
-                    Ok(()) => {
-                        (StatusCode::OK, axum::Json(LoginResp { token })).into_response()
-                    }
+                match st
+                    .auth
+                    .create_session(&cred.subject_id, &hash, expires)
+                    .await
+                {
+                    Ok(()) => (StatusCode::OK, axum::Json(LoginResp { token })).into_response(),
                     Err(e) => status_for(&e).into_response(),
                 }
             } else {
@@ -177,4 +176,38 @@ pub fn session_routes(auth: AuthState) -> Router {
             .with_state(auth.clone()),
         auth,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap-admin seeding
+// ---------------------------------------------------------------------------
+
+/// Failure seeding the bootstrap admin.
+#[derive(Debug, thiserror::Error)]
+pub enum BootstrapError {
+    #[error(transparent)]
+    Hash(#[from] crate::AuthError),
+    #[error(transparent)]
+    Store(#[from] ControlPlaneError),
+}
+
+/// Seed `username`/`password` as the first user iff the store has no users yet.
+/// The admin's subject id equals its username (role assignment stays an operator
+/// ACL task). A non-empty store is a no-op (so a restart never re-seeds).
+pub async fn bootstrap_admin<A: Auth>(
+    auth: &A,
+    username: &str,
+    password: &str,
+) -> Result<(), BootstrapError> {
+    if auth.has_any_user().await? {
+        return Ok(());
+    }
+    let password_phc = crate::hash_password(password)?;
+    auth.create_user(&NewUser {
+        subject_id: SubjectId(username.to_string()),
+        username: username.to_string(),
+        password_phc,
+    })
+    .await?;
+    Ok(())
 }
