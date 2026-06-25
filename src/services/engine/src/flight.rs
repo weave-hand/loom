@@ -3,23 +3,57 @@
 //! the worker is a pure compute client over the wire.
 
 use std::pin::Pin;
+use std::sync::Arc;
 
 use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
+use arrow_flight::sql::{Any, CommandStatementQuery, ProstMessageExt, TicketStatementQuery};
 use arrow_flight::{
-    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use control_plane_core::TableRef;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
 use futures::TryStreamExt; // for `.map_err` on the FlightDataEncoder stream
+use prost::Message;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status, Streaming};
 
 pub struct FlightDataService {
+    /// File-ticket data plane (worker/compaction): a real Iceberg `SqlCatalog`.
     pub catalog: SqlCatalog,
     pub pool: PgPool,
+    /// Flight SQL read plane: the live-table catalog the governed reads run against.
+    pub serving_catalog: IcebergCatalog,
+    /// `Some((bucket, store))` for an S3 warehouse; `None` => local filesystem.
+    pub serving_store: Option<(String, Arc<dyn object_store::ObjectStore>)>,
+}
+
+impl FlightDataService {
+    /// Run `sql` through the streaming serving tier and Flight-encode the result
+    /// `RecordBatch` stream (schema message first, then batches). DataFusion/stream
+    /// errors map to `Status::internal`, matching the old unary handler's mapping so
+    /// query-api's HTTP error codes are unchanged.
+    async fn do_get_sql(
+        &self,
+        sql: String,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let stream = engine_serving::execute_query_stream(
+            &self.serving_catalog,
+            &sql,
+            self.serving_store.as_ref(),
+        )
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        let mapped = stream.map_err(|e| FlightError::from_external_error(Box::new(e)));
+        let out = FlightDataEncoderBuilder::new()
+            .build(mapped)
+            .map_err(|e| Status::internal(e.to_string()));
+        Ok(Response::new(Box::pin(out)))
+    }
 }
 
 #[tonic::async_trait]
@@ -40,14 +74,33 @@ impl FlightService for FlightDataService {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        let ticket = FlightTicketReq::decode(request.into_inner())?;
+        let ticket = request.into_inner();
+
+        // Flight SQL read path: a TicketStatementQuery (Any-wrapped) carrying the SQL.
+        // Try the protobuf decode first; a legacy JSON `FlightTicket` always starts
+        // with `{` (an invalid protobuf `Any`), so this never misroutes the file path.
+        // (The decode-then-`is::<>()` ordering is load-bearing.)
+        if let Ok(any) = Any::decode(&ticket.ticket[..])
+            && any.is::<TicketStatementQuery>()
+        {
+            let tsq = any
+                .unpack::<TicketStatementQuery>()
+                .map_err(|e| Status::invalid_argument(format!("bad flight-sql ticket: {e}")))?
+                .ok_or_else(|| Status::internal("flight-sql ticket unpack returned None"))?;
+            let sql = String::from_utf8(tsq.statement_handle.to_vec())
+                .map_err(|e| Status::invalid_argument(format!("non-utf8 sql: {e}")))?;
+            return self.do_get_sql(sql).await;
+        }
+
+        // File-ticket data plane (existing): a JSON `FlightTicket` naming data files.
+        let req = FlightTicketReq::decode(ticket)?;
         let table = TableRef {
-            schema: ticket.schema,
-            name: ticket.name,
+            schema: req.schema,
+            name: req.name,
         };
         // The schema is discarded here on purpose: FlightDataEncoderBuilder
         // derives it from the batches below, so we don't pass it explicitly.
-        let (_schema, batches) = read_files_as_batches(&self.catalog, &table, &ticket.files)
+        let (_schema, batches) = read_files_as_batches(&self.catalog, &table, &req.files)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -74,9 +127,30 @@ impl FlightService for FlightDataService {
     }
     async fn get_flight_info(
         &self,
-        _: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("get_flight_info"))
+        let descriptor = request.into_inner();
+        let any = Any::decode(&descriptor.cmd[..])
+            .map_err(|e| Status::invalid_argument(format!("bad flight-sql command: {e}")))?;
+        let cmd = any
+            .unpack::<CommandStatementQuery>()
+            .map_err(|e| Status::invalid_argument(format!("bad CommandStatementQuery: {e}")))?
+            .ok_or_else(|| {
+                Status::unimplemented("only CommandStatementQuery is supported on this plane")
+            })?;
+        // The ticket carries the SQL string in a TicketStatementQuery handle; do_get
+        // decodes it and runs the stream. No schema is attached to the FlightInfo —
+        // the client reads the schema from the do_get stream's first message.
+        let ticket = TicketStatementQuery {
+            statement_handle: cmd.query.into_bytes().into(),
+        };
+        let endpoint = FlightEndpoint::new().with_ticket(Ticket {
+            ticket: ticket.as_any().encode_to_vec().into(),
+        });
+        let info = FlightInfo::new()
+            .with_endpoint(endpoint)
+            .with_descriptor(descriptor);
+        Ok(Response::new(info))
     }
     async fn poll_flight_info(
         &self,

@@ -9,6 +9,6 @@ pub mod serving;
 
 pub use provider::PgTableProvider;
 pub use serving::{
-    EngineServingError, IcebergMirrorTableProvider, execute_query, execute_query_to_ipc,
+    EngineServingError, IcebergMirrorTableProvider, execute_query, execute_query_stream,
     prune_files, register_iceberg_table,
 };

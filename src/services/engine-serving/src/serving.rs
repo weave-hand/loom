@@ -26,7 +26,7 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::create_physical_expr;
 use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistics};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use datafusion::scalar::ScalarValue;
 use object_store::local::LocalFileSystem;
 
@@ -464,23 +464,22 @@ pub async fn execute_query(
     df.collect().await.map_err(to_serving)
 }
 
-/// Execute `sql` and return the full result as one Arrow-58 IPC *stream* (schema
-/// message + all batches). Bounded by the compiled query's LIMIT, so a single blob
-/// is fine. Empty result → empty `Vec<u8>` (the client reads it as zero rows).
-pub async fn execute_query_to_ipc(
+/// Streaming sibling of [`execute_query`]: register the same live Iceberg tables
+/// into a fresh `SessionContext`, run the same compiled SQL, and return DataFusion's
+/// `execute_stream()` result instead of collecting. The caller (the engine's Flight
+/// `do_get`) encodes this stream directly, so neither the engine nor the client
+/// holds the whole result — removing the unary path's ~4 MB message ceiling and its
+/// double buffering. The returned stream is `'static` (DataFusion captures the plan
+/// + task context), so the `SessionContext` may be dropped on return.
+pub async fn execute_query_stream(
     catalog: &IcebergCatalog,
     sql: &str,
     serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
-) -> Result<Vec<u8>, EngineServingError> {
-    let batches = execute_query(catalog, sql, serving_store).await?;
-    let mut buf = Vec::new();
-    if let Some(first) = batches.first() {
-        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &first.schema())
-            .map_err(to_serving)?;
-        for b in &batches {
-            w.write(b).map_err(to_serving)?;
-        }
-        w.finish().map_err(to_serving)?;
+) -> Result<SendableRecordBatchStream, EngineServingError> {
+    let ctx = SessionContext::new();
+    for table in catalog.live_tables().await.map_err(to_serving)? {
+        register_iceberg_table(&ctx, catalog, &table, serving_store).await?;
     }
-    Ok(buf)
+    let df = ctx.sql(sql).await.map_err(to_serving)?;
+    df.execute_stream().await.map_err(to_serving)
 }

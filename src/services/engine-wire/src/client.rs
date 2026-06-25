@@ -115,33 +115,3 @@ impl Queue for GrpcQueueClient {
         Ok(())
     }
 }
-
-use crate::pb::engine_query_client::EngineQueryClient as PbEngineQueryClient;
-
-/// A cloneable gRPC client for the engine's `EngineQuery` service over a UDS.
-#[derive(Clone)]
-pub struct EngineQueryClient {
-    inner: PbEngineQueryClient<Channel>,
-}
-
-impl EngineQueryClient {
-    /// Connect to the engine's `EngineQuery` service at the given UDS path.
-    pub async fn connect(socket: impl Into<String>) -> Result<Self> {
-        let channel = crate::uds_channel(socket.into()).await?;
-        Ok(Self {
-            inner: PbEngineQueryClient::new(channel),
-        })
-    }
-
-    /// Execute already-compiled, param-inlined SQL; return the Arrow IPC result bytes.
-    pub async fn execute_query(&self, sql: String) -> Result<Vec<u8>> {
-        let resp = self
-            .inner
-            .clone()
-            .execute_query(pb::ExecuteQueryRequest { sql })
-            .await
-            .map_err(be)?
-            .into_inner();
-        Ok(resp.ipc)
-    }
-}
