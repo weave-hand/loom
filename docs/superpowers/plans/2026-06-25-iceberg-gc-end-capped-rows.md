@@ -12,7 +12,8 @@
 
 - **Tests are `rust_test` integration targets only** — never inline `#[cfg(test)]`/`#[test]` in `src/**.rs`. The `no-inline-tests` prek hook enforces this.
 - **Fixture tests use the `loom_fixture_test` macro** (`src/control-plane/postgres/defs.bzl`), never a bare `rust_test`. In this cloud (root) session, `buck2 test` routes fixture tests to the non-root RE worker automatically.
-- **Compile-time SQL**: any `sqlx::query!`/`query_scalar!` in the postgres adapter requires a refreshed committed `.sqlx` cache (`tools/sqlx-prepare.sh`). Dynamic table names (`inline_<table_id>`) must use runtime `sqlx::query(AssertSqlSafe(format!(...)))`, never the macro.
+- **SQL strategy — runtime queries, NO new `query!` macros (recorded deviation).** `cargo sqlx prepare` (the `.sqlx` regen tool) currently FAILS to compile the postgres crate in cargo-mode: `iceberg_sql_catalog/s3_storage.rs` uses `serde::{Deserialize,Serialize}` + `#[typetag::serde]` but `serde` is not a direct dependency in `src/control-plane/postgres/Cargo.toml` (buck2 builds it fine via reindeer's graph-wide feature unification; cargo does not). Fixing it means adding `serde` to the manifest + a reindeer re-lock, which risks the documented duckdb-downgrade footgun (CLAUDE.md). So `iceberg_gc.rs` adds **zero** compile-time `query!`/`query_scalar!` macros and instead uses **runtime** `sqlx::query`/`sqlx::query_scalar` (static `&'static str` literals need no `AssertSqlSafe`; the dynamic `inline_<table_id>` delete uses `AssertSqlSafe(format!(...))`). Consequence: **no `.sqlx` regen is needed** (Task 3 is dropped) and the existing `sqlx-cache-check` test is unaffected. Every query is exercised against a real schema by the Task-4 fixture tests. The cargo-mode breakage is filed as an ISSUES item (Task 10 step 4).
+- **Reuse `crate::backend`** (the crate-root `fn backend(e: sqlx::Error) -> ControlPlaneError`, visible to all submodules) — do NOT define a local copy.
 - **No new third-party dependency.** Reuse the `iceberg`, `sqlx`, `time`, `tonic` crates already in the tree (avoids a reindeer re-lock).
 - **Spec deviation (recorded):** the spec's migration `0017_iceberg_snapshot_committed_at.sql` adding a `committed_at` column is **redundant and is NOT created** — `iceberg_mirror.snapshot.snapshot_time timestamptz not null default now()` already exists (migration `0012`, lines 5–12) and is inserted inside the committing transaction by `next_snapshot` (`iceberg_mirror.rs:56-63`), giving exactly the commit-time→snapshot mapping the spec wanted. The horizon query and the test's age-injection use `snapshot_time`.
 - **Markdown lint:** any `.md` file ends with exactly one trailing newline, no trailing whitespace (the `lint` CI job checks all files).
@@ -154,18 +155,15 @@ pub async fn delete_file(&self, path: &str) -> control_plane_core::Result<()> {
 
 use std::time::Duration;
 
-use control_plane_core::{ControlPlaneError, Result, TableRef};
+use control_plane_core::{Result, TableRef};
 use sqlx::{AssertSqlSafe, PgPool};
 use time::OffsetDateTime;
 
+use crate::backend;
 use crate::iceberg_flush::lock_key;
 use crate::iceberg_inline::inline_table_name;
 use crate::iceberg_mirror::live_table_id;
 use crate::iceberg_sql_catalog::SqlCatalog;
-
-fn backend(e: sqlx::Error) -> ControlPlaneError {
-    ControlPlaneError::Backend(Box::new(e))
-}
 
 /// Counts of what a `gc_table` run reclaimed, for observability and tests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -220,11 +218,13 @@ async fn gc_locked(
 
     // 2. Resolve the horizon H = youngest snapshot fully aged out of the window.
     //    `now()` is taken in Rust; sub-second precision is irrelevant at GC scale.
+    //    Runtime query (static literal — no AssertSqlSafe needed); `max()` over
+    //    zero matching rows yields NULL → None → a clean no-op.
     let cutoff = OffsetDateTime::now_utc() - time::Duration::seconds(retention.as_secs() as i64);
-    let horizon: Option<i64> = sqlx::query_scalar!(
+    let horizon: Option<i64> = sqlx::query_scalar(
         "select max(snapshot_id) from iceberg_mirror.snapshot where snapshot_time < $1",
-        cutoff,
     )
+    .bind(cutoff)
     .fetch_one(pool)
     .await
     .map_err(backend)?;
@@ -235,12 +235,12 @@ async fn gc_locked(
 
     // 3. Collect the Parquet paths of reclaimable data files (before deleting
     //    the rows that name them).
-    let paths: Vec<String> = sqlx::query_scalar!(
+    let paths: Vec<String> = sqlx::query_scalar(
         "select path from iceberg_mirror.data_file \
          where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
-        tid,
-        h,
     )
+    .bind(tid)
+    .bind(h)
     .fetch_all(pool)
     .await
     .map_err(backend)?;
@@ -248,24 +248,24 @@ async fn gc_locked(
     // 4. Delete mirror rows in one transaction: stats first (FK child), then the
     //    data_file rows, then end-capped inline rows.
     let mut tx = pool.begin().await.map_err(backend)?;
-    sqlx::query!(
+    sqlx::query(
         "delete from iceberg_mirror.data_file_column_stat \
          where data_file_id in ( \
              select data_file_id from iceberg_mirror.data_file \
              where table_id = $1 and end_snapshot is not null and end_snapshot <= $2)",
-        tid,
-        h,
     )
+    .bind(tid)
+    .bind(h)
     .execute(&mut *tx)
     .await
     .map_err(backend)?;
 
-    let data_file_rows = sqlx::query!(
+    let data_file_rows = sqlx::query(
         "delete from iceberg_mirror.data_file \
          where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
-        tid,
-        h,
     )
+    .bind(tid)
+    .bind(h)
     .execute(&mut *tx)
     .await
     .map_err(backend)?
@@ -320,71 +320,13 @@ async fn gc_locked(
 
 - [ ] **Step 3: Expose `lock_key`** — in `src/control-plane/postgres/src/iceberg_flush.rs`, change `fn lock_key(` to `pub(crate) fn lock_key(`.
 
-- [ ] **Step 4: Regenerate `.sqlx` and build** — proceed to Task 3 (the new `query!`/`query_scalar!` macros will not compile until the cache is refreshed).
+- [ ] **Step 4: Build** — `buck2 build //src/control-plane/postgres:postgres 2>&1 | tail -15`. Expected `BUILD SUCCEEDED`. No `.sqlx` regen is required (runtime queries only — see Global Constraints). Commit happens after Task 4's tests pass.
 
 ---
 
-## Task 3: Regenerate the committed `.sqlx` cache
+## Task 3: ~~Regenerate the committed `.sqlx` cache~~ — ELIMINATED
 
-**Files:**
-- Modify: `src/control-plane/postgres/.sqlx/` (new `query-*.json` entries for the GC queries)
-
-**Why:** the postgres `rust_library` builds offline against the committed `.sqlx` cache. The three new compile-time queries (horizon `max`, path `select`, the two deletes) need cache entries or the build fails, and the `sqlx-cache-check` test will go red.
-
-This cloud session runs as root; `initdb`/`postgres` refuse uid 0, so the cache is regenerated by booting the hermetic Postgres **as the non-root `ubuntu` user** and running `cargo sqlx prepare` against it.
-
-- [ ] **Step 1: Materialize the pinned binaries (root, builds on RE)**
-
-```bash
-cd /home/user/loom
-buck2 build //src/control-plane/postgres:postgres-bin //src/control-plane/postgres:libxml2 \
-  //src/control-plane/postgres:duckdb-cli //src/control-plane/postgres:duckdb-extensions \
-  --show-output
-```
-
-- [ ] **Step 2: Install sqlx-cli into `.loom/bin` (root, hermetic cargo)**
-
-```bash
-cd /home/user/loom
-eval "$(./tools/env.sh)"
-[ -x .loom/bin/sqlx ] || cargo install --root "$PWD/.loom" --version '^0.9' \
-  --no-default-features --features postgres,rustls sqlx-cli
-```
-
-- [ ] **Step 3: Run `tools/sqlx-prepare.sh` as `ubuntu`**
-
-The script boots `initdb`/`postgres`/`duckdb` and runs `cargo sqlx prepare`. Run the whole script as `ubuntu` (it must own the cluster and the temp dirs; cargo + buck2 outputs under the repo are world-readable). Make the repo writable for the `.sqlx` output and pass through the proxy env:
-
-```bash
-cd /home/user/loom
-chmod -R a+rwX src/control-plane/postgres/.sqlx
-sudo -u ubuntu env "PATH=$PWD/.loom/bin:$PATH" HOME=/home/ubuntu \
-  HTTPS_PROXY="${HTTPS_PROXY:-}" HTTP_PROXY="${HTTP_PROXY:-}" \
-  bash tools/sqlx-prepare.sh 2>&1 | tail -25
-```
-
-Expected: `query data written to .sqlx` (or no error) and new/changed files under `src/control-plane/postgres/.sqlx/`. If `sudo -u ubuntu` cannot reach the hermetic cargo/toolchain, fall back to: boot the cluster as `ubuntu` and run only `cargo sqlx prepare` as root against the `ubuntu`-owned socket (root can open any unix socket; `--auth=trust` needs no password). Record whichever path worked.
-
-- [ ] **Step 4: Build the postgres crate (root, RE)**
-
-```bash
-cd /home/user/loom
-buck2 build //src/control-plane/postgres:postgres 2>&1 | tail -15
-```
-
-Expected: `BUILD SUCCEEDED`. A `query!`-validation failure here means the cache is stale — re-run Step 3.
-
-- [ ] **Step 5: Commit Layer-1 progress so far**
-
-```bash
-cd /home/user/loom
-git add src/control-plane/postgres/src/iceberg_gc.rs \
-  src/control-plane/postgres/src/lib.rs \
-  src/control-plane/postgres/src/iceberg_flush.rs \
-  src/control-plane/postgres/src/iceberg_sql_catalog/catalog.rs \
-  src/control-plane/postgres/.sqlx
-git commit -m "feat(iceberg): gc_table reclaim primitive + delete_file seam"
-```
+**Dropped.** `iceberg_gc.rs` adds no compile-time `query!`/`query_scalar!` macros (runtime queries only — see Global Constraints), so there is nothing to regenerate; the committed `.sqlx` cache is untouched and `sqlx-cache-check` is unaffected. The `cargo sqlx prepare` pipeline is in fact currently broken in cargo-mode (the `serde`-not-a-direct-dep issue), which is *why* this module avoids the macros. Commit Layer-1 progress after Task 4's tests pass.
 
 ---
 
