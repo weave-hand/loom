@@ -87,6 +87,10 @@ pub struct Config {
     pub data_path: PathBuf,
     pub object_store: ObjectStoreConfig,
     pub lock_timeout: Duration,
+    /// Retention window for physical GC of end-capped Iceberg rows. Snapshots
+    /// older than this are eligible for reclamation. From `LOOM_GC_RETENTION_SECS`
+    /// (default 7 days). The `_SECS` unit suffix matches `LOOM_LOCK_TIMEOUT_MS`.
+    pub gc_retention: Duration,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,6 +127,13 @@ impl Config {
             ),
             None => Duration::from_millis(5000),
         };
+        let gc_retention = match vars.get("LOOM_GC_RETENTION_SECS") {
+            Some(s) => Duration::from_secs(
+                s.parse::<u64>()
+                    .map_err(|e| invalid("LOOM_GC_RETENTION_SECS", e.to_string()))?,
+            ),
+            None => Duration::from_secs(7 * 24 * 3600),
+        };
 
         let data_path = PathBuf::from(req("LOOM_DATA_PATH")?);
         let object_store = ObjectStoreConfig::parse(vars, &data_path).map_err(|e| match e {
@@ -148,6 +159,7 @@ impl Config {
             data_path,
             object_store,
             lock_timeout,
+            gc_retention,
         })
     }
 

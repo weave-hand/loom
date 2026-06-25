@@ -8,6 +8,7 @@ service EngineControl {
   rpc Heartbeat    (HeartbeatRequest)    returns (HeartbeatResponse);
   rpc AwaitJobs    (AwaitJobsRequest)    returns (AwaitJobsResponse);   // unary long-poll
   rpc FlushTable   (FlushTableRequest)   returns (FlushTableResponse);
+  rpc GcTable      (GcTableRequest)      returns (GcTableResponse);
   rpc ListFiles    (ListFilesRequest)    returns (ListFilesResponse);
   rpc CompactTable (CompactTableRequest) returns (CompactTableResponse);
 }
@@ -35,6 +36,9 @@ message AwaitJobsResponse {}                            // returns on notify or 
 
 message FlushTableRequest  { string schema = 1; string name = 2; }
 message FlushTableResponse { optional int64 snapshot_id = 1; }   // absent = None
+
+message GcTableRequest  { string schema = 1; string name = 2; }
+message GcTableResponse { uint64 data_file_rows = 1; uint64 inline_rows = 2; uint64 objects_deleted = 3; }
 
 message FileMeta { string path = 1; int64 record_count = 2; int64 file_size_bytes = 3; }
 message ListFilesRequest  { string schema = 1; string name = 2; }

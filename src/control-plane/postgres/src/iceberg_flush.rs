@@ -134,7 +134,8 @@ fn compaction_event(table: &TableRef, run_id: RunId) -> LineageEvent {
 }
 
 /// 64-bit advisory-lock key from the table identity (stable per (schema, name)).
-fn lock_key(schema: &str, name: &str) -> i64 {
+/// `pub(crate)` so GC (`iceberg_gc`) takes the *same* key and serializes against flush.
+pub(crate) fn lock_key(schema: &str, name: &str) -> i64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     schema.hash(&mut h);

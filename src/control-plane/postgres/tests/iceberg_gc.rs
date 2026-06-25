@@ -1,0 +1,408 @@
+//! Fixture tests for physical GC of end-capped Iceberg-mirror rows (`iceberg_gc`).
+//!
+//! Covers the `SqlCatalog::delete_file` object-store seam and the `gc_table`
+//! reclaim primitive: aged-out end-capped data files (+ their Parquet/stats) and
+//! inline rows are physically reclaimed, in-window rows are protected, an
+//! unaged table is a no-op, and GC serializes with a concurrent flush.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use arrow_array::{Int64Array, RecordBatch};
+use arrow_ipc::writer::StreamWriter;
+use arrow_schema::{DataType, Field, Schema};
+use std::time::Duration;
+
+use control_plane_core::{
+    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef,
+};
+use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_flush::flush_table;
+use control_plane_postgres::iceberg_gc::{GcSummary, gc_table};
+use control_plane_postgres::iceberg_inline::inline_append;
+use control_plane_postgres::iceberg_landing::{land, overwrite_parquet_snapshot};
+use control_plane_postgres::iceberg_sql_catalog::{
+    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
+};
+use iceberg::CatalogBuilder;
+use iceberg::io::LocalFsStorageFactory;
+use time::OffsetDateTime;
+
+const SEVEN_DAYS: Duration = Duration::from_secs(7 * 24 * 3600);
+
+fn columns() -> Vec<ColumnSpec> {
+    vec![ColumnSpec {
+        name: "id".into(),
+        ty: "long".into(),
+        nullable: false,
+    }]
+}
+
+/// An Arrow IPC body of `rows` rows (`id: long` = `0..rows`), for `land`.
+fn ipc_body(rows: i64) -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
+    )
+    .expect("batch");
+    let mut buf = Vec::new();
+    {
+        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
+        w.write(&batch).expect("write");
+        w.finish().expect("finish");
+    }
+    buf
+}
+
+/// A bare `id: long` record batch of ids `0..rows`.
+fn batch(rows: i64) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    RecordBatch::try_new(
+        schema,
+        vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
+    )
+    .expect("batch")
+}
+
+fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
+    let out = TableRef {
+        schema: schema.into(),
+        name: name.into(),
+    };
+    LineageEvent {
+        run_id: run,
+        event_type: EventType::Complete,
+        event_time: OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![DatasetId::from(&out).dataset_ref()],
+        payload: serde_json::json!({ "source": "test" }),
+    }
+}
+
+async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
+    let mut props = HashMap::new();
+    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
+    props.insert(
+        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+        format!("file://{warehouse}"),
+    );
+    SqlCatalogBuilder::default()
+        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .load("loom", props)
+        .await
+        .expect("catalog")
+}
+
+/// Strip a `file://` URL to a local filesystem path.
+fn local_path(file_url: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(file_url.strip_prefix("file://").unwrap_or(file_url))
+}
+
+/// Backdate snapshot `snap_id`'s `snapshot_time` so it looks aged out of the window.
+async fn age_snapshot(pool: &sqlx::PgPool, snap_id: i64) {
+    let old = OffsetDateTime::now_utc() - time::Duration::days(365);
+    sqlx::query("update iceberg_mirror.snapshot set snapshot_time = $1 where snapshot_id = $2")
+        .bind(old)
+        .bind(snap_id)
+        .execute(pool)
+        .await
+        .expect("age snapshot");
+}
+
+/// The delete seam removes the object and is idempotent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_file_removes_object_and_is_idempotent() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+
+    let obj = wh.path().join("victim.parquet");
+    std::fs::write(&obj, b"bytes").expect("write object");
+    let url = format!("file://{}", obj.display());
+    assert!(obj.exists(), "object exists before delete");
+
+    catalog.delete_file(&url).await.expect("delete");
+    assert!(!obj.exists(), "object gone after delete");
+
+    // Idempotent: deleting an absent object is not an error.
+    catalog
+        .delete_file(&url)
+        .await
+        .expect("second delete is a no-op");
+}
+
+/// Happy path + in-window protection for real data files (+ their Parquet/stats).
+///
+/// land s1 (file A, 10 rows) → overwrite s2 (file B, 4 rows; end-caps A@s2) →
+/// overwrite s3 (file C, 2 rows; end-caps B@s3). Age s2 only ⇒ H = s2.
+/// Reclaimable: A (end=s2 ≤ H). Retained: B (end=s3 > H), C (live).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let ice = IcebergCatalog::new(pool.clone());
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+
+    let s1 = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(10),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+    )
+    .await
+    .expect("land");
+    let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
+
+    let s2 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        vec![batch(4)],
+        Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+    )
+    .await
+    .expect("ow s2");
+    let b_path = local_path(&ice.files_with_stats(&t, s2).await.expect("files@s2")[0].path);
+
+    let s3 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        vec![batch(2)],
+        Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+    )
+    .await
+    .expect("ow s3");
+    let c_path = local_path(&ice.files_with_stats(&t, s3).await.expect("files@s3")[0].path);
+
+    assert!(
+        a_path.exists() && b_path.exists() && c_path.exists(),
+        "all 3 objects on disk before gc"
+    );
+
+    age_snapshot(&pool, s2.0).await; // H = s2 (s1, s3 stay recent)
+
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+    assert_eq!(
+        summary,
+        GcSummary {
+            data_file_rows: 1,
+            inline_rows: 0,
+            objects_deleted: 1
+        }
+    );
+
+    // (a) A's row + object reclaimed; (b) B retained (end=s3 > H); C live.
+    assert!(!a_path.exists(), "aged-out object A deleted");
+    assert!(b_path.exists(), "in-window object B retained");
+    assert!(c_path.exists(), "live object C retained");
+
+    // (c) live read at current (s3) unchanged: file C, 2 rows.
+    let cur = ice.current_snapshot(&t).await.expect("current");
+    assert_eq!(cur.id, s3);
+    let now = ice
+        .files_with_stats(&t, s3)
+        .await
+        .expect("files@s3 post-gc");
+    assert_eq!(now.len(), 1);
+    assert_eq!(now[0].record_count, 2);
+
+    // (b) structural: B still resolvable via the mirror at s2 (end=s3 > H).
+    let at_s2 = ice
+        .files_with_stats(&t, s2)
+        .await
+        .expect("files@s2 post-gc");
+    assert_eq!(at_s2.len(), 1, "B retained in the mirror");
+    assert_eq!(at_s2[0].record_count, 4);
+}
+
+/// Inline source: inline_append → flush end-caps the inline rows at the flush
+/// snapshot Sf; aging Sf makes them reclaimable. The flushed real file (live)
+/// survives and still reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_reclaims_aged_inline_rows() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let ice = IcebergCatalog::new(pool.clone());
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "inl".into(),
+    };
+    let run = RunId(uuid::Uuid::new_v4());
+
+    inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &batch(3),
+        lineage(run, "wh", "inl"),
+        None,
+    )
+    .await
+    .expect("inline_append");
+    let sf = flush_table(&catalog, &pool, &t, run)
+        .await
+        .expect("flush")
+        .expect("flushed something");
+
+    age_snapshot(&pool, sf.0).await; // H = Sf; inline rows end-capped @ Sf are reclaimable
+
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+    assert!(
+        summary.inline_rows >= 1,
+        "end-capped inline rows reclaimed (got {summary:?})"
+    );
+
+    // The flushed real file (live, end=NULL) is untouched: current read still has 3 rows.
+    let cur = ice.current_snapshot(&t).await.expect("current");
+    let files = ice.files_with_stats(&t, cur.id).await.expect("files");
+    let live_rows: i64 = files.iter().map(|f| f.record_count).sum();
+    assert_eq!(live_rows, 3, "live flushed data intact after gc");
+}
+
+/// No-op: nothing aged out ⇒ horizon undefined ⇒ reclaim nothing, succeed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_is_a_noop_when_nothing_aged_out() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let ice = IcebergCatalog::new(pool.clone());
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "fresh".into(),
+    };
+
+    let s1 = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(10),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "fresh"),
+    )
+    .await
+    .expect("land");
+    let s2 = overwrite_parquet_snapshot(&pool, &catalog, &t, &columns(), vec![batch(4)], None)
+        .await
+        .expect("ow");
+    let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
+
+    // No age injection: snapshots are fresh, so a 7d horizon reclaims nothing.
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+    assert_eq!(summary, GcSummary::default(), "nothing reclaimed");
+
+    assert!(a_path.exists(), "end-capped-but-in-window object retained");
+    assert_eq!(ice.current_snapshot(&t).await.expect("current").id, s2);
+}
+
+/// Lock coexistence: gc_table and a concurrent flush_table on the same table take
+/// the same advisory key and serialize — neither errors, final state is consistent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gc_serializes_with_concurrent_flush() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog_g = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog_f = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "race".into(),
+    };
+    let run = RunId(uuid::Uuid::new_v4());
+    let ice = IcebergCatalog::new(pool.clone());
+
+    // Seed: land A (s1) → overwrite B (s2; end-caps A) → age s2 so gc reclaims A,
+    // then add live inline rows so flush has work to drain.
+    let s1 = land(
+        &pool,
+        &catalog_g,
+        &t,
+        &columns(),
+        &ipc_body(10),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "race"),
+    )
+    .await
+    .expect("land");
+    let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
+    let s2 = overwrite_parquet_snapshot(&pool, &catalog_g, &t, &columns(), vec![batch(4)], None)
+        .await
+        .expect("ow");
+    age_snapshot(&pool, s2.0).await;
+    inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &batch(2),
+        lineage(run, "wh", "race"),
+        None,
+    )
+    .await
+    .expect("inline_append");
+
+    // Each racer gets its OWN pool (pool_for caps at 5 connections), so the
+    // advisory-lock waiter parked in pg_advisory_xact_lock never starves the active
+    // task's work connections.
+    let pool_gc = fx.pool_for(&db).await;
+    let pool_flush = fx.pool_for(&db).await;
+    let flush = tokio::spawn({
+        let t_f = t.clone();
+        async move { flush_table(&catalog_f, &pool_flush, &t_f, run).await }
+    });
+    let gc = tokio::spawn({
+        let t_g = t.clone();
+        async move { gc_table(&catalog_g, &pool_gc, &t_g, SEVEN_DAYS).await }
+    });
+    let gc_res = gc.await.expect("gc join");
+    let flush_res = flush.await.expect("flush join");
+    gc_res.expect("gc ok under contention");
+    flush_res.expect("flush ok under contention");
+
+    // Both did their work under contention, in either serialization order: gc
+    // reclaimed the aged file A; flush drained the inline rows into the live set;
+    // the result reads back intact (no half-applied corruption).
+    assert!(
+        !a_path.exists(),
+        "gc reclaimed aged file A under contention"
+    );
+    let cur = ice.current_snapshot(&t).await.expect("current");
+    let rows: i64 = ice
+        .files_with_stats(&t, cur.id)
+        .await
+        .expect("files readable")
+        .iter()
+        .map(|f| f.record_count)
+        .sum();
+    assert_eq!(rows, 6, "B(4) + flushed inline(2) are the live set");
+    assert!(
+        ice.inline_live_batch(&t, cur.id)
+            .await
+            .expect("inline_live_batch")
+            .is_none(),
+        "flush retired the inline rows"
+    );
+}

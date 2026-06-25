@@ -1,15 +1,16 @@
-//! Zero-pool flush+compact worker binary.
+//! Zero-pool flush/GC/compact worker binary.
 //!
 //! Reads `LOOM_ENGINE_SOCKET` (required), `LOOM_WORKER_ID` (default: random uuid),
 //! `LOOM_LOCK_TIMEOUT_MS` (default: 5000), and `LOOM_WAREHOUSE_URI` (required for
 //! compaction). Connects to the engine over a UDS and runs the generic
-//! `control_plane_worker::Worker<GrpcQueueClient>` loop, draining `flush_table`
-//! and `compact_table` jobs. No Postgres in the dep closure — the engine owns PG.
+//! `control_plane_worker::Worker<GrpcQueueClient>` loop, draining `flush_table`,
+//! `gc_table`, and `compact_table` jobs (dispatched by kind). No Postgres in the
+//! dep closure — the engine owns PG.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use control_plane_core::{COMPACT_JOB_KIND, FLUSH_JOB_KIND, JobFailure, RetryPolicy};
+use control_plane_core::{COMPACT_JOB_KIND, FLUSH_JOB_KIND, GC_JOB_KIND, JobFailure, RetryPolicy};
 use control_plane_worker::Worker;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::FlightTableClient;
@@ -56,7 +57,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     worker
         .run(
-            &[FLUSH_JOB_KIND.to_string(), COMPACT_JOB_KIND.to_string()],
+            &[
+                FLUSH_JOB_KIND.to_string(),
+                GC_JOB_KIND.to_string(),
+                COMPACT_JOB_KIND.to_string(),
+            ],
             shutdown,
             move |job| {
                 let flush = flush.clone();
@@ -64,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 async move {
                     match job.kind.as_str() {
                         k if k == FLUSH_JOB_KIND => worker::handler::handle_flush(flush, job).await,
+                        k if k == GC_JOB_KIND => worker::handler::handle_gc(flush, job).await,
                         k if k == COMPACT_JOB_KIND => handle_compact(&cctx, job).await,
                         other => Err(JobFailure {
                             error: format!("unknown job kind: {other}"),

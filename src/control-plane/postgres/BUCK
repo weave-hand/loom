@@ -533,6 +533,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "iceberg-gc",
+    crate = "iceberg_gc",
+    srcs = ["tests/iceberg_gc.rs"],
+    crate_root = "tests/iceberg_gc.rs",
+    deps = [
+        "//third-party:arrow-ipc",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-overwrite",
     crate = "iceberg_overwrite",
     srcs = ["tests/iceberg_overwrite.rs"],
