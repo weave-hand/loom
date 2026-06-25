@@ -28,6 +28,14 @@ pub(crate) struct AclState {
     inherits: HashSet<(String, String)>, // (role, inherits): role gains inherits's perms
 }
 
+impl AclState {
+    /// Insert a subject id (idempotent). Used by `create_user` to make a new
+    /// user a valid ACL principal.
+    pub(crate) fn subjects_insert(&mut self, id: &str) {
+        self.subjects.insert(id.to_string());
+    }
+}
+
 /// True if `target` is reachable from `start` following role->inherits edges
 /// (i.e. `start` transitively inherits `target`). Visited-set guards cycles.
 fn reaches(edges: &HashSet<(String, String)>, start: &str, target: &str) -> bool {

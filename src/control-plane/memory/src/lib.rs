@@ -3,6 +3,7 @@
 //! a `Tx` stages writes and applies them on commit (read-committed semantics).
 
 mod acl;
+mod auth;
 mod catalog;
 mod lineage;
 mod ontology;
@@ -22,6 +23,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::acl::AclState;
+use crate::auth::AuthState;
 use crate::catalog::CatalogState;
 use crate::lineage::LineageState;
 use crate::ontology::OntologyState;
@@ -61,6 +63,7 @@ pub struct MemoryControlPlane {
     catalog: Arc<Mutex<CatalogState>>,
     ontology: Arc<Mutex<OntologyState>>,
     acl: Arc<Mutex<AclState>>,
+    auth: Arc<Mutex<AuthState>>,
     lineage: Arc<Mutex<LineageState>>,
     lock_timeout: Duration,
 }
@@ -73,6 +76,7 @@ impl MemoryControlPlane {
             catalog: Arc::new(Mutex::new(CatalogState::default())),
             ontology: Arc::new(Mutex::new(OntologyState::default())),
             acl: Arc::new(Mutex::new(AclState::default())),
+            auth: Arc::new(Mutex::new(AuthState::default())),
             lineage: Arc::new(Mutex::new(LineageState::default())),
             lock_timeout,
         }
