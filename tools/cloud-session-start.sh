@@ -49,15 +49,72 @@ if ! grep -q 'LOOM_CLOUD_ENV' "$PROFILE" 2>/dev/null; then
     # gets a 401, so every native `buck2 build //src/...` fails on the toolchain fetch.
     # Direct egress to github works for these public, sha256-pinned tarballs, so route
     # them around the proxy. The same applies to the //tools:* github-release binaries.
-    # NOTE: git is unaffected — its url.insteadOf rewrites github.com to the git proxy on
-    # 127.0.0.1 (already no_proxy), so this only diverts buck2/curl-style direct HTTPS.
-    # Written single-quoted so each shell APPENDS to the live NO_PROXY rather than baking
-    # a stale snapshot of it.
+    # This profile block is for INTERACTIVE shells (a human's terminal). It does NOT
+    # reach non-interactive `bash -c` tool-call shells (they skip ~/.bashrc past the
+    # `[ -z "$PS1" ] && return` guard) nor the buck2 daemon they spawn — the buck2
+    # shim installed below is what carries this bypass to the daemon, which is the
+    # process that actually runs `download_file`. Written single-quoted so each shell
+    # APPENDS to the live NO_PROXY rather than baking a stale snapshot of it.
     echo 'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"'
     echo 'export no_proxy="$NO_PROXY"'
     echo '# --- end LOOM_CLOUD_ENV ---'
   } >> "$PROFILE"
 fi
+
+# --- Cold-build hardening -----------------------------------------------------
+# A fresh cloud session builds //src/... from cold, which trips three blockers the
+# snapshot/profile alone do not cover. See
+# docs/superpowers/specs/2026-06-25-cloud-session-cold-build-reliability-design.md.
+
+# (1) buck2 shim. /usr/local/sbin precedes /usr/local/bin on PATH, so this shim shadows
+# the real binary. It does two things before exec-ing it: (a) exports the github
+# NO_PROXY bypass so the daemon (which runs `download_file`) can fetch toolchains
+# regardless of how the harness injects env into non-interactive tool shells — the
+# authoritative fix for the "head issue"; and (b) injects --unstable-allow-all-tests-on-re
+# for `buck2 test`, so fixture test RUNS go to RE (non-root `buildbuddy`) instead of the
+# local executor, which here is root and would fail their initdb. Idempotent copy.
+SHIM_SRC="$REPO/tools/ci/buck2-proxy-shim.sh"
+SHIM_DST="/usr/local/sbin/buck2"
+if [ -f "$SHIM_SRC" ]; then
+  if ! cmp -s "$SHIM_SRC" "$SHIM_DST" 2>/dev/null; then
+    install -m 0755 "$SHIM_SRC" "$SHIM_DST" 2>/dev/null \
+      || echo "WARN: could not install buck2 proxy shim to $SHIM_DST (github fetches may 401)"
+  fi
+else
+  echo "WARN: buck2 proxy shim source missing at $SHIM_SRC"
+fi
+
+# (2) bsdtar (libarchive-tools) — required by the :libxml2 fixture genrule. The setup
+# snapshot may not include it; install per-session if absent.
+if ! command -v bsdtar >/dev/null 2>&1; then
+  if [ "$(id -u)" = 0 ]; then _apt="apt-get"; else _apt="sudo apt-get"; fi
+  $_apt install -y --no-install-recommends libarchive-tools >/tmp/loom-bsdtar.log 2>&1 \
+    || echo "WARN: bsdtar install failed (libxml2 fixture genrule may fail); see /tmp/loom-bsdtar.log"
+fi
+
+# (3) Third-party GitHub git sources (the prelude submodule + Cargo git deps like
+# apache/iceberg-rust). ~/.gitconfig rewrites ALL https://github.com/ to the scoped
+# git proxy, which 403s any repo outside this session's scope — so these public,
+# sha-pinned sources are denied. We don't hardcode the orgs: derive them from the
+# repo's OWN declarations (.gitmodules + `git = "https://github.com/…"` in Cargo
+# manifests), so a new submodule or git-dep is covered automatically. For each, a
+# longer (more specific) self-referential insteadOf wins by longest-match and keeps
+# github.com/<org>/* on its direct URL instead of the scoped proxy. The actual
+# egress-proxy bypass is per-consumer: the shim's NO_PROXY for the buck2 daemon's
+# git_fetch, and `-c http.proxy=` on the submodule init below.
+{
+  git -C "$REPO" config -f "$REPO/.gitmodules" --get-regexp 'submodule\..*\.url' 2>/dev/null | awk '{print $2}'
+  grep -rhoE 'git = "https://github\.com/[^"]+"' "$REPO/src" 2>/dev/null | sed -E 's/git = "//; s/"$//'
+} | while read -r _url; do
+  case "$_url" in
+    https://github.com/*/*)
+      _rest="${_url#https://github.com/}"; _org="https://github.com/${_rest%%/*}/"
+      git config --global url."$_org".insteadOf "$_org" 2>/dev/null \
+        || echo "WARN: could not set git insteadOf override for $_org (fetch may 403)"
+      ;;
+  esac
+done
+# --- end cold-build hardening -------------------------------------------------
 
 # Sanity: warn (don't fail) if a required tool/secret is missing — the routine can
 # still partially run, and a clear message beats a cryptic failure later.
@@ -68,8 +125,13 @@ command -v gh    >/dev/null 2>&1 || echo "WARN: gh not found on PATH (PR landing
 
 # Ensure the prelude submodule is present — any buck2 build needs it, and the setup
 # script may not have located the repo to init it. Idempotent / fast if already done.
+# `-c http.proxy=` disables the egress proxy for this invocation (it propagates to the
+# per-submodule child clones), so the public github submodule clones direct instead of
+# 403-ing through the scoped git proxy; the insteadOf overrides above keep its URL on
+# github.com. The only submodule is the prelude (github) — loom-hosted submodules, if
+# any were added, use 127.0.0.1 (localhost, never proxied), so this is safe for them too.
 if [ -f "$REPO/.gitmodules" ]; then
-  git -C "$REPO" submodule update --init --recursive >/tmp/loom-submodule.log 2>&1 || \
+  git -C "$REPO" -c http.proxy= submodule update --init --recursive >/tmp/loom-submodule.log 2>&1 || \
     echo "WARN: submodule init failed (see /tmp/loom-submodule.log)"
 fi
 
