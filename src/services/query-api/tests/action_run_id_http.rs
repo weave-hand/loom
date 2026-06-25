@@ -13,6 +13,7 @@ use control_plane_core::{
 use control_plane_memory::MemoryControlPlane;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue};
+use service_runtime::Subject;
 use tower::ServiceExt;
 
 /// Records the run_id of the single event it is handed.
@@ -117,18 +118,14 @@ async fn created_response_carries_run_id_header() {
         serving,
         action_engine: engine.clone(),
     });
-    let res = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/actions/createWidget")
-                .header("X-Loom-Subject", subj.0.clone())
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"id":"42","name":"gadget"}"#))
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/actions/createWidget")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"id":"42","name":"gadget"}"#))
         .unwrap();
+    req.extensions_mut().insert(Subject(subj.clone()));
+    let res = app.oneshot(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::CREATED);
     let header = res

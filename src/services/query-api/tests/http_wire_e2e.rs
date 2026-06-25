@@ -20,7 +20,7 @@ use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
 };
 use e2e_support::InProcessServingEngine;
-use e2e_support::{grant_read, ids_i64, prop, spawn_http, subject_with_role, tref};
+use e2e_support::{grant_read, ids_i64, prop, session_token, spawn_http, subject_with_role, tref};
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use ingest::landing::{DuckLakeMaterializer, IcebergMaterializer};
@@ -28,6 +28,7 @@ use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use query_api::serving::{DuckLakeActionWriter, EmbeddedDuckDb};
 use query_api::serving_datafusion::IcebergActionWriter;
+use service_runtime::{AuthState, protect};
 
 const INLINE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 
@@ -179,8 +180,19 @@ async fn run_wire_vertical(backend: WireBackend) {
     grant_read(&backend.cp, &role, "Customer").await;
     let (_intruder, _intruder_role) = subject_with_role(&backend.cp, "intruder").await;
 
+    // Mint session tokens so the auth gate can verify both subjects.
+    let reader_token = session_token(&backend.cp, "reader").await;
+    let intruder_token = session_token(&backend.cp, "intruder").await;
+
+    // Wrap the query router with the auth gate (mirrors the binary's main.rs).
+    let auth = AuthState {
+        auth: backend.cp.clone(),
+        session_ttl: std::time::Duration::from_secs(3600),
+    };
+    let protected_query = protect(backend.query, auth);
+
     let (ingest_url, _ig) = spawn_http(backend.ingest).await;
-    let (query_url, _qg) = spawn_http(backend.query).await;
+    let (query_url, _qg) = spawn_http(protected_query).await;
     let client = reqwest::Client::new();
 
     // Happy path 1/2 — land over the wire.
@@ -197,7 +209,7 @@ async fn run_wire_vertical(backend: WireBackend) {
     // Happy path 2/2 — authorized typed read returns the landed rows.
     let resp = client
         .get(format!("{query_url}/objects/Customer"))
-        .header("X-Loom-Subject", "reader")
+        .header("Authorization", format!("Bearer {reader_token}"))
         .send()
         .await
         .unwrap();
@@ -205,10 +217,10 @@ async fn run_wire_vertical(backend: WireBackend) {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(ids_i64(&body), vec![1i64, 2], "read body: {body}");
 
-    // Deny — ungranted subject -> 403.
+    // Deny — authenticated but ungranted subject -> 403.
     let resp = client
         .get(format!("{query_url}/objects/Customer"))
-        .header("X-Loom-Subject", "intruder")
+        .header("Authorization", format!("Bearer {intruder_token}"))
         .send()
         .await
         .unwrap();
@@ -229,7 +241,7 @@ async fn run_wire_vertical(backend: WireBackend) {
     // client error, which is what this smoke asserts.
     let resp = client
         .get(format!("{query_url}/objects/Nope"))
-        .header("X-Loom-Subject", "reader")
+        .header("Authorization", format!("Bearer {reader_token}"))
         .send()
         .await
         .unwrap();

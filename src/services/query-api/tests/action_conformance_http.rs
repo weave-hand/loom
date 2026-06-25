@@ -18,6 +18,7 @@ use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue};
 use serde_json::json;
+use service_runtime::Subject;
 use tower::ServiceExt;
 
 /// Serving engine that is never called on the action path (reads only). Returns empty.
@@ -122,18 +123,15 @@ async fn seeded_state() -> AppState {
 
 async fn post(state: AppState, action: &str, body: serde_json::Value) -> (StatusCode, String) {
     let app = router(state);
-    let res = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/actions/{action}"))
-                .header("X-Loom-Subject", "analyst")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!("/actions/{action}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
         .unwrap();
+    req.extensions_mut()
+        .insert(Subject(SubjectId("analyst".into())));
+    let res = app.oneshot(req).await.unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     (status, String::from_utf8_lossy(&bytes).to_string())

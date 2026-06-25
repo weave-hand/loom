@@ -19,6 +19,7 @@ use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, Rows, ServingEngine, ServingError, SqlValue};
 use serde_json::json;
+use service_runtime::Subject;
 use tower::ServiceExt;
 
 struct StubServing;
@@ -117,18 +118,15 @@ async fn post_json(
         action_engine: Arc::new(OkEngine),
     };
     let app = router(state);
-    let res = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/actions/{action}"))
-                .header("X-Loom-Subject", subject)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!("/actions/{action}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
         .unwrap();
+    req.extensions_mut()
+        .insert(Subject(SubjectId(subject.into())));
+    let res = app.oneshot(req).await.unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let json = if bytes.is_empty() {
