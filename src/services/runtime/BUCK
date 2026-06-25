@@ -7,9 +7,12 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:argon2",
         "//third-party:axum",
+        "//third-party:hex",
         "//third-party:iceberg",
         "//third-party:object_store",
+        "//third-party:sha2",
         "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:tokio",
@@ -41,6 +44,15 @@ rust_test(
     crate = "object_store_config",
     srcs = ["tests/object_store_config.rs"],
     crate_root = "tests/object_store_config.rs",
+    edition = "2024",
+    deps = [":runtime"],
+)
+
+rust_test(
+    name = "crypto",
+    crate = "crypto",
+    srcs = ["tests/crypto.rs"],
+    crate_root = "tests/crypto.rs",
     edition = "2024",
     deps = [":runtime"],
 )
