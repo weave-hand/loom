@@ -60,6 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let flight = FlightDataService {
         catalog: flight_catalog,
+        serving_catalog: IcebergCatalog::new(pool.clone()),
+        serving_store: service_runtime::build_serving_object_store(&cfg.object_store)?,
         pool,
     };
 

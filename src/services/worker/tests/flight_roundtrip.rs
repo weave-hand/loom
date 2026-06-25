@@ -104,6 +104,8 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     };
     let flight_svc = FlightDataService {
         catalog: flight_catalog,
+        serving_catalog: control_plane_postgres::iceberg_catalog::IcebergCatalog::new(pool.clone()),
+        serving_store: None,
         pool,
     };
 
