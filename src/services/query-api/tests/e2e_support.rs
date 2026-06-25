@@ -154,7 +154,7 @@ pub async fn session_token(cp: &PgControlPlane, subject: &str) -> String {
 /// Drive the HTTP router (behind the auth gate) and return (status, parsed JSON body).
 pub async fn get(
     cp: Arc<PgControlPlane>,
-    eng: Arc<EmbeddedDuckDb>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
     uri: &str,
     subject: &str,
 ) -> (StatusCode, serde_json::Value) {

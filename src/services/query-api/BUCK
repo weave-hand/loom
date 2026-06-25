@@ -85,9 +85,9 @@ loom_fixture_test(
     crate = "governed_read",
     srcs = ["tests/governed_read.rs"],
     crate_root = "tests/governed_read.rs",
-    duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:tokio",
