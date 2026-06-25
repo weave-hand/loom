@@ -132,7 +132,7 @@ impl Tx for IcebergTx {
                         .into(),
                     )
                 })?;
-            register_files(&mut tx, table, cols, files, *mode, at).await?;
+            register_files(&mut tx, table, cols, files, mode.clone(), at).await?;
         }
         tx.commit().await.map_err(backend)?;
         Ok(Some(at))
