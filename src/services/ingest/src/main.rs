@@ -33,9 +33,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = parse_landing_backend(std::env::var("LOOM_LANDING_BACKEND").ok().as_deref())
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+    // Build the auth-serving control plane from a pool CLONE before the backend
+    // match consumes `pool` (both arms move it). Capture lock_timeout first too.
+    let lock_timeout = cfg.lock_timeout;
+    let pg = Arc::new(service_runtime::control_plane(pool.clone(), lock_timeout));
+    let auth_state = service_runtime::AuthState {
+        auth: pg.clone(),
+        session_ttl: service_runtime::session_ttl_from_env(),
+    };
+    if let (Ok(user), Ok(pass)) = (
+        std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME"),
+        std::env::var("LOOM_BOOTSTRAP_ADMIN_PASSWORD"),
+    ) {
+        service_runtime::bootstrap_admin(pg.as_ref(), &user, &pass).await?;
+    }
+
     let materializer: Arc<dyn LandingMaterializer> = match backend {
         LandingBackend::DuckLake => {
-            let cp = Arc::new(service_runtime::control_plane(pool, cfg.lock_timeout));
+            let cp = Arc::new(service_runtime::control_plane(pool, lock_timeout));
             let store = Arc::new(service_runtime::local_store(&cfg.data_path)?);
             Arc::new(DuckLakeMaterializer { cp, store })
         }
@@ -58,7 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let app = router(AppState { materializer });
+    let app = service_runtime::protect(router(AppState { materializer }), auth_state.clone())
+        .merge(service_runtime::login_routes(auth_state.clone()))
+        .merge(service_runtime::session_routes(auth_state));
+
     service_runtime::serve(cfg.bind_addr, app).await?;
     Ok(())
 }

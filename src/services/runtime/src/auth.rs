@@ -191,6 +191,15 @@ pub enum BootstrapError {
     Store(#[from] ControlPlaneError),
 }
 
+/// Read the session TTL from `LOOM_SESSION_TTL_SECS` (default 24h).
+pub fn session_ttl_from_env() -> Duration {
+    std::env::var("LOOM_SESSION_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(86_400))
+}
+
 /// Seed `username`/`password` as the first user iff the store has no users yet.
 /// The admin's subject id equals its username (role assignment stays an operator
 /// ACL task). A non-empty store is a no-op (so a restart never re-seeds).

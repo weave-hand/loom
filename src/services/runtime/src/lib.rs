@@ -5,7 +5,7 @@
 mod auth;
 pub use auth::{
     AuthState, BootstrapError, Subject, bootstrap_admin, login_routes, protect, require_auth,
-    session_routes, status_for,
+    session_routes, session_ttl_from_env, status_for,
 };
 
 mod crypto;
