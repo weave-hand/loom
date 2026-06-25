@@ -278,7 +278,6 @@ loom_fixture_test(
     crate = "multi_hop_traversal_e2e",
     srcs = ["tests/multi_hop_traversal_e2e.rs"],
     crate_root = "tests/multi_hop_traversal_e2e.rs",
-    duckdb = True,
     deps = [
         ":query-api",
         ":e2e-support",
@@ -424,7 +423,6 @@ loom_fixture_test(
     crate = "inverse_hops_e2e",
     srcs = ["tests/inverse_hops_e2e.rs"],
     crate_root = "tests/inverse_hops_e2e.rs",
-    duckdb = True,
     deps = [
         ":query-api",
         ":e2e-support",

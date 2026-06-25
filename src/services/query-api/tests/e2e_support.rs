@@ -24,7 +24,7 @@ use control_plane_core::{
     RoleId, RunId, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use control_plane_postgres::fixture::{DuckLakeWriter, IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use engine_serving::execute_query;
 use http_body_util::BodyExt;
@@ -416,6 +416,186 @@ pub async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeW
     )
     .await
     .unwrap();
+    (cp, eng, writer)
+}
+
+/// Seed the same customer→orders→line_items chain as [`setup`], define the same three
+/// ontology types and two FK links, and serve via the in-process Iceberg/DataFusion engine.
+///
+/// Returns `(cp, Arc<dyn ServingEngine>, IcebergWriter)`. The caller **must** keep the
+/// returned `IcebergWriter` alive — its `TempDir` holds the Parquet warehouse; dropping it
+/// removes the files from under the serving engine.
+pub async fn setup_iceberg(
+    fx: &PgFixture,
+) -> (
+    PgControlPlane,
+    Arc<dyn query_api::serving::ServingEngine>,
+    IcebergWriter,
+) {
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+
+    // customer(id, region): (1,'CA'), (2,'NY')
+    let cust_cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("region".to_string(), "string".to_string(), true),
+    ];
+    writer
+        .seed_arrays(
+            "main",
+            "customer",
+            &cust_cols,
+            &[
+                SeedCol::Long(vec![1, 2]),
+                SeedCol::Str(vec!["CA", "NY"]),
+            ],
+        )
+        .await;
+
+    // orders(id, customer_id, status): (10,1,'shipped'),(11,1,'pending'),(20,2,'shipped')
+    let ord_cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("customer_id".to_string(), "long".to_string(), false),
+        ("status".to_string(), "string".to_string(), true),
+    ];
+    writer
+        .seed_arrays(
+            "main",
+            "orders",
+            &ord_cols,
+            &[
+                SeedCol::Long(vec![10, 11, 20]),
+                SeedCol::Long(vec![1, 1, 2]),
+                SeedCol::Str(vec!["shipped", "pending", "shipped"]),
+            ],
+        )
+        .await;
+
+    // line_items(id, order_id, sku): (100,10,'A'),(101,10,'B'),(102,11,'C'),(200,20,'D')
+    let li_cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("order_id".to_string(), "long".to_string(), false),
+        ("sku".to_string(), "string".to_string(), true),
+    ];
+    writer
+        .seed_arrays(
+            "main",
+            "line_items",
+            &li_cols,
+            &[
+                SeedCol::Long(vec![100, 101, 102, 200]),
+                SeedCol::Long(vec![10, 10, 11, 20]),
+                SeedCol::Str(vec!["A", "B", "C", "D"]),
+            ],
+        )
+        .await;
+
+    let cust = tref("main", "customer");
+    let ord = tref("main", "orders");
+    let li = tref("main", "line_items");
+
+    cp.define_type(ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "region".into(),
+                ty: "String".into(),
+                required: false,
+            },
+        ],
+        derived: vec![],
+        table: cust.clone(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+    cp.define_type(ObjectType {
+        name: TypeName("Order".into()),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "customer_id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "status".into(),
+                ty: "String".into(),
+                required: false,
+            },
+        ],
+        derived: vec![],
+        table: ord.clone(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+    cp.define_type(ObjectType {
+        name: TypeName("LineItem".into()),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "order_id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "sku".into(),
+                ty: "String".into(),
+                required: false,
+            },
+        ],
+        derived: vec![],
+        table: li.clone(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+
+    cp.define_link(LinkDef {
+        name: "orders".into(),
+        from: TypeName("Customer".into()),
+        to: TypeName("Order".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+    })
+    .await
+    .unwrap();
+    cp.define_link(LinkDef {
+        name: "lineItems".into(),
+        from: TypeName("Order".into()),
+        to: TypeName("LineItem".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "order_id".into(),
+        },
+    })
+    .await
+    .unwrap();
+
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng: Arc<dyn query_api::serving::ServingEngine> =
+        Arc::new(InProcessServingEngine::new(catalog));
     (cp, eng, writer)
 }
 

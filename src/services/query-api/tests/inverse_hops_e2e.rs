@@ -10,7 +10,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
-use e2e_support::{ids, setup};
+use e2e_support::{ids, setup_iceberg};
 use query_api::handler::{
     ChainQuery, Direction, Hop, QueryDeps, QueryError, Subject, read_linked_chain,
 };
@@ -45,11 +45,11 @@ async fn grant_read(cp: &PgControlPlane, role: &RoleId, type_name: &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn inverse_single_hop_reaches_origin_customer() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -75,11 +75,11 @@ async fn inverse_single_hop_reaches_origin_customer() {
 #[tokio::test(flavor = "multi_thread")]
 async fn inverse_two_hop_chain_reaches_origin_customer() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -107,11 +107,11 @@ async fn inverse_two_hop_chain_reaches_origin_customer() {
 #[tokio::test(flavor = "multi_thread")]
 async fn inverse_hop_is_governed_on_the_reached_type() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     // Grant LineItem (source) and Customer (final) but NOT Order (the intermediate type
     // the inverse `lineItems` hop reaches) -> the whole traversal is Forbidden.
@@ -137,11 +137,11 @@ async fn inverse_hop_is_governed_on_the_reached_type() {
 #[tokio::test(flavor = "multi_thread")]
 async fn unknown_inbound_link_is_unknown_link() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     let (a, role) = subject_with_role(&cp, "dan").await;
     grant_read(&cp, &role, "Customer").await;
@@ -169,11 +169,11 @@ async fn unknown_inbound_link_is_unknown_link() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ambiguous_inbound_link_is_rejected() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     // Define a SECOND link also named `lineItems` but from Customer -> LineItem, so two
     // links named `lineItems` are inbound to LineItem (from Order and from Customer).
