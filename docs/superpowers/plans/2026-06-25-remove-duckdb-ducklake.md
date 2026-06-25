@@ -127,39 +127,31 @@ git commit -m "test(query-api): port governed_read e2e to in-process Iceberg ser
 
 ---
 
-## Task 2: Fan out the e2e port to the remaining portable tests
+## Task 2: Port the remaining e2e tests off DuckDB (4 sub-tasks)
 
-With the seam proven, mechanically apply the same signature update to the other portable e2e tests, and DELETE the DuckDB-specific ones.
+> **Revised after Task 1 discovery.** The e2e tests do NOT share one fixture — porting is a *mix* of six shapes. Each sub-task implementer reads `/workspace/.superpowers/sdd/e2e-port-reference.md` (the proven `governed_read.rs` pattern + per-file bucket map + seed/serve signatures) as its requirements. Rules common to all: preserve every assertion and data value; translate seeding (→ `IcebergWriter::seed_arrays`) and serving (→ `InProcessServingEngine`) only; remove all duck imports; drop `duckdb = True` from each ported BUCK target. Do NOT delete `EmbeddedDuckDb`/`e2e_support::setup`/`land` here — Task 3/6 remove them once nothing depends on them. Each sub-task ends green on its own targets and commits.
 
-**Files (re-point — apply the Task 1 mechanical change: `(cp, eng) = setup`, `get(cp, eng, …)`, drop duck imports, and remove `duckdb = True` from the matching BUCK target):**
-- `serving_engine.rs`, `bind_read_e2e.rs`, `link_traversal.rs`, `derived_properties_e2e.rs`, `typed_filter_e2e.rs`, `http_wire_e2e.rs`, `multi_hop_traversal_e2e.rs`, `association_e2e.rs`, `graph_reach_e2e.rs`, `graph_path_e2e.rs`, `graph_union_e2e.rs`, `graph_tail_e2e.rs`, `inverse_hops_e2e.rs`, `serving_types.rs`, `action_e2e.rs`
+### Task 2A — Bucket A (shared-fixture) + the Iceberg seed helpers
+- Add `setup_iceberg(fx) -> (PgControlPlane, Arc<dyn ServingEngine>, IcebergWriter)` to `e2e_support.rs`, seeding the same customer→orders→line_items chain + ontology + two FK links via `IcebergWriter`, serving via `InProcessServingEngine`.
+- Port `multi_hop_traversal_e2e.rs`, `inverse_hops_e2e.rs` to call it.
+- Gate: `buck2 test //src/services/query-api:multi-hop-traversal-e2e //src/services/query-api:inverse-hops-e2e > /tmp/t2a.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t2a.log` → Pass.
+- Commit: `test(query-api): port shared-fixture e2e tests (multi-hop, inverse-hops) to Iceberg serving`.
 
-**Files (DELETE — DuckDB-specific, no Iceberg equivalent needed):**
-- `tests/spike_duckdb.rs` (embedded duckdb-rs ABI gate — obsolete)
-- `tests/inline_write_spike.rs` (duckdb spike)
-- `tests/quack_serving.rs` (Quack-over-DuckDB; Quack serving is deferred and duck-based)
-- `tests/multi_file_limit_guard.rs` (guards the DuckDB `ORDER BY`/`LIMIT` workaround — `iss-multi-file-limit-misread`; the workaround is being deleted)
-- `tests/serving_backend_parse.rs` (tests `parse_serving_backend`, deleted in Task 3)
+### Task 2B — Bucket B (land()-based HTTP route tests)
+- Port `association_e2e.rs`, `graph_reach_e2e.rs`, `graph_path_e2e.rs`, `graph_union_e2e.rs`, `graph_tail_e2e.rs`: replace each local `land()` call with `IcebergWriter::seed_arrays`, serve via `InProcessServingEngine` through `e2e_support::get`.
+- Gate: the five matching targets green (`graph-reach-e2e`, `graph-path-e2e`, `graph-union-e2e`, `graph-tail-e2e`, `association-e2e`).
+- Commit: `test(query-api): port graph/association HTTP e2e tests to Iceberg serving`.
 
-- [ ] **Step 1: Re-point each portable test.**
+### Task 2C — Bucket C (self-contained tests)
+- Port `bind_read_e2e.rs`, `link_traversal.rs`, `derived_properties_e2e.rs`, `typed_filter_e2e.rs`, `action_e2e.rs`: rewrite each local seed to `IcebergWriter::seed_arrays` and serve via `InProcessServingEngine`. `action_e2e.rs` also swaps `DuckLakeActionWriter` → `IcebergActionWriter` (constructor args per `http_wire_e2e.rs`'s Iceberg arm).
+- Gate: the five matching targets green.
+- Commit: `test(query-api): port self-contained read/action e2e tests to Iceberg serving`.
 
-For each file in the re-point list, apply the exact mechanical change proven in Task 1 (new `setup`/`get` signatures, drop `EmbeddedDuckDb`/`DuckLakeWriter` imports).
-
-- [ ] **Step 2: Delete the DuckDB-specific test files and their BUCK targets.**
-
-Delete the five files above and remove their targets from `src/services/query-api/BUCK` (`spike-duckdb`, `inline-write-spike`, `quack-serving`, `multi-file-limit-guard`, `serving-types`'s sibling `serving_backend_parse`). Remove `duckdb = True` from every remaining re-pointed target.
-
-- [ ] **Step 3: Run the full query-api test set.**
-
-Run: `buck2 test //src/services/query-api/... > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t.log`
-Expected: `Tests finished: Pass`. (`query-api` still builds against `duckdb` here — that's fine; the crate dep is dropped in Task 3.)
-
-- [ ] **Step 4: Commit.**
-
-```bash
-git add src/services/query-api
-git commit -m "test(query-api): port all e2e tests to Iceberg serving; drop duck-specific spikes"
-```
+### Task 2D — Deletions + dual-backend trim
+- DELETE (duck-specific / engine-being-removed): `serving_engine.rs`, `serving_types.rs` (low-level `EmbeddedDuckDb` mechanics — engine is going away; engine-serving crate has its own tests), `spike_duckdb.rs`, `inline_write_spike.rs`, `quack_serving.rs`, `multi_file_limit_guard.rs` (guards a DuckDB-engine `LIMIT` bug, `iss-multi-file-limit-misread`, removed with the engine), `serving_backend_parse.rs` (tests `parse_serving_backend`, deleted in Task 3). Remove each file's BUCK target.
+- TRIM `http_wire_e2e.rs`: delete the `ducklake_backend()` arm + its helpers; keep the `iceberg_backend()` arm; remove `duckdb = True`.
+- Gate: `buck2 test //src/services/query-api/... > /tmp/t2d.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t2d.log` → Pass. (query-api still builds against the `duckdb` crate here — `EmbeddedDuckDb` is deleted in Task 3.) At this point NO query-api e2e target sets `duckdb = True`.
+- Commit: `test(query-api): delete DuckDB-specific e2e tests; trim http_wire dual-backend to Iceberg`.
 
 ---
 
