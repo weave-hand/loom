@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, Aggregation, Cardinality, Catalog, CompareOp, ControlPlane,
-    ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect, EventType, Lineage,
-    LineageEvent, LinkBacking, LinkDef, NewJob, ObjectType, Ontology, Page, PageReq, ParamDef,
-    Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
-    SnapshotId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionName, Aggregation, Auth, Cardinality, Catalog, CompareOp,
+    ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect, EventType,
+    Lineage, LineageEvent, LinkBacking, LinkDef, NewJob, NewUser, ObjectType, Ontology, Page,
+    PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter,
+    RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -1604,6 +1604,74 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     a.set_policy(&rid("reader"), Action::Read, table_ok)
         .await
         .expect("table-target structural ok");
+}
+
+/// Contract for the `Auth` ops. `a` must be freshly empty. Bound on `Acl` too so
+/// we can prove `create_user` made the subject a real ACL principal.
+pub async fn auth_contract<A: Auth + Acl>(a: &A) {
+    let sid = |s: &str| SubjectId(s.to_string());
+    let h = |b: u8| -> [u8; 32] { [b; 32] };
+
+    // Fresh store: no users.
+    assert!(!a.has_any_user().await.unwrap());
+
+    // --- create_user ---
+    a.create_user(&NewUser {
+        subject_id: sid("u-alice"),
+        username: "alice".into(),
+        password_phc: "phc-alice".into(),
+    })
+    .await
+    .unwrap();
+    assert!(a.has_any_user().await.unwrap());
+
+    // create_user ensured the ACL subject: assigning a role must succeed (it
+    // returns NotFound for an unknown subject).
+    a.define_role(&RoleId("r".into())).await.unwrap();
+    a.assign_role(&sid("u-alice"), &RoleId("r".into()))
+        .await
+        .unwrap();
+
+    // duplicate username → Conflict
+    let dup = a
+        .create_user(&NewUser {
+            subject_id: sid("u-other"),
+            username: "alice".into(),
+            password_phc: "phc-other".into(),
+        })
+        .await;
+    assert!(matches!(dup, Err(ControlPlaneError::Conflict(_))));
+
+    // --- find_password_credential ---
+    let cred = a.find_password_credential("alice").await.unwrap().unwrap();
+    assert_eq!(cred.subject_id, sid("u-alice"));
+    assert_eq!(cred.password_phc, "phc-alice");
+    assert!(a.find_password_credential("ghost").await.unwrap().is_none());
+
+    // --- sessions ---
+    let now = OffsetDateTime::now_utc();
+    let future = now + time::Duration::hours(1);
+    a.create_session(&sid("u-alice"), &h(1), future).await.unwrap();
+
+    // resolve while unexpired
+    assert_eq!(
+        a.resolve_session(&h(1), now).await.unwrap(),
+        Some(sid("u-alice"))
+    );
+    // unknown token → None
+    assert!(a.resolve_session(&h(9), now).await.unwrap().is_none());
+    // expiry boundary: at/after expires_at → None
+    assert!(
+        a.resolve_session(&h(1), now + time::Duration::hours(2))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // revoke is effective and idempotent
+    a.revoke_session(&h(1)).await.unwrap();
+    assert!(a.resolve_session(&h(1), now).await.unwrap().is_none());
+    a.revoke_session(&h(1)).await.unwrap(); // no-op, no error
 }
 
 /// Both-adapter contract for type-existence validation on the three loom-owned
