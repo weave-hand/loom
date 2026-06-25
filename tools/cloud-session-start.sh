@@ -49,15 +49,56 @@ if ! grep -q 'LOOM_CLOUD_ENV' "$PROFILE" 2>/dev/null; then
     # gets a 401, so every native `buck2 build //src/...` fails on the toolchain fetch.
     # Direct egress to github works for these public, sha256-pinned tarballs, so route
     # them around the proxy. The same applies to the //tools:* github-release binaries.
-    # NOTE: git is unaffected — its url.insteadOf rewrites github.com to the git proxy on
-    # 127.0.0.1 (already no_proxy), so this only diverts buck2/curl-style direct HTTPS.
-    # Written single-quoted so each shell APPENDS to the live NO_PROXY rather than baking
-    # a stale snapshot of it.
+    # This profile block is for INTERACTIVE shells (a human's terminal). It does NOT
+    # reach non-interactive `bash -c` tool-call shells (they skip ~/.bashrc past the
+    # `[ -z "$PS1" ] && return` guard) nor the buck2 daemon they spawn — the buck2
+    # shim installed below is what carries this bypass to the daemon, which is the
+    # process that actually runs `download_file`. Written single-quoted so each shell
+    # APPENDS to the live NO_PROXY rather than baking a stale snapshot of it.
     echo 'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"'
     echo 'export no_proxy="$NO_PROXY"'
     echo '# --- end LOOM_CLOUD_ENV ---'
   } >> "$PROFILE"
 fi
+
+# --- Cold-build hardening -----------------------------------------------------
+# A fresh cloud session builds //src/... from cold, which trips three blockers the
+# snapshot/profile alone do not cover. See
+# docs/superpowers/specs/2026-06-25-cloud-session-cold-build-reliability-design.md.
+
+# (1) buck2 proxy shim. The authoritative fix for the GitHub `download_file` HEAD-401
+# ("the head issue"): /usr/local/sbin precedes /usr/local/bin on PATH, so this shim
+# shadows the real binary and exports the github NO_PROXY bypass before exec-ing it —
+# guaranteeing the daemon inherits the bypass regardless of how the harness injects
+# env into non-interactive tool shells. Idempotent copy.
+SHIM_SRC="$REPO/tools/ci/buck2-proxy-shim.sh"
+SHIM_DST="/usr/local/sbin/buck2"
+if [ -f "$SHIM_SRC" ]; then
+  if ! cmp -s "$SHIM_SRC" "$SHIM_DST" 2>/dev/null; then
+    install -m 0755 "$SHIM_SRC" "$SHIM_DST" 2>/dev/null \
+      || echo "WARN: could not install buck2 proxy shim to $SHIM_DST (github fetches may 401)"
+  fi
+else
+  echo "WARN: buck2 proxy shim source missing at $SHIM_SRC"
+fi
+
+# (2) bsdtar (libarchive-tools) — required by the :libxml2 fixture genrule. The setup
+# snapshot may not include it; install per-session if absent.
+if ! command -v bsdtar >/dev/null 2>&1; then
+  if [ "$(id -u)" = 0 ]; then _apt="apt-get"; else _apt="sudo apt-get"; fi
+  $_apt install -y --no-install-recommends libarchive-tools >/tmp/loom-bsdtar.log 2>&1 \
+    || echo "WARN: bsdtar install failed (libxml2 fixture genrule may fail); see /tmp/loom-bsdtar.log"
+fi
+
+# (3) iceberg-rust git fetch. ~/.gitconfig rewrites ALL https://github.com/ to the
+# scoped git proxy, which 403s repos outside this session's scope — so the
+# `git_fetch` for apache/iceberg-rust is denied. A longer (more specific) self-
+# referential insteadOf wins by longest-match and keeps github.com/apache/* direct;
+# combined with the shim's NO_PROXY (inherited by the git_fetch subprocess) git
+# connects straight to github, which works for this public, sha-pinned repo.
+git config --global url."https://github.com/apache/".insteadOf "https://github.com/apache/" \
+  || echo "WARN: could not set iceberg-rust git insteadOf override (git_fetch may 403)"
+# --- end cold-build hardening -------------------------------------------------
 
 # Sanity: warn (don't fail) if a required tool/secret is missing — the routine can
 # still partially run, and a clear message beats a cryptic failure later.
