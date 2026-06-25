@@ -47,3 +47,18 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "execute-query-stream",
+    crate = "execute_query_stream",
+    srcs = ["tests/execute_query_stream.rs"],
+    crate_root = "tests/execute_query_stream.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:futures",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
