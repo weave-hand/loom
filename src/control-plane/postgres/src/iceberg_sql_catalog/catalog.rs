@@ -371,9 +371,11 @@ impl SqlCatalog {
     }
 
     /// Physically delete an object-store file by its absolute URL (e.g. a `file://`
-    /// or `s3://` Parquet path). Idempotent: a missing object is not an error. This
-    /// is the only object-store *delete* capability on the catalog — used by GC to
-    /// reclaim the Parquet of end-capped data files; read/write paths are untouched.
+    /// or `s3://` Parquet path). Idempotent: a missing object is not an error —
+    /// idempotency is provided by the backend (`LocalFsStorage`/S3 both no-op on
+    /// absence), not enforced here. This is the only object-store *delete*
+    /// capability on the catalog — used by GC to reclaim the Parquet of end-capped
+    /// data files; read/write paths are untouched.
     pub async fn delete_file(&self, path: &str) -> control_plane_core::Result<()> {
         self.fileio
             .delete(path)

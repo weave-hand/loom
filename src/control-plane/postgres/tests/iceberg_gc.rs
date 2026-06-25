@@ -332,9 +332,11 @@ async fn gc_serializes_with_concurrent_flush() {
         name: "race".into(),
     };
     let run = RunId(uuid::Uuid::new_v4());
+    let ice = IcebergCatalog::new(pool.clone());
 
-    // Seed: a real file end-capped + aged (gc has work), plus live inline rows (flush has work).
-    land(
+    // Seed: land A (s1) → overwrite B (s2; end-caps A) → age s2 so gc reclaims A,
+    // then add live inline rows so flush has work to drain.
+    let s1 = land(
         &pool,
         &catalog_g,
         &t,
@@ -346,6 +348,7 @@ async fn gc_serializes_with_concurrent_flush() {
     )
     .await
     .expect("land");
+    let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
     let s2 = overwrite_parquet_snapshot(&pool, &catalog_g, &t, &columns(), vec![batch(4)], None)
         .await
         .expect("ow");
@@ -361,26 +364,45 @@ async fn gc_serializes_with_concurrent_flush() {
     .await
     .expect("inline_append");
 
+    // Each racer gets its OWN pool (pool_for caps at 5 connections), so the
+    // advisory-lock waiter parked in pg_advisory_xact_lock never starves the active
+    // task's work connections.
+    let pool_gc = fx.pool_for(&db).await;
+    let pool_flush = fx.pool_for(&db).await;
     let flush = tokio::spawn({
-        let pool_f = pool.clone();
         let t_f = t.clone();
-        async move { flush_table(&catalog_f, &pool_f, &t_f, run).await }
+        async move { flush_table(&catalog_f, &pool_flush, &t_f, run).await }
     });
     let gc = tokio::spawn({
-        let pool_g = pool.clone();
         let t_g = t.clone();
-        async move { gc_table(&catalog_g, &pool_g, &t_g, SEVEN_DAYS).await }
+        async move { gc_table(&catalog_g, &pool_gc, &t_g, SEVEN_DAYS).await }
     });
     let gc_res = gc.await.expect("gc join");
     let flush_res = flush.await.expect("flush join");
     gc_res.expect("gc ok under contention");
     flush_res.expect("flush ok under contention");
 
-    // Final state is readable and consistent (no half-applied corruption).
-    let ice = IcebergCatalog::new(pool.clone());
+    // Both did their work under contention, in either serialization order: gc
+    // reclaimed the aged file A; flush drained the inline rows into the live set;
+    // the result reads back intact (no half-applied corruption).
+    assert!(
+        !a_path.exists(),
+        "gc reclaimed aged file A under contention"
+    );
     let cur = ice.current_snapshot(&t).await.expect("current");
-    let _ = ice
+    let rows: i64 = ice
         .files_with_stats(&t, cur.id)
         .await
-        .expect("files readable");
+        .expect("files readable")
+        .iter()
+        .map(|f| f.record_count)
+        .sum();
+    assert_eq!(rows, 6, "B(4) + flushed inline(2) are the live set");
+    assert!(
+        ice.inline_live_batch(&t, cur.id)
+            .await
+            .expect("inline_live_batch")
+            .is_none(),
+        "flush retired the inline rows"
+    );
 }
