@@ -134,6 +134,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Password reset, email verification, rotation, account lockout, and login rate-limiting — deliberately out of the [[road-auth-password-session]] foundation, which ships create + verify only.
 - [ ] **Session refresh / sliding expiry** `{#fut-auth-session-refresh area:acl status:deferred from:2026-06-23-auth-password-session-design pr:- spec:-}`
   [[road-auth-password-session]] sessions have a fixed TTL; sliding renewal / refresh tokens are a deferred efficiency/ergonomics follow-on.
+- [ ] **Redact password verifier from credential Debug** `{#fut-auth-credential-debug-redact area:acl status:deferred from:2026-06-23-auth-password-session-design pr:#195 spec:-}`
+  `NewUser`/`PasswordCredential` (`control-plane/core/src/auth.rs`) derive `Debug`, exposing the Argon2 PHC verifier if a caller ever logs the struct. Latent only — nothing logs them today, and a PHC is a hash not plaintext — but a manual `Debug` impl that redacts `password_phc` (the derive is currently needed for the testkit `assert_eq`) is cheap hardening. Surfaced by the [[road-auth-password-session]] final review.
 
 ## ingest
 
