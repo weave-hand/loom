@@ -2,6 +2,7 @@
 //! No I/O — adapters (memory, postgres) implement these against a backend.
 
 mod acl;
+mod auth;
 mod catalog;
 mod error;
 mod flush;
@@ -18,6 +19,7 @@ pub use acl::{
     Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
     SubjectId, validate_row_filter,
 };
+pub use auth::{Auth, NewUser, PasswordCredential};
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
 pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};

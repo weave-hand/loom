@@ -114,3 +114,13 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "auth-types",
+    crate = "auth_types",
+    srcs = ["tests/auth_types.rs"],
+    crate_root = "tests/auth_types.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
