@@ -26,8 +26,8 @@ use sqlx::PgPool;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_inline::inline_append;
 use crate::iceberg_mirror::{
-    ProjectedColumn, ProjectedFile, end_cap_live_data_files, ensure_table, live_columns_for,
-    next_snapshot, project_files, reconcile_and_project, stamp_schema_version,
+    ProjectedColumn, ProjectedFile, end_cap_files_by_path, end_cap_live_data_files, ensure_table,
+    live_columns_for, next_snapshot, project_files, reconcile_and_project, stamp_schema_version,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
@@ -397,7 +397,7 @@ pub(crate) async fn ensure_iceberg_table(
 }
 
 /// How [`register_files`] folds new files into the table's live set.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum WriteMode {
     /// Add `files` to the currently-live set.
     Append,
@@ -405,6 +405,13 @@ pub enum WriteMode {
     /// become the sole live set (prior files still time-travel). The
     /// `road-iceberg-overwrite-mode` contract, over already-written files.
     Overwrite,
+    /// Expire the specific live files named by `expire_paths`, then add `files`, at
+    /// the new snapshot. Schema-invariant (compaction never changes columns), so it
+    /// skips *column* reconciliation (`reconcile_and_project`) — callers pass `&[]`
+    /// for `columns` — but still stamps the snapshot's schema version
+    /// (`stamp_schema_version`), since `current_snapshot` reads a `schema_version`
+    /// for every snapshot row.
+    Compact { expire_paths: Vec<String> },
 }
 
 /// Register already-written Parquet `files` into the `iceberg_mirror.*` projection
@@ -427,10 +434,19 @@ pub async fn register_files(
     at: SnapshotId,
 ) -> Result<()> {
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
-    // Overwrite: end-cap pre-existing live files BEFORE projecting the new ones, so
-    // only the prior files are retired (same ordering law as `write_mirror`).
-    if let WriteMode::Overwrite = mode {
-        end_cap_live_data_files(conn, tid, at).await?;
+    match &mode {
+        WriteMode::Append => {}
+        WriteMode::Overwrite => {
+            end_cap_live_data_files(conn, tid, at).await?;
+        }
+        WriteMode::Compact { expire_paths } => {
+            // Subset-expire the named files; project the new ones below. Schema is
+            // unchanged, so skip reconcile_and_project (it would require `columns`).
+            end_cap_files_by_path(conn, tid, expire_paths, at).await?;
+            project_files(conn, tid, at, &projected_files(files)?).await?;
+            stamp_schema_version(conn, tid, at).await?;
+            return Ok(());
+        }
     }
     reconcile_and_project(conn, tid, at, &projected_columns(columns)?).await?;
     project_files(conn, tid, at, &projected_files(files)?).await?;

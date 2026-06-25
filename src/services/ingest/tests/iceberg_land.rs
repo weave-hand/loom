@@ -10,7 +10,7 @@ use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use control_plane_core::{Catalog, Lineage, PageReq, RunId, TableRef};
+use control_plane_core::{Catalog, ControlPlane, PageReq, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
@@ -60,6 +60,7 @@ async fn small_iceberg_land_inlines_through_http() {
         .await
         .expect("catalog");
 
+    let cp_arc: Arc<dyn ControlPlane> = Arc::new(cp);
     let state = AppState {
         materializer: Arc::new(IcebergMaterializer {
             catalog: Arc::new(catalog),
@@ -68,6 +69,7 @@ async fn small_iceberg_land_inlines_through_http() {
             inline_byte_limit: 16 * 1024 * 1024,
             flush_byte_threshold: 1, // tiny: any inline landing crosses it
         }),
+        cp: cp_arc.clone(),
     };
 
     let run = uuid::Uuid::new_v4();
@@ -102,7 +104,8 @@ async fn small_iceberg_land_inlines_through_http() {
     assert_eq!(cur.id.0, snap, "returned id is the mirror current snapshot");
 
     // Lineage was emitted for the run, naming the landed dataset.
-    let page = cp
+    let page = cp_arc
+        .lineage()
         .events_for(&RunId(run), PageReq::unbounded())
         .await
         .expect("events");

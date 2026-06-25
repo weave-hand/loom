@@ -16,7 +16,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
-use control_plane_core::ControlPlane;
+use control_plane_core::{ControlPlane, GC_JOB_KIND, NewJob};
 use service_runtime::Subject;
 
 /// Log a backend/serving fault server-side, then return the opaque 500 the client
@@ -44,7 +44,31 @@ pub fn router(state: AppState) -> Router {
         .route("/objects/:type_name/graph/:link_name", get(get_graph))
         .route("/objects/:type_name/graph", get(get_graph_path))
         .route("/actions/:action_name", post(post_action))
+        .route("/maintenance/gc/:schema/:table", post(enqueue_gc))
         .with_state(state)
+}
+
+/// Operator-triggered physical GC: enqueue a `gc_table` job for `(schema, table)`.
+/// A zero-pool worker drains it via the engine's `GcTable` RPC. Returns 202 with
+/// the job id; the actual reclamation runs asynchronously.
+async fn enqueue_gc(
+    State(st): State<AppState>,
+    Path((schema, table)): Path<(String, String)>,
+) -> axum::response::Response {
+    let job = NewJob {
+        kind: GC_JOB_KIND.to_string(),
+        payload: serde_json::json!({ "schema": schema, "name": table }),
+        run_at: None,
+        priority: 0,
+    };
+    match st.cp.queue().enqueue(job).await {
+        Ok(id) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job_id": id.0.to_string() })),
+        )
+            .into_response(),
+        Err(e) => internal_error("enqueue gc_table", e),
+    }
 }
 
 async fn get_object(

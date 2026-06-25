@@ -2,9 +2,10 @@
 //! Delegates queue operations to a `PgControlPlane` and flush_table to
 //! `iceberg_flush::flush_table`.
 
-use control_plane_core::{Queue, RetryPolicy, RunId, TableRef};
+use control_plane_core::{Catalog, Queue, RetryPolicy, RunId, TableRef};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_flush::flush_table;
+use control_plane_postgres::iceberg_gc::gc_table;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use engine_wire::convert;
 use engine_wire::pb;
@@ -12,8 +13,10 @@ use sqlx::PgPool;
 use tonic::{Request, Response, Status};
 
 fn status(e: control_plane_core::ControlPlaneError) -> Status {
+    use control_plane_core::ControlPlaneError::*;
     match e {
-        control_plane_core::ControlPlaneError::NotFound(m) => Status::not_found(m.to_string()),
+        NotFound(m) => Status::not_found(m.to_string()),
+        Conflict(m) => Status::aborted(m.to_string()),
         other => Status::internal(other.to_string()),
     }
 }
@@ -30,6 +33,8 @@ pub struct EngineControlService {
     pub cp: PgControlPlane,
     pub catalog: SqlCatalog,
     pub pool: PgPool,
+    /// Retention window for `gc_table` (from `LOOM_GC_RETENTION_SECS`).
+    pub retention: std::time::Duration,
 }
 
 #[tonic::async_trait]
@@ -108,6 +113,82 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         .await
         .map_err(status)?;
         Ok(Response::new(pb::FlushTableResponse {
+            snapshot_id: snap.map(|s| s.0),
+        }))
+    }
+
+    async fn gc_table(
+        &self,
+        req: Request<pb::GcTableRequest>,
+    ) -> std::result::Result<Response<pb::GcTableResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let summary = gc_table(&self.catalog, &self.pool, &table, self.retention)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::GcTableResponse {
+            data_file_rows: summary.data_file_rows,
+            inline_rows: summary.inline_rows,
+            objects_deleted: summary.objects_deleted,
+        }))
+    }
+
+    async fn list_files(
+        &self,
+        req: Request<pb::ListFilesRequest>,
+    ) -> std::result::Result<Response<pb::ListFilesResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let ice = control_plane_postgres::iceberg_catalog::IcebergCatalog::new(self.pool.clone());
+        let files = match ice.current_snapshot(&table).await {
+            Ok(snap) => ice
+                .files_with_stats(&table, snap.id)
+                .await
+                .map_err(status)?,
+            Err(control_plane_core::ControlPlaneError::NotFound(_)) => Vec::new(),
+            Err(e) => return Err(status(e)),
+        };
+        Ok(Response::new(pb::ListFilesResponse {
+            files: files
+                .into_iter()
+                .map(|f| pb::FileMeta {
+                    path: f.path,
+                    record_count: f.record_count,
+                    file_size_bytes: f.file_size_bytes,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn compact_table(
+        &self,
+        req: Request<pb::CompactTableRequest>,
+    ) -> std::result::Result<Response<pb::CompactTableResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let write: Vec<control_plane_core::DataFile> = r
+            .write_json
+            .iter()
+            .map(|s| {
+                serde_json::from_str(s)
+                    .map_err(|e| Status::invalid_argument(format!("bad write DataFile json: {e}")))
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let snap = control_plane_postgres::iceberg_compact::compact_table(
+            &self.pool, &table, &r.expire, &write,
+        )
+        .await
+        .map_err(status)?;
+        Ok(Response::new(pb::CompactTableResponse {
             snapshot_id: snap.map(|s| s.0),
         }))
     }

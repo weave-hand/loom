@@ -12,13 +12,16 @@ use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_flight::flight_service_server::FlightServiceServer;
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, PageReq, Queue, RunId, TableRef,
+    Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, GC_JOB_KIND, LineageEvent, NewJob,
+    PageReq, Queue, RunId, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline::inline_append;
+use control_plane_postgres::iceberg_landing::{land, overwrite_parquet_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -29,7 +32,40 @@ use engine_wire::pb::engine_control_server::EngineControlServer;
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use tonic::transport::Server;
-use worker::handler::handle_flush;
+use worker::handler::{handle_flush, handle_gc};
+
+/// An Arrow IPC body of `rows` rows (`id: long` = `0..rows`), for `land`.
+fn ipc_body(rows: i64) -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let b = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
+    )
+    .expect("batch");
+    let mut buf = Vec::new();
+    {
+        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
+        w.write(&b).expect("write");
+        w.finish().expect("finish");
+    }
+    buf
+}
+
+/// Strip a `file://` URL to a local filesystem path.
+fn local_path(file_url: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(file_url.strip_prefix("file://").unwrap_or(file_url))
+}
+
+/// Backdate snapshot `snap_id`'s `snapshot_time` so it ages out of any window.
+async fn age_snapshot(pool: &sqlx::PgPool, snap_id: i64) {
+    let old = time::OffsetDateTime::now_utc() - time::Duration::days(365);
+    sqlx::query("update iceberg_mirror.snapshot set snapshot_time = $1 where snapshot_id = $2")
+        .bind(old)
+        .bind(snap_id)
+        .execute(pool)
+        .await
+        .expect("age snapshot");
+}
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -89,6 +125,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         cp,
         catalog: control_catalog,
         pool: pool.clone(),
+        retention: Duration::from_secs(7 * 24 * 3600),
     };
     let flight_svc = FlightDataService {
         catalog: flight_catalog,
@@ -289,4 +326,96 @@ async fn duplicate_dispatch_flush_is_idempotent_over_the_wire() {
         .await
         .expect("inline_live_batch");
     assert!(inline.is_none(), "inline rows retired exactly once");
+}
+
+/// Full e2e: a `gc_table` job flows through the worker's GC handler over the wire
+/// (dequeue → handle_gc → engine `GcTable` RPC → reclaim primitive → complete),
+/// physically deleting an aged-out end-capped Parquet object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_job_flows_through_worker_and_reclaims_object() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+
+    // Seed with a test-local catalog: land A (10 rows), then overwrite with B
+    // (4 rows; end-caps A). The mirror records absolute file:// paths, which the
+    // engine's GC deletes by path regardless of which warehouse wrote them.
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+    let ice = IcebergCatalog::new(pool.clone());
+
+    let s1 = land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(10),
+        0,
+        i64::MAX,
+        inline_lineage(RunId(uuid::Uuid::new_v4()), &table),
+    )
+    .await
+    .expect("land");
+    let a_path = local_path(&ice.files_with_stats(&table, s1).await.expect("files@s1")[0].path);
+
+    let s2 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        vec![inline_batch(&[0, 1, 2, 3])],
+        None,
+    )
+    .await
+    .expect("overwrite");
+    age_snapshot(&pool, s2.0).await; // engine retention=7d → A (end=s2) reclaimable
+    assert!(a_path.exists(), "object A present before gc");
+
+    // Enqueue a gc_table job into the engine's queue.
+    let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
+    cp.queue()
+        .enqueue(NewJob {
+            kind: GC_JOB_KIND.to_string(),
+            payload: serde_json::json!({ "schema": "wh", "name": "t" }),
+            run_at: None,
+            priority: 0,
+        })
+        .await
+        .expect("enqueue gc job");
+
+    // Drive it through the worker GC handler over the wire.
+    let client = GrpcQueueClient::connect(&sock).await.expect("connect");
+    let job = client
+        .dequeue(&[GC_JOB_KIND.to_string()], "e2e-gc")
+        .await
+        .expect("dequeue")
+        .expect("a gc_table job must be present");
+    assert_eq!(job.kind, GC_JOB_KIND, "dequeued job kind must be gc_table");
+    let job_id = job.id;
+    handle_gc(client.clone(), job).await.expect("handle_gc");
+    client.complete(job_id).await.expect("complete");
+
+    // Aged object A reclaimed over the wire; current data intact; queue drained.
+    assert!(
+        !a_path.exists(),
+        "aged object A deleted by gc over the wire"
+    );
+    let cur = ice.current_snapshot(&table).await.expect("current");
+    assert_eq!(cur.id, s2);
+    let files = ice.files_with_stats(&table, s2).await.expect("files@s2");
+    assert_eq!(
+        files.iter().map(|f| f.record_count).sum::<i64>(),
+        4,
+        "live data intact after gc"
+    );
+    let again = client
+        .dequeue(&[GC_JOB_KIND.to_string()], "e2e-gc")
+        .await
+        .expect("dequeue after complete");
+    assert!(again.is_none(), "queue empty after gc job completed");
 }

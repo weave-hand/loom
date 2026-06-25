@@ -70,6 +70,7 @@ async fn lands_through_real_runtime_wiring() {
             cp: cp.clone(),
             store,
         }),
+        cp: cp.clone(),
     })
     .oneshot(
         Request::builder()

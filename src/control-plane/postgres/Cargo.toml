@@ -54,6 +54,8 @@ thiserror = "1"
 # services already depend on (the serving S3 read path needs it too).
 object_store = { version = "0.13", features = ["aws"] }
 # iceberg's Storage/StorageFactory traits are #[typetag::serde]; impls need the attr.
+# `serde` (declared above) also satisfies the #[typetag::serde] impls in s3_storage.rs
+# (S3Storage / S3StorageFactory) so cargo check resolves their trait bounds.
 typetag = "0.2"
 # Async S3 ObjectStore methods return futures::stream for list(); pull StreamExt.
 futures = "0.3"

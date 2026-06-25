@@ -7,6 +7,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//src/services/store-config:store-config",
         "//third-party:argon2",
         "//third-party:async-trait",
         "//third-party:axum",

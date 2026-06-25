@@ -126,17 +126,16 @@ async fn append_then_overwrite_preserves_time_travel() {
     assert_eq!(before.items[0].record_count, 10);
 }
 
-/// `compact_files` is explicitly unsupported on the Iceberg `Tx` (no transform path
-/// calls it; deferred, `fut-iceberg-gc`).
+/// `compact_files` stages the compaction and `commit` applies it via the subset-expire
+/// machinery. An empty expire + empty write set commits a no-op snapshot (tables that
+/// have no prior mirror rows return None from commit).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn compact_files_is_unsupported() {
+async fn compact_files_stages_without_error() {
     let fx = PgFixture::start();
     let (cp, _wh) = iceberg_cp(&fx).await;
     let mut tx = cp.begin().await.unwrap();
-    assert!(
-        tx.compact_files(&t(), &[], &[]).await.is_err(),
-        "compact_files must return unsupported"
-    );
+    // Staging never fails — even with empty slices.
+    tx.compact_files(&t(), &[], &[]).await.unwrap();
 }
 
 /// Atomicity: a commit that fails mid-apply (files staged without a matching

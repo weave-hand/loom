@@ -43,6 +43,21 @@ fn lock_timeout_defaults_to_5000ms() {
 }
 
 #[test]
+fn gc_retention_defaults_to_seven_days_and_parses_override() {
+    let mut v = full();
+    v.remove("LOOM_GC_RETENTION_SECS");
+    assert_eq!(
+        Config::from_map(&v).unwrap().gc_retention,
+        Duration::from_secs(7 * 24 * 3600)
+    );
+    v.insert("LOOM_GC_RETENTION_SECS".into(), "60".into());
+    assert_eq!(
+        Config::from_map(&v).unwrap().gc_retention,
+        Duration::from_secs(60)
+    );
+}
+
+#[test]
 fn missing_required_var_errors() {
     let mut v = full();
     v.remove("LOOM_DB_HOST");

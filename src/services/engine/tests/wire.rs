@@ -80,7 +80,12 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let catalog = make_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
 
-    let svc = EngineControlService { cp, catalog, pool };
+    let svc = EngineControlService {
+        cp,
+        catalog,
+        pool,
+        retention: Duration::from_secs(7 * 24 * 3600),
+    };
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
 
@@ -260,6 +265,7 @@ async fn flush_over_wire() {
             cp: cp2,
             catalog: catalog2,
             pool: pool2,
+            retention: Duration::from_secs(7 * 24 * 3600),
         };
         let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind");
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);

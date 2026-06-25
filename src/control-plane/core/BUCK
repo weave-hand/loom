@@ -124,3 +124,29 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "gc-job",
+    crate = "gc_job",
+    srcs = ["tests/gc_job.rs"],
+    crate_root = "tests/gc_job.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "compact-job",
+    crate = "compact_job",
+    srcs = ["tests/compact_job.rs"],
+    crate_root = "tests/compact_job.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
