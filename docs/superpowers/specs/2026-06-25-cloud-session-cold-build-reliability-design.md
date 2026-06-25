@@ -8,7 +8,7 @@ again")._
 
 A fresh **cloud session** (web/remote, running as `root`) cannot reliably build
 `//src/...` from cold. `buck2 test //src/...` fails the build, and the failure
-recurs across sessions. Three independent cold-build blockers were observed and
+recurs across sessions. Four independent cold-build blockers were observed and
 hand-fixed this session:
 
 1. **GitHub `download_file` HEAD → 401 ("the head issue").** buck2's `http_archive`
@@ -23,13 +23,20 @@ hand-fixed this session:
    (`libarchive-tools`). It was absent on the host, so the genrule failed with
    `bsdtar: command not found`.
 
-3. **iceberg-rust git fetch → 403.** The lone git third-party dep
-   (`apache/iceberg-rust`) is fetched by a `git_fetch` action. `~/.gitconfig`
-   rewrites **all** `https://github.com/` to the scoped git proxy
+3. **iceberg-rust git fetch → 403.** The git third-party dep
+   (`apache/iceberg-rust`) is fetched by a `git_fetch` action in the buck2 daemon.
+   `~/.gitconfig` rewrites **all** `https://github.com/` to the scoped git proxy
    (`127.0.0.1:<port>/git/`), which 403s any repo outside this session's scope
    (`weave-hand/loom`). So `apache/iceberg-rust` is denied.
 
-After clearing all three, the build goes green and the pure-logic tests pass; the
+4. **prelude submodule clone → 403.** Same root cause as (3): the prelude
+   (`facebook/buck2-prelude`, the repo's only git submodule, required by every
+   buck2 build) is cloned by `git submodule update --init` in the hook, gets
+   rewritten to the scoped proxy, and 403s. This blocker is invisible from a
+   session that already has the prelude checked out — only a truly fresh clone
+   hits it — which is why it must be tested from a brand-new session.
+
+After clearing all four, the build goes green and the pure-logic tests pass; the
 fixture tests then pass via the **CI-populated remote test-result cache** (they are
 local-run by design and need a non-root user — see Non-goals).
 
@@ -70,13 +77,25 @@ call) installs the shim idempotently and additionally:
 
 - ensures `bsdtar` is present (`command -v bsdtar || apt-get install -y
   --no-install-recommends libarchive-tools`), since the setup snapshot may lack it;
-- sets the iceberg git override
-  `git config --global url."https://github.com/apache/".insteadOf
-  "https://github.com/apache/"` (longest-match-wins self-reference) so the
-  `git_fetch` for `apache/iceberg-rust` stays direct instead of hitting the scoped
-  git proxy. Combined with the shim's `NO_PROXY` (inherited by the `git_fetch`
-  subprocess), git connects directly to github, which works for this public,
-  sha-pinned repo.
+- **derives** the third-party github sources from the repo's own declarations —
+  `.gitmodules` (submodules → `facebook/buck2-prelude`) and `git =
+  "https://github.com/…"` in `src/**/Cargo.toml` (git deps → `apache/iceberg-rust`)
+  — and for each sets a longest-match-wins self-referential `insteadOf`
+  (`git config --global url."https://github.com/<org>/".insteadOf
+  "https://github.com/<org>/"`) so those orgs stay on their direct github URL
+  instead of the scoped git proxy. Nothing hardcodes the org list, so a new
+  submodule or git-dep is covered automatically. The actual egress-proxy bypass is
+  per-consumer: the shim's `NO_PROXY` for the daemon's `git_fetch` (iceberg), and
+  `-c http.proxy=` on the submodule init (prelude — verified to propagate to the
+  per-submodule child clones). Both connect directly to github, which works for
+  these public, sha-pinned sources.
+
+Why this is "dynamic enough": there is no proxy-side runtime allow API (the
+`__agentproxy` control surface exposes only `/status`; `add_repo` cannot scope in
+public upstreams), but the bypass keys on *hostname* and reads `$HTTPS_PROXY` at
+runtime, so it survives the egress proxy's port moving (observed `36399→41665`
+mid-session). The only inputs are the repo's own dep declarations, computed at
+session start.
 
 The shim source is a committed, reviewable file (`tools/ci/buck2-proxy-shim.sh`)
 that the hook copies into place, not an inline heredoc — so it can be read and
@@ -97,9 +116,10 @@ shim is robust to all three.
 1. **New** `tools/ci/buck2-proxy-shim.sh` — the wrapper script (exports github
    `NO_PROXY`, `exec`s `/usr/local/bin/buck2 "$@"`).
 2. **Edit** `tools/cloud-session-start.sh` — install the shim to
-   `/usr/local/sbin/buck2` idempotently; ensure `bsdtar`; set the iceberg git
-   `insteadOf` override. All guarded so local dev (`REMOTE_ENV` unset) is unaffected
-   and warm runs are near-instant.
+   `/usr/local/sbin/buck2` idempotently; ensure `bsdtar`; derive + set the github
+   `insteadOf` overrides from `.gitmodules` + Cargo git deps; run the submodule init
+   with `-c http.proxy=` so the prelude clones direct. All guarded so local dev
+   (`REMOTE_ENV` unset) is unaffected and warm runs are near-instant.
 3. **Edit** `src/control-plane/postgres/defs.bzl` — replace the stale comment
    (lines ~1–11) with an accurate description: fixtures run their command locally by
    default (no RE test profile), pass on a non-root host, and are cached remotely
