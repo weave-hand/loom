@@ -1,20 +1,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
-use axum::http::{header::AUTHORIZATION, StatusCode};
-use axum::Router;
+use axum::http::{StatusCode, header::AUTHORIZATION};
 use control_plane_core::{Auth, NewUser, SubjectId};
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
-use service_runtime::{
-    hash_password, login_routes, session_routes, token_sha256, AuthState,
-};
+use service_runtime::{AuthState, hash_password, login_routes, session_routes, token_sha256};
 use tower::ServiceExt;
 
 fn state(cp: Arc<MemoryControlPlane>) -> AuthState {
-    AuthState { auth: cp, session_ttl: Duration::from_secs(3600) }
+    AuthState {
+        auth: cp,
+        session_ttl: Duration::from_secs(3600),
+    }
 }
 
 async fn seed_user(cp: &MemoryControlPlane, username: &str, password: &str) {
@@ -113,9 +114,10 @@ async fn logout_revokes_session() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    assert!(cp
-        .resolve_session(&token_sha256(token), time::OffsetDateTime::now_utc())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        cp.resolve_session(&token_sha256(token), time::OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

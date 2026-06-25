@@ -39,10 +39,7 @@ pub trait Auth {
     /// Look up a username's subject + stored password verifier for login.
     /// Unknown username → `Ok(None)` (the caller must not distinguish
     /// "no such user" from "bad password" in its response).
-    async fn find_password_credential(
-        &self,
-        username: &str,
-    ) -> Result<Option<PasswordCredential>>;
+    async fn find_password_credential(&self, username: &str) -> Result<Option<PasswordCredential>>;
 
     /// Persist a session: the SHA-256 of the issued token plus its expiry.
     /// Idempotent on the token hash.

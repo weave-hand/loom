@@ -1651,7 +1651,9 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     // --- sessions ---
     let now = OffsetDateTime::now_utc();
     let future = now + time::Duration::hours(1);
-    a.create_session(&sid("u-alice"), &h(1), future).await.unwrap();
+    a.create_session(&sid("u-alice"), &h(1), future)
+        .await
+        .unwrap();
 
     // resolve while unexpired
     assert_eq!(
