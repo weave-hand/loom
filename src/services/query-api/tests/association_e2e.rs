@@ -1,5 +1,5 @@
-//! Association e2e: ?shape=association over the real HTTP router backed by a DuckDB
-//! serving engine reading a DuckLake-on-Postgres catalog. Proves the edge-list shape
+//! Association e2e: ?shape=association over the real HTTP router backed by an in-process
+//! Iceberg/DataFusion serving engine. Proves the edge-list shape
 //! {associations:[{from,to}]}: single-hop exact pairs, multi-hop source<->final-target
 //! pairing, governance (an intermediate/target filter drops pairs routing through
 //! excluded rows), dedup (same source->same target via two paths = one pair; different
@@ -7,117 +7,103 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use axum::http::StatusCode;
 use control_plane_core::{
     Acl, Action, Cardinality, CompareOp, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
     PolicyTarget, RowFilter, ScalarValue, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use e2e_support::{get, grant_read, land, prop, subject_with_role, tref};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
-use query_api::serving::EmbeddedDuckDb;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::{InProcessServingEngine, get, grant_read, prop, subject_with_role, tref};
 
 /// Seed the chain customer -> orders -> line_items (FK both hops), plus a parallel join
 /// table proving dedup across two intermediate paths. Define the ontology types WITH
 /// identities (Customer.id, Order.id, LineItem.id), the FK links, and a join-table link
 /// Customer -> LineItem. Returns the wired control plane + serving engine; the caller MUST
-/// keep the `DuckLakeWriter` alive (its TempDir holds the Parquet the engine reads).
-async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter) {
+/// keep the `IcebergWriter` alive (its TempDir holds the Parquet the engine reads).
+async fn setup(
+    fx: &PgFixture,
+) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+
+    let writer = IcebergWriter::new(pool.clone(), dsn);
 
     // customer(id, region): (1,'CA'), (2,'CA'), (3,'NY')
     let cust = tref("main", "customer");
-    let cust_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("region", DataType::Utf8, true),
-    ]));
-    let cust_batch = RecordBatch::try_new(
-        cust_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec![Some("CA"), Some("CA"), Some("NY")])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &cust, cust_schema, cust_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "customer",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("region".to_string(), "string".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3]),
+                SeedCol::Str(vec!["CA", "CA", "NY"]),
+            ],
+        )
+        .await;
 
     // orders(id, customer_id, status):
     //   (10,1,'shipped'),(11,1,'pending'),(20,2,'shipped'),(30,3,'shipped')
     let ord = tref("main", "orders");
-    let ord_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("customer_id", DataType::Int64, false),
-        Field::new("status", DataType::Utf8, true),
-    ]));
-    let ord_batch = RecordBatch::try_new(
-        ord_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![10, 11, 20, 30])),
-            Arc::new(Int64Array::from(vec![1, 1, 2, 3])),
-            Arc::new(StringArray::from(vec![
-                Some("shipped"),
-                Some("pending"),
-                Some("shipped"),
-                Some("shipped"),
-            ])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &ord, ord_schema, ord_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "orders",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("customer_id".to_string(), "long".to_string(), false),
+                ("status".to_string(), "string".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![10, 11, 20, 30]),
+                SeedCol::Long(vec![1, 1, 2, 3]),
+                SeedCol::Str(vec!["shipped", "pending", "shipped", "shipped"]),
+            ],
+        )
+        .await;
 
     // line_items(id, order_id, sku):
     //   (100,10,'A'),(101,10,'B'),(102,11,'A'),(200,20,'A'),(300,30,'A')
-    // Note order 10 and 11 both belong to customer 1, and both reach a line_item with
-    // sku 'A' (100 and 102) — used for the dedup case via a join-table path.
     let li = tref("main", "line_items");
-    let li_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("order_id", DataType::Int64, false),
-        Field::new("sku", DataType::Utf8, true),
-    ]));
-    let li_batch = RecordBatch::try_new(
-        li_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![100, 101, 102, 200, 300])),
-            Arc::new(Int64Array::from(vec![10, 10, 11, 20, 30])),
-            Arc::new(StringArray::from(vec![
-                Some("A"),
-                Some("B"),
-                Some("A"),
-                Some("A"),
-                Some("A"),
-            ])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &li, li_schema, li_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "line_items",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("order_id".to_string(), "long".to_string(), false),
+                ("sku".to_string(), "string".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![100, 101, 102, 200, 300]),
+                SeedCol::Long(vec![10, 10, 11, 20, 30]),
+                SeedCol::Str(vec!["A", "B", "A", "A", "A"]),
+            ],
+        )
+        .await;
 
-    // cust_li(customer_id, line_item_id): a join table directly linking customer 1 to
-    // BOTH line_items 100 and 102. Combined with the multi-hop FK path (which also reaches
-    // 100 and 102 from customer 1), this lets dedup be exercised: customer 1 reaches
-    // line_item 100 via two distinct intermediate paths but the pair (1,100) appears once.
+    // cust_li(customer_id, line_item_id): join table customer 1 -> {100, 102}, customer 2 -> {200}
     let cust_li = tref("main", "cust_li");
-    let cust_li_schema = Arc::new(Schema::new(vec![
-        Field::new("customer_id", DataType::Int64, false),
-        Field::new("line_item_id", DataType::Int64, false),
-    ]));
-    let cust_li_batch = RecordBatch::try_new(
-        cust_li_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 1, 2])),
-            Arc::new(Int64Array::from(vec![100, 102, 200])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &cust_li, cust_li_schema, cust_li_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "cust_li",
+            &[
+                ("customer_id".to_string(), "long".to_string(), false),
+                ("line_item_id".to_string(), "long".to_string(), false),
+            ],
+            &[
+                SeedCol::Long(vec![1, 1, 2]),
+                SeedCol::Long(vec![100, 102, 200]),
+            ],
+        )
+        .await;
 
     // Customer declares identity `id`.
     cp.define_type(ObjectType {
@@ -236,16 +222,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
     (cp, eng, writer)
 }
 

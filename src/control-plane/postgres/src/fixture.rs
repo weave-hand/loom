@@ -27,7 +27,7 @@ use crate::PgControlPlane;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use iceberg::io::LocalFsStorageFactory;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::{Catalog, CatalogBuilder as _, NamespaceIdent, TableCreation, TableIdent};
@@ -619,16 +619,19 @@ pub enum SeedCol<'a> {
     NullableLong(Vec<Option<i64>>),
     /// A non-null `string` column.
     Str(Vec<&'a str>),
+    /// A non-null `boolean` column.
+    Bool(Vec<bool>),
 }
 
 impl SeedCol<'_> {
-    /// Build the arrow-array-57 column for this data (kept inside `control-plane-postgres`
+    /// Build the arrow-array column for this data (kept inside `control-plane-postgres`
     /// so the arrow-array version never leaks across a crate boundary).
     fn to_array(&self) -> ArrayRef {
         match self {
             SeedCol::Long(v) => Arc::new(Int64Array::from(v.clone())),
             SeedCol::NullableLong(v) => Arc::new(Int64Array::from(v.clone())),
             SeedCol::Str(v) => Arc::new(StringArray::from(v.clone())),
+            SeedCol::Bool(v) => Arc::new(BooleanArray::from(v.clone())),
         }
     }
 }
