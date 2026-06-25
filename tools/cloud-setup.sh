@@ -32,6 +32,11 @@ echo "loom cloud setup starting (pwd=$START_PWD, buck2=$BUCK2_RELEASE)"
 apt-get update -y || echo "WARN: apt-get update reported errors (continuing; main archives still refresh)"
 apt-get install -y --no-install-recommends zstd >/tmp/loom-apt-zstd.log 2>&1 || \
   { echo "WARN: apt install zstd failed:"; tail -5 /tmp/loom-apt-zstd.log; }
+# libarchive-tools provides `bsdtar`, required by the :libxml2 fixture genrule (one
+# of the hermetic-Postgres test inputs). Baking it into the snapshot also makes it
+# available per session in case the libxml2 action ever cache-misses.
+apt-get install -y --no-install-recommends libarchive-tools >/tmp/loom-apt-bsdtar.log 2>&1 || \
+  { echo "WARN: apt install libarchive-tools (bsdtar) failed:"; tail -5 /tmp/loom-apt-bsdtar.log; }
 apt-get install -y --no-install-recommends gh >/tmp/loom-apt-gh.log 2>&1 || true
 
 # gh fallback: install the official release tarball to /usr/local/bin if apt didn't
@@ -73,8 +78,22 @@ if [ -n "$REPO" ]; then
   if command -v buck2 >/dev/null 2>&1; then
     # Forced LOCAL (--config project.remote_enabled=): the BuildBuddy key is not
     # available at setup time and .buckconfig sets remote_enabled=true.
+    #
+    # Two groups get pre-warmed into the snapshot's CAS:
+    #  - //tools:*            — the code-health routines' binaries.
+    #  - the fixture/toolchain DOWNLOADS — postgres-bin, duckdb-cli, libxml2, and
+    #    the CPython toolchain archive. These are `download_file`/genrule inputs the
+    #    hermetic-Postgres/DuckDB tests need to even BUILD. At session time their
+    #    fetches go through the agent proxy, whose HEAD-request handling rejects the
+    #    GitHub release / crates.io URLs (so `buck2 test //src/...` fails to build);
+    #    fetching them here (setup runs outside that proxy) bakes them into the
+    #    snapshot so the session build hits cache instead of re-downloading.
     ( cd "$REPO" && buck2 build --config project.remote_enabled= \
-        //tools:jq //tools:rust-code-analysis //tools:lucidshark-duplo ) \
+        //tools:jq //tools:rust-code-analysis //tools:lucidshark-duplo \
+        //src/control-plane/postgres:postgres-bin \
+        //src/control-plane/postgres:duckdb-cli \
+        //src/control-plane/postgres:libxml2 \
+        toolchains//:cpython_archive ) \
       >/tmp/loom-prewarm.log 2>&1 || \
       { echo "WARN: tool pre-warm failed (non-fatal):"; tail -10 /tmp/loom-prewarm.log; }
   fi
