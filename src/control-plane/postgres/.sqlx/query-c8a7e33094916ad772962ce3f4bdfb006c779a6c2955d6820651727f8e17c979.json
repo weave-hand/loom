@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into auth.session (token_sha256, subject_id, expires_at) values ($1, $2, $3) on conflict (token_sha256) do update set subject_id = excluded.subject_id, expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c8a7e33094916ad772962ce3f4bdfb006c779a6c2955d6820651727f8e17c979"
+}

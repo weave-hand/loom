@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into auth.user (subject_id, username) values ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "79c30823d2643d18cb7e5dcbe9efedeae030637fa0a486a1fab3aa1365b0ece1"
+}

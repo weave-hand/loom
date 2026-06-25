@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.subject_id, pc.password_phc from auth.user u join auth.password_credential pc on pc.subject_id = u.subject_id where u.username = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "subject_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth.\"user\"",
+            "name": "subject_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "password_phc",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth.password_credential",
+            "name": "password_phc"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f123fbc58e252925c6c3675315e1edac057e0d0ee274de5cd3521a624197949c"
+}

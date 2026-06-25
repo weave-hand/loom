@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into auth.password_credential (subject_id, password_phc) values ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "efdfd716ade5d03e73bc29d75c66f4961eca774f9cb21e968719b7a332ef699e"
+}
