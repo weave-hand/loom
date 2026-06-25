@@ -52,6 +52,7 @@ fn app_state(dir: &std::path::Path) -> (Arc<dyn ControlPlane>, AppState) {
             cp: cp.clone(),
             store,
         }),
+        cp: cp.clone(),
     };
     (cp, state)
 }

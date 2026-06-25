@@ -54,6 +54,59 @@ impl GrpcQueueClient {
             .into_inner();
         Ok((resp.data_file_rows, resp.inline_rows, resp.objects_deleted))
     }
+
+    /// List a table's live files (path + counts) for worker-side small-file selection.
+    pub async fn list_files(
+        &self,
+        schema: String,
+        name: String,
+    ) -> Result<Vec<control_plane_core::FileRef>> {
+        let resp = self
+            .inner
+            .clone()
+            .list_files(pb::ListFilesRequest { schema, name })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok(resp
+            .files
+            .into_iter()
+            .map(|f| control_plane_core::FileRef {
+                path: f.path,
+                record_count: f.record_count,
+                file_size_bytes: f.file_size_bytes,
+            })
+            .collect())
+    }
+
+    /// Commit a compaction swap: expire `expire` (absolute paths) + register `write`
+    /// (already written). Returns the new snapshot id (or `None` if the table was
+    /// never written). Each `DataFile` is sent as a JSON string in `write_json`.
+    pub async fn compact_table(
+        &self,
+        schema: String,
+        name: String,
+        expire: Vec<String>,
+        write: &[control_plane_core::DataFile],
+    ) -> Result<Option<i64>> {
+        let write_json = write
+            .iter()
+            .map(|f| serde_json::to_string(f).map_err(be))
+            .collect::<Result<Vec<_>>>()?;
+        let resp = self
+            .inner
+            .clone()
+            .compact_table(pb::CompactTableRequest {
+                schema,
+                name,
+                expire,
+                write_json,
+            })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok(resp.snapshot_id)
+    }
 }
 
 #[async_trait::async_trait]

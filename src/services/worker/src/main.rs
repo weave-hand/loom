@@ -1,17 +1,21 @@
-//! Zero-pool flush/GC worker binary.
+//! Zero-pool flush/GC/compact worker binary.
 //!
 //! Reads `LOOM_ENGINE_SOCKET` (required), `LOOM_WORKER_ID` (default: random uuid),
-//! and `LOOM_LOCK_TIMEOUT_MS` (default: 5000). Connects to the engine over a UDS
-//! and runs the generic `control_plane_worker::Worker<GrpcQueueClient>` loop,
-//! draining `flush_table` and `gc_table` jobs (dispatched by kind). No Postgres in
-//! the dep closure — the engine owns PG.
+//! `LOOM_LOCK_TIMEOUT_MS` (default: 5000), and `LOOM_WAREHOUSE_URI` (required for
+//! compaction). Connects to the engine over a UDS and runs the generic
+//! `control_plane_worker::Worker<GrpcQueueClient>` loop, draining `flush_table`,
+//! `gc_table`, and `compact_table` jobs (dispatched by kind). No Postgres in the
+//! dep closure — the engine owns PG.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use control_plane_core::{FLUSH_JOB_KIND, GC_JOB_KIND};
+use control_plane_core::{COMPACT_JOB_KIND, FLUSH_JOB_KIND, GC_JOB_KIND, JobFailure, RetryPolicy};
 use control_plane_worker::Worker;
 use engine_wire::client::GrpcQueueClient;
+use engine_wire::flight::FlightTableClient;
 use tokio_util::sync::CancellationToken;
+use worker::compact::{CompactCtx, handle_compact};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,8 +29,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(5000),
     );
 
-    let client = GrpcQueueClient::connect(socket).await?;
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let store_cfg = store_config::ObjectStoreConfig::parse_from_env(&env)?;
+    let write = Arc::new(store_config::build_write_store(&store_cfg)?);
+    let flight = FlightTableClient::connect(&socket).await?;
+    let threshold_bytes = std::env::var("LOOM_COMPACT_THRESHOLD_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128 * 1024 * 1024_i64);
+
+    let client = GrpcQueueClient::connect(&socket).await?;
     let flush = client.clone();
+    let cctx = CompactCtx {
+        control: client.clone(),
+        flight,
+        write,
+        threshold_bytes,
+    };
     let worker = Worker::new(client, worker_id, lease);
 
     let shutdown = CancellationToken::new();
@@ -38,14 +57,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     worker
         .run(
-            &[FLUSH_JOB_KIND.to_string(), GC_JOB_KIND.to_string()],
+            &[
+                FLUSH_JOB_KIND.to_string(),
+                GC_JOB_KIND.to_string(),
+                COMPACT_JOB_KIND.to_string(),
+            ],
             shutdown,
             move |job| {
-                let engine = flush.clone();
+                let flush = flush.clone();
+                let cctx = cctx.clone();
                 async move {
                     match job.kind.as_str() {
-                        GC_JOB_KIND => worker::handler::handle_gc(engine, job).await,
-                        _ => worker::handler::handle_flush(engine, job).await,
+                        k if k == FLUSH_JOB_KIND => worker::handler::handle_flush(flush, job).await,
+                        k if k == GC_JOB_KIND => worker::handler::handle_gc(flush, job).await,
+                        k if k == COMPACT_JOB_KIND => handle_compact(&cctx, job).await,
+                        other => Err(JobFailure {
+                            error: format!("unknown job kind: {other}"),
+                            policy: RetryPolicy::Abandon,
+                        }),
                     }
                 }
             },

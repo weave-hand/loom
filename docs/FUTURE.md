@@ -35,6 +35,10 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Carved out of [[iss-existence-validation]]: validate `define_type`'s backing `TableRef` and ACL `PolicyTarget::Table` targets against the DuckLake catalog. Needs a `Catalog::exists(&TableRef)` read seam — the catalog is DuckDB-owned and external to loom's Postgres, so it is not cheaply checkable today and the type-only slice deliberately left `Table` targets unvalidated.
 - [x] **Queue-driven compaction job + incremental output** `{#fut-compaction-job area:catalog status:promoted from:2026-06-17-compaction-design pr:- spec:-}`
   Promoted to committed work — see [[road-compaction-job]]. Operator-triggered, engine-wire compaction (zero-pool worker streams files over Arrow Flight, commits `compact_files` over a new `EngineControl::CompactTable` RPC). Watermark-tracked **incremental (append-delta)** output remains a deferred follow-on (slice 1 is full-rewrite of the small-file set). Compacted files get fresh row-ids — revisit if row-level deletes land.
+- [ ] **Incremental (append-delta) compaction output** `{#fut-compaction-incremental area:catalog status:deferred from:2026-06-22-engine-wire-compaction-flight-design pr:- spec:-}`
+  The remaining half of [[fut-compaction-job]]. [[road-compaction-job]] shipped full-rewrite of the small-file set (every small file re-read and coalesced each run). Watermark-tracked incremental output would compact only files added since the last compaction watermark, avoiding O(table) rework on each run. Needs a per-table compaction watermark in the catalog and append-delta selection in the worker. Compacted files get fresh row-ids — revisit if/when row-level deletes land.
+- [ ] **Automatic compaction triggering** `{#fut-compaction-auto-trigger area:catalog status:deferred from:2026-06-22-engine-wire-compaction-flight-design pr:- spec:-}`
+  [[road-compaction-job]] is operator-triggered only (an explicit `POST …/compact` enqueue), which sidesteps the "when to compact" policy question. Automatic threshold-based triggering — enqueue a `compact_table` job when a table accrues more than N sub-threshold files (mirroring the inline-flush trigger) — is deferred until the policy and back-pressure story is worked out.
 
 ## ontology
 
@@ -223,8 +227,10 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   The binaries ship as a minimal `serve` with no graceful shutdown/signal handling, no TLS, and no connection-pool tuning knobs.
 - [ ] **S3 / remote object store for binaries** `{#fut-binaries-s3 area:deploy status:deferred from:2026-06-13-service-runtime-and-binaries-design pr:- spec:-}`
   `service_runtime` wires LocalFileSystem only; S3/remote object store is a later store slice.
-- [ ] **Config and deployment ergonomics** `{#fut-config-deploy-ergonomics area:deploy status:deferred from:to-be-planned pr:- spec:-}`
-  Broad improvements to configuration and deployment ergonomics.
+- [ ] **YAML config-file format** `{#fut-config-yaml-format area:deploy status:deferred from:2026-06-25-config-seam-unification-design pr:- spec:-}`
+  [[road-config-seam-unification]] loads the structured config file as JSON (`serde_json`, already vendored). Adding YAML authoring is purely additive (JSON ⊂ YAML) but needs a *maintained* YAML crate — the de-facto `serde_yaml` is archived upstream — so the crate choice is its own decision, deferred until a deployment actually wants to hand-author YAML ConfigMaps.
+- [x] **Config and deployment ergonomics** `{#fut-config-deploy-ergonomics area:deploy status:promoted from:to-be-planned pr:- spec:-}`
+  Promoted to [[road-config-seam-unification]], which takes the configuration half — consolidating loom's scattered operational tuning knobs onto one typed, validated env→config seam (per-domain sub-structs, fail-fast on bad input). The deployment-ergonomics half (Helm `values.yaml` wiring of those knobs) stays with [[fut-deploy-followups]].
 
 ## test
 
@@ -259,6 +265,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Every concern is single-tenant; a `tenant_id` threaded through schemas and lookups is deferred until a deployment needs it.
 - [ ] **Wider Tx composition** `{#fut-wider-tx-composition area:cross-cutting status:deferred from:2026-06-07-tx-seam-decision-design pr:- spec:-}`
   `Tx` carries only `enqueue` and `emit`; the seam stays flat (a new op is added as a flat method when needed). Re-open only if a fourth transactional concern proves it insufficient.
+- [ ] **Lazy worker compaction-context init** `{#fut-worker-lazy-compact-ctx area:cross-cutting status:deferred from:2026-06-22-engine-wire-compaction-flight-design pr:- spec:-}`
+  The zero-pool worker ([[road-compaction-job]]) builds its `CompactCtx` eagerly in `main` (parses `LOOM_WAREHOUSE_URI`, builds the write store, connects the Flight client), so a worker that only ever drains `flush_table` jobs now hard-requires warehouse config and a reachable Flight endpoint at startup. Acceptable today (no flush-only worker deployment exists yet, and the engine always serves Flight + `EngineControl` on one socket), but when the worker Helm manifest is authored either set `LOOM_WAREHOUSE_URI` there or make `CompactCtx` construction lazy/per-job so a flush-only worker need not require it.
 - [ ] **metrics crate / counters & histograms** `{#fut-metrics-crate area:cross-cutting status:deferred from:2026-06-07-tracing-instrumentation-design pr:- spec:-}`
   The tracing pass wired spans/events only; a `metrics` crate with counters/histograms is deferred to the binaries (libraries have no subscriber).
 - [ ] **Muntjac integration** `{#fut-muntjac-integration area:cross-cutting status:deferred from:to-be-planned pr:- spec:-}`

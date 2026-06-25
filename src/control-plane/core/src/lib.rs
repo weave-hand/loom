@@ -3,6 +3,7 @@
 
 mod acl;
 mod catalog;
+mod compact_job;
 mod error;
 mod flush;
 mod gc;
@@ -20,6 +21,7 @@ pub use acl::{
     SubjectId, validate_row_filter,
 };
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
+pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
 pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};
 pub use gc::{GC_JOB_KIND, GcJob};

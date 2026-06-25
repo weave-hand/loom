@@ -575,6 +575,48 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "iceberg-compact",
+    crate = "iceberg_compact",
+    srcs = ["tests/iceberg_compact.rs"],
+    crate_root = "tests/iceberg_compact.rs",
+    deps = [
+        "//third-party:arrow-ipc",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-tx-compact",
+    crate = "iceberg_tx_compact",
+    srcs = ["tests/iceberg_tx_compact.rs"],
+    crate_root = "tests/iceberg_tx_compact.rs",
+    deps = [
+        "//third-party:arrow-ipc",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-schema-evolution-land",
     crate = "iceberg_schema_evolution_land",
     srcs = ["tests/iceberg_schema_evolution_land.rs"],

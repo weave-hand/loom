@@ -74,3 +74,16 @@ rust_test(
     edition = "2024",
     deps = [":engine-wire", "//third-party:serde_json"],
 )
+
+rust_test(
+    name = "compact-rpc",
+    crate = "compact_rpc",
+    srcs = ["tests/compact_rpc.rs"],
+    crate_root = "tests/compact_rpc.rs",
+    edition = "2024",
+    deps = [
+        ":engine-wire",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+    ],
+)

@@ -81,6 +81,7 @@ async fn ducklake_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) 
             cp: cp.clone() as Arc<dyn ControlPlane>,
             store: store.clone(),
         }),
+        cp: cp.clone() as Arc<dyn ControlPlane>,
     });
 
     let eng = EmbeddedDuckDb::attach(
@@ -139,6 +140,7 @@ async fn iceberg_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
             inline_byte_limit: INLINE_BYTE_LIMIT,
             flush_byte_threshold: i64::MAX,
         }),
+        cp: cp.clone() as Arc<dyn ControlPlane>,
     });
 
     let query = query_api::http::router(query_api::http::AppState {

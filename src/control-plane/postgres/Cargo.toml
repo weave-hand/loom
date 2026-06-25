@@ -54,6 +54,9 @@ thiserror = "1"
 object_store = { version = "0.13", features = ["aws"] }
 # iceberg's Storage/StorageFactory traits are #[typetag::serde]; impls need the attr.
 typetag = "0.2"
+# s3_storage.rs implements #[typetag::serde] traits which require serde::Serialize/Deserialize
+# on S3Storage / S3StorageFactory. Declared explicitly so cargo check resolves the trait bounds.
+serde = { version = "1", features = ["derive"] }
 # Async S3 ObjectStore methods return futures::stream for list(); pull StreamExt.
 futures = "0.3"
 # AWS SigV4 PUT-bucket in the MinIO fixture (fixture.rs is compiled into the lib,

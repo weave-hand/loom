@@ -1,0 +1,23 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+cargo.rust_library(
+    name = "store-config",
+    crate = "store_config",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//third-party:object_store",
+        "//third-party:thiserror",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "config",
+    crate = "config",
+    srcs = ["tests/config.rs"],
+    crate_root = "tests/config.rs",
+    edition = "2024",
+    deps = [":store-config"],
+)
