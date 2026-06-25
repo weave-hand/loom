@@ -80,16 +80,16 @@ impl FlightService for FlightDataService {
         // Try the protobuf decode first; a legacy JSON `FlightTicket` always starts
         // with `{` (an invalid protobuf `Any`), so this never misroutes the file path.
         // (The decode-then-`is::<>()` ordering is load-bearing.)
-        if let Ok(any) = Any::decode(&ticket.ticket[..]) {
-            if any.is::<TicketStatementQuery>() {
-                let tsq = any
-                    .unpack::<TicketStatementQuery>()
-                    .map_err(|e| Status::invalid_argument(format!("bad flight-sql ticket: {e}")))?
-                    .ok_or_else(|| Status::internal("flight-sql ticket unpack returned None"))?;
-                let sql = String::from_utf8(tsq.statement_handle.to_vec())
-                    .map_err(|e| Status::invalid_argument(format!("non-utf8 sql: {e}")))?;
-                return self.do_get_sql(sql).await;
-            }
+        if let Ok(any) = Any::decode(&ticket.ticket[..])
+            && any.is::<TicketStatementQuery>()
+        {
+            let tsq = any
+                .unpack::<TicketStatementQuery>()
+                .map_err(|e| Status::invalid_argument(format!("bad flight-sql ticket: {e}")))?
+                .ok_or_else(|| Status::internal("flight-sql ticket unpack returned None"))?;
+            let sql = String::from_utf8(tsq.statement_handle.to_vec())
+                .map_err(|e| Status::invalid_argument(format!("non-utf8 sql: {e}")))?;
+            return self.do_get_sql(sql).await;
         }
 
         // File-ticket data plane (existing): a JSON `FlightTicket` naming data files.
