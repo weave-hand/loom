@@ -69,10 +69,7 @@ pub async fn append_batches(
         })
         .collect();
 
-    let tx = Transaction::new(table);
-    let action = tx.fast_append().add_data_files(data_files);
-    let tx = action.apply(tx)?;
-    tx.commit(catalog).await?;
+    commit_append_with_retry(catalog, table.identifier(), table.clone(), data_files).await?;
     Ok(summaries)
 }
 
@@ -267,10 +264,7 @@ pub async fn append_batches_with_extras(
         end_cap,
         overwrite,
     };
-    let tx = Transaction::new(table);
-    let action = tx.fast_append().add_data_files(data_files);
-    let tx = action.apply(tx)?;
-    tx.commit(&wrapper).await?;
+    commit_append_with_retry(&wrapper, table.identifier(), table.clone(), data_files).await?;
     Ok(summaries)
 }
 
