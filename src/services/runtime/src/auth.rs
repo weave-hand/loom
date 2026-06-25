@@ -95,3 +95,86 @@ pub async fn require_auth(State(st): State<AuthState>, mut req: Request, next: N
 pub fn protect(router: Router, auth: AuthState) -> Router {
     router.route_layer(axum::middleware::from_fn_with_state(auth, require_auth))
 }
+
+// ---------------------------------------------------------------------------
+// Login / logout route handlers
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct LoginReq {
+    username: String,
+    password: String,
+}
+
+#[derive(serde::Serialize)]
+struct LoginResp {
+    token: String,
+}
+
+/// `POST /auth/login` — public. Verify the password, mint a session token,
+/// return it once. A uniform 401 on unknown user OR bad password (and a
+/// dummy hash on unknown user keeps login timing uniform).
+async fn login(
+    State(st): State<AuthState>,
+    axum::Json(req): axum::Json<LoginReq>,
+) -> Response {
+    match st.auth.find_password_credential(&req.username).await {
+        Ok(Some(cred)) => {
+            if crate::verify_password(&req.password, &cred.password_phc) {
+                let token = crate::generate_session_token();
+                let hash = token_sha256(&token);
+                let expires = OffsetDateTime::now_utc()
+                    + time::Duration::try_from(st.session_ttl)
+                        .expect("session_ttl fits in time::Duration");
+                match st.auth.create_session(&cred.subject_id, &hash, expires).await {
+                    Ok(()) => {
+                        (StatusCode::OK, axum::Json(LoginResp { token })).into_response()
+                    }
+                    Err(e) => status_for(&e).into_response(),
+                }
+            } else {
+                unauthorized()
+            }
+        }
+        // Unknown user: burn comparable time with a dummy hash, then the same 401.
+        Ok(None) => {
+            let _ = crate::hash_password(&req.password);
+            unauthorized()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `POST /auth/logout` — authenticated. Revoke the presented session
+/// (idempotent). The `Subject` extractor enforces the caller is verified;
+/// the token to revoke is re-read from the `Authorization` header.
+async fn logout(
+    _subject: Subject,
+    State(st): State<AuthState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(token) = bearer_token(&headers) {
+        let hash = token_sha256(&token);
+        if let Err(e) = st.auth.revoke_session(&hash).await {
+            return status_for(&e).into_response();
+        }
+    }
+    StatusCode::OK.into_response()
+}
+
+/// Public auth routes (login). Mount un-gated.
+pub fn login_routes(auth: AuthState) -> Router {
+    Router::new()
+        .route("/auth/login", axum::routing::post(login))
+        .with_state(auth)
+}
+
+/// Authenticated session routes (logout), behind the authn gate.
+pub fn session_routes(auth: AuthState) -> Router {
+    protect(
+        Router::new()
+            .route("/auth/logout", axum::routing::post(logout))
+            .with_state(auth.clone()),
+        auth,
+    )
+}
