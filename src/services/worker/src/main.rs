@@ -1,13 +1,14 @@
-//! Zero-pool flush worker binary.
+//! Zero-pool flush/GC worker binary.
 //!
 //! Reads `LOOM_ENGINE_SOCKET` (required), `LOOM_WORKER_ID` (default: random uuid),
 //! and `LOOM_LOCK_TIMEOUT_MS` (default: 5000). Connects to the engine over a UDS
 //! and runs the generic `control_plane_worker::Worker<GrpcQueueClient>` loop,
-//! draining `flush_table` jobs. No Postgres in the dep closure — the engine owns PG.
+//! draining `flush_table` and `gc_table` jobs (dispatched by kind). No Postgres in
+//! the dep closure — the engine owns PG.
 
 use std::time::Duration;
 
-use control_plane_core::FLUSH_JOB_KIND;
+use control_plane_core::{FLUSH_JOB_KIND, GC_JOB_KIND};
 use control_plane_worker::Worker;
 use engine_wire::client::GrpcQueueClient;
 use tokio_util::sync::CancellationToken;
@@ -36,10 +37,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     worker
-        .run(&[FLUSH_JOB_KIND.to_string()], shutdown, move |job| {
-            let flush = flush.clone();
-            async move { worker::handler::handle_flush(flush, job).await }
-        })
+        .run(
+            &[FLUSH_JOB_KIND.to_string(), GC_JOB_KIND.to_string()],
+            shutdown,
+            move |job| {
+                let engine = flush.clone();
+                async move {
+                    match job.kind.as_str() {
+                        GC_JOB_KIND => worker::handler::handle_gc(engine, job).await,
+                        _ => worker::handler::handle_flush(engine, job).await,
+                    }
+                }
+            },
+        )
         .await?;
     Ok(())
 }

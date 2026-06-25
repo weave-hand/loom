@@ -51,6 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cp,
         catalog,
         pool: pool.clone(),
+        retention: cfg.gc_retention,
     };
     let flight = FlightDataService {
         catalog: flight_catalog,

@@ -114,3 +114,16 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "gc-job",
+    crate = "gc_job",
+    srcs = ["tests/gc_job.rs"],
+    crate_root = "tests/gc_job.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)

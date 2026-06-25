@@ -41,6 +41,19 @@ impl GrpcQueueClient {
             .into_inner();
         Ok(resp.snapshot_id)
     }
+
+    /// GC a table by schema + name; returns the reclaim counts
+    /// `(data_file_rows, inline_rows, objects_deleted)`.
+    pub async fn gc_table(&self, schema: String, name: String) -> Result<(u64, u64, u64)> {
+        let resp = self
+            .inner
+            .clone()
+            .gc_table(pb::GcTableRequest { schema, name })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok((resp.data_file_rows, resp.inline_rows, resp.objects_deleted))
+    }
 }
 
 #[async_trait::async_trait]

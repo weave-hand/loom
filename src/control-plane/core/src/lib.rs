@@ -5,6 +5,7 @@ mod acl;
 mod catalog;
 mod error;
 mod flush;
+mod gc;
 mod identity;
 mod lineage;
 mod logical_type;
@@ -21,6 +22,7 @@ pub use acl::{
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
 pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};
+pub use gc::{GC_JOB_KIND, GcJob};
 pub use identity::{DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TypeId};
 pub use lineage::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
 pub use logical_type::{
