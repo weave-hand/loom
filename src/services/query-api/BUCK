@@ -112,18 +112,14 @@ loom_fixture_test(
     crate = "bind_read_e2e",
     srcs = ["tests/bind_read_e2e.rs"],
     crate_root = "tests/bind_read_e2e.rs",
-    duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/services/ingest:ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
-        "//third-party:arrow",
-        "//third-party:object_store",
         "//third-party:serde_json",
-        "//third-party:time",
         "//third-party:tokio",
-        "//third-party:uuid",
     ],
 )
 
@@ -132,18 +128,13 @@ loom_fixture_test(
     crate = "link_traversal",
     srcs = ["tests/link_traversal.rs"],
     crate_root = "tests/link_traversal.rs",
-    duckdb = True,
     deps = [
         ":query-api",
-        "//src/services/ingest:ingest",
+        ":e2e-support",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
-        "//third-party:arrow",
-        "//third-party:object_store",
         "//third-party:serde_json",
-        "//third-party:time",
         "//third-party:tokio",
-        "//third-party:uuid",
     ],
 )
 
@@ -152,18 +143,13 @@ loom_fixture_test(
     crate = "derived_properties_e2e",
     srcs = ["tests/derived_properties_e2e.rs"],
     crate_root = "tests/derived_properties_e2e.rs",
-    duckdb = True,
     deps = [
         ":query-api",
-        "//src/services/ingest:ingest",
+        ":e2e-support",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
-        "//third-party:arrow",
-        "//third-party:object_store",
         "//third-party:serde_json",
-        "//third-party:time",
         "//third-party:tokio",
-        "//third-party:uuid",
     ],
 )
 
@@ -172,18 +158,12 @@ loom_fixture_test(
     crate = "typed_filter_e2e",
     srcs = ["tests/typed_filter_e2e.rs"],
     crate_root = "tests/typed_filter_e2e.rs",
-    duckdb = True,
     deps = [
         ":query-api",
-        "//src/services/ingest:ingest",
+        ":e2e-support",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
-        "//third-party:arrow",
-        "//third-party:object_store",
-        "//third-party:serde_json",
-        "//third-party:time",
         "//third-party:tokio",
-        "//third-party:uuid",
     ],
 )
 
@@ -840,13 +820,15 @@ loom_fixture_test(
     crate = "action_e2e",
     srcs = ["tests/action_e2e.rs"],
     crate_root = "tests/action_e2e.rs",
-    duckdb = True,
     deps = [
         ":query-api",
+        ":e2e-support",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
-        "//third-party:object_store",
+        "//third-party:iceberg",
         "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
         "//third-party:tokio",
     ],
 )

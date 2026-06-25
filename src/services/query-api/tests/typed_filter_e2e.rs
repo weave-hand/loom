@@ -2,24 +2,16 @@
 //! A Text bind would match nothing; coercion to the column's logical type makes it work.
 //! An uncoercible value is a 400 (BadFilter).
 
-use std::sync::Arc;
-
-use arrow::array::{BooleanArray, Float64Array, Int64Array, RecordBatch};
-use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    Acl, Action, DatasetRef, Effect, EventType, LineageEvent, ObjectType, Ontology, PolicyTarget,
-    PropertyDef, RoleId, RunId, SubjectId, TableRef, TypeName,
+    Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use ingest::{MaterializeRequest, materialize};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::InProcessServingEngine;
 use query_api::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
 use query_api::render::objects_to_json;
-use query_api::serving::EmbeddedDuckDb;
-use time::OffsetDateTime;
-use uuid::Uuid;
 
 fn tref(s: &str, n: &str) -> TableRef {
     TableRef {
@@ -28,75 +20,37 @@ fn tref(s: &str, n: &str) -> TableRef {
     }
 }
 
-async fn land(
-    cp: &PgControlPlane,
-    store: &Arc<dyn ObjectStore>,
-    table: &TableRef,
-    schema: Arc<Schema>,
-    batch: RecordBatch,
-) {
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(table)],
-        payload: serde_json::json!({}),
-    };
-    materialize(
-        cp,
-        store.clone(),
-        MaterializeRequest {
-            table,
-            schema,
-            batches: &[batch],
-            file_prefix: "run-1",
-            gate: None,
-            lineage,
-        },
-    )
-    .await
-    .unwrap();
-}
-
 /// Seed an Order table with NON-TEXT columns: id Long, amount Double, active Boolean.
-/// Rows: (1, 10.5, true), (2, 20.0, false), (3, 10.5, true), (4, NULL, NULL), (5, 30.0, NULL). The caller
-/// MUST keep the returned `DuckLakeWriter` alive (its TempDir holds the Parquet files).
-async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter, SubjectId) {
+/// Rows: (1, 10.5, true), (2, 20.0, false), (3, 10.5, true), (4, NULL, NULL), (5, 30.0, NULL).
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, SubjectId, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
 
     let ord = tref("main", "orders");
-    let ord_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("amount", DataType::Float64, true),
-        Field::new("active", DataType::Boolean, true),
-    ]));
-    let ord_batch = RecordBatch::try_new(
-        ord_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])),
-            Arc::new(Float64Array::from(vec![
-                Some(10.5),
-                Some(20.0),
-                Some(10.5),
-                None,
-                Some(30.0),
-            ])),
-            Arc::new(BooleanArray::from(vec![
-                Some(true),
-                Some(false),
-                Some(true),
-                None,
-                None,
-            ])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &ord, ord_schema, ord_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "orders",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("amount".to_string(), "double".to_string(), true),
+                ("active".to_string(), "boolean".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3, 4, 5]),
+                SeedCol::NullableDouble(vec![
+                    Some(10.5),
+                    Some(20.0),
+                    Some(10.5),
+                    None,
+                    Some(30.0),
+                ]),
+                SeedCol::NullableBool(vec![Some(true), Some(false), Some(true), None, None]),
+            ],
+        )
+        .await;
 
     cp.define_type(ObjectType {
         name: TypeName("Order".into()),
@@ -139,23 +93,17 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
-    (cp, eng, writer, subj)
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
+    // Return the writer: it owns the `file://` warehouse TempDir, removed on drop.
+    // Keeping it alive keeps the seeded Parquet on disk for the test's reads.
+    (cp, eng, subj, writer)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn typed_filters_match_and_reject() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer, a) = setup(&fx).await;
+    let (cp, eng, a, _writer) = setup(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
@@ -234,7 +182,7 @@ async fn typed_filters_match_and_reject() {
 #[tokio::test(flavor = "multi_thread")]
 async fn comparison_set_and_null_operators() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer, a) = setup(&fx).await;
+    let (cp, eng, a, _writer) = setup(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,

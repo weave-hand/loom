@@ -621,17 +621,24 @@ pub enum SeedCol<'a> {
     Str(Vec<&'a str>),
     /// A non-null `boolean` column.
     Bool(Vec<bool>),
+    /// A nullable `double` column (`None` => SQL NULL).
+    NullableDouble(Vec<Option<f64>>),
+    /// A nullable `boolean` column (`None` => SQL NULL).
+    NullableBool(Vec<Option<bool>>),
 }
 
 impl SeedCol<'_> {
     /// Build the arrow-array column for this data (kept inside `control-plane-postgres`
     /// so the arrow-array version never leaks across a crate boundary).
     fn to_array(&self) -> ArrayRef {
+        use arrow_array::Float64Array;
         match self {
             SeedCol::Long(v) => Arc::new(Int64Array::from(v.clone())),
             SeedCol::NullableLong(v) => Arc::new(Int64Array::from(v.clone())),
             SeedCol::Str(v) => Arc::new(StringArray::from(v.clone())),
             SeedCol::Bool(v) => Arc::new(BooleanArray::from(v.clone())),
+            SeedCol::NullableDouble(v) => Arc::new(Float64Array::from(v.clone())),
+            SeedCol::NullableBool(v) => Arc::new(BooleanArray::from(v.clone())),
         }
     }
 }

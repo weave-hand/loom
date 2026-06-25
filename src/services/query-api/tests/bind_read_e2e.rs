@@ -2,80 +2,56 @@
 //! ontology type by `bind`, is retrievable through the governed read path. Proves
 //! loom's two layers (landing + model) meet.
 
-use std::sync::Arc;
-
-use arrow::array::{Float64Array, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    Acl, Action, DatasetRef, Effect, EventType, LineageEvent, ObjectType, PolicyTarget,
-    PropertyDef, RoleId, RunId, SubjectId, TableRef, TypeName,
+    Acl, Action, Effect, ObjectType, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef,
+    TypeName,
 };
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use ingest::{MaterializeRequest, bind, materialize};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::InProcessServingEngine;
+use ingest::bind;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
-use query_api::serving::EmbeddedDuckDb;
 use serde_json::json;
-use time::OffsetDateTime;
-use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn landed_then_bound_dataset_is_queryable() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
 
     let table = TableRef {
         schema: "main".into(),
         name: "customer".into(),
     };
 
-    // 1. LAND: materialize a dataset (id int64, email varchar, amount float64).
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("email", DataType::Utf8, true),
-        Field::new("amount", DataType::Float64, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2])),
-            Arc::new(StringArray::from(vec![Some("a@x"), Some("b@x")])),
-            Arc::new(Float64Array::from(vec![Some(1.5), Some(2.5)])),
-        ],
-    )
-    .unwrap();
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(&table)],
-        payload: serde_json::json!({}),
-    };
-    materialize(
-        &cp,
-        store.clone(),
-        MaterializeRequest {
-            table: &table,
-            schema,
-            batches: &[batch],
-            file_prefix: "run-1",
-            gate: None,
-            lineage,
-        },
-    )
-    .await
-    .unwrap();
+    // 1. LAND: seed a dataset (id long, email string, amount double).
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("email".to_string(), "string".to_string(), true),
+        ("amount".to_string(), "double".to_string(), true),
+    ];
+    writer
+        .seed_arrays(
+            "main",
+            "customer",
+            &cols,
+            &[
+                SeedCol::Long(vec![1, 2]),
+                SeedCol::Str(vec!["a@x", "b@x"]),
+                SeedCol::NullableDouble(vec![Some(1.5), Some(2.5)]),
+            ],
+        )
+        .await;
 
     // 2. BIND: a Customer type over the landed table (validated against physical schema).
+    // The IcebergCatalog implements `Catalog` against iceberg_mirror.*, so bind() finds
+    // the table that IcebergWriter just committed.
+    let iceberg_cat = IcebergCatalog::new(pool.clone());
     bind(
-        &cp,
+        &iceberg_cat,
         &cp,
         ObjectType {
             name: TypeName("Customer".into()),
@@ -120,16 +96,8 @@ async fn landed_then_bound_dataset_is_queryable() {
     .unwrap();
 
     // 4. READ through the governed front door.
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,

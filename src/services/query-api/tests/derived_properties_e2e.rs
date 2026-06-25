@@ -2,26 +2,18 @@
 //! Customer->Order FK link, served through read_object. Both-ends governance: without
 //! Read on Order the derived props are omitted; an Order row-filter narrows the aggregate.
 
-use std::sync::Arc;
-
-use arrow::array::{Float64Array, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    Acl, Action, Aggregation, Cardinality, CompareOp, DatasetRef, DerivedPropertyDef, Effect,
-    EventType, LineageEvent, LinkBacking, LinkDef, ObjectType, Ontology, Policy, PolicyTarget,
-    PropertyDef, RoleId, RowFilter, RunId, ScalarValue, SubjectId, TableRef, TypeName,
+    Acl, Action, Aggregation, Cardinality, CompareOp, DerivedPropertyDef, Effect, LinkBacking,
+    LinkDef, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter,
+    ScalarValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use ingest::{MaterializeRequest, materialize};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::InProcessServingEngine;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
-use query_api::serving::EmbeddedDuckDb;
 use serde_json::json;
-use time::OffsetDateTime;
-use uuid::Uuid;
 
 fn tref(s: &str, n: &str) -> TableRef {
     TableRef {
@@ -30,76 +22,44 @@ fn tref(s: &str, n: &str) -> TableRef {
     }
 }
 
-async fn land(
-    cp: &PgControlPlane,
-    store: &Arc<dyn ObjectStore>,
-    table: &TableRef,
-    schema: Arc<Schema>,
-    batch: RecordBatch,
-) {
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(table)],
-        payload: serde_json::json!({}),
-    };
-    materialize(
-        cp,
-        store.clone(),
-        MaterializeRequest {
-            table,
-            schema,
-            batches: &[batch],
-            file_prefix: "run-1",
-            gate: None,
-            lineage,
-        },
-    )
-    .await
-    .unwrap();
-}
-
 /// Seed Customer + Order with an FK link Customer-(orders)->Order and the two derived
 /// properties orderCount (COUNT) + totalSpend (SUM(amount)). Customer 1 has orders
 /// (10, 5.0, 'shipped') and (11, 7.0, 'pending'); customer 2 has none.
-/// The caller MUST keep the returned `DuckLakeWriter` alive (its TempDir holds the
-/// Parquet files the engine reads).
-async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter) {
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
 
     let cust = tref("main", "customer");
-    let cust_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    let cust_batch = RecordBatch::try_new(
-        cust_schema.clone(),
-        vec![Arc::new(Int64Array::from(vec![1, 2]))],
-    )
-    .unwrap();
-    land(&cp, &store, &cust, cust_schema, cust_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "customer",
+            &[("id".to_string(), "long".to_string(), false)],
+            &[SeedCol::Long(vec![1, 2])],
+        )
+        .await;
 
     let ord = tref("main", "orders");
-    let ord_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("customer_id", DataType::Int64, false),
-        Field::new("amount", DataType::Float64, true),
-        Field::new("status", DataType::Utf8, true),
-    ]));
-    let ord_batch = RecordBatch::try_new(
-        ord_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![10, 11])),
-            Arc::new(Int64Array::from(vec![1, 1])),
-            Arc::new(Float64Array::from(vec![Some(5.0), Some(7.0)])),
-            Arc::new(StringArray::from(vec![Some("shipped"), Some("pending")])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &ord, ord_schema, ord_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "orders",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("customer_id".to_string(), "long".to_string(), false),
+                ("amount".to_string(), "double".to_string(), true),
+                ("status".to_string(), "string".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![10, 11]),
+                SeedCol::Long(vec![1, 1]),
+                SeedCol::NullableDouble(vec![Some(5.0), Some(7.0)]),
+                SeedCol::Str(vec!["shipped", "pending"]),
+            ],
+        )
+        .await;
 
     cp.define_type(ObjectType {
         name: TypeName("Order".into()),
@@ -171,16 +131,10 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
+    // Return the writer: it owns the `file://` warehouse TempDir, which is removed on
+    // drop. Keeping it alive for the test's lifetime keeps the seeded Parquet on disk.
     (cp, eng, writer)
 }
 
