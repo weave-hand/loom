@@ -33,6 +33,7 @@ rust_binary(
     edition = "2024",
     deps = [
         ":ingest",
+        "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/services/runtime:runtime",
         "//third-party:iceberg",
@@ -186,6 +187,23 @@ rust_test(
         "//third-party:object_store",
         "//third-party:serde_json",
         "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+loom_fixture_test(
+    name = "compact-endpoint",
+    crate = "compact_endpoint",
+    srcs = ["tests/compact_endpoint.rs"],
+    crate_root = "tests/compact_endpoint.rs",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:serde_json",
         "//third-party:tokio",
         "//third-party:tower",
     ],
