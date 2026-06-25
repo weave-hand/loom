@@ -5,11 +5,13 @@
 //! consumer that dials the engine's UDS and reconstructs `RecordBatch`es).
 
 use arrow_array::RecordBatch;
-use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
+use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
+use arrow_flight::{FlightDescriptor, Ticket};
 use control_plane_core::Result;
 use futures::TryStreamExt;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tonic::transport::Channel;
 
@@ -66,6 +68,63 @@ impl FlightTableClient {
             .map_err(crate::client::be)?;
         // Map inbound tonic::Status errors to FlightError::Tonic via From impl,
         // then decode the schema-first FlightData stream into RecordBatches.
+        let stream = FlightRecordBatchStream::new_from_flight_data(
+            resp.into_inner()
+                .map_err(arrow_flight::error::FlightError::from),
+        );
+        let batches: Vec<RecordBatch> = stream.try_collect().await.map_err(crate::client::be)?;
+        Ok(batches)
+    }
+}
+
+/// Zero-pool client for the engine's internal **Flight SQL** read plane. Performs
+/// the `CommandStatementQuery` dance — `get_flight_info` returns a ticket carrying
+/// the SQL, `do_get` streams the result `RecordBatch`es — over the engine's UDS.
+/// Holds no Postgres connection. Replaces the unary `EngineQueryClient`.
+#[derive(Clone)]
+pub struct FlightSqlClient {
+    inner: FlightServiceClient<Channel>,
+}
+
+impl FlightSqlClient {
+    /// Connect to the engine's Arrow Flight service over the given UDS path.
+    pub async fn connect(socket: impl Into<String>) -> Result<Self> {
+        let channel = crate::uds_channel(socket.into()).await?;
+        Ok(Self {
+            inner: FlightServiceClient::new(channel),
+        })
+    }
+
+    /// Execute already-compiled, param-inlined `sql` and collect the streamed result.
+    /// Each `RecordBatch` arrives as its own Flight message, so a wide/large result
+    /// never serialises into a single oversized gRPC message (the unary path's cap).
+    pub async fn execute(&self, sql: String) -> Result<Vec<RecordBatch>> {
+        let cmd = CommandStatementQuery {
+            query: sql,
+            transaction_id: None,
+        };
+        let descriptor = FlightDescriptor::new_cmd(cmd.as_any().encode_to_vec());
+
+        let info = self
+            .inner
+            .clone()
+            .get_flight_info(descriptor)
+            .await
+            .map_err(crate::client::be)?
+            .into_inner();
+        let ticket = info
+            .endpoint
+            .into_iter()
+            .next()
+            .and_then(|e| e.ticket)
+            .ok_or_else(|| crate::client::be("flight info carried no ticket"))?;
+
+        let resp = self
+            .inner
+            .clone()
+            .do_get(ticket)
+            .await
+            .map_err(crate::client::be)?;
         let stream = FlightRecordBatchStream::new_from_flight_data(
             resp.into_inner()
                 .map_err(arrow_flight::error::FlightError::from),
