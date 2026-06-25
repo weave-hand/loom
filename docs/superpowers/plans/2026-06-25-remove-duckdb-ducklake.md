@@ -20,6 +20,7 @@
 - **Commit message style:** Conventional Commits (enforced by the `conventional-commit` hook); end commit bodies with `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - **Branch:** `plan/remove-duckdb-ducklake` (already created; the spec is committed there).
 - **No external pyiceberg oracle in this PR** — deferred to a FUTURE item (Task 8). Read-path correctness is gated by the re-pointed e2e suite on Iceberg serving.
+- **Rebased onto `origin/main` (2026-06-25):** this plan accounts for two same-day merges on the target surface. **#195 (Auth slice 1)** added `AuthState` + `service_runtime::protect(...).merge(login_routes).merge(session_routes)` + `bootstrap_admin` around the query-api **and** ingest routers (ingest's `AppState` gained a `cp` field); the e2e `get`/`setup` already mint session tokens. Preserve all auth wiring when collapsing backend matches. **#189 (Flight SQL)** already rewrote `EngineServingClient` to a `FlightSqlClient` internally — `connect(socket)` is unchanged, so no serving-transport work is needed. **#193 (config seam) is docs-only** — the `env::var`/`parse_*` deletion targets remain valid.
 
 ---
 
@@ -69,38 +70,31 @@ Read these in full before editing — they define the exact types you must wire:
 - `src/control-plane/postgres/src/fixture.rs` lines 594–916 (`IcebergWriter`, `SeedCol`)
 - `src/services/engine-serving/src/serving.rs` lines 454–465 (`execute_query` signature)
 
-- [ ] **Step 2: Change `get` to accept any serving engine.**
+- [ ] **Step 2: Change only the `get` parameter type to a trait object.**
 
-Replace the `EmbeddedDuckDb`-typed parameter with the trait object so the helper is backend-agnostic:
+The current `get` already mints a session token (`session_token(&cp, subject)`) and wraps the router with `service_runtime::protect(...)` for auth (added by #195). **Change ONLY the `eng` parameter type** from the concrete `Arc<EmbeddedDuckDb>` to `Arc<dyn query_api::serving::ServingEngine>` — leave the body (session_token, AppState construction, `protect` wrapping, request/header building, response parsing) exactly as-is. `EmbeddedDuckDb: ServingEngine`, so existing callers keep compiling; new Iceberg callers now work too.
 
 ```rust
-// e2e_support.rs — was: eng: Arc<EmbeddedDuckDb>
-pub async fn get(
-    cp: Arc<PgControlPlane>,
-    eng: Arc<dyn query_api::serving::ServingEngine>,
-    uri: &str,
-    subject: &str,
-) -> (StatusCode, serde_json::Value) {
-    let app = router(AppState {
-        cp: cp as Arc<dyn ControlPlane>,
-        serving: eng,
-        action_engine: Arc::new(StubAction),
-    });
-    // ... body unchanged ...
-}
+// e2e_support.rs — change ONLY this line:
+//   was: eng: Arc<EmbeddedDuckDb>,
+//   now: eng: Arc<dyn query_api::serving::ServingEngine>,
 ```
 
 - [ ] **Step 3: Change `setup` to seed Iceberg and return an Iceberg serving engine.**
 
-Rewrite `setup` to seed via `IcebergWriter` (not `DuckLakeWriter`) and return an `Arc<dyn ServingEngine>` built from `InProcessServingEngine` over an `IcebergCatalog`. Keep the same ontology/link topology the test relies on. New signature:
+Rewrite `setup` to seed via `IcebergWriter` (not `DuckLakeWriter`) and return an `Arc<dyn ServingEngine>` built from `InProcessServingEngine` over an `IcebergCatalog`. Keep the same ontology/link topology the test relies on. Note the exact current signatures (verified against the rebased tree):
+- `IcebergWriter::new(pool: PgPool, pg_dsn: String) -> IcebergWriter` — **synchronous, no `.await`** (fields: `pool`, `pg_dsn`, `warehouse: TempDir`).
+- `InProcessServingEngine::new(catalog: IcebergCatalog) -> InProcessServingEngine`.
+- `IcebergCatalog::new(pool: PgPool) -> IcebergCatalog`.
 
 ```rust
-// e2e_support.rs
+// e2e_support.rs — new signature (was: -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter))
 pub async fn setup(fx: &PgFixture) -> (PgControlPlane, Arc<dyn query_api::serving::ServingEngine>) {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let writer = IcebergWriter::new(/* args per fixture.rs: pool/warehouse */).await;
-    // ... seed the same three tables (customer / orders / line_items) via writer,
+    let pg_dsn = fx.pg_dsn(&db); // DSN helper used by IcebergWriter (see fixture.rs / engine wire.rs)
+    let writer = IcebergWriter::new(pool.clone(), pg_dsn); // SYNC — no .await
+    // ... seed the same three tables (customer / orders / line_items) via `writer`,
     //     define the same ontology types + links as today, using land()/prop() ...
     let catalog = IcebergCatalog::new(pool.clone());
     let eng: Arc<dyn query_api::serving::ServingEngine> =
@@ -109,7 +103,7 @@ pub async fn setup(fx: &PgFixture) -> (PgControlPlane, Arc<dyn query_api::servin
 }
 ```
 
-(Fill the seed body by translating each existing `DuckLakeWriter`-based `land()` in today's `setup` to the `IcebergWriter` equivalent — the table/column shapes are identical; only the writer changes.)
+(Fill the seed body by translating each existing `DuckLakeWriter`-based `land()` in today's `setup` to the `IcebergWriter` equivalent — read the current `IcebergWriter` methods in `fixture.rs` (~line 603+) for the seed API; the table/column shapes are identical, only the writer changes. The two-value return means every caller's `let (cp, eng, _writer) = setup(...)` becomes `let (cp, eng) = setup(...)`.)
 
 - [ ] **Step 4: Update `governed_read.rs` call sites to the new signatures.**
 
@@ -182,28 +176,34 @@ git commit -m "test(query-api): port all e2e tests to Iceberg serving; drop duck
 - Consumes: `EngineServingClient::connect(socket: impl Into<String>)`, `IcebergActionWriter::new(...)`, `build_iceberg_catalog(&cfg)` (all already present in `main.rs`'s Iceberg arm).
 - Produces: a `main()` with no backend match — Iceberg unconditionally; `LOOM_ENGINE_SOCKET` required (fail-fast).
 
-- [ ] **Step 1: Collapse `main.rs` to the Iceberg path.**
+- [ ] **Step 1: Collapse the serving-backend match to the Iceberg path — preserving auth wiring.**
 
-Delete the `let backend = parse_serving_backend(...)?;` line and the `match backend { ServingBackend::DuckLake => {...} ServingBackend::Iceberg => {...} }`. Keep the Iceberg arm's body as straight-line code. Result:
+> ⚠️ Drift note (rebased onto #195 auth + #189 Flight SQL): `main.rs` now builds `AuthState`, optionally runs `bootstrap_admin`, and wraps the router with `service_runtime::protect(...).merge(login_routes(...)).merge(session_routes(...))` before `serve`. Do NOT rewrite the whole tail — make the MINIMAL deletion below and leave all auth/serve code after it untouched. `EngineServingClient` already uses Flight SQL internally; `connect(socket)` is unchanged, so no serving-transport change is needed.
+
+Make exactly these deletions:
+- Delete `let backend = parse_serving_backend(std::env::var("LOOM_SERVING_BACKEND")...)?;`.
+- Replace the whole `let (serving, action_engine): (...) = match backend { ServingBackend::DuckLake => {...} ServingBackend::Iceberg => { <BODY> } };` with the Iceberg arm's `<BODY>` inlined, assigned to the same `(serving, action_engine)` bindings the rest of `main` already uses:
 
 ```rust
-let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
-    .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
-let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
-    .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
-let engine_socket = std::env::var("LOOM_ENGINE_SOCKET")
-    .map_err(|_| -> Box<dyn std::error::Error> {
-        "LOOM_ENGINE_SOCKET must be set (query-api serves reads only via the engine)".into()
-    })?;
-let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
-let action_engine: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
-    catalog, pool.clone(), inline_byte_limit, flush_byte_threshold,
-));
-let serving: Arc<dyn ServingEngine> = Arc::new(EngineServingClient::connect(engine_socket).await?);
-let app = router(AppState { cp, serving, action_engine });
+// replaces the entire `match backend { ... }` expression; keep the same bindings:
+let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = {
+    let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
+        .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
+    let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
+        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
+    let engine_socket = std::env::var("LOOM_ENGINE_SOCKET")
+        .map_err(|_| -> Box<dyn std::error::Error> {
+            "LOOM_ENGINE_SOCKET must be set (query-api serves reads only via the engine)".into()
+        })?;
+    let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
+    let action: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
+        catalog, pool.clone(), inline_byte_limit, flush_byte_threshold,
+    ));
+    (Arc::new(EngineServingClient::connect(engine_socket).await?), action)
+};
 ```
 
-Remove now-unused imports (`EmbeddedDuckDb`, `DuckLakeActionWriter`, `ServingBackend`, `parse_serving_backend`, `local_store` if unused).
+Leave the subsequent `AuthState` / `bootstrap_admin` / `protect(router(AppState { cp, serving, action_engine }), auth_state).merge(...)` / `serve` lines EXACTLY as they are. Remove now-unused imports (`EmbeddedDuckDb`, `DuckLakeActionWriter`, `ServingBackend`, `parse_serving_backend`, `local_store` if unused).
 
 - [ ] **Step 2: Delete `parse_serving_backend` + the `ServingBackend` enum.**
 
@@ -249,21 +249,25 @@ git commit -m "feat(query-api): Iceberg-only serving; remove EmbeddedDuckDb and 
 - Modify: `src/services/ingest/tests/` (re-point `runtime_land`, `bind` to Iceberg; DELETE `ducklake_interop.rs`)
 - Modify: `src/services/ingest/BUCK` (remove `duckdb = True` from `runtime-land`/`bind`; delete `ducklake-interop` target)
 
-- [ ] **Step 1: Collapse `main.rs` to the Iceberg materializer.**
+- [ ] **Step 1: Collapse the landing-backend match — preserving auth wiring.**
 
-Delete `let backend = parse_landing_backend(...)?;` and the match; keep the Iceberg arm straight-line:
+> ⚠️ Drift note (rebased onto #195 auth): ingest `main.rs` now builds `AuthState`, optionally runs `bootstrap_admin`, constructs the router as `router(AppState { materializer, cp })` (note the added `cp` field), and wraps it with `service_runtime::protect(...).merge(login_routes(...)).merge(session_routes(...))`. Make the MINIMAL deletion below; leave all auth/`cp`/serve code untouched.
+
+Delete `let backend = parse_landing_backend(std::env::var("LOOM_LANDING_BACKEND")...)?;` and replace the `match backend { LandingBackend::DuckLake => {...} LandingBackend::Iceberg => { <BODY> } }` with the Iceberg `<BODY>` inlined, bound to the same `materializer`:
 
 ```rust
-let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
-    .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
-let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
-    .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
-let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
-let materializer: Arc<dyn LandingMaterializer> = Arc::new(IcebergMaterializer {
-    catalog, pool, inline_byte_limit, flush_byte_threshold,
-});
-let app = router(AppState { materializer });
+// replaces the entire `match backend { ... }`; keep the same `materializer` binding:
+let materializer: Arc<dyn LandingMaterializer> = {
+    let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
+        .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
+    let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
+        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
+    let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
+    Arc::new(IcebergMaterializer { catalog, pool, inline_byte_limit, flush_byte_threshold })
+};
 ```
+
+Leave the subsequent `AuthState` / `bootstrap_admin` / `protect(router(AppState { materializer, cp }), auth_state).merge(...)` / `serve` lines EXACTLY as they are. (If the deleted DuckLake arm was the only consumer of a `let pg = ...`/`control_plane(pool, ...)` binding that auth now also needs for `cp`, keep that binding — auth depends on it.)
 
 - [ ] **Step 2: Delete the DuckLake landing code.**
 
@@ -297,6 +301,8 @@ git commit -m "feat(ingest): Iceberg-only landing; remove DuckLakeMaterializer"
 - Modify: `src/services/transform/BUCK` (remove `duckdb = True`; drop `backend.rs` from srcs)
 
 - [ ] **Step 1: Collapse `main.rs`.**
+
+> Drift note: transform is a queue-driven worker (no HTTP router/`AppState`), so — unlike query-api/ingest — it gained no auth wiring from #195. Confirm there is no `protect(...)`/`serve` tail here before editing; if there isn't (expected), this is a plain collapse.
 
 Delete `let backend = parse_transform_backend(...)?;` and the match. Build the handler control-plane straight-line:
 
