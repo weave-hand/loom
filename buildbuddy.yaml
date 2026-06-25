@@ -1,5 +1,5 @@
-# loom CI — BuildBuddy Workflows. Source of truth for build/test/lint, replacing
-# .github/workflows/ci.yml. Runs on BuildBuddy runners co-located with the RE/cache;
+# loom CI — BuildBuddy Workflows. Source of truth for build/test/lint (it replaced
+# the retired .github/workflows/ci.yml). Runs on BuildBuddy runners co-located with the RE/cache;
 # workflow VMs are snapshotted/reused, so the per-action setup
 # (tools/ci/buildbuddy-setup.sh) is near-instant on warm runs.
 #
