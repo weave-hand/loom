@@ -76,6 +76,7 @@ impl ControlPlane for IcebergControlPlane {
             catalog: self.catalog.clone(),
             staged_creates: Vec::new(),
             staged_files: Vec::new(),
+            staged_compacts: Vec::new(),
         }))
     }
 }
@@ -88,6 +89,7 @@ pub struct IcebergTx {
     catalog: Arc<SqlCatalog>,
     staged_creates: Vec<(TableRef, Vec<ColumnSpec>)>,
     staged_files: Vec<(TableRef, Vec<DataFile>, WriteMode)>,
+    staged_compacts: Vec<(TableRef, Vec<String>, Vec<DataFile>)>,
 }
 
 #[async_trait]
@@ -101,9 +103,10 @@ impl Tx for IcebergTx {
             catalog,
             staged_creates,
             staged_files,
+            staged_compacts,
         } = *self;
 
-        if staged_creates.is_empty() && staged_files.is_empty() {
+        if staged_creates.is_empty() && staged_files.is_empty() && staged_compacts.is_empty() {
             // Only lineage/enqueue (already applied on the held tx) — commit them.
             tx.commit().await.map_err(backend)?;
             return Ok(None);
@@ -133,6 +136,20 @@ impl Tx for IcebergTx {
                     )
                 })?;
             register_files(&mut tx, table, cols, files, mode.clone(), at).await?;
+        }
+        // 4. Register staged compactions — columns unused by the Compact arm, so &[].
+        for (table, expire, write) in &staged_compacts {
+            register_files(
+                &mut tx,
+                table,
+                &[],
+                write,
+                WriteMode::Compact {
+                    expire_paths: expire.clone(),
+                },
+                at,
+            )
+            .await?;
         }
         tx.commit().await.map_err(backend)?;
         Ok(Some(at))
@@ -169,12 +186,12 @@ impl Tx for IcebergTx {
 
     async fn compact_files(
         &mut self,
-        _table: &TableRef,
-        _expire: &[String],
-        _write: &[DataFile],
+        table: &TableRef,
+        expire: &[String],
+        write: &[DataFile],
     ) -> Result<()> {
-        Err(ControlPlaneError::Backend(
-            "IcebergTx::compact_files is unsupported (deferred, fut-iceberg-gc)".into(),
-        ))
+        self.staged_compacts
+            .push((table.clone(), expire.to_vec(), write.to_vec()));
+        Ok(())
     }
 }
