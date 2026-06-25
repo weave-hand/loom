@@ -1,7 +1,15 @@
 {
-  "enabledMcpjsonServers": [
-    "buildbuddy"
-  ],
+  "enabledMcpjsonServers": ["buildbuddy"],
+  "permissions": {
+    "allow": [
+      "mcp__buildbuddy",
+      "mcp__buildbuddy__get_invocation",
+      "mcp__buildbuddy__get_target",
+      "mcp__buildbuddy__get_action",
+      "mcp__buildbuddy__get_log",
+      "mcp__buildbuddy__get_file_range"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
