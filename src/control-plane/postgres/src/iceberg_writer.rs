@@ -5,6 +5,8 @@
 //! This module is pure write — it holds no mirror logic.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
@@ -18,12 +20,23 @@ use iceberg::writer::file_writer::location_generator::{
 };
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
-use iceberg::{Catalog, Namespace, NamespaceIdent, Result, TableCommit, TableCreation, TableIdent};
+use iceberg::{
+    Catalog, ErrorKind, Namespace, NamespaceIdent, Result, TableCommit, TableCreation, TableIdent,
+};
 use parquet::file::properties::WriterProperties;
 
 use control_plane_core::LineageEvent;
 
 use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
+
+/// Bound on commit retries after a lost pointer CAS. A conflict at the cap
+/// propagates the original (still retryable-flagged) error so a higher layer
+/// (e.g. the queue worker's RetryPolicy) can re-drive it.
+const COMMIT_MAX_RETRIES: u32 = 5;
+/// Base delay for exponential backoff between commit attempts.
+const COMMIT_BACKOFF_BASE: Duration = Duration::from_millis(5);
+/// Cap on the exponential backoff delay.
+const COMMIT_BACKOFF_CAP: Duration = Duration::from_millis(200);
 
 /// A neutral summary of one committed Parquet data file, returned to callers
 /// (tests, the seeder) that want to assert on the write without depending on
@@ -61,6 +74,67 @@ pub async fn append_batches(
     let tx = action.apply(tx)?;
     tx.commit(catalog).await?;
     Ok(summaries)
+}
+
+/// Commit a `fast_append` of `data_files`, retrying on a lost pointer CAS.
+///
+/// A conflict means this writer's staged metadata was built against a now-stale
+/// `metadata_location`, so a bare CAS replay would re-conflict forever. On
+/// `CatalogCommitConflicts` we instead reload the table (picking up the winning
+/// writer's new parent snapshot), re-stage the **same** already-written
+/// `data_files` against it, and re-commit, with bounded exponential backoff plus
+/// a per-writer jitter term so colliding writers de-synchronize. The data files
+/// are written once (UUID-prefixed paths) and reused across attempts, so
+/// re-adding them is correct and collision-free. Attempt 0 reuses the
+/// already-loaded `table`, so the reload round-trip is paid only on the retry
+/// path. Any non-conflict error, or a conflict past `COMMIT_MAX_RETRIES`,
+/// propagates unchanged.
+async fn commit_append_with_retry(
+    catalog: &dyn Catalog,
+    ident: &TableIdent,
+    mut table: Table,
+    data_files: Vec<DataFile>,
+) -> Result<()> {
+    let mut attempt: u32 = 0;
+    loop {
+        let tx = Transaction::new(&table);
+        let action = tx.fast_append().add_data_files(data_files.clone());
+        let tx = action.apply(tx)?;
+        match tx.commit(catalog).await {
+            Ok(_) => return Ok(()),
+            Err(e)
+                if e.kind() == ErrorKind::CatalogCommitConflicts
+                    && attempt < COMMIT_MAX_RETRIES =>
+            {
+                tokio::time::sleep(commit_backoff(ident, attempt)).await;
+                table = catalog.load_table(ident).await?;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Backoff delay for a given attempt: `min(CAP, BASE * 2^attempt)` plus a small
+/// jitter derived from the table identity hashed with the attempt, so one
+/// writer's attempt N and N+1 do not land on the same delay. No `rand` crate —
+/// the jitter is a deterministic hash, which is enough to break ties. Note the
+/// jitter is the *same* across writers contending on one table (they share the
+/// `TableIdent`), so de-synchronization across writers comes mainly from the
+/// exponential growth and the natural spread in Postgres commit latency rather
+/// than from the jitter; if high-N contention ever proves under-spread, mix a
+/// per-writer entropy source into the hash here (a tracked deferred refinement,
+/// not needed at the calibrated N=8).
+fn commit_backoff(ident: &TableIdent, attempt: u32) -> Duration {
+    let exp = COMMIT_BACKOFF_BASE
+        .saturating_mul(1u32 << attempt.min(16))
+        .min(COMMIT_BACKOFF_CAP);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ident.hash(&mut hasher);
+    attempt.hash(&mut hasher);
+    // Jitter in [0, BASE): keep it bounded so it never dominates the delay.
+    let jitter_ms = hasher.finish() % (COMMIT_BACKOFF_BASE.as_millis() as u64).max(1);
+    exp + Duration::from_millis(jitter_ms)
 }
 
 /// A per-call `Catalog` decorator that carries `CommitExtras` (lineage and/or an
