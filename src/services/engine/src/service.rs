@@ -111,4 +111,22 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             snapshot_id: snap.map(|s| s.0),
         }))
     }
+
+    async fn list_files(
+        &self,
+        _req: Request<pb::ListFilesRequest>,
+    ) -> std::result::Result<Response<pb::ListFilesResponse>, Status> {
+        Err(Status::unimplemented(
+            "list_files: not yet implemented (task B3)",
+        ))
+    }
+
+    async fn compact_table(
+        &self,
+        _req: Request<pb::CompactTableRequest>,
+    ) -> std::result::Result<Response<pb::CompactTableResponse>, Status> {
+        Err(Status::unimplemented(
+            "compact_table: not yet implemented (task B3)",
+        ))
+    }
 }

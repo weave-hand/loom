@@ -2,12 +2,14 @@ syntax = "proto3";
 package loom.engine.v1;
 
 service EngineControl {
-  rpc Dequeue   (DequeueRequest)    returns (DequeueResponse);
-  rpc Complete  (CompleteRequest)   returns (CompleteResponse);
-  rpc Fail      (FailRequest)       returns (FailResponse);
-  rpc Heartbeat (HeartbeatRequest)  returns (HeartbeatResponse);
-  rpc AwaitJobs (AwaitJobsRequest)  returns (AwaitJobsResponse);   // unary long-poll
-  rpc FlushTable(FlushTableRequest) returns (FlushTableResponse);
+  rpc Dequeue      (DequeueRequest)      returns (DequeueResponse);
+  rpc Complete     (CompleteRequest)     returns (CompleteResponse);
+  rpc Fail         (FailRequest)         returns (FailResponse);
+  rpc Heartbeat    (HeartbeatRequest)    returns (HeartbeatResponse);
+  rpc AwaitJobs    (AwaitJobsRequest)    returns (AwaitJobsResponse);   // unary long-poll
+  rpc FlushTable   (FlushTableRequest)   returns (FlushTableResponse);
+  rpc ListFiles    (ListFilesRequest)    returns (ListFilesResponse);
+  rpc CompactTable (CompactTableRequest) returns (CompactTableResponse);
 }
 
 message Job {
@@ -33,3 +35,9 @@ message AwaitJobsResponse {}                            // returns on notify or 
 
 message FlushTableRequest  { string schema = 1; string name = 2; }
 message FlushTableResponse { optional int64 snapshot_id = 1; }   // absent = None
+
+message FileMeta { string path = 1; int64 record_count = 2; int64 file_size_bytes = 3; }
+message ListFilesRequest  { string schema = 1; string name = 2; }
+message ListFilesResponse { repeated FileMeta files = 1; }
+message CompactTableRequest  { string schema = 1; string name = 2; repeated string expire = 3; repeated string write_json = 4; }
+message CompactTableResponse { optional int64 snapshot_id = 1; }
