@@ -454,7 +454,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
-use control_plane_postgres::storage::LocalFsStorageFactory;
+use iceberg::io::LocalFsStorageFactory;
 use engine::flight::FlightDataService;
 use engine_wire::flight::FlightSqlClient;
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -465,7 +465,7 @@ use tonic::transport::Server;
 async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
     let mut props = std::collections::HashMap::new();
     props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(SQL_CATALOG_PROP_WAREHOUSE.to_string(), format!("{warehouse}/"));
+    props.insert(SQL_CATALOG_PROP_WAREHOUSE.to_string(), format!("file://{warehouse}"));
     SqlCatalogBuilder::default()
         .with_storage_factory(Arc::new(LocalFsStorageFactory))
         .load("loom", props)
@@ -540,9 +540,9 @@ async fn flight_sql_streams_unioned_result() {
 }
 ```
 
-- [ ] **Step 2: Wire the test target**
+- [ ] **Step 2: Wire the test target and add `prost` to the `:engine` library**
 
-Add to `src/services/engine/BUCK` (mirror the `wire` target):
+In `src/services/engine/BUCK`, add `"//third-party:prost",` to the `rust_library(name = "engine", ...)` `deps` (the handler now calls `prost::Message::{decode, encode_to_vec}`). Then add the test target (mirror the `wire` target):
 
 ```python
 loom_fixture_test(
@@ -703,18 +703,7 @@ impl FlightDataService {
 
 - [ ] **Step 5: Update the engine binary construction site**
 
-In `src/services/engine/src/main.rs`, change the `flight` construction (lines 61-64). The `IcebergCatalog` and serving store are already built for `query` (lines 57-60); build a second `IcebergCatalog` for the flight service from the same pool, and reuse the serving-store builder:
-
-```rust
-    let flight = FlightDataService {
-        catalog: flight_catalog,
-        pool,
-        serving_catalog: IcebergCatalog::new(pool_for_flight),
-        serving_store: service_runtime::build_serving_object_store(&cfg.object_store)?,
-    };
-```
-
-To get `pool_for_flight`, clone the pool before it is moved into `flight.pool`. Replace the `pool` move: change `let flight = FlightDataService { catalog: flight_catalog, pool, .. }` so `pool` is cloned for `serving_catalog` first. Concretely, set:
+In `src/services/engine/src/main.rs`, change the `flight` construction (lines 61-64). Put `pool` last so the earlier `pool.clone()` borrows it before the move (Rust evaluates struct-literal field initializers in source order):
 
 ```rust
     let flight = FlightDataService {
@@ -846,7 +835,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
-use control_plane_postgres::storage::LocalFsStorageFactory;
+use iceberg::io::LocalFsStorageFactory;
 use engine::flight::FlightDataService;
 use iceberg::CatalogBuilder;
 use query_api::engine_client::EngineServingClient;
@@ -857,7 +846,7 @@ use tonic::transport::Server;
 async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
     let mut props = std::collections::HashMap::new();
     props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(SQL_CATALOG_PROP_WAREHOUSE.to_string(), format!("{warehouse}/"));
+    props.insert(SQL_CATALOG_PROP_WAREHOUSE.to_string(), format!("file://{warehouse}"));
     SqlCatalogBuilder::default()
         .with_storage_factory(Arc::new(LocalFsStorageFactory))
         .load("loom", props)
