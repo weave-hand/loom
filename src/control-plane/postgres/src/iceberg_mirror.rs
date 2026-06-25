@@ -186,6 +186,46 @@ pub async fn live_table_id(conn: &mut PgConnection, ns: &str, name: &str) -> Res
     .map_err(backend)
 }
 
+/// End-cap (set `end_snapshot = at`) the specific live `iceberg_mirror.data_file`
+/// rows named by `paths` for `table_id` — the subset-expire leg of compaction
+/// (`Tx::compact_files`' Iceberg twin). Prior snapshots still time-travel (the rows
+/// keep `begin_snapshot < at`). Returns `ControlPlaneError::Conflict` if any path is
+/// not currently live (a concurrent compaction already superseded it), so a raced
+/// compaction fails rather than silently dropping files. `paths` is de-duplicated
+/// before the count check.
+pub async fn end_cap_files_by_path(
+    conn: &mut PgConnection,
+    table_id: i64,
+    paths: &[String],
+    at: SnapshotId,
+) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut unique: Vec<String> = paths.to_vec();
+    unique.sort();
+    unique.dedup();
+    let capped = sqlx::query_scalar!(
+        "update iceberg_mirror.data_file set end_snapshot = $2 \
+         where table_id = $1 and path = any($3) and end_snapshot is null \
+         returning path",
+        table_id,
+        at.0,
+        &unique[..],
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if capped.len() != unique.len() {
+        return Err(ControlPlaneError::Conflict(format!(
+            "compact: {} of {} expire paths were not live (raced compaction)",
+            unique.len() - capped.len(),
+            unique.len()
+        )));
+    }
+    Ok(())
+}
+
 /// End-cap (set `end_snapshot = at`) every currently-live `iceberg_mirror.data_file`
 /// row for `table_id`, leaving its `table`/`column` rows untouched. This is the
 /// data-file leg of a drop ([`mark_dropped`]) and the whole "expire old files" step

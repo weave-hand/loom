@@ -16,7 +16,7 @@ pub struct ColumnSpec {
 /// A typed scalar stat bound. Format-neutral: each adapter encodes it its own way
 /// (DuckLake → VARCHAR string; Iceberg → typed binary lower/upper bound). Not `Eq`
 /// (carries floats).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StatValue {
     Bool(bool),
     I32(i32),
@@ -29,7 +29,7 @@ pub enum StatValue {
 /// Per-column statistics for one data file. `value_count` is NOT stored: it is
 /// derivable (`record_count − null_count`) and each format counts differently
 /// (DuckLake excludes nulls; Iceberg includes them), so the adapter derives it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ColumnStat {
     pub column_name: String,
     pub null_count: i64,
@@ -40,13 +40,13 @@ pub struct ColumnStat {
 
 /// The on-storage format of a registered data file. Explicit (not assumed Parquet)
 /// because formats like Iceberg record it per file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FileFormat {
     Parquet,
 }
 
 /// A data file the caller has already written to object storage.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DataFile {
     pub path: String,
     pub path_is_relative: bool,

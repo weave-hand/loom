@@ -14,7 +14,10 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
-use control_plane_core::{DatasetId, EventType, LineageEvent, RunId, TableRef};
+use control_plane_core::{
+    COMPACT_JOB_KIND, CompactJob, ControlPlane, DatasetId, EventType, LineageEvent, NewJob, RunId,
+    TableRef,
+};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -30,12 +33,46 @@ use crate::materialize::resolve_columns;
 #[derive(Clone)]
 pub struct AppState {
     pub materializer: Arc<dyn LandingMaterializer>,
+    pub cp: Arc<dyn ControlPlane>,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/datasets/:schema/:table", post(land))
+        .route("/tables/:schema/:table/compact", post(compact))
         .with_state(state)
+}
+
+/// Operator action: enqueue a compaction job for `{schema}.{table}`. Returns the
+/// JobId; a zero-pool worker performs the compaction asynchronously.
+async fn compact(
+    State(st): State<AppState>,
+    Path((schema, table)): Path<(String, String)>,
+) -> Response {
+    let payload = match serde_json::to_value(CompactJob {
+        schema,
+        name: table,
+    }) {
+        Ok(v) => v,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    let job = NewJob {
+        kind: COMPACT_JOB_KIND.to_string(),
+        payload,
+        run_at: None,
+        priority: 0,
+    };
+    match st.cp.queue().enqueue(job).await {
+        Ok(id) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job_id": id.0.to_string() })),
+        )
+            .into_response(),
+        // Opaque on backend faults (governance-fronted service).
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    }
 }
 
 /// Decode an Arrow IPC stream into its schema and record batches.
