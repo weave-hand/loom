@@ -484,23 +484,3 @@ pub async fn execute_query_stream(
     df.execute_stream().await.map_err(to_serving)
 }
 
-/// Execute `sql` and return the full result as one Arrow-58 IPC *stream* (schema
-/// message + all batches). Bounded by the compiled query's LIMIT, so a single blob
-/// is fine. Empty result → empty `Vec<u8>` (the client reads it as zero rows).
-pub async fn execute_query_to_ipc(
-    catalog: &IcebergCatalog,
-    sql: &str,
-    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
-) -> Result<Vec<u8>, EngineServingError> {
-    let batches = execute_query(catalog, sql, serving_store).await?;
-    let mut buf = Vec::new();
-    if let Some(first) = batches.first() {
-        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &first.schema())
-            .map_err(to_serving)?;
-        for b in &batches {
-            w.write(b).map_err(to_serving)?;
-        }
-        w.finish().map_err(to_serving)?;
-    }
-    Ok(buf)
-}
