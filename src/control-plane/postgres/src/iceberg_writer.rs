@@ -80,12 +80,13 @@ pub async fn append_batches(
 /// `CatalogCommitConflicts` we instead reload the table (picking up the winning
 /// writer's new parent snapshot), re-stage the **same** already-written
 /// `data_files` against it, and re-commit, with bounded exponential backoff plus
-/// a per-writer jitter term so colliding writers de-synchronize. The data files
-/// are written once (UUID-prefixed paths) and reused across attempts, so
-/// re-adding them is correct and collision-free. Attempt 0 reuses the
-/// already-loaded `table`, so the reload round-trip is paid only on the retry
-/// path. Any non-conflict error, or a conflict past `COMMIT_MAX_RETRIES`,
-/// propagates unchanged.
+/// a per-writer jitter term derived from the UUID-prefixed data-file path so
+/// colliding writers on the same table de-synchronize rather than re-collide in
+/// lockstep. The data files are written once (UUID-prefixed paths) and reused
+/// across attempts, so re-adding them is correct and collision-free. Attempt 0
+/// reuses the already-loaded `table`, so the reload round-trip is paid only on
+/// the retry path. Any non-conflict error, or a conflict past
+/// `COMMIT_MAX_RETRIES`, propagates unchanged.
 async fn commit_append_with_retry(
     catalog: &dyn Catalog,
     ident: &TableIdent,
@@ -93,6 +94,7 @@ async fn commit_append_with_retry(
     data_files: Vec<DataFile>,
 ) -> Result<()> {
     let mut attempt: u32 = 0;
+    let writer_path = data_files.first().map(|f| f.file_path());
     loop {
         let tx = Transaction::new(&table);
         let action = tx.fast_append().add_data_files(data_files.clone());
@@ -103,7 +105,7 @@ async fn commit_append_with_retry(
                 if e.kind() == ErrorKind::CatalogCommitConflicts
                     && attempt < COMMIT_MAX_RETRIES =>
             {
-                tokio::time::sleep(commit_backoff(ident, attempt)).await;
+                tokio::time::sleep(commit_backoff(ident, attempt, writer_path)).await;
                 table = catalog.load_table(ident).await?;
                 attempt += 1;
             }
@@ -113,21 +115,21 @@ async fn commit_append_with_retry(
 }
 
 /// Backoff delay for a given attempt: `min(CAP, BASE * 2^attempt)` plus a small
-/// jitter derived from the table identity hashed with the attempt, so one
-/// writer's attempt N and N+1 do not land on the same delay. No `rand` crate —
-/// the jitter is a deterministic hash, which is enough to break ties. Note the
-/// jitter is the *same* across writers contending on one table (they share the
-/// `TableIdent`), so de-synchronization across writers comes mainly from the
-/// exponential growth and the natural spread in Postgres commit latency rather
-/// than from the jitter; if high-N contention ever proves under-spread, mix a
-/// per-writer entropy source into the hash here (a tracked deferred refinement,
-/// not needed at the calibrated N=8).
-fn commit_backoff(ident: &TableIdent, attempt: u32) -> Duration {
+/// jitter derived from the per-writer UUID data-file path hashed with the attempt,
+/// so genuinely-colliding writers on the same table de-synchronize — each writer
+/// uses a distinct UUID-prefixed path, producing a different hash and thus a
+/// different jitter offset. When `writer_path` is `None` (empty append, no data
+/// files), the jitter falls back to hashing the table identity alone. No `rand`
+/// crate — the jitter is a deterministic hash, which is enough to break ties.
+fn commit_backoff(ident: &TableIdent, attempt: u32, writer_path: Option<&str>) -> Duration {
     let exp = COMMIT_BACKOFF_BASE
         .saturating_mul(1u32 << attempt.min(16))
         .min(COMMIT_BACKOFF_CAP);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    ident.hash(&mut hasher);
+    match writer_path {
+        Some(path) => path.hash(&mut hasher),
+        None => ident.hash(&mut hasher),
+    }
     attempt.hash(&mut hasher);
     // Jitter in [0, BASE): keep it bounded so it never dominates the delay.
     let jitter_ms = hasher.finish() % (COMMIT_BACKOFF_BASE.as_millis() as u64).max(1);
