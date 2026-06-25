@@ -148,8 +148,12 @@ async fn drop_unappended_table_succeeds_without_orphan_snapshot() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_appends_keep_the_mirror_consistent() {
+/// Spawn `n` writers that each append one file to the same table concurrently,
+/// then assert the mirror is consistent: exactly `n` snapshots, no orphan
+/// snapshot (every snapshot carries its files), and exactly `n` data files
+/// (none dropped, none duplicated). With the CAS-conflict retry in place this
+/// holds even when writers collide on the pointer CAS.
+async fn concurrent_appends_consistent(n: i64) {
     let fx = PgFixture::start();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
@@ -167,9 +171,8 @@ async fn concurrent_appends_keep_the_mirror_consistent() {
         .current_schema()
         .clone();
 
-    const N: i64 = 4;
     let mut handles = Vec::new();
-    for k in 0..N {
+    for k in 0..n {
         let dsn = fx.pg_dsn(&db);
         let whs = whs.clone();
         let cs = cs.clone();
@@ -192,13 +195,13 @@ async fn concurrent_appends_keep_the_mirror_consistent() {
     }
 
     let pool: PgPool = fx.pool_for(&db).await;
-    // Exactly N snapshots, each carrying at least one data file (no orphan snapshot
-    // rows from a rolled-back CAS attempt), and all N files present (none dropped).
+    // Exactly n snapshots, each carrying at least one data file (no orphan snapshot
+    // rows from a rolled-back CAS attempt), and all n files present (none dropped).
     let snap_count: i64 = sqlx::query_scalar("select count(*) from iceberg_mirror.snapshot")
         .fetch_one(&pool)
         .await
         .expect("count snapshots");
-    assert_eq!(snap_count, N, "one snapshot per successful append");
+    assert_eq!(snap_count, n, "one snapshot per successful append");
     let orphans: i64 = sqlx::query_scalar(
         "select count(*) from iceberg_mirror.snapshot s \
          where not exists (select 1 from iceberg_mirror.data_file f where f.begin_snapshot = s.snapshot_id)",
@@ -211,5 +214,20 @@ async fn concurrent_appends_keep_the_mirror_consistent() {
         .fetch_one(&pool)
         .await
         .expect("count files");
-    assert_eq!(files, N, "all appended files present, none duplicated");
+    assert_eq!(files, n, "all appended files present, none duplicated");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_appends_keep_the_mirror_consistent() {
+    // Baseline contention level; kept green before the retry existed.
+    concurrent_appends_consistent(4).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_appends_tolerate_contention() {
+    // N=8 went red without the CAS-conflict retry (lost pointer CAS, no re-drive)
+    // and the bump was reverted. Green here is the proof the retry re-commits a
+    // lost CAS. No minimum-retry-count assertion: contention is nondeterministic,
+    // so the invariant set (n snapshots, no orphans, n files) is the robust proof.
+    concurrent_appends_consistent(8).await;
 }
