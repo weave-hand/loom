@@ -483,4 +483,3 @@ pub async fn execute_query_stream(
     let df = ctx.sql(sql).await.map_err(to_serving)?;
     df.execute_stream().await.map_err(to_serving)
 }
-

@@ -25,7 +25,10 @@ use tonic::transport::Server;
 async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
     let mut props = std::collections::HashMap::new();
     props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(SQL_CATALOG_PROP_WAREHOUSE.to_string(), format!("file://{warehouse}"));
+    props.insert(
+        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+        format!("file://{warehouse}"),
+    );
     SqlCatalogBuilder::default()
         .with_storage_factory(Arc::new(LocalFsStorageFactory))
         .load("loom", props)
