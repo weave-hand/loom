@@ -197,6 +197,15 @@ impl PgFixture {
             .args(["-c", "listen_addresses="])
             .args(["-c", "fsync=off"])
             .args(["-c", "full_page_writes=off"])
+            // Keep dynamic shared memory OFF the host's tiny /dev/shm tmpfs. The
+            // default `posix` type allocates DSM segments as /dev/shm/PostgreSQL.*;
+            // because teardown SIGKILLs the server (see `Drop`), postgres never runs
+            // its shutdown cleanup, so those segments leak permanently. Under the
+            // boot throttle's up-to-K concurrent clusters they accumulate across runs
+            // and exhaust /dev/shm, starving later fixtures (the `iceberg-s3-roundtrip`
+            // flake). `mmap` places DSM in $PGDATA/pg_dynshmem/ — inside the per-cluster
+            // data tempdir, which self-cleans on Drop and lives on disk, not the tmpfs.
+            .args(["-c", "dynamic_shared_memory_type=mmap"])
             .spawn()
             .expect("spawn postgres");
 
