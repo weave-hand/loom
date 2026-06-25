@@ -1,23 +1,22 @@
 //! `EngineServingClient` — a `ServingEngine` that runs reads on the engine service
-//! over the engine wire: inline params, send compiled SQL, decode the Arrow-58 IPC
-//! result into `Rows`. Replaces the in-process DataFusion engine.
+//! over **internal Flight SQL**: inline params, send the compiled SQL as a
+//! `CommandStatementQuery`, consume the streamed Arrow-58 batches, flatten to `Rows`.
 
-use arrow::ipc::reader::StreamReader;
 use async_trait::async_trait;
-use engine_wire::client::EngineQueryClient;
+use engine_wire::flight::FlightSqlClient;
 
 use crate::serving::{Rows, ServingError, SqlValue, inline_params};
 use crate::serving_datafusion::batches_to_rows;
 use crate::sql::SqlDialect;
 
 pub struct EngineServingClient {
-    client: EngineQueryClient,
+    client: FlightSqlClient,
 }
 
 impl EngineServingClient {
-    /// Connect to the engine's `EngineQuery` service at `socket` (a UDS path).
+    /// Connect to the engine's Arrow Flight service at `socket` (a UDS path).
     pub async fn connect(socket: impl Into<String>) -> Result<Self, ServingError> {
-        let client = EngineQueryClient::connect(socket)
+        let client = FlightSqlClient::connect(socket)
             .await
             .map_err(|e| ServingError::Engine(e.to_string()))?;
         Ok(Self { client })
@@ -27,27 +26,16 @@ impl EngineServingClient {
 #[async_trait]
 impl crate::serving::ServingEngine for EngineServingClient {
     async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
-        // Same param inlining the in-process DataFusion engine used; the engine has
-        // no positional bind slot.
+        // Same param inlining the unary path used; the engine has no positional bind slot.
         let inlined = inline_params(sql, params);
-        let ipc = self
+        let batches = self
             .client
-            .execute_query(inlined)
+            .execute(inlined)
             .await
             .map_err(|e| ServingError::Engine(e.to_string()))?;
-        // Empty result → empty Rows (no column names). This matches the OLD
-        // DataFusion path (which also returned empty Rows for a zero-row result);
-        // it differs from EmbeddedDuckDb (which preserves columns for empty
-        // results), but is behavior-preserving for the Iceberg backend — not a
-        // regression introduced here.
-        if ipc.is_empty() {
-            return Ok(Rows::default());
-        }
-        let reader = StreamReader::try_new(std::io::Cursor::new(ipc), None)
-            .map_err(|e| ServingError::Engine(e.to_string()))?;
-        let batches = reader
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| ServingError::Engine(e.to_string()))?;
+        // Empty result → empty Rows (no column names) — behaviour-preserving for the
+        // Iceberg backend, matching the previous unary/DataFusion path. `batches_to_rows`
+        // already returns `Rows::default()` for an empty batch list.
         Ok(batches_to_rows(batches))
     }
     fn dialect(&self) -> &'static dyn SqlDialect {
