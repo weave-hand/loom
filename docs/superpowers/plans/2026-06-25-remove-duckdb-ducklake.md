@@ -10,6 +10,22 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-25-remove-duckdb-ducklake-design.md`
 
+## Ordering correction (2026-06-25)
+
+During execution we found `EmbeddedDuckDb` (query-api serving) and `DuckLakeWriter`
+(shared seed fixture) are consumed **across services** (notably `transform`'s
+`typed_transform_e2e.rs` reads back via `EmbeddedDuckDb`). Shared duck code must be
+deleted **last**, after every consumer is ported. Corrected task order:
+**Task 4 (ingest) → Task 5 (transform) → Task 3 (delete EmbeddedDuckDb + drop duckdb
+crate, now orphaned) → Task 6 (control-plane format + DuckLakeWriter) → Task 7 (build
+cleanup) → Task 8 (docs/gate).** Task numbers below keep their original labels; only
+execution order changed.
+
+**GUARDRAIL:** never re-introduce DuckDB to satisfy a broken build. If removing duck
+code breaks a test: port it to Iceberg (`IcebergWriter` + `InProcessServingEngine`) or
+delete it if duck-specific; if neither, STOP. Adding the `duckdb` crate / `EmbeddedDuckDb`
+/ an inline duck engine anywhere is a task failure.
+
 ## Global Constraints
 
 - **Tests are `rust_test` integration targets only** — never inline `#[cfg(test)]`. Fixture-backed tests use the `loom_fixture_test` macro (`src/control-plane/postgres/defs.bzl`).
