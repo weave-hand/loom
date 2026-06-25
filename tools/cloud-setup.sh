@@ -84,9 +84,11 @@ if [ -n "$REPO" ]; then
     #  - the fixture/toolchain DOWNLOADS — postgres-bin, duckdb-cli, libxml2, and
     #    the CPython toolchain archive. These are `download_file`/genrule inputs the
     #    hermetic-Postgres/DuckDB tests need to even BUILD. At session time their
-    #    fetches go through the agent proxy, whose HEAD-request handling rejects the
-    #    GitHub release / crates.io URLs (so `buck2 test //src/...` fails to build);
-    #    fetching them here (setup runs outside that proxy) bakes them into the
+    #    fetches go through the agent proxy, whose HEAD-request handling redirects
+    #    GitHub release HEADs to objects.githubusercontent.com (401) while the GET
+    #    succeeds — so buck2's pre-flight http_head aborts download_file before it
+    #    ever issues the working GET (see anthropics/claude-code#70588).
+    #    Fetching them here (setup runs outside that proxy) bakes them into the
     #    snapshot so the session build hits cache instead of re-downloading.
     ( cd "$REPO" && buck2 build --config project.remote_enabled= \
         //tools:jq //tools:rust-code-analysis //tools:lucidshark-duplo \
