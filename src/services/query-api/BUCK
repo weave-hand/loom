@@ -11,6 +11,7 @@ rust_library(
         "//src/control-plane/postgres:postgres",
         "//src/services/engine-wire:engine-wire",
         "//src/services/ingest:ingest",
+        "//src/services/runtime:runtime",
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",

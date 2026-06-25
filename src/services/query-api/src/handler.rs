@@ -6,6 +6,7 @@ use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, ObjectType, Ontology, PageReq, PolicyTarget,
     PropertyDef, RowFilter, SubjectId, TypeName,
 };
+pub use service_runtime::Subject;
 
 use crate::serving::{ServingEngine, SqlValue};
 use crate::sql::{compile_chain_with, compile_select_with};
@@ -21,9 +22,6 @@ pub struct ObjectRows {
 }
 
 const DEFAULT_LIMIT: u32 = 1000;
-
-/// The authenticated caller (authn is a later spec; carried from a request header).
-pub struct Subject(pub SubjectId);
 
 /// A read request: an ontology type plus optional equality filters on allowed columns.
 pub struct ObjectQuery {
