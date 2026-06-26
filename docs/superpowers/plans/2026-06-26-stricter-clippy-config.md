@@ -2,468 +2,282 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Adopt broad `clippy::pedantic` + `clippy::restriction` as loom's enforced first-party lint policy, wired once through the buck2 toolchain, and bring the tree to a green `clippy-all.sh`.
+**Goal:** Adopt broad `clippy::pedantic` + `clippy::restriction` as loom's enforced first-party lint policy, wired once through the buck2 toolchain, enforce a curated high-signal subset (panic-safety + error-handling) on production code, exempt test and test-harness code, and bring the tree to a green `clippy-all.sh`.
 
-**Architecture:** The buck2 prelude's `RustToolchainInfo` already carries `warn_lints` / `deny_lints` / `allow_lints` / `clippy_toml` fields that `_lintify` (`prelude/rust/build.bzl:954-968`) turns into clippy flags. loom's `hermetic_rust_toolchain` (`toolchains/rust_dist.bzl`) doesn't forward them, so step one is to add and thread those attributes (mirroring the prelude's own `system_rust_toolchain`, `prelude/toolchains/rust.bzl:42-77`). Then enable the groups once on the `:rust` toolchain in `toolchains/BUCK`, measure the resulting diagnostics, and reach green via a census-driven split of code-fixes vs an `allow_lints` allowlist plus a root `clippy.toml` for test exemptions.
+**Architecture:** The buck2 prelude's `RustToolchainInfo` carries `warn_lints`/`allow_lints`/`clippy_toml` fields that `_lintify` (`prelude/rust/build.bzl:954-968`) turns into clippy flags. loom's `hermetic_rust_toolchain` (`toolchains/rust_dist.bzl`) now forwards them (Task 1). The groups are enabled once on `:rust`; a large `allow_lints` block (Billy-Levin-style enable-broadly-allowlist) silences the stylistic/contradictory/structural lints; the high-signal panic-safety/error-handling lints stay enforced. Test targets and test-harness libraries are exempted from the panic-safety lints (test code legitimately panics) via a `loom_rust_test` wrapper + the existing `loom_fixture_test` macro + crate/module `#![allow]` on the two harness sources. Then production violations of the enforced set (~160 sites) are fixed for real.
 
 **Tech Stack:** buck2 + vendored prelude, hermetic Rust toolchain (pinned nightly), clippy via the `[clippy.txt]` sub-target, `tools/clippy-all.sh` (the enforced gate, also the `clippy` prek hook + CI `lint` job).
 
 ## Global Constraints
 
-- **Enforced gate fails on ANY diagnostic.** `tools/clippy-all.sh` builds each first-party target's `[clippy.txt]` sub-target and exits non-zero if any diagnostics file is non-empty. "Green" means `tools/clippy-all.sh` exits 0 over `//src/...`.
-- **Scope is first-party only:** `//src/...`. Third-party (`//third-party`) and `//tools` are out of scope (the gate already scopes to `root//src/...`).
-- **buck2 does not read Cargo `[lints]`.** All lint config flows through `RustToolchainInfo`; do NOT add `[workspace.lints]` (the gate would ignore it).
-- **Tests are separate `rust_test` crates, not `#[cfg(test)]` modules.** Whether clippy's `allow-*-in-tests` exemptions fire for them is verified in Task 1, with a documented fallback.
-- **Lint fields take plain strings**, mirroring `prelude/toolchains/rust.bzl` (`attrs.list(attrs.string())`). Lint values are written like `"clippy::pedantic"` (no embedded quotes).
-- **Use `warn`, not `deny`.** The gate already converts any diagnostic to a failure; `warn` keeps a bare local `buck2 build` non-fatal.
-- **Don't pipe `buck2 test`/`buck2 bxl` through `tail`/`head`** — redirect to a file and grep it (`> /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`). `buck2 build | tail` is fine.
-- **Commits follow Conventional Commits** (the `conventional-commit` commit-msg hook enforces it). End commit messages with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer.
-- Work happens on the existing `clippy-strict-lints` branch.
+- **Enforced gate fails on ANY diagnostic.** `tools/clippy-all.sh` builds each first-party target's `[clippy.txt]` and exits non-zero if any diagnostics file is non-empty. "Green" means `tools/clippy-all.sh` exits 0 over `//src/...`.
+- **Scope is first-party only:** `//src/...`. Third-party and `//tools` are out of scope.
+- **buck2 does not read Cargo `[lints]`.** All lint config flows through `RustToolchainInfo` / per-target `rustc_flags`. Do NOT add `[workspace.lints]`.
+- **Lint fields take plain strings** (`attrs.list(attrs.string())`), values like `"clippy::pedantic"`. Per-target allows are `rustc_flags = ["-Aclippy::<lint>"]` (rustc silently ignores `clippy::*` flags; only the clippy action applies them).
+- **Use `warn`, not `deny`** for the toolchain groups.
+- **Test/harness code is exempted, not rewritten.** The panic-safety lints are allowed for: all `rust_test` targets (via `loom_rust_test` + `loom_fixture_test`), the `testkit` library (`src/control-plane/testkit/src/lib.rs`, a conformance harness), and `postgres/src/fixture.rs` (the test fixture harness — CLAUDE.md: "not production query paths"). Production `src/` code is fixed for real.
+- **ENFORCED production lint set** (the only `clippy::restriction`/leftover lints kept on for `src/`; everything else in the groups is allowed):
+  `unwrap_used`, `expect_used`, `indexing_slicing`, `panic`, `get_unwrap`, `unwrap_in_result`, `panic_in_result_fn`, `map_err_ignore`, `let_underscore_must_use`, `unused_result_ok`, `unreachable`, `format_push_string`, `allow_attributes_without_reason`, `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`.
+- **TEST/HARNESS exemption lint set** (allowed for test targets + the two harness sources):
+  `unwrap_used`, `expect_used`, `indexing_slicing`, `panic`, `get_unwrap`, `unwrap_in_result`, `panic_in_result_fn`, `unreachable`, `assertions_on_result_states`.
+- **Don't pipe `buck2 test`/`buck2 bxl` through tail/head** — redirect to a file and grep it. `buck2 build | tail` is fine.
+- **ENV (local machine):** inotify is throttled (~4041 slots); `buck-out/` grows to ~8800 dirs after a full gate run and can break the next run. Clean buck-out (`buck2 clean` / remove `buck-out`) if the gate errors with "too many open files"/inotify. CI/RE is unaffected.
+- **Markdown hygiene:** any `.md` edit must end with exactly one trailing newline and no trailing whitespace (the `lint` job's `end-of-file-fixer`/`trim trailing whitespace` police all files). Run `buck2 run //tools:prek -- run --all-files` before pushing and commit what it changes.
+- **Commits:** Conventional Commits (commit-msg hook) + trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Branch: `clippy-strict-lints`.
 
 ---
 
-### Task 1: Wire toolchain lint fields + enable-pedantic spike (de-risk)
+### Task 1: Wire toolchain lint fields + enable-pedantic spike — ✅ DONE
 
-Proves the configure-once mechanism end to end on one group (`clippy::pedantic`) before any bulk work: the gate sees clippy diagnostics, plain `rustc` builds stay clean, and the `clippy.toml` test-exemption behavior is established.
+Threaded `allow_lints`/`deny_lints`/`warn_lints`/`clippy_toml` through `hermetic_rust_toolchain` into `RustToolchainInfo` (commit `17bfa0b`). `clippy_toml` uses `attrs.dep(providers=[DefaultInfo])` + root `BUCK` `export_file` (`root//:clippy-toml`). Root `clippy.toml` has the five `allow-*-in-tests` keys. Verified: pedantic reaches the clippy action; plain `rustc` stays clean; `allow-unwrap-in-tests` fires for `#[test]`-fn code in `rust_test` crates (but NOT test-helper fns — hence the wrapper in Task 3).
 
-**Files:**
-- Modify: `toolchains/rust_dist.bzl` (the `hermetic_rust_toolchain` rule + its impl)
-- Modify: `toolchains/BUCK:169-182` (the `:rust` toolchain instance)
-- Create: `clippy.toml` (repo root)
+### Task 2: Enable `restriction` + census — ✅ DONE (measurement, uncommitted)
 
-**Interfaces:**
-- Produces: a `:rust` toolchain whose `RustToolchainInfo` has populated `warn_lints` / `allow_lints` / `clippy_toml`. Later tasks only change the *values* of `warn_lints` / `allow_lints` in `toolchains/BUCK` and the body of `clippy.toml` — the rule plumbing is fixed here.
-
-- [ ] **Step 1: Add the four lint attributes to the `hermetic_rust_toolchain` rule**
-
-In `toolchains/rust_dist.bzl`, extend the `attrs` dict (currently ends after `use_bundled_linker`, lines 84-93) to add:
-
-```python
-hermetic_rust_toolchain = rule(
-    impl = _hermetic_rust_toolchain_impl,
-    is_toolchain_rule = True,
-    attrs = {
-        "rustc_dist": attrs.dep(),
-        "std_dist": attrs.dep(),
-        "clippy_dist": attrs.dep(),
-        "rustc_target_triple": attrs.string(default = "x86_64-unknown-linux-gnu"),
-        "host_triple": attrs.string(default = "x86_64-unknown-linux-gnu"),
-        "default_edition": attrs.string(default = "2024"),
-        "rustc_flags": attrs.list(attrs.string(), default = []),
-        "use_bundled_linker": attrs.bool(default = False),
-        # Lint policy: forwarded into RustToolchainInfo. clippy::* lints in
-        # warn_lints/allow_lints are applied to the clippy action; see
-        # prelude/rust/build.bzl:_lintify. clippy_toml configures lint
-        # parameters (e.g. allow-*-in-tests) for the clippy action only.
-        "allow_lints": attrs.list(attrs.string(), default = []),
-        "deny_lints": attrs.list(attrs.string(), default = []),
-        "warn_lints": attrs.list(attrs.string(), default = []),
-        "clippy_toml": attrs.option(attrs.source(), default = None),
-    },
-)
-```
-
-- [ ] **Step 2: Thread the attributes into `RustToolchainInfo`**
-
-In `_hermetic_rust_toolchain_impl`, extend the `RustToolchainInfo(...)` constructor (currently lines 69-78) to forward the new fields:
-
-```python
-        RustToolchainInfo(
-            compiler = RunInfo(args = [rustc]),
-            rustdoc = RunInfo(args = [rustdoc]),
-            clippy_driver = RunInfo(args = [clippy_driver]),
-            panic_runtime = PanicRuntime("unwind"),
-            default_edition = ctx.attrs.default_edition,
-            rustc_target_triple = target,
-            sysroot_path = sysroot,
-            rustc_flags = rustc_flags,
-            allow_lints = ctx.attrs.allow_lints,
-            deny_lints = ctx.attrs.deny_lints,
-            warn_lints = ctx.attrs.warn_lints,
-            clippy_toml = ctx.attrs.clippy_toml,
-        ),
-```
-
-- [ ] **Step 3: Create the root `clippy.toml` with test exemptions**
-
-Create `clippy.toml` at the repo root:
-
-```toml
-# Clippy configuration for loom's first-party crates. Applied to the clippy
-# action via the :rust toolchain's clippy_toml field (toolchains/BUCK).
-# These configure lint *parameters* only — lint groups/levels are set with
-# warn_lints/allow_lints in toolchains/BUCK. See
-# docs/superpowers/specs/2026-06-26-stricter-clippy-config-design.md.
-
-# Exempt test code from the panic-policy restriction lints. NOTE: loom's tests
-# are separate rust_test crates, not #[cfg(test)] modules; Task 1 Step 7
-# verifies whether these fire for that layout.
-allow-unwrap-in-tests = true
-allow-panic-in-tests = true
-allow-expect-in-tests = true
-allow-indexing-slicing-in-tests = true
-allow-dbg-in-tests = true
-```
-
-- [ ] **Step 4: Enable `clippy::pedantic` only, on the `:rust` toolchain**
-
-In `toolchains/BUCK`, edit the `hermetic_rust_toolchain(name = "rust", ...)` instance (lines 169-182) to add the lint fields just before `visibility`:
-
-```python
-    rustc_flags = ["-Copt-level=2"] + select({
-        "root//tools/coverage:coverage_enabled": ["-Cinstrument-coverage"],
-        "DEFAULT": [],
-    }),
-    # Lint policy — spike: pedantic only (Task 1). Task 2 adds restriction.
-    warn_lints = ["clippy::pedantic"],
-    allow_lints = [],
-    clippy_toml = "clippy.toml",
-    visibility = ["PUBLIC"],
-```
-
-- [ ] **Step 5: Verify the gate now sees pedantic diagnostics on one crate**
-
-Run:
-```bash
-buck2 build '//src/control-plane/core:core[clippy.txt]' --show-output 2>/dev/null \
-  | awk '{print $2}' | xargs -r cat | tee /tmp/clippy_pedantic.txt
-```
-Expected: non-empty output containing `clippy::` pedantic warnings (e.g. `must_use_candidate`, `missing_errors_doc`, `module_name_repetitions` — exact lints vary). If empty, the mechanism is not wired — recheck Steps 1-4. Confirms: toolchain `warn_lints` reaches the clippy action.
-
-- [ ] **Step 6: Verify a plain build stays clean (no `-Wclippy::*` noise reaching rustc)**
-
-Run:
-```bash
-buck2 build //src/control-plane/core:core 2>&1 | tee /tmp/build_plain.txt
-grep -i 'unknown lint\|clippy::' /tmp/build_plain.txt || echo "CLEAN: no clippy-lint noise on rustc build"
-```
-Expected: `CLEAN: ...` — the normal rustc compile must not emit `unknown lint` warnings for the `clippy::*` flags. **If it is NOT clean** (rustc warns on the tool-lint flags): the fallback is to additionally pass `-A unknown_lints` only on the normal build, or to use the `_lintify` quote-strip convention; record the resolution inline in `toolchains/rust_dist.bzl` and proceed. (rustc registers `clippy` as a tool, so this is expected to be clean.)
-
-- [ ] **Step 7: Probe whether `allow-*-in-tests` fires for a `rust_test` crate**
-
-Pick a test crate that calls `.unwrap()` (e.g. `//src/control-plane/core:page`) and lint it:
-```bash
-buck2 build '//src/control-plane/core:page[clippy.txt]' --show-output 2>/dev/null \
-  | awk '{print $2}' | xargs -r cat | grep -c 'unwrap_used' || true
-```
-Note the result for Task 3. Pedantic doesn't include `unwrap_used`, so add a throwaway `warn_lints = ["clippy::pedantic", "clippy::unwrap_used"]` for this probe only, then revert to `["clippy::pedantic"]`. Expected: if the count is 0, the `allow-unwrap-in-tests` exemption works for separate test crates; if >0, it does NOT — record that Task 3 must instead `allow` the panic-policy lints for `rust_test` targets via a `loom_rust_test` wrapper or test-root `#![allow(...)]` (fallback per the spec §2).
-
-- [ ] **Step 8: Run the full gate to capture the pedantic-only baseline**
-
-Run:
-```bash
-./tools/clippy-all.sh > /tmp/clippy_pedantic_all.txt 2>&1; echo "exit=$?"
-wc -l /tmp/clippy_pedantic_all.txt
-```
-Expected: non-zero exit, with pedantic warnings across crates. This is the expected red state — do NOT fix yet. It confirms the policy is live tree-wide.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add toolchains/rust_dist.bzl toolchains/BUCK clippy.toml
-git commit -m "build(toolchain): forward clippy lint fields; enable pedantic spike
-
-Thread warn_lints/deny_lints/allow_lints/clippy_toml through
-hermetic_rust_toolchain into RustToolchainInfo (mirroring the prelude's
-system_rust_toolchain) and enable clippy::pedantic on :rust as a spike.
-Adds root clippy.toml for test exemptions.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
-```
+`toolchains/BUCK` working-tree edit sets `warn_lints = ["clippy::pedantic", "clippy::restriction"]`, `allow_lints = ["clippy::blanket_clippy_restriction_lints"]`. Census: 109 distinct lints, ~10,591 occurrences, 0 build failures. Triage decisions are recorded in the plan Global Constraints (enforced set / exemption set) and the SDD ledger.
 
 ---
 
-### Task 2: Enable `restriction` and capture the full census
+### Task 3: Apply lint policy — global allowlist + test/harness exemptions
 
-Turns on the full target policy and records exactly what fires, so Task 3 can triage from data rather than guesses.
+Brings the tree from "everything red" to "red ONLY on the ~160 production sites of the enforced set." No production code fixes here (Task 4 does those).
 
 **Files:**
-- Modify: `toolchains/BUCK` (the `:rust` `warn_lints` value)
-- Create: `/tmp/clippy_census.txt` (working artifact, not committed)
+- Modify: `toolchains/BUCK` (the `:rust` `allow_lints` — the full global allowlist)
+- Create: `src/loom_test.bzl` (shared `LOOM_TEST_LINT_ALLOWS` + `loom_rust_test` wrapper)
+- Modify: `src/control-plane/postgres/defs.bzl` (`loom_fixture_test` injects `LOOM_TEST_LINT_ALLOWS`)
+- Modify: the 12 BUCK files containing bare `rust_test(` — migrate to `loom_rust_test`
+- Modify: `src/control-plane/testkit/src/lib.rs` (crate-root `#![allow]` harness exemption)
+- Modify: `src/control-plane/postgres/src/fixture.rs` (module `#![allow]` harness exemption)
 
 **Interfaces:**
-- Consumes: the wired toolchain from Task 1.
-- Produces: a census (lint name → count → representative files) used by Task 3.
+- Consumes: the wired toolchain (Task 1); the working-tree `warn_lints` edit (Task 2).
+- Produces: `loom_rust_test(name, crate, srcs, crate_root, deps, edition="2024", **kwargs)` — a `rust_test` wrapper that appends `LOOM_TEST_LINT_ALLOWS` to `rustc_flags`. `LOOM_TEST_LINT_ALLOWS` (a `list[str]` of `-Aclippy::*` flags) is the single source of the test exemption set, imported by both wrappers.
 
-- [ ] **Step 1: Add `clippy::restriction` to `warn_lints`**
+- [ ] **Step 1: Write the global `allow_lints` in `toolchains/BUCK`**
 
-In `toolchains/BUCK`, update the `:rust` `warn_lints` and pre-allow only the one lint that the group-enable itself requires:
+Set the `:rust` toolchain's `allow_lints` to the full allowlist — every firing lint NOT in the enforced production set, grouped with reason comments. Keep `warn_lints = ["clippy::pedantic", "clippy::restriction"]`. The list (from the census):
 
 ```python
     warn_lints = ["clippy::pedantic", "clippy::restriction"],
     allow_lints = [
-        # Required: warns merely for enabling the restriction group broadly.
-        "clippy::blanket_clippy_restriction_lints",
-    ],
-    clippy_toml = "clippy.toml",
-```
-
-- [ ] **Step 2: Run the gate and capture raw diagnostics**
-
-Run:
-```bash
-./tools/clippy-all.sh > /tmp/clippy_raw.txt 2>&1; echo "exit=$?"
-```
-Expected: non-zero exit, large output. This is the working census source.
-
-- [ ] **Step 3: Summarize the census by lint, sorted by frequency**
-
-Run:
-```bash
-grep -oE 'clippy::[a-z_]+' /tmp/clippy_raw.txt | sort | uniq -c | sort -rn \
-  | tee /tmp/clippy_census.txt
-```
-Expected: a frequency table, e.g.
-```
-   412 clippy::implicit_return
-   233 clippy::missing_docs_in_private_items
-    ...
-     3 clippy::dbg_macro
-```
-Keep `/tmp/clippy_census.txt` and `/tmp/clippy_raw.txt` for Task 3. (No commit — Task 2's only tracked change is the one-line `warn_lints`/`allow_lints` edit, which is committed as part of Task 3 once the allowlist is finalized.)
-
----
-
-### Task 3: Triage the census → finalize `allow_lints` and `clippy.toml`
-
-Splits every firing lint into keep-and-fix vs allow-with-reason, per the spec §2 policy, and writes the final allowlist. This task produces NO code fixes (Task 4 does); it produces the decision and the config.
-
-**Files:**
-- Modify: `toolchains/BUCK` (the `:rust` `allow_lints` list)
-- Modify: `clippy.toml` (only if Task 1 Step 7 found test exemptions don't fire)
-
-**Interfaces:**
-- Consumes: `/tmp/clippy_census.txt`, `/tmp/clippy_raw.txt` (Task 2); the Task 1 Step 7 test-exemption result.
-- Produces: the final `allow_lints` block; the set of "kept" lints whose violations Task 4 must fix.
-
-- [ ] **Step 1: Classify each lint in the census using the policy**
-
-For every lint in `/tmp/clippy_census.txt`, assign **KEEP** (high-signal, fix the code) or **ALLOW** (stylistic / contradictory / whole-API-surface, add to `allow_lints` with a reason). Apply the spec §2 governing rule:
-
-- **KEEP (fix the code):** panic safety — `unwrap_used`, `indexing_slicing`, `string_slice`, `panic`, `unwrap_in_result`, `panic_in_result_fn`, `get_unwrap`; error handling — `let_underscore_must_use`, `let_underscore_future`, `map_err_ignore`; unsafe — `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`, `mem_forget`; async — `await_holding_lock`, `await_holding_refcell_ref`, `large_futures`; leftovers — `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`; discipline — `allow_attributes`, `allow_attributes_without_reason`.
-- **ALLOW (with reason):** pervasive style — `implicit_return`, `missing_docs_in_private_items`, `question_mark_used`, `min_ident_chars`, `single_char_lifetime_names`, `single_call_fn`, `ref_patterns`, `else_if_without_else`, `pattern_type_mismatch`; numeric noise — `arithmetic_side_effects`, `as_conversions`, `integer_division`, `modulo_arithmetic`, `default_numeric_fallback`; whole-type-surface — `exhaustive_enums`, `exhaustive_structs`, `field_scoped_visibility_modifiers`, `partial_pub_fields`; contradictory pairs (allow one side) — `mod_module_files`, `semicolon_inside_block` (or outside), `pub_with_shorthand` (or without), `shadow_reuse`/`shadow_same`/`shadow_unrelated`, `separated_literal_suffix` (or unseparated); not-applicable — `std_instead_of_core`, `std_instead_of_alloc`.
-- **Demotion rule:** any KEEP lint whose count is large with low payoff may be moved to ALLOW; record the reason in the comment. The census decides borderline cases, not this list.
-- For any lint in the census **not** named above, default to ALLOW if it is purely stylistic, else KEEP; note the call.
-
-Write the classification as a scratch list (e.g. `/tmp/clippy_triage.txt`) for reference.
-
-- [ ] **Step 2: Write the final `allow_lints` block**
-
-In `toolchains/BUCK`, replace the `:rust` `allow_lints` with the finalized list, grouped with one-line reason comments, e.g.:
-
-```python
-    allow_lints = [
         # Required when enabling the restriction group broadly.
         "clippy::blanket_clippy_restriction_lints",
+        # Structural: loom mandates separate rust_test crates, not #[cfg(test)]
+        # modules (CLAUDE.md) — this fires on every test fn.
+        "clippy::tests_outside_test_module",
         # Pervasive style — fire on nearly every expression; no signal here.
-        "clippy::implicit_return",
-        "clippy::question_mark_used",
-        "clippy::min_ident_chars",
-        "clippy::single_char_lifetime_names",
-        # Docs not required on private items in an application codebase.
-        "clippy::missing_docs_in_private_items",
-        # ~85% false positives on ordinary indexing/arithmetic (per emschwartz).
-        "clippy::arithmetic_side_effects",
-        "clippy::as_conversions",
-        # Whole-API-surface; not a goal for a non-library service tree.
-        "clippy::exhaustive_enums",
-        "clippy::exhaustive_structs",
-        # Contradictory-pair lints — keep one side only.
-        "clippy::mod_module_files",
-        "clippy::semicolon_outside_block",
-        "clippy::shadow_reuse",
-        "clippy::shadow_same",
-        "clippy::shadow_unrelated",
-        # ... remainder from the Step 1 classification, each with a reason ...
+        "clippy::implicit_return", "clippy::min_ident_chars", "clippy::question_mark_used",
+        "clippy::single_call_fn", "clippy::pattern_type_mismatch", "clippy::ref_patterns",
+        "clippy::else_if_without_else", "clippy::single_char_lifetime_names",
+        "clippy::many_single_char_names", "clippy::similar_names", "clippy::shadow_reuse",
+        "clippy::shadow_unrelated", "clippy::shadow_same", "clippy::items_after_statements",
+        "clippy::unneeded_field_pattern", "clippy::used_underscore_binding",
+        "clippy::used_underscore_items", "clippy::elidable_lifetime_names",
+        # Docs — not required across this service tree.
+        "clippy::missing_docs_in_private_items", "clippy::doc_markdown", "clippy::missing_errors_doc",
+        "clippy::missing_panics_doc", "clippy::doc_paragraphs_missing_punctuation",
+        "clippy::missing_inline_in_public_items",
+        # Naming / module conventions — opinionated.
+        "clippy::module_name_repetitions", "clippy::struct_field_names", "clippy::pub_use",
+        "clippy::mod_module_files", "clippy::unused_trait_names", "clippy::enum_glob_use",
+        "clippy::absolute_paths", "clippy::arbitrary_source_item_ordering",
+        "clippy::field_scoped_visibility_modifiers", "clippy::missing_trait_methods",
+        "clippy::renamed_function_params", "clippy::multiple_inherent_impl", "clippy::unused_self",
+        # Numeric / cast — high false-positive rate; documented-invariant churn.
+        "clippy::arithmetic_side_effects", "clippy::as_conversions", "clippy::default_numeric_fallback",
+        "clippy::cast_possible_wrap", "clippy::cast_possible_truncation", "clippy::cast_lossless",
+        "clippy::cast_precision_loss", "clippy::cast_sign_loss", "clippy::integer_division_remainder_used",
+        "clippy::float_arithmetic", "clippy::decimal_literal_representation", "clippy::little_endian_bytes",
+        # std vs core/alloc — these are std services.
+        "clippy::std_instead_of_core", "clippy::std_instead_of_alloc",
+        # Whole-API-surface / opinionated restriction.
+        "clippy::exhaustive_structs", "clippy::exhaustive_enums", "clippy::wildcard_enum_match_arm",
+        "clippy::clone_on_ref_ptr", "clippy::impl_trait_in_params", "clippy::let_underscore_untyped",
+        "clippy::semicolon_outside_block", "clippy::unseparated_literal_suffix",
+        "clippy::separated_literal_suffix", "clippy::pub_with_shorthand", "clippy::missing_assert_message",
+        "clippy::str_to_string", "clippy::duration_suboptimal_units", "clippy::non_ascii_literal",
+        "clippy::assertions_on_result_states", "clippy::allow_attributes",
+        "clippy::case_sensitive_file_extension_comparisons", "clippy::missing_asserts_for_indexing",
+        # Subjective pedantic — commonly allowed; low signal / high churn.
+        "clippy::must_use_candidate", "clippy::too_many_lines", "clippy::cognitive_complexity",
+        "clippy::needless_pass_by_value", "clippy::if_not_else", "clippy::single_match_else",
+        "clippy::match_wildcard_for_single_variants", "clippy::implicit_hasher",
+        "clippy::default_trait_access", "clippy::return_self_not_must_use", "clippy::trivially_copy_pass_by_ref",
+        "clippy::iter_over_hash_type",
+        # Cheap-mechanical pedantic — allowed for now; candidates to promote-to-fix later.
+        "clippy::map_unwrap_or", "clippy::redundant_closure_for_method_calls", "clippy::implicit_clone",
+        "clippy::manual_string_new", "clippy::needless_continue", "clippy::explicit_iter_loop",
+        "clippy::stable_sort_primitive", "clippy::redundant_type_annotations", "clippy::unnecessary_semicolon",
+        "clippy::semicolon_if_nothing_returned", "clippy::deref_by_slicing", "clippy::single_char_pattern",
+        "clippy::manual_assert", "clippy::ignored_unit_patterns", "clippy::match_same_arms",
+        "clippy::return_and_then", "clippy::unnecessary_literal_bound", "clippy::needless_continue",
     ],
+    clippy_toml = "root//:clippy-toml",
 ```
 
-- [ ] **Step 3: Apply the test-exemption fallback if needed**
+Note: this is the full allowlist; if `clippy-all.sh` later reports an ALLOWed lint still firing, it was misspelled — fix it. Lints in the enforced set (see Global Constraints) are deliberately ABSENT here.
 
-If Task 1 Step 7 found `allow-*-in-tests` does NOT fire for `rust_test` crates, the panic-policy KEEP lints would redden the whole test suite. Resolve by adding the panic-policy lints to `allow_lints` scoped to tests is not possible at toolchain granularity, so instead: keep them KEEP for lib/bin and accept fixing test-side violations, OR (preferred) add a `loom_rust_test` wrapper macro that injects `rustc_flags = ["-Aclippy::unwrap_used", "-Aclippy::indexing_slicing", "-Aclippy::panic", "-Aclippy::expect_used"]` and migrate `rust_test` targets to it. Record which path was taken in the design doc's §2. If the exemptions DO fire, skip this step.
+- [ ] **Step 2: Create the shared `loom_rust_test` wrapper**
 
-- [ ] **Step 4: Re-run the gate to confirm only KEEP-lint violations remain**
+Create `src/loom_test.bzl`:
 
-Run:
-```bash
-./tools/clippy-all.sh > /tmp/clippy_after_allow.txt 2>&1; echo "exit=$?"
-grep -oE 'clippy::[a-z_]+' /tmp/clippy_after_allow.txt | sort | uniq -c | sort -rn
+```python
+"""Shared wrapper for first-party rust_test targets.
+
+Test code legitimately panics on failed setup, so the panic-safety restriction
+lints are allowed for every test target. Keeping the exemption here (and in
+loom_fixture_test, which appends the same list) means a new test target gets it
+by construction. Production `src/` code is NOT exempted — it is held to the
+enforced lint set on the :rust toolchain.
+"""
+
+# Panic-safety / test-assertion lints allowed for all test + harness code.
+LOOM_TEST_LINT_ALLOWS = [
+    "-Aclippy::unwrap_used",
+    "-Aclippy::expect_used",
+    "-Aclippy::indexing_slicing",
+    "-Aclippy::panic",
+    "-Aclippy::get_unwrap",
+    "-Aclippy::unwrap_in_result",
+    "-Aclippy::panic_in_result_fn",
+    "-Aclippy::unreachable",
+    "-Aclippy::assertions_on_result_states",
+]
+
+def loom_rust_test(name, rustc_flags = [], **kwargs):
+    native.rust_test(
+        name = name,
+        rustc_flags = rustc_flags + LOOM_TEST_LINT_ALLOWS,
+        **kwargs
+    )
 ```
-Expected: non-zero exit, but the remaining lints are ONLY the KEEP set from Step 1. If an ALLOWed lint still appears, it was misspelled in `allow_lints` — fix it. This is the precise worklist for Task 4.
 
-- [ ] **Step 5: Commit the policy (config only, tree still red)**
+Add a `BUCK`-visibility note if needed (load works cross-package via `load("//src:loom_test.bzl", ...)` — confirm the `src/` package exposes the file; if `src/` has no `BUCK`, a `.bzl` is still loadable by path. Verify with a build in Step 6).
+
+- [ ] **Step 3: Make `loom_fixture_test` inject the same allows**
+
+In `src/control-plane/postgres/defs.bzl`, import and append `LOOM_TEST_LINT_ALLOWS` to the `native.rust_test` call's `rustc_flags`:
+
+```python
+load("//src:loom_test.bzl", "LOOM_TEST_LINT_ALLOWS")
+```
+and in the body, change the `native.rust_test(...)` call to merge it:
+```python
+    native.rust_test(
+        name = name,
+        crate = crate,
+        srcs = srcs,
+        crate_root = crate_root,
+        edition = edition,
+        env = fixture_env,
+        deps = deps,
+        rustc_flags = kwargs.pop("rustc_flags", []) + LOOM_TEST_LINT_ALLOWS,
+        **kwargs
+    )
+```
+
+- [ ] **Step 4: Migrate bare `rust_test(` to `loom_rust_test(`**
+
+For each of the 12 BUCK files containing bare `rust_test(` (`grep -rln 'rust_test(' src --include=BUCK`), add `load("//src:loom_test.bzl", "loom_rust_test")` at the top and replace each top-level `rust_test(` call with `loom_rust_test(`. Do NOT touch `loom_fixture_test(` calls (already handled) or `native.rust_test` inside `defs.bzl`. Targets that already pass `rustc_flags` keep them (the wrapper merges).
+
+- [ ] **Step 5: Exempt the two harness sources**
+
+Top of `src/control-plane/testkit/src/lib.rs` (before any items, after the module doc-comment):
+```rust
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "testkit is a conformance test-harness library consumed by test crates, not a production path"
+)]
+```
+Top of `src/control-plane/postgres/src/fixture.rs`:
+```rust
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "fixture.rs is the postgres test-fixture harness, not a production query path (see CLAUDE.md)"
+)]
+```
+(`allow_attributes` is in the global allowlist, so `#![allow(...)]` is fine; `allow_attributes_without_reason` stays enforced, so the `reason =` is required.)
+
+- [ ] **Step 6: Run the gate; confirm only the enforced production set remains red**
+
+Clean buck-out if needed (see ENV), then:
+```bash
+./tools/clippy-all.sh > /tmp/clippy_t3.txt 2>&1; echo "exit=$?"
+sed 's/\x1b\[[0-9;]*m//g' /tmp/clippy_t3.txt | grep -oE 'clippy::[a-z_]+' | sort | uniq -c | sort -rn
+```
+Expected: non-zero exit, and the remaining lints are ONLY from the enforced set (`unwrap_used`, `expect_used`, `indexing_slicing`, `map_err_ignore`, `let_underscore_must_use`, `panic`, `format_push_string`, `unused_result_ok`, `unreachable`, `allow_attributes_without_reason`) and ONLY in `src/` non-harness files (no `/tests/`, no `testkit/src/lib.rs`, no `fixture.rs`). If an allowed lint still appears, fix its spelling in Step 1. If a test/harness file still appears, the wrapper/exemption missed it — fix Steps 2-5.
+
+- [ ] **Step 7: Commit the policy (config + exemptions; production still red)**
 
 ```bash
-git add toolchains/BUCK clippy.toml
-git commit -m "build(lints): enable clippy::restriction; finalize allowlist
+git add toolchains/BUCK src/loom_test.bzl src/control-plane/postgres/defs.bzl \
+  src/control-plane/testkit/src/lib.rs src/control-plane/postgres/src/fixture.rs \
+  $(grep -rln 'loom_rust_test(' src --include=BUCK)
+git commit -m "build(lints): enable restriction; allowlist + test/harness exemptions
 
-Enable clippy::restriction alongside pedantic and add the census-driven
-allow_lints exceptions (each with a reason). Tree is intentionally still
-red on the kept high-signal lints; fixed in the following commits.
+Enable clippy::restriction alongside pedantic; add the census-driven global
+allow_lints (Billy-Levin enable-broadly-allowlist). Exempt test code from the
+panic-safety lints via a loom_rust_test wrapper + loom_fixture_test, and the two
+test-harness sources (testkit lib, postgres fixture) via crate/module allow.
+Tree intentionally still red on the ~160 enforced production sites; fixed next.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 4: Fix the KEEP-lint violations to green
+### Tasks 4a–4d: Fix the enforced-set violations in production, per crate
 
-Resolves every remaining diagnostic so `clippy-all.sh` exits 0. Worked as a fix-and-recheck loop, committing in reviewable batches by lint family (or by crate), because the exact edits are determined by the Task 3 worklist.
+Each sub-task fixes ONE crate's production violations of the enforced set, keeps that crate's tests green, and commits. Worked independently; order by size. The enforced set and fix idioms are identical across them — only the crate/scope differs.
 
-**Files:**
-- Modify: first-party `src/**/*.rs` (exact files from `/tmp/clippy_after_allow.txt`)
-
-**Interfaces:**
-- Consumes: the KEEP worklist from Task 3 Step 4.
-- Produces: a green `clippy-all.sh`.
-
-- [ ] **Step 1: Pick the next lint family from the worklist**
-
-From the Task 3 Step 4 frequency list, take one lint (start with the lowest-count, most-mechanical, e.g. `dbg_macro`, `todo`). List its sites:
-```bash
-grep -B2 'clippy::<lint_name>' /tmp/clippy_after_allow.txt | grep -oE 'src/[^ :]+\.rs'
-```
-
-- [ ] **Step 2: Fix each site by hand using clippy's suggestion**
-
-Apply the idiomatic fix the diagnostic recommends. Examples by family:
-- `dbg_macro` / leftover `print_stdout` → delete, or convert to `tracing::debug!`/`info!` (this tree uses `tracing`; see CLAUDE.md).
-- `unwrap_used` / `expect_used` / `get_unwrap` in lib/bin → propagate with `?` over a `Result`, or `.ok_or(...)?` / `.context(...)?`; for genuine invariants use `.expect("reason")` only where the KEEP policy allows, else restructure.
+**Fix idioms (all sub-tasks):**
+- `unwrap_used` / `expect_used` / `get_unwrap` → propagate with `?` over the fn's `Result` (add a `thiserror` variant or `.map_err(...)`/`.context(...)` as the surrounding code does); for a genuine, documented invariant that cannot be a `Result`, restructure or — last resort — `#[expect(clippy::unwrap_used, reason = "…")]` on that statement (NOT a blanket file allow).
 - `indexing_slicing` → `.get(i).ok_or(...)?` / `.first()` / `.get(range)`.
-- `undocumented_unsafe_blocks` → add a `// SAFETY: <why>` comment above the `unsafe` block.
-- `let_underscore_must_use` / `let_underscore_future` → handle the value (`?`, `.await`, or an explicit `let _: () =`/`drop()` with justification).
-- `allow_attributes_without_reason` → convert `#[allow(x)]` to `#[expect(x, reason = "…")]`.
+- `map_err_ignore` → carry the source error (`.map_err(|e| Error::Foo(e))` / `#[from]`), never `|_|`.
+- `let_underscore_must_use` → handle the value (`?`, `.await`, explicit `drop()` with reason).
+- `panic` / `unreachable` → return an error variant, or `#[expect(..., reason=…)]` for a proven-unreachable arm.
+- `unused_result_ok` → replace `.ok()` discard with `?` or explicit handling.
+- `format_push_string` → `write!(s, ...)` instead of `s.push_str(&format!(...))`.
+- For locks (`.lock().unwrap()` in `memory`): prefer propagating the poison (`.map_err(|_| Error::LockPoisoned)?`) if the fn returns `Result`; if not, `#[expect(clippy::unwrap_used, reason = "std Mutex poisoning is unrecoverable here")]` per call is acceptable.
+- Use `#[expect(...)]` not `#[allow(...)]` only where the lint genuinely should fire; otherwise fix. Every suppression carries a `reason =`.
 
-Prefer fixing over allowing. If a specific KEEP lint proves to have a large, low-value tail after starting, demote it: move it to `allow_lints` in `toolchains/BUCK` with a reason, and note it. Do NOT use inline `#[allow(...)]` to silence — use `#[expect(..., reason = "…")]` (the `allow_attributes` lint requires it).
+**Per sub-task loop (do for each crate):**
+- [ ] List the crate's remaining enforced-set sites from `/tmp/clippy_t3.txt` (or re-lint the crate: `buck2 build '//<crate>:<lib>[clippy.txt]' --show-output 2>/dev/null | awk '{print $2}' | xargs -r cat`).
+- [ ] Fix each site with the idiom above.
+- [ ] Re-lint the crate's lib/bin `[clippy.txt]` — expect zero enforced-set diagnostics.
+- [ ] Run the crate's tests: `buck2 test //<crate>/... > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log` — expect `0 failed`. (`?`-refactors change signatures/behavior; this catches regressions.)
+- [ ] Commit: `fix(clippy): enforce panic-safety lints in <crate>` + trailer.
 
-- [ ] **Step 3: Re-lint just the affected crate(s)**
-
-For each touched crate, e.g. core:
-```bash
-buck2 build '//src/control-plane/core:core[clippy.txt]' --show-output 2>/dev/null \
-  | awk '{print $2}' | xargs -r cat
-```
-Expected: the targeted lint no longer appears for that crate.
-
-- [ ] **Step 4: Keep tests green as you go**
-
-After fixing a crate, run its tests (fixtures route local automatically):
-```bash
-buck2 test //src/control-plane/core/... > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log
-```
-Expected: `Tests finished: ... 0 failed`. Refactors for `?`-propagation can change signatures/behavior — this catches regressions early.
-
-- [ ] **Step 5: Commit the batch**
-
-```bash
-git add -A
-git commit -m "fix(clippy): resolve <lint_name> across <area>
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
-```
-
-- [ ] **Step 6: Repeat Steps 1-5 until the worklist is empty**
-
-Loop over the remaining lint families. After each, re-run `./tools/clippy-all.sh > /tmp/c.txt 2>&1; echo exit=$?` periodically to watch the count fall. Exit the loop when:
-```bash
-./tools/clippy-all.sh; echo "exit=$?"
-```
-Expected: `exit=0`.
+**Sub-tasks (by size):**
+- [ ] **Task 4a — `src/services/query-api`** (~56: `sql.rs` 26, `handler.rs` 13, `http.rs` 5, `filter.rs` 5, `params.rs` 4, `serving.rs`/`main.rs`/`chain_filter.rs` 3)
+- [ ] **Task 4b — `src/control-plane/memory`** (~60: `acl.rs` 16, `queue.rs` 15, `ontology.rs` 8, `auth.rs` 7, `catalog.rs` 5, `lineage.rs` 4, `transaction.rs` 3, `lib.rs` 2 — mostly lock poisoning)
+- [ ] **Task 4c — `src/control-plane/postgres` (non-fixture)** (~30: `iceberg_landing.rs` 8, `iceberg_sql_catalog/catalog.rs` 6, `iceberg_schema_evolution.rs` 4, `ontology.rs` 2, `iceberg_sql_catalog/s3_storage.rs` 2, `iceberg_mirror.rs` 2, + 6 singletons). `fixture.rs` is already exempted — do NOT touch it.
+- [ ] **Task 4d — small services batch** (~17: `engine` 4, `runtime` 3, `datafusion-io` 3, `worker` 2, `transform` 2, `ingest` 2, `control-plane/worker` 1). One commit for the batch is fine; run each touched crate's tests.
 
 ---
 
 ### Task 5: Full verification + document the policy
 
-Confirms the whole suite is green under the new policy and records the mechanism for future contributors.
-
-**Files:**
-- Modify: `CLAUDE.md` (add a lint-policy section)
-- Modify: `docs/superpowers/specs/2026-06-26-stricter-clippy-config-design.md` (resolve the test-exemption fork note with what actually happened)
-
-- [ ] **Step 1: Run the full clippy gate**
-
-```bash
-./tools/clippy-all.sh; echo "exit=$?"
-```
-Expected: `exit=0`.
-
-- [ ] **Step 2: Run the full test sweep**
-
-```bash
-buck2 test //src/... > /tmp/full_test.log 2>&1; grep -E "Tests finished|FAIL|error:" /tmp/full_test.log
-```
-Expected: `Tests finished: ... 0 failed`, no `FAIL`/`error:`. (Per CLAUDE.md the fixture tests can flake on resource contention; re-run a clean sweep to confirm any failure is non-deterministic before treating it as real.)
-
-- [ ] **Step 3: Add the lint-policy section to CLAUDE.md**
-
-Under the existing clippy bullet in the "Dev tools" section, add a paragraph:
-
-```markdown
-- **Clippy lint policy.** loom enables `clippy::pedantic` + `clippy::restriction`
-  tree-wide as `warn`, configured **once** on the `:rust` toolchain
-  (`toolchains/BUCK`) via the prelude's `warn_lints`/`allow_lints`/`clippy_toml`
-  fields (forwarded through `hermetic_rust_toolchain` in `toolchains/rust_dist.bzl`).
-  Every first-party crate and `rust_test` inherits it automatically; the enforced
-  gate (`tools/clippy-all.sh`, the `clippy` prek hook) fails on any diagnostic.
-  To silence a lint **globally**, add it to `allow_lints` in `toolchains/BUCK` with
-  a one-line reason; to silence **locally**, use `#[expect(lint, reason = "…")]`
-  (bare `#[allow]` is itself denied by `allow_attributes`). The root `clippy.toml`
-  configures lint parameters (e.g. `allow-*-in-tests`), not levels. A nightly
-  toolchain bump can add new group members and redden the gate — fix or `allow`
-  them like any other. See docs/superpowers/specs/2026-06-26-stricter-clippy-config-design.md.
-```
-
-- [ ] **Step 4: Resolve the spec's test-exemption fork**
-
-In the design doc §2, replace the "If constraint #4 proves…" hedge with one sentence stating what Task 1 Step 7 found (exemptions fire / required the `loom_rust_test` fallback).
-
-- [ ] **Step 5: Commit the docs**
-
-```bash
-git add CLAUDE.md docs/superpowers/specs/2026-06-26-stricter-clippy-config-design.md
-git commit -m "docs(clippy): document the toolchain lint policy
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
-```
-
-- [ ] **Step 6: Push and open the PR**
-
-```bash
-git push -u origin clippy-strict-lints
-gh pr create --title "Stricter clippy: enable pedantic + restriction tree-wide" \
-  --body "$(cat <<'EOF'
-Adopts broad clippy::pedantic + clippy::restriction as loom's enforced
-first-party lint policy, wired once through the :rust toolchain
-(warn_lints/allow_lints/clippy_toml). Census-driven allowlist for the
-stylistic/contradictory lints; high-signal lints fixed to green.
-
-Spec: docs/superpowers/specs/2026-06-26-stricter-clippy-config-design.md
-Plan: docs/superpowers/plans/2026-06-26-stricter-clippy-config.md
-
-- clippy-all.sh exits 0 over //src/...
-- buck2 test //src/... green
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
-```
-Expected: PR opens; the `affected` + `lint` BuildBuddy actions run. Merge on green.
+- [ ] **Step 1: Full clippy gate** — clean buck-out if needed, then `./tools/clippy-all.sh; echo "exit=$?"` → expect `exit=0`.
+- [ ] **Step 2: Full test sweep** — `buck2 test //src/... > /tmp/full_test.log 2>&1; grep -E "Tests finished|FAIL|error:" /tmp/full_test.log` → expect `0 failed`. (Fixture tests can flake on contention; re-run a clean sweep before treating a failure as real.)
+- [ ] **Step 3: CLAUDE.md lint-policy section.** Under the clippy bullet in "Dev tools", add a paragraph documenting: groups enabled tree-wide via `:rust` `warn_lints` (forwarded through `hermetic_rust_toolchain`); the large `allow_lints` allowlist (enable-broadly model); the enforced production subset; that test code is exempted via `loom_rust_test`/`loom_fixture_test` (`src/loom_test.bzl` → `LOOM_TEST_LINT_ALLOWS`) and the two harness sources via `#![allow]`; how to silence globally (add to `allow_lints` with a reason) vs locally (`#[expect(lint, reason=…)]`); and that a nightly bump can add lints that redden the gate.
+- [ ] **Step 4: Resolve the spec's test-exemption fork.** In `docs/superpowers/specs/2026-06-26-stricter-clippy-config-design.md` §2, replace the "If constraint #4 proves…" hedge with what happened: in-`#[test]`-fn code is exempted by `allow-*-in-tests`, but test-helper/harness code required the `loom_rust_test` wrapper + harness `#![allow]`s.
+- [ ] **Step 5: Record the deferred promote-to-fix list.** Add a FUTURE register item (`docs/FUTURE.md`, via the grammar in CLAUDE.md "Documentation registers") noting the cheap-mechanical pedantic lints currently allowlisted (`map_unwrap_or`, `redundant_closure_for_method_calls`, `cast_lossless`, …) as candidates to promote from allow to fix.
+- [ ] **Step 6: prek + commit docs** — `buck2 run //tools:prek -- run --all-files` (commit any hook fixes), then commit CLAUDE.md + spec + FUTURE.md.
+- [ ] **Step 7: Push + PR** — `git push -u origin clippy-strict-lints`; `gh pr create` with title "Stricter clippy: enable pedantic + restriction tree-wide" and a body summarizing enforced-set/allowlist/exemptions and linking the spec + plan. Merge on green `affected` + `lint`.
 
 ---
 
 ## Self-Review
 
-**Spec coverage:**
-- Spec §1 (mechanism) → Task 1 Steps 1-2. ✓
-- Spec §2 (lint policy: keep/allow + clippy.toml exemptions) → Task 1 Step 3, Task 3 Steps 1-3. ✓
-- Spec §3 Step 0 (spike) → Task 1 Steps 4-8. ✓
-- Spec §3 Step 1 (census) → Task 2. ✓
-- Spec §3 Step 2 (triage) → Task 3. ✓
-- Spec §3 Step 3 (fix) → Task 4. ✓
-- Spec §3 Step 4 (green + docs) → Task 5. ✓
-- Spec §4 (verification & scope) → Task 5 Steps 1-2; scope stated in Global Constraints. ✓
-- Spec risks (test exemptions, rustc-vs-clippy routing) → Task 1 Steps 6-7 with fallbacks. ✓
+**Spec coverage:** mechanism (Task 1 ✅); groups enabled + allowlist (Task 3 Step 1); test-exemption mechanism, incl. the constraint-#4 fallback that materialized (Task 3 Steps 2-5); production fixes for the enforced high-signal set (Tasks 4a-d); verification + docs + deferred-list (Task 5). The keep/allow split is now concrete (Global Constraints) rather than census-deferred, because the census has been taken.
 
-**Placeholder scan:** The census/triage tasks are inherently data-driven; they carry the full decision procedure (Task 3 Step 1) and concrete commands/examples rather than fixed code, which is the correct shape for measurement-driven work — not a placeholder. Code-bearing steps (Task 1) contain exact edits.
+**Placeholder scan:** The allowlist (Task 3 Step 1) and per-crate site counts (Tasks 4a-d) are concrete from the census. Fix idioms are spelled out. No "TBD"/"handle edge cases" placeholders.
 
-**Type consistency:** Field names `allow_lints`/`deny_lints`/`warn_lints`/`clippy_toml` match `RustToolchainInfo` (`prelude/rust/rust_toolchain.bzl:81-100`) and the attr names added in Task 1 Step 1. The `clippy_toml = "clippy.toml"` value is a source path resolved by `attrs.option(attrs.source())`. Consistent throughout.
+**Type consistency:** `LOOM_TEST_LINT_ALLOWS` (list of `-Aclippy::*` strings) is defined once in `src/loom_test.bzl` and imported by both `loom_rust_test` and `loom_fixture_test`. `allow_lints`/`warn_lints` are plain-string lists matching `RustToolchainInfo` (Task 1). The enforced set (Global Constraints) and the global allowlist (Task 3 Step 1) are complementary — no lint appears in both.
