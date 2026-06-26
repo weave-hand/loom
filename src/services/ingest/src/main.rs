@@ -12,16 +12,6 @@ use iceberg::CatalogBuilder;
 use ingest::http::{AppState, router};
 use ingest::landing::{IcebergMaterializer, LandingMaterializer};
 
-/// Default inline threshold: 16 MiB of in-memory (uncompressed) Arrow. Below this a
-/// request inlines (mirror-only rows); above it writes real Parquet. Tunable via
-/// `LOOM_INLINE_BYTE_LIMIT`.
-const DEFAULT_INLINE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
-
-/// Default live-inline-byte total that triggers a flush, overridable via
-/// `LOOM_FLUSH_BYTE_THRESHOLD`. 64 MiB = 4× the inline routing limit, so a table
-/// accrues several inline batches before compacting.
-const DEFAULT_FLUSH_BYTE_THRESHOLD: i64 = 64 * 1024 * 1024;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     service_runtime::init_tracing();
@@ -48,21 +38,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         service_runtime::bootstrap_admin(pg.as_ref(), &user, &pass).await?;
     }
 
+    // Compose ingest config from defaults < file < env.
+    let env = service_runtime::env_map();
+    let mut app_cfg = ingest::config::IngestConfig::default();
+    if let Some(path) = env.get("LOOM_CONFIG_FILE") {
+        let doc = std::fs::read_to_string(path)
+            .map_err(|e| service_runtime::invalid("LOOM_CONFIG_FILE", e))?;
+        app_cfg = service_runtime::parse_config_doc(&doc)?;
+    }
+    app_cfg.routing.overlay_env(&env)?;
+    app_cfg.write.overlay_env(&env)?;
+    app_cfg.routing.validate()?;
+    // `app_cfg.write` is composed and validated here so LOOM_WRITE_* env vars parse
+    // and validate at startup. The live HTTP landing path (IcebergMaterializer) does
+    // not consume WriteConfig — only the datafusion write path (materialize::land) does.
+    // Do not add a WriteConfig field to IcebergMaterializer this slice.
+    app_cfg.write.validate()?;
+
     let materializer: Arc<dyn LandingMaterializer> = {
-        let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
-        let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
         let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
         Arc::new(IcebergMaterializer {
             catalog,
             pool,
-            inline_byte_limit,
-            flush_byte_threshold,
+            inline_byte_limit: app_cfg.routing.inline_byte_limit,
+            flush_byte_threshold: app_cfg.routing.flush_byte_threshold,
         })
     };
 

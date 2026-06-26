@@ -135,6 +135,7 @@ rust_test(
         ":ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/memory:memory",
+        "//src/services/datafusion-io:datafusion-io",
         "//third-party:arrow",
         "//third-party:object_store",
         "//third-party:serde_json",

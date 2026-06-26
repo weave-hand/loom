@@ -77,6 +77,7 @@ async fn unmodeled_landing_returns_a_snapshot() {
             gate: None,
             lineage: lineage(&t),
         },
+        &datafusion_io::WriteConfig::default(),
     )
     .await
     .unwrap();
@@ -132,6 +133,7 @@ async fn modeled_landing_passes_gate_and_returns_a_snapshot() {
             gate: Some(&shape),
             lineage: lineage(&t),
         },
+        &datafusion_io::WriteConfig::default(),
     )
     .await
     .unwrap();
@@ -186,6 +188,7 @@ async fn gate_rejection_happens_before_any_write() {
             gate: Some(&shape),
             lineage: lineage(&t),
         },
+        &datafusion_io::WriteConfig::default(),
     )
     .await
     .unwrap_err();

@@ -6,6 +6,15 @@ use std::collections::HashMap;
 
 use loom_config::{ConfigError, invalid, overlay_opt};
 
+/// The ingest binary's composed config: routing + write tuning. `#[serde(default)]` so a
+/// partial config file deserializes (omitted domains fall to their `Default`).
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct IngestConfig {
+    pub routing: RoutingTuning,
+    pub write: datafusion_io::WriteConfig,
+}
+
 /// Inline/flush byte routing knobs.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
