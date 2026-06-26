@@ -45,9 +45,13 @@ pub fn parse_params(
     Ok(out)
 }
 
+#[expect(
+    clippy::map_err_ignore,
+    reason = "error-handling debt — see docs/error-handling-debt.md"
+)]
 fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, ParamError> {
     let bad = |m: &str| ParamError::BadValue(name.to_string(), m.to_string());
-    let repr = json_repr_of(logical_ty).map_err(|_err| bad("unknown logical type"))?;
+    let repr = json_repr_of(logical_ty).map_err(|_| bad("unknown logical type"))?;
     match repr {
         // Integer/Double both arrive as JSON numbers.
         JsonRepr::Number => {
@@ -64,7 +68,7 @@ fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, Para
             let s = v.as_str().ok_or_else(|| bad("expected a numeric string"))?;
             s.parse::<i64>()
                 .map(SqlValue::Int)
-                .map_err(|_err| bad("not an int64"))
+                .map_err(|_| bad("not an int64"))
         }
         JsonRepr::Bool => v
             .as_bool()
@@ -81,7 +85,7 @@ fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, Para
             let fmt = time::macros::format_description!("[year]-[month]-[day]");
             time::Date::parse(s, &fmt)
                 .map(SqlValue::Date)
-                .map_err(|_err| bad("invalid ISO date"))
+                .map_err(|_| bad("invalid ISO date"))
         }
         JsonRepr::IsoTimestamp => {
             let s = v
@@ -91,7 +95,7 @@ fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, Para
                 time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
             time::PrimitiveDateTime::parse(s, &fmt)
                 .map(SqlValue::Timestamp)
-                .map_err(|_err| bad("invalid ISO timestamp"))
+                .map_err(|_| bad("invalid ISO timestamp"))
         }
         // Vectors are stored data, not action/query inputs (road-vector-column-type).
         JsonRepr::FloatArray => Err(bad("vector parameters are not supported")),

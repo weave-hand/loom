@@ -27,9 +27,13 @@ pub struct CallerPredicate {
 /// Operator-agnostic — the per-operand building block reused by `coerce_predicate`. The
 /// `Number` repr (Integer/Double) resolves to `Int` when `raw` is a clean integer, else
 /// `Double` — equality-correct under DuckDB numeric coercion.
+#[expect(
+    clippy::map_err_ignore,
+    reason = "error-handling debt — see docs/error-handling-debt.md"
+)]
 pub fn coerce_filter(name: &str, logical_ty: &str, raw: &str) -> Result<SqlValue, FilterError> {
     let bad = |m: &str| FilterError::BadValue(name.to_string(), m.to_string());
-    let repr = json_repr_of(logical_ty).map_err(|_err| bad("unknown logical type"))?;
+    let repr = json_repr_of(logical_ty).map_err(|_| bad("unknown logical type"))?;
     match repr {
         JsonRepr::Number => {
             if let Ok(i) = raw.parse::<i64>() {
@@ -37,13 +41,13 @@ pub fn coerce_filter(name: &str, logical_ty: &str, raw: &str) -> Result<SqlValue
             } else {
                 raw.parse::<f64>()
                     .map(SqlValue::Double)
-                    .map_err(|_err| bad("expected a number"))
+                    .map_err(|_| bad("expected a number"))
             }
         }
         JsonRepr::NumericString => raw
             .parse::<i64>()
             .map(SqlValue::Int)
-            .map_err(|_err| bad("not an int64")),
+            .map_err(|_| bad("not an int64")),
         JsonRepr::Bool => match raw {
             "true" => Ok(SqlValue::Bool(true)),
             "false" => Ok(SqlValue::Bool(false)),
@@ -54,14 +58,14 @@ pub fn coerce_filter(name: &str, logical_ty: &str, raw: &str) -> Result<SqlValue
             let fmt = time::macros::format_description!("[year]-[month]-[day]");
             time::Date::parse(raw, &fmt)
                 .map(SqlValue::Date)
-                .map_err(|_err| bad("invalid ISO date"))
+                .map_err(|_| bad("invalid ISO date"))
         }
         JsonRepr::IsoTimestamp => {
             let fmt =
                 time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
             time::PrimitiveDateTime::parse(raw, &fmt)
                 .map(SqlValue::Timestamp)
-                .map_err(|_err| bad("invalid ISO timestamp"))
+                .map_err(|_| bad("invalid ISO timestamp"))
         }
         // Vector columns are not filterable (storage, not search — road-vector-column-type).
         JsonRepr::FloatArray => Err(bad("vector columns cannot be filtered")),

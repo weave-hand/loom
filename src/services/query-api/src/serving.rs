@@ -97,6 +97,10 @@ pub fn build_object_batch(
 /// One single-row Arrow array for a cell of base type `base`. `SqlValue::Null`
 /// yields a typed null; any non-null variant must match `base` (the canonical
 /// scalar-to-Arrow mapping) or it is a `ServingError`.
+#[expect(
+    clippy::map_err_ignore,
+    reason = "error-handling debt — see docs/error-handling-debt.md"
+)]
 fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayRef), ServingError> {
     let mismatch = || {
         ServingError::Engine(format!(
@@ -107,7 +111,7 @@ fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayR
         BaseType::Integer => {
             let cell: Option<i32> = match v {
                 SqlValue::Null => None,
-                SqlValue::Int(i) => Some((*i).try_into().map_err(|_err| {
+                SqlValue::Int(i) => Some((*i).try_into().map_err(|_| {
                     ServingError::Engine(format!("integer overflow for column `{col}`"))
                 })?),
                 _ => return Err(mismatch()),
