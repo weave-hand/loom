@@ -27,7 +27,6 @@ LOOM_TEST_LINT_ALLOWS = [
     "-Aclippy::unwrap_in_result",
     "-Aclippy::panic_in_result_fn",
     "-Aclippy::unreachable",
-    "-Aclippy::assertions_on_result_states",
 ]
 
 def rust_test(rustc_flags = [], **kwargs):

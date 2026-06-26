@@ -486,7 +486,8 @@ impl SqlCatalog {
         let mirror_files = crate::iceberg_mirror::added_files_of(&staged_table)
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
-        let mirror_columns = crate::iceberg_mirror::columns_of(&staged_table);
+        let mirror_columns = crate::iceberg_mirror::columns_of(&staged_table)
+            .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
         let staged_snap = staged_table
             .metadata()
             .current_snapshot()

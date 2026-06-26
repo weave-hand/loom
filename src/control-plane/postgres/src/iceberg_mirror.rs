@@ -282,11 +282,13 @@ pub async fn mark_dropped(
 /// Build `ProjectedColumn`s from an Iceberg table's current schema (in-memory).
 /// Columns are emitted in schema order; only primitive types are supported (the
 /// only types loom's ontology maps — see `iceberg_type`).
-#[allow(
-    clippy::panic,
-    reason = "columns_of returns Vec not Result; schema invariant violations (missing vector doc, unsupported column type) cannot be recovered from"
-)]
-pub fn columns_of(table: &Table) -> Vec<ProjectedColumn> {
+///
+/// Errors if the stored schema holds something loom cannot project — a `list`
+/// column missing its `vector(N)` doc, or an unsupported column type. loom owns
+/// the schema, so these are trusted-substrate invariant violations; they surface
+/// as `Backend` (matching `iceberg_err`) so callers abort the mirror op cleanly
+/// rather than panicking.
+pub fn columns_of(table: &Table) -> Result<Vec<ProjectedColumn>> {
     table
         .metadata()
         .current_schema()
@@ -294,10 +296,8 @@ pub fn columns_of(table: &Table) -> Vec<ProjectedColumn> {
         .fields()
         .iter()
         .enumerate()
-        .map(|(i, field)| ProjectedColumn {
-            order: (i + 1) as i64,
-            name: field.name.clone(),
-            iceberg_type: match field.field_type.as_ref() {
+        .map(|(i, field)| {
+            let iceberg_type = match field.field_type.as_ref() {
                 iceberg::spec::Type::Primitive(p) => p.to_string(),
                 // A `list<float>` field is a loom vector column. The dimension `N` is
                 // stashed in the field doc as `vector(N)` (Iceberg lists are
@@ -306,12 +306,24 @@ pub fn columns_of(table: &Table) -> Vec<ProjectedColumn> {
                     .doc
                     .clone()
                     .filter(|d| d.starts_with("vector("))
-                    .unwrap_or_else(|| {
-                        panic!("project: list column {} lacks a vector(N) doc", field.name)
-                    }),
-                other => panic!("project: unsupported column type {other:?}"),
-            },
-            nullable: !field.required,
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            format!("project: list column {} lacks a vector(N) doc", field.name)
+                                .into(),
+                        )
+                    })?,
+                other => {
+                    return Err(ControlPlaneError::Backend(
+                        format!("project: unsupported column type {other:?}").into(),
+                    ));
+                }
+            };
+            Ok(ProjectedColumn {
+                order: (i + 1) as i64,
+                name: field.name.clone(),
+                iceberg_type,
+                nullable: !field.required,
+            })
         })
         .collect()
 }
@@ -334,7 +346,7 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
         .map_err(iceberg_err)?;
     // Column names in table schema order — the same order Iceberg writes columns to
     // the Parquet file, so `column_stats_from_parquet` records each by name.
-    let names: Vec<String> = columns_of(table).into_iter().map(|c| c.name).collect();
+    let names: Vec<String> = columns_of(table)?.into_iter().map(|c| c.name).collect();
     let mut files = Vec::new();
     for manifest_file in manifest_list.entries() {
         let manifest = manifest_file
