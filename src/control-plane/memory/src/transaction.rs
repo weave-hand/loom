@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use control_plane_core::{
@@ -41,9 +43,9 @@ impl Tx for MemoryTx {
             // the postgres single-`sqlx::Transaction` guarantee. Lock order is
             // rows->lineage->catalog; readers each take only ONE of these locks (no
             // reader takes two), so holding all three here cannot deadlock.
-            let mut rows = self.rows.lock().unwrap();
-            let mut lin = self.lineage.lock().unwrap();
-            let mut cat = self.catalog.lock().unwrap();
+            let mut rows = self.rows.lock();
+            let mut lin = self.lineage.lock();
+            let mut cat = self.catalog.lock();
 
             // Validate every fallible precondition BEFORE mutating any state, so a
             // rejected op aborts the whole commit with nothing applied (the guards

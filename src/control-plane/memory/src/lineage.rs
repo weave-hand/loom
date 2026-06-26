@@ -14,7 +14,7 @@ pub(crate) struct LineageState {
 impl Lineage for MemoryControlPlane {
     #[tracing::instrument(skip(self, event), fields(run_id = ?event.run_id, event_type = ?event.event_type), level = "debug")]
     async fn emit(&self, event: LineageEvent) -> Result<()> {
-        self.lineage.lock().unwrap().events.push(event);
+        self.lineage.lock().events.push(event);
         Ok(())
     }
 
@@ -23,7 +23,6 @@ impl Lineage for MemoryControlPlane {
         Ok(Page::from_full(
             self.lineage
                 .lock()
-                .unwrap()
                 .events
                 .iter()
                 .filter(|e| e.run_id == *run)
@@ -34,7 +33,7 @@ impl Lineage for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn upstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
-        let lin = self.lineage.lock().unwrap();
+        let lin = self.lineage.lock();
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for e in lin.events.iter().filter(|e| e.outputs.contains(dataset)) {
@@ -49,7 +48,7 @@ impl Lineage for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn downstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
-        let lin = self.lineage.lock().unwrap();
+        let lin = self.lineage.lock();
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for e in lin.events.iter().filter(|e| e.inputs.contains(dataset)) {

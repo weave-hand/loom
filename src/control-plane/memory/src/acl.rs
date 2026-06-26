@@ -76,7 +76,7 @@ fn effective_roles(
 impl MemoryControlPlane {
     /// Property names of a defined ontology type, or `None` if undefined.
     fn type_properties(&self, name: &str) -> Option<Vec<String>> {
-        let ont = self.ontology.lock().unwrap();
+        let ont = self.ontology.lock();
         ont.types
             .get(name)
             .map(|t| t.properties.iter().map(|p| p.name.clone()).collect())
@@ -84,7 +84,7 @@ impl MemoryControlPlane {
 
     /// True if an ontology type with this name is defined.
     fn type_exists(&self, name: &str) -> bool {
-        self.ontology.lock().unwrap().types.contains_key(name)
+        self.ontology.lock().types.contains_key(name)
     }
 }
 
@@ -92,19 +92,19 @@ impl MemoryControlPlane {
 impl Acl for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_subject(&self, id: &SubjectId) -> Result<()> {
-        self.acl.lock().unwrap().subjects.insert(id.0.clone());
+        self.acl.lock().subjects.insert(id.0.clone());
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_role(&self, id: &RoleId) -> Result<()> {
-        self.acl.lock().unwrap().roles.insert(id.0.clone());
+        self.acl.lock().roles.insert(id.0.clone());
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
-        let mut acl = self.acl.lock().unwrap();
+        let mut acl = self.acl.lock();
         if !acl.subjects.contains(&subject.0) {
             return Err(ControlPlaneError::NotFound(format!(
                 "subject {}",
@@ -122,7 +122,6 @@ impl Acl for MemoryControlPlane {
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
         self.acl
             .lock()
-            .unwrap()
             .members
             .remove(&(subject.0.clone(), role.0.clone()));
         Ok(())
@@ -130,7 +129,7 @@ impl Acl for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn add_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
-        let mut acl = self.acl.lock().unwrap();
+        let mut acl = self.acl.lock();
         if !acl.roles.contains(&role.0) {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
@@ -151,7 +150,6 @@ impl Acl for MemoryControlPlane {
     async fn remove_role_inheritance(&self, role: &RoleId, inherits: &RoleId) -> Result<()> {
         self.acl
             .lock()
-            .unwrap()
             .inherits
             .remove(&(role.0.clone(), inherits.0.clone()));
         Ok(())
@@ -167,7 +165,7 @@ impl Acl for MemoryControlPlane {
     ) -> Result<()> {
         // role-exists check (short acl lock)
         {
-            let acl = self.acl.lock().unwrap();
+            let acl = self.acl.lock();
             if !acl.roles.contains(&role.0) {
                 return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
             }
@@ -185,7 +183,6 @@ impl Acl for MemoryControlPlane {
         }
         self.acl
             .lock()
-            .unwrap()
             .grants
             .insert((role.0.clone(), action, target_key(&target)), effect);
         Ok(())
@@ -195,7 +192,6 @@ impl Acl for MemoryControlPlane {
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()> {
         self.acl
             .lock()
-            .unwrap()
             .grants
             .remove(&(role.0.clone(), action, target_key(target)));
         Ok(())
@@ -205,7 +201,7 @@ impl Acl for MemoryControlPlane {
     async fn set_policy(&self, role: &RoleId, action: Action, policy: Policy) -> Result<()> {
         // role-exists check (short acl lock)
         {
-            let acl = self.acl.lock().unwrap();
+            let acl = self.acl.lock();
             if !acl.roles.contains(&role.0) {
                 return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
             }
@@ -235,7 +231,7 @@ impl Acl for MemoryControlPlane {
         }
         // insert (short acl lock)
         let key = (role.0.clone(), action, target_key(&policy.target));
-        self.acl.lock().unwrap().policies.insert(key, policy);
+        self.acl.lock().policies.insert(key, policy);
         Ok(())
     }
 
@@ -248,7 +244,6 @@ impl Acl for MemoryControlPlane {
     ) -> Result<()> {
         self.acl
             .lock()
-            .unwrap()
             .policies
             .remove(&(role.0.clone(), action, target_key(target)));
         Ok(())
@@ -260,7 +255,7 @@ impl Acl for MemoryControlPlane {
         action: Action,
         target: &PolicyTarget,
     ) -> Result<Decision> {
-        let acl = self.acl.lock().unwrap();
+        let acl = self.acl.lock();
         let tk = target_key(target);
         let direct = acl
             .members
@@ -290,7 +285,7 @@ impl Acl for MemoryControlPlane {
         target: &PolicyTarget,
         _page: PageReq,
     ) -> Result<Page<Policy>> {
-        let acl = self.acl.lock().unwrap();
+        let acl = self.acl.lock();
         let tk = target_key(target);
         let direct = acl
             .members
