@@ -299,9 +299,10 @@ WRAPPER
 #      Cargo workflow (and prek hooks), built below.
 #
 # `:rust-host-toolchain` — a complete, runnable host Rust toolchain assembled
-# from the dists in toolchains/BUCK. Used by `:clippy` below AND by
-# tools/buckify.sh (reindeer shells out to `cargo metadata`), so neither needs a
-# host rustup. The rustc dist ships no host std (it lives in the separate
+# from the dists in toolchains/BUCK. Used by `:clippy` below, by tools/buckify.sh
+# (reindeer shells out to `cargo metadata`), and by `rust-project develop` as the
+# sysroot it hands rust-analyzer — so none of them need a host rustup. The rustc
+# dist ships no host std (it lives in the separate
 # rust-std dist), so we assemble a sysroot: rustc at `<root>/bin/rustc` with std
 # merged under `<root>/lib/rustlib/<triple>/lib`, so rustc's default sysroot
 # detection (two dirs up from the binary) finds std. cargo, cargo-clippy,
@@ -337,6 +338,14 @@ genrule(
         cp -L "$CARGO_DIST/bin/cargo" "$OUT/bin/cargo"
         cp -L "$CLIPPY_DIST/bin/cargo-clippy" "$OUT/bin/cargo-clippy"
         cp -L "$CLIPPY_DIST/bin/clippy-driver" "$OUT/bin/clippy-driver"
+        # rust-analyzer's proc-macro server. `rust-project develop` points
+        # rust-analyzer at this assembled toolchain as its sysroot, and
+        # rust-analyzer derives the server as <sysroot>/libexec/rust-analyzer-proc-macro-srv.
+        # Without it, attribute/derive proc-macros never expand and the editor
+        # shows thousands of false diagnostics. The binary's rpath ($ORIGIN/../lib)
+        # resolves librustc_driver/libLLVM out of $OUT/lib above, so no wrapper.
+        mkdir -p "$OUT/libexec"
+        cp -L "$RUSTC_DIST/libexec/rust-analyzer-proc-macro-srv" "$OUT/libexec/rust-analyzer-proc-macro-srv"
     """.format(triple = RUST_HOST_TRIPLE),
     visibility = ["PUBLIC"],
 )
@@ -361,6 +370,21 @@ WRAPPER
     labels = ["uses_local_filesystem_abspaths"],
     executable = True,
     visibility = ["PUBLIC"],
+)
+
+# Contract test: the assembled :rust-host-toolchain is the sysroot that
+# `rust-project develop` hands rust-analyzer, and rust-analyzer derives the
+# proc-macro server from <sysroot>/libexec/. Assert that server is present and
+# runnable so a change to the genrule above can't silently drop it (which would
+# flood the editor with false diagnostics — proc-macros never expand). Declaring
+# :rust-host-toolchain as a $(location ...) makes the assembled dir a buck input,
+# so this re-runs only when the toolchain changes.
+rust_test(
+    name = "rust-analyzer-proc-macro-srv-present",
+    srcs = ["tests/proc_macro_srv_present.rs"],
+    crate = "proc_macro_srv_present",
+    crate_root = "tests/proc_macro_srv_present.rs",
+    env = {"LOOM_RUST_HOST_TOOLCHAIN": "$(location :rust-host-toolchain)"},
 )
 
 # btd / supertd — Buck Target Determinator (https://github.com/facebookincubator/buck2-change-detector).
