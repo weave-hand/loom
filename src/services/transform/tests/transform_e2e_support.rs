@@ -88,7 +88,7 @@ pub fn cols(specs: &[(&str, &str, bool)]) -> Vec<ColumnSpec> {
 /// control plane under a RELATIVE mirror path (the shape the transform's
 /// `scan_table` resolves against `store`). `file_prefix` is the per-append file
 /// prefix (distinct prefixes => distinct data files, e.g. for compaction).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "seed_table needs cp, store, table, columns, schema, batch, and file_prefix to fully specify a seeded table")]
 pub async fn seed_table(
     cp: &IcebergControlPlane,
     store: &Arc<dyn object_store::ObjectStore>,
@@ -135,8 +135,8 @@ pub async fn seed_table(
 /// Use for files that are read back through `engine_serving` but never scanned by a
 /// transform/compaction (which expect RELATIVE paths against `store`). The Parquet is
 /// still written physically into `store`, so both readers find the bytes.
-#[allow(dead_code)] // shared test helper; used by compact_e2e but not all includers
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, reason = "shared test helper; used by compact_e2e but not all includers")]
+#[allow(clippy::too_many_arguments, reason = "seed_table_absolute needs cp, store, root_url, table, columns, schema, batch, and file_prefix")]
 pub async fn seed_table_absolute(
     cp: &IcebergControlPlane,
     store: &Arc<dyn object_store::ObjectStore>,

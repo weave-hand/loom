@@ -112,12 +112,13 @@ async fn spawn_server(fx: &PgFixture, db: &str, wh_path: &str) -> (tempfile::Tem
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
 
     tokio::spawn(async move {
-        Server::builder()
-            .add_service(EngineControlServer::new(svc))
-            .add_service(FlightServiceServer::new(flight_svc))
-            .serve_with_incoming(incoming)
-            .await
-            .ok();
+        drop(
+            Server::builder()
+                .add_service(EngineControlServer::new(svc))
+                .add_service(FlightServiceServer::new(flight_svc))
+                .serve_with_incoming(incoming)
+                .await,
+        );
     });
 
     // Small pause so the server is ready to accept.

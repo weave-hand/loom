@@ -3,6 +3,8 @@
 //! trusted ontology/ACL metadata and are double-quoted; every caller VALUE is a
 //! bound `?` parameter (never interpolated) — this is the injection boundary.
 
+use std::fmt::Write as _;
+
 use control_plane_core::{
     Aggregation, CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef, validate_row_filter,
 };
@@ -65,6 +67,10 @@ fn col_ref(dialect: &dyn SqlDialect, alias: &str, id: &str) -> String {
     }
 }
 
+#[expect(
+    clippy::unreachable,
+    reason = "validate_row_filter enforces CompareOp<->ScalarValue invariant"
+)]
 fn scalar(v: &ScalarValue, out: &mut Vec<SqlValue>) {
     match v {
         ScalarValue::Text(s) => out.push(SqlValue::Text(s.clone())),
@@ -74,6 +80,10 @@ fn scalar(v: &ScalarValue, out: &mut Vec<SqlValue>) {
     }
 }
 
+#[expect(
+    clippy::unreachable,
+    reason = "validate_row_filter enforces CompareOp<->ScalarValue invariant"
+)]
 fn op_sql(op: CompareOp) -> &'static str {
     match op {
         CompareOp::Eq => "=",
@@ -90,6 +100,10 @@ fn op_sql(op: CompareOp) -> &'static str {
 /// caller, `compile_select`, enforces this up front). The `unreachable!` arms below —
 /// and those in `scalar`/`op_sql` — rely on that CompareOp<->ScalarValue invariant; a
 /// caller that skips validation could turn them into a panic.
+#[expect(
+    clippy::unreachable,
+    reason = "validate_row_filter enforces CompareOp<->ScalarValue invariant"
+)]
 fn filter_sql(
     dialect: &dyn SqlDialect,
     f: &RowFilter,
@@ -274,7 +288,9 @@ fn caller_predicate_sql(
         IsNotNull => format!("({col} IS NOT NULL)"),
         _ => {
             debug_assert_eq!(p.values.len(), 1, "scalar predicate must have one operand");
-            params.push(p.values[0].clone());
+            if let Some(v) = p.values.first() {
+                params.push(v.clone());
+            }
             format!(
                 "({col} {} {})",
                 op_sql(p.op),
@@ -372,7 +388,10 @@ fn select_where_conjuncts(
 /// are ANDed together as conjuncts. `derived` aggregate subqueries (if any) are appended
 /// to the SELECT list; their params precede the WHERE params. The outer table is aliased
 /// `o` only when at least one aggregate is present (so the no-derived output is unchanged).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SQL compile functions require all builder parameters"
+)]
 pub fn compile_select_with(
     dialect: &dyn SqlDialect,
     table: &TableRef,
@@ -410,14 +429,17 @@ pub fn compile_select_with(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
+    let _write = write!(sql, " {}", dialect.limit_clause(limit));
     Ok((sql, params))
 }
 
 /// Compile a governed SELECT for loom's default (`DataFusionDialect`) dialect.
 /// Convenience wrapper for tests; production read paths use [`compile_select_with`]
 /// with the serving engine's dialect so the engine selects it.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SQL compile functions require all builder parameters"
+)]
 pub fn compile_select(
     table: &TableRef,
     allowed_cols: &[String],
@@ -491,21 +513,31 @@ fn chain_from_where(
         )
     };
 
-    let mut from = format!("{} {}", tbl(&types[k].table), alias(k));
+    let types_k = types.get(k).ok_or_else(|| {
+        CompileError::MalformedFilter("chain types index out of range".to_string())
+    })?;
+    let mut from = format!("{} {}", tbl(&types_k.table), alias(k));
     for i in (1..=k).rev() {
         let to_alias = alias(i);
         let from_alias = alias(i - 1);
-        let from_tbl = tbl(&types[i - 1].table);
-        match &hops[i - 1] {
+        let types_prev = types.get(i - 1).ok_or_else(|| {
+            CompileError::MalformedFilter("chain types index out of range".to_string())
+        })?;
+        let from_tbl = tbl(&types_prev.table);
+        let hop = hops.get(i - 1).ok_or_else(|| {
+            CompileError::MalformedFilter("chain hops index out of range".to_string())
+        })?;
+        match hop {
             LinkBacking::ForeignKey {
                 from_column,
                 to_column,
             } => {
-                from.push_str(&format!(
+                let _write = write!(
+                    from,
                     " JOIN {from_tbl} {from_alias} ON {from_alias}.{} = {to_alias}.{}",
                     dialect.quote_ident(from_column),
                     dialect.quote_ident(to_column),
-                ));
+                );
             }
             LinkBacking::JoinTable {
                 table,
@@ -516,13 +548,14 @@ fn chain_from_where(
             } => {
                 let jt = tbl(table);
                 let j = format!("j{i}");
-                from.push_str(&format!(
+                let _write = write!(
+                    from,
                     " JOIN {jt} {j} ON {j}.{} = {to_alias}.{} JOIN {from_tbl} {from_alias} ON {from_alias}.{} = {j}.{}",
                     dialect.quote_ident(to_column),
                     dialect.quote_ident(to_key),
                     dialect.quote_ident(from_key),
                     dialect.quote_ident(from_column),
-                ));
+                );
             }
         }
     }
@@ -568,7 +601,7 @@ pub fn compile_chain_with(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
+    let _write = write!(sql, " {}", dialect.limit_clause(limit));
     Ok((sql, params))
 }
 
@@ -596,7 +629,7 @@ pub fn compile_chain_pairs(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
+    let _write = write!(sql, " {}", dialect.limit_clause(limit));
     Ok((sql, params))
 }
 
@@ -787,7 +820,10 @@ fn reach_projection_where(
 /// final node `nxt` with the start `row_filters`. A 1-step path is the single-self-link case
 /// (byte-identical SQL). Termination by the inlined `depth` bound; `DISTINCT` dedups. Every
 /// caller value is a bound param.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SQL compile functions require all builder parameters"
+)]
 pub fn compile_graph_reach(
     dialect: &dyn SqlDialect,
     table: &TableRef,
@@ -853,7 +889,10 @@ pub fn compile_graph_reach(
 /// Param order: seed predicates, seed row-filters (`s`), recursive row-filters (`nxt`, ONE set
 /// shared across all arms), projection row-filters (`p`). `backings` is non-empty (enforced by
 /// caller). Every caller value is a bound param.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SQL compile functions require all builder parameters"
+)]
 pub fn compile_graph_reach_union(
     dialect: &dyn SqlDialect,
     table: &TableRef,
@@ -958,7 +997,10 @@ pub fn compile_graph_reach_union(
 /// that order. This is a focused helper, NOT a refactor of `compile_graph_reach` (whose CTE
 /// generalizes over a multi-link path); the shared surface is the self-hop join, which already
 /// lives in `link_join`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SQL compile functions require all builder parameters"
+)]
 fn recursive_reach_cte(
     dialect: &dyn SqlDialect,
     table: &TableRef,
@@ -1018,7 +1060,10 @@ fn recursive_reach_cte(
 /// recursive `core_row_filters` (nxt), then the tail's per-position params. Precondition:
 /// `tail_types.len() == tail_hops.len() + 1` and `tail_hops` non-empty. Every caller value is a
 /// bound param.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SQL compile functions require all builder parameters"
+)]
 pub fn compile_graph_reach_tail(
     dialect: &dyn SqlDialect,
     table: &TableRef,
@@ -1040,7 +1085,9 @@ pub fn compile_graph_reach_tail(
     );
     debug_assert!(!tail_hops.is_empty(), "part-B tail must have >= 1 hop");
     debug_assert!(
-        tail_types[0].row_filters.is_empty() && tail_types[0].predicates.is_empty(),
+        tail_types
+            .first()
+            .is_some_and(|t| t.row_filters.is_empty() && t.predicates.is_empty()),
         "tail_types[0] must carry empty row-filters and predicates: governance lives in the CTE"
     );
     let q = |id: &str| dialect.quote_ident(id);

@@ -144,7 +144,7 @@ async fn revoked_session_401() {
     let expires = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     // Ensure user exists.
     let phc = hash_password("e2e-password").expect("hash");
-    let _ = cp
+    let _create_carol = cp
         .create_user(&NewUser {
             subject_id: SubjectId("carol".into()),
             username: "carol".into(),

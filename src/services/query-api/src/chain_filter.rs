@@ -43,7 +43,7 @@ pub fn resolve_chain_filters(
                     let idx = path
                         .iter()
                         .position(|l| l == prefix)
-                        .expect("count == 1 implies present");
+                        .ok_or_else(|| FilterResolveError::UnknownTarget(prefix.to_string()))?;
                     out.push(ChainFilter {
                         position: idx + 1,
                         column: column.to_string(),

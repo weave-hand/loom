@@ -92,11 +92,12 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     tokio::spawn(async move {
         // _wh keeps the warehouse tempdir alive for the lifetime of the task.
         let _wh = wh;
-        Server::builder()
-            .add_service(EngineControlServer::new(svc))
-            .serve_with_incoming(incoming)
-            .await
-            .ok();
+        drop(
+            Server::builder()
+                .add_service(EngineControlServer::new(svc))
+                .serve_with_incoming(incoming)
+                .await,
+        );
     });
 
     // Small pause so the server is ready to accept.
@@ -270,11 +271,12 @@ async fn flush_over_wire() {
         let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind");
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
         tokio::spawn(async move {
-            Server::builder()
-                .add_service(EngineControlServer::new(svc))
-                .serve_with_incoming(incoming)
-                .await
-                .ok();
+            drop(
+                Server::builder()
+                    .add_service(EngineControlServer::new(svc))
+                    .serve_with_incoming(incoming)
+                    .await,
+            );
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
         (sock_dir, sock_str)

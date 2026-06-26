@@ -274,7 +274,7 @@ async fn emits_tracing_event_on_contained_panic() {
         worker
             .run(&["boom".to_string()], t, move |_j| async move {
                 panic!("handler blew up");
-                #[allow(unreachable_code)]
+                #[allow(unreachable_code, reason = "intentional dead code after panic to satisfy the closure return type")]
                 Ok(())
             })
             .await

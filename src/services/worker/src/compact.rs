@@ -60,10 +60,10 @@ pub async fn handle_compact(ctx: &CompactCtx, job: Job) -> std::result::Result<(
         })
         .await
         .map_err(|e| retry(attempts, format!("flight fetch: {e}")))?;
-    if batches.is_empty() {
+    let Some(first) = batches.first() else {
         return Ok(());
-    }
-    let arrow_schema = batches[0].schema();
+    };
+    let arrow_schema = first.schema();
     let run_id = uuid::Uuid::new_v4().to_string();
     let dir_prefix = format!("{schema}/{name}/{run_id}");
     let written = write_dataset(

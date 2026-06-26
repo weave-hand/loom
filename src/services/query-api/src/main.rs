@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
         let engine_socket =
-            std::env::var("LOOM_ENGINE_SOCKET").map_err(|_| -> Box<dyn std::error::Error> {
+            std::env::var("LOOM_ENGINE_SOCKET").map_err(|_err| -> Box<dyn std::error::Error> {
                 "LOOM_ENGINE_SOCKET must be set for the Iceberg serving backend".into()
             })?;
         let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);

@@ -24,7 +24,7 @@ pub enum TypedTransformError {
 
 /// Run one typed transform. `run_id` is a caller-unique output-file prefix (a UUID);
 /// `root_url` is the warehouse root the output's paths are absolutized against.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "typed transform requires all schema, store, and run context args")]
 pub async fn run_typed_transform(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,

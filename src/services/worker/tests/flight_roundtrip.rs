@@ -115,12 +115,13 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
 
     tokio::spawn(async move {
         let _wh = wh; // keep warehouse tempdir alive for the task lifetime
-        Server::builder()
-            .add_service(EngineControlServer::new(svc))
-            .add_service(FlightServiceServer::new(flight_svc))
-            .serve_with_incoming(incoming)
-            .await
-            .ok();
+        drop(
+            Server::builder()
+                .add_service(EngineControlServer::new(svc))
+                .add_service(FlightServiceServer::new(flight_svc))
+                .serve_with_incoming(incoming)
+                .await,
+        );
     });
 
     // Small pause so the server is ready to accept.

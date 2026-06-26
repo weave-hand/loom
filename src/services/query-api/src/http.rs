@@ -426,14 +426,17 @@ async fn get_graph_path(
             )
                 .into_response();
         }
-        if starred[0] != 0 {
+        if starred.first().copied().unwrap_or(0) != 0 {
             return (
                 StatusCode::BAD_REQUEST,
                 "the recursive `*` segment must be the first path segment",
             )
                 .into_response();
         }
-        let core_link = path[0].trim_end_matches('*').to_string();
+        let Some(first_path) = path.first() else {
+            return (StatusCode::BAD_REQUEST, "empty path").into_response();
+        };
+        let core_link = first_path.trim_end_matches('*').to_string();
         if core_link.is_empty() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -441,7 +444,7 @@ async fn get_graph_path(
             )
                 .into_response();
         }
-        let tail_links: Vec<String> = path[1..].to_vec();
+        let tail_links: Vec<String> = path.get(1..).unwrap_or_default().to_vec();
         return graph_tail_respond(
             &st, type_name, core_link, tail_links, depth, filters, ids, &subject,
         )
@@ -534,7 +537,10 @@ async fn graph_union_respond(
 
 /// Recursive-core + relational-tail (`?path=l0*,l1,…`) tail: build a `GraphTailQuery`, run
 /// `read_graph_reach_with_tail`, map via `graph_error`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "HTTP handler requires all routing params"
+)]
 async fn graph_tail_respond(
     st: &AppState,
     type_name: String,

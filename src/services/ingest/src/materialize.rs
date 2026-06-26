@@ -54,7 +54,7 @@ pub fn resolve_columns(
 /// The write tail: DataFusion Parquet write + one atomic control-plane
 /// transaction (create_table + append_files + emit + commit). `columns` is the
 /// already-resolved physical schema (see [`resolve_columns`]).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "land requires cp, store, table, schema, columns, batches, file_prefix, and lineage — all structurally distinct args")]
 pub async fn land(
     cp: &dyn ControlPlane,
     object_store: Arc<dyn ObjectStore>,

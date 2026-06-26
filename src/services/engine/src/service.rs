@@ -24,7 +24,7 @@ fn status(e: control_plane_core::ControlPlaneError) -> Status {
 fn parse_id(s: &str) -> std::result::Result<control_plane_core::JobId, Status> {
     Ok(control_plane_core::JobId(
         s.parse()
-            .map_err(|_| Status::invalid_argument("bad job id"))?,
+            .map_err(|_e| Status::invalid_argument("bad job id"))?,
     ))
 }
 

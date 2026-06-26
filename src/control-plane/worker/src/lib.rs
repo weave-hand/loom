@@ -99,7 +99,7 @@ impl<Q: Queue + Send + Sync> Worker<Q> {
                             tokio::select! {
                                 res = &mut fut => break res,
                                 _ = hb.tick() => {
-                                    let _ = self.queue.heartbeat(id).await;
+                                    drop(self.queue.heartbeat(id).await);
                                 }
                             }
                         };

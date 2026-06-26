@@ -39,10 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .load("loom", props)
         .await?;
 
-    let socket_path = std::env::var("LOOM_ENGINE_SOCKET").expect("LOOM_ENGINE_SOCKET must be set");
+    let socket_path = std::env::var("LOOM_ENGINE_SOCKET")?;
 
-    // Remove stale socket file if present.
-    let _ = std::fs::remove_file(&socket_path);
+    // Remove stale socket file if present (error is expected when no socket exists).
+    drop(std::fs::remove_file(&socket_path));
 
     let listener = UnixListener::bind(&socket_path)?;
     let incoming = UnixListenerStream::new(listener);
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_service(EngineControlServer::new(control))
         .add_service(FlightServiceServer::new(flight))
         .serve_with_incoming_shutdown(incoming, async {
-            tokio::signal::ctrl_c().await.ok();
+            drop(tokio::signal::ctrl_c().await);
         })
         .await?;
 
