@@ -1,8 +1,9 @@
 //! Real production-wiring land: build the ingest AppState via the service_runtime
-//! helpers against a real (fixture) Postgres + bootstrapped DuckLake catalog, POST an
-//! Arrow IPC stream through the router, and read the snapshot back from the catalog.
-//! Exercises build_pool (over a unix socket), control_plane, and local_store.
+//! helpers against a real (fixture) Postgres, POST an Arrow IPC stream through the
+//! router into an `IcebergMaterializer`, and read the snapshot back from the
+//! mirror-backed catalog. Exercises build_pool (over a unix socket) + control_plane.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,10 +11,17 @@ use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use control_plane_core::{ControlPlane, TableRef};
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use control_plane_core::{Catalog, ControlPlane, TableRef};
+use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_sql_catalog::{
+    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
+};
 use http_body_util::BodyExt;
+use iceberg::CatalogBuilder;
+use iceberg::io::LocalFsStorageFactory;
 use ingest::http::{AppState, router};
+use ingest::landing::IcebergMaterializer;
 use service_runtime::DbConfig;
 use tower::ServiceExt;
 
@@ -44,8 +52,7 @@ async fn lands_through_real_runtime_wiring() {
     let fixture = PgFixture::start();
     // Creates + migrates a fresh db; we rebuild our own pool through the runtime below.
     let (_seed, db) = fixture.fresh_db().await;
-    let writer = DuckLakeWriter::new(fixture.socket_path(), &db);
-    writer.bootstrap().await;
+    let wh = tempfile::tempdir().expect("wh");
 
     // Build the real AppState via service_runtime — a unix-socket DbConfig (host = the
     // fixture's socket dir), so build_pool exercises the production connect path.
@@ -60,15 +67,29 @@ async fn lands_through_real_runtime_wiring() {
         .await
         .expect("build pool");
     let cp: Arc<dyn ControlPlane> = Arc::new(service_runtime::control_plane(
-        pool,
+        pool.clone(),
         Duration::from_millis(300),
     ));
-    let store = Arc::new(service_runtime::local_store(writer.data_path()).expect("store"));
+
+    // The vendored Iceberg catalog over the same Postgres + a temp file warehouse.
+    let mut props = HashMap::new();
+    props.insert(SQL_CATALOG_PROP_URI.to_string(), fixture.pg_dsn(&db));
+    props.insert(
+        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+        format!("file://{}", wh.path().display()),
+    );
+    let catalog = SqlCatalogBuilder::default()
+        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .load("loom", props)
+        .await
+        .expect("catalog");
 
     let res = router(AppState {
-        materializer: Arc::new(ingest::landing::DuckLakeMaterializer {
-            cp: cp.clone(),
-            store,
+        materializer: Arc::new(IcebergMaterializer {
+            catalog: Arc::new(catalog),
+            pool: pool.clone(),
+            inline_byte_limit: 16 * 1024 * 1024,
+            flush_byte_threshold: 64 * 1024 * 1024,
         }),
         cp: cp.clone(),
     })
@@ -91,8 +112,7 @@ async fn lands_through_real_runtime_wiring() {
         schema: "main".into(),
         name: "customer".into(),
     };
-    let snap = cp
-        .catalog()
+    let snap = IcebergCatalog::new(pool.clone())
         .current_snapshot(&table)
         .await
         .expect("current snapshot after landing");

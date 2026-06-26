@@ -47,7 +47,6 @@ loom_fixture_test(
     crate = "runtime_land",
     srcs = ["tests/runtime_land.rs"],
     crate_root = "tests/runtime_land.rs",
-    duckdb = True,
     deps = [
         ":ingest",
         "//src/services/runtime:runtime",
@@ -56,28 +55,11 @@ loom_fixture_test(
         "//third-party:arrow",
         "//third-party:axum",
         "//third-party:http-body-util",
+        "//third-party:iceberg",
         "//third-party:serde_json",
+        "//third-party:tempfile",
         "//third-party:tokio",
         "//third-party:tower",
-    ],
-)
-
-loom_fixture_test(
-    name = "ducklake-interop",
-    crate = "ducklake_interop",
-    srcs = ["tests/ducklake_interop.rs"],
-    crate_root = "tests/ducklake_interop.rs",
-    duckdb = True,
-    deps = [
-        ":ingest",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:arrow",
-        "//third-party:object_store",
-        "//third-party:serde_json",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
     ],
 )
 
@@ -86,7 +68,6 @@ loom_fixture_test(
     crate = "bind",
     srcs = ["tests/bind.rs"],
     crate_root = "tests/bind.rs",
-    duckdb = True,
     deps = [
         ":ingest",
         "//src/control-plane/core:core",
@@ -118,15 +99,6 @@ rust_test(
     crate_root = "tests/gate.rs",
     edition = "2024",
     deps = [":ingest", "//third-party:arrow"],
-)
-
-rust_test(
-    name = "landing",
-    crate = "landing",
-    srcs = ["tests/landing.rs"],
-    crate_root = "tests/landing.rs",
-    edition = "2024",
-    deps = [":ingest"],
 )
 
 loom_fixture_test(
@@ -171,21 +143,22 @@ rust_test(
     ],
 )
 
-rust_test(
+loom_fixture_test(
     name = "http-land",
     crate = "http_land",
     srcs = ["tests/http_land.rs"],
     crate_root = "tests/http_land.rs",
-    edition = "2024",
     deps = [
         ":ingest",
+        "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
-        "//src/control-plane/memory:memory",
+        "//src/control-plane/postgres:postgres",
         "//third-party:arrow",
         "//third-party:axum",
         "//third-party:http-body-util",
-        "//third-party:object_store",
+        "//third-party:iceberg",
         "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:tokio",
         "//third-party:tower",
