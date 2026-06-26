@@ -5,8 +5,8 @@
 //! over an `IcebergCatalog`) — no DuckDB in the path.
 
 use control_plane_core::{
-    Acl, Action, CompareOp, ControlPlane, Effect, ObjectType, Ontology, Policy, PolicyTarget,
-    PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
+    Acl, Action, CompareOp, Effect, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef,
+    RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;

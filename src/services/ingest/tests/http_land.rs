@@ -71,8 +71,10 @@ async fn app_state(
         .load("loom", props)
         .await
         .expect("catalog");
-    let cp: Arc<dyn ControlPlane> =
-        Arc::new(service_runtime::control_plane(pool.clone(), Duration::from_millis(300)));
+    let cp: Arc<dyn ControlPlane> = Arc::new(service_runtime::control_plane(
+        pool.clone(),
+        Duration::from_millis(300),
+    ));
     let state = AppState {
         materializer: Arc::new(IcebergMaterializer {
             catalog: Arc::new(catalog),

@@ -26,8 +26,9 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use e2e_support::{InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role,
-    tref};
+use e2e_support::{
+    InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role, tref,
+};
 
 /// Seed person/company/city. knows: 1->2, 2->3 (FK knows_id). worksAt: 1->10, 2->11, 3->12 (FK
 /// worksat_id). locatedIn: 10->22, 11->20, 12->20 (FK city_id; companies 11 & 12 share city 20).
@@ -94,10 +95,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
                 ("id".to_string(), "long".to_string(), false),
                 ("cname".to_string(), "string".to_string(), true),
             ],
-            &[
-                SeedCol::Long(vec![20, 22]),
-                SeedCol::Str(vec!["hq", "z"]),
-            ],
+            &[SeedCol::Long(vec![20, 22]), SeedCol::Str(vec!["hq", "z"])],
         )
         .await;
 

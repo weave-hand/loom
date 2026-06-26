@@ -26,8 +26,9 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use e2e_support::{InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role,
-    tref};
+use e2e_support::{
+    InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role, tref,
+};
 
 /// Seed the shared-membership graph: person, team, membership(person_id, team_id), company.
 /// Teams T1{1,2}, T2{3,4,5}, T3{5,6}; T3 inactive. `memberOf` Person->Team and `hasMember`
@@ -55,14 +56,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
             &[
                 SeedCol::Long(vec![1, 2, 3, 4, 5, 6]),
                 SeedCol::Str(vec!["ann", "bob", "cal", "dee", "eve", "fin"]),
-                SeedCol::NullableLong(vec![
-                    Some(7),
-                    Some(7),
-                    Some(8),
-                    Some(8),
-                    Some(8),
-                    Some(8),
-                ]),
+                SeedCol::NullableLong(vec![Some(7), Some(7), Some(8), Some(8), Some(8), Some(8)]),
             ],
         )
         .await;

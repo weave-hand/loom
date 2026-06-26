@@ -344,11 +344,9 @@ async fn bind_collects_all_derived_violations() {
     assert!(v.iter().any(
         |x| x.property == "a" && matches!(x.reason, BindViolationReason::UnknownDerivedLink(_))
     ));
-    assert!(
-        v.iter()
-            .any(|x| x.property == "b"
-                && matches!(x.reason, BindViolationReason::MissingAggColumn))
-    );
+    assert!(v
+        .iter()
+        .any(|x| x.property == "b" && matches!(x.reason, BindViolationReason::MissingAggColumn)));
     assert!(v.iter().any(|x| x.property == "c"
         && matches!(x.reason, BindViolationReason::BadDerivedResultType { .. })));
     assert!(customer_derived(&cp).await.is_empty());
@@ -504,11 +502,9 @@ async fn bind_link_rejects_a_missing_fk_from_column() {
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
-    assert!(
-        v.iter()
-            .any(|x| x.property == "nope"
-                && matches!(x.reason, BindViolationReason::MissingColumn))
-    );
+    assert!(v
+        .iter()
+        .any(|x| x.property == "nope" && matches!(x.reason, BindViolationReason::MissingColumn)));
     assert!(link_names(&cp).await.is_empty());
 }
 
@@ -523,11 +519,9 @@ async fn bind_link_rejects_a_missing_fk_to_column() {
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
-    assert!(
-        v.iter()
-            .any(|x| x.property == "nope"
-                && matches!(x.reason, BindViolationReason::MissingColumn))
-    );
+    assert!(v
+        .iter()
+        .any(|x| x.property == "nope" && matches!(x.reason, BindViolationReason::MissingColumn)));
 }
 
 #[tokio::test]

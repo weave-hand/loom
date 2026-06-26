@@ -21,17 +21,16 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use e2e_support::{InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role,
-    tref};
+use e2e_support::{
+    InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role, tref,
+};
 
 /// Seed a single `Person` table with a `knows(a, b)` join-table self-link forming a graph
 /// `1->2, 2->3, 3->1 (cycle), 3->4`, plus a boolean `active` column (node 2 inactive). A
 /// `company` table + `employer` FK link Person -> Company drives the non-self-link case.
 /// Person declares identity `id`. Returns the wired control plane + serving engine; the
 /// caller MUST keep the `IcebergWriter` alive (its TempDir holds the Parquet read).
-async fn setup(
-    fx: &PgFixture,
-) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

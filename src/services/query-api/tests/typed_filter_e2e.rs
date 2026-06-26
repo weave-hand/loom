@@ -22,7 +22,14 @@ fn tref(s: &str, n: &str) -> TableRef {
 
 /// Seed an Order table with NON-TEXT columns: id Long, amount Double, active Boolean.
 /// Rows: (1, 10.5, true), (2, 20.0, false), (3, 10.5, true), (4, NULL, NULL), (5, 30.0, NULL).
-async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, SubjectId, IcebergWriter) {
+async fn setup(
+    fx: &PgFixture,
+) -> (
+    PgControlPlane,
+    InProcessServingEngine,
+    SubjectId,
+    IcebergWriter,
+) {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -40,13 +47,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Subje
             ],
             &[
                 SeedCol::Long(vec![1, 2, 3, 4, 5]),
-                SeedCol::NullableDouble(vec![
-                    Some(10.5),
-                    Some(20.0),
-                    Some(10.5),
-                    None,
-                    Some(30.0),
-                ]),
+                SeedCol::NullableDouble(vec![Some(10.5), Some(20.0), Some(10.5), None, Some(30.0)]),
                 SeedCol::NullableBool(vec![Some(true), Some(false), Some(true), None, None]),
             ],
         )

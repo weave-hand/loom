@@ -22,9 +22,7 @@ use e2e_support::{InProcessServingEngine, get, grant_read, prop, subject_with_ro
 /// identities (Customer.id, Order.id, LineItem.id), the FK links, and a join-table link
 /// Customer -> LineItem. Returns the wired control plane + serving engine; the caller MUST
 /// keep the `IcebergWriter` alive (its TempDir holds the Parquet the engine reads).
-async fn setup(
-    fx: &PgFixture,
-) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

@@ -408,10 +408,7 @@ async fn many_to_many_dedups_shared_targets() {
                 ("customer_id".to_string(), "long".to_string(), false),
                 ("order_id".to_string(), "long".to_string(), false),
             ],
-            &[
-                SeedCol::Long(vec![1, 3]),
-                SeedCol::Long(vec![11, 11]),
-            ],
+            &[SeedCol::Long(vec![1, 3]), SeedCol::Long(vec![11, 11])],
         )
         .await;
 

@@ -25,8 +25,9 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use e2e_support::{InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role,
-    tref};
+use e2e_support::{
+    InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role, tref,
+};
 
 /// Seed a `Person` table with a `knows_id` FK self-link (edges 1->2, 2->3) and a
 /// `colleagues(a, b)` join-table self-link (edge 1->4), plus a boolean `active` column
@@ -79,10 +80,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
                 ("a".to_string(), "long".to_string(), false),
                 ("b".to_string(), "long".to_string(), false),
             ],
-            &[
-                SeedCol::Long(vec![1, 6]),
-                SeedCol::Long(vec![4, 5]),
-            ],
+            &[SeedCol::Long(vec![1, 6]), SeedCol::Long(vec![4, 5])],
         )
         .await;
 

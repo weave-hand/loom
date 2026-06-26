@@ -18,7 +18,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
     Acl, Action, Auth, Cardinality, ControlPlane, ControlPlaneError, Effect, LinkBacking, LinkDef,
-    NewUser, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    NewUser, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef,
+    TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -223,10 +224,7 @@ pub async fn setup_iceberg(
             "main",
             "customer",
             &cust_cols,
-            &[
-                SeedCol::Long(vec![1, 2]),
-                SeedCol::Str(vec!["CA", "NY"]),
-            ],
+            &[SeedCol::Long(vec![1, 2]), SeedCol::Str(vec!["CA", "NY"])],
         )
         .await;
 

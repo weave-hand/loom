@@ -24,15 +24,10 @@ use service_runtime::{
 };
 use tower::ServiceExt;
 
-use e2e_support::{
-    StubAction, grant_read, session_token, setup_iceberg, subject_with_role,
-};
+use e2e_support::{StubAction, grant_read, session_token, setup_iceberg, subject_with_role};
 
 /// Build the full query-api app: protected object routes + public /auth/login.
-fn app(
-    cp: Arc<PgControlPlane>,
-    eng: Arc<dyn query_api::serving::ServingEngine>,
-) -> axum::Router {
+fn app(cp: Arc<PgControlPlane>, eng: Arc<dyn query_api::serving::ServingEngine>) -> axum::Router {
     let auth = AuthState {
         auth: cp.clone() as Arc<dyn Auth + Send + Sync>,
         session_ttl: Duration::from_secs(3600),

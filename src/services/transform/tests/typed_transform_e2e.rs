@@ -18,8 +18,8 @@ use std::time::Duration;
 use arrow::array::{Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    Acl, Action, Catalog, ControlPlane, ControlPlaneError, DatasetRef, Effect, NewJob, ObjectType,
-    PageReq, PropertyDef, Queue, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, ControlPlane, ControlPlaneError, DatasetRef, Effect, NewJob, ObjectType, PageReq,
+    PropertyDef, Queue, RoleId, SubjectId, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;

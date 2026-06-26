@@ -135,6 +135,7 @@ pub async fn seed_table(
 /// Use for files that are read back through `engine_serving` but never scanned by a
 /// transform/compaction (which expect RELATIVE paths against `store`). The Parquet is
 /// still written physically into `store`, so both readers find the bytes.
+#[allow(dead_code)] // shared test helper; used by compact_e2e but not all includers
 #[allow(clippy::too_many_arguments)]
 pub async fn seed_table_absolute(
     cp: &IcebergControlPlane,

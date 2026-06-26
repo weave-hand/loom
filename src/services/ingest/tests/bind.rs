@@ -262,10 +262,7 @@ async fn seed_reserved(writer: &IcebergWriter) {
                 ("id".into(), "long".into(), false),
                 ("_x".into(), "long".into(), true),
             ],
-            &[
-                SeedCol::Long(vec![1]),
-                SeedCol::NullableLong(vec![Some(1)]),
-            ],
+            &[SeedCol::Long(vec![1]), SeedCol::NullableLong(vec![Some(1)])],
         )
         .await;
 }
@@ -550,9 +547,7 @@ async fn bind_link_validates_backing_columns_over_the_real_catalog() {
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
-    assert!(
-        v.iter()
-            .any(|x| x.property == "nope"
-                && matches!(x.reason, BindViolationReason::MissingColumn))
-    );
+    assert!(v
+        .iter()
+        .any(|x| x.property == "nope" && matches!(x.reason, BindViolationReason::MissingColumn)));
 }
