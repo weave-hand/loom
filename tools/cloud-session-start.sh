@@ -146,4 +146,27 @@ if [ -x "$REPO/tools/env.sh" ]; then
     echo "WARN: tools/env.sh activation failed (non-fatal); see /tmp/loom-env.log"
 fi
 
+# Regenerate rust-project.json so the rust-analyzer-lsp plugin can load loom's
+# buck2 crate graph (RA reads it from the repo root). It is gitignored — it bakes
+# absolute buck-out paths, so it is machine-specific and must be regenerated in
+# each ephemeral cloud session rather than committed. Uses the VENDORED
+# //tools:rust-project (.loom/bin, via env.sh) and the HERMETIC rustc (toolchain
+# bin): --prefer-rustup-managed-toolchain merely runs `rustc --print sysroot`,
+# which resolves to loom's hermetic sysroot (no host rustup exists here). We
+# eval env.sh into THIS shell first so both are on PATH (the block above only
+# appends env.sh's exports to the profile, which non-interactive tool shells skip).
+#
+# Backgrounded + non-fatal: the `buck2 bxl` over root//src/... is heavy and must
+# not delay session start, and the census routines (complexity/duplication/STPA/
+# docs) don't use RA at all — only the implementation routines benefit, and they
+# pick up rust-project.json once the background job finishes. nohup detaches it
+# from the hook's process group so it survives the hook returning.
+if [ -x "$REPO/tools/env.sh" ]; then
+  REPO="$REPO" nohup bash -c '
+    eval "$(cd "$REPO" && ./tools/env.sh 2>/dev/null)" || exit 0
+    cd "$REPO" && exec rust-project develop --prefer-rustup-managed-toolchain root//src/...
+  ' >/tmp/loom-rust-project.log 2>&1 &
+  echo "rust-project.json generation started in background (PID $!; log /tmp/loom-rust-project.log)"
+fi
+
 echo "loom cloud session ready (REMOTE_ENV=true): buck2 + gh + remote execution configured"

@@ -44,6 +44,8 @@ declare -A TOOLS=(
     [btd]="root//tools:btd-bin-x86_64"
     [supertd]="root//tools:supertd-bin-x86_64"
     [rustfmt]="root//tools:rustfmt"
+    [rust-analyzer]="root//tools:rust-analyzer"
+    [rust-project]="root//tools:rust-project-x86_64-linux"
     [jq]="root//tools:jq-x86_64-linux"
     [rust-code-analysis-cli]="root//tools:rust-code-analysis-x86_64-linux"
     [lucidshark-duplo]="root//tools:lucidshark-duplo-x86_64-linux"
@@ -81,4 +83,4 @@ printf 'export LD_LIBRARY_PATH=%q\n' "$TOOLCHAIN/lib${CLEAN_LDLP:+:$CLEAN_LDLP}"
 # Marker for shell-prompt / tooling detection ("are we in the loom env?"). Not a
 # re-activation guard — activation is always safe to re-run (it re-points symlinks).
 printf 'export LOOM_ENV_ACTIVE=%q\n' "1"
-log "ready — cargo/rustc/reindeer/prek/btd/supertd/rustfmt on PATH; 'cargo clippy' for clippy; run loom-refresh for //src binaries"
+log "ready — cargo/rustc/reindeer/prek/btd/supertd/rustfmt/rust-analyzer/rust-project on PATH; 'cargo clippy' for clippy; run loom-refresh for //src binaries"

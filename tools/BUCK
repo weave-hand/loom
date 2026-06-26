@@ -1,3 +1,53 @@
+# zstd (https://github.com/aspect-build/zstd-prebuilt) — statically-linked `zstd`
+# CLI, vendored so the `.zst` decompress genrules below (reindeer, rust-project)
+# run on RE instead of being pinned local. The aspect-build release ships RAW
+# STATIC BINARIES (not archives), so the genrule is just cp + chmod (no host-only
+# label, like jq). Consumers reference it via `$(exe root//tools:zstd)`, which
+# materializes the binary on whatever platform the action runs on — so NO host
+# `zstd` is needed anywhere (local or RE), closing the gap the old `uses_xz`
+# label papered over. To bump: replace ZSTD_VERSION and refresh each sha256 from
+# the release's SHA256.txt. Linux x86_64 / aarch64 only (matches platforms/BUCK);
+# asset names use `amd64`/`arm64`, the genrules keep the repo's `x86_64`/`aarch64`.
+
+ZSTD_VERSION = "v1.5.6-bcr2"
+
+_ZSTD_URL = "https://github.com/aspect-build/zstd-prebuilt/releases/download/{version}/zstd_linux_{arch}"
+
+http_file(
+    name = "zstd-amd64.bin",
+    urls = [_ZSTD_URL.format(version = ZSTD_VERSION, arch = "amd64")],
+    sha256 = "190c196b46883a234238d9c52a211c1494df79bb170fbe30c6fc22639d5d4731",
+)
+
+http_file(
+    name = "zstd-arm64.bin",
+    urls = [_ZSTD_URL.format(version = ZSTD_VERSION, arch = "arm64")],
+    sha256 = "4fa2386a975c2120f91f3103bd4268a19a341cb9063417f3829018e94f28c8c6",
+)
+
+genrule(
+    name = "zstd-x86_64-linux",
+    out = "zstd",
+    cmd = "cp $(location :zstd-amd64.bin) $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "zstd-aarch64-linux",
+    out = "zstd",
+    cmd = "cp $(location :zstd-arm64.bin) $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "zstd",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":zstd-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":zstd-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
 # Reindeer (third-party Rust dependency importer). Used at dev time to materialize
 # BUCK targets for crates declared in third-party manifests; not a build-time dep
 # of any service.
@@ -10,7 +60,9 @@
 #
 # We pull the prebuilt release binary instead of building from source. To bump:
 # replace REINDEER_VERSION below, then update each SHA256 from the matching
-# `.zst` asset on the release page. Decompression uses the host's `zstd` CLI.
+# `.zst` asset on the release page. Decompression uses the vendored
+# `//tools:zstd` (above) via `$(exe …)`, so these genrules run on RE and need no
+# host `zstd`.
 #
 # `buck2 run //tools:reindeer -- <args>` invokes the binary for the current
 # target CPU. Only Linux x86_64 / aarch64 are wired — matches platforms/BUCK.
@@ -31,26 +83,18 @@ http_file(
     sha256 = "9ee50586a3ad9d5cba41f3d22d3fa3303f8aba01d9b7f499acfe16eeec1afc13",
 )
 
-# NOTE: `uses_xz` is borrowed from the prelude's set of "host-only decompressor
-# tool" labels — we use it to keep these genrules off RE since the BuildBuddy
-# workers don't have `zstd` installed. Swap for `uses_zstd` if the prelude ever
-# adds one. Until then, every dev machine that runs `buck2 run //tools:reindeer`
-# needs `zstd` on PATH.
-
 genrule(
     name = "reindeer-x86_64-linux",
     out = "reindeer",
-    cmd = "zstd -d -c $(location :reindeer-x86_64-linux.zst) > $OUT && chmod +x $OUT",
+    cmd = "$(exe root//tools:zstd) -d -c $(location :reindeer-x86_64-linux.zst) > $OUT && chmod +x $OUT",
     executable = True,
-    labels = ["uses_xz"],
 )
 
 genrule(
     name = "reindeer-aarch64-linux",
     out = "reindeer",
-    cmd = "zstd -d -c $(location :reindeer-aarch64-linux.zst) > $OUT && chmod +x $OUT",
+    cmd = "$(exe root//tools:zstd) -d -c $(location :reindeer-aarch64-linux.zst) > $OUT && chmod +x $OUT",
     executable = True,
-    labels = ["uses_xz"],
 )
 
 command_alias(
@@ -58,6 +102,64 @@ command_alias(
     exe = select({
         "prelude//cpu/constraints:x86_64": ":reindeer-x86_64-linux",
         "prelude//cpu/constraints:arm64": ":reindeer-aarch64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# rust-project — buck2's rust-analyzer integration (the `rust-project develop`
+# tool that generates the `rust-project.json` RA consumes). Upstream
+# facebook/buck2 ships it only as a source crate (integrations/rust-project,
+# `cargo install`-only, see DEVELOPING.md), so loom consumes a prebuilt from the
+# **weave-hand/buck2** fork, which adds a release workflow. Vendoring it makes the
+# IDE/cloud RA path hermetic (no host `cargo install`) — exposed on PATH via
+# tools/env.sh and used by tools/cloud-session-start.sh to regenerate
+# rust-project.json per cloud session.
+#
+# Like reindeer, the release assets are bare per-arch `.zst` binaries (not
+# tarballs), so the decompress genrules use the vendored `//tools:zstd` via
+# `$(exe …)` — they run on RE and need no host `zstd`. The fork's tag is
+# `rust-project/<version>` (a path-style tag), which GitHub serves at a
+# literal-slash download URL.
+#
+# To bump: cut a new release on the fork (track the buck2 release loom is pinned
+# to, BUCK2_RELEASE), then update RUST_PROJECT_VERSION and refresh each sha256
+# (e.g. `sha256sum` the downloaded `.zst`). Linux x86_64 / aarch64 only.
+
+RUST_PROJECT_VERSION = "v2026.06.26.00"
+
+_RUST_PROJECT_URL = "https://github.com/weave-hand/buck2/releases/download/rust-project/{version}/rust-project-{triple}.zst"
+
+http_file(
+    name = "rust-project-x86_64-linux.zst",
+    urls = [_RUST_PROJECT_URL.format(version = RUST_PROJECT_VERSION, triple = "x86_64-unknown-linux-gnu")],
+    sha256 = "eb34a4d1a9cf25ca3d59bc10de3e09dfc0683fddc65e8291d6e0d341dbef8aaf",
+)
+
+http_file(
+    name = "rust-project-aarch64-linux.zst",
+    urls = [_RUST_PROJECT_URL.format(version = RUST_PROJECT_VERSION, triple = "aarch64-unknown-linux-gnu")],
+    sha256 = "3019fad21eb9732f5dbb08af0c95ba4fdf5626ec52ae4b8ec3ca3611ae8ee23a",
+)
+
+genrule(
+    name = "rust-project-x86_64-linux",
+    out = "rust-project",
+    cmd = "$(exe root//tools:zstd) -d -c $(location :rust-project-x86_64-linux.zst) > $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "rust-project-aarch64-linux",
+    out = "rust-project",
+    cmd = "$(exe root//tools:zstd) -d -c $(location :rust-project-aarch64-linux.zst) > $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "rust-project",
+    exe = select({
+        "prelude//cpu/constraints:x86_64": ":rust-project-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":rust-project-aarch64-linux",
     }),
     visibility = ["PUBLIC"],
 )
@@ -142,6 +244,40 @@ genrule(
 #!/usr/bin/env bash
 export LD_LIBRARY_PATH="$RUSTC_DIR/lib"
 exec "$RUSTFMT_DIR/bin/rustfmt" "\\$@"
+WRAPPER
+        chmod +x $OUT
+    """,
+    labels = ["uses_local_filesystem_abspaths"],
+    executable = True,
+    visibility = ["PUBLIC"],
+)
+
+# rust-analyzer — the language server from the same Rust nightly the toolchain is
+# pinned to (see toolchains/BUCK), wrapping the `rust-analyzer-preview` dist. Like
+# rustfmt, the binary dynamically links against librustc_driver in the rustc
+# dist's `lib/`, and — importantly — when it spawns itself as a proc-macro server
+# it dlopen's proc-macro `.so`s built against this toolchain's libstd, which also
+# lives in `lib/`; so the wrapper points LD_LIBRARY_PATH there before exec'ing it.
+# Exposed on PATH via tools/env.sh so it shadows any `~/.cargo/bin/rust-analyzer`
+# rustup shim. Consumed by the rust-analyzer-lsp integration.
+#
+# The wrapper bakes absolute `$PWD` paths to the dist outputs, so the
+# `uses_local_filesystem_abspaths` label forces the genrule off RE so those paths
+# resolve. Host-only and x86_64-only, matching the rustc dist.
+genrule(
+    name = "rust-analyzer",
+    srcs = [
+        "toolchains//:rust-analyzer-x86_64-linux",
+        "toolchains//:rustc-x86_64-linux",
+    ],
+    out = "rust-analyzer",
+    bash = """
+        RA_DIR="$PWD/$(location toolchains//:rust-analyzer-x86_64-linux)"
+        RUSTC_DIR="$PWD/$(location toolchains//:rustc-x86_64-linux)"
+        cat > $OUT <<WRAPPER
+#!/usr/bin/env bash
+export LD_LIBRARY_PATH="$RUSTC_DIR/lib\\${LD_LIBRARY_PATH:+:\\$LD_LIBRARY_PATH}"
+exec "$RA_DIR/bin/rust-analyzer" "\\$@"
 WRAPPER
         chmod +x $OUT
     """,
