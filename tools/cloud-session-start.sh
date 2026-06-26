@@ -164,9 +164,24 @@ fi
 if [ -x "$REPO/tools/env.sh" ]; then
   REPO="$REPO" nohup bash -c '
     eval "$(cd "$REPO" && ./tools/env.sh 2>/dev/null)" || exit 0
-    cd "$REPO" && exec rust-project develop --prefer-rustup-managed-toolchain root//src/...
+    cd "$REPO" || exit 0
+    # Generate to a sibling temp path and atomically swap it in only on success.
+    # `rust-project develop` is heavy (a buck2 bxl over root//src/...) and writes
+    # its output only at the very end, so a direct write leaves rust-project.json
+    # at 0 bytes for minutes — which reads as a broken/empty config to editors and
+    # to anyone inspecting it. Writing to .tmp and `mv`-ing on success (same dir =
+    # atomic rename) means the file is only ever absent or complete, and any prior
+    # json survives a failed regeneration. -o sets the output path.
+    tmp="$REPO/rust-project.json.tmp"
+    if rust-project develop --prefer-rustup-managed-toolchain -o "$tmp" root//src/... && [ -s "$tmp" ]; then
+      mv -f "$tmp" "$REPO/rust-project.json"
+      echo "rust-project.json ready ($(wc -c < "$REPO/rust-project.json") bytes)"
+    else
+      rm -f "$tmp"
+      echo "rust-project develop failed; left existing rust-project.json untouched"
+    fi
   ' >/tmp/loom-rust-project.log 2>&1 &
-  echo "rust-project.json generation started in background (PID $!; log /tmp/loom-rust-project.log)"
+  echo "rust-project.json generation started in background (~3-5 min on a cold cache; appears atomically when ready; PID $!; log /tmp/loom-rust-project.log)"
 fi
 
 echo "loom cloud session ready (REMOTE_ENV=true): buck2 + gh + remote execution configured"

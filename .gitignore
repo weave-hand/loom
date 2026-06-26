@@ -4,6 +4,7 @@ cspell.json
 **/target/**
 /.vscode/
 rust-project.json
+rust-project.json.tmp
 /.loom/
 /.direnv/
 # `homelab` git external cell expansion target (buck2 fetches into buck-out;
