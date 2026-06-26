@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 rust_library(
     name = "datafusion-io",
     crate = "datafusion_io",

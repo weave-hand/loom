@@ -240,18 +240,14 @@ hermetic_rust_toolchain(
         "DEFAULT": [],
     }) + CLIPPY_ALLOWS,
     # Lint policy — pedantic + restriction enabled; census-driven allowlist; enforced
-    # panic-safety set left to fire in production code (Task 4 fixes those).
+    # panic-safety set left to fire in production code. Test code is exempted from the
+    # panic-safety lints via the loom_rust_test wrapper (src/loom_test.bzl), NOT the
+    # toolchain rustc_test_flags field: that field is unusable here — the prelude's
+    # rust_test_impl does `extra_flags += ["--test"]` on the frozen provider list when
+    # it is non-empty (rust_binary.bzl:561), a Starlark mutation error that breaks every
+    # rust_test build. The wrapper injects the -A flags via per-target rustc_flags, which
+    # flows through a different (non-mutating) path.
     warn_lints = ["clippy::pedantic", "clippy::restriction"],
-    # Panic-safety lints allowed for test code only. rustc_test_flags is applied
-    # by the prelude solely to rust_test targets (rust_binary.bzl:rust_test_impl) —
-    # every rust_test (bare and loom_fixture_test) and its srcs inherit this;
-    # rust_library/rust_binary do NOT. Test code legitimately panics on setup.
-    rustc_test_flags = [
-        "-Aclippy::unwrap_used", "-Aclippy::expect_used", "-Aclippy::indexing_slicing",
-        "-Aclippy::panic", "-Aclippy::get_unwrap", "-Aclippy::unwrap_in_result",
-        "-Aclippy::panic_in_result_fn", "-Aclippy::unreachable",
-        "-Aclippy::assertions_on_result_states",
-    ],
     clippy_toml = "root//:clippy-toml",
     visibility = ["PUBLIC"],
 )

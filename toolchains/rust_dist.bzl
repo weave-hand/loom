@@ -78,7 +78,6 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             allow_lints = ctx.attrs.allow_lints,
             deny_lints = ctx.attrs.deny_lints,
             warn_lints = ctx.attrs.warn_lints,
-            rustc_test_flags = ctx.attrs.rustc_test_flags,
             clippy_toml = ctx.attrs.clippy_toml[DefaultInfo].default_outputs[0] if ctx.attrs.clippy_toml else None,
         ),
     ]
@@ -110,7 +109,11 @@ hermetic_rust_toolchain = rule(
         "allow_lints": attrs.list(attrs.string(), default = []),
         "deny_lints": attrs.list(attrs.string(), default = []),
         "warn_lints": attrs.list(attrs.string(), default = []),
-        "rustc_test_flags": attrs.list(attrs.string(), default = []),
+        # NOTE: deliberately NOT exposing the prelude's `rustc_test_flags` toolchain
+        # field — it is unusable (rust_binary.bzl:561 mutates the frozen provider list
+        # via `extra_flags += ["--test"]`, breaking every rust_test build when it is
+        # non-empty). Test-only lint flags are injected per-target by the
+        # loom_rust_test wrapper (src/loom_test.bzl) instead.
         "clippy_toml": attrs.option(attrs.dep(providers = [DefaultInfo]), default = None),
     },
 )

@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 rust_library(
     name = "core",
     crate = "control_plane_core",
