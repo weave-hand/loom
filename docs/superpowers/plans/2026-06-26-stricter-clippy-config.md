@@ -42,16 +42,17 @@ Threaded `allow_lints`/`deny_lints`/`warn_lints`/`clippy_toml` through `hermetic
 Brings the tree from "everything red" to "red ONLY on the ~160 production sites of the enforced set." No production code fixes here (Task 4 does those).
 
 **Files:**
-- Modify: `toolchains/BUCK` (the `:rust` `allow_lints` — the full global allowlist)
-- Create: `src/loom_test.bzl` (shared `LOOM_TEST_LINT_ALLOWS` + `loom_rust_test` wrapper)
-- Modify: `src/control-plane/postgres/defs.bzl` (`loom_fixture_test` injects `LOOM_TEST_LINT_ALLOWS`)
-- Modify: the 12 BUCK files containing bare `rust_test(` — migrate to `loom_rust_test`
+- Modify: `toolchains/rust_dist.bzl` (add+forward a `rustc_test_flags` attr — test-only compile flags)
+- Modify: `toolchains/BUCK` (the `:rust` `allow_lints` full allowlist + `rustc_test_flags` exemption list)
+- Modify: `src/services/query-api/tests/e2e_support.rs` (crate-root `#![allow]` — the one test-support `rust_library`)
 - Modify: `src/control-plane/testkit/src/lib.rs` (crate-root `#![allow]` harness exemption)
 - Modify: `src/control-plane/postgres/src/fixture.rs` (module `#![allow]` harness exemption)
 
+**Mechanism (why this is small):** The prelude's `RustToolchainInfo.rustc_test_flags` (`rust_toolchain.bzl:58`) is consumed ONLY in `rust_test_impl` (`rust_binary.bzl:555-571`) as `extra_flags` — applied to every `rust_test` target's compile (incl. its clippy emit) and to NOTHING else (not `rust_library`, not `rust_binary`). So one toolchain field exempts ALL test targets — bare `rust_test` AND `loom_fixture_test` (which calls `native.rust_test`) AND their `srcs` (e.g. `transform_e2e_support.rs`, which is a src of fixture tests). No wrapper, no per-target migration, no `defs.bzl` edit. The only test code NOT compiled as a `rust_test` target is: the single `query-api:e2e-support` `rust_library` (`tests/e2e_support.rs`), `testkit` (a `rust_library` harness), and `postgres/src/fixture.rs` (a module in the production lib) — those three get a source-level `#![allow]`.
+
 **Interfaces:**
 - Consumes: the wired toolchain (Task 1); the working-tree `warn_lints` edit (Task 2).
-- Produces: `loom_rust_test(name, crate, srcs, crate_root, deps, edition="2024", **kwargs)` — a `rust_test` wrapper that appends `LOOM_TEST_LINT_ALLOWS` to `rustc_flags`. `LOOM_TEST_LINT_ALLOWS` (a `list[str]` of `-Aclippy::*` flags) is the single source of the test exemption set, imported by both wrappers.
+- Produces: `:rust` toolchain with `rustc_test_flags` = the `-Aclippy::*` test-exemption list. New `rust_test` targets inherit the exemption automatically.
 
 - [ ] **Step 1: Write the global `allow_lints` in `toolchains/BUCK`**
 
@@ -117,115 +118,70 @@ Set the `:rust` toolchain's `allow_lints` to the full allowlist — every firing
 
 Note: this is the full allowlist; if `clippy-all.sh` later reports an ALLOWed lint still firing, it was misspelled — fix it. Lints in the enforced set (see Global Constraints) are deliberately ABSENT here.
 
-- [ ] **Step 2: Create the shared `loom_rust_test` wrapper**
+- [ ] **Step 2: Add a `rustc_test_flags` attr to `hermetic_rust_toolchain`**
 
-Create `src/loom_test.bzl`:
-
+In `toolchains/rust_dist.bzl`, add `"rustc_test_flags": attrs.list(attrs.string(), default = [])` to the rule's `attrs` (alongside the lint fields from Task 1), and forward it into `RustToolchainInfo(...)`:
 ```python
-"""Shared wrapper for first-party rust_test targets.
+            rustc_test_flags = ctx.attrs.rustc_test_flags,
+```
+(The prelude's `RustToolchainInfo` already declares this field — `rust_toolchain.bzl:58` — and consumes it ONLY in `rust_test_impl`.)
 
-Test code legitimately panics on failed setup, so the panic-safety restriction
-lints are allowed for every test target. Keeping the exemption here (and in
-loom_fixture_test, which appends the same list) means a new test target gets it
-by construction. Production `src/` code is NOT exempted — it is held to the
-enforced lint set on the :rust toolchain.
-"""
+- [ ] **Step 3: Set the test exemption on `:rust`**
 
-# Panic-safety / test-assertion lints allowed for all test + harness code.
-LOOM_TEST_LINT_ALLOWS = [
-    "-Aclippy::unwrap_used",
-    "-Aclippy::expect_used",
-    "-Aclippy::indexing_slicing",
-    "-Aclippy::panic",
-    "-Aclippy::get_unwrap",
-    "-Aclippy::unwrap_in_result",
-    "-Aclippy::panic_in_result_fn",
-    "-Aclippy::unreachable",
-    "-Aclippy::assertions_on_result_states",
-]
-
-def loom_rust_test(name, rustc_flags = [], **kwargs):
-    native.rust_test(
-        name = name,
-        rustc_flags = rustc_flags + LOOM_TEST_LINT_ALLOWS,
-        **kwargs
-    )
+In `toolchains/BUCK`, add to the `:rust` toolchain (after `allow_lints`):
+```python
+    # Panic-safety lints allowed for test code only. rustc_test_flags is applied
+    # by the prelude solely to rust_test targets (rust_binary.bzl:rust_test_impl) —
+    # every rust_test (bare and loom_fixture_test) and its srcs inherit this;
+    # rust_library/rust_binary do NOT. Test code legitimately panics on setup.
+    rustc_test_flags = [
+        "-Aclippy::unwrap_used", "-Aclippy::expect_used", "-Aclippy::indexing_slicing",
+        "-Aclippy::panic", "-Aclippy::get_unwrap", "-Aclippy::unwrap_in_result",
+        "-Aclippy::panic_in_result_fn", "-Aclippy::unreachable",
+        "-Aclippy::assertions_on_result_states",
+    ],
 ```
 
-Add a `BUCK`-visibility note if needed (load works cross-package via `load("//src:loom_test.bzl", ...)` — confirm the `src/` package exposes the file; if `src/` has no `BUCK`, a `.bzl` is still loadable by path. Verify with a build in Step 6).
+- [ ] **Step 4: Exempt the three non-test-target test sources**
 
-- [ ] **Step 3: Make `loom_fixture_test` inject the same allows**
+These are test code NOT compiled as `rust_test` targets, so `rustc_test_flags` does not reach them. Add a crate-root (or module) `#![allow(...)]` at the very top of each, before any items:
 
-In `src/control-plane/postgres/defs.bzl`, import and append `LOOM_TEST_LINT_ALLOWS` to the `native.rust_test` call's `rustc_flags`:
-
-```python
-load("//src:loom_test.bzl", "LOOM_TEST_LINT_ALLOWS")
-```
-and in the body, change the `native.rust_test(...)` call to merge it:
-```python
-    native.rust_test(
-        name = name,
-        crate = crate,
-        srcs = srcs,
-        crate_root = crate_root,
-        edition = edition,
-        env = fixture_env,
-        deps = deps,
-        rustc_flags = kwargs.pop("rustc_flags", []) + LOOM_TEST_LINT_ALLOWS,
-        **kwargs
-    )
-```
-
-- [ ] **Step 4: Migrate bare `rust_test(` to `loom_rust_test(`**
-
-For each of the 12 BUCK files containing bare `rust_test(` (`grep -rln 'rust_test(' src --include=BUCK`), add `load("//src:loom_test.bzl", "loom_rust_test")` at the top and replace each top-level `rust_test(` call with `loom_rust_test(`. Do NOT touch `loom_fixture_test(` calls (already handled) or `native.rust_test` inside `defs.bzl`. Targets that already pass `rustc_flags` keep them (the wrapper merges).
-
-- [ ] **Step 5: Exempt the two harness sources**
-
-Top of `src/control-plane/testkit/src/lib.rs` (before any items, after the module doc-comment):
+`src/services/query-api/tests/e2e_support.rs` (the one test-support `rust_library`), `src/control-plane/testkit/src/lib.rs` (conformance harness lib), and `src/control-plane/postgres/src/fixture.rs` (fixture harness module):
 ```rust
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
-    reason = "testkit is a conformance test-harness library consumed by test crates, not a production path"
+    reason = "test/fixture harness code, not a production path"
 )]
 ```
-Top of `src/control-plane/postgres/src/fixture.rs`:
-```rust
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "fixture.rs is the postgres test-fixture harness, not a production query path (see CLAUDE.md)"
-)]
-```
-(`allow_attributes` is in the global allowlist, so `#![allow(...)]` is fine; `allow_attributes_without_reason` stays enforced, so the `reason =` is required.)
+Tailor each `reason` (e.g. testkit: "conformance test-harness library"; fixture.rs: "postgres test-fixture harness, not a production query path — see CLAUDE.md"). `allow_attributes` is globally allowed so `#![allow]` is fine; `allow_attributes_without_reason` stays enforced, so the `reason =` is required.
 
-- [ ] **Step 6: Run the gate; confirm only the enforced production set remains red**
+- [ ] **Step 5: Run the gate; confirm only the enforced production set remains red**
 
 Clean buck-out if needed (see ENV), then:
 ```bash
 ./tools/clippy-all.sh > /tmp/clippy_t3.txt 2>&1; echo "exit=$?"
 sed 's/\x1b\[[0-9;]*m//g' /tmp/clippy_t3.txt | grep -oE 'clippy::[a-z_]+' | sort | uniq -c | sort -rn
+sed 's/\x1b\[[0-9;]*m//g' /tmp/clippy_t3.txt | grep -oE '> [^ ]+\.rs' | sort -u | grep -E '/tests/|testkit/src/lib.rs|fixture.rs' || echo "GOOD: no test/harness files remain"
 ```
-Expected: non-zero exit, and the remaining lints are ONLY from the enforced set (`unwrap_used`, `expect_used`, `indexing_slicing`, `map_err_ignore`, `let_underscore_must_use`, `panic`, `format_push_string`, `unused_result_ok`, `unreachable`, `allow_attributes_without_reason`) and ONLY in `src/` non-harness files (no `/tests/`, no `testkit/src/lib.rs`, no `fixture.rs`). If an allowed lint still appears, fix its spelling in Step 1. If a test/harness file still appears, the wrapper/exemption missed it — fix Steps 2-5.
+Expected: non-zero exit; remaining lints are ONLY the enforced set (`unwrap_used`, `expect_used`, `indexing_slicing`, `map_err_ignore`, `let_underscore_must_use`, `panic`, `format_push_string`, `unused_result_ok`, `unreachable`, `allow_attributes_without_reason`) in `src/` non-harness files. If an allowed lint still appears → misspelled in Step 1, fix it. If a `/tests/` file still appears → either `rustc_test_flags` didn't reach it (a `rust_library` test-support crate other than e2e_support — add a `#![allow]`) or the flag isn't wired (recheck Steps 2-3). If `testkit/src/lib.rs` or `fixture.rs` appears → the Step 4 `#![allow]` is missing/misplaced.
 
-- [ ] **Step 7: Commit the policy (config + exemptions; production still red)**
+- [ ] **Step 6: Commit the policy (config + exemptions; production still red)**
 
 ```bash
-git add toolchains/BUCK src/loom_test.bzl src/control-plane/postgres/defs.bzl \
-  src/control-plane/testkit/src/lib.rs src/control-plane/postgres/src/fixture.rs \
-  $(grep -rln 'loom_rust_test(' src --include=BUCK)
-git commit -m "build(lints): enable restriction; allowlist + test/harness exemptions
+git add toolchains/rust_dist.bzl toolchains/BUCK \
+  src/services/query-api/tests/e2e_support.rs \
+  src/control-plane/testkit/src/lib.rs src/control-plane/postgres/src/fixture.rs
+git commit -m "build(lints): enable restriction; allowlist + test exemptions
 
 Enable clippy::restriction alongside pedantic; add the census-driven global
 allow_lints (Billy-Levin enable-broadly-allowlist). Exempt test code from the
-panic-safety lints via a loom_rust_test wrapper + loom_fixture_test, and the two
-test-harness sources (testkit lib, postgres fixture) via crate/module allow.
-Tree intentionally still red on the ~160 enforced production sites; fixed next.
+panic-safety lints via the toolchain's rustc_test_flags (applied by the prelude
+to rust_test targets only), plus a #![allow] on the three test sources not
+compiled as rust_test targets (query-api e2e-support lib, testkit lib, postgres
+fixture). Tree intentionally still red on the ~160 enforced production sites.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
