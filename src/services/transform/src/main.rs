@@ -17,9 +17,24 @@ use object_store::ObjectStore;
 use tokio_util::sync::CancellationToken;
 use transform::{transform_handler, typed_transform_handler};
 
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct TransformConfig {
+    worker: loom_config::WorkerTuning,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
+    let env = service_runtime::env_map();
+    let mut tcfg = TransformConfig::default();
+    if let Some(path) = env.get("LOOM_CONFIG_FILE") {
+        let doc = std::fs::read_to_string(path)
+            .map_err(|e| service_runtime::invalid("LOOM_CONFIG_FILE", e))?;
+        tcfg = service_runtime::parse_config_doc(&doc)?;
+    }
+    tcfg.worker.overlay_env(&env)?;
+    tcfg.worker.validate()?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
     // The queue is backend-neutral (same Postgres tables either way), so the Worker
     // always dequeues through the `PgControlPlane`; the *handler's* `ControlPlane`
@@ -35,7 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let catalog = build_iceberg_catalog(&cfg).await?;
     let cp_for_handler: Arc<dyn ControlPlane> =
         Arc::new(IcebergControlPlane::new(pg.clone(), catalog));
-    let worker = Worker::new(pg, "transform-1", cfg.lock_timeout);
+    let worker = Worker::new(pg, "transform-1", cfg.lock_timeout)
+        .with_poll_interval(tcfg.worker.poll_interval());
     let shutdown = CancellationToken::new();
 
     worker
