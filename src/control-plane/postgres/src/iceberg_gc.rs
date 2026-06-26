@@ -82,7 +82,7 @@ pub async fn gc_table(
     let result = gc_locked(catalog, pool, table, retention).await;
 
     // Rolling back the lock-holding tx releases the advisory lock.
-    let _ = lock_tx.rollback().await;
+    drop(lock_tx.rollback().await);
     result
 }
 

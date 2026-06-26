@@ -125,7 +125,7 @@ impl Queue for PgControlPlane {
             .await
             .map_err(backend)?;
         // A notification, or the polling-fallback timeout — whichever first.
-        let _ = tokio::time::timeout(timeout, listener.recv()).await;
+        drop(tokio::time::timeout(timeout, listener.recv()).await);
         Ok(())
     }
 }

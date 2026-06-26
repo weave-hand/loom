@@ -5,6 +5,7 @@
 //! `IcebergCatalog::inline_live_batch`. External Iceberg clients don't see inline rows
 //! until a future flush. See the slice-A design doc.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use arrow_array::builder::{
@@ -145,7 +146,8 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
             ControlPlaneError::Backend(format!("inline: no pg type for {:?}", c.ty).into())
         })?;
         // Column names come from the trusted schema; quote to preserve case.
-        cols.push_str(&format!(", \"{}\" {}", c.name.replace('"', "\"\""), pg));
+        write!(cols, ", \"{}\" {}", c.name.replace('"', "\"\""), pg)
+            .map_err(|e| ControlPlaneError::Backend(e.into()))?;
     }
     Ok(format!(
         "create table if not exists {} (\

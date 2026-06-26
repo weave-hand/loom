@@ -256,17 +256,35 @@ impl SqlCatalog {
         let max_connections: u32 = config
             .props
             .get("pool.max-connections")
-            .map(|v| v.parse().unwrap())
+            .map(|v| {
+                v.parse::<u32>().map_err(|e| {
+                    Error::new(ErrorKind::Unexpected, format!("invalid pool.max-connections: {e}"))
+                })
+            })
+            .transpose()?
             .unwrap_or(MAX_CONNECTIONS);
         let idle_timeout: u64 = config
             .props
             .get("pool.idle-timeout")
-            .map(|v| v.parse().unwrap())
+            .map(|v| {
+                v.parse::<u64>().map_err(|e| {
+                    Error::new(ErrorKind::Unexpected, format!("invalid pool.idle-timeout: {e}"))
+                })
+            })
+            .transpose()?
             .unwrap_or(IDLE_TIMEOUT);
         let test_before_acquire: bool = config
             .props
             .get("pool.test-before-acquire")
-            .map(|v| v.parse().unwrap())
+            .map(|v| {
+                v.parse::<bool>().map_err(|e| {
+                    Error::new(
+                        ErrorKind::Unexpected,
+                        format!("invalid pool.test-before-acquire: {e}"),
+                    )
+                })
+            })
+            .transpose()?
             .unwrap_or(TEST_BEFORE_ACQUIRE);
 
         let pool = PgPoolOptions::new()
@@ -364,7 +382,7 @@ impl SqlCatalog {
             None => {
                 let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
                 let result = sqlx_query.execute(&mut *tx).await.map_err(from_sqlx_error);
-                let _ = tx.commit().await.map_err(from_sqlx_error);
+                drop(tx.commit().await.map_err(from_sqlx_error));
                 result
             }
         }
@@ -497,7 +515,7 @@ impl SqlCatalog {
             .await?;
 
         if update_result.rows_affected() == 0 {
-            let _ = tx.rollback().await;
+            drop(tx.rollback().await);
             return Err(Error::new(
                 ErrorKind::CatalogCommitConflicts,
                 format!("Commit conflicted for table: {table_ident}"),
@@ -987,7 +1005,7 @@ impl Catalog for SqlCatalog {
             return no_such_table_err(identifier);
         }
 
-        let row = &rows[0];
+        let row = rows.first().ok_or_else(|| Error::new(ErrorKind::Unexpected, "expected at least one row"))?;
         let tbl_metadata_location = row
             .try_get::<String, _>(CATALOG_FIELD_METADATA_LOCATION_PROP)
             .map_err(from_sqlx_error)?;

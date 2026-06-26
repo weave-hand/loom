@@ -50,7 +50,7 @@ pub async fn flush_table(
 
     // End the lock-holding transaction (nothing was written on it; rollback releases
     // the lock). A drop would do the same — this is explicit for clarity.
-    let _ = lock_tx.rollback().await;
+    drop(lock_tx.rollback().await);
     result
 }
 
