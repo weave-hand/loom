@@ -13,7 +13,7 @@ appVersion: "0.1.0"
 kubeVersion: ">=1.27.0-0"
 keywords:
   - data-platform
-  - ducklake
+  - iceberg
   - datafusion
 home: https://github.com/weave-hand/loom
 sources:
