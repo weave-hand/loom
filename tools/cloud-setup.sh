@@ -92,6 +92,7 @@ if [ -n "$REPO" ]; then
     #    snapshot so the session build hits cache instead of re-downloading.
     ( cd "$REPO" && buck2 build --config project.remote_enabled= \
         //tools:jq //tools:rust-code-analysis //tools:lucidshark-duplo \
+        //tools:rust-analyzer //tools:rust-project \
         //src/control-plane/postgres:postgres-bin \
         //src/control-plane/postgres:duckdb-cli \
         //src/control-plane/postgres:libxml2 \

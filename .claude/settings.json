@@ -1,5 +1,8 @@
 {
   "enabledMcpjsonServers": ["buildbuddy"],
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true
+  },
   "permissions": {
     "allow": [
       "mcp__buildbuddy",
