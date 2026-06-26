@@ -11,6 +11,7 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/services/engine-wire:engine-wire",
+        "//src/services/ingest:ingest",
         "//src/services/runtime:runtime",
         "//src/loom-config:loom-config",
         "//third-party:arrow",

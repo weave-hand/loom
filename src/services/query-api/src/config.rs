@@ -31,3 +31,12 @@ impl ServingTuning {
         Ok(())
     }
 }
+
+/// The query-api binary's composed config: routing + serving tuning. `#[serde(default)]`
+/// so a partial config file deserializes (omitted domains fall to their `Default`).
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct QueryApiConfig {
+    pub routing: ingest::config::RoutingTuning,
+    pub serving: ServingTuning,
+}
