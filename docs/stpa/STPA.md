@@ -166,4 +166,3 @@ flowchart TD
 - Is there a stuck-job reaper distinct from lock-expiry reclaim, or does a job whose worker crashes after lock expiry but is never re-eligible (e.g. wrong kind set) stall indefinitely?
 - The DataFusion serving engine registers ALL live Iceberg tables per query (engine-serving/src/serving.rs); a deployment with many tables pays a per-query metadata scan that could become a latency or DoS concern.
 - The engine gRPC service trusts the UDS filesystem boundary for all queue and flush operations — is process-level isolation (container, namespace) sufficient, or should application-level authentication be added before multi-tenant deployment?
-
