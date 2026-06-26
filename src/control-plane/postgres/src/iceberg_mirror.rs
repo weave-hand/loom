@@ -282,7 +282,10 @@ pub async fn mark_dropped(
 /// Build `ProjectedColumn`s from an Iceberg table's current schema (in-memory).
 /// Columns are emitted in schema order; only primitive types are supported (the
 /// only types loom's ontology maps — see `iceberg_type`).
-#[allow(clippy::panic, reason = "columns_of returns Vec not Result; schema invariant violations (missing vector doc, unsupported column type) cannot be recovered from")]
+#[allow(
+    clippy::panic,
+    reason = "columns_of returns Vec not Result; schema invariant violations (missing vector doc, unsupported column type) cannot be recovered from"
+)]
 pub fn columns_of(table: &Table) -> Vec<ProjectedColumn> {
     table
         .metadata()

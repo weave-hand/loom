@@ -69,9 +69,10 @@ pub fn classify_schema_change(
     }
     if incoming.len() < live.len() {
         // `incoming.len() < live.len()` guarantees `incoming.len()` is a valid index into `live`.
-        let name = live
-            .get(incoming.len())
-            .map_or_else(|| "<schema evolution: index out of bounds>".to_string(), |c| c.name.clone());
+        let name = live.get(incoming.len()).map_or_else(
+            || "<schema evolution: index out of bounds>".to_string(),
+            |c| c.name.clone(),
+        );
         return Err(SchemaEvolutionError::ColumnDropped { name });
     }
     // `live.len() <= incoming.len()` is guaranteed by the early return above.

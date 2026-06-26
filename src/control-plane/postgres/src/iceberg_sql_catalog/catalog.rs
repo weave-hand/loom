@@ -258,7 +258,10 @@ impl SqlCatalog {
             .get("pool.max-connections")
             .map(|v| {
                 v.parse::<u32>().map_err(|e| {
-                    Error::new(ErrorKind::Unexpected, format!("invalid pool.max-connections: {e}"))
+                    Error::new(
+                        ErrorKind::Unexpected,
+                        format!("invalid pool.max-connections: {e}"),
+                    )
                 })
             })
             .transpose()?
@@ -268,7 +271,10 @@ impl SqlCatalog {
             .get("pool.idle-timeout")
             .map(|v| {
                 v.parse::<u64>().map_err(|e| {
-                    Error::new(ErrorKind::Unexpected, format!("invalid pool.idle-timeout: {e}"))
+                    Error::new(
+                        ErrorKind::Unexpected,
+                        format!("invalid pool.idle-timeout: {e}"),
+                    )
                 })
             })
             .transpose()?
@@ -1005,7 +1011,9 @@ impl Catalog for SqlCatalog {
             return no_such_table_err(identifier);
         }
 
-        let row = rows.first().ok_or_else(|| Error::new(ErrorKind::Unexpected, "expected at least one row"))?;
+        let row = rows
+            .first()
+            .ok_or_else(|| Error::new(ErrorKind::Unexpected, "expected at least one row"))?;
         let tbl_metadata_location = row
             .try_get::<String, _>(CATALOG_FIELD_METADATA_LOCATION_PROP)
             .map_err(from_sqlx_error)?;

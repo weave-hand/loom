@@ -47,7 +47,10 @@ fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
 
 /// Spawn the worker on BOTH transform kinds; the queue dequeues through `pg`, the
 /// handler commits through a fresh Iceberg control plane over `warehouse`.
-#[allow(clippy::too_many_arguments, reason = "spawn_worker needs pg, cp_h, store, and root_url to fully configure the test worker")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "spawn_worker needs pg, cp_h, store, and root_url to fully configure the test worker"
+)]
 fn spawn_worker(
     pg: &PgControlPlane,
     cp_h: Arc<dyn ControlPlane>,

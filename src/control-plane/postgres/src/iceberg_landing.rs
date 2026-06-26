@@ -54,7 +54,10 @@ fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
 /// of writing real Parquet. `flush_byte_threshold` is the live-inline-byte total
 /// at/above which a `flush_table` job is enqueued after an inline write. Returns
 /// the loom mirror snapshot id either way.
-#[allow(clippy::too_many_arguments, reason = "iceberg landing functions have many required parameters with no sensible grouping")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "iceberg landing functions have many required parameters with no sensible grouping"
+)]
 pub async fn land(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -139,7 +142,10 @@ fn align_to_columns(
 /// `batches` (bare arrow — re-wrapped under the table's field-id schema) as a
 /// real Parquet snapshot running `extras` in the commit tx, and return the mirror
 /// snapshot id. Shared by the landing Parquet path and the flush path.
-#[allow(clippy::too_many_arguments, reason = "iceberg landing functions have many required parameters with no sensible grouping")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "iceberg landing functions have many required parameters with no sensible grouping"
+)]
 pub(crate) async fn append_parquet_snapshot(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -251,7 +257,16 @@ fn coerce_batch_to_ice(
                     )
                 })?;
                 if let Some(control_plane_core::BaseType::Vector(n)) =
-                    control_plane_core::resolve_logical(&columns.get(i).ok_or_else(|| ControlPlaneError::Backend("landing: column index out of range".into()))?.ty)
+                    control_plane_core::resolve_logical(
+                        &columns
+                            .get(i)
+                            .ok_or_else(|| {
+                                ControlPlaneError::Backend(
+                                    "landing: column index out of range".into(),
+                                )
+                            })?
+                            .ty,
+                    )
                 {
                     for r in 0..list.len() {
                         let len = list.value_length(r);
@@ -286,7 +301,10 @@ fn coerce_batch_to_ice(
 /// clients not seeing the new column is the accepted `iss-iceberg-inline-visibility` gap).
 /// loom-governed reads resolve entirely through the mirror, so the new columns/files are
 /// immediately visible. Returns the mirror snapshot id.
-#[allow(clippy::too_many_arguments, reason = "iceberg landing functions have many required parameters with no sensible grouping")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "iceberg landing functions have many required parameters with no sensible grouping"
+)]
 async fn land_additive(
     pool: &PgPool,
     catalog: &SqlCatalog,

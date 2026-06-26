@@ -19,10 +19,7 @@ pub(crate) struct OntologyState {
 impl Ontology for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_type(&self, ty: ObjectType) -> Result<()> {
-        self.ontology
-            .lock()
-            .types
-            .insert(ty.name.0.clone(), ty);
+        self.ontology.lock().types.insert(ty.name.0.clone(), ty);
         Ok(())
     }
 
@@ -51,12 +48,7 @@ impl Ontology for MemoryControlPlane {
 
     async fn list_types(&self, _page: PageReq) -> Result<Page<ObjectType>> {
         Ok(Page::from_full(
-            self.ontology
-                .lock()
-                .types
-                .values()
-                .cloned()
-                .collect(),
+            self.ontology.lock().types.values().cloned().collect(),
         ))
     }
 

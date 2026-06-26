@@ -317,9 +317,6 @@ fn parquet_footer_size(bytes: &[u8]) -> Option<i64> {
     if n < 8 || bytes.get(n - 4..) != Some(b"PAR1") {
         return None;
     }
-    let footer_bytes: [u8; 4] = bytes
-        .get(n - 8..n - 4)?
-        .try_into()
-        .ok()?;
+    let footer_bytes: [u8; 4] = bytes.get(n - 8..n - 4)?.try_into().ok()?;
     Some(u32::from_le_bytes(footer_bytes) as i64)
 }

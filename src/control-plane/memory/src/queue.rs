@@ -26,8 +26,7 @@ impl Queue for MemoryControlPlane {
                     kinds.contains(&r.kind)
                         && r.run_at <= now
                         && (r.state == "available"
-                            || (r.state == "running"
-                                && r.locked_at.is_none_or(|t| t < cutoff)))
+                            || (r.state == "running" && r.locked_at.is_none_or(|t| t < cutoff)))
                 })
             })
             .collect();
