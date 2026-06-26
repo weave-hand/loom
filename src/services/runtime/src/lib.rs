@@ -29,6 +29,8 @@ pub use store_config::{
     build_serving_object_store, build_write_store, local_store,
 };
 
+pub use loom_config::{ConfigError, env_map, invalid, overlay_opt, parse_config_doc};
+
 /// Discrete Postgres connection fields. Feeds the sqlx control-plane pool and the
 /// Iceberg SQL catalog, with no URL parsing in between.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +40,8 @@ pub struct DbConfig {
     pub user: String,
     pub password: String,
     pub dbname: String,
+    /// Max pool connections. `None` ⇒ sqlx default. From `LOOM_DB_MAX_CONNECTIONS`.
+    pub max_connections: Option<u32>,
 }
 
 impl DbConfig {
@@ -93,14 +97,6 @@ pub struct Config {
     pub gc_retention: Duration,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ConfigError {
-    #[error("missing required environment variable: {0}")]
-    MissingVar(String),
-    #[error("invalid value for {var}: {detail}")]
-    Invalid { var: String, detail: String },
-}
-
 impl Config {
     /// Parse from a key->value map. `from_env` wraps this with `std::env::vars()`.
     pub fn from_map(vars: &HashMap<String, String>) -> Result<Config, ConfigError> {
@@ -135,6 +131,14 @@ impl Config {
             None => Duration::from_secs(7 * 24 * 3600),
         };
 
+        let max_connections = match vars.get("LOOM_DB_MAX_CONNECTIONS") {
+            Some(s) => Some(
+                s.parse::<u32>()
+                    .map_err(|e| invalid("LOOM_DB_MAX_CONNECTIONS", e.to_string()))?,
+            ),
+            None => None,
+        };
+
         let data_path = PathBuf::from(req("LOOM_DATA_PATH")?);
         let object_store = ObjectStoreConfig::parse(vars, &data_path).map_err(|e| match e {
             store_config::StoreConfigError::Missing(k) => ConfigError::MissingVar(k),
@@ -155,6 +159,7 @@ impl Config {
                 user: req("LOOM_DB_USER")?,
                 password: req("LOOM_DB_PASSWORD")?,
                 dbname: req("LOOM_DB_NAME")?,
+                max_connections,
             },
             data_path,
             object_store,
@@ -203,8 +208,11 @@ pub fn build_storage_factory(
 
 /// Connect a control-plane pool from the DB config.
 pub async fn build_pool(db: &DbConfig) -> Result<PgPool, RuntimeError> {
-    PgPoolOptions::new()
-        .connect_with(db.pg_connect_options())
+    let mut opts = PgPoolOptions::new();
+    if let Some(n) = db.max_connections {
+        opts = opts.max_connections(n);
+    }
+    opts.connect_with(db.pg_connect_options())
         .await
         .map_err(RuntimeError::Pool)
 }

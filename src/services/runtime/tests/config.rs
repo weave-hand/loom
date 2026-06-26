@@ -89,6 +89,7 @@ fn pg_url_tcp_and_socket() {
         user: "loom".into(),
         password: "secret".into(),
         dbname: "loom".into(),
+        max_connections: None,
     };
     assert_eq!(tcp.pg_url(), "postgres://loom:secret@db.internal:5432/loom");
 
@@ -98,9 +99,33 @@ fn pg_url_tcp_and_socket() {
         user: "loom".into(),
         password: "secret".into(),
         dbname: "loom".into(),
+        max_connections: None,
     };
     assert_eq!(
         socket.pg_url(),
         "postgres://loom:secret@localhost/loom?host=/var/run/postgresql"
     );
+}
+
+#[test]
+fn max_connections_absent_defaults_none() {
+    let cfg = Config::from_map(&full()).unwrap();
+    assert_eq!(cfg.db.max_connections, None);
+}
+
+#[test]
+fn max_connections_parsed() {
+    let mut vars = full();
+    vars.insert("LOOM_DB_MAX_CONNECTIONS".into(), "12".into());
+    let cfg = Config::from_map(&vars).unwrap();
+    assert_eq!(cfg.db.max_connections, Some(12));
+}
+
+#[test]
+fn max_connections_malformed_is_error() {
+    let mut vars = full();
+    vars.insert("LOOM_DB_MAX_CONNECTIONS".into(), "lots".into());
+    let err = Config::from_map(&vars).unwrap_err();
+    assert!(matches!(err, ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_DB_MAX_CONNECTIONS"));
 }
