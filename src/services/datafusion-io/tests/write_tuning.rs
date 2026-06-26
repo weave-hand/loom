@@ -65,6 +65,13 @@ fn validate_rejects_zero_max_files() {
 }
 
 #[test]
+fn validate_rejects_zero_target_file_size() {
+    let c: WriteConfig = serde_json::from_str(r#"{"target_file_size_bytes": 0}"#).unwrap();
+    let err = c.validate().unwrap_err();
+    assert!(format!("{err}").contains("LOOM_WRITE_TARGET_FILE_BYTES"));
+}
+
+#[test]
 fn validate_accepts_defaults() {
     assert!(WriteConfig::default().validate().is_ok());
 }

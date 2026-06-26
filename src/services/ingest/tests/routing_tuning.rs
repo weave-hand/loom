@@ -47,3 +47,10 @@ fn validate_rejects_zero() {
     let r: RoutingTuning = serde_json::from_str(r#"{"inline_byte_limit": 0}"#).unwrap();
     assert!(r.validate().is_err());
 }
+
+#[test]
+fn validate_rejects_nonpositive_flush_threshold() {
+    let r: RoutingTuning = serde_json::from_str(r#"{"flush_byte_threshold": 0}"#).unwrap();
+    let err = r.validate().unwrap_err();
+    assert!(format!("{err}").contains("LOOM_FLUSH_BYTE_THRESHOLD"));
+}
