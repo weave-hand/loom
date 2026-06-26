@@ -21,15 +21,10 @@ fn status(e: control_plane_core::ControlPlaneError) -> Status {
     }
 }
 
-#[expect(
-    clippy::map_err_ignore,
-    reason = "error-handling debt — see docs/error-handling-debt.md"
-)]
 fn parse_id(s: &str) -> std::result::Result<control_plane_core::JobId, Status> {
-    Ok(control_plane_core::JobId(
-        s.parse()
-            .map_err(|_| Status::invalid_argument("bad job id"))?,
-    ))
+    Ok(control_plane_core::JobId(s.parse().map_err(|e| {
+        Status::invalid_argument(format!("bad job id: {e}"))
+    })?))
 }
 
 /// The engine's gRPC service implementation.
