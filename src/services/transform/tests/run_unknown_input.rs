@@ -107,6 +107,7 @@ async fn missing_input_at_files_is_unknown_input() {
     let res = run_transform(
         &cp,
         store,
+        "file:///tmp/loom-test-wh",
         "run-x",
         TransformRequest {
             inputs: &[input],

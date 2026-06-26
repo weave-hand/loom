@@ -128,6 +128,7 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
     .unwrap();
 
     let store_h = store.clone();
+    let root_url = format!("file://{}", writer.data_path().display());
     let token = CancellationToken::new();
     let t = token.clone();
     let worker = Worker::new(cp.clone(), "transform-test", Duration::from_millis(300))
@@ -138,7 +139,8 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
             .run(&["transform".to_string()], t, move |job| {
                 let cp = cp_h.clone();
                 let store = store_h.clone();
-                async move { transform_handler(cp.as_ref(), store, job).await }
+                let root_url = root_url.clone();
+                async move { transform_handler(cp.as_ref(), store, &root_url, job).await }
             })
             .await
     });
@@ -232,6 +234,7 @@ async fn empty_input_runs_transform_count_is_zero() {
     transform::run_transform(
         &cp,
         store.clone(),
+        &format!("file://{}", writer.data_path().display()),
         "run-empty-count",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {
@@ -289,6 +292,7 @@ async fn empty_input_select_star_commits_empty_output() {
     transform::run_transform(
         &cp,
         store.clone(),
+        &format!("file://{}", writer.data_path().display()),
         "run-empty-star",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {

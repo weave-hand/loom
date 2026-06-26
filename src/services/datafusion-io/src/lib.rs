@@ -13,5 +13,6 @@ pub use infer::{
 };
 pub use scan::{ScanError, register_empty_table, scan_table};
 pub use write::{
-    WriteConfig, WriteError, WrittenFile, estimate_partitions, file_stats_from_bytes, write_dataset,
+    WriteConfig, WriteError, WrittenFile, absolute_data_files, estimate_partitions,
+    file_stats_from_bytes, write_dataset,
 };

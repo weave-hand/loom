@@ -44,6 +44,7 @@ struct TransformPayload {
 pub async fn transform_handler(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
+    root_url: &str,
     job: Job,
 ) -> Result<(), JobFailure> {
     let payload: TransformPayload = match serde_json::from_value(job.payload.clone()) {
@@ -80,6 +81,7 @@ pub async fn transform_handler(
     let res = run_transform(
         cp,
         store,
+        root_url,
         &run_id,
         TransformRequest {
             inputs: &inputs,
@@ -113,6 +115,7 @@ struct TypedTransformPayload {
 pub async fn typed_transform_handler(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
+    root_url: &str,
     job: Job,
 ) -> Result<(), JobFailure> {
     let payload: TypedTransformPayload = match serde_json::from_value(job.payload.clone()) {
@@ -131,6 +134,7 @@ pub async fn typed_transform_handler(
     let res = run_typed_transform(
         cp,
         store,
+        root_url,
         &run_id,
         &inputs,
         &output,

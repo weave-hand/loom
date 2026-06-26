@@ -15,28 +15,26 @@ use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use object_store::ObjectStore;
 use tokio_util::sync::CancellationToken;
-use transform::{
-    TransformBackend, parse_transform_backend, transform_handler, typed_transform_handler,
-};
+use transform::{transform_handler, typed_transform_handler};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
-    let backend = parse_transform_backend(std::env::var("LOOM_TRANSFORM_BACKEND").ok().as_deref())?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
     // The queue is backend-neutral (same Postgres tables either way), so the Worker
-    // always dequeues through the DuckLake `PgControlPlane`; only the *handler's*
-    // `ControlPlane` (which `run.rs` commits output through) varies by backend.
+    // always dequeues through the `PgControlPlane`; the *handler's* `ControlPlane`
+    // (which `run.rs` commits output through) writes to Iceberg.
     let pg = service_runtime::control_plane(pool, cfg.lock_timeout);
-    let store: Arc<dyn ObjectStore> = Arc::new(service_runtime::local_store(&cfg.data_path)?);
+    // The write store carries the warehouse `root_url` (scheme-selected `file://`/`s3://`),
+    // which the handlers absolutize the output's data-file paths against so the committed
+    // mirror paths match what the serving engine resolves.
+    let write = service_runtime::build_write_store(&cfg.object_store)?;
+    let store: Arc<dyn ObjectStore> = write.store.clone();
+    let root_url = write.root_url.clone();
 
-    let cp_for_handler: Arc<dyn ControlPlane> = match backend {
-        TransformBackend::DuckLake => Arc::new(pg.clone()),
-        TransformBackend::Iceberg => {
-            let catalog = build_iceberg_catalog(&cfg).await?;
-            Arc::new(IcebergControlPlane::new(pg.clone(), catalog))
-        }
-    };
+    let catalog = build_iceberg_catalog(&cfg).await?;
+    let cp_for_handler: Arc<dyn ControlPlane> =
+        Arc::new(IcebergControlPlane::new(pg.clone(), catalog));
     let worker = Worker::new(pg, "transform-1", cfg.lock_timeout);
     let shutdown = CancellationToken::new();
 
@@ -47,10 +45,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             move |job: Job| {
                 let cp = cp_for_handler.clone();
                 let store = store.clone();
+                let root_url = root_url.clone();
                 async move {
                     match job.kind.as_str() {
-                        "typed-transform" => typed_transform_handler(cp.as_ref(), store, job).await,
-                        "transform" => transform_handler(cp.as_ref(), store, job).await,
+                        "typed-transform" => {
+                            typed_transform_handler(cp.as_ref(), store, &root_url, job).await
+                        }
+                        "transform" => transform_handler(cp.as_ref(), store, &root_url, job).await,
                         other => Err(JobFailure {
                             error: format!("unknown job kind: {other}"),
                             policy: RetryPolicy::Abandon,

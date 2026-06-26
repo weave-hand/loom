@@ -62,8 +62,9 @@ async fn land(
 }
 
 /// Run the worker once over the `transform` queue until the job drains.
-async fn drain_transforms(cp: &PgControlPlane, store: &Arc<dyn ObjectStore>) {
+async fn drain_transforms(cp: &PgControlPlane, store: &Arc<dyn ObjectStore>, root_url: &str) {
     let store_h = store.clone();
+    let root_url = root_url.to_string();
     let token = CancellationToken::new();
     let t = token.clone();
     let worker = Worker::new(cp.clone(), "overwrite-test", Duration::from_millis(300))
@@ -74,7 +75,8 @@ async fn drain_transforms(cp: &PgControlPlane, store: &Arc<dyn ObjectStore>) {
             .run(&["transform".to_string()], t, move |job| {
                 let cp = cp_h.clone();
                 let store = store_h.clone();
-                async move { transform_handler(cp.as_ref(), store, job).await }
+                let root_url = root_url.clone();
+                async move { transform_handler(cp.as_ref(), store, &root_url, job).await }
             })
             .await
     });
@@ -108,6 +110,7 @@ async fn overwrite_replaces_contents_and_preserves_time_travel() {
     writer.bootstrap().await;
     let store: Arc<dyn ObjectStore> =
         Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let root_url = format!("file://{}", writer.data_path().display());
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -150,7 +153,7 @@ async fn overwrite_replaces_contents_and_preserves_time_travel() {
 
     // First overwrite: out := src_a (2 rows). (Output table is new -> create + replace.)
     enqueue_overwrite(&cp, "src_a", "out").await;
-    drain_transforms(&cp, &store).await;
+    drain_transforms(&cp, &store, &root_url).await;
     let out = tref("main", "out");
     let snap_after_a = cp.current_snapshot(&out).await.unwrap().id;
     let count_a = writer
@@ -164,7 +167,7 @@ async fn overwrite_replaces_contents_and_preserves_time_travel() {
 
     // Second overwrite: out := src_b (1 row). Replaces, not appends.
     enqueue_overwrite(&cp, "src_b", "out").await;
-    drain_transforms(&cp, &store).await;
+    drain_transforms(&cp, &store, &root_url).await;
     let count_b = writer
         .query_scalar("SELECT count(*) FROM lake.main.out;")
         .await;

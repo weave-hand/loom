@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use control_plane_core::{ControlPlane, DataFile, FileRef, SnapshotId, TableRef};
 use datafusion::execution::context::SessionContext;
-use datafusion_io::{WriteConfig, scan_table, write_dataset};
+use datafusion_io::{WriteConfig, absolute_data_files, scan_table, write_dataset};
 use object_store::ObjectStore;
 
 /// Tunables for a compaction run.
@@ -48,6 +48,7 @@ pub fn small_files(files: &[FileRef], threshold_bytes: i64) -> Vec<&FileRef> {
 pub async fn compact_table(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
+    root_url: &str,
     run_id: &str,
     table: &TableRef,
     cfg: &CompactConfig,
@@ -81,18 +82,10 @@ pub async fn compact_table(
     // 4. Write the coalesced, size-targeted files.
     let dir_prefix = format!("{}/{}/{}", table.schema, table.name, run_id);
     let written = write_dataset(store, &dir_prefix, schema, &batches, &cfg.write).await?;
-    let new_files: Vec<DataFile> = written
-        .into_iter()
-        .map(|f| DataFile {
-            path: f.path,
-            path_is_relative: true,
-            file_format: control_plane_core::FileFormat::Parquet,
-            record_count: f.record_count,
-            file_size_bytes: f.file_size_bytes,
-            column_stats: f.column_stats,
-            parquet_footer_size: Some(f.footer_size),
-        })
-        .collect();
+    // Store ABSOLUTE mirror paths so the serving engine (which resolves
+    // `iceberg_mirror.data_file.path` as an absolute URL) can read the coalesced files.
+    let new_files: Vec<DataFile> =
+        absolute_data_files(written, root_url, &table.schema, &table.name);
 
     // 5. One Tx: swap the small files for the coalesced ones. No lineage (physical reorg).
     let mut tx = cp.begin().await?;

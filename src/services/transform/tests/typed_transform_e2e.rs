@@ -84,10 +84,12 @@ async fn land(
 fn spawn_worker(
     cp: &PgControlPlane,
     store: &Arc<dyn ObjectStore>,
+    root_url: &str,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let t = token.clone();
     let store_h = store.clone();
+    let root_url = root_url.to_string();
     let cp_h: Arc<dyn ControlPlane> = Arc::new(cp.clone());
     let worker = Worker::new(
         cp.clone(),
@@ -103,12 +105,13 @@ fn spawn_worker(
                 move |job| {
                     let cp = cp_h.clone();
                     let store = store_h.clone();
+                    let root_url = root_url.clone();
                     async move {
                         match job.kind.as_str() {
                             "typed-transform" => {
-                                typed_transform_handler(cp.as_ref(), store, job).await
+                                typed_transform_handler(cp.as_ref(), store, &root_url, job).await
                             }
-                            _ => transform_handler(cp.as_ref(), store, job).await,
+                            _ => transform_handler(cp.as_ref(), store, &root_url, job).await,
                         }
                     }
                 },
@@ -235,7 +238,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
     .unwrap();
 
     // 4. RUN the worker until the job drains.
-    let (token, handle) = spawn_worker(&cp, &store);
+    let (token, handle) = spawn_worker(&cp, &store, &format!("file://{}", writer.data_path().display()));
     tokio::time::sleep(Duration::from_millis(900)).await;
     token.cancel();
     handle.await.unwrap();
@@ -409,7 +412,7 @@ async fn non_conforming_typed_transform_commits_nothing() {
     .await
     .unwrap();
 
-    let (token, handle) = spawn_worker(&cp, &store);
+    let (token, handle) = spawn_worker(&cp, &store, &format!("file://{}", writer.data_path().display()));
     tokio::time::sleep(Duration::from_millis(700)).await;
     token.cancel();
     handle.await.unwrap();

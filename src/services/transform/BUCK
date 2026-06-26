@@ -66,15 +66,6 @@ rust_test(
     ],
 )
 
-rust_test(
-    name = "transform-backend",
-    crate = "transform_backend",
-    srcs = ["tests/transform_backend.rs"],
-    crate_root = "tests/transform_backend.rs",
-    edition = "2024",
-    deps = [":transform"],
-)
-
 loom_fixture_test(
     name = "iceberg-backend-e2e",
     crate = "iceberg_backend_e2e",
@@ -86,6 +77,7 @@ loom_fixture_test(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/services/datafusion-io:datafusion-io",
+        "//src/services/engine-serving:engine-serving",
         "//third-party:arrow",
         "//third-party:iceberg",
         "//third-party:object_store",

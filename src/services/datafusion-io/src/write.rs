@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use bytes::Bytes;
-use control_plane_core::{ColumnStat, StatValue};
+use control_plane_core::{ColumnStat, DataFile, FileFormat, StatValue};
 use datafusion::common::config::TableParquetOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::datasource::MemTable;
@@ -163,6 +163,37 @@ pub struct WrittenFile {
     pub file_size_bytes: i64,
     pub footer_size: i64,
     pub column_stats: Vec<ColumnStat>,
+}
+
+/// Promote the table-relative `WrittenFile`s from [`write_dataset`] into absolute
+/// [`DataFile`]s for a snapshot commit. `write_dataset` returns each file's path
+/// relative to the table directory (e.g. `"<run_id>/part-0.parquet"`); the snapshot
+/// mirror — and the DataFusion serving path that reads it (`IcebergMirrorTableProvider`,
+/// which resolves `iceberg_mirror.data_file.path` as an ABSOLUTE URL) — needs the full
+/// `{root_url}/{schema}/{table}/{rel}` path with `path_is_relative = false`.
+///
+/// This is the single source of truth for that promotion, shared by the transform
+/// (`run.rs`), Iceberg compaction (`compact.rs`), and matching the worker compaction
+/// path (`worker/src/compact.rs`) — so a relative path can never leak into the mirror
+/// and silently make a transform-derived dataset unreadable through serving.
+pub fn absolute_data_files(
+    written: Vec<WrittenFile>,
+    root_url: &str,
+    schema: &str,
+    table: &str,
+) -> Vec<DataFile> {
+    written
+        .into_iter()
+        .map(|w| DataFile {
+            path: format!("{root_url}/{schema}/{table}/{}", w.path),
+            path_is_relative: false,
+            file_format: FileFormat::Parquet,
+            record_count: w.record_count,
+            file_size_bytes: w.file_size_bytes,
+            column_stats: w.column_stats,
+            parquet_footer_size: Some(w.footer_size),
+        })
+        .collect()
 }
 
 fn min_stat(stats: &Statistics) -> Option<StatValue> {

@@ -22,10 +22,13 @@ pub enum TypedTransformError {
     Transform(#[from] TransformError),
 }
 
-/// Run one typed transform. `run_id` is a caller-unique output-file prefix (a UUID).
+/// Run one typed transform. `run_id` is a caller-unique output-file prefix (a UUID);
+/// `root_url` is the warehouse root the output's paths are absolutized against.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_typed_transform(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
+    root_url: &str,
     run_id: &str,
     inputs: &[TypeName],
     output: &TypeName,
@@ -78,6 +81,7 @@ pub async fn run_typed_transform(
     run_transform(
         cp,
         store,
+        root_url,
         run_id,
         TransformRequest {
             inputs: &specs,

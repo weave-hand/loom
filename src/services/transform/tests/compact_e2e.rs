@@ -97,7 +97,7 @@ async fn compact_coalesces_small_files_and_preserves_time_travel() {
         small_file_threshold_bytes: 10 * 1024 * 1024,
         write: WriteConfig::default(),
     };
-    let snap = compact_table(&cp, store.clone(), "compact-1", &acc, &cfg)
+    let snap = compact_table(&cp, store.clone(), &format!("file://{}", writer.data_path().display()), "compact-1", &acc, &cfg)
         .await
         .unwrap()
         .expect("compaction produced a snapshot");
@@ -124,7 +124,7 @@ async fn compact_coalesces_small_files_and_preserves_time_travel() {
     );
 
     // No-op: one coalesced file remains (< 2 small files) -> None, no new snapshot.
-    let again = compact_table(&cp, store.clone(), "compact-2", &acc, &cfg)
+    let again = compact_table(&cp, store.clone(), &format!("file://{}", writer.data_path().display()), "compact-2", &acc, &cfg)
         .await
         .unwrap();
     assert!(again.is_none(), "fewer than two small files -> no-op");
@@ -195,7 +195,7 @@ async fn compact_leaves_large_files_untouched() {
         small_file_threshold_bytes: large.file_size_bytes,
         write: WriteConfig::default(),
     };
-    let snap = compact_table(&cp, store.clone(), "mix-1", &mixed, &cfg)
+    let snap = compact_table(&cp, store.clone(), &format!("file://{}", writer.data_path().display()), "mix-1", &mixed, &cfg)
         .await
         .unwrap()
         .expect("the three small files were compacted");
