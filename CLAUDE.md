@@ -49,6 +49,22 @@ Remote execution runs through BuildBuddy (configured under `[buck2_re_client]` i
 - **`//tools:lucidshark-duplo`** — duplicate-code detector ([toniantunovi/lucidshark-duplo](https://github.com/toniantunovi/lucidshark-duplo)); drives the `loom-duplication` routine. Ships as `.tar.gz` with the `lucidshark-duplo` binary at the archive root (no wrapper dir). Invoke as `buck2 run //tools:lucidshark-duplo -- <file-list> --json -m 20`. To bump: update `DUPLO_VERSION` in `tools/BUCK` and refresh each `sha256` from the new release's `.tar.gz` assets.
 - **`tools/env.sh` / `tools/loom-refresh`** — dev-shell activation. `eval "$(./tools/env.sh)"` (or `direnv allow` for the checked-in `.envrc`) puts the hermetic Rust toolchain (`cargo`/`rustc`/`rustfmt`, `cargo clippy`) and the dev-tool binaries (`reindeer`/`prek`/`btd`/`supertd`) on `PATH` via symlinks under `.loom/bin` (gitignored). The Rust toolchain's real `bin/` goes on PATH (sysroot stays auto-detected); dev tools point at the concrete per-arch genrules, not the `command_alias` trampolines (those break when symlinked). First-party `//src` binaries are exposed by name but only built/repointed by `tools/loom-refresh`, never on activation.
 
+## Code navigation
+
+Navigate loom's Rust with `Grep` / `Glob` / `Read` (and `Explore` subagents for
+breadth). The **`rust-analyzer` LSP is NOT available in cloud / automated
+sessions** — it was backed out of the cloud setup because driving it makes the
+buck2 rust-project integration run check builds in a *second* `rust-analyzer`
+isolation-dir buck-out, and cloud sessions lack the disk for it. So the
+`rust-analyzer-lsp` plugin is not enabled in this repo's `.claude/settings.json`,
+`tools/cloud-setup.sh` no longer pre-warms `//tools:rust-analyzer`, and
+`tools/cloud-session-start.sh` no longer regenerates `rust-project.json`. **Don't
+reach for the `LSP` tool** — `ToolSearch "select:LSP"` returns nothing here. The
+**`loom-code-navigation`** skill documents grep-based navigation patterns. Local
+dev can still run rust-analyzer if a developer wires it up themselves (see
+`DEVELOPING.md` + their own user-global plugin enablement) — that's a per-developer
+choice, not something these routines depend on.
+
 ## Third-party Rust deps
 
 Managed by reindeer in **non-vendored (http_archive) mode** — generated rules download each crate's `.crate` from crates.io at build time; sources are not checked in. Config is `reindeer.toml` at the repo root (paths in it are relative to the repo root), pointing at the **workspace** `Cargo.toml`. First-party crates (workspace members like `src/hello`) are written by hand; reindeer only emits third-party rules.
