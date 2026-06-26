@@ -39,8 +39,8 @@ pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
 }
 
 /// The `ActionEngine` for the Iceberg serving backend: a governed typed-insert is
-/// built into the same one-row batch the DuckLake writer uses, encoded to Arrow IPC,
-/// and forwarded to the atomic inline-write seam `iceberg_landing::land`. A single
+/// built into a one-row batch, encoded to Arrow IPC, and forwarded to the atomic
+/// inline-write seam `iceberg_landing::land`. A single
 /// action row inlines (mirror-only typed rows): one Postgres transaction committing
 /// the row and its lineage together, drained to real Parquet later by the flush
 /// vertical. Holds the same dependencies as ingest's `IcebergMaterializer`.

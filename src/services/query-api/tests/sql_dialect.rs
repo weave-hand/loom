@@ -2,7 +2,8 @@ use control_plane_core::{Aggregation, CompareOp, LinkBacking, RowFilter, ScalarV
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
 use query_api::sql::{
-    DerivedAggregate, DerivedSelect, DuckDbDialect, SqlDialect, compile_select, compile_select_with,
+    DataFusionDialect, DerivedAggregate, DerivedSelect, SqlDialect, compile_select,
+    compile_select_with,
 };
 
 struct BacktickDialect;
@@ -30,14 +31,14 @@ fn quote_ident_escapes_embedded_double_quote() {
     // A trusted-but-unvalidated identifier containing a `"` must not panic the
     // request thread; it is escaped per SQL identifier rules (`"` -> `""`).
     // See iss-quote-ident-panic.
-    let d = DuckDbDialect;
+    let d = DataFusionDialect;
     assert_eq!(d.quote_ident("we\"ird"), "\"we\"\"ird\"");
     // An ordinary identifier is unchanged apart from the surrounding quotes.
     assert_eq!(d.quote_ident("plain"), "\"plain\"");
 }
 
 #[test]
-fn default_compile_select_equals_explicit_duckdb() {
+fn default_compile_select_equals_explicit_datafusion() {
     let f = RowFilter::Compare {
         property: "status".into(),
         op: CompareOp::Eq,
@@ -54,7 +55,7 @@ fn default_compile_select_equals_explicit_duckdb() {
     )
     .unwrap();
     let b = compile_select_with(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &t(),
         &["id".into()],
         &[],
@@ -66,7 +67,7 @@ fn default_compile_select_equals_explicit_duckdb() {
     .unwrap();
     assert_eq!(
         a, b,
-        "the default wrapper must equal explicit DuckDbDialect"
+        "the default wrapper must equal explicit DataFusionDialect"
     );
 }
 
@@ -96,22 +97,16 @@ fn dialect_controls_quoting_and_placeholders() {
 }
 
 #[test]
-fn duckdb_dialect_requests_order_barrier() {
-    use query_api::sql::{DuckDbDialect, SqlDialect};
-    assert!(DuckDbDialect.limit_needs_order_barrier());
-}
-
-#[test]
-fn datafusion_dialect_keeps_bare_limit_and_renders_like_duckdb() {
-    use query_api::sql::{DataFusionDialect, DuckDbDialect, SqlDialect};
+fn datafusion_dialect_emits_bare_limit() {
+    // The sole serving dialect emits a bare `LIMIT` (no ORDER BY barrier): DataFusion
+    // has no multi-file `LIMIT` corruption bug (iss-multi-file-limit-misread).
     let df = DataFusionDialect;
-    let duck = DuckDbDialect;
-    // No barrier on the DataFusion path (it has no multi-file LIMIT bug).
-    assert!(!df.limit_needs_order_barrier());
-    // Identical rendering to DuckDB: the compiled SQL is valid for both engines.
-    assert_eq!(df.quote_ident("a\"b"), duck.quote_ident("a\"b"));
-    assert_eq!(df.placeholder(3), duck.placeholder(3));
-    assert_eq!(df.limit_clause(1000), duck.limit_clause(1000));
+    assert_eq!(df.limit_clause(1000), "LIMIT 1000");
+    let (sql, _params) = compile_select(&t(), &["id".into()], &[], &[], &[], &[], 1000).unwrap();
+    assert_eq!(
+        sql, r#"SELECT "id" FROM "main"."orders" LIMIT 1000"#,
+        "bare LIMIT, no ORDER BY barrier: {sql}"
+    );
 }
 
 #[test]

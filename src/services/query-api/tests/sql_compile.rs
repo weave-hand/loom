@@ -32,7 +32,7 @@ fn projects_allowed_columns_and_quotes_identifiers() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id", "status" FROM "main"."orders" ORDER BY "id", "status" LIMIT 100"#
+        r#"SELECT "id", "status" FROM "main"."orders" LIMIT 100"#
     );
     assert!(params.is_empty());
 }
@@ -56,7 +56,7 @@ fn compiles_acl_compare_leaf_as_bound_param() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) ORDER BY "id" LIMIT 100"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 100"#
     );
     assert_eq!(params, vec![SqlValue::Text("open".into())]);
 }
@@ -94,7 +94,7 @@ fn compiles_and_or_not_tree() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "a" FROM "main"."orders" WHERE (("a" = ?) AND (("b" > ?) OR (NOT ("c" IS NULL)))) ORDER BY "a" LIMIT 10"#
+        r#"SELECT "a" FROM "main"."orders" WHERE (("a" = ?) AND (("b" > ?) OR (NOT ("c" IS NULL)))) LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Int(1), SqlValue::Int(2)]);
 }
@@ -121,7 +121,7 @@ fn expands_in_list_into_placeholders() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("region" IN (?, ?)) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("region" IN (?, ?)) LIMIT 10"#
     );
     assert_eq!(
         params,
@@ -149,7 +149,7 @@ fn ands_acl_filter_with_request_equality_filter() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("tenant" = ?) AND ("status" = ?) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("tenant" = ?) AND ("status" = ?) LIMIT 10"#
     );
     assert_eq!(
         params,
@@ -179,7 +179,7 @@ fn expands_not_in_list_into_placeholders() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("region" NOT IN (?, ?)) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("region" NOT IN (?, ?)) LIMIT 10"#
     );
     assert_eq!(
         params,
@@ -207,7 +207,7 @@ fn compiles_is_not_null_without_a_param() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
     );
     assert!(params.is_empty());
 }
@@ -220,7 +220,7 @@ fn eq_filters_only_form_the_where_clause() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Text("open".into())]);
 }
@@ -239,7 +239,7 @@ fn masks_a_column_with_marker() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id", '***' AS "secret" FROM "main"."orders" ORDER BY "id" LIMIT 100"#
+        r#"SELECT "id", '***' AS "secret" FROM "main"."orders" LIMIT 100"#
     );
     assert!(
         params.is_empty(),
@@ -261,7 +261,7 @@ fn masking_preserves_projection_order_and_other_columns() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "a", '***' AS "b", "c" FROM "main"."orders" ORDER BY "a", "c" LIMIT 10"#
+        r#"SELECT "a", '***' AS "b", "c" FROM "main"."orders" LIMIT 10"#
     );
 }
 
@@ -320,7 +320,7 @@ fn derived_fk_count_compiles_to_a_correlated_subquery() {
         sql,
         "SELECT \"id\", (SELECT COUNT(*) FROM \"main\".\"orders\" sub \
          WHERE sub.\"customer_id\" = o.\"id\") AS \"orderCount\" \
-         FROM \"main\".\"customer\" o ORDER BY \"id\" LIMIT 100"
+         FROM \"main\".\"customer\" o LIMIT 100"
     );
     assert!(params.is_empty());
 }
@@ -368,7 +368,7 @@ fn derived_jointable_sum_with_target_filter_orders_params_first() {
         "SELECT \"id\", (SELECT COALESCE(SUM(sub.\"amount\"), 0) FROM \"main\".\"orders\" sub \
          JOIN \"main\".\"customer_order\" j ON j.\"order_id\" = sub.\"id\" \
          WHERE j.\"customer_id\" = o.\"id\" AND (sub.\"status\" = ?)) AS \"totalSpend\" \
-         FROM \"main\".\"customer\" o WHERE (\"region\" = ?) ORDER BY \"id\" LIMIT 100"
+         FROM \"main\".\"customer\" o WHERE (\"region\" = ?) LIMIT 100"
     );
     assert_eq!(
         params,
@@ -397,7 +397,7 @@ fn masked_derived_emits_marker_no_subquery_no_alias() {
     .unwrap();
     assert_eq!(
         sql,
-        "SELECT \"id\", '***' AS \"orderCount\" FROM \"main\".\"customer\" ORDER BY \"id\" LIMIT 100"
+        "SELECT \"id\", '***' AS \"orderCount\" FROM \"main\".\"customer\" LIMIT 100"
     );
     assert!(params.is_empty());
 }
@@ -451,7 +451,7 @@ fn chain_two_hop_fk_compiles_to_nested_joins() {
         "SELECT DISTINCT t_2.\"id\", t_2.\"sku\" FROM \"main\".\"line_items\" t_2 \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_0.\"region\" = ?) ORDER BY t_2.\"id\", t_2.\"sku\" LIMIT 100"
+         WHERE (t_0.\"region\" = ?) LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("CA".into())]);
 }
@@ -495,7 +495,7 @@ fn chain_fk_then_jointable_adds_mapping_join_for_that_hop_only() {
          JOIN \"main\".\"order_tag\" j2 ON j2.\"tag_id\" = t_2.\"id\" \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = j2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         ORDER BY t_2.\"name\" LIMIT 100"
+         LIMIT 100"
     );
     assert!(params.is_empty());
 }
@@ -539,7 +539,7 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_0.\"region\" = ?) AND (t_1.\"status\" = ?) ORDER BY t_2.\"id\" LIMIT 100"
+         WHERE (t_0.\"region\" = ?) AND (t_1.\"status\" = ?) LIMIT 100"
     );
     assert_eq!(
         params,
@@ -578,7 +578,7 @@ fn chain_single_hop_jointable_renders_j1_mapping() {
         "SELECT DISTINCT t_1.\"name\" FROM \"main\".\"tags\" t_1 \
          JOIN \"main\".\"customer_tag\" j1 ON j1.\"tag_id\" = t_1.\"id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = j1.\"customer_id\" \
-         ORDER BY t_1.\"name\" LIMIT 100"
+         LIMIT 100"
     );
     assert!(params.is_empty());
 }
@@ -617,7 +617,7 @@ fn chain_single_hop_reproduces_traversal_semantics() {
         sql,
         "SELECT DISTINCT t_1.\"id\", '***' AS \"secret\" FROM \"main\".\"orders\" t_1 \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_0.\"region\" = ?) ORDER BY t_1.\"id\" LIMIT 100"
+         WHERE (t_0.\"region\" = ?) LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("CA".into())]);
 }
@@ -657,7 +657,7 @@ fn chain_eq_filter_on_final_target_binds_at_t_k() {
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_2.\"sku\" = ?) ORDER BY t_2.\"id\" LIMIT 100"
+         WHERE (t_2.\"sku\" = ?) LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("A".into())]);
 }
@@ -697,7 +697,7 @@ fn chain_eq_filters_bind_per_position_in_chain_order() {
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"order_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_0.\"region\" = ?) AND (t_1.\"id\" = ?) ORDER BY t_2.\"id\" LIMIT 100"
+         WHERE (t_0.\"region\" = ?) AND (t_1.\"id\" = ?) LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Text("CA".into()), SqlValue::Int(10)]);
 }
@@ -712,7 +712,7 @@ fn caller_predicate_gt_renders_with_param() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" > ?) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" > ?) LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Int(100)]);
 }
@@ -727,7 +727,7 @@ fn caller_predicate_in_expands_placeholders() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("status" IN (?, ?)) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("status" IN (?, ?)) LIMIT 10"#
     );
     assert_eq!(
         params,
@@ -745,7 +745,7 @@ fn caller_predicate_isnotnull_no_param() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
     );
     assert!(params.is_empty());
 }
@@ -767,56 +767,9 @@ fn caller_predicate_range_two_same_column_ands() {
     let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
     assert_eq!(
         sql,
-        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" >= ?) AND ("amount" <= ?) ORDER BY "id" LIMIT 10"#
+        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" >= ?) AND ("amount" <= ?) LIMIT 10"#
     );
     assert_eq!(params, vec![SqlValue::Int(100), SqlValue::Int(200)]);
-}
-
-#[test]
-fn select_emits_order_barrier_before_limit_on_duckdb() {
-    use control_plane_core::TableRef;
-    use query_api::sql::compile_select;
-    let table = TableRef {
-        schema: "main".into(),
-        name: "t".into(),
-    };
-    let (sql, _params) = compile_select(
-        &table,
-        &["id".to_string(), "name".to_string()],
-        &[], // mask_cols
-        &[], // row_filters
-        &[], // predicates
-        &[], // derived
-        1000,
-    )
-    .unwrap();
-    // The barrier orders by the projected visible columns, before the LIMIT.
-    assert!(
-        sql.contains(r#"ORDER BY "id", "name" LIMIT 1000"#),
-        "expected ORDER BY barrier before LIMIT, got: {sql}"
-    );
-}
-
-#[test]
-fn select_order_key_excludes_masked_columns() {
-    use control_plane_core::TableRef;
-    use query_api::sql::compile_select;
-    let table = TableRef {
-        schema: "main".into(),
-        name: "t".into(),
-    };
-    let (sql, _params) = compile_select(
-        &table,
-        &["id".to_string(), "secret".to_string()],
-        &["secret".to_string()], // mask "secret"
-        &[],
-        &[],
-        &[],
-        1000,
-    )
-    .unwrap();
-    // Masked column is not an order key; only the visible "id" is.
-    assert!(sql.contains(r#"ORDER BY "id" LIMIT 1000"#), "got: {sql}");
 }
 
 #[test]
@@ -846,42 +799,7 @@ fn caller_predicate_binds_at_chain_alias() {
         sql,
         "SELECT DISTINCT t_1.\"id\" FROM \"main\".\"orders\" t_1 \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
-         WHERE (t_1.\"amount\" > ?) ORDER BY t_1.\"id\" LIMIT 100"
+         WHERE (t_1.\"amount\" > ?) LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Int(50)]);
-}
-
-#[test]
-fn chain_emits_order_barrier_before_limit_on_duckdb() {
-    use query_api::sql::compile_chain;
-    // 1-hop FK chain: customer -> orders (mirrors chain_single_hop_reproduces_traversal_semantics)
-    let types = vec![
-        ChainType {
-            table: tr("main", "customer"),
-            row_filters: vec![],
-            predicates: vec![],
-        },
-        ChainType {
-            table: tr("main", "orders"),
-            row_filters: vec![],
-            predicates: vec![],
-        },
-    ];
-    let hops = vec![LinkBacking::ForeignKey {
-        from_column: "id".into(),
-        to_column: "customer_id".into(),
-    }];
-    let (sql, _params) = compile_chain(
-        &types,
-        &hops,
-        &["id".to_string(), "sku".to_string()],
-        &[],
-        1000,
-    )
-    .unwrap();
-    // Chain projects the final target alias t_1; order key is its visible cols.
-    assert!(
-        sql.contains(r#"ORDER BY t_1."id", t_1."sku" LIMIT 1000"#),
-        "got: {sql}"
-    );
 }

@@ -1,4 +1,4 @@
-//! The typed transform primitive: resolve input/output ontology types to their DuckLake
+//! The typed transform primitive: resolve input/output ontology types to their physical
 //! tables, run the SQL (written in type terms), validate the result conforms to the
 //! output type, and commit — emitting first-class type-named lineage. Delegates the
 //! scan/SQL/write/commit skeleton to `run_transform`.

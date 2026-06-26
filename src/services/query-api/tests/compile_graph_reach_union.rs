@@ -7,7 +7,7 @@
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{DuckDbDialect, compile_graph_reach_union};
+use query_api::sql::{DataFusionDialect, compile_graph_reach_union};
 
 fn person() -> TableRef {
     TableRef {
@@ -39,7 +39,7 @@ fn two_self_links_union_with_row_filter() {
         value: ScalarValue::Bool(true),
     }];
     let (sql, params) = compile_graph_reach_union(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &person(),
         "id",
         &[fk, jt],
@@ -117,7 +117,7 @@ fn single_self_link_with_seed_predicate() {
         values: vec![SqlValue::Int(7)],
     }];
     let (sql, params) = compile_graph_reach_union(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &person(),
         "id",
         &[fk],
@@ -143,27 +143,4 @@ fn single_self_link_with_seed_predicate() {
     // Only the seed In value is bound (no row-filters, no projection filters).
     assert_eq!(params.len(), 1, "seed id only; got {params:?}");
     assert_eq!(params[0], SqlValue::Int(7));
-}
-
-#[test]
-fn graph_reach_union_order_barrier_present() {
-    // Single FK self-link; identity = "id" visible -> ORDER BY p."id" before LIMIT.
-    let fk = LinkBacking::ForeignKey {
-        from_column: "parent_id".into(),
-        to_column: "id".into(),
-    };
-    let (sql, _params) = compile_graph_reach_union(
-        &DuckDbDialect,
-        &person(),
-        "id",
-        &[fk],
-        &[],
-        &[],
-        &["id".to_string(), "name".to_string()],
-        &[],
-        2,
-        500,
-    )
-    .unwrap();
-    assert!(sql.contains(r#"ORDER BY p."id" LIMIT 500"#), "got: {sql}");
 }

@@ -1,6 +1,6 @@
-//! DuckLake <-> DataFusion IO: write Arrow batches as size-targeted Snappy Parquet
-//! into object storage (with the per-file DuckLake stats the snapshot-commit
-//! primitive needs), read a DuckLake table's Parquet back as a DataFusion table,
+//! Table-format <-> DataFusion IO: write Arrow batches as size-targeted Snappy Parquet
+//! into object storage (with the per-file `DataFile` stats the snapshot-commit
+//! primitive needs), read a table's Parquet back as a DataFusion table,
 //! and infer loom logical column specs from an Arrow schema. Shared by `ingest` and
 //! `transform`.
 

@@ -9,7 +9,7 @@
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{ChainType, DuckDbDialect, compile_graph_reach_tail};
+use query_api::sql::{ChainType, DataFusionDialect, compile_graph_reach_tail};
 
 fn tref(n: &str) -> TableRef {
     TableRef {
@@ -42,7 +42,7 @@ fn fk_core_single_tail_shape() {
         to_column: "id".into(),
     }];
     let (sql, params) = compile_graph_reach_tail(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &tref("person"),
         "id",
         &core,
@@ -130,7 +130,7 @@ fn param_order_seed_core_tail() {
         to_column: "id".into(),
     }];
     let (sql, params) = compile_graph_reach_tail(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &tref("person"),
         "id",
         &core,
@@ -204,7 +204,7 @@ fn join_table_core_and_multi_hop_tail() {
         },
     ];
     let (sql, _params) = compile_graph_reach_tail(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &tref("person"),
         "id",
         &core,
@@ -241,48 +241,4 @@ fn join_table_core_and_multi_hop_tail() {
         sql.contains(r#"t_0."id" IN (SELECT id FROM reach WHERE depth >= 1)"#),
         "membership glue on t_0: {sql}"
     );
-}
-
-#[test]
-fn graph_reach_tail_order_barrier_present() {
-    // Person --knows(FK)*--> Person, tail --worksAt(FK)--> Company. One tail hop => k=1,
-    // final_alias = "t_1". Project ["id"]; identity (core Person) is not the tail target's
-    // column, so pass None -> order key = visible projected tail cols -> t_1."id".
-    let core = LinkBacking::ForeignKey {
-        from_column: "knows_id".into(),
-        to_column: "id".into(),
-    };
-    let tail_types = vec![
-        ChainType {
-            table: tref("person"),
-            row_filters: vec![],
-            predicates: vec![],
-        },
-        ChainType {
-            table: tref("company"),
-            row_filters: vec![],
-            predicates: vec![],
-        },
-    ];
-    let tail_hops = vec![LinkBacking::ForeignKey {
-        from_column: "worksat_id".into(),
-        to_column: "id".into(),
-    }];
-    let (sql, _params) = compile_graph_reach_tail(
-        &DuckDbDialect,
-        &tref("person"),
-        "id",
-        &core,
-        &[],
-        &[],
-        &tail_types,
-        &tail_hops,
-        &["id".to_string()],
-        &[],
-        3,
-        250,
-    )
-    .unwrap();
-    // Final alias is t_1; order key is the visible projected tail col qualified there.
-    assert!(sql.contains(r#"ORDER BY t_1."id" LIMIT 250"#), "got: {sql}");
 }

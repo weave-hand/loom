@@ -1,4 +1,4 @@
-//! The transform primitive: resolve input DuckLake table(s), have DataFusion run a SQL
+//! The transform primitive: resolve input table(s), have DataFusion run a SQL
 //! query over them, and commit the result as a new snapshot of the output table plus
 //! lineage (inputs -> output), atomically. Append semantics. Shared by the physical
 //! path (inputs registered under their table name) and the typed path (registered under

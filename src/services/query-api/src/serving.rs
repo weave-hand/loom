@@ -13,7 +13,7 @@ use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use async_trait::async_trait;
 use control_plane_core::{BaseType, ColumnSpec, resolve_logical};
 
-use crate::sql::{DuckDbDialect, SqlDialect};
+use crate::sql::{DataFusionDialect, SqlDialect};
 
 /// A backend-neutral scalar cell. Scalar-only by design (lists are expanded into
 /// placeholders before binding — see sql::compile_select_with).
@@ -187,11 +187,11 @@ pub trait ServingEngine: Send + Sync {
     /// Execute read-only `sql`, binding `params` positionally (`?` placeholders).
     async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError>;
 
-    /// The SQL dialect this engine speaks. Defaults to DuckDB for backward
-    /// compatibility; the in-process Iceberg/DataFusion engine overrides this with
-    /// `DataFusionDialect`.
+    /// The SQL dialect this engine speaks. Defaults to `DataFusionDialect` — loom's
+    /// sole serving dialect. (Production reads go through `EngineServingClient`, which
+    /// also overrides this with `DataFusionDialect`.)
     fn dialect(&self) -> &'static dyn SqlDialect {
-        &DuckDbDialect
+        &DataFusionDialect
     }
 }
 

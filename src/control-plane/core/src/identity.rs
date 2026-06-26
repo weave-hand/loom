@@ -1,4 +1,4 @@
-//! loom's canonical identity for a dataset it governs — a physical DuckLake table.
+//! loom's canonical identity for a dataset it governs — a physical Iceberg table.
 //! Bridges catalog `TableRef` and lineage `DatasetRef` so the two stop being joined by
 //! hand-built strings. Pure logic, no I/O. See
 //! docs/superpowers/specs/2026-06-12-qualified-dataset-identity-design.md.
@@ -13,7 +13,7 @@ use crate::ontology::TypeName;
 /// datasource-derived namespaces and are NOT loom-namespaced.
 pub const LOOM_DATASET_NAMESPACE: &str = "loom";
 
-/// loom's canonical identity for a dataset it governs — a physical DuckLake table. The
+/// loom's canonical identity for a dataset it governs — a physical Iceberg table. The
 /// deployment-independent logical identity that bridges catalog `TableRef` and lineage
 /// `DatasetRef`. An ontology type reaches its dataset through `ObjectType.table ->
 /// DatasetId`; a type-level variant is an additive change if type-level lineage lands.

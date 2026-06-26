@@ -11,30 +11,23 @@ use crate::filter::CallerPredicate;
 use crate::serving::SqlValue;
 
 /// The dialect-variant tokens of the read-SQL the compiler emits. The compiler is
-/// otherwise dialect-neutral (ANSI joins/predicates); only these three knobs differ
-/// across the serving engines loom might target. Extend the trait only when a real
-/// dialect needs a token that is currently hardcoded (e.g. an aggregate spelling).
+/// otherwise dialect-neutral (ANSI joins/predicates); only these knobs differ across
+/// the serving engines loom might target. Extend the trait only when a real dialect
+/// needs a token that is currently hardcoded (e.g. an aggregate spelling).
 pub trait SqlDialect: Send + Sync {
     /// Quote a (trusted, ontology/ACL-derived) identifier.
     fn quote_ident(&self, id: &str) -> String;
-    /// The placeholder for the `one_based`-th bound parameter. DuckDB ignores the
-    /// index (`?`); a positional dialect would render `$1`, `$2`, …​.
+    /// The placeholder for the `one_based`-th bound parameter. The DataFusion engine
+    /// ignores the index (`?`); a positional dialect would render `$1`, `$2`, …​.
     fn placeholder(&self, one_based: usize) -> String;
     /// The trailing row-limit clause (no leading space added by the dialect).
     fn limit_clause(&self, limit: u32) -> String;
-    /// Whether this dialect needs a stable `ORDER BY` barrier before a pushed-down
-    /// `LIMIT` to avoid the multi-file Parquet `LIMIT` corruption (an upstream
-    /// DuckDB/DuckLake bug — `iss-multi-file-limit-misread`). Defaulted `false`;
-    /// only `DuckDbDialect` opts in. An engine without the bug keeps the bare `LIMIT`.
-    fn limit_needs_order_barrier(&self) -> bool {
-        false
-    }
 }
 
-/// The DuckDB dialect — loom's only serving dialect today.
-pub struct DuckDbDialect;
+/// The DataFusion serving dialect — loom's sole serving dialect.
+pub struct DataFusionDialect;
 
-impl SqlDialect for DuckDbDialect {
+impl SqlDialect for DataFusionDialect {
     fn quote_ident(&self, id: &str) -> String {
         // Escape any embedded double-quote per SQL identifier rules (`"` -> `""`)
         // rather than panicking. Identifiers come from trusted ontology/ACL
@@ -49,29 +42,6 @@ impl SqlDialect for DuckDbDialect {
     fn limit_clause(&self, limit: u32) -> String {
         format!("LIMIT {limit}")
     }
-    fn limit_needs_order_barrier(&self) -> bool {
-        true
-    }
-}
-
-/// The DataFusion serving dialect. Renders identifiers, placeholders, and the
-/// `LIMIT` clause exactly like `DuckDbDialect` (the compiled SQL is valid for both
-/// engines), but does NOT request the `LIMIT` order barrier: DataFusion has no
-/// multi-file `LIMIT` corruption bug, so it keeps the bare `LIMIT`
-/// (`iss-multi-file-limit-misread`).
-pub struct DataFusionDialect;
-
-impl SqlDialect for DataFusionDialect {
-    fn quote_ident(&self, id: &str) -> String {
-        DuckDbDialect.quote_ident(id)
-    }
-    fn placeholder(&self, one_based: usize) -> String {
-        DuckDbDialect.placeholder(one_based)
-    }
-    fn limit_clause(&self, limit: u32) -> String {
-        DuckDbDialect.limit_clause(limit)
-    }
-    // limit_needs_order_barrier(): inherits the trait default (false).
 }
 
 /// The value substituted for a masked column. A compile-time constant (never caller
@@ -398,47 +368,6 @@ fn select_where_conjuncts(
     conjuncts
 }
 
-/// The order-key column NAMES for the stable `ORDER BY` barrier: the `identity`
-/// alone when it is a visible (projected, unmasked) column; otherwise every visible
-/// projected column. A masked column is never an order key (its projected value is
-/// the `MASK_MARKER`, not the real value). Returns raw (unquoted, unqualified) names;
-/// the caller qualifies + quotes them with its projection alias. An empty result
-/// (everything masked) makes the caller emit a bare `LIMIT`.
-fn order_key_cols(
-    identity: Option<&str>,
-    allowed_cols: &[String],
-    mask_cols: &[String],
-) -> Vec<String> {
-    let visible: Vec<String> = allowed_cols
-        .iter()
-        .filter(|c| !mask_cols.iter().any(|m| m == *c))
-        .cloned()
-        .collect();
-    match identity {
-        Some(id) if visible.iter().any(|c| c == id) => vec![id.to_string()],
-        _ => visible,
-    }
-}
-
-/// The trailing clause after the WHERE. On a dialect that needs the multi-file
-/// `LIMIT` order barrier (DuckDB), emit `ORDER BY <order_cols> LIMIT n` — which
-/// compiles to DuckDB's TopN operator, so the `LIMIT` is NOT pushed into the
-/// multi-file Parquet scan (the corruption site, `iss-multi-file-limit-misread`).
-/// On any other dialect, or when there is no usable order key, a bare `LIMIT n`.
-/// `order_cols` are already quoted (and alias-qualified where the projection uses
-/// an alias) by the caller.
-fn order_barrier_limit(dialect: &dyn SqlDialect, order_cols: &[String], limit: u32) -> String {
-    if dialect.limit_needs_order_barrier() && !order_cols.is_empty() {
-        format!(
-            "ORDER BY {} {}",
-            order_cols.join(", "),
-            dialect.limit_clause(limit)
-        )
-    } else {
-        dialect.limit_clause(limit)
-    }
-}
-
 /// `allowed_cols` must be non-empty (caller enforces). `row_filters` and `predicates`
 /// are ANDed together as conjuncts. `derived` aggregate subqueries (if any) are appended
 /// to the SELECT list; their params precede the WHERE params. The outer table is aliased
@@ -481,20 +410,13 @@ pub fn compile_select_with(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    let order_cols: Vec<String> = order_key_cols(None, allowed_cols, mask_cols)
-        .iter()
-        .map(|c| dialect.quote_ident(c))
-        .collect();
-    sql.push_str(&format!(
-        " {}",
-        order_barrier_limit(dialect, &order_cols, limit)
-    ));
+    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
     Ok((sql, params))
 }
 
-/// Compile a governed SELECT for loom's default (DuckDB) dialect. Convenience wrapper
-/// for statically-DuckDB callers (e.g. tests); production read paths must use
-/// [`compile_select_with`] with the serving engine's dialect so the engine selects it.
+/// Compile a governed SELECT for loom's default (`DataFusionDialect`) dialect.
+/// Convenience wrapper for tests; production read paths use [`compile_select_with`]
+/// with the serving engine's dialect so the engine selects it.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_select(
     table: &TableRef,
@@ -506,7 +428,7 @@ pub fn compile_select(
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     compile_select_with(
-        &DuckDbDialect,
+        &DataFusionDialect,
         table,
         allowed_cols,
         mask_cols,
@@ -646,14 +568,7 @@ pub fn compile_chain_with(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    let order_cols: Vec<String> = order_key_cols(None, allowed_cols, mask_cols)
-        .iter()
-        .map(|c| format!("{final_alias}.{}", dialect.quote_ident(c)))
-        .collect();
-    sql.push_str(&format!(
-        " {}",
-        order_barrier_limit(dialect, &order_cols, limit)
-    ));
+    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
     Ok((sql, params))
 }
 
@@ -681,14 +596,7 @@ pub fn compile_chain_pairs(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    let order_cols = vec![
-        format!("t_0.{}", dialect.quote_ident(source_id)),
-        format!("t_{k}.{}", dialect.quote_ident(target_id)),
-    ];
-    sql.push_str(&format!(
-        " {}",
-        order_barrier_limit(dialect, &order_cols, limit)
-    ));
+    sql.push_str(&format!(" {}", dialect.limit_clause(limit)));
     Ok((sql, params))
 }
 
@@ -907,11 +815,7 @@ pub fn compile_graph_reach(
     let cols = masked_col_exprs(dialect, allowed_cols, mask_cols, "p.").join(", ");
     let proj_where = reach_projection_where(dialect, &id, row_filters, &mut params);
 
-    let order_cols: Vec<String> = order_key_cols(Some(identity), allowed_cols, mask_cols)
-        .iter()
-        .map(|c| format!("p.{}", q(c)))
-        .collect();
-    let limit_clause = order_barrier_limit(dialect, &order_cols, limit);
+    let limit_clause = dialect.limit_clause(limit);
 
     let sql = format!(
         "WITH RECURSIVE reach(id, depth) AS (\
@@ -1030,11 +934,7 @@ pub fn compile_graph_reach_union(
     }
     let proj_where = proj_conj.join(" AND ");
 
-    let order_cols: Vec<String> = order_key_cols(Some(identity), allowed_cols, mask_cols)
-        .iter()
-        .map(|c| format!("p.{}", q(c)))
-        .collect();
-    let limit_clause = order_barrier_limit(dialect, &order_cols, limit);
+    let limit_clause = dialect.limit_clause(limit);
 
     let sql = format!(
         "WITH RECURSIVE reach(id, depth) AS (\
@@ -1184,19 +1084,15 @@ pub fn compile_graph_reach_tail(
     where_conj.extend(conjuncts);
     let where_sql = where_conj.join(" AND ");
 
-    let order_cols: Vec<String> = order_key_cols(None, allowed_cols, mask_cols)
-        .iter()
-        .map(|c| format!("{final_alias}.{}", q(c)))
-        .collect();
-    let limit_clause = order_barrier_limit(dialect, &order_cols, limit);
+    let limit_clause = dialect.limit_clause(limit);
 
     let sql = format!("{cte} SELECT DISTINCT {cols} FROM {from} WHERE {where_sql} {limit_clause}");
     Ok((sql, params))
 }
 
-/// Compile a governed multi-hop traversal for loom's default (DuckDB) dialect. Convenience
-/// wrapper for statically-DuckDB callers (e.g. tests); production paths must use
-/// [`compile_chain_with`] with the serving engine's dialect.
+/// Compile a governed multi-hop traversal for loom's default (`DataFusionDialect`)
+/// dialect. Convenience wrapper for tests; production paths use [`compile_chain_with`]
+/// with the serving engine's dialect.
 pub fn compile_chain(
     types: &[ChainType],
     hops: &[LinkBacking],
@@ -1204,5 +1100,12 @@ pub fn compile_chain(
     mask_cols: &[String],
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
-    compile_chain_with(&DuckDbDialect, types, hops, allowed_cols, mask_cols, limit)
+    compile_chain_with(
+        &DataFusionDialect,
+        types,
+        hops,
+        allowed_cols,
+        mask_cols,
+        limit,
+    )
 }

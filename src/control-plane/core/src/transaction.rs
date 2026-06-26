@@ -13,7 +13,7 @@ use crate::snapshot::{ColumnSpec, DataFile};
 
 #[async_trait]
 pub trait ControlPlane: Send + Sync {
-    /// The DuckLake catalog read surface.
+    /// The table-format catalog read surface.
     fn catalog(&self) -> &(dyn Catalog + Send + Sync);
     /// The object/link ontology.
     fn ontology(&self) -> &(dyn Ontology + Send + Sync);
@@ -43,7 +43,7 @@ pub trait Tx: Send {
     /// transaction commits. Makes "record lineage AND enqueue downstream work"
     /// atomic.
     async fn emit(&mut self, event: LineageEvent) -> Result<()>;
-    /// Create a physical DuckLake table. Staged; applied at commit. Idempotent: a
+    /// Create a physical Iceberg table. Staged; applied at commit. Idempotent: a
     /// no-op if the table already exists live.
     async fn create_table(&mut self, table: &TableRef, columns: &[ColumnSpec]) -> Result<()>;
     /// Register already-written Parquet data files as part of the snapshot. Staged.

@@ -1,4 +1,4 @@
-//! Read path: register a DuckLake table's Parquet files (from the catalog file
+//! Read path: register a table's Parquet files (from the catalog file
 //! list) as a named DataFusion table, so a transform's SQL can reference it.
 //! The inverse of `write_dataset` — same loom object-store URL + relative layout.
 
@@ -24,7 +24,7 @@ pub enum ScanError {
     DataFusion(#[from] datafusion::error::DataFusionError),
 }
 
-/// Register `files` (a DuckLake table's data files at some snapshot) as a DataFusion
+/// Register `files` (a table's data files at some snapshot) as a DataFusion
 /// table named `name`. Each `FileRef.path` is table-dir-relative; the full object key
 /// is reconstructed as `<schema>/<table>/<path>` under the loom object store — matching
 /// how `write_dataset` lays files out.
@@ -51,7 +51,7 @@ pub async fn scan_table(
 
     // Keep string/binary columns as canonical Arrow types (Utf8/Binary) rather than
     // the `*View` variants ParquetFormat defaults to. The landing path's
-    // `infer_columns` only maps the canonical types to DuckLake types, so a scanned
+    // `infer_columns` only maps the canonical types to logical types, so a scanned
     // column that flows into a transform output must stay canonical to commit.
     let format = ParquetFormat::default().with_force_view_types(false);
     let opts = ListingOptions::new(Arc::new(format));
