@@ -139,10 +139,16 @@ allow-indexing-slicing-in-tests = true
 allow-dbg-in-tests = true
 ```
 
-If constraint #4 proves these do not fire for loom's separate `rust_test` crates, the
-fallback is to `allow` the affected lints for test targets another way (e.g. a
-`loom_rust_test` wrapper passing per-target `allow` flags, or `#![allow(...)]` test-root
-attributes). This fork is resolved empirically during the spike/census.
+**RESOLVED (implementation):** `allow-*-in-tests` fires for code *inside* `#[test]`/`#[tokio::test]`
+functions in a `rust_test` crate, but NOT for test-helper/support code outside them. So the
+exemption is delivered by a **`loom_rust_test` wrapper** (`src/loom_test.bzl`) that injects the
+panic-safety `-Aclippy::*` flags via per-target `rustc_flags`, loaded into each BUCK with a
+`rust_test` (and applied by `loom_fixture_test`). The cleaner-looking toolchain `rustc_test_flags`
+field was tried first and abandoned: it is unusable in the pinned prelude — `rust_binary.bzl:561`
+does `extra_flags += ["--test"]` on the frozen provider list, a Starlark mutation error that breaks
+every `rust_test` build when the field is non-empty. The three test-support sources that are NOT
+`rust_test` targets (`query-api/tests/e2e_support.rs`, `testkit/src/lib.rs`, `postgres/src/fixture.rs`)
+carry a crate/module `#![allow(...reason)]`.
 
 ### 3. Big-bang execution
 
