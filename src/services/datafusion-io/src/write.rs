@@ -96,7 +96,8 @@ pub enum WriteError {
 }
 
 /// The loom object-store URL DataFusion writes through. The authority is arbitrary;
-/// it only keys the registered store.
+/// it only keys the registered store. Deliberately `const`, not config: an identity/
+/// protocol invariant, not a deployment tunable. See road-config-seam-unification.
 pub(crate) const LOOM_STORE_URL: &str = "loom://data";
 
 /// Write `batches` as N size-targeted Snappy Parquet files directly into `store`,

@@ -284,6 +284,10 @@ fn chain_error(e: QueryError) -> axum::response::Response {
     }
 }
 
+// Deliberately `const`, not config: safety guardrails bounding traversal recursion /
+// blast radius that an operator must not be able to lift per-deployment.
+// `DEFAULT_GRAPH_DEPTH` stays const because it is coupled to the `MAX_GRAPH_DEPTH`
+// guardrail, not a deployment concern. See road-config-seam-unification.
 const MAX_GRAPH_DEPTH: u32 = 10;
 const DEFAULT_GRAPH_DEPTH: u32 = 5;
 

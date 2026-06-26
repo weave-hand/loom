@@ -405,7 +405,9 @@ pub async fn read_linked_objects(
 }
 
 /// Maximum chain depth (number of hops). A request beyond this is rejected before
-/// any catalog/ACL work — bounds the join count.
+/// any catalog/ACL work — bounds the join count. Deliberately `const`, not config: a
+/// safety guardrail an operator must not be able to lift per-deployment. See
+/// road-config-seam-unification.
 const MAX_CHAIN_DEPTH: usize = 4;
 
 /// Per-position governance metadata for a resolved chain, aligned with the `ChainType`
