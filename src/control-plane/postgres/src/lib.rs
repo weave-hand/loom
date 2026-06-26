@@ -22,8 +22,6 @@ pub mod fixture;
 
 mod acl;
 mod auth;
-mod catalog;
-pub mod ducklake_type;
 pub mod iceberg_catalog;
 pub mod iceberg_compact;
 pub mod iceberg_control_plane;
@@ -42,9 +40,9 @@ pub use iceberg_read::read_files_as_batches;
 mod lineage;
 mod ontology;
 mod queue;
-mod snapshot;
 mod transaction;
 
+use iceberg_catalog::IcebergCatalog;
 use transaction::PgTx;
 
 /// Postgres-backed control plane over a sqlx connection pool.
@@ -52,13 +50,22 @@ use transaction::PgTx;
 pub struct PgControlPlane {
     pool: PgPool,
     lock_timeout: Duration,
+    /// Read adapter over the `iceberg_mirror.*` projection, returned by
+    /// [`ControlPlane::catalog`]. The DuckLake table format that previously backed
+    /// `catalog()` has been removed; Iceberg is the table format.
+    iceberg_catalog: IcebergCatalog,
 }
 
 impl PgControlPlane {
     /// Wrap an existing connection pool. Callers own pool setup (the test fixture
     /// builds one per fresh database; services will build one at startup).
     pub fn new(pool: PgPool, lock_timeout: Duration) -> Self {
-        Self { pool, lock_timeout }
+        let iceberg_catalog = IcebergCatalog::new(pool.clone());
+        Self {
+            pool,
+            lock_timeout,
+            iceberg_catalog,
+        }
     }
 
     /// The underlying connection pool. Used by the Iceberg read adapter and test
@@ -83,7 +90,7 @@ pub async fn run_migrations(pool: &PgPool, migrations_dir: &Path) -> Result<()> 
 #[async_trait]
 impl ControlPlane for PgControlPlane {
     fn catalog(&self) -> &(dyn Catalog + Send + Sync) {
-        self
+        &self.iceberg_catalog
     }
     fn ontology(&self) -> &(dyn Ontology + Send + Sync) {
         self
@@ -98,14 +105,12 @@ impl ControlPlane for PgControlPlane {
         self
     }
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
+        // A plain Postgres transaction backing the transactional queue/lineage
+        // concerns (`enqueue`/`emit`). The DuckLake table-format write path that the
+        // old `PgTx` also drove on commit has been removed; the table-write methods
+        // on this `Tx` now error (Iceberg owns the table format).
         let tx = self.pool.begin().await.map_err(backend)?;
-        Ok(Box::new(PgTx {
-            tx,
-            staged_tables: Vec::new(),
-            staged_files: Vec::new(),
-            staged_replacements: Vec::new(),
-            staged_compactions: Vec::new(),
-        }))
+        Ok(Box::new(PgTx { tx }))
     }
 }
 

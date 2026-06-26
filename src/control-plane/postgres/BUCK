@@ -211,15 +211,6 @@ rust_library(
 )
 
 rust_test(
-    name = "ducklake-type",
-    crate = "ducklake_type",
-    srcs = ["tests/ducklake_type.rs"],
-    crate_root = "tests/ducklake_type.rs",
-    edition = "2024",
-    deps = [":postgres", "//src/control-plane/core:core"],
-)
-
-rust_test(
     name = "iceberg-type",
     crate = "iceberg_type",
     srcs = ["tests/iceberg_type.rs"],
@@ -342,33 +333,15 @@ loom_fixture_test(
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
-loom_fixture_test(
-    name = "tx",
-    crate = "tx",
-    srcs = ["tests/tx.rs"],
-    crate_root = "tests/tx.rs",
-    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
-)
-
-loom_fixture_test(
-    name = "ducklake-smoke",
-    crate = "ducklake_smoke",
-    srcs = ["tests/ducklake_smoke.rs"],
-    crate_root = "tests/ducklake_smoke.rs",
-    duckdb = True,
-    deps = [":postgres", "//third-party:tokio"],
-)
-
 # Freshness gate for the committed sqlx offline cache: re-runs sqlx's `describe`
-# against the live (migrated + DuckLake-attached) schema and compares to each
-# committed .sqlx/query-*.json. Declaring :sqlx-cache as $(location ...) makes the
-# cache a buck input, so this re-runs only when the cache or schema changes.
+# against the live (migrated) schema and compares to each committed
+# .sqlx/query-*.json. Declaring :sqlx-cache as $(location ...) makes the cache a
+# buck input, so this re-runs only when the cache or schema changes.
 loom_fixture_test(
     name = "sqlx-cache-check",
     crate = "sqlx_cache",
     srcs = ["tests/sqlx_cache.rs"],
     crate_root = "tests/sqlx_cache.rs",
-    duckdb = True,
     env = {"LOOM_SQLX_DIR": "$(location :sqlx-cache)/.sqlx"},
     deps = [
         ":postgres",
@@ -376,75 +349,6 @@ loom_fixture_test(
         "//third-party:sqlx",
         "//third-party:tokio",
     ],
-)
-
-loom_fixture_test(
-    name = "snapshot-append",
-    crate = "snapshot_append",
-    srcs = ["tests/snapshot_append.rs"],
-    crate_root = "tests/snapshot_append.rs",
-    duckdb = True,
-    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
-)
-
-loom_fixture_test(
-    name = "snapshot-create",
-    crate = "snapshot_create",
-    srcs = ["tests/snapshot_create.rs"],
-    crate_root = "tests/snapshot_create.rs",
-    duckdb = True,
-    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
-)
-
-loom_fixture_test(
-    name = "ducklake-interop",
-    crate = "ducklake_interop",
-    srcs = ["tests/ducklake_interop.rs"],
-    crate_root = "tests/ducklake_interop.rs",
-    duckdb = True,
-    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
-)
-
-loom_fixture_test(
-    name = "snapshot-rollback",
-    crate = "snapshot_rollback",
-    srcs = ["tests/snapshot_rollback.rs"],
-    crate_root = "tests/snapshot_rollback.rs",
-    duckdb = True,
-    deps = [
-        ":postgres",
-        "//src/control-plane/core:core",
-        "//third-party:serde_json",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "snapshot-conformance",
-    crate = "snapshot_conformance",
-    srcs = ["tests/snapshot_conformance.rs"],
-    crate_root = "tests/snapshot_conformance.rs",
-    duckdb = True,
-    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
-)
-
-loom_fixture_test(
-    name = "snapshot-replace",
-    crate = "snapshot_replace",
-    srcs = ["tests/snapshot_replace.rs"],
-    crate_root = "tests/snapshot_replace.rs",
-    duckdb = True,
-    deps = [":postgres", "//src/control-plane/core:core", "//third-party:tokio"],
-)
-
-loom_fixture_test(
-    name = "facade",
-    crate = "facade",
-    srcs = ["tests/facade.rs"],
-    crate_root = "tests/facade.rs",
-    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 )
 
 loom_fixture_test(
@@ -460,21 +364,6 @@ loom_fixture_test(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "catalog",
-    crate = "catalog",
-    srcs = ["tests/catalog.rs"],
-    crate_root = "tests/catalog.rs",
-    duckdb = True,
-    deps = [
-        ":postgres",
-        "//src/control-plane/core:core",
-        "//src/control-plane/testkit:testkit",
-        "//third-party:async-trait",
-        "//third-party:tokio",
     ],
 )
 
