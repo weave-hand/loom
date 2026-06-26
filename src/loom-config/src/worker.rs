@@ -14,7 +14,7 @@ use crate::{ConfigError, overlay_opt};
 pub struct WorkerTuning {
     /// Notification-miss fallback poll interval, in milliseconds. Default 5000.
     pub poll_interval_ms: u64,
-    /// Exponential-backoff ceiling, in seconds. Default 60.
+    /// Exponential-backoff ceiling, in seconds. Default 60. Override: `LOOM_WORKER_BACKOFF_CEILING_SECS`.
     pub backoff_ceiling_secs: u64,
     /// Exponential-backoff iteration cap (attempts are clamped to this). Default 6.
     pub backoff_max_attempts: u32,
@@ -50,9 +50,7 @@ impl WorkerTuning {
     /// Apply any present `LOOM_WORKER_*` vars over the current values.
     pub fn overlay_env(&mut self, vars: &HashMap<String, String>) -> Result<(), ConfigError> {
         overlay_opt(vars, "LOOM_WORKER_POLL_INTERVAL_MS", &mut self.poll_interval_ms)?;
-        #[expect(clippy::map_identity, reason = "provisional: Task 5 renames var to _SECS and removes this .map")]
-        overlay_opt(vars, "LOOM_WORKER_BACKOFF_CEILING_MS", &mut self.backoff_ceiling_secs)
-            .map(|()| ())?; // NB: ceiling is seconds; see validate/notes below
+        overlay_opt(vars, "LOOM_WORKER_BACKOFF_CEILING_SECS", &mut self.backoff_ceiling_secs)?;
         overlay_opt(vars, "LOOM_WORKER_BACKOFF_MAX_ATTEMPTS", &mut self.backoff_max_attempts)?;
         Ok(())
     }

@@ -29,5 +29,8 @@ rust_test(
     srcs = ["tests/worker_tuning.rs"],
     crate_root = "tests/worker_tuning.rs",
     edition = "2024",
-    deps = [":loom-config"],
+    deps = [
+        ":loom-config",
+        "//third-party:serde_json",
+    ],
 )
