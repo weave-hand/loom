@@ -78,6 +78,7 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             allow_lints = ctx.attrs.allow_lints,
             deny_lints = ctx.attrs.deny_lints,
             warn_lints = ctx.attrs.warn_lints,
+            rustc_test_flags = ctx.attrs.rustc_test_flags,
             clippy_toml = ctx.attrs.clippy_toml[DefaultInfo].default_outputs[0] if ctx.attrs.clippy_toml else None,
         ),
     ]
@@ -98,9 +99,18 @@ hermetic_rust_toolchain = rule(
         # warn_lints/allow_lints are applied to the clippy action; see
         # prelude/rust/build.bzl:_lintify. clippy_toml configures lint
         # parameters (e.g. allow-*-in-tests) for the clippy action only.
+        #
+        # FOOTGUN: allow_lints can NOT override a lint enabled via a *group* in
+        # warn_lints (e.g. allowing clippy::implicit_return while warn_lints has
+        # clippy::restriction). _lint_flags emits -A before -W, so the group -W
+        # wins. To allowlist members of an enabled group, put -Aclippy::<lint> in
+        # rustc_flags instead (emitted after lints — see toolchains/BUCK
+        # CLIPPY_ALLOWS). allow_lints/deny_lints are for standalone (non-group)
+        # lints, where order does not matter.
         "allow_lints": attrs.list(attrs.string(), default = []),
         "deny_lints": attrs.list(attrs.string(), default = []),
         "warn_lints": attrs.list(attrs.string(), default = []),
+        "rustc_test_flags": attrs.list(attrs.string(), default = []),
         "clippy_toml": attrs.option(attrs.dep(providers = [DefaultInfo]), default = None),
     },
 )

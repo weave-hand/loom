@@ -1,3 +1,14 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::let_underscore_must_use,
+    clippy::unused_result_ok,
+    clippy::map_err_ignore,
+    clippy::unreachable,
+    reason = "postgres test-fixture harness, not a production query path — see CLAUDE.md"
+)]
 //! Hermetic Postgres test fixture.
 //!
 //! Boots an ephemeral cluster from a buck2-provided server binary (located via
