@@ -2,7 +2,10 @@
 //! primitive needs. The load-bearing fidelity unit: the Parquet write/read-back tests
 //! (tests/write.rs, tests/single_file_write.rs) are its executable oracle.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+
+use loom_config::{ConfigError, invalid, overlay_opt};
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
@@ -22,7 +25,10 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::file::statistics::Statistics;
 
 /// Tunables for the DataFusion write. Defaults target ~128 MiB Snappy files.
-#[derive(Clone, Debug)]
+/// Serde container `#[serde(default)]` lets a partial config document omit any field
+/// (it falls to `Default`); `overlay_env` then applies `LOOM_WRITE_*` on top.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct WriteConfig {
     /// Desired size of each output Parquet file, in bytes.
     pub target_file_size_bytes: u64,
@@ -40,6 +46,31 @@ impl Default for WriteConfig {
             max_files: 64,
             compression_factor: 0.3,
         }
+    }
+}
+
+impl WriteConfig {
+    /// Apply any present `LOOM_WRITE_*` vars over the current values.
+    pub fn overlay_env(&mut self, vars: &HashMap<String, String>) -> Result<(), ConfigError> {
+        overlay_opt(vars, "LOOM_WRITE_TARGET_FILE_BYTES", &mut self.target_file_size_bytes)?;
+        overlay_opt(vars, "LOOM_WRITE_MAX_FILES", &mut self.max_files)?;
+        overlay_opt(vars, "LOOM_WRITE_COMPRESSION_FACTOR", &mut self.compression_factor)?;
+        Ok(())
+    }
+
+    /// Validate ranges (run after file+env layers). `compression_factor` in `(0, 1]`,
+    /// `max_files >= 1`, `target_file_size_bytes >= 1`.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.target_file_size_bytes == 0 {
+            return Err(invalid("LOOM_WRITE_TARGET_FILE_BYTES", "must be >= 1"));
+        }
+        if self.max_files == 0 {
+            return Err(invalid("LOOM_WRITE_MAX_FILES", "must be >= 1"));
+        }
+        if self.compression_factor <= 0.0 || self.compression_factor > 1.0 {
+            return Err(invalid("LOOM_WRITE_COMPRESSION_FACTOR", "must be in (0, 1]"));
+        }
+        Ok(())
     }
 }
 
