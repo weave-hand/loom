@@ -48,6 +48,21 @@ Remote execution runs through BuildBuddy (configured under `[buck2_re_client]` i
 - **`//tools:lucidshark-duplo`** — duplicate-code detector ([toniantunovi/lucidshark-duplo](https://github.com/toniantunovi/lucidshark-duplo)); drives the `loom-duplication` routine. Ships as `.tar.gz` with the `lucidshark-duplo` binary at the archive root (no wrapper dir). Invoke as `buck2 run //tools:lucidshark-duplo -- <file-list> --json -m 20`. To bump: update `DUPLO_VERSION` in `tools/BUCK` and refresh each `sha256` from the new release's `.tar.gz` assets.
 - **`tools/env.sh` / `tools/loom-refresh`** — dev-shell activation. `eval "$(./tools/env.sh)"` (or `direnv allow` for the checked-in `.envrc`) puts the hermetic Rust toolchain (`cargo`/`rustc`/`rustfmt`, `cargo clippy`) and the dev-tool binaries (`reindeer`/`prek`/`btd`/`supertd`) on `PATH` via symlinks under `.loom/bin` (gitignored). The Rust toolchain's real `bin/` goes on PATH (sysroot stays auto-detected); dev tools point at the concrete per-arch genrules, not the `command_alias` trampolines (those break when symlinked). First-party `//src` binaries are exposed by name but only built/repointed by `tools/loom-refresh`, never on activation.
 
+## Code navigation
+
+For navigating loom's Rust, **prefer rust-analyzer's semantic navigation over raw
+grep** — it resolves the real definition behind a name, every genuine use, trait
+implementations, types, and call graphs, including macro-generated symbols (e.g.
+the tonic `pb::*` types) and re-exports that grep can't see. The `rust-analyzer`
+LSP is wired hermetically (`//tools:rust-analyzer`; the `LSP` tool is *deferred* —
+load it with `ToolSearch "select:LSP"`). See the **`loom-code-navigation`** skill
+for when/how to use LSP vs grep. The `LSP` tool is **main-session-only** — drive it
+from the main loop; subagents can't use it (they inherit internal + MCP tools, not
+LSP), so resolve locations with the LSP yourself and hand subagents the `file:line`
+targets. In cloud sessions (`CLAUDE_CODE_REMOTE=true`) the LSP warms up a few
+minutes in (background `rust-project.json` regen + indexing), so probe and
+interleave with grep until it answers — the skill documents the protocol.
+
 ## Third-party Rust deps
 
 Managed by reindeer in **non-vendored (http_archive) mode** — generated rules download each crate's `.crate` from crates.io at build time; sources are not checked in. Config is `reindeer.toml` at the repo root (paths in it are relative to the repo root), pointing at the **workspace** `Cargo.toml`. First-party crates (workspace members like `src/hello`) are written by hand; reindeer only emits third-party rules.
