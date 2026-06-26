@@ -28,7 +28,7 @@ pub(crate) struct AuthState {
 impl Auth for MemoryControlPlane {
     #[tracing::instrument(skip(self, user), level = "debug")]
     async fn create_user(&self, user: &NewUser) -> Result<()> {
-        let mut auth = self.auth.lock().unwrap();
+        let mut auth = self.auth.lock();
         if auth.users.contains_key(&user.username) {
             return Err(ControlPlaneError::Conflict(format!(
                 "username {}",
@@ -44,13 +44,13 @@ impl Auth for MemoryControlPlane {
         );
         drop(auth);
         // Ensure the ACL subject exists (so the user is a valid ACL principal).
-        self.acl.lock().unwrap().subjects_insert(&user.subject_id.0);
+        self.acl.lock().subjects_insert(&user.subject_id.0);
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn find_password_credential(&self, username: &str) -> Result<Option<PasswordCredential>> {
-        let auth = self.auth.lock().unwrap();
+        let auth = self.auth.lock();
         Ok(auth.users.get(username).map(|u| PasswordCredential {
             subject_id: SubjectId(u.subject_id.clone()),
             password_phc: u.password_phc.clone(),
@@ -64,7 +64,7 @@ impl Auth for MemoryControlPlane {
         token_sha256: &[u8; 32],
         expires_at: OffsetDateTime,
     ) -> Result<()> {
-        self.auth.lock().unwrap().sessions.insert(
+        self.auth.lock().sessions.insert(
             *token_sha256,
             MemSession {
                 subject_id: subject.0.clone(),
@@ -80,7 +80,7 @@ impl Auth for MemoryControlPlane {
         token_sha256: &[u8; 32],
         now: OffsetDateTime,
     ) -> Result<Option<SubjectId>> {
-        let auth = self.auth.lock().unwrap();
+        let auth = self.auth.lock();
         Ok(auth
             .sessions
             .get(token_sha256)
@@ -89,12 +89,12 @@ impl Auth for MemoryControlPlane {
 
     #[tracing::instrument(skip(self, token_sha256), level = "debug")]
     async fn revoke_session(&self, token_sha256: &[u8; 32]) -> Result<()> {
-        self.auth.lock().unwrap().sessions.remove(token_sha256);
+        self.auth.lock().sessions.remove(token_sha256);
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn has_any_user(&self) -> Result<bool> {
-        Ok(!self.auth.lock().unwrap().users.is_empty())
+        Ok(!self.auth.lock().users.is_empty())
     }
 }

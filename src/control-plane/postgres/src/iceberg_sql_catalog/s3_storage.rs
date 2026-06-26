@@ -118,8 +118,11 @@ impl S3Storage {
             return Ok(s.clone());
         }
         let s: Arc<dyn ObjectStore> = Arc::new(self.settings.build_store()?);
-        let _ = self.store.set(s.clone());
-        Ok(self.store.get().unwrap().clone())
+        drop(self.store.set(s.clone()));
+        self.store
+            .get()
+            .ok_or_else(|| Error::new(ErrorKind::Unexpected, "store not initialized after set"))
+            .cloned()
     }
 
     /// `s3://{bucket}/{key}` -> `{key}` (also tolerates `s3://{key}` and leading `/`).

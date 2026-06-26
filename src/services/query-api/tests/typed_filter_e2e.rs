@@ -1,6 +1,6 @@
 //! Typed input filters e2e: filter a Double and a Boolean column through read_object.
 //! A Text bind would match nothing; coercion to the column's logical type makes it work.
-//! An uncoercible value is a 400 (BadFilter).
+//! An uncoercible value is a 400 (BadFilterValue, carrying the parse fault).
 
 use control_plane_core::{
     Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId,
@@ -162,7 +162,7 @@ async fn typed_filters_match_and_reject() {
     .unwrap();
     assert_eq!(ids(&r_false), vec!["2".to_string()]);
 
-    // Uncoercible value -> BadFilter (400).
+    // Uncoercible value -> BadFilterValue (400), carrying the source parse error.
     let err = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
@@ -175,8 +175,8 @@ async fn typed_filters_match_and_reject() {
     .await
     .unwrap_err();
     assert!(
-        matches!(err, QueryError::BadFilter(_)),
-        "uncoercible filter value -> BadFilter"
+        matches!(err, QueryError::BadFilterValue(_)),
+        "uncoercible filter value -> BadFilterValue, got {err:?}"
     );
 }
 
@@ -252,7 +252,11 @@ async fn comparison_set_and_null_operators() {
         ]
     );
 
-    // Bad arity (gt with no operand) -> BadFilter (400).
+    // Bad arity (gt with no operand) -> BadFilterValue (400): coerce_predicate returns a
+    // FilterError for the malformed predicate, which the handler now carries through.
     let err = run(vec![("amount".into(), "gt".into())]).await.unwrap_err();
-    assert!(matches!(err, QueryError::BadFilter(_)));
+    assert!(
+        matches!(err, QueryError::BadFilterValue(_)),
+        "bad arity -> BadFilterValue, got {err:?}"
+    );
 }

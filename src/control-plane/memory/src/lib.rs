@@ -10,8 +10,10 @@ mod ontology;
 mod queue;
 mod transaction;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use control_plane_core::{
@@ -111,7 +113,7 @@ impl MemoryControlPlane {
         columns: &[(String, String, bool)],
         batches: &[usize],
     ) -> Vec<SnapshotId> {
-        let mut cat = self.catalog.lock().unwrap();
+        let mut cat = self.catalog.lock();
         let key = (table.schema.clone(), table.name.clone());
 
         if !cat.tables.contains_key(&key) {
@@ -163,7 +165,7 @@ impl MemoryControlPlane {
     /// its still-open files/columns so the MVCC `end`-bound is exercised at the
     /// file/column level (not just short-circuited by the table-liveness gate).
     pub fn drop_table_catalog(&self, table: &TableRef) -> SnapshotId {
-        let mut cat = self.catalog.lock().unwrap();
+        let mut cat = self.catalog.lock();
         let key = (table.schema.clone(), table.name.clone());
         let d = cat.new_snapshot();
         if let Some(t) = cat.tables.get_mut(&key) {

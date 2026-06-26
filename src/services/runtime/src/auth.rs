@@ -120,6 +120,10 @@ async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq
             if crate::verify_password(&req.password, &cred.password_phc) {
                 let token = crate::generate_session_token();
                 let hash = token_sha256(&token);
+                #[expect(
+                    clippy::expect_used,
+                    reason = "session_ttl comes from Duration::from_secs(u64) which always fits in time::Duration (<292 years)"
+                )]
                 let expires = OffsetDateTime::now_utc()
                     + time::Duration::try_from(st.session_ttl)
                         .expect("session_ttl fits in time::Duration");
@@ -137,7 +141,7 @@ async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq
         }
         // Unknown user: burn comparable time with a dummy hash, then the same 401.
         Ok(None) => {
-            let _ = crate::hash_password(&req.password);
+            drop(crate::hash_password(&req.password));
             unauthorized()
         }
         Err(e) => status_for(&e).into_response(),

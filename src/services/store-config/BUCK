@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load("@prelude//rust:cargo_package.bzl", "cargo")
 
 cargo.rust_library(

@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load(":defs.bzl", "loom_fixture_test")
 
 # Prebuilt, self-contained PostgreSQL server from theseus-rs/postgresql-binaries.

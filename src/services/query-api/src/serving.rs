@@ -107,8 +107,8 @@ fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayR
         BaseType::Integer => {
             let cell: Option<i32> = match v {
                 SqlValue::Null => None,
-                SqlValue::Int(i) => Some((*i).try_into().map_err(|_| {
-                    ServingError::Engine(format!("integer overflow for column `{col}`"))
+                SqlValue::Int(i) => Some((*i).try_into().map_err(|e| {
+                    ServingError::Engine(format!("integer overflow for column `{col}`: {e}"))
                 })?),
                 _ => return Err(mismatch()),
             };

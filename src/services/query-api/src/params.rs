@@ -47,7 +47,11 @@ pub fn parse_params(
 
 fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, ParamError> {
     let bad = |m: &str| ParamError::BadValue(name.to_string(), m.to_string());
-    let repr = json_repr_of(logical_ty).map_err(|_| bad("unknown logical type"))?;
+    // Like `bad`, but folds the discarded source error into the message for diagnostics.
+    let bad_src = |m: &str, e: &dyn std::fmt::Display| {
+        ParamError::BadValue(name.to_string(), format!("{m}: {e}"))
+    };
+    let repr = json_repr_of(logical_ty).map_err(|e| bad_src("unknown logical type", &e.0))?;
     match repr {
         // Integer/Double both arrive as JSON numbers.
         JsonRepr::Number => {
@@ -64,7 +68,7 @@ fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, Para
             let s = v.as_str().ok_or_else(|| bad("expected a numeric string"))?;
             s.parse::<i64>()
                 .map(SqlValue::Int)
-                .map_err(|_| bad("not an int64"))
+                .map_err(|e| bad_src("not an int64", &e))
         }
         JsonRepr::Bool => v
             .as_bool()
@@ -81,7 +85,7 @@ fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, Para
             let fmt = time::macros::format_description!("[year]-[month]-[day]");
             time::Date::parse(s, &fmt)
                 .map(SqlValue::Date)
-                .map_err(|_| bad("invalid ISO date"))
+                .map_err(|e| bad_src("invalid ISO date", &e))
         }
         JsonRepr::IsoTimestamp => {
             let s = v
@@ -91,7 +95,7 @@ fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, Para
                 time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
             time::PrimitiveDateTime::parse(s, &fmt)
                 .map(SqlValue::Timestamp)
-                .map_err(|_| bad("invalid ISO timestamp"))
+                .map_err(|e| bad_src("invalid ISO timestamp", &e))
         }
         // Vectors are stored data, not action/query inputs (road-vector-column-type).
         JsonRepr::FloatArray => Err(bad("vector parameters are not supported")),

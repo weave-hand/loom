@@ -46,9 +46,7 @@ pub fn classify_schema_change(
     live: &[ProjectedColumn],
     incoming: &[ProjectedColumn],
 ) -> Result<SchemaPlan, SchemaEvolutionError> {
-    let shared = live.len().min(incoming.len());
-    for i in 0..shared {
-        let (l, n) = (&live[i], &incoming[i]);
+    for (i, (l, n)) in live.iter().zip(incoming.iter()).enumerate() {
         if l.name != n.name {
             return Err(SchemaEvolutionError::ColumnChangedAtPosition {
                 position: i as i64,
@@ -70,11 +68,17 @@ pub fn classify_schema_change(
         }
     }
     if incoming.len() < live.len() {
-        return Err(SchemaEvolutionError::ColumnDropped {
-            name: live[incoming.len()].name.clone(),
-        });
+        // `incoming.len() < live.len()` guarantees `incoming.len()` is a valid index into `live`.
+        let name = live.get(incoming.len()).map_or_else(
+            || "<schema evolution: index out of bounds>".to_string(),
+            |c| c.name.clone(),
+        );
+        return Err(SchemaEvolutionError::ColumnDropped { name });
     }
-    let new_columns: Vec<ProjectedColumn> = incoming[live.len()..].to_vec();
+    // `live.len() <= incoming.len()` is guaranteed by the early return above.
+    let new_columns: Vec<ProjectedColumn> = incoming
+        .get(live.len()..)
+        .map_or_else(Vec::new, <[ProjectedColumn]>::to_vec);
     if let Some(req) = new_columns.iter().find(|c| !c.nullable) {
         return Err(SchemaEvolutionError::NonNullableColumnAdded {
             name: req.name.clone(),

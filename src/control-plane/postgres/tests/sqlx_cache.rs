@@ -214,7 +214,7 @@ async fn sqlx_cache_matches_live_schema() {
         }
     }
 
-    conn.close().await.ok();
+    drop(conn.close().await);
 
     assert!(
         failures.is_empty(),

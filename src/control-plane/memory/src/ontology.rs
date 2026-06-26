@@ -19,17 +19,13 @@ pub(crate) struct OntologyState {
 impl Ontology for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_type(&self, ty: ObjectType) -> Result<()> {
-        self.ontology
-            .lock()
-            .unwrap()
-            .types
-            .insert(ty.name.0.clone(), ty);
+        self.ontology.lock().types.insert(ty.name.0.clone(), ty);
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_link(&self, link: LinkDef) -> Result<()> {
-        let mut ont = self.ontology.lock().unwrap();
+        let mut ont = self.ontology.lock();
         for endpoint in [&link.from, &link.to] {
             if !ont.types.contains_key(&endpoint.0) {
                 return Err(ControlPlaneError::NotFound(format!("type {}", endpoint.0)));
@@ -44,7 +40,6 @@ impl Ontology for MemoryControlPlane {
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
         self.ontology
             .lock()
-            .unwrap()
             .types
             .get(&name.0)
             .cloned()
@@ -53,18 +48,12 @@ impl Ontology for MemoryControlPlane {
 
     async fn list_types(&self, _page: PageReq) -> Result<Page<ObjectType>> {
         Ok(Page::from_full(
-            self.ontology
-                .lock()
-                .unwrap()
-                .types
-                .values()
-                .cloned()
-                .collect(),
+            self.ontology.lock().types.values().cloned().collect(),
         ))
     }
 
     async fn links(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
-        let ont = self.ontology.lock().unwrap();
+        let ont = self.ontology.lock();
         if !ont.types.contains_key(&name.0) {
             return Err(ControlPlaneError::NotFound(name.0.clone()));
         }
@@ -78,7 +67,7 @@ impl Ontology for MemoryControlPlane {
     }
 
     async fn links_to(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
-        let ont = self.ontology.lock().unwrap();
+        let ont = self.ontology.lock();
         if !ont.types.contains_key(&name.0) {
             return Err(ControlPlaneError::NotFound(name.0.clone()));
         }
@@ -97,7 +86,7 @@ impl Ontology for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_action(&self, action: ActionDef) -> Result<()> {
-        let mut ont = self.ontology.lock().unwrap();
+        let mut ont = self.ontology.lock();
         if !ont.types.contains_key(&action.target.0) {
             return Err(ControlPlaneError::Validation(format!(
                 "action `{}` references unknown target type `{}`",
@@ -111,7 +100,6 @@ impl Ontology for MemoryControlPlane {
     async fn get_action(&self, name: &ActionName) -> Result<ActionDef> {
         self.ontology
             .lock()
-            .unwrap()
             .actions
             .get(&name.0)
             .cloned()

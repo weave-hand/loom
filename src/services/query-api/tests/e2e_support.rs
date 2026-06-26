@@ -1,3 +1,14 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::let_underscore_must_use,
+    clippy::unused_result_ok,
+    clippy::map_err_ignore,
+    clippy::unreachable,
+    reason = "test/fixture harness code, not a production path"
+)]
 //! Shared test-support helpers for query-api end-to-end tests.
 //!
 //! Provides the common `tref` / `setup_iceberg` / `ids` functions used by

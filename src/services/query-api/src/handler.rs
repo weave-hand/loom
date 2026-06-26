@@ -54,6 +54,12 @@ pub enum QueryError {
     Forbidden,
     #[error("filter column not permitted: {0}")]
     BadFilter(String),
+    /// A caller filter value did not coerce to its column's declared logical type. Carries
+    /// the underlying `FilterError` (whose message already names the column) so the parse
+    /// detail survives to the HTTP layer instead of being discarded. Distinct from
+    /// `BadFilter`, which is a governance denial (column not permitted), not a parse fault.
+    #[error(transparent)]
+    BadFilterValue(#[from] crate::filter::FilterError),
     /// The traversal chain is malformed (empty path, or depth over the cap).
     #[error("malformed traversal chain: {0}")]
     BadChain(String),
@@ -149,10 +155,7 @@ pub fn identity_in_predicate(
         .unwrap_or("");
     let mut values = Vec::with_capacity(ids.len());
     for raw in ids {
-        values.push(
-            crate::filter::coerce_filter(&identity, ty, raw)
-                .map_err(|_| QueryError::BadFilter(identity.clone()))?,
-        );
+        values.push(crate::filter::coerce_filter(&identity, ty, raw)?);
     }
     Ok(Some(crate::filter::CallerPredicate {
         column: identity,
@@ -226,8 +229,7 @@ pub async fn read_object(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        let p = crate::filter::coerce_predicate(col, ty, raw)
-            .map_err(|_| QueryError::BadFilter(col.clone()))?;
+        let p = crate::filter::coerce_predicate(col, ty, raw)?;
         predicates.push(p);
     }
 
@@ -596,7 +598,9 @@ async fn resolve_chain(
         if f.position >= ctypes.len() {
             return Err(QueryError::BadFilter(f.column.clone()));
         }
-        let meta = &metas[f.position];
+        let meta = metas
+            .get(f.position)
+            .ok_or_else(|| QueryError::BadFilter(f.column.clone()))?;
         let allowed = project_allowed(&meta.otype.properties, &meta.denied);
         if !allowed.contains(&f.column) || meta.masked.contains(&f.column) {
             return Err(QueryError::BadFilter(f.column.clone()));
@@ -608,15 +612,24 @@ async fn resolve_chain(
             .find(|p| p.name == f.column)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        let p = crate::filter::coerce_predicate(&f.column, ty, &f.raw)
-            .map_err(|_| QueryError::BadFilter(f.column.clone()))?;
-        ctypes[f.position].predicates.push(p);
+        let p = crate::filter::coerce_predicate(&f.column, ty, &f.raw)?;
+        ctypes
+            .get_mut(f.position)
+            .ok_or_else(|| QueryError::BadFilter(f.column.clone()))?
+            .predicates
+            .push(p);
     }
 
     // Object-set input: scope the SOURCE (position 0) to the given identities.
-    let source = &metas[0];
+    let source = metas
+        .first()
+        .ok_or_else(|| QueryError::BadChain("empty chain".to_string()))?;
     if let Some(p) = identity_in_predicate(&source.otype, &source.denied, &source.masked, &q.ids)? {
-        ctypes[0].predicates.push(p);
+        ctypes
+            .first_mut()
+            .ok_or_else(|| QueryError::BadChain("empty chain".to_string()))?
+            .predicates
+            .push(p);
     }
 
     Ok((metas, ctypes, hops))
@@ -629,7 +642,9 @@ pub async fn read_linked_chain(
 ) -> Result<ObjectRows, QueryError> {
     let (metas, ctypes, hops) = resolve_chain(q, subject, deps).await?;
     // Final-target projection, from the last position (path is non-empty => >= 2 metas).
-    let target = metas.last().expect("non-empty path yields a final target");
+    let target = metas
+        .last()
+        .ok_or_else(|| QueryError::BadChain("empty chain".to_string()))?;
     let to_allowed = project_allowed(&target.otype.properties, &target.denied);
     if to_allowed.is_empty() {
         return Err(QueryError::Forbidden);
@@ -691,8 +706,12 @@ pub async fn read_associations(
     deps: &QueryDeps<'_>,
 ) -> Result<Associations, QueryError> {
     let (metas, ctypes, hops) = resolve_chain(q, subject, deps).await?;
-    let source = &metas[0];
-    let target = metas.last().expect("non-empty path yields a final target");
+    let source = metas
+        .first()
+        .ok_or_else(|| QueryError::BadChain("empty chain".to_string()))?;
+    let target = metas
+        .last()
+        .ok_or_else(|| QueryError::BadChain("empty chain".to_string()))?;
 
     // Both projected ends must declare an identity.
     let source_id = source
@@ -862,10 +881,7 @@ pub async fn read_graph_reach(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        seed_predicates.push(
-            crate::filter::coerce_predicate(col, ty, raw)
-                .map_err(|_| QueryError::BadFilter(col.clone()))?,
-        );
+        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
     }
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
         seed_predicates.push(p);
@@ -992,10 +1008,7 @@ pub async fn read_graph_reach_union(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        seed_predicates.push(
-            crate::filter::coerce_predicate(col, ty, raw)
-                .map_err(|_| QueryError::BadFilter(col.clone()))?,
-        );
+        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
     }
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
         seed_predicates.push(p);
@@ -1184,10 +1197,7 @@ pub async fn read_graph_reach_with_tail(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        seed_predicates.push(
-            crate::filter::coerce_predicate(col, ty, raw)
-                .map_err(|_| QueryError::BadFilter(col.clone()))?,
-        );
+        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
     }
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
         seed_predicates.push(p);

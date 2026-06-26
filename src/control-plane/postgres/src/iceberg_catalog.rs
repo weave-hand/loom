@@ -107,7 +107,9 @@ impl IcebergCatalog {
                     column_stats: Vec::new(),
                 });
             }
-            let file = out.last_mut().expect("just pushed");
+            let file = out
+                .last_mut()
+                .ok_or_else(|| ControlPlaneError::Backend("just pushed; must be present".into()))?;
             if let (Some(column_name), Some(null_count), Some(column_size_bytes)) =
                 (r.column_name, r.null_count, r.column_size_bytes)
             {

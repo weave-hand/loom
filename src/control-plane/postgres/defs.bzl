@@ -1,3 +1,5 @@
+load("//src:loom_test.bzl", "LOOM_TEST_LINT_ALLOWS")
+
 # Shared macro for hermetic-fixture rust_test targets.
 #
 # Fixture tests boot real initdb/postgres processes, which refuse to run as
@@ -56,5 +58,7 @@ def loom_fixture_test(
         edition = edition,
         env = fixture_env,
         deps = deps,
+        # Same test panic-lint exemption as the loom_rust_test wrapper.
+        rustc_flags = kwargs.pop("rustc_flags", []) + LOOM_TEST_LINT_ALLOWS,
         **kwargs
     )

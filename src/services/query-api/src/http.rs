@@ -117,6 +117,9 @@ async fn get_object(
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
+        Err(QueryError::BadFilterValue(e)) => {
+            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+        }
         Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
         Err(e) => internal_error("object read serving fault", e),
     }
@@ -272,6 +275,7 @@ fn chain_error(e: QueryError) -> axum::response::Response {
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
+        QueryError::BadFilterValue(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         other => internal_error("chain/association read serving fault", other),
     }
 }
@@ -426,14 +430,17 @@ async fn get_graph_path(
             )
                 .into_response();
         }
-        if starred[0] != 0 {
+        if starred.first().copied().unwrap_or(0) != 0 {
             return (
                 StatusCode::BAD_REQUEST,
                 "the recursive `*` segment must be the first path segment",
             )
                 .into_response();
         }
-        let core_link = path[0].trim_end_matches('*').to_string();
+        let Some(first_path) = path.first() else {
+            return (StatusCode::BAD_REQUEST, "empty path").into_response();
+        };
+        let core_link = first_path.trim_end_matches('*').to_string();
         if core_link.is_empty() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -441,7 +448,7 @@ async fn get_graph_path(
             )
                 .into_response();
         }
-        let tail_links: Vec<String> = path[1..].to_vec();
+        let tail_links: Vec<String> = path.get(1..).unwrap_or_default().to_vec();
         return graph_tail_respond(
             &st, type_name, core_link, tail_links, depth, filters, ids, &subject,
         )
@@ -459,6 +466,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
         QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
+        QueryError::BadFilterValue(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         other => internal_error("graph read serving fault", other),
     }
@@ -534,7 +542,10 @@ async fn graph_union_respond(
 
 /// Recursive-core + relational-tail (`?path=l0*,l1,…`) tail: build a `GraphTailQuery`, run
 /// `read_graph_reach_with_tail`, map via `graph_error`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "HTTP handler requires all routing params"
+)]
 async fn graph_tail_respond(
     st: &AppState,
     type_name: String,

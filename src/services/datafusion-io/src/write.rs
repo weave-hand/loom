@@ -60,6 +60,8 @@ pub enum WriteError {
     DataFusion(#[from] datafusion::error::DataFusionError),
     #[error("object store error: {0}")]
     ObjectStore(#[from] object_store::Error),
+    #[error("not a valid parquet buffer (len {0}, missing PAR1 magic or too short)")]
+    NotParquet(usize),
 }
 
 /// The loom object-store URL DataFusion writes through. The authority is arbitrary;
@@ -246,7 +248,7 @@ pub fn file_stats_from_bytes(
     schema: &Schema,
 ) -> Result<WrittenFile, WriteError> {
     let file_size_bytes = bytes.len() as i64;
-    let footer_size = parquet_footer_size(bytes);
+    let footer_size = parquet_footer_size(bytes).ok_or(WriteError::NotParquet(bytes.len()))?;
 
     let reader = SerializedFileReader::new(Bytes::from(bytes.to_vec()))?;
     let meta = reader.metadata();
@@ -308,13 +310,13 @@ pub fn file_stats_from_bytes(
 }
 
 /// The 4 bytes before the trailing `PAR1` magic are the little-endian footer
-/// length recorded as `footer_size`.
-fn parquet_footer_size(bytes: &[u8]) -> i64 {
-    assert!(
-        bytes.len() >= 8 && &bytes[bytes.len() - 4..] == b"PAR1",
-        "not a well-formed parquet buffer (len {}, missing PAR1 magic)",
-        bytes.len()
-    );
-    let len = &bytes[bytes.len() - 8..bytes.len() - 4];
-    u32::from_le_bytes(len.try_into().unwrap()) as i64
+/// length recorded as `footer_size`. Returns `None` when the buffer is not a
+/// well-formed Parquet file (callers propagate as a `WriteError`).
+fn parquet_footer_size(bytes: &[u8]) -> Option<i64> {
+    let n = bytes.len();
+    if n < 8 || bytes.get(n - 4..) != Some(b"PAR1") {
+        return None;
+    }
+    let footer_bytes: [u8; 4] = bytes.get(n - 8..n - 4)?.try_into().ok()?;
+    Some(u32::from_le_bytes(footer_bytes) as i64)
 }

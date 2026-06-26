@@ -21,6 +21,10 @@ serde_json = "1"
 # Tracing facade: libraries emit spans/events; the Step 3 service binaries install
 # the subscriber. No subscriber/metrics here.
 tracing = "0.1"
+# Non-poisoning locks for the in-memory control-plane fake: parking_lot guards
+# return the guard directly (no PoisonError), so the fake's hot paths need no
+# .lock().unwrap() — keeping it clean under the enforced clippy::unwrap_used.
+parking_lot = "0.12"
 
 [dev-dependencies]
 control-plane-testkit = { path = "../testkit" }

@@ -249,6 +249,10 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   `params::parse_value` and `filter::coerce_filter` duplicate the short `JsonRepr` repr-match; sharing one taxonomy helper would remove the duplication (input shapes `Value` vs `&str` differ enough it wasn't worth it yet).
 - [ ] **Consolidate BindViolation / conformance Violation enums** `{#fut-conformance-enum-consolidation area:quality status:deferred from:2026-06-15-typed-transforms-part1-design pr:#59 spec:-}`
   `ingest::BindViolation` and the typed-transform `Violation` are deliberate parallels; consolidating both into control-plane-core is a noted follow-up.
+- [ ] **Promote cheap-mechanical pedantic lints from allow to enforce** `{#fut-clippy-promote-pedantic area:quality status:deferred from:2026-06-26-stricter-clippy-config-design pr:- spec:-}`
+  The strict-clippy adoption allowlisted (`CLIPPY_ALLOWS` in `toolchains/BUCK`) a tail of cheap, mechanically-fixable pedantic lints (`map_unwrap_or`, `redundant_closure_for_method_calls`, `cast_lossless`, `manual_string_new`, `needless_continue`, `semicolon_if_nothing_returned`, ...) to keep the adoption PR focused on the panic-safety set. Each can be promoted by removing it from `CLIPPY_ALLOWS` and fixing the (small) violation count. Spec: `docs/superpowers/specs/2026-06-26-stricter-clippy-config-design.md`.
+- [x] **Carry source errors at `map_err_ignore` sites** `{#fut-clippy-map-err-debt area:quality status:promoted from:2026-06-26-stricter-clippy-config-design pr:#200 spec:-}`
+  Done on PR #200. All 18 production `map_err(|_| ...)` sites now carry the source: `FilterError`/gRPC `Status`/`TryFromIntError` fold the source into the message (Group 1/3), and `QueryError` gained a `BadFilterValue(#[from] FilterError)` variant rendered into the HTTP 400 body so parse detail survives to the client (Group 2). Every tracked `#[expect(clippy::map_err_ignore)]` is gone; the lint is enforced with no suppressions. Resolution log in [`error-handling-debt.md`](error-handling-debt.md).
 
 ## devx
 

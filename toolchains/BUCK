@@ -160,6 +160,67 @@ remote_test_execution_toolchain(
     visibility = ["PUBLIC"],
 )
 
+# Clippy allowlist (Billy-Levin enable-broadly model): pedantic+restriction are
+# enabled as groups in warn_lints; these -A flags ride in rustc_flags so the
+# prelude emits them AFTER the group -W (see prelude/rust/build.bzl:494 "Lints go
+# first to allow other args to override them"), letting individual allows win.
+# Lints NOT listed here stay enforced. blanket_clippy_restriction_lints is here
+# too (it is triggered by the group enable, so must be overridden post-warn).
+CLIPPY_ALLOWS = [
+    # Required when enabling the restriction group broadly.
+    "-Aclippy::blanket_clippy_restriction_lints",
+    # Structural: loom mandates separate rust_test crates, not #[cfg(test)]
+    # modules (CLAUDE.md) — this fires on every test fn.
+    "-Aclippy::tests_outside_test_module",
+    # Pervasive style — fire on nearly every expression; no signal here.
+    "-Aclippy::implicit_return", "-Aclippy::min_ident_chars", "-Aclippy::question_mark_used",
+    "-Aclippy::single_call_fn", "-Aclippy::pattern_type_mismatch", "-Aclippy::ref_patterns",
+    "-Aclippy::else_if_without_else", "-Aclippy::single_char_lifetime_names",
+    "-Aclippy::many_single_char_names", "-Aclippy::similar_names", "-Aclippy::shadow_reuse",
+    "-Aclippy::shadow_unrelated", "-Aclippy::shadow_same", "-Aclippy::items_after_statements",
+    "-Aclippy::unneeded_field_pattern", "-Aclippy::used_underscore_binding",
+    "-Aclippy::used_underscore_items", "-Aclippy::elidable_lifetime_names",
+    # Docs — not required across this service tree.
+    "-Aclippy::missing_docs_in_private_items", "-Aclippy::doc_markdown", "-Aclippy::missing_errors_doc",
+    "-Aclippy::missing_panics_doc", "-Aclippy::doc_paragraphs_missing_punctuation",
+    "-Aclippy::missing_inline_in_public_items",
+    # Naming / module conventions — opinionated.
+    "-Aclippy::module_name_repetitions", "-Aclippy::struct_field_names", "-Aclippy::pub_use",
+    "-Aclippy::mod_module_files", "-Aclippy::unused_trait_names", "-Aclippy::enum_glob_use",
+    "-Aclippy::absolute_paths", "-Aclippy::arbitrary_source_item_ordering",
+    "-Aclippy::field_scoped_visibility_modifiers", "-Aclippy::missing_trait_methods",
+    "-Aclippy::renamed_function_params", "-Aclippy::multiple_inherent_impl", "-Aclippy::unused_self",
+    # Numeric / cast — high false-positive rate; documented-invariant churn.
+    "-Aclippy::arithmetic_side_effects", "-Aclippy::as_conversions", "-Aclippy::default_numeric_fallback",
+    "-Aclippy::cast_possible_wrap", "-Aclippy::cast_possible_truncation", "-Aclippy::cast_lossless",
+    "-Aclippy::cast_precision_loss", "-Aclippy::cast_sign_loss", "-Aclippy::integer_division_remainder_used",
+    "-Aclippy::float_arithmetic", "-Aclippy::decimal_literal_representation", "-Aclippy::little_endian_bytes",
+    # std vs core/alloc — these are std services.
+    "-Aclippy::std_instead_of_core", "-Aclippy::std_instead_of_alloc",
+    # Whole-API-surface / opinionated restriction.
+    "-Aclippy::exhaustive_structs", "-Aclippy::exhaustive_enums", "-Aclippy::wildcard_enum_match_arm",
+    "-Aclippy::clone_on_ref_ptr", "-Aclippy::impl_trait_in_params", "-Aclippy::let_underscore_untyped",
+    "-Aclippy::semicolon_outside_block", "-Aclippy::unseparated_literal_suffix",
+    "-Aclippy::separated_literal_suffix", "-Aclippy::pub_with_shorthand", "-Aclippy::missing_assert_message",
+    "-Aclippy::str_to_string", "-Aclippy::duration_suboptimal_units", "-Aclippy::non_ascii_literal",
+    "-Aclippy::assertions_on_result_states", "-Aclippy::allow_attributes",
+    "-Aclippy::case_sensitive_file_extension_comparisons", "-Aclippy::missing_asserts_for_indexing",
+    # Subjective pedantic — commonly allowed; low signal / high churn.
+    "-Aclippy::must_use_candidate", "-Aclippy::too_many_lines", "-Aclippy::cognitive_complexity",
+    "-Aclippy::needless_pass_by_value", "-Aclippy::if_not_else", "-Aclippy::single_match_else",
+    "-Aclippy::match_wildcard_for_single_variants", "-Aclippy::implicit_hasher",
+    "-Aclippy::default_trait_access", "-Aclippy::return_self_not_must_use", "-Aclippy::trivially_copy_pass_by_ref",
+    "-Aclippy::iter_over_hash_type",
+    # Cheap-mechanical pedantic — allowed for now; candidates to promote-to-fix later.
+    "-Aclippy::map_unwrap_or", "-Aclippy::redundant_closure_for_method_calls", "-Aclippy::implicit_clone",
+    "-Aclippy::manual_string_new", "-Aclippy::needless_continue", "-Aclippy::explicit_iter_loop",
+    "-Aclippy::stable_sort_primitive", "-Aclippy::redundant_type_annotations", "-Aclippy::unnecessary_semicolon",
+    "-Aclippy::semicolon_if_nothing_returned", "-Aclippy::deref_by_slicing", "-Aclippy::single_char_pattern",
+    "-Aclippy::manual_assert", "-Aclippy::ignored_unit_patterns", "-Aclippy::match_same_arms",
+    "-Aclippy::return_and_then", "-Aclippy::unnecessary_literal_bound",
+    "-Aclippy::manual_let_else",
+]
+
 # Coverage gate: building under the `//tools/coverage:coverage_enabled`
 # constraint_value appends -Cinstrument-coverage to every Rust compile in that
 # configuration, so `rust_test` binaries and their lib deps emit an LLVM
@@ -177,6 +238,16 @@ hermetic_rust_toolchain(
     rustc_flags = ["-Copt-level=2"] + select({
         "root//tools/coverage:coverage_enabled": ["-Cinstrument-coverage"],
         "DEFAULT": [],
-    }),
+    }) + CLIPPY_ALLOWS,
+    # Lint policy — pedantic + restriction enabled; census-driven allowlist; enforced
+    # panic-safety set left to fire in production code. Test code is exempted from the
+    # panic-safety lints via the loom_rust_test wrapper (src/loom_test.bzl), NOT the
+    # toolchain rustc_test_flags field: that field is unusable here — the prelude's
+    # rust_test_impl does `extra_flags += ["--test"]` on the frozen provider list when
+    # it is non-empty (rust_binary.bzl:561), a Starlark mutation error that breaks every
+    # rust_test build. The wrapper injects the -A flags via per-target rustc_flags, which
+    # flows through a different (non-mutating) path.
+    warn_lints = ["clippy::pedantic", "clippy::restriction"],
+    clippy_toml = "root//:clippy-toml",
     visibility = ["PUBLIC"],
 )

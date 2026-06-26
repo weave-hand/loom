@@ -44,22 +44,21 @@ impl CatalogState {
 impl Catalog for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn current_snapshot(&self, table: &TableRef) -> Result<Snapshot> {
-        let cat = self.catalog.lock().unwrap();
+        let cat = self.catalog.lock();
         let key = (table.schema.clone(), table.name.clone());
         let s = cat.latest_live(&key).ok_or_else(|| {
             ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name))
         })?;
-        Ok(cat
-            .snapshots
+        cat.snapshots
             .iter()
             .find(|sn| sn.id.0 == s)
             .cloned()
-            .unwrap())
+            .ok_or_else(|| ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name)))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
-        let cat = self.catalog.lock().unwrap();
+        let cat = self.catalog.lock();
         let key = (table.schema.clone(), table.name.clone());
         let t = cat.tables.get(&key).ok_or_else(|| {
             ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name))
@@ -80,7 +79,7 @@ impl Catalog for MemoryControlPlane {
         at: SnapshotId,
         _page: PageReq,
     ) -> Result<Page<FileRef>> {
-        let cat = self.catalog.lock().unwrap();
+        let cat = self.catalog.lock();
         let key = (table.schema.clone(), table.name.clone());
         let live = cat.tables.get(&key).is_some_and(|t| t.live_at(at.0));
         if !live {
@@ -102,7 +101,7 @@ impl Catalog for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
-        let cat = self.catalog.lock().unwrap();
+        let cat = self.catalog.lock();
         let key = (table.schema.clone(), table.name.clone());
         let live = cat.tables.get(&key).is_some_and(|t| t.live_at(at.0));
         if !live {

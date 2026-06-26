@@ -1,3 +1,14 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::let_underscore_must_use,
+    clippy::unused_result_ok,
+    clippy::map_err_ignore,
+    clippy::unreachable,
+    reason = "conformance test-harness library, not a production path"
+)]
 //! Backend-agnostic contract tests for the control-plane traits.
 //! Each adapter runs the same suite against its own implementation.
 

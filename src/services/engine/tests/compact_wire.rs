@@ -97,11 +97,12 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
 
     tokio::spawn(async move {
         let _wh = wh;
-        Server::builder()
-            .add_service(EngineControlServer::new(svc))
-            .serve_with_incoming(incoming)
-            .await
-            .ok();
+        drop(
+            Server::builder()
+                .add_service(EngineControlServer::new(svc))
+                .serve_with_incoming(incoming)
+                .await,
+        );
     });
 
     tokio::time::sleep(Duration::from_millis(20)).await;

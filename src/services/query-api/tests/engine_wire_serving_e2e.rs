@@ -50,11 +50,10 @@ async fn spawn_flight(fx: &PgFixture, db: &str, warehouse: &str) -> (tempfile::T
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = UnixListenerStream::new(listener);
     tokio::spawn(async move {
-        Server::builder()
+        let _serve_result = Server::builder()
             .add_service(FlightServiceServer::new(svc))
             .serve_with_incoming(incoming)
-            .await
-            .ok();
+            .await;
     });
     tokio::time::sleep(Duration::from_millis(20)).await;
     (sock_dir, sock_str)

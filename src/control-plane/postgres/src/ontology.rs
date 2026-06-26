@@ -445,7 +445,10 @@ fn backing_cols(b: &LinkBacking) -> BackingCols<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "backing_from_row maps 7 independent row columns that cannot be meaningfully grouped"
+)]
 fn backing_from_row(
     kind: &str,
     from_column: String,

@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load("@prelude//rust:cargo_package.bzl", "cargo")
 
 # Pure-Rust codegen tool: protox + tonic-prost-build, no protoc.

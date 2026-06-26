@@ -11762,6 +11762,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "parking_lot",
+    actual = ":parking_lot-0.12",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "parking_lot-0.12.5.crate",
     sha256 = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a",
