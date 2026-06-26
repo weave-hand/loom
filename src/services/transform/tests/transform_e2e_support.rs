@@ -2,9 +2,8 @@
 //! control plane + the loom-native serving engine — NO DuckDB anywhere.
 //!
 //! The four transform e2e suites (`transform_e2e`, `overwrite_e2e`, `compact_e2e`,
-//! `typed_transform_e2e`) used to seed inputs with `DuckLakeWriter` and read output
-//! back with `DuckLakeWriter.query_scalar(...)` / `EmbeddedDuckDb`. This module
-//! replaces both halves:
+//! `typed_transform_e2e`) used to seed inputs and read output back through the
+//! now-removed DuckLake/DuckDB serving path. This module replaces both halves:
 //!
 //! - **Seed** (`seed_table`): writes real Parquet via `datafusion_io::write_dataset`
 //!   into the SAME object store the transform reads from, then registers it through

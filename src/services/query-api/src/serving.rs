@@ -1,6 +1,7 @@
-//! The serving-engine seam: run read-only SQL against loom's DuckLake catalog.
-//! `EmbeddedDuckDb` runs in-process; `QuackServingEngine` forwards to a remote
-//! `quack_serve`'d DuckDB via the `quack_query` table function.
+//! The serving-engine seam: the `ServingEngine`/`ActionEngine` traits plus the
+//! engine-neutral row/value types and the param-inlining helper. Concrete engines
+//! live elsewhere — production reads go through `EngineServingClient` (Flight SQL
+//! over the engine wire); tests use the in-process Iceberg/DataFusion engine.
 
 use std::sync::Arc;
 
@@ -94,8 +95,8 @@ pub fn build_object_batch(
 }
 
 /// One single-row Arrow array for a cell of base type `base`. `SqlValue::Null`
-/// yields a typed null; any non-null variant must match `base` (the same
-/// scalar-to-Arrow mapping `to_duck` uses) or it is a `ServingError`.
+/// yields a typed null; any non-null variant must match `base` (the canonical
+/// scalar-to-Arrow mapping) or it is a `ServingError`.
 fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayRef), ServingError> {
     let mismatch = || {
         ServingError::Engine(format!(
@@ -186,9 +187,9 @@ pub trait ServingEngine: Send + Sync {
     /// Execute read-only `sql`, binding `params` positionally (`?` placeholders).
     async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError>;
 
-    /// The SQL dialect this engine speaks. Defaults to DuckDB — every serving engine
-    /// loom ships today (`EmbeddedDuckDb`, `QuackServingEngine`) is DuckDB-compatible.
-    /// A future non-DuckDB engine overrides this.
+    /// The SQL dialect this engine speaks. Defaults to DuckDB for backward
+    /// compatibility; the in-process Iceberg/DataFusion engine overrides this with
+    /// `DataFusionDialect`.
     fn dialect(&self) -> &'static dyn SqlDialect {
         &DuckDbDialect
     }
@@ -210,178 +211,6 @@ pub trait ActionEngine: Send + Sync {
         logical_types: &[String],
         event: control_plane_core::LineageEvent,
     ) -> Result<control_plane_core::SnapshotId, ServingError>;
-}
-
-use control_plane_core::{ControlPlane, LineageEvent, SnapshotId, TableRef};
-use object_store::ObjectStore;
-
-/// Action writer that routes a single-row write through loom's OWN atomic
-/// snapshot-commit primitive (`ingest::materialize::land_ducklake`): build a
-/// one-row Parquet file, then create_table (idempotent — the target table already
-/// exists) + append_files + emit(lineage) + commit, all in one Postgres
-/// transaction, returning the new `SnapshotId`. The row and its lineage land or
-/// roll back together. Replaces the inline `EmbeddedDuckDbWriter`; the part-1
-/// "inline row, no Parquet" low-latency property is retired in favor of atomicity
-/// (actions are interactive, low-frequency; small files are handled by compaction).
-pub struct DuckLakeActionWriter {
-    cp: Arc<dyn ControlPlane>,
-    store: Arc<dyn ObjectStore>,
-}
-
-impl DuckLakeActionWriter {
-    pub fn new(cp: Arc<dyn ControlPlane>, store: Arc<dyn ObjectStore>) -> Self {
-        Self { cp, store }
-    }
-}
-
-#[async_trait]
-impl ActionEngine for DuckLakeActionWriter {
-    async fn write_object(
-        &self,
-        table: &TableRef,
-        columns: &[String],
-        values: &[SqlValue],
-        logical_types: &[String],
-        event: LineageEvent,
-    ) -> Result<SnapshotId, ServingError> {
-        let (schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
-        // Unique per action: the run id keeps each write's files in their own dir.
-        let file_prefix = format!("action-{}", event.run_id.0);
-        ingest::materialize::land_ducklake(
-            self.cp.as_ref(),
-            self.store.clone(),
-            table,
-            schema,
-            &specs,
-            std::slice::from_ref(&batch),
-            &file_prefix,
-            event,
-        )
-        .await
-        .map_err(|e| ServingError::Engine(e.to_string()))
-    }
-}
-
-/// Embedded DuckDB that has ATTACHed loom's DuckLake catalog read-only.
-/// duckdb-rs is synchronous; calls run on a blocking thread. A fresh connection
-/// per query keeps the slice simple (pool later).
-pub struct EmbeddedDuckDb {
-    attach_sql: String,
-}
-
-impl EmbeddedDuckDb {
-    /// `pg_conn` is a libpq connection string (e.g. "dbname=loom host=/sock user=postgres"
-    /// or "dbname=loom host=db.internal port=5432 user=loom password=secret").
-    /// `data_path` must match the dir the writer used (relative file paths resolve under it).
-    pub async fn attach(pg_conn: &str, data_path: &std::path::Path) -> Result<Self, ServingError> {
-        let ext_dir = std::env::var("DUCKDB_EXTENSION_DIR")
-            .map_err(|_| ServingError::Engine("DUCKDB_EXTENSION_DIR unset".into()))?;
-        let attach_sql = format!(
-            "SET extension_directory='{}';\nLOAD ducklake;\nLOAD postgres_scanner;\n\
-             ATTACH 'ducklake:postgres:{}' AS lake \
-             (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\nUSE lake;",
-            ext_dir,
-            pg_conn,
-            data_path.display(),
-        );
-        Ok(Self { attach_sql })
-    }
-}
-
-#[async_trait]
-impl ServingEngine for EmbeddedDuckDb {
-    async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
-        let attach = self.attach_sql.clone();
-        let sql = sql.to_string();
-        let params = params.to_vec();
-        tokio::task::spawn_blocking(move || run_sync(&attach, &sql, &params))
-            .await
-            .map_err(|e| ServingError::Engine(format!("join: {e}")))?
-    }
-}
-
-/// A Quack-protocol client `ServingEngine`: forwards SQL to a separate
-/// `quack_serve`'d DuckDB (which owns the DuckLake `ATTACH`) via the `quack_query`
-/// table function. The local duckdb-rs connection only `LOAD quack`s — no catalog
-/// is attached client-side; execution happens on the serving tier.
-pub struct QuackServingEngine {
-    /// e.g. "quack:127.0.0.1:9494" — the server's listen URI (client form).
-    uri: String,
-    /// Auth token agreed with the server.
-    token: String,
-    /// Offline extension dir to `LOAD quack` from (DUCKDB_EXTENSION_DIR).
-    ext_dir: String,
-}
-
-impl QuackServingEngine {
-    pub fn new(uri: impl Into<String>, token: impl Into<String>) -> Result<Self, ServingError> {
-        let ext_dir = std::env::var("DUCKDB_EXTENSION_DIR")
-            .map_err(|_| ServingError::Engine("DUCKDB_EXTENSION_DIR unset".into()))?;
-        Ok(Self {
-            uri: uri.into(),
-            token: token.into(),
-            ext_dir,
-        })
-    }
-}
-
-#[async_trait]
-impl ServingEngine for QuackServingEngine {
-    async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
-        // 1. Inline params (quack_query has no bind slot). 2. Prefix `USE lake;` —
-        // a quack-forwarded session does NOT inherit the server's USE lake.
-        let forwarded = format!("USE lake; {}", inline_params(sql, params));
-        // All three values are wrapped in sql_escape: `forwarded` carries
-        // user-derived param values, and uri/token are escaped defensively so a
-        // stray quote can never break out of the quack_query call. disable_ssl is
-        // hardcoded for now — this engine is test/local-scope; making TLS
-        // configurable is part of the later HTTP-wiring slice.
-        let wrapper = format!(
-            "SELECT * FROM quack_query('{}', '{}', token := '{}', disable_ssl := true)",
-            sql_escape(&self.uri),
-            sql_escape(&forwarded),
-            sql_escape(&self.token),
-        );
-        let preamble = format!("SET extension_directory='{}';\nLOAD quack;", self.ext_dir);
-        tokio::task::spawn_blocking(move || run_sync(&preamble, &wrapper, &[]))
-            .await
-            .map_err(|e| ServingError::Engine(format!("join: {e}")))?
-    }
-}
-
-fn run_sync(attach: &str, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
-    use duckdb::types::Value;
-    let conn =
-        duckdb::Connection::open_in_memory().map_err(|e| ServingError::Engine(e.to_string()))?;
-    conn.execute_batch(attach)
-        .map_err(|e| ServingError::Engine(e.to_string()))?;
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| ServingError::Engine(e.to_string()))?;
-    let bound: Vec<Value> = params.iter().map(to_duck).collect();
-    let pref: Vec<&dyn duckdb::ToSql> = bound.iter().map(|v| v as &dyn duckdb::ToSql).collect();
-    let mut q = stmt
-        .query(pref.as_slice())
-        .map_err(|e| ServingError::Engine(e.to_string()))?;
-    // Capture the result schema from the executed query BEFORE stepping, so a
-    // zero-row result still reports its columns (an empty `Rows.columns` would be
-    // wrong for a governed read that legitimately matched no rows). Column metadata
-    // is only populated after `query()` executes the statement — reading it off the
-    // freshly-prepared statement panics.
-    let columns: Vec<String> = q.as_ref().map(|s| s.column_names()).unwrap_or_default();
-
-    let mut rows: Vec<Vec<SqlValue>> = Vec::new();
-    while let Some(row) = q.next().map_err(|e| ServingError::Engine(e.to_string()))? {
-        let mut cells = Vec::with_capacity(columns.len());
-        for i in 0..columns.len() {
-            let v: Value = row
-                .get(i)
-                .map_err(|e| ServingError::Engine(e.to_string()))?;
-            cells.push(from_duck(v));
-        }
-        rows.push(cells);
-    }
-    Ok(Rows { columns, rows })
 }
 
 /// Escape a string for embedding in a DuckDB single-quoted literal: double every
@@ -424,66 +253,4 @@ pub fn inline_params(sql: &str, params: &[SqlValue]) -> String {
         }
     }
     out
-}
-
-fn to_duck(v: &SqlValue) -> duckdb::types::Value {
-    use duckdb::types::{TimeUnit, Value};
-    match v {
-        SqlValue::Text(s) => Value::Text(s.clone()),
-        SqlValue::Int(i) => Value::BigInt(*i),
-        SqlValue::Bool(b) => Value::Boolean(*b),
-        SqlValue::Double(f) => Value::Double(*f),
-        SqlValue::Date(d) => {
-            Value::Date32((*d - time::macros::date!(1970 - 01 - 01)).whole_days() as i32)
-        }
-        SqlValue::Timestamp(ts) => {
-            // whole_microseconds() is i128; saturate rather than silently wrap on the
-            // (implausible, far-from-epoch) overflow case.
-            let micros = (ts.assume_utc() - time::OffsetDateTime::UNIX_EPOCH)
-                .whole_microseconds()
-                .try_into()
-                .unwrap_or(i64::MAX);
-            Value::Timestamp(TimeUnit::Microsecond, micros)
-        }
-        SqlValue::Null => Value::Null,
-    }
-}
-
-fn from_duck(v: duckdb::types::Value) -> SqlValue {
-    use duckdb::types::Value;
-    match v {
-        Value::Null => SqlValue::Null,
-        Value::Boolean(b) => SqlValue::Bool(b),
-        Value::TinyInt(i) => SqlValue::Int(i as i64),
-        Value::SmallInt(i) => SqlValue::Int(i as i64),
-        Value::Int(i) => SqlValue::Int(i as i64),
-        Value::BigInt(i) => SqlValue::Int(i),
-        Value::Float(f) => SqlValue::Double(f as f64),
-        Value::Double(f) => SqlValue::Double(f),
-        Value::Date32(days) => SqlValue::Date(date_from_epoch_days(days)),
-        Value::Timestamp(unit, n) => SqlValue::Timestamp(timestamp_from_unit(unit, n)),
-        Value::Text(s) => SqlValue::Text(s),
-        // Decimal, Time64, HugeInt, lists/structs, etc. are not yet first-class; keep
-        // the defensive debug fallback so an unmapped variant never panics a read.
-        other => SqlValue::Text(format!("{other:?}")),
-    }
-}
-
-/// Days since the Unix epoch -> a calendar date.
-fn date_from_epoch_days(days: i32) -> time::Date {
-    time::macros::date!(1970 - 01 - 01) + time::Duration::days(days as i64)
-}
-
-/// A DuckDB timestamp (unit + count since epoch) -> a wall-clock datetime.
-fn timestamp_from_unit(unit: duckdb::types::TimeUnit, n: i64) -> time::PrimitiveDateTime {
-    use duckdb::types::TimeUnit;
-    let nanos: i128 = match unit {
-        TimeUnit::Second => n as i128 * 1_000_000_000,
-        TimeUnit::Millisecond => n as i128 * 1_000_000,
-        TimeUnit::Microsecond => n as i128 * 1_000,
-        TimeUnit::Nanosecond => n as i128,
-    };
-    let odt = time::OffsetDateTime::from_unix_timestamp_nanos(nanos)
-        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
-    time::PrimitiveDateTime::new(odt.date(), odt.time())
 }

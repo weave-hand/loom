@@ -1,7 +1,7 @@
 //! Shared serving utilities for the query-api Iceberg path: serialisation helpers
-//! (`encode_ipc_stream`, `batches_to_rows`, `arrow_to_sqlvalue`), the Iceberg action
-//! writer, and the backend selector. The DataFusion execution layer has moved to
-//! `engine-serving`; this file retains only the pieces still owned by query-api.
+//! (`encode_ipc_stream`, `batches_to_rows`, `arrow_to_sqlvalue`) and the Iceberg
+//! action writer. The DataFusion execution layer has moved to `engine-serving`;
+//! this file retains only the pieces still owned by query-api.
 
 use std::sync::Arc;
 
@@ -94,26 +94,6 @@ impl ActionEngine for IcebergActionWriter {
     }
 }
 
-/// Which table-format backend the query-api binary serves reads from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServingBackend {
-    /// DuckLake via embedded DuckDB (default; today's behavior).
-    DuckLake,
-    /// File-backed Iceberg via the loom-native DataFusion engine.
-    Iceberg,
-}
-
-/// Parse `LOOM_SERVING_BACKEND`. Unset -> DuckLake. Case-insensitive.
-pub fn parse_serving_backend(v: Option<&str>) -> Result<ServingBackend, String> {
-    match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("") | Some("ducklake") => Ok(ServingBackend::DuckLake),
-        Some("iceberg") => Ok(ServingBackend::Iceberg),
-        Some(other) => Err(format!(
-            "LOOM_SERVING_BACKEND must be 'ducklake' or 'iceberg', got {other:?}"
-        )),
-    }
-}
-
 /// Flatten DataFusion result batches into the engine-neutral `Rows`. Columns come
 /// from the first batch's schema (DataFusion preserves projection order, satisfying
 /// the handler's column-order contract); an empty result yields empty `Rows`.
@@ -141,8 +121,7 @@ pub fn batches_to_rows(batches: Vec<RecordBatch>) -> Rows {
 }
 
 /// One Arrow cell -> `SqlValue`. Covers the scalar set loom serves; an unmapped
-/// Arrow type falls back to a debug `Text` so a read never panics (mirrors the
-/// DuckDB engine's `from_duck` fallback).
+/// Arrow type falls back to a debug `Text` so a read never panics.
 fn arrow_to_sqlvalue(array: &dyn Array, row: usize) -> SqlValue {
     if array.is_null(row) {
         return SqlValue::Null;
@@ -177,7 +156,7 @@ fn arrow_to_sqlvalue(array: &dyn Array, row: usize) -> SqlValue {
         }
         // Defensive: a type loom doesn't serve as a first-class scalar. Render the
         // single cell (not the whole array) so the fallback is bounded and
-        // row-correct; mirrors the DuckDB engine's per-value `from_duck` fallback.
+        // row-correct.
         _ => match ArrayFormatter::try_new(array, &FormatOptions::default()) {
             Ok(fmt) => SqlValue::Text(fmt.value(row).to_string()),
             Err(_) => SqlValue::Null,

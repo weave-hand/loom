@@ -1,7 +1,7 @@
-//! Unit tests for the Quack path's parameter inlining: typed scalars render to
-//! SQL literals and `?` placeholders are substituted left-to-right. The escape
-//! (doubling `'`) is the injection boundary for the inline path — exercised here
-//! server-free; the behavioural proof is in tests/quack_serving.rs.
+//! Unit tests for `inline_params`: typed scalars render to SQL literals and `?`
+//! placeholders are substituted left-to-right. The escape (doubling `'`) is the
+//! injection boundary for the inline path — exercised here server-free. The
+//! in-process Iceberg/DataFusion engine consumes the inlined SQL.
 
 use query_api::serving::{SqlValue, inline_params};
 
