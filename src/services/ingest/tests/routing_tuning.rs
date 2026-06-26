@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use ingest::config::RoutingTuning;
 
 fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
 }
 
 #[test]
@@ -24,7 +27,8 @@ fn partial_json_falls_to_default() {
 #[test]
 fn env_overrides_file() {
     let mut r: RoutingTuning = serde_json::from_str(r#"{"inline_byte_limit": 1024}"#).unwrap();
-    r.overlay_env(&map(&[("LOOM_INLINE_BYTE_LIMIT", "2048")])).unwrap();
+    r.overlay_env(&map(&[("LOOM_INLINE_BYTE_LIMIT", "2048")]))
+        .unwrap();
     assert_eq!(r.inline_byte_limit, 2048);
 }
 
@@ -38,7 +42,9 @@ fn file_survives_when_env_silent() {
 #[test]
 fn malformed_env_is_error_naming_key() {
     let mut r = RoutingTuning::default();
-    let err = r.overlay_env(&map(&[("LOOM_INLINE_BYTE_LIMIT", "abc")])).unwrap_err();
+    let err = r
+        .overlay_env(&map(&[("LOOM_INLINE_BYTE_LIMIT", "abc")]))
+        .unwrap_err();
     assert!(format!("{err}").contains("LOOM_INLINE_BYTE_LIMIT"));
 }
 

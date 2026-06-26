@@ -70,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         write_cfg: wcfg.write.clone(),
         worker_tuning,
     };
-    let worker = Worker::new(client, worker_id, lease).with_poll_interval(wcfg.worker.poll_interval());
+    let worker =
+        Worker::new(client, worker_id, lease).with_poll_interval(wcfg.worker.poll_interval());
 
     let shutdown = CancellationToken::new();
     let sig = shutdown.clone();

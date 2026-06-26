@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use datafusion_io::WriteConfig;
 
 fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
 }
 
 #[test]
@@ -25,14 +28,16 @@ fn partial_json_falls_to_default() {
 #[test]
 fn env_overlay_applies() {
     let mut c = WriteConfig::default();
-    c.overlay_env(&map(&[("LOOM_WRITE_MAX_FILES", "10")])).unwrap();
+    c.overlay_env(&map(&[("LOOM_WRITE_MAX_FILES", "10")]))
+        .unwrap();
     assert_eq!(c.max_files, 10);
 }
 
 #[test]
 fn env_overrides_file_value() {
     let mut c: WriteConfig = serde_json::from_str(r#"{"max_files": 8}"#).unwrap();
-    c.overlay_env(&map(&[("LOOM_WRITE_MAX_FILES", "10")])).unwrap();
+    c.overlay_env(&map(&[("LOOM_WRITE_MAX_FILES", "10")]))
+        .unwrap();
     assert_eq!(c.max_files, 10, "env wins over file");
 }
 
@@ -46,7 +51,9 @@ fn file_value_survives_when_env_silent() {
 #[test]
 fn malformed_env_is_error_naming_key() {
     let mut c = WriteConfig::default();
-    let err = c.overlay_env(&map(&[("LOOM_WRITE_MAX_FILES", "lots")])).unwrap_err();
+    let err = c
+        .overlay_env(&map(&[("LOOM_WRITE_MAX_FILES", "lots")]))
+        .unwrap_err();
     assert!(format!("{err}").contains("LOOM_WRITE_MAX_FILES"));
 }
 

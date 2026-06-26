@@ -52,9 +52,17 @@ impl Default for WriteConfig {
 impl WriteConfig {
     /// Apply any present `LOOM_WRITE_*` vars over the current values.
     pub fn overlay_env(&mut self, vars: &HashMap<String, String>) -> Result<(), ConfigError> {
-        overlay_opt(vars, "LOOM_WRITE_TARGET_FILE_BYTES", &mut self.target_file_size_bytes)?;
+        overlay_opt(
+            vars,
+            "LOOM_WRITE_TARGET_FILE_BYTES",
+            &mut self.target_file_size_bytes,
+        )?;
         overlay_opt(vars, "LOOM_WRITE_MAX_FILES", &mut self.max_files)?;
-        overlay_opt(vars, "LOOM_WRITE_COMPRESSION_FACTOR", &mut self.compression_factor)?;
+        overlay_opt(
+            vars,
+            "LOOM_WRITE_COMPRESSION_FACTOR",
+            &mut self.compression_factor,
+        )?;
         Ok(())
     }
 
@@ -68,7 +76,10 @@ impl WriteConfig {
             return Err(invalid("LOOM_WRITE_MAX_FILES", "must be >= 1"));
         }
         if self.compression_factor <= 0.0 || self.compression_factor > 1.0 {
-            return Err(invalid("LOOM_WRITE_COMPRESSION_FACTOR", "must be in (0, 1]"));
+            return Err(invalid(
+                "LOOM_WRITE_COMPRESSION_FACTOR",
+                "must be in (0, 1]",
+            ));
         }
         Ok(())
     }

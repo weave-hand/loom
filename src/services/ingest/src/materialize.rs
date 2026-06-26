@@ -71,14 +71,7 @@ pub async fn land(
 ) -> Result<SnapshotId, IngestError> {
     // DataFusion write: N Snappy Parquet files straight to object storage.
     let dir_prefix = format!("{}/{}/{}", table.schema, table.name, file_prefix);
-    let files = write_dataset(
-        object_store,
-        &dir_prefix,
-        schema,
-        batches,
-        write_cfg,
-    )
-    .await?;
+    let files = write_dataset(object_store, &dir_prefix, schema, batches, write_cfg).await?;
 
     // One atomic transaction: create_table (idempotent) + append_files + emit.
     let data_files: Vec<DataFile> = files

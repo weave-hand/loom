@@ -28,7 +28,10 @@ pub struct RoutingTuning {
 
 impl Default for RoutingTuning {
     fn default() -> Self {
-        Self { inline_byte_limit: 16 * 1024 * 1024, flush_byte_threshold: 64 * 1024 * 1024 }
+        Self {
+            inline_byte_limit: 16 * 1024 * 1024,
+            flush_byte_threshold: 64 * 1024 * 1024,
+        }
     }
 }
 
@@ -36,7 +39,11 @@ impl RoutingTuning {
     /// Apply `LOOM_INLINE_BYTE_LIMIT` / `LOOM_FLUSH_BYTE_THRESHOLD` over the current values.
     pub fn overlay_env(&mut self, vars: &HashMap<String, String>) -> Result<(), ConfigError> {
         overlay_opt(vars, "LOOM_INLINE_BYTE_LIMIT", &mut self.inline_byte_limit)?;
-        overlay_opt(vars, "LOOM_FLUSH_BYTE_THRESHOLD", &mut self.flush_byte_threshold)?;
+        overlay_opt(
+            vars,
+            "LOOM_FLUSH_BYTE_THRESHOLD",
+            &mut self.flush_byte_threshold,
+        )?;
         Ok(())
     }
 

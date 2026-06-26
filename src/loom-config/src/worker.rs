@@ -22,7 +22,11 @@ pub struct WorkerTuning {
 
 impl Default for WorkerTuning {
     fn default() -> Self {
-        Self { poll_interval_ms: 5000, backoff_ceiling_secs: 60, backoff_max_attempts: 6 }
+        Self {
+            poll_interval_ms: 5000,
+            backoff_ceiling_secs: 60,
+            backoff_max_attempts: 6,
+        }
     }
 }
 
@@ -43,25 +47,46 @@ impl WorkerTuning {
     #[must_use]
     pub fn backoff(&self, attempts: i32) -> Duration {
         let shift = attempts.clamp(0, self.backoff_max_attempts.min(63) as i32) as u32;
-        let secs = 1u64.checked_shl(shift).unwrap_or(u64::MAX).min(self.backoff_ceiling_secs);
+        let secs = 1u64
+            .checked_shl(shift)
+            .unwrap_or(u64::MAX)
+            .min(self.backoff_ceiling_secs);
         Duration::from_secs(secs)
     }
 
     /// Apply any present `LOOM_WORKER_*` vars over the current values.
     pub fn overlay_env(&mut self, vars: &HashMap<String, String>) -> Result<(), ConfigError> {
-        overlay_opt(vars, "LOOM_WORKER_POLL_INTERVAL_MS", &mut self.poll_interval_ms)?;
-        overlay_opt(vars, "LOOM_WORKER_BACKOFF_CEILING_SECS", &mut self.backoff_ceiling_secs)?;
-        overlay_opt(vars, "LOOM_WORKER_BACKOFF_MAX_ATTEMPTS", &mut self.backoff_max_attempts)?;
+        overlay_opt(
+            vars,
+            "LOOM_WORKER_POLL_INTERVAL_MS",
+            &mut self.poll_interval_ms,
+        )?;
+        overlay_opt(
+            vars,
+            "LOOM_WORKER_BACKOFF_CEILING_SECS",
+            &mut self.backoff_ceiling_secs,
+        )?;
+        overlay_opt(
+            vars,
+            "LOOM_WORKER_BACKOFF_MAX_ATTEMPTS",
+            &mut self.backoff_max_attempts,
+        )?;
         Ok(())
     }
 
     /// Validate bounds. `poll_interval_ms >= 1`, `backoff_max_attempts >= 1`.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.poll_interval_ms == 0 {
-            return Err(crate::invalid("LOOM_WORKER_POLL_INTERVAL_MS", "must be >= 1"));
+            return Err(crate::invalid(
+                "LOOM_WORKER_POLL_INTERVAL_MS",
+                "must be >= 1",
+            ));
         }
         if self.backoff_max_attempts == 0 {
-            return Err(crate::invalid("LOOM_WORKER_BACKOFF_MAX_ATTEMPTS", "must be >= 1"));
+            return Err(crate::invalid(
+                "LOOM_WORKER_BACKOFF_MAX_ATTEMPTS",
+                "must be >= 1",
+            ));
         }
         Ok(())
     }

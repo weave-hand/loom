@@ -5,7 +5,10 @@ use std::time::Duration;
 use loom_config::WorkerTuning;
 
 fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
 }
 
 #[test]
@@ -34,7 +37,8 @@ fn partial_json_falls_to_default() {
 #[test]
 fn env_overrides_file() {
     let mut w: WorkerTuning = serde_json::from_str(r#"{"poll_interval_ms": 250}"#).unwrap();
-    w.overlay_env(&map(&[("LOOM_WORKER_POLL_INTERVAL_MS", "1000")])).unwrap();
+    w.overlay_env(&map(&[("LOOM_WORKER_POLL_INTERVAL_MS", "1000")]))
+        .unwrap();
     assert_eq!(w.poll_interval_ms, 1000);
 }
 
@@ -44,7 +48,8 @@ fn env_backoff_keys_apply() {
     w.overlay_env(&map(&[
         ("LOOM_WORKER_BACKOFF_CEILING_SECS", "30"),
         ("LOOM_WORKER_BACKOFF_MAX_ATTEMPTS", "4"),
-    ])).unwrap();
+    ]))
+    .unwrap();
     assert_eq!(w.backoff_ceiling_secs, 30);
     assert_eq!(w.backoff_max_attempts, 4);
 }
@@ -52,7 +57,9 @@ fn env_backoff_keys_apply() {
 #[test]
 fn malformed_env_is_error_naming_key() {
     let mut w = WorkerTuning::default();
-    let err = w.overlay_env(&map(&[("LOOM_WORKER_POLL_INTERVAL_MS", "soon")])).unwrap_err();
+    let err = w
+        .overlay_env(&map(&[("LOOM_WORKER_POLL_INTERVAL_MS", "soon")]))
+        .unwrap_err();
     assert!(format!("{err}").contains("LOOM_WORKER_POLL_INTERVAL_MS"));
 }
 

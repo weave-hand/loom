@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use loom_config::{ConfigError, env_map, overlay_opt, parse_config_doc};
 
 fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
 }
 
 #[test]
@@ -37,15 +40,14 @@ fn overlay_opt_malformed_is_error_naming_key() {
 
 #[test]
 fn parse_config_doc_rejects_bad_json() {
-    let err = parse_config_doc::<std::collections::BTreeMap<String, u64>>("{ not json")
-        .unwrap_err();
+    let err =
+        parse_config_doc::<std::collections::BTreeMap<String, u64>>("{ not json").unwrap_err();
     assert!(matches!(err, ConfigError::Invalid { ref var, .. } if var == "LOOM_CONFIG_FILE"));
 }
 
 #[test]
 fn parse_config_doc_accepts_good_json() {
-    let m: std::collections::BTreeMap<String, u64> =
-        parse_config_doc(r#"{"a": 1}"#).unwrap();
+    let m: std::collections::BTreeMap<String, u64> = parse_config_doc(r#"{"a": 1}"#).unwrap();
     assert_eq!(m.get("a"), Some(&1));
 }
 

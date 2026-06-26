@@ -6,6 +6,7 @@
 
 pub mod action;
 pub mod chain_filter;
+pub mod config;
 pub mod engine_client;
 pub mod filter;
 pub mod handler;
@@ -17,4 +18,3 @@ pub mod serving;
 pub mod serving_datafusion;
 pub mod sql;
 pub mod write_filter;
-pub mod config;

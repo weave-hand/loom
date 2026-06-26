@@ -12,5 +12,7 @@ fn service_runtime_reexports_overlay_opt() {
         vars.insert("LOOM_N".into(), "x".into());
         service_runtime::overlay_opt(&vars, "LOOM_N", &mut slot).unwrap_err()
     };
-    assert!(matches!(err, service_runtime::ConfigError::Invalid { ref var, .. } if var == "LOOM_N"));
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. } if var == "LOOM_N")
+    );
 }

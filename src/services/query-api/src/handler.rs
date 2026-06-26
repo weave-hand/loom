@@ -21,7 +21,6 @@ pub struct ObjectRows {
     pub rows: Vec<Vec<SqlValue>>,
 }
 
-
 /// A read request: an ontology type plus optional equality filters on allowed columns.
 pub struct ObjectQuery {
     pub type_name: String,

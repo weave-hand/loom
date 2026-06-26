@@ -23,7 +23,10 @@ pub enum ConfigError {
 /// Construct an `Invalid` error naming the offending key.
 #[must_use]
 pub fn invalid(var: &str, detail: impl core::fmt::Display) -> ConfigError {
-    ConfigError::Invalid { var: var.to_string(), detail: detail.to_string() }
+    ConfigError::Invalid {
+        var: var.to_string(),
+        detail: detail.to_string(),
+    }
 }
 
 /// Apply `vars[key]` over `slot` if present; `ConfigError::Invalid` (naming `key`) if

@@ -14,7 +14,9 @@ pub struct ServingTuning {
 
 impl Default for ServingTuning {
     fn default() -> Self {
-        Self { default_limit: 1000 }
+        Self {
+            default_limit: 1000,
+        }
     }
 }
 
