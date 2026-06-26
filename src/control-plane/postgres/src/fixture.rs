@@ -248,7 +248,7 @@ impl PgFixture {
     }
 
     /// The unix-socket directory the server listens on (for clients that build
-    /// their own connection string, e.g. the DuckLake writer).
+    /// their own connection string, e.g. the Iceberg SQL catalog).
     pub fn socket_path(&self) -> &std::path::Path {
         self.socket_dir.path()
     }

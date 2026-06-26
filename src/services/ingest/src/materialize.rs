@@ -1,6 +1,6 @@
 //! The orchestrator: gate -> schema-selection -> datafusion write -> one atomic Tx
 //! (create_table + append_files + emit + commit). Ordering is write-then-commit;
-//! a commit failure after the write orphans the Parquet files (documented; GC deferred).
+//! a commit failure after the write orphans Parquet files (documented; GC deferred).
 
 use std::sync::Arc;
 
@@ -51,11 +51,11 @@ pub fn resolve_columns(
     })
 }
 
-/// The DuckLake write tail: DataFusion Parquet write + one atomic control-plane
+/// The write tail: DataFusion Parquet write + one atomic control-plane
 /// transaction (create_table + append_files + emit + commit). `columns` is the
 /// already-resolved physical schema (see [`resolve_columns`]).
 #[allow(clippy::too_many_arguments)]
-pub async fn land_ducklake(
+pub async fn land(
     cp: &dyn ControlPlane,
     object_store: Arc<dyn ObjectStore>,
     table: &TableRef,
@@ -97,16 +97,16 @@ pub async fn land_ducklake(
     tx.commit().await?.ok_or(IngestError::NoSnapshot)
 }
 
-/// Land data as a registered DuckLake snapshot + lineage, atomically. Thin
-/// convenience over [`resolve_columns`] + [`land_ducklake`] for callers that
-/// hold a whole [`MaterializeRequest`] (the integration tests).
+/// Land data as a snapshot + lineage commit, atomically. Thin convenience over
+/// [`resolve_columns`] + [`land`] for callers that hold a whole
+/// [`MaterializeRequest`] (the integration tests).
 pub async fn materialize(
     cp: &dyn ControlPlane,
     object_store: Arc<dyn ObjectStore>,
     req: MaterializeRequest<'_>,
 ) -> Result<SnapshotId, IngestError> {
     let columns = resolve_columns(&req.schema, req.gate)?;
-    land_ducklake(
+    land(
         cp,
         object_store,
         req.table,

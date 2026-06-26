@@ -27,9 +27,9 @@ use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 use crate::landing::{LandRequest, LandingMaterializer};
 use crate::materialize::resolve_columns;
 
-/// Shared, owned dependencies: the configured landing backend (DuckLake or
-/// Iceberg), chosen at boot. Gate + schema resolution + lineage are backend-
-/// agnostic and happen in the handler before dispatch.
+/// Shared, owned dependencies: the configured landing backend (Iceberg),
+/// chosen at boot. Gate + schema resolution + lineage are backend-agnostic
+/// and happen in the handler before dispatch.
 #[derive(Clone)]
 pub struct AppState {
     pub materializer: Arc<dyn LandingMaterializer>,
