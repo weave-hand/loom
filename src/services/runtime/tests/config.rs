@@ -82,21 +82,6 @@ fn invalid_values_error() {
 }
 
 #[test]
-fn ducklake_libpq_renders_all_fields() {
-    let db = DbConfig {
-        host: "db.internal".into(),
-        port: 5432,
-        user: "loom".into(),
-        password: "secret".into(),
-        dbname: "loom".into(),
-    };
-    assert_eq!(
-        db.ducklake_libpq(),
-        "dbname=loom host=db.internal port=5432 user=loom password=secret"
-    );
-}
-
-#[test]
 fn pg_url_tcp_and_socket() {
     let tcp = DbConfig {
         host: "db.internal".into(),

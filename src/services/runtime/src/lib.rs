@@ -29,8 +29,8 @@ pub use store_config::{
     build_serving_object_store, build_write_store, local_store,
 };
 
-/// Discrete Postgres connection fields. Feeds both the sqlx control-plane pool and
-/// DuckLake's ATTACH connection string, with no URL parsing in between.
+/// Discrete Postgres connection fields. Feeds the sqlx control-plane pool and the
+/// Iceberg SQL catalog, with no URL parsing in between.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DbConfig {
     pub host: String,
@@ -54,14 +54,6 @@ impl DbConfig {
             .database(&self.dbname)
     }
 
-    /// libpq-style connection string for `ATTACH 'ducklake:postgres:<...>'`.
-    pub fn ducklake_libpq(&self) -> String {
-        format!(
-            "dbname={} host={} port={} user={} password={}",
-            self.dbname, self.host, self.port, self.user, self.password
-        )
-    }
-
     /// A sqlx-connectable `postgres://` URL — what the vendored Iceberg SQL catalog
     /// (`SqlCatalog`) opens its own pool with. A `host` beginning with `/` is a unix
     /// socket directory (passed as a `?host=` query param, libpq convention, with the
@@ -69,10 +61,9 @@ impl DbConfig {
     ///
     /// NOTE: `user`/`password` are interpolated raw, not percent-encoded — a password
     /// containing URL-reserved characters (`@ : / ? #`) would corrupt parsing. This is
-    /// the only connection form with that limitation (`ducklake_libpq` is libpq
-    /// space-delimited; `pg_connect_options` is structured). Acceptable for the current
-    /// controlled-deploy posture; percent-encode here if free-form passwords are ever
-    /// supported.
+    /// the only URL-form connection (unlike `pg_connect_options`, which is structured).
+    /// Acceptable for the current controlled-deploy posture; percent-encode here if
+    /// free-form passwords are ever supported.
     pub fn pg_url(&self) -> String {
         if self.host.starts_with('/') {
             format!(
