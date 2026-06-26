@@ -178,5 +178,9 @@ hermetic_rust_toolchain(
         "root//tools/coverage:coverage_enabled": ["-Cinstrument-coverage"],
         "DEFAULT": [],
     }),
+    # Lint policy — spike: pedantic only (Task 1). Task 2 adds restriction.
+    warn_lints = ["clippy::pedantic"],
+    allow_lints = [],
+    clippy_toml = "root//:clippy-toml",
     visibility = ["PUBLIC"],
 )

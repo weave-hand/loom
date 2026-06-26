@@ -75,6 +75,10 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             rustc_target_triple = target,
             sysroot_path = sysroot,
             rustc_flags = rustc_flags,
+            allow_lints = ctx.attrs.allow_lints,
+            deny_lints = ctx.attrs.deny_lints,
+            warn_lints = ctx.attrs.warn_lints,
+            clippy_toml = ctx.attrs.clippy_toml[DefaultInfo].default_outputs[0] if ctx.attrs.clippy_toml else None,
         ),
     ]
 
@@ -90,5 +94,13 @@ hermetic_rust_toolchain = rule(
         "default_edition": attrs.string(default = "2024"),
         "rustc_flags": attrs.list(attrs.string(), default = []),
         "use_bundled_linker": attrs.bool(default = False),
+        # Lint policy: forwarded into RustToolchainInfo. clippy::* lints in
+        # warn_lints/allow_lints are applied to the clippy action; see
+        # prelude/rust/build.bzl:_lintify. clippy_toml configures lint
+        # parameters (e.g. allow-*-in-tests) for the clippy action only.
+        "allow_lints": attrs.list(attrs.string(), default = []),
+        "deny_lints": attrs.list(attrs.string(), default = []),
+        "warn_lints": attrs.list(attrs.string(), default = []),
+        "clippy_toml": attrs.option(attrs.dep(providers = [DefaultInfo]), default = None),
     },
 )
