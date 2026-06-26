@@ -288,9 +288,11 @@ fn caller_predicate_sql(
         IsNotNull => format!("({col} IS NOT NULL)"),
         _ => {
             debug_assert_eq!(p.values.len(), 1, "scalar predicate must have one operand");
-            if let Some(v) = p.values.first() {
-                params.push(v.clone());
-            }
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "scalar caller-predicate invariant: exactly one operand (enforced upstream by filter::coerce_predicate). Fail closed on violation rather than emit a placeholder bound to a stale param on this ACL/caller-predicate path."
+            )]
+            params.push(p.values[0].clone());
             format!(
                 "({col} {} {})",
                 op_sql(p.op),
