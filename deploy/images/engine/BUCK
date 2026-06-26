@@ -1,0 +1,31 @@
+# loom engine service image: the buck2-built `engine-bin` (x86_64 glibc, pure
+# Rust, no embedded C++) layered onto an apko/Wolfi base — identical package set to the
+# ingest base. Kept under //deploy (not //src) so it stays off the normal CI
+# build sweep — apko fetches packages over the network and builds local-only; the
+# release workflow builds/pushes it explicitly. The engine runs as a sidecar in
+# the query-api pod, serving its Arrow Flight + control plane over the shared
+# LOOM_ENGINE_SOCKET unix-domain socket.
+load("@homelab//buck2/apko:defs.bzl", "apko_image")
+load("@homelab//buck2/oci:defs.bzl", "oci_image", "tar_layer")
+
+# Wolfi base (glibc + libgcc + CA certs, nonroot, entrypoint = /usr/local/bin/engine).
+apko_image(
+    name = "base",
+    config = "apko.yaml",
+    lock = "apko.lock.json",
+)
+
+# Stage the engine binary at the base's entrypoint path.
+tar_layer(
+    name = "bin_layer",
+    binary = "root//src/services/engine:engine-bin",
+    path = "/usr/local/bin/engine",
+)
+
+# Deployable image + `.info` (digest pin) + `.push` (crane push to ghcr).
+oci_image(
+    name = "image",
+    base = ":base",
+    layers = [":bin_layer"],
+    repository = "ghcr.io/weave-hand/loom-engine",
+)

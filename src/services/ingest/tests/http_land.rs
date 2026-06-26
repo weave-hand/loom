@@ -1,7 +1,9 @@
 //! Hermetic landing-endpoint smoke: POST an Arrow IPC stream, assert the land
-//! happened end-to-end through `materialize` (memory control plane + a temp-dir
-//! object store; tower oneshot, no socket / Postgres / DuckDB).
+//! happened end-to-end through the Iceberg materializer (fixture Postgres + a temp
+//! file warehouse; tower oneshot, no socket). The model-gate / error paths reject
+//! before materializing, so they exercise the same wiring without landing.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,12 +11,18 @@ use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use control_plane_core::{ControlPlane, TableRef};
-use control_plane_memory::MemoryControlPlane;
+use control_plane_core::{Catalog, ControlPlane, TableRef};
+use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_sql_catalog::{
+    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
+};
 use http_body_util::BodyExt;
+use iceberg::CatalogBuilder;
+use iceberg::io::LocalFsStorageFactory;
 use ingest::http::{AppState, router};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
+use ingest::landing::IcebergMaterializer;
+use sqlx::PgPool;
 use tower::ServiceExt;
 
 /// A 2-row batch: id: Int64 (required), name: Utf8 (nullable).
@@ -44,23 +52,46 @@ fn ipc_bytes(batch: &RecordBatch) -> Vec<u8> {
     buf
 }
 
-fn app_state(dir: &std::path::Path) -> (Arc<dyn ControlPlane>, AppState) {
-    let cp: Arc<dyn ControlPlane> = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    let store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new_with_prefix(dir).unwrap());
+/// Build an Iceberg-backed `AppState` over the fixture db + a temp file warehouse.
+/// The `TempDir` is returned so the caller keeps the warehouse alive for the test.
+async fn app_state(
+    fx: &PgFixture,
+    db: &str,
+) -> (Arc<dyn ControlPlane>, PgPool, tempfile::TempDir, AppState) {
+    let pool = fx.pool_for(db).await;
+    let wh = tempfile::tempdir().unwrap();
+    let mut props = HashMap::new();
+    props.insert(SQL_CATALOG_PROP_URI.to_string(), fx.pg_dsn(db));
+    props.insert(
+        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+        format!("file://{}", wh.path().display()),
+    );
+    let catalog = SqlCatalogBuilder::default()
+        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .load("loom", props)
+        .await
+        .expect("catalog");
+    let cp: Arc<dyn ControlPlane> = Arc::new(service_runtime::control_plane(
+        pool.clone(),
+        Duration::from_millis(300),
+    ));
     let state = AppState {
-        materializer: Arc::new(ingest::landing::DuckLakeMaterializer {
-            cp: cp.clone(),
-            store,
+        materializer: Arc::new(IcebergMaterializer {
+            catalog: Arc::new(catalog),
+            pool: pool.clone(),
+            inline_byte_limit: 16 * 1024 * 1024,
+            flush_byte_threshold: 64 * 1024 * 1024,
         }),
         cp: cp.clone(),
     };
-    (cp, state)
+    (cp, pool, wh, state)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unmodeled_land_succeeds_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
-    let (cp, state) = app_state(dir.path());
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (_cp, pool, _wh, state) = app_state(&fx, &db).await;
     let res = router(state)
         .oneshot(
             Request::builder()
@@ -80,14 +111,13 @@ async fn unmodeled_land_succeeds_end_to_end() {
         .as_i64()
         .expect("snapshot_id is an integer");
 
-    // Prove the land actually happened: the memory catalog now has a current
-    // snapshot for the table, reached through the facade.
+    // Prove the land actually happened: the mirror catalog now has a current
+    // snapshot for the table at the returned id.
     let table = TableRef {
         schema: "main".into(),
         name: "customer".into(),
     };
-    let snap = cp
-        .catalog()
+    let snap = IcebergCatalog::new(pool.clone())
         .current_snapshot(&table)
         .await
         .expect("table has a current snapshot after landing");
@@ -106,8 +136,9 @@ fn model_header(json: &str) -> (axum::http::HeaderName, axum::http::HeaderValue)
 
 #[tokio::test(flavor = "multi_thread")]
 async fn modeled_land_succeeds() {
-    let dir = tempfile::tempdir().unwrap();
-    let (_cp, state) = app_state(dir.path());
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (_cp, _pool, _wh, state) = app_state(&fx, &db).await;
     let model = r#"{"columns":[{"name":"id","ty":"long","required":true},{"name":"name","ty":"string","required":false}]}"#;
     let (hn, hv) = model_header(model);
     let res = router(state)
@@ -126,8 +157,9 @@ async fn modeled_land_succeeds() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn nonconforming_model_is_422_with_violations() {
-    let dir = tempfile::tempdir().unwrap();
-    let (cp, state) = app_state(dir.path());
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (_cp, pool, _wh, state) = app_state(&fx, &db).await;
     // Requires a column the batch does not have.
     let model = r#"{"columns":[{"name":"missing","ty":"long","required":true}]}"#;
     let (hn, hv) = model_header(model);
@@ -154,15 +186,19 @@ async fn nonconforming_model_is_422_with_violations() {
         name: "customer".into(),
     };
     assert!(
-        cp.catalog().current_snapshot(&table).await.is_err(),
+        IcebergCatalog::new(pool.clone())
+            .current_snapshot(&table)
+            .await
+            .is_err(),
         "a rejected land writes no catalog rows"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn garbage_body_is_400() {
-    let dir = tempfile::tempdir().unwrap();
-    let (_cp, state) = app_state(dir.path());
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (_cp, _pool, _wh, state) = app_state(&fx, &db).await;
     let res = router(state)
         .oneshot(
             Request::builder()
@@ -178,8 +214,9 @@ async fn garbage_body_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_model_header_is_400() {
-    let dir = tempfile::tempdir().unwrap();
-    let (_cp, state) = app_state(dir.path());
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (_cp, _pool, _wh, state) = app_state(&fx, &db).await;
     let (hn, hv) = model_header("not json");
     let res = router(state)
         .oneshot(

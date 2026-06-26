@@ -1,5 +1,5 @@
 //! Graph recursive-core + relational-tail e2e: GET /objects/:type/graph?path=knows*,worksAt over
-//! the real HTTP router backed by DuckDB-over-DuckLake. Proves:
+//! the real HTTP router backed by an in-process Iceberg/DataFusion serving engine. Proves:
 //!   - knows*,worksAt from {1} returns companies of the depth>=1 reachable people {2,3}, and
 //!     EXCLUDES company 10 (person 1's own employer — the seed is not in its own reach set),
 //!   - a multi-hop tail knows*,worksAt,locatedIn projects the final City type and DEDUPS (two
@@ -18,96 +18,86 @@
 
 use std::sync::Arc;
 
-use arrow::array::{BooleanArray, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use axum::http::StatusCode;
 use control_plane_core::{
     Acl, Action, Cardinality, CompareOp, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
     PolicyTarget, RowFilter, ScalarValue, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use e2e_support::{get, grant_read, ids_i64 as ids, land, prop, subject_with_role, tref};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
-use query_api::serving::EmbeddedDuckDb;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::{
+    InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role, tref,
+};
 
 /// Seed person/company/city. knows: 1->2, 2->3 (FK knows_id). worksAt: 1->10, 2->11, 3->12 (FK
 /// worksat_id). locatedIn: 10->22, 11->20, 12->20 (FK city_id; companies 11 & 12 share city 20).
-/// Person 3 is INACTIVE. The caller MUST keep the returned `DuckLakeWriter` alive.
-async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter) {
+/// Person 3 is INACTIVE. The caller MUST keep the returned `IcebergWriter` alive.
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+
+    let writer = IcebergWriter::new(pool.clone(), dsn);
 
     // person(id, name, active, knows_id, worksat_id).
     let person = tref("main", "person");
-    let person_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-        Field::new("active", DataType::Boolean, false),
-        Field::new("knows_id", DataType::Int64, true),
-        Field::new("worksat_id", DataType::Int64, true),
-    ]));
-    let person_batch = RecordBatch::try_new(
-        person_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec![
-                Some("ann"),
-                Some("bob"),
-                Some("cal"),
-            ])),
-            // person 3 inactive (row-filter test); 1 and 2 active.
-            Arc::new(BooleanArray::from(vec![true, true, false])),
-            // knows: 1->2, 2->3 (3 has no outbound knows edge).
-            Arc::new(Int64Array::from(vec![Some(2), Some(3), None])),
-            // worksAt: 1->10, 2->11, 3->12.
-            Arc::new(Int64Array::from(vec![Some(10), Some(11), Some(12)])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &person, person_schema, person_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "person",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("name".to_string(), "string".to_string(), true),
+                ("active".to_string(), "boolean".to_string(), false),
+                ("knows_id".to_string(), "long".to_string(), true),
+                ("worksat_id".to_string(), "long".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3]),
+                SeedCol::Str(vec!["ann", "bob", "cal"]),
+                // person 3 inactive (row-filter test); 1 and 2 active.
+                SeedCol::Bool(vec![true, true, false]),
+                // knows: 1->2, 2->3 (3 has no outbound knows edge).
+                SeedCol::NullableLong(vec![Some(2), Some(3), None]),
+                // worksAt: 1->10, 2->11, 3->12.
+                SeedCol::NullableLong(vec![Some(10), Some(11), Some(12)]),
+            ],
+        )
+        .await;
 
     // company(id, cname, city_id). locatedIn: 10->22, 11->20, 12->20.
     let company = tref("main", "company");
-    let company_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("cname", DataType::Utf8, true),
-        Field::new("city_id", DataType::Int64, true),
-    ]));
-    let company_batch = RecordBatch::try_new(
-        company_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![10, 11, 12])),
-            Arc::new(StringArray::from(vec![
-                Some("x"),
-                Some("acme"),
-                Some("beta"),
-            ])),
-            Arc::new(Int64Array::from(vec![Some(22), Some(20), Some(20)])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &company, company_schema, company_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "company",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("cname".to_string(), "string".to_string(), true),
+                ("city_id".to_string(), "long".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![10, 11, 12]),
+                SeedCol::Str(vec!["x", "acme", "beta"]),
+                SeedCol::NullableLong(vec![Some(22), Some(20), Some(20)]),
+            ],
+        )
+        .await;
 
     // city(id, cname).
     let city = tref("main", "city");
-    let city_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("cname", DataType::Utf8, true),
-    ]));
-    let city_batch = RecordBatch::try_new(
-        city_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![20, 22])),
-            Arc::new(StringArray::from(vec![Some("hq"), Some("z")])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &city, city_schema, city_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "city",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("cname".to_string(), "string".to_string(), true),
+            ],
+            &[SeedCol::Long(vec![20, 22]), SeedCol::Str(vec!["hq", "z"])],
+        )
+        .await;
 
     cp.define_type(ObjectType {
         name: TypeName("Person".into()),
@@ -187,16 +177,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
     (cp, eng, writer)
 }
 

@@ -1,6 +1,6 @@
 //! Over-the-wire e2e smoke: boot the ingest + query-api routers on real
 //! ephemeral TCP ports (via `service_runtime::serve`) and drive the land→read
-//! vertical with a real `reqwest` client, over BOTH storage backends.
+//! vertical with a real `reqwest` client, over the Iceberg storage backend.
 //!
 //! This complements the in-process `oneshot` suite (behavioral breadth) with a
 //! smoke of the network path: `serve()` + routers + body/JSON + status codes.
@@ -14,7 +14,7 @@ use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{ControlPlane, ObjectType, Ontology, TypeName};
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
@@ -23,10 +23,7 @@ use e2e_support::InProcessServingEngine;
 use e2e_support::{grant_read, ids_i64, prop, session_token, spawn_http, subject_with_role, tref};
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
-use ingest::landing::{DuckLakeMaterializer, IcebergMaterializer};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
-use query_api::serving::{DuckLakeActionWriter, EmbeddedDuckDb};
+use ingest::landing::IcebergMaterializer;
 use query_api::serving_datafusion::IcebergActionWriter;
 use service_runtime::{AuthState, protect};
 
@@ -34,7 +31,7 @@ const INLINE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 
 /// The two assembled routers for one backend, plus the control plane (for
 /// not-under-test seeding). The backend's tempdirs/writers are returned
-/// separately as a keep-alive (see `ducklake_backend`/`iceberg_backend`).
+/// separately as a keep-alive (see `iceberg_backend`).
 struct WireBackend {
     ingest: axum::Router,
     query: axum::Router,
@@ -63,49 +60,6 @@ fn customer_ipc() -> Vec<u8> {
         w.finish().unwrap();
     }
     buf
-}
-
-/// Assemble the DuckLake-backed ingest + query routers over one fresh db +
-/// bootstrapped DuckLake warehouse (mirrors the `main.rs` DuckLake arms).
-/// Returns the backend plus a keep-alive (the `DuckLakeWriter` owns the tempdir
-/// holding the Parquet files the engine reads) the caller must hold.
-async fn ducklake_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
-    let (cp, db) = fx.fresh_db().await;
-    let cp = Arc::new(cp);
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
-
-    let ingest = ingest::http::router(ingest::http::AppState {
-        materializer: Arc::new(DuckLakeMaterializer {
-            cp: cp.clone() as Arc<dyn ControlPlane>,
-            store: store.clone(),
-        }),
-        cp: cp.clone() as Arc<dyn ControlPlane>,
-    });
-
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
-
-    let query = query_api::http::router(query_api::http::AppState {
-        cp: cp.clone() as Arc<dyn ControlPlane>,
-        serving: Arc::new(eng),
-        action_engine: Arc::new(DuckLakeActionWriter::new(
-            cp.clone() as Arc<dyn ControlPlane>,
-            store,
-        )),
-    });
-
-    (WireBackend { ingest, query, cp }, Box::new(writer))
 }
 
 /// Assemble the Iceberg-backed ingest + query routers over one fresh db + a
@@ -252,13 +206,6 @@ async fn run_wire_vertical(backend: WireBackend) {
         "unknown-type status: {}",
         resp.status()
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn ducklake_wire_vertical() {
-    let fx = PgFixture::start();
-    let (backend, _keep) = ducklake_backend(&fx).await;
-    run_wire_vertical(backend).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

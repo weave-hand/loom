@@ -1,112 +1,53 @@
-//! THE governed-read oracle: an ontology type resolves to a DuckLake table; an ACL
+//! THE governed-read oracle: an ontology type resolves to an Iceberg table; an ACL
 //! policy (row filter + denied column) shapes the result; a request equality filter
-//! narrows it. Seeds real rows via the snapshot-commit primitive + a DuckDB-written
-//! Parquet (mirrors postgres/tests/ducklake_interop.rs::duckdb_scans_loom_appended_file).
+//! narrows it. Seeds real Parquet through the Iceberg writer chain (`IcebergWriter`)
+//! and serves it with the loom-native DataFusion engine (`InProcessServingEngine`
+//! over an `IcebergCatalog`) — no DuckDB in the path.
 
 use control_plane_core::{
-    Acl, Action, ColumnSpec, ColumnStat, CompareOp, ControlPlane, DataFile, Effect, FileFormat,
-    ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue,
-    StatValue, SubjectId, TableRef, TypeName,
+    Acl, Action, CompareOp, Effect, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef,
+    RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
 };
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::InProcessServingEngine;
 use query_api::handler::{ObjectQuery, QueryDeps, QueryError, Subject, read_object};
-use query_api::serving::{EmbeddedDuckDb, SqlValue};
+use query_api::serving::SqlValue;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn governed_object_read() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
 
     let table = TableRef {
         schema: "main".into(),
         name: "orders".into(),
     };
 
-    // 1. loom natively creates the table (id, status, secret).
-    let mut tx = cp.begin().await.unwrap();
-    tx.create_table(
-        &table,
-        &[
-            ColumnSpec {
-                name: "id".into(),
-                ty: "long".into(),
-                nullable: false,
-            },
-            ColumnSpec {
-                name: "status".into(),
-                ty: "string".into(),
-                nullable: true,
-            },
-            ColumnSpec {
-                name: "secret".into(),
-                ty: "string".into(),
-                nullable: true,
-            },
-        ],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap().expect("create snapshot");
-
-    // 2. DuckDB writes the Parquet at the resolved relative path, loom registers it.
-    let dir = writer.data_path().join("main").join("orders");
-    std::fs::create_dir_all(&dir).unwrap();
-    let abs = dir.join("o.parquet");
+    // 1. Seed real Iceberg Parquet for orders(id, status, secret):
+    //    (1,'open','s1'),(2,'closed','s2'),(3,'open','s3').
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("status".to_string(), "string".to_string(), true),
+        ("secret".to_string(), "string".to_string(), true),
+    ];
     writer
-        .exec(&format!(
-            "COPY (SELECT * FROM (VALUES \
-           (1, 'open', 's1'), (2, 'closed', 's2'), (3, 'open', 's3')) \
-           AS t(id, status, secret)) TO '{}' (FORMAT parquet);",
-            abs.display()
-        ))
-        .await;
-    let bytes = std::fs::read(&abs).unwrap();
-    let footer = {
-        let l = &bytes[bytes.len() - 8..bytes.len() - 4];
-        u32::from_le_bytes(l.try_into().unwrap()) as i64
-    };
-    let mut tx = cp.begin().await.unwrap();
-    tx.append_files(
-        &table,
-        &[DataFile {
-            path: "o.parquet".into(),
-            path_is_relative: true,
-            file_format: FileFormat::Parquet,
-            record_count: 3,
-            file_size_bytes: bytes.len() as i64,
-            column_stats: vec![
-                ColumnStat {
-                    column_name: "id".into(),
-                    null_count: 0,
-                    column_size_bytes: 24,
-                    min: Some(StatValue::I64(1)),
-                    max: Some(StatValue::I64(3)),
-                },
-                ColumnStat {
-                    column_name: "status".into(),
-                    null_count: 0,
-                    column_size_bytes: 24,
-                    min: Some(StatValue::Str("closed".into())),
-                    max: Some(StatValue::Str("open".into())),
-                },
-                ColumnStat {
-                    column_name: "secret".into(),
-                    null_count: 0,
-                    column_size_bytes: 24,
-                    min: Some(StatValue::Str("s1".into())),
-                    max: Some(StatValue::Str("s3".into())),
-                },
+        .seed_arrays(
+            "main",
+            "orders",
+            &cols,
+            &[
+                SeedCol::Long(vec![1, 2, 3]),
+                SeedCol::Str(vec!["open", "closed", "open"]),
+                SeedCol::Str(vec!["s1", "s2", "s3"]),
             ],
-            parquet_footer_size: Some(footer),
-        }],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap().expect("append snapshot");
+        )
+        .await;
 
-    // 3. Ontology: type Order -> main.orders, with properties id/status/secret.
+    // 2. Ontology: type Order -> main.orders, with properties id/status/secret.
     cp.define_type(ObjectType {
         name: TypeName("Order".into()),
         properties: vec![
@@ -133,7 +74,7 @@ async fn governed_object_read() {
     .await
     .unwrap();
 
-    // 4. ACL: subject `analyst` in role `analysts`; policy on type Order denies `secret`
+    // 3. ACL: subject `analyst` in role `analysts`; policy on type Order denies `secret`
     //    and restricts rows to status = 'open'.
     let subj = SubjectId("analyst".into());
     let role = RoleId("analysts".into());
@@ -165,17 +106,9 @@ async fn governed_object_read() {
     .await
     .unwrap();
 
-    // 5. Read it.
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    // 4. Read it through the loom-native Iceberg serving engine.
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
@@ -205,7 +138,7 @@ async fn governed_object_read() {
     assert!(ids.contains(&&SqlValue::Int(1)) && ids.contains(&&SqlValue::Int(3)));
     assert!(!ids.contains(&&SqlValue::Int(2)), "closed row filtered out");
 
-    // 6. A request equality filter narrows further.
+    // 5. A request equality filter narrows further.
     let rows2 = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
@@ -220,7 +153,7 @@ async fn governed_object_read() {
     assert_eq!(rows2.rows.len(), 1);
     assert_eq!(rows2.rows[0][0], SqlValue::Int(1));
 
-    // 7. Deny-by-default: a subject with no Read grant is Forbidden (no open default).
+    // 6. Deny-by-default: a subject with no Read grant is Forbidden (no open default).
     let stranger = SubjectId("stranger".into());
     let err = read_object(
         &ObjectQuery {
@@ -339,4 +272,6 @@ async fn governed_object_read() {
         matches!(bad, QueryError::BadFilter(ref c) if c == "secret"),
         "a filter on a masked column is rejected, got {bad:?}",
     );
+
+    drop(writer);
 }

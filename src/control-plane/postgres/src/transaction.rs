@@ -1,6 +1,17 @@
+//! The Postgres `Tx` implementation for the **non-table-format** transactional
+//! concerns: transactional queue `enqueue` and lineage `emit`, committed/rolled
+//! back as a single real Postgres transaction.
+//!
+//! The DuckLake table format that this transaction used to also drive (staged
+//! `create_table`/`append_files`/`replace_files`/`compact_files` flushed by
+//! `snapshot::commit_snapshot` on commit) has been removed; Iceberg is the table
+//! format. Those table-write methods now return an explicit error — the Iceberg
+//! write path lives in `IcebergControlPlane`/`IcebergMaterializer`, not here.
+
 use async_trait::async_trait;
 use control_plane_core::{
-    ColumnSpec, DataFile, JobId, LineageEvent, NewJob, Result, SnapshotId, TableRef, Tx,
+    ColumnSpec, ControlPlaneError, DataFile, JobId, LineageEvent, NewJob, Result, SnapshotId,
+    TableRef, Tx,
 };
 use sqlx::Postgres;
 
@@ -10,32 +21,20 @@ use crate::queue::pg_insert;
 
 pub(crate) struct PgTx {
     pub(crate) tx: sqlx::Transaction<'static, Postgres>,
-    pub(crate) staged_tables: Vec<(TableRef, Vec<ColumnSpec>)>,
-    pub(crate) staged_files: Vec<(TableRef, Vec<DataFile>)>,
-    pub(crate) staged_replacements: Vec<(TableRef, Vec<DataFile>)>,
-    pub(crate) staged_compactions: Vec<(TableRef, Vec<String>, Vec<DataFile>)>,
+}
+
+/// The error returned by the table-format write methods, which DuckLake used to
+/// back. Iceberg owns the table-format write path now.
+fn no_table_format() -> ControlPlaneError {
+    ControlPlaneError::Validation(
+        "PgControlPlane transactions carry no table-format writer; use IcebergControlPlane".into(),
+    )
 }
 
 #[async_trait]
 impl Tx for PgTx {
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn commit(mut self: Box<Self>) -> Result<Option<SnapshotId>> {
-        if !self.staged_tables.is_empty()
-            || !self.staged_files.is_empty()
-            || !self.staged_replacements.is_empty()
-            || !self.staged_compactions.is_empty()
-        {
-            let id = crate::snapshot::commit_snapshot(
-                &mut self.tx,
-                &self.staged_tables,
-                &self.staged_files,
-                &self.staged_replacements,
-                &self.staged_compactions,
-            )
-            .await?;
-            self.tx.commit().await.map_err(backend)?;
-            return Ok(Some(id));
-        }
+    async fn commit(self: Box<Self>) -> Result<Option<SnapshotId>> {
         self.tx.commit().await.map_err(backend)?;
         Ok(None)
     }
@@ -55,30 +54,24 @@ impl Tx for PgTx {
         pg_emit(&mut *self.tx, &event).await
     }
 
-    async fn create_table(&mut self, table: &TableRef, columns: &[ColumnSpec]) -> Result<()> {
-        self.staged_tables.push((table.clone(), columns.to_vec()));
-        Ok(())
+    async fn create_table(&mut self, _table: &TableRef, _columns: &[ColumnSpec]) -> Result<()> {
+        Err(no_table_format())
     }
 
-    async fn append_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
-        self.staged_files.push((table.clone(), files.to_vec()));
-        Ok(())
+    async fn append_files(&mut self, _table: &TableRef, _files: &[DataFile]) -> Result<()> {
+        Err(no_table_format())
     }
 
-    async fn replace_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
-        self.staged_replacements
-            .push((table.clone(), files.to_vec()));
-        Ok(())
+    async fn replace_files(&mut self, _table: &TableRef, _files: &[DataFile]) -> Result<()> {
+        Err(no_table_format())
     }
 
     async fn compact_files(
         &mut self,
-        table: &TableRef,
-        expire: &[String],
-        write: &[DataFile],
+        _table: &TableRef,
+        _expire: &[String],
+        _write: &[DataFile],
     ) -> Result<()> {
-        self.staged_compactions
-            .push((table.clone(), expire.to_vec(), write.to_vec()));
-        Ok(())
+        Err(no_table_format())
     }
 }

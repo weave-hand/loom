@@ -1,6 +1,6 @@
 //! Graph path-cycle e2e: GET /objects/:type/graph?path=l1,l2 over the real HTTP router
-//! backed by a DuckDB serving engine reading a DuckLake-on-Postgres catalog. Proves the
-//! bounded recursive reachability shape {objects:[...]} over a MULTI-LINK cyclic path
+//! backed by an in-process Iceberg/DataFusion serving engine. Proves the bounded recursive
+//! reachability shape {objects:[...]} over a MULTI-LINK cyclic path
 //! `Person --memberOf--> Team --hasMember--> Person` (shared-team membership):
 //!   - depth bounds (a bridge person makes depth 2 reach further than depth 1),
 //!   - a cycle (the pattern inherently revisits the seed) terminates and the set dedups,
@@ -18,124 +18,101 @@
 
 use std::sync::Arc;
 
-use arrow::array::{BooleanArray, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use axum::http::StatusCode;
 use control_plane_core::{
     Acl, Action, Cardinality, CompareOp, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
     PolicyTarget, RowFilter, ScalarValue, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use e2e_support::{get, grant_read, ids_i64 as ids, land, prop, subject_with_role, tref};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
-use query_api::serving::EmbeddedDuckDb;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::{
+    InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role, tref,
+};
 
 /// Seed the shared-membership graph: person, team, membership(person_id, team_id), company.
 /// Teams T1{1,2}, T2{3,4,5}, T3{5,6}; T3 inactive. `memberOf` Person->Team and `hasMember`
 /// Team->Person both back onto `membership`, forming a Person->Team->Person cycle. A
 /// `worksAt` FK Person->Company drives the non-cyclic case. Person & Team declare identity
-/// `id`. Caller MUST keep the `DuckLakeWriter` alive (its TempDir holds the Parquet read).
-async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter) {
+/// `id`. Caller MUST keep the `IcebergWriter` alive (its TempDir holds the Parquet read).
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+
+    let writer = IcebergWriter::new(pool.clone(), dsn);
 
     // person(id, name, company_id): 6 persons; company drives the worksAt link.
     let person = tref("main", "person");
-    let person_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-        Field::new("company_id", DataType::Int64, true),
-    ]));
-    let person_batch = RecordBatch::try_new(
-        person_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6])),
-            Arc::new(StringArray::from(vec![
-                Some("ann"),
-                Some("bob"),
-                Some("cal"),
-                Some("dee"),
-                Some("eve"),
-                Some("fin"),
-            ])),
-            Arc::new(Int64Array::from(vec![
-                Some(7),
-                Some(7),
-                Some(8),
-                Some(8),
-                Some(8),
-                Some(8),
-            ])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &person, person_schema, person_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "person",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("name".to_string(), "string".to_string(), true),
+                ("company_id".to_string(), "long".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3, 4, 5, 6]),
+                SeedCol::Str(vec!["ann", "bob", "cal", "dee", "eve", "fin"]),
+                SeedCol::NullableLong(vec![Some(7), Some(7), Some(8), Some(8), Some(8), Some(8)]),
+            ],
+        )
+        .await;
 
     // team(id, name, active): T3 (id=3) is INACTIVE (intermediate governance test).
     let team = tref("main", "team");
-    let team_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-        Field::new("active", DataType::Boolean, false),
-    ]));
-    let team_batch = RecordBatch::try_new(
-        team_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec![
-                Some("red"),
-                Some("green"),
-                Some("blue"),
-            ])),
-            Arc::new(BooleanArray::from(vec![true, true, false])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &team, team_schema, team_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "team",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("name".to_string(), "string".to_string(), true),
+                ("active".to_string(), "boolean".to_string(), false),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3]),
+                SeedCol::Str(vec!["red", "green", "blue"]),
+                SeedCol::Bool(vec![true, true, false]),
+            ],
+        )
+        .await;
 
     // membership(person_id, team_id): T1{1,2}, T2{3,4,5}, T3{5,6}. Person 5 bridges T2/T3.
     let membership = tref("main", "membership");
-    let membership_schema = Arc::new(Schema::new(vec![
-        Field::new("person_id", DataType::Int64, false),
-        Field::new("team_id", DataType::Int64, false),
-    ]));
-    let membership_batch = RecordBatch::try_new(
-        membership_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 5, 6])),
-            Arc::new(Int64Array::from(vec![1, 1, 2, 2, 2, 3, 3])),
-        ],
-    )
-    .unwrap();
-    land(
-        &cp,
-        &store,
-        &membership,
-        membership_schema,
-        membership_batch,
-    )
-    .await;
+    writer
+        .seed_arrays(
+            "main",
+            "membership",
+            &[
+                ("person_id".to_string(), "long".to_string(), false),
+                ("team_id".to_string(), "long".to_string(), false),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3, 4, 5, 5, 6]),
+                SeedCol::Long(vec![1, 1, 2, 2, 2, 3, 3]),
+            ],
+        )
+        .await;
 
     // company(id, name): targets for the non-cyclic worksAt link.
     let company = tref("main", "company");
-    let company_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-    ]));
-    let company_batch = RecordBatch::try_new(
-        company_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![7, 8])),
-            Arc::new(StringArray::from(vec![Some("acme"), Some("globex")])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &company, company_schema, company_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "company",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("name".to_string(), "string".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![7, 8]),
+                SeedCol::Str(vec!["acme", "globex"]),
+            ],
+        )
+        .await;
 
     // Person declares identity `id`.
     cp.define_type(ObjectType {
@@ -221,16 +198,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
     (cp, eng, writer)
 }
 

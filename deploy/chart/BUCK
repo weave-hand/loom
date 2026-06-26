@@ -14,6 +14,7 @@ helm_chart(
     images = {
         "ingest.image": "//images/ingest:image.info",
         "queryApi.image": "//images/query-api:image.info",
+        "engine.image": "//images/engine:image.info",
     },
     lint = True,
     publish = True,

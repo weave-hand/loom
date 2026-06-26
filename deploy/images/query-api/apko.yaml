@@ -1,9 +1,12 @@
 # apko/Wolfi base for the loom query-api image. Like ingest it's a glibc
-# (x86_64-unknown-linux-gnu) binary, but query-api embeds DuckDB (the `duckdb`
-# crate compiles bundled C++), which links libstdc++ at runtime — so the base
-# adds libstdc++ on top of glibc/libgcc/CA certs. The query-api binary is layered
-# on at /usr/local/bin/query-api by oci_image. Runs as a non-root user. Refresh
-# the lockfile with `apko lock apko.yaml` when this changes.
+# (x86_64-unknown-linux-gnu, dynamically linked) Rust binary. query-api is now a
+# pure wire client — it reads over the engine's Arrow Flight service — so it no
+# longer bundles an embedded C++ analytics engine and needs no libstdc++. Its
+# only native runtime deps are glibc + libgcc, so the base matches the ingest
+# base exactly: glibc + libgcc + CA certs (outbound TLS to the object store). The
+# query-api binary is layered on at /usr/local/bin/query-api by oci_image. Runs
+# as a non-root user. Refresh the lockfile with `apko lock apko.yaml` when this
+# changes.
 contents:
   repositories:
     - https://packages.wolfi.dev/os
@@ -13,7 +16,6 @@ contents:
     - ca-certificates-bundle
     - glibc
     - libgcc
-    - libstdc++
 accounts:
   users:
     - username: nonroot

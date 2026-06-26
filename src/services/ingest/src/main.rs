@@ -10,10 +10,7 @@ use control_plane_postgres::iceberg_sql_catalog::{
 };
 use iceberg::CatalogBuilder;
 use ingest::http::{AppState, router};
-use ingest::landing::{
-    DuckLakeMaterializer, IcebergMaterializer, LandingBackend, LandingMaterializer,
-    parse_landing_backend,
-};
+use ingest::landing::{IcebergMaterializer, LandingMaterializer};
 
 /// Default inline threshold: 16 MiB of in-memory (uncompressed) Arrow. Below this a
 /// request inlines (mirror-only rows); above it writes real Parquet. Tunable via
@@ -31,18 +28,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
 
-    // One concrete control plane, built before the `match backend` (the DuckLake
-    // branch moves `pool` into its own materializer cp and the Iceberg branch moves
-    // it into the catalog, so we clone here while `pool` is still owned). It serves
-    // both the `ControlPlane` surface (the compact endpoint's queue) and `Auth`.
+    // One concrete control plane, built before the materializer (which moves `pool`
+    // into the Iceberg catalog, so we clone here while `pool` is still owned). It
+    // serves both the `ControlPlane` surface (the compact endpoint's queue) and `Auth`.
     let pg = Arc::new(service_runtime::control_plane(
         pool.clone(),
         cfg.lock_timeout,
     ));
     let cp: Arc<dyn ControlPlane> = pg.clone();
-
-    let backend = parse_landing_backend(std::env::var("LOOM_LANDING_BACKEND").ok().as_deref())
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let auth_state = service_runtime::AuthState {
         auth: pg.clone(),
@@ -55,29 +48,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         service_runtime::bootstrap_admin(pg.as_ref(), &user, &pass).await?;
     }
 
-    let materializer: Arc<dyn LandingMaterializer> = match backend {
-        LandingBackend::DuckLake => {
-            let mat_cp = Arc::new(service_runtime::control_plane(pool, cfg.lock_timeout));
-            let store = Arc::new(service_runtime::local_store(&cfg.data_path)?);
-            Arc::new(DuckLakeMaterializer { cp: mat_cp, store })
-        }
-        LandingBackend::Iceberg => {
-            let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
-            let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
-                .ok()
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
-            let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
-            Arc::new(IcebergMaterializer {
-                catalog,
-                pool,
-                inline_byte_limit,
-                flush_byte_threshold,
-            })
-        }
+    let materializer: Arc<dyn LandingMaterializer> = {
+        let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
+        let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
+        let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
+        Arc::new(IcebergMaterializer {
+            catalog,
+            pool,
+            inline_byte_limit,
+            flush_byte_threshold,
+        })
     };
 
     let app = service_runtime::protect(router(AppState { materializer, cp }), auth_state.clone())

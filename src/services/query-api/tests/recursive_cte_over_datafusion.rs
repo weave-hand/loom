@@ -1,8 +1,8 @@
 //! Recursive-CTE reachability (WITH RECURSIVE, emitted by compile_graph_reach /
 //! compile_graph_reach_union) executed through engine_serving::execute_query over
-//! Iceberg-mirror-backed tables — closing iss-recursive-cte-iceberg. The DuckDB
-//! graph e2es (graph-reach-e2e / graph-union-e2e) prove the same reachable sets
-//! against the DuckLake/DuckDB engine; this proves them against loom's own engine.
+//! Iceberg-mirror-backed tables — closing iss-recursive-cte-iceberg. The graph e2es
+//! (graph-reach-e2e / graph-union-e2e) assert the same reachable sets end-to-end;
+//! this proves them directly against loom's DataFusion engine.
 
 use control_plane_core::{CompareOp, LinkBacking, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -10,7 +10,9 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use query_api::filter::CallerPredicate;
 use query_api::serving::{Rows, SqlValue};
 use query_api::serving_datafusion::batches_to_rows;
-use query_api::sql::{DuckDbDialect, GraphStep, compile_graph_reach, compile_graph_reach_union};
+use query_api::sql::{
+    DataFusionDialect, GraphStep, compile_graph_reach, compile_graph_reach_union,
+};
 
 /// Sorted `id` column values from a `Rows` whose projection is `("id", "name")`.
 fn ids_of(rows: &Rows) -> Vec<i64> {
@@ -81,7 +83,7 @@ async fn fk_self_link_recursive_reach_over_datafusion() {
         values: vec![SqlValue::Int(1)],
     }];
     let (sql, params) = compile_graph_reach(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &person(),
         "id",
         &[step],
@@ -186,7 +188,7 @@ async fn union_self_links_recursive_reach_over_datafusion() {
         values: vec![SqlValue::Int(1)],
     }];
     let (sql, params) = compile_graph_reach_union(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &person(),
         "id",
         &backings,

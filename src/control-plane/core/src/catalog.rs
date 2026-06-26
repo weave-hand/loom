@@ -1,5 +1,5 @@
 //! The catalog concern: a read-only view over the active table-format catalog. The
-//! table-format adapter (DuckLake today) populates it; loom reads it. Snapshots are
+//! table-format adapter (Iceberg) populates it; loom reads it. Snapshots are
 //! catalog-global and identified by a monotonic id; tables/files/columns are
 //! versioned by `begin`/`end` snapshot ranges (MVCC), so reads are "this table
 //! *at* that snapshot".
@@ -15,7 +15,7 @@ use crate::page::{Page, PageReq};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SnapshotId(pub i64);
 
-/// A `schema.table` reference within the DuckLake catalog.
+/// A `schema.table` reference within the table-format catalog.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TableRef {
     pub schema: String,

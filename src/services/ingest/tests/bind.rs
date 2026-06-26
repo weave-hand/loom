@@ -1,11 +1,15 @@
-//! bind validation against the real catalog: a conforming type binds and persists;
-//! a non-conforming type is rejected with ALL violations and nothing is persisted.
+//! bind validation against the real (Iceberg mirror) catalog: a conforming type
+//! binds and persists; a non-conforming type is rejected with ALL violations and
+//! nothing is persisted. Seeding is via the Iceberg writer (real Parquet -> mirror
+//! projection); `bind` reads the physical schema through the mirror-backed
+//! `IcebergCatalog` while the ontology stays on the shared Postgres tables (`cp`).
 
 use control_plane_core::{
     Aggregation, Cardinality, ControlPlaneError, DerivedPropertyDef, LinkBacking, LinkDef,
     ObjectType, Ontology, PageReq, PropertyDef, TableRef, TypeName,
 };
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use ingest::{BindError, BindViolationReason, bind, bind_link};
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
@@ -23,20 +27,38 @@ fn customer() -> TableRef {
     }
 }
 
-// Seed main.customer: id BIGINT (int64) NOT NULL, email VARCHAR (varchar) NULL,
-// amount INTEGER (int32) NULL.
-async fn seed_customer(writer: &DuckLakeWriter) {
+/// Build an Iceberg writer over the fixture db (its own pool + libpq DSN for the
+/// vendored catalog).
+async fn writer_for(fx: &PgFixture, db: &str) -> IcebergWriter {
+    let pool = fx.pool_for(db).await;
+    IcebergWriter::new(pool, fx.pg_dsn(db))
+}
+
+// Seed main.customer with logical columns chosen so the bind validator sees the
+// SAME outcomes the DuckLake seed produced:
+//   id     long  NN   (a valid required Long / identity)
+//   email  string NULL (String matches; required-over-nullable -> NullabilityViolation)
+//   amount long  NULL  (only exercised as `Money` -> UnknownLogicalType; physical irrelevant)
+//   score  string NULL (declared Long -> TypeMismatch; required-over-nullable -> NullabilityViolation)
+// (The SeedCol API carries only long/string/etc.; the validator compares loom logical
+// types, so substituting string for the original int32 columns preserves every assertion.)
+async fn seed_customer(writer: &IcebergWriter) {
     writer
-        .seed(
+        .seed_arrays(
             "main",
             "customer",
             &[
-                ("id".into(), "BIGINT".into(), false),
-                ("email".into(), "VARCHAR".into(), true),
-                ("amount".into(), "INTEGER".into(), true),
-                ("score".into(), "INTEGER".into(), true),
+                ("id".into(), "long".into(), false),
+                ("email".into(), "string".into(), true),
+                ("amount".into(), "long".into(), true),
+                ("score".into(), "string".into(), true),
             ],
-            &[2],
+            &[
+                SeedCol::Long(vec![1, 2]),
+                SeedCol::Str(vec!["a@x", "b@x"]),
+                SeedCol::NullableLong(vec![Some(10), Some(20)]),
+                SeedCol::Str(vec!["s1", "s2"]),
+            ],
         )
         .await;
 }
@@ -45,20 +67,21 @@ async fn seed_customer(writer: &DuckLakeWriter) {
 async fn bind_accepts_conforming_type_and_persists_it() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     let type_def = ObjectType {
         name: TypeName("Customer".into()),
         properties: vec![
-            prop("id", "Long", true),             // int64, non-null -> ok
-            prop("email", "EmailAddress", false), // varchar, optional -> ok
+            prop("id", "Long", true),             // long, non-null -> ok
+            prop("email", "EmailAddress", false), // string, optional -> ok
         ],
         derived: vec![],
         table: customer(),
         identity: None,
     };
-    bind(&cp, &cp, type_def.clone()).await.unwrap();
+    bind(&cat, &cp, type_def.clone()).await.unwrap();
 
     let got = cp.get_type(&TypeName("Customer".into())).await.unwrap();
     assert_eq!(got, type_def);
@@ -68,14 +91,15 @@ async fn bind_accepts_conforming_type_and_persists_it() {
 async fn bind_collects_all_violations_and_persists_nothing() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // phone: not a column (MissingColumn)
-    // id: Integer over int64 column (TypeMismatch)
+    // id: Integer over long column (TypeMismatch)
     // amount: Money is unknown (UnknownLogicalType)
     // email: String required over a nullable column (NullabilityViolation)
-    // score: required Long (int64) over a nullable int32 column (TypeMismatch + NullabilityViolation)
+    // score: required Long over a nullable string column (TypeMismatch + NullabilityViolation)
     let type_def = ObjectType {
         name: TypeName("Bad".into()),
         properties: vec![
@@ -90,7 +114,7 @@ async fn bind_collects_all_violations_and_persists_nothing() {
         identity: None,
     };
 
-    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
@@ -108,7 +132,7 @@ async fn bind_collects_all_violations_and_persists_nothing() {
         v.iter().any(|x| x.property == "email"
             && matches!(x.reason, BindViolationReason::NullabilityViolation))
     );
-    // score: required `Long` over a nullable int32 column -> BOTH a type mismatch
+    // score: required `Long` over a nullable non-long column -> BOTH a type mismatch
     // and a nullability violation (independent checks).
     assert!(
         v.iter().any(|x| x.property == "score"
@@ -130,10 +154,11 @@ async fn bind_collects_all_violations_and_persists_nothing() {
 async fn bind_accepts_identity_naming_a_required_property() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
-    // `id` is a required property (int64, non-null) -> a valid identity.
+    // `id` is a required property (long, non-null) -> a valid identity.
     let type_def = ObjectType {
         name: TypeName("Customer".into()),
         properties: vec![
@@ -144,15 +169,16 @@ async fn bind_accepts_identity_naming_a_required_property() {
         table: customer(),
         identity: Some("id".into()),
     };
-    bind(&cp, &cp, type_def).await.unwrap();
+    bind(&cat, &cp, type_def).await.unwrap();
 }
 
 #[tokio::test]
 async fn bind_rejects_identity_naming_unknown_property() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // `nope` is not a declared property -> BadIdentity.
     let type_def = ObjectType {
@@ -162,7 +188,7 @@ async fn bind_rejects_identity_naming_unknown_property() {
         table: customer(),
         identity: Some("nope".into()),
     };
-    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
@@ -177,8 +203,9 @@ async fn bind_rejects_identity_naming_unknown_property() {
 async fn bind_rejects_identity_naming_non_required_property() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // `email` is a declared but non-required (nullable) property -> a PK can't be
     // nullable -> BadIdentity.
@@ -192,7 +219,7 @@ async fn bind_rejects_identity_naming_non_required_property() {
         table: customer(),
         identity: Some("email".into()),
     };
-    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
@@ -207,8 +234,8 @@ async fn bind_rejects_identity_naming_non_required_property() {
 async fn bind_rejects_an_unknown_table() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await; // empty catalog, no tables
+    // No seeding: empty catalog, no tables.
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     let type_def = ObjectType {
         name: TypeName("Ghost".into()),
@@ -220,22 +247,22 @@ async fn bind_rejects_an_unknown_table() {
         },
         identity: None,
     };
-    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let err = bind(&cat, &cp, type_def).await.unwrap_err();
     assert!(matches!(err, BindError::TableNotFound(_)), "got {err:?}");
 }
 
-// Seed main.reserved: id BIGINT NOT NULL, _x BIGINT NULL.
+// Seed main.reserved: id long NN, _x long NULL.
 // The physical column `_x` exists so the only violation is the reserved name.
-async fn seed_reserved(writer: &DuckLakeWriter) {
+async fn seed_reserved(writer: &IcebergWriter) {
     writer
-        .seed(
+        .seed_arrays(
             "main",
             "reserved",
             &[
-                ("id".into(), "BIGINT".into(), false),
-                ("_x".into(), "BIGINT".into(), true),
+                ("id".into(), "long".into(), false),
+                ("_x".into(), "long".into(), true),
             ],
-            &[1],
+            &[SeedCol::Long(vec![1]), SeedCol::NullableLong(vec![Some(1)])],
         )
         .await;
 }
@@ -251,8 +278,9 @@ fn reserved_table() -> TableRef {
 async fn bind_rejects_a_property_name_starting_with_underscore() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_reserved(&writer).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // `_x` exists as a physical column, so the only violation is the reserved name.
     let type_def = ObjectType {
@@ -262,7 +290,7 @@ async fn bind_rejects_a_property_name_starting_with_underscore() {
         table: reserved_table(),
         identity: None,
     };
-    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
@@ -277,8 +305,9 @@ async fn bind_rejects_a_property_name_starting_with_underscore() {
 async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // Base conforming type, but derived property name begins with `_`.
     let type_def = ObjectType {
@@ -293,7 +322,7 @@ async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
         table: customer(),
         identity: None,
     };
-    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
@@ -304,11 +333,11 @@ async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
     );
 }
 
-// ---- postgres parity: derived-property + bind_link over the real DuckLake catalog ----
+// ---- postgres parity: derived-property + bind_link over the real Iceberg catalog ----
 //
 // The exhaustive violation matrix lives in the in-memory `bind_validation` suite;
 // these cases prove the SAME validators run against the real catalog, whose adapter
-// maps physical DuckLake types to loom logical types that feed the validator.
+// maps physical Iceberg types to loom logical types that feed the validator.
 
 fn purchase_table() -> TableRef {
     TableRef {
@@ -317,18 +346,24 @@ fn purchase_table() -> TableRef {
     }
 }
 
-// Seed main.purchase: id BIGINT NOT NULL, customer_id BIGINT NULL, cost INTEGER NULL.
-async fn seed_purchase(writer: &DuckLakeWriter) {
+// Seed main.purchase: id long NN, customer_id long NULL, cost long NULL.
+// (`cost` is a numeric column so Sum applies; long preserves the original INTEGER
+// intent — both map to a numeric loom logical type the validator accepts.)
+async fn seed_purchase(writer: &IcebergWriter) {
     writer
-        .seed(
+        .seed_arrays(
             "main",
             "purchase",
             &[
-                ("id".into(), "BIGINT".into(), false),
-                ("customer_id".into(), "BIGINT".into(), true),
-                ("cost".into(), "INTEGER".into(), true),
+                ("id".into(), "long".into(), false),
+                ("customer_id".into(), "long".into(), true),
+                ("cost".into(), "long".into(), true),
             ],
-            &[2],
+            &[
+                SeedCol::Long(vec![1, 2]),
+                SeedCol::NullableLong(vec![Some(1), Some(1)]),
+                SeedCol::NullableLong(vec![Some(5), Some(7)]),
+            ],
         )
         .await;
 }
@@ -373,13 +408,14 @@ async fn define_purchase_graph(cp: &impl Ontology) {
 async fn bind_accepts_valid_derived_properties_over_the_real_catalog() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
     seed_purchase(&writer).await;
     define_purchase_graph(&cp).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
-    // Count -> Long, and Sum over the INTEGER `cost` column -> Long (numeric). The
-    // DuckLake adapter maps BIGINT/INTEGER to loom logical types the validator reads.
+    // Count -> Long, and Sum over the numeric `cost` column -> Long (numeric). The
+    // Iceberg adapter maps the physical types to loom logical types the validator reads.
     let derived = vec![
         DerivedPropertyDef {
             name: "purchaseCount".into(),
@@ -401,7 +437,7 @@ async fn bind_accepts_valid_derived_properties_over_the_real_catalog() {
         table: customer(),
         identity: None,
     };
-    bind(&cp, &cp, type_def).await.unwrap();
+    bind(&cat, &cp, type_def).await.unwrap();
 
     let got = cp.get_type(&TypeName("Customer".into())).await.unwrap();
     assert_eq!(got.derived, derived);
@@ -411,12 +447,13 @@ async fn bind_accepts_valid_derived_properties_over_the_real_catalog() {
 async fn bind_rejects_a_bad_derived_reference_over_the_real_catalog() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
     seed_purchase(&writer).await;
     define_purchase_graph(&cp).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
-    // `cost` is INTEGER -> Sum is applicable, but "ghost" is not a column on
+    // `cost` is numeric -> Sum is applicable, but "ghost" is not a column on
     // purchase -> MissingAggColumn; and "noSuchLink" is undefined -> UnknownDerivedLink.
     let type_def = ObjectType {
         name: TypeName("Customer".into()),
@@ -438,7 +475,7 @@ async fn bind_rejects_a_bad_derived_reference_over_the_real_catalog() {
         table: customer(),
         identity: None,
     };
-    let err = bind(&cp, &cp, type_def).await.unwrap_err();
+    let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
@@ -454,9 +491,10 @@ async fn bind_rejects_a_bad_derived_reference_over_the_real_catalog() {
 async fn bind_link_validates_backing_columns_over_the_real_catalog() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
+    let writer = writer_for(&fx, &db).await;
     seed_customer(&writer).await;
     seed_purchase(&writer).await;
+    let cat = IcebergCatalog::new(fx.pool_for(&db).await);
     // Endpoint types only (no link yet — bind_link creates it).
     cp.define_type(ObjectType {
         name: TypeName("Customer".into()),
@@ -487,7 +525,7 @@ async fn bind_link_validates_backing_columns_over_the_real_catalog() {
             to_column: "customer_id".into(),
         },
     };
-    bind_link(&cp, &cp, good).await.unwrap();
+    bind_link(&cat, &cp, good).await.unwrap();
     let links = cp
         .links(&TypeName("Customer".into()), PageReq::unbounded())
         .await
@@ -505,13 +543,11 @@ async fn bind_link_validates_backing_columns_over_the_real_catalog() {
             to_column: "nope".into(),
         },
     };
-    let err = bind_link(&cp, &cp, bad).await.unwrap_err();
+    let err = bind_link(&cat, &cp, bad).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
     };
-    assert!(
-        v.iter()
-            .any(|x| x.property == "nope"
-                && matches!(x.reason, BindViolationReason::MissingColumn))
-    );
+    assert!(v
+        .iter()
+        .any(|x| x.property == "nope" && matches!(x.reason, BindViolationReason::MissingColumn)));
 }

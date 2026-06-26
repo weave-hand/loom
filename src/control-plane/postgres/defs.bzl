@@ -1,6 +1,6 @@
 # Shared macro for hermetic-fixture rust_test targets.
 #
-# Fixture tests boot real initdb/postgres/duckdb processes, which refuse to run as
+# Fixture tests boot real initdb/postgres processes, which refuse to run as
 # root. buck2/tpx runs the test-RUN action on the LOCAL executor by default (it only
 # dispatches to RE when told, via --unstable-allow-all-tests-on-re — there is no
 # buckconfig key and NO remote test-result cache; tests re-run every invocation). So
@@ -28,7 +28,6 @@ def loom_fixture_test(
         srcs,
         crate_root,
         deps,
-        duckdb = False,
         minio = False,
         edition = "2024",
         env = {},
@@ -46,9 +45,6 @@ def loom_fixture_test(
         # env) wins.
         "LOOM_PG_FIXTURE_SLOT_DIR": "/tmp/loom-pg-fixture-slots",
     }
-    if duckdb:
-        fixture_env["DUCKDB_BIN"] = "$(location //src/control-plane/postgres:duckdb-cli)"
-        fixture_env["DUCKDB_EXTENSION_DIR"] = "$(location //src/control-plane/postgres:duckdb-extensions)"
     if minio:
         fixture_env["MINIO_BIN"] = "$(location //src/control-plane/postgres:minio-bin)"
     fixture_env.update(env)

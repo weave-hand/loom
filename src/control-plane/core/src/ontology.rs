@@ -1,10 +1,10 @@
 //! The ontology concern: loom's user-facing typed model — object types, their
 //! logical properties, links between types, and the mapping from a type to its
-//! backing DuckLake table. Unlike the catalog, the `ontology` schema is
+//! backing Iceberg table. Unlike the catalog, the `ontology` schema is
 //! loom-owned: this trait reads AND writes it.
 //!
 //! Property types are the ontology's own logical vocabulary (e.g. `EmailAddress`),
-//! deliberately decoupled from the physical DuckLake column types (which come from
+//! deliberately decoupled from the physical column types (which come from
 //! [`crate::Catalog::schema`]). [`Ontology::resolve`] bridges a type to its
 //! physical table via [`crate::TableRef`].
 
@@ -19,7 +19,7 @@ use crate::page::{Page, PageReq};
 pub struct TypeName(pub String);
 
 /// A logical property of an object type. `ty` is the ontology's logical type
-/// (loom's vocabulary), NOT the physical DuckLake column type.
+/// (loom's vocabulary), NOT the physical column type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PropertyDef {
     pub name: String,
@@ -172,7 +172,7 @@ pub trait Ontology {
     /// `NotFound` if the type itself is absent. The `page` request is accepted but not yet
     /// enforced; results are a single full page.
     async fn links_to(&self, name: &TypeName, page: PageReq) -> Result<Page<LinkDef>>;
-    /// The physical DuckLake table backing `name`. `NotFound` if the type is absent.
+    /// The physical Iceberg table backing `name`. `NotFound` if the type is absent.
     async fn resolve(&self, name: &TypeName) -> Result<TableRef>;
     /// Create or replace a named action and its ordered parameter list. Upsert.
     async fn define_action(&self, action: ActionDef) -> Result<()>;

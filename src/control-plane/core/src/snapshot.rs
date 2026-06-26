@@ -1,6 +1,6 @@
 //! Inputs for the native register-only snapshot-commit primitive (the caller writes
 //! the data files; loom writes the catalog rows). Format-neutral: the active
-//! table-format adapter (DuckLake today) encodes these into its physical catalog.
+//! table-format adapter (Iceberg) encodes these into its physical catalog.
 //! See `docs/superpowers/specs/2026-06-16-ducklake-format-seams-design.md`.
 
 /// A column for `Tx::create_table`. `ty` is a loom LOGICAL type name (canonical:
@@ -14,8 +14,7 @@ pub struct ColumnSpec {
 }
 
 /// A typed scalar stat bound. Format-neutral: each adapter encodes it its own way
-/// (DuckLake → VARCHAR string; Iceberg → typed binary lower/upper bound). Not `Eq`
-/// (carries floats).
+/// (Iceberg → typed binary lower/upper bound). Not `Eq` (carries floats).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StatValue {
     Bool(bool),
@@ -27,8 +26,8 @@ pub enum StatValue {
 }
 
 /// Per-column statistics for one data file. `value_count` is NOT stored: it is
-/// derivable (`record_count − null_count`) and each format counts differently
-/// (DuckLake excludes nulls; Iceberg includes them), so the adapter derives it.
+/// derivable (`record_count − null_count`) and each format counts differently, so the
+/// adapter derives it (Iceberg's value count includes nulls).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ColumnStat {
     pub column_name: String,
@@ -55,6 +54,6 @@ pub struct DataFile {
     pub file_size_bytes: i64,
     pub column_stats: Vec<ColumnStat>,
     /// Parquet footer length — a physical-Parquet detail some formats persist
-    /// (DuckLake records it; Iceberg ignores it). `Some` for Parquet files.
+    /// (Iceberg ignores it). `Some` for Parquet files.
     pub parquet_footer_size: Option<i64>,
 }

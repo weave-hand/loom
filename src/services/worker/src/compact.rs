@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use control_plane_core::{CompactJob, DataFile, FileFormat, Job, JobFailure, RetryPolicy};
-use datafusion_io::{WriteConfig, write_dataset};
+use control_plane_core::{CompactJob, DataFile, Job, JobFailure, RetryPolicy};
+use datafusion_io::{WriteConfig, absolute_data_files, write_dataset};
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
 use store_config::WriteStore;
@@ -76,18 +76,8 @@ pub async fn handle_compact(ctx: &CompactCtx, job: Job) -> std::result::Result<(
     .await
     .map_err(|e| retry(attempts, format!("write_dataset: {e}")))?;
 
-    let new_files: Vec<DataFile> = written
-        .into_iter()
-        .map(|w| DataFile {
-            path: format!("{}/{}/{}/{}", ctx.write.root_url, schema, name, w.path),
-            path_is_relative: false,
-            file_format: FileFormat::Parquet,
-            record_count: w.record_count,
-            file_size_bytes: w.file_size_bytes,
-            column_stats: w.column_stats,
-            parquet_footer_size: Some(w.footer_size),
-        })
-        .collect();
+    let new_files: Vec<DataFile> =
+        absolute_data_files(written, &ctx.write.root_url, &schema, &name);
 
     ctx.control
         .compact_table(schema, name, small_paths, &new_files)

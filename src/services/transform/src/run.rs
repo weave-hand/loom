@@ -1,4 +1,4 @@
-//! The transform primitive: resolve input DuckLake table(s), have DataFusion run a SQL
+//! The transform primitive: resolve input table(s), have DataFusion run a SQL
 //! query over them, and commit the result as a new snapshot of the output table plus
 //! lineage (inputs -> output), atomically. Append semantics. Shared by the physical
 //! path (inputs registered under their table name) and the typed path (registered under
@@ -11,8 +11,8 @@ use control_plane_core::{
 };
 use datafusion::execution::context::SessionContext;
 use datafusion_io::{
-    WriteConfig, infer_columns, logical_arrow_schema, register_empty_table, scan_table,
-    write_dataset,
+    WriteConfig, absolute_data_files, infer_columns, logical_arrow_schema, register_empty_table,
+    scan_table, write_dataset,
 };
 use object_store::ObjectStore;
 
@@ -88,9 +88,13 @@ fn unknown_input(table: &TableRef, e: control_plane_core::ControlPlaneError) -> 
 }
 
 /// Run one transform. `run_id` is a caller-unique output-file prefix (e.g. a UUID).
+/// `root_url` is the warehouse root (e.g. `file://<data_path>` or `s3://<bucket>`) the
+/// output's relative paths are absolutized against, so the committed mirror paths match
+/// what the serving engine resolves (`{root_url}/{schema}/{table}/{rel}`).
 pub async fn run_transform(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
+    root_url: &str,
     run_id: &str,
     req: TransformRequest<'_>,
 ) -> Result<SnapshotId, TransformError> {
@@ -183,18 +187,12 @@ pub async fn run_transform(
         &WriteConfig::default(),
     )
     .await?;
-    let data_files: Vec<DataFile> = written
-        .into_iter()
-        .map(|f| DataFile {
-            path: f.path,
-            path_is_relative: true,
-            file_format: control_plane_core::FileFormat::Parquet,
-            record_count: f.record_count,
-            file_size_bytes: f.file_size_bytes,
-            column_stats: f.column_stats,
-            parquet_footer_size: Some(f.footer_size),
-        })
-        .collect();
+    // Store ABSOLUTE mirror paths (`{root_url}/{schema}/{table}/{rel}`) so the serving
+    // engine — which resolves `iceberg_mirror.data_file.path` as an absolute URL — can read
+    // the transform's output. A relative path here makes a transform-derived dataset
+    // unreadable through serving (file-not-found).
+    let data_files: Vec<DataFile> =
+        absolute_data_files(written, root_url, &req.output.schema, &req.output.name);
 
     // 6. One atomic Tx: create_table (idempotent) + append_files/replace_files + emit lineage.
     let mut tx = cp.begin().await?;

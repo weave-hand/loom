@@ -41,6 +41,25 @@ queryApi:
   # object-store PVC. Setting this overrides that default (use with RWX).
   affinity: {}
 
+# Engine: runs as a SIDECAR in the query-api pod (not a standalone Deployment).
+# query-api is a pure wire client and reads over the engine's Arrow Flight
+# service via a shared unix-domain socket (socketPath, on the socketDir emptyDir
+# mounted into both containers). The engine reads the same warehouse as query-api
+# and talks to Postgres + the object store over the pod's existing egress.
+engine:
+  image:
+    repository: ghcr.io/weave-hand/loom-engine
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Placeholder TCP port for service_runtime's LOOM_BIND_ADDR parse; the engine
+  # actually serves on socketPath, so nothing connects to this port.
+  port: 8081
+  # Shared socket directory (emptyDir mount) and the socket file within it.
+  socketDir: /run/loom
+  socketPath: /run/loom/engine.sock
+  resources: {}
+
 # Service lock-timeout (ms) -> LOOM_LOCK_TIMEOUT_MS.
 lockTimeoutMs: 5000
 

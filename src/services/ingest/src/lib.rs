@@ -1,5 +1,5 @@
 //! loom ingest: the landing-edge materializer. Arrow batches -> registered
-//! DuckLake snapshot + lineage via the part-1 snapshot-commit primitive, with an
+//! snapshot + lineage via the part-1 snapshot-commit primitive, with an
 //! optional model-conformance gate. See the spec under docs/superpowers/specs/.
 
 pub mod bind;

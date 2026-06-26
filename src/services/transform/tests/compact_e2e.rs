@@ -1,71 +1,40 @@
 //! Compaction e2e: land three small files into one table, compact_table coalesces them
-//! into a single file (DuckDB read-back sees the same rows), the pre-compaction snapshot
+//! into a single file (serving read-back sees the same rows), the pre-compaction snapshot
 //! still time-travels to the three originals, and a second compaction is a no-op (one
-//! file left -> fewer than two small files -> None).
+//! file left -> fewer than two small files -> None). On the Iceberg control plane; row
+//! content reads through `engine_serving`, file counts through the catalog. NO DuckDB.
+
+mod transform_e2e_support;
 
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use control_plane_core::{Catalog, DatasetRef, EventType, LineageEvent, PageReq, RunId, TableRef};
-use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use ingest::{MaterializeRequest, materialize};
+use control_plane_core::{ControlPlane, PageReq};
+use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-use time::OffsetDateTime;
 use transform::{CompactConfig, WriteConfig, compact_table};
-use uuid::Uuid;
 
-fn tref(s: &str, n: &str) -> TableRef {
-    TableRef {
-        schema: s.into(),
-        name: n.into(),
-    }
-}
-
-/// Land one batch into `table` under a distinct file prefix (one append -> one data file).
-async fn land(
-    cp: &PgControlPlane,
-    store: &Arc<dyn ObjectStore>,
-    table: &TableRef,
-    schema: Arc<Schema>,
-    batch: RecordBatch,
-    prefix: &str,
-) {
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(table)],
-        payload: serde_json::json!({}),
-    };
-    materialize(
-        cp,
-        store.clone(),
-        MaterializeRequest {
-            table,
-            schema,
-            batches: &[batch],
-            file_prefix: prefix,
-            gate: None,
-            lineage,
-        },
-    )
-    .await
-    .unwrap();
-}
+use transform_e2e_support::{
+    col_csv, cols, make_catalog, scalar_i64, seed_table, seed_table_absolute, tref,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn compact_coalesces_small_files_and_preserves_time_travel() {
     let fx = PgFixture::start();
-    let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let warehouse = wh.path().display().to_string();
+    let root_url = format!("file://{warehouse}");
+    let catalog = make_catalog(fx.pg_dsn(&db), &warehouse).await;
     let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+        Arc::new(LocalFileSystem::new_with_prefix(wh.path()).expect("store"));
+    let cp = IcebergControlPlane::new(pg, catalog);
 
+    let cspec = cols(&[("id", "long", false), ("label", "string", true)]);
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("label", DataType::Utf8, true),
@@ -83,13 +52,44 @@ async fn compact_coalesces_small_files_and_preserves_time_travel() {
         .unwrap()
     };
 
-    // Three appends -> three small data files.
-    land(&cp, &store, &acc, schema.clone(), row(1, "a"), "run-1").await;
-    land(&cp, &store, &acc, schema.clone(), row(2, "b"), "run-2").await;
-    land(&cp, &store, &acc, schema.clone(), row(3, "c"), "run-3").await;
+    // Three appends (distinct prefixes) -> three small data files.
+    seed_table(
+        &cp,
+        &store,
+        &acc,
+        &cspec,
+        schema.clone(),
+        row(1, "a"),
+        "run-1",
+    )
+    .await;
+    seed_table(
+        &cp,
+        &store,
+        &acc,
+        &cspec,
+        schema.clone(),
+        row(2, "b"),
+        "run-2",
+    )
+    .await;
+    seed_table(
+        &cp,
+        &store,
+        &acc,
+        &cspec,
+        schema.clone(),
+        row(3, "c"),
+        "run-3",
+    )
+    .await;
 
-    let before = cp.current_snapshot(&acc).await.unwrap().id;
-    let files_before = cp.files(&acc, before, PageReq::unbounded()).await.unwrap();
+    let before = cp.catalog().current_snapshot(&acc).await.unwrap().id;
+    let files_before = cp
+        .catalog()
+        .files(&acc, before, PageReq::unbounded())
+        .await
+        .unwrap();
     assert_eq!(files_before.len(), 3, "three small files before compaction");
 
     // Compact: 10 MiB threshold (all three qualify), default 128 MiB output target -> 1 file.
@@ -97,26 +97,40 @@ async fn compact_coalesces_small_files_and_preserves_time_travel() {
         small_file_threshold_bytes: 10 * 1024 * 1024,
         write: WriteConfig::default(),
     };
-    let snap = compact_table(&cp, store.clone(), "compact-1", &acc, &cfg)
+    let snap = compact_table(&cp, store.clone(), &root_url, "compact-1", &acc, &cfg)
         .await
         .unwrap()
         .expect("compaction produced a snapshot");
 
-    let files_after = cp.files(&acc, snap, PageReq::unbounded()).await.unwrap();
+    let files_after = cp
+        .catalog()
+        .files(&acc, snap, PageReq::unbounded())
+        .await
+        .unwrap();
     assert_eq!(files_after.len(), 1, "three small files coalesced into one");
 
-    // DuckDB read-back: the row set is unchanged.
-    let count = writer
-        .query_scalar("SELECT count(*) FROM lake.main.acc;")
-        .await;
-    assert_eq!(count, "3", "compaction preserves the row set");
-    let labels = writer
-        .query_scalar("SELECT string_agg(label, ',' ORDER BY id) FROM lake.main.acc;")
-        .await;
-    assert_eq!(labels, "a,b,c", "values intact after rewrite");
+    // Serving read-back: the row set is unchanged.
+    let serving = IcebergCatalog::new(fx.pool_for(&db).await);
+    let count =
+        engine_serving::execute_query(&serving, "SELECT count(*) FROM \"main\".\"acc\"", None)
+            .await
+            .expect("count");
+    assert_eq!(scalar_i64(&count), 3, "compaction preserves the row set");
+    let labels = engine_serving::execute_query(
+        &serving,
+        "SELECT \"id\", \"label\" FROM \"main\".\"acc\" ORDER BY \"id\"",
+        None,
+    )
+    .await
+    .expect("labels");
+    assert_eq!(col_csv(&labels), "a,b,c", "values intact after rewrite");
 
     // Time travel: the pre-compaction snapshot still lists the three originals.
-    let files_then = cp.files(&acc, before, PageReq::unbounded()).await.unwrap();
+    let files_then = cp
+        .catalog()
+        .files(&acc, before, PageReq::unbounded())
+        .await
+        .unwrap();
     assert_eq!(
         files_then.len(),
         3,
@@ -124,23 +138,27 @@ async fn compact_coalesces_small_files_and_preserves_time_travel() {
     );
 
     // No-op: one coalesced file remains (< 2 small files) -> None, no new snapshot.
-    let again = compact_table(&cp, store.clone(), "compact-2", &acc, &cfg)
+    let again = compact_table(&cp, store.clone(), &root_url, "compact-2", &acc, &cfg)
         .await
         .unwrap();
     assert!(again.is_none(), "fewer than two small files -> no-op");
-    let head = cp.current_snapshot(&acc).await.unwrap().id;
+    let head = cp.catalog().current_snapshot(&acc).await.unwrap().id;
     assert_eq!(head, snap, "no-op created no new snapshot");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn compact_leaves_large_files_untouched() {
     let fx = PgFixture::start();
-    let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let warehouse = wh.path().display().to_string();
+    let root_url = format!("file://{warehouse}");
+    let catalog = make_catalog(fx.pg_dsn(&db), &warehouse).await;
     let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+        Arc::new(LocalFileSystem::new_with_prefix(wh.path()).expect("store"));
+    let cp = IcebergControlPlane::new(pg, catalog);
 
+    let cspec = cols(&[("id", "long", false), ("label", "string", true)]);
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("label", DataType::Utf8, true),
@@ -159,9 +177,36 @@ async fn compact_leaves_large_files_untouched() {
     };
 
     // Three 1-row (small) files plus one 200-row (large) file.
-    land(&cp, &store, &mixed, schema.clone(), row(1, "a"), "s1").await;
-    land(&cp, &store, &mixed, schema.clone(), row(2, "b"), "s2").await;
-    land(&cp, &store, &mixed, schema.clone(), row(3, "c"), "s3").await;
+    seed_table(
+        &cp,
+        &store,
+        &mixed,
+        &cspec,
+        schema.clone(),
+        row(1, "a"),
+        "s1",
+    )
+    .await;
+    seed_table(
+        &cp,
+        &store,
+        &mixed,
+        &cspec,
+        schema.clone(),
+        row(2, "b"),
+        "s2",
+    )
+    .await;
+    seed_table(
+        &cp,
+        &store,
+        &mixed,
+        &cspec,
+        schema.clone(),
+        row(3, "c"),
+        "s3",
+    )
+    .await;
     let big = RecordBatch::try_new(
         schema.clone(),
         vec![
@@ -172,14 +217,27 @@ async fn compact_leaves_large_files_untouched() {
         ],
     )
     .unwrap();
-    land(&cp, &store, &mixed, schema.clone(), big, "big").await;
+    // The large file is left untouched by compaction (never scanned), but IS read back
+    // through serving for the final count, so it is seeded with an ABSOLUTE mirror path.
+    seed_table_absolute(
+        &cp,
+        &store,
+        &root_url,
+        &mixed,
+        &cspec,
+        schema.clone(),
+        big,
+        "big",
+    )
+    .await;
 
     // Set the threshold to the largest file's exact size so the 200-row file is NOT a
     // candidate (`file_size_bytes < threshold` is false at equality) while the three
     // 1-row files are. Reading sizes from the catalog keeps the test robust to parquet
     // size variance rather than hard-coding byte counts.
-    let before = cp.current_snapshot(&mixed).await.unwrap().id;
+    let before = cp.catalog().current_snapshot(&mixed).await.unwrap().id;
     let live = cp
+        .catalog()
         .files(&mixed, before, PageReq::unbounded())
         .await
         .unwrap();
@@ -195,13 +253,17 @@ async fn compact_leaves_large_files_untouched() {
         small_file_threshold_bytes: large.file_size_bytes,
         write: WriteConfig::default(),
     };
-    let snap = compact_table(&cp, store.clone(), "mix-1", &mixed, &cfg)
+    let snap = compact_table(&cp, store.clone(), &root_url, "mix-1", &mixed, &cfg)
         .await
         .unwrap()
         .expect("the three small files were compacted");
 
     // After: the large file is still live (path unchanged) plus exactly one coalesced file.
-    let after = cp.files(&mixed, snap, PageReq::unbounded()).await.unwrap();
+    let after = cp
+        .catalog()
+        .files(&mixed, snap, PageReq::unbounded())
+        .await
+        .unwrap();
     assert_eq!(after.len(), 2, "large file untouched + one coalesced file");
     assert!(
         after.items.iter().any(|f| f.path == large.path),
@@ -209,11 +271,14 @@ async fn compact_leaves_large_files_untouched() {
     );
 
     // Row set preserved: 3 small + 200 large = 203.
-    let count = writer
-        .query_scalar("SELECT count(*) FROM lake.main.mixed;")
-        .await;
+    let serving = IcebergCatalog::new(fx.pool_for(&db).await);
+    let count =
+        engine_serving::execute_query(&serving, "SELECT count(*) FROM \"main\".\"mixed\"", None)
+            .await
+            .expect("count");
     assert_eq!(
-        count, "203",
+        scalar_i64(&count),
+        203,
         "compaction over a mixed set preserves all rows"
     );
 }

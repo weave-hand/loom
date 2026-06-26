@@ -27,7 +27,7 @@ use crate::PgControlPlane;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
 use iceberg::io::LocalFsStorageFactory;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::{Catalog, CatalogBuilder as _, NamespaceIdent, TableCreation, TableIdent};
@@ -248,7 +248,7 @@ impl PgFixture {
     }
 
     /// The unix-socket directory the server listens on (for clients that build
-    /// their own connection string, e.g. the DuckLake writer).
+    /// their own connection string, e.g. the Iceberg SQL catalog).
     pub fn socket_path(&self) -> &std::path::Path {
         self.socket_dir.path()
     }
@@ -318,285 +318,11 @@ impl Drop for PgFixture {
     }
 }
 
-/// Test-support: drives real DuckLake (the pinned DuckDB CLI) to produce a
-/// `ducklake.*` catalog in the hermetic Postgres, so the pg `Catalog` adapter has
-/// real data to read. Reads `DUCKDB_BIN` (the CLI) and `DUCKDB_EXTENSION_DIR` (the
-/// offline extension dir) from the environment, set by the `rust_test` rule.
-pub struct DuckLakeWriter {
-    duckdb_bin: PathBuf,
-    extension_dir: String,
-    socket: PathBuf,
-    db: String,
-    // Parquet data path; removed when the writer drops.
-    _data_dir: TempDir,
-}
-
-impl DuckLakeWriter {
-    pub fn new(socket: &std::path::Path, db: &str) -> Self {
-        Self {
-            duckdb_bin: PathBuf::from(
-                std::env::var("DUCKDB_BIN").expect("DUCKDB_BIN must point at the duckdb CLI"),
-            ),
-            extension_dir: std::env::var("DUCKDB_EXTENSION_DIR")
-                .expect("DUCKDB_EXTENSION_DIR must point at the offline extension dir"),
-            socket: socket.to_path_buf(),
-            db: db.to_string(),
-            _data_dir: tempfile::tempdir().expect("create ducklake data tempdir"),
-        }
-    }
-
-    /// Create `schema.table` (if absent) with `columns` as `(name, sql_type, nullable)`,
-    /// then apply each entry of `batches` as one INSERT of that many rows (one Parquet
-    /// data file per batch, inlining disabled). Returns the per-batch snapshot ids, in order.
-    pub async fn seed(
-        &self,
-        schema: &str,
-        table: &str,
-        columns: &[(String, String, bool)],
-        batches: &[usize],
-    ) -> Vec<i64> {
-        let col_defs: Vec<String> = columns
-            .iter()
-            .map(|(name, ty, nullable)| {
-                format!("{name} {ty}{}", if *nullable { "" } else { " NOT NULL" })
-            })
-            .collect();
-
-        let mut sql = String::new();
-        sql.push_str(&format!(
-            "SET extension_directory='{}';\n",
-            self.extension_dir
-        ));
-        sql.push_str("LOAD ducklake;\nLOAD postgres_scanner;\n");
-        sql.push_str(&format!(
-            "ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\n",
-            self.db,
-            self.socket.display(),
-            self._data_dir.path().display(),
-        ));
-        sql.push_str(&format!(
-            "CREATE TABLE IF NOT EXISTS lake.{schema}.{table} ({});\n",
-            col_defs.join(", ")
-        ));
-        for n in batches {
-            sql.push_str(&format!(
-                "INSERT INTO lake.{schema}.{table} SELECT {} FROM range({}) t(i);\n",
-                Self::row_exprs(columns),
-                n
-            ));
-        }
-
-        let status = Command::new(&self.duckdb_bin)
-            .arg("-c")
-            .arg(&sql)
-            .status()
-            .expect("run duckdb");
-        assert!(status.success(), "duckdb seeding failed");
-
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_with(self.opts())
-            .await
-            .expect("connect to read back snapshots");
-        sqlx::query_scalar::<_, i64>(AssertSqlSafe(
-            "select f.begin_snapshot from ducklake_data_file f \
-             join ducklake_table t on f.table_id = t.table_id \
-             join ducklake_schema s on t.schema_id = s.schema_id \
-             where s.schema_name = $1 and t.table_name = $2 \
-             order by f.data_file_id",
-        ))
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&pool)
-        .await
-        .expect("read back data-file snapshots")
-    }
-
-    /// ATTACH the DuckLake catalog WITHOUT creating any table. A bare ATTACH
-    /// against an empty database runs `InitializeDuckLake`, creating the 27
-    /// `ducklake_*` tables, seeding snapshot 0, the `main` schema, and the
-    /// `ducklake_metadata` rows — i.e. the same starting point a fresh DuckLake
-    /// catalog has, with no `CREATE TABLE`/`INSERT`. loom's native `create_table`
-    /// writer then operates against this bootstrap-only catalog.
-    pub async fn bootstrap(&self) {
-        let mut sql = String::new();
-        sql.push_str(&format!(
-            "SET extension_directory='{}';\n",
-            self.extension_dir
-        ));
-        sql.push_str("LOAD ducklake;\nLOAD postgres_scanner;\n");
-        sql.push_str(&format!(
-            "ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\n",
-            self.db,
-            self.socket.display(),
-            self._data_dir.path().display(),
-        ));
-
-        let status = Command::new(&self.duckdb_bin)
-            .arg("-c")
-            .arg(&sql)
-            .status()
-            .expect("run duckdb");
-        assert!(status.success(), "duckdb bootstrap (bare ATTACH) failed");
-    }
-
-    /// Drop `schema.table` via the DuckDB CLI (DuckLake records the drop, setting
-    /// `end_snapshot` on the table and its files/columns). Returns that drop snapshot.
-    pub async fn drop_table(&self, schema: &str, table: &str) -> i64 {
-        let mut sql = String::new();
-        sql.push_str(&format!(
-            "SET extension_directory='{}';\n",
-            self.extension_dir
-        ));
-        sql.push_str("LOAD ducklake;\nLOAD postgres_scanner;\n");
-        sql.push_str(&format!(
-            "ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\n",
-            self.db,
-            self.socket.display(),
-            self._data_dir.path().display(),
-        ));
-        sql.push_str(&format!("DROP TABLE lake.{schema}.{table};\n"));
-
-        let status = Command::new(&self.duckdb_bin)
-            .arg("-c")
-            .arg(&sql)
-            .status()
-            .expect("run duckdb");
-        assert!(status.success(), "duckdb drop failed");
-
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_with(self.opts())
-            .await
-            .expect("connect to read back drop snapshot");
-        sqlx::query_scalar::<_, i64>(AssertSqlSafe(
-            "select t.end_snapshot from ducklake_table t \
-             join ducklake_schema s on t.schema_id = s.schema_id \
-             where s.schema_name = $1 and t.table_name = $2 and t.end_snapshot is not null \
-             order by t.end_snapshot desc limit 1",
-        ))
-        .bind(schema)
-        .bind(table)
-        .fetch_one(&pool)
-        .await
-        .expect("read back drop snapshot")
-    }
-
-    fn opts(&self) -> PgConnectOptions {
-        PgConnectOptions::new()
-            .socket(&self.socket)
-            .username("postgres")
-            .database(&self.db)
-    }
-
-    /// The `DATA_PATH` root used in the ATTACH (the Parquet data dir). DuckLake
-    /// resolves a relative file path as `DATA_PATH + schema.path + table.path +
-    /// file.path`; loom registers relative paths, so for table `main.t` a file
-    /// `"f.parquet"` lives at `<data_path>/main/t/f.parquet`.
-    pub fn data_path(&self) -> &std::path::Path {
-        self._data_dir.path()
-    }
-
-    /// The ATTACH preamble (SET extension_directory + LOAD + ATTACH lake) shared
-    /// by every duckdb-cli invocation against this catalog + data dir.
-    fn preamble(&self) -> String {
-        format!(
-            "SET extension_directory='{}';\nLOAD ducklake;\nLOAD postgres_scanner;\n\
-             ATTACH 'ducklake:postgres:dbname={} host={} user=postgres' AS lake \
-             (DATA_PATH '{}/', DATA_INLINING_ROW_LIMIT 0);\n",
-            self.extension_dir,
-            self.db,
-            self.socket.display(),
-            self._data_dir.path().display(),
-        )
-    }
-
-    /// Run arbitrary DuckDB SQL against the attached catalog (preamble prepended).
-    /// Panics on a non-zero exit (test-only).
-    pub async fn exec(&self, sql: &str) {
-        let full = format!("{}{sql}", self.preamble());
-        let status = Command::new(&self.duckdb_bin)
-            .arg("-c")
-            .arg(&full)
-            .status()
-            .expect("run duckdb");
-        assert!(status.success(), "duckdb exec failed for SQL:\n{sql}");
-    }
-
-    /// Run a SQL statement that produces a single scalar and return its stdout,
-    /// trimmed. Uses `-noheader -list` so stdout is just the value. Panics on a
-    /// non-zero exit, surfacing duckdb's stderr (test-only).
-    pub async fn query_scalar(&self, sql: &str) -> String {
-        let full = format!("{}{sql}", self.preamble());
-        let out = Command::new(&self.duckdb_bin)
-            .args(["-noheader", "-list", "-c"])
-            .arg(&full)
-            .output()
-            .expect("run duckdb");
-        assert!(
-            out.status.success(),
-            "duckdb query failed for SQL:\n{sql}\nstderr:\n{}",
-            String::from_utf8_lossy(&out.stderr),
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    /// The current max `snapshot_id` in the DuckLake catalog, read directly from
-    /// Postgres (the `ducklake_*` tables live in the pg backend, not as plain
-    /// DuckDB-visible names). Used to assert snapshot-counter continuity.
-    pub async fn max_snapshot_id(&self) -> i64 {
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_with(self.opts())
-            .await
-            .expect("connect to read max snapshot id");
-        sqlx::query_scalar::<_, Option<i64>>(AssertSqlSafe(
-            "select max(snapshot_id) from ducklake_snapshot",
-        ))
-        .fetch_one(&pool)
-        .await
-        .expect("read max snapshot id")
-        .expect("ducklake_snapshot has at least one row")
-    }
-
-    /// Count rows in a `ducklake_*` catalog table, read directly from Postgres.
-    /// `table` must be a trusted literal (test-only). Used to assert that a
-    /// rolled-back snapshot commit leaks zero catalog rows.
-    pub async fn count_rows(&self, table: &str) -> i64 {
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_with(self.opts())
-            .await
-            .expect("connect to count rows");
-        sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!("select count(*) from {table}")))
-            .fetch_one(&pool)
-            .await
-            .expect("count rows")
-    }
-
-    /// Positional row expressions matching `columns`: integer columns count up from
-    /// `i`, everything else is a constant cast to the column type.
-    fn row_exprs(columns: &[(String, String, bool)]) -> String {
-        columns
-            .iter()
-            .map(|(_, ty, _)| {
-                if ty.to_ascii_lowercase().contains("int") {
-                    "i".to_string()
-                } else {
-                    format!("CAST('x' AS {ty})")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
 /// Test-only seeder for the Iceberg path. Creates real, spec-compliant Iceberg tables via the
 /// vendored SQL catalog (exercising the catalog port end to end against the hermetic Postgres +
 /// a `file://` warehouse), then writes real Parquet through the slice-2 writer chain
 /// (`iceberg_writer::append_batches`). Each append's `update_table` projects the canonical
 /// metadata into `iceberg_mirror.*`, so the read adapter serves exactly what was committed.
-/// Sibling of `DuckLakeWriter`.
 ///
 /// The catalog contracts assert file counts/paths and schema/type round-trips, all satisfied by
 /// the real write→project→read path. `long`/`string` columns cover every type the contracts seed.
@@ -619,16 +345,26 @@ pub enum SeedCol<'a> {
     NullableLong(Vec<Option<i64>>),
     /// A non-null `string` column.
     Str(Vec<&'a str>),
+    /// A non-null `boolean` column.
+    Bool(Vec<bool>),
+    /// A nullable `double` column (`None` => SQL NULL).
+    NullableDouble(Vec<Option<f64>>),
+    /// A nullable `boolean` column (`None` => SQL NULL).
+    NullableBool(Vec<Option<bool>>),
 }
 
 impl SeedCol<'_> {
-    /// Build the arrow-array-57 column for this data (kept inside `control-plane-postgres`
+    /// Build the arrow-array column for this data (kept inside `control-plane-postgres`
     /// so the arrow-array version never leaks across a crate boundary).
     fn to_array(&self) -> ArrayRef {
+        use arrow_array::Float64Array;
         match self {
             SeedCol::Long(v) => Arc::new(Int64Array::from(v.clone())),
             SeedCol::NullableLong(v) => Arc::new(Int64Array::from(v.clone())),
             SeedCol::Str(v) => Arc::new(StringArray::from(v.clone())),
+            SeedCol::Bool(v) => Arc::new(BooleanArray::from(v.clone())),
+            SeedCol::NullableDouble(v) => Arc::new(Float64Array::from(v.clone())),
+            SeedCol::NullableBool(v) => Arc::new(BooleanArray::from(v.clone())),
         }
     }
 }

@@ -1,5 +1,5 @@
-//! dataset->model binding: validate a landed DuckLake table's physical schema
-//! against a declared ontology type, then persist it (define_type). A bound type is
+//! dataset->model binding: validate a landed table's physical schema against a
+//! declared ontology type, then persist it (define_type). A bound type is
 //! guaranteed-serveable by the query read path. See the part-2b design doc.
 
 use control_plane_core::{

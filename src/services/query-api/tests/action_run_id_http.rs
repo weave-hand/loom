@@ -35,9 +35,9 @@ impl ActionEngine for CapturingEngine {
     }
 }
 
-/// No-op read engine: the action path never queries it, and this is a plain
-/// `rust_test` (no `DUCKDB_EXTENSION_DIR`), so we MUST NOT construct a real
-/// `EmbeddedDuckDb` (its `attach` errors when that env var is unset on RE).
+/// No-op read engine: the action path never queries it, so a plain `rust_test`
+/// needs no real serving engine (the production `EngineServingClient` requires a
+/// live engine socket, which this unit test deliberately avoids).
 struct NoServing;
 #[async_trait]
 impl ServingEngine for NoServing {

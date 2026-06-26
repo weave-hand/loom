@@ -4,7 +4,7 @@
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{DuckDbDialect, GraphStep, compile_graph_reach};
+use query_api::sql::{DataFusionDialect, GraphStep, compile_graph_reach};
 
 fn person() -> TableRef {
     TableRef {
@@ -21,7 +21,7 @@ fn fk_self_link_recursive_reach() {
         to_column: "id".into(),
     };
     let (sql, params) = compile_graph_reach(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &person(),
         "id",
         &[GraphStep {
@@ -86,7 +86,7 @@ fn join_table_self_link_and_row_filter_and_seed() {
         values: vec![SqlValue::Int(5)],
     }];
     let (sql, params) = compile_graph_reach(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &person(),
         "id",
         &[GraphStep {
@@ -161,7 +161,7 @@ fn two_step_path_cycle_with_intermediate_filter() {
         value: ScalarValue::Text("US".into()),
     }];
     let (sql, params) = compile_graph_reach(
-        &DuckDbDialect,
+        &DataFusionDialect,
         &person(),
         "id",
         &path,
@@ -199,62 +199,4 @@ fn two_step_path_cycle_with_intermediate_filter() {
     assert_eq!(params[1], SqlValue::Bool(true)); // g1.active
     assert_eq!(params[2], SqlValue::Text("US".into())); // nxt.region (final node, start filter)
     assert_eq!(params[3], SqlValue::Text("US".into())); // p.region (projection)
-}
-
-/// A single Person -> Person FK self-link (knows_id -> id), reused by the ORDER BY barrier tests.
-fn sample_self_link() -> (TableRef, Vec<GraphStep>) {
-    let table = person();
-    let path = vec![GraphStep {
-        backing: LinkBacking::ForeignKey {
-            from_column: "knows_id".into(),
-            to_column: "id".into(),
-        },
-        next_table: person(),
-        next_filters: vec![],
-    }];
-    (table, path)
-}
-
-#[test]
-fn graph_reach_orders_by_identity_when_visible() {
-    // Reuse the existing single-self-link fixture builder in this file for `table`,
-    // `path`, etc. Project ["id","label"]; identity = "id" (visible).
-    let (table, path) = sample_self_link(); // local construction as in existing tests
-    let (sql, _params) = compile_graph_reach(
-        &DuckDbDialect,
-        &table,
-        "id",
-        &path,
-        &[],
-        &[],
-        &["id".to_string(), "label".to_string()],
-        &[],
-        3,
-        1000,
-    )
-    .unwrap();
-    // Identity is visible -> order key is identity alone, qualified at the projection alias `p`.
-    assert!(sql.contains(r#"ORDER BY p."id" LIMIT 1000"#), "got: {sql}");
-}
-
-#[test]
-fn graph_reach_orders_by_projected_cols_when_identity_masked() {
-    let (table, path) = sample_self_link();
-    let (sql, _params) = compile_graph_reach(
-        &DuckDbDialect,
-        &table,
-        "id",
-        &path,
-        &[],
-        &[],
-        &["id".to_string(), "label".to_string()],
-        &["id".to_string()], // identity masked -> falls back to visible projected cols
-        3,
-        1000,
-    )
-    .unwrap();
-    assert!(
-        sql.contains(r#"ORDER BY p."label" LIMIT 1000"#),
-        "got: {sql}"
-    );
 }

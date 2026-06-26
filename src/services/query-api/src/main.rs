@@ -1,7 +1,7 @@
 //! query-api binary: build the read AppState from env config via service_runtime —
-//! a Postgres control plane plus a serving engine selected by LOOM_SERVING_BACKEND
-//! (DuckLake-on-DuckDB by default, or the loom-native DataFusion engine over the
-//! Iceberg mirror via the engine wire) — and serve the HTTP API.
+//! a Postgres control plane plus the loom-native DataFusion engine over the Iceberg
+//! mirror (reads stream over the engine wire via `EngineServingClient`) — and serve
+//! the HTTP API.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use control_plane_postgres::iceberg_sql_catalog::{
 use iceberg::CatalogBuilder;
 use query_api::engine_client::EngineServingClient;
 use query_api::http::{AppState, router};
-use query_api::serving::{ActionEngine, DuckLakeActionWriter, EmbeddedDuckDb, ServingEngine};
-use query_api::serving_datafusion::{IcebergActionWriter, ServingBackend, parse_serving_backend};
+use query_api::serving::{ActionEngine, ServingEngine};
+use query_api::serving_datafusion::IcebergActionWriter;
 
 /// Inline routing threshold (in-memory uncompressed Arrow). Below this an action row
 /// inlines (mirror-only); tunable via `LOOM_INLINE_BYTE_LIMIT`. Matches ingest.
@@ -27,8 +27,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     service_runtime::init_tracing();
     let cfg = service_runtime::Config::from_env()?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
-    let backend = parse_serving_backend(std::env::var("LOOM_SERVING_BACKEND").ok().as_deref())
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     // Concrete PgControlPlane: serves both ControlPlane (read path) and Auth.
     let pg = Arc::new(service_runtime::control_plane(
@@ -37,40 +35,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let cp: Arc<dyn ControlPlane> = pg.clone();
 
-    let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = match backend {
-        ServingBackend::DuckLake => {
-            let store: Arc<dyn object_store::ObjectStore> =
-                Arc::new(service_runtime::local_store(&cfg.data_path)?);
-            (
-                Arc::new(EmbeddedDuckDb::attach(&cfg.db.ducklake_libpq(), &cfg.data_path).await?),
-                Arc::new(DuckLakeActionWriter::new(cp.clone(), store)),
-            )
-        }
-        ServingBackend::Iceberg => {
-            let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
-            let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
-                .ok()
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
-            let engine_socket =
-                std::env::var("LOOM_ENGINE_SOCKET").map_err(|_| -> Box<dyn std::error::Error> {
-                    "LOOM_ENGINE_SOCKET must be set for the Iceberg serving backend".into()
-                })?;
-            let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
-            let action: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
-                catalog,
-                pool.clone(),
-                inline_byte_limit,
-                flush_byte_threshold,
-            ));
-            (
-                Arc::new(EngineServingClient::connect(engine_socket).await?),
-                action,
-            )
-        }
+    let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = {
+        let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
+        let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
+        let engine_socket =
+            std::env::var("LOOM_ENGINE_SOCKET").map_err(|_| -> Box<dyn std::error::Error> {
+                "LOOM_ENGINE_SOCKET must be set for the Iceberg serving backend".into()
+            })?;
+        let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
+        let action: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
+            catalog,
+            pool.clone(),
+            inline_byte_limit,
+            flush_byte_threshold,
+        ));
+        (
+            Arc::new(EngineServingClient::connect(engine_socket).await?),
+            action,
+        )
     };
 
     // Auth wiring.

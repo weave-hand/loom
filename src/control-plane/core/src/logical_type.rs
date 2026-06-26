@@ -2,8 +2,8 @@
 //! Used by dataset→model binding to check a landed column's logical type satisfies a
 //! declared property's logical type. Pure logic, no I/O. The vocabulary is CLOSED: an
 //! unrecognized logical type is an error, never a silent pass — that keeps the ontology
-//! authoritative. Physical mapping (logical ↔ DuckLake type strings) lives in the
-//! postgres adapter (`control_plane_postgres::ducklake_type`).
+//! authoritative. Physical mapping (logical ↔ Iceberg type strings) lives in the
+//! postgres adapter (`control_plane_postgres::iceberg_type`).
 //!
 //! NOTE: this vocabulary also classifies how each type renders on the JSON wire
 //! (see `JsonRepr` / `json_repr_of`): Date/Timestamp -> ISO-8601 strings, Long ->

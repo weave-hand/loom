@@ -1,13 +1,13 @@
-//! Arrow batches -> Snappy Parquet bytes + the DuckLake `DataFile` stats the
-//! snapshot-commit primitive needs. The load-bearing fidelity unit: the DuckDB
-//! read-back interop test (tests/ducklake_interop.rs) is its executable oracle.
+//! Arrow batches -> Snappy Parquet bytes + the `DataFile` stats the snapshot-commit
+//! primitive needs. The load-bearing fidelity unit: the Parquet write/read-back tests
+//! (tests/write.rs, tests/single_file_write.rs) are its executable oracle.
 
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use bytes::Bytes;
-use control_plane_core::{ColumnStat, StatValue};
+use control_plane_core::{ColumnStat, DataFile, FileFormat, StatValue};
 use datafusion::common::config::TableParquetOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::datasource::MemTable;
@@ -98,9 +98,9 @@ pub async fn write_dataset(
     // batches across them) and `soft_max_rows_per_output_file`. The old code left this at
     // its default of 4, so the output file count tracked the upstream batch count — a join
     // that emitted 2 batches silently produced 2 files even though `estimate_partitions`
-    // asked for 1. A multi-file DuckLake table is then mis-read by DuckDB under a pushed-down
-    // `LIMIT` (the scan reconstructs `id` values incorrectly, e.g. 10 -> 266), corrupting
-    // reads — so a stray split is not cosmetic. Pinning the sink's file count to exactly
+    // asked for 1. That historically mis-read a multi-file table under a pushed-down `LIMIT`
+    // (the DuckDB-era scan reconstructed `id` values incorrectly, e.g. 10 -> 266), corrupting
+    // reads — so a stray split was never cosmetic. Pinning the sink's file count to exactly
     // `partitions` (and leaving the high soft row cap) makes small results a single file
     // while still letting size-targeted large results split. See tests/single_file_write.rs.
     let mut config = SessionConfig::new();
@@ -157,12 +157,43 @@ pub async fn write_dataset(
 #[derive(Clone, Debug)]
 pub struct WrittenFile {
     /// Path to register in `append_files`, relative to the table directory
-    /// (e.g. "<file_prefix>/part-0.parquet"). DuckLake resolves it under data_path.
+    /// (e.g. "<file_prefix>/part-0.parquet"). The catalog resolves it under data_path.
     pub path: String,
     pub record_count: i64,
     pub file_size_bytes: i64,
     pub footer_size: i64,
     pub column_stats: Vec<ColumnStat>,
+}
+
+/// Promote the table-relative `WrittenFile`s from [`write_dataset`] into absolute
+/// [`DataFile`]s for a snapshot commit. `write_dataset` returns each file's path
+/// relative to the table directory (e.g. `"<run_id>/part-0.parquet"`); the snapshot
+/// mirror — and the DataFusion serving path that reads it (`IcebergMirrorTableProvider`,
+/// which resolves `iceberg_mirror.data_file.path` as an ABSOLUTE URL) — needs the full
+/// `{root_url}/{schema}/{table}/{rel}` path with `path_is_relative = false`.
+///
+/// This is the single source of truth for that promotion, shared by the transform
+/// (`run.rs`), Iceberg compaction (`compact.rs`), and matching the worker compaction
+/// path (`worker/src/compact.rs`) — so a relative path can never leak into the mirror
+/// and silently make a transform-derived dataset unreadable through serving.
+pub fn absolute_data_files(
+    written: Vec<WrittenFile>,
+    root_url: &str,
+    schema: &str,
+    table: &str,
+) -> Vec<DataFile> {
+    written
+        .into_iter()
+        .map(|w| DataFile {
+            path: format!("{root_url}/{schema}/{table}/{}", w.path),
+            path_is_relative: false,
+            file_format: FileFormat::Parquet,
+            record_count: w.record_count,
+            file_size_bytes: w.file_size_bytes,
+            column_stats: w.column_stats,
+            parquet_footer_size: Some(w.footer_size),
+        })
+        .collect()
 }
 
 fn min_stat(stats: &Statistics) -> Option<StatValue> {
@@ -206,7 +237,7 @@ fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<std::cmp::Ordering> 
     }
 }
 
-/// Extract the DuckLake `DataFile` stats from a complete Parquet byte buffer,
+/// Extract the `DataFile` stats from a complete Parquet byte buffer,
 /// merging typed min/max across ALL row groups (preserves pruning on multi-row-group
 /// files). `path` is the relative DataFile path to record.
 pub fn file_stats_from_bytes(
@@ -277,7 +308,7 @@ pub fn file_stats_from_bytes(
 }
 
 /// The 4 bytes before the trailing `PAR1` magic are the little-endian footer
-/// length DuckLake records as `footer_size`.
+/// length recorded as `footer_size`.
 fn parquet_footer_size(bytes: &[u8]) -> i64 {
     assert!(
         bytes.len() >= 8 && &bytes[bytes.len() - 4..] == b"PAR1",

@@ -1,26 +1,19 @@
-//! Governed link traversal e2e: land Customer + Order tables, define an FK link and a
-//! many-to-many link, and exercise the both-ends governance matrix against real DuckDB.
+//! Governed link traversal e2e: seed Customer + Order tables, define an FK link and a
+//! many-to-many link, and exercise the both-ends governance matrix.
 
-use std::sync::Arc;
-
-use arrow::array::{Float64Array, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    Acl, Action, Cardinality, CompareOp, DatasetRef, Effect, EventType, LineageEvent, LinkBacking,
-    LinkDef, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, RunId,
-    ScalarValue, SubjectId, TableRef, TypeName,
+    Acl, Action, Cardinality, CompareOp, Effect, LinkBacking, LinkDef, ObjectType, Ontology,
+    Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef,
+    TypeName,
 };
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use ingest::{MaterializeRequest, materialize};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::InProcessServingEngine;
 use query_api::handler::{
     ChainFilter, LinkQuery, QueryDeps, QueryError, Subject, read_linked_objects,
 };
-use query_api::serving::{EmbeddedDuckDb, SqlValue};
-use time::OffsetDateTime;
-use uuid::Uuid;
+use query_api::serving::SqlValue;
 
 fn tref(s: &str, n: &str) -> TableRef {
     TableRef {
@@ -37,91 +30,50 @@ fn srcf(col: &str, val: &str) -> ChainFilter {
     }
 }
 
-async fn land(
-    cp: &PgControlPlane,
-    store: &Arc<dyn ObjectStore>,
-    table: &TableRef,
-    schema: Arc<Schema>,
-    batch: RecordBatch,
-) {
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(table)],
-        payload: serde_json::json!({}),
-    };
-    materialize(
-        cp,
-        store.clone(),
-        MaterializeRequest {
-            table,
-            schema,
-            batches: &[batch],
-            file_prefix: "run-1",
-            gate: None,
-            lineage,
-        },
-    )
-    .await
-    .unwrap();
-}
-
-/// Seed two types (Customer, Order) + an FK link Customer-(orders)->Order, and land
-/// rows. Returns (cp, attached serving engine, the live writer that owns the data dir).
-/// The caller MUST keep the returned `DuckLakeWriter` alive: its `TempDir` holds the
-/// Parquet files the engine reads, and dropping it deletes them out from under DuckDB.
-async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter) {
+/// Seed two types (Customer, Order) + an FK link Customer-(orders)->Order, and seed
+/// rows. Returns (cp, serving engine, writer). The writer is returned so the caller
+/// can seed additional tables (e.g. the join-table in many_to_many_dedups_shared_targets).
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
 
     let cust = tref("main", "customer");
-    let cust_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("region", DataType::Utf8, true),
-    ]));
-    let cust_batch = RecordBatch::try_new(
-        cust_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec![Some("CA"), Some("NY"), Some("CA")])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &cust, cust_schema, cust_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "customer",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("region".to_string(), "string".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3]),
+                SeedCol::Str(vec!["CA", "NY", "CA"]),
+            ],
+        )
+        .await;
 
     let ord = tref("main", "orders");
-    let ord_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("customer_id", DataType::Int64, false),
-        Field::new("amount", DataType::Float64, true),
-        Field::new("secret", DataType::Utf8, true),
-    ]));
-    let ord_batch = RecordBatch::try_new(
-        ord_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![10, 11, 12, 13])),
-            Arc::new(Int64Array::from(vec![1, 1, 2, 3])),
-            Arc::new(Float64Array::from(vec![
-                Some(50.0),
-                Some(200.0),
-                Some(70.0),
-                Some(300.0),
-            ])),
-            Arc::new(StringArray::from(vec![
-                Some("x"),
-                Some("y"),
-                Some("z"),
-                Some("w"),
-            ])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &ord, ord_schema, ord_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "orders",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("customer_id".to_string(), "long".to_string(), false),
+                ("amount".to_string(), "double".to_string(), true),
+                ("secret".to_string(), "string".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![10, 11, 12, 13]),
+                SeedCol::Long(vec![1, 1, 2, 3]),
+                SeedCol::NullableDouble(vec![Some(50.0), Some(200.0), Some(70.0), Some(300.0)]),
+                SeedCol::Str(vec!["x", "y", "z", "w"]),
+            ],
+        )
+        .await;
 
     cp.define_type(ObjectType {
         name: TypeName("Customer".into()),
@@ -187,16 +139,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
     (cp, eng, writer)
 }
 
@@ -454,24 +398,19 @@ async fn many_to_many_dedups_shared_targets() {
     grant_read(&cp, &role, "Customer").await;
     grant_read(&cp, &role, "Order").await;
 
-    // Land the mapping table into the SAME data dir the engine reads (writer.data_path()),
-    // not a fresh writer (whose TempDir would be a different, unread directory).
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    // Seed the mapping table into the same catalog the engine reads.
     let map = tref("main", "customer_order");
-    let map_schema = Arc::new(Schema::new(vec![
-        Field::new("customer_id", DataType::Int64, false),
-        Field::new("order_id", DataType::Int64, false),
-    ]));
-    let map_batch = RecordBatch::try_new(
-        map_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 3])),
-            Arc::new(Int64Array::from(vec![11, 11])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &map, map_schema, map_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "customer_order",
+            &[
+                ("customer_id".to_string(), "long".to_string(), false),
+                ("order_id".to_string(), "long".to_string(), false),
+            ],
+            &[SeedCol::Long(vec![1, 3]), SeedCol::Long(vec![11, 11])],
+        )
+        .await;
 
     cp.define_link(LinkDef {
         name: "shared".into(),

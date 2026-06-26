@@ -8,7 +8,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
-use e2e_support::{ids, setup};
+use e2e_support::{ids, setup_iceberg};
 use query_api::handler::{
     ChainFilter, ChainQuery, QueryDeps, QueryError, Subject, read_linked_chain,
 };
@@ -52,11 +52,11 @@ async fn grant_read(cp: &PgControlPlane, role: &RoleId, type_name: &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn multi_hop_served_and_governed() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
 
     // ---- subject A: Read on all three -> sees the reachable LineItems ----
@@ -143,11 +143,11 @@ async fn multi_hop_served_and_governed() {
 #[tokio::test(flavor = "multi_thread")]
 async fn target_filter_narrows_final_set() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -177,11 +177,11 @@ async fn target_filter_narrows_final_set() {
 #[tokio::test(flavor = "multi_thread")]
 async fn intermediate_typed_filter_coerces_and_narrows() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -211,11 +211,11 @@ async fn intermediate_typed_filter_coerces_and_narrows() {
 #[tokio::test(flavor = "multi_thread")]
 async fn source_and_intermediate_filters_combine() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -241,11 +241,11 @@ async fn source_and_intermediate_filters_combine() {
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_positioned_filters_are_rejected() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -323,11 +323,11 @@ async fn bad_positioned_filters_are_rejected() {
 #[tokio::test(flavor = "multi_thread")]
 async fn intermediate_comparison_operator_narrows() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let (cp, eng, _writer) = setup_iceberg(&fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
-        serving: &eng,
+        serving: &*eng,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;

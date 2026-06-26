@@ -1,7 +1,7 @@
 //! Iceberg physical type names → loom logical types for the `iceberg_mirror` read path. The
 //! closed vocabulary is authoritative: an Iceberg type loom has no logical name for maps to
 //! `None` (the adapter surfaces it as an explicit error rather than leaking a raw Iceberg type
-//! string into `core`). Mirror of `ducklake_type::logical_from_ducklake`.
+//! string into `core`).
 
 use control_plane_core::BaseType;
 

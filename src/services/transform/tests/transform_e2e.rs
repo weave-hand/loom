@@ -1,5 +1,9 @@
 //! Queue -> worker -> transform -> snapshot + lineage -> read-back, against real
-//! Postgres + DuckDB. Lands inputs via the ingest materializer, then runs a SQL join.
+//! Postgres + Iceberg. Seeds inputs as real Iceberg Parquet (mirror-registered),
+//! runs a SQL join through the Iceberg control plane, and reads the output back
+//! through the loom-native serving engine (`engine_serving::execute_query`). NO DuckDB.
+
+mod transform_e2e_support;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,76 +11,42 @@ use std::time::Duration;
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetRef, EventType, LineageEvent, NewJob, PageReq, Queue, RunId,
-    TableRef,
+    ColumnSpec, ControlPlane, DatasetRef, LineageEvent, NewJob, PageReq, Queue, TableRef,
 };
-use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
+use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_worker::Worker;
-use ingest::{MaterializeRequest, materialize};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
-use time::OffsetDateTime;
 use tokio_util::sync::CancellationToken;
 use transform::transform_handler;
-use uuid::Uuid;
 
-fn tref(s: &str, n: &str) -> TableRef {
-    TableRef {
-        schema: s.into(),
-        name: n.into(),
-    }
-}
-
-async fn land(
-    cp: &PgControlPlane,
-    store: &Arc<dyn ObjectStore>,
-    table: &TableRef,
-    schema: Arc<Schema>,
-    batch: RecordBatch,
-) {
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(table)],
-        payload: serde_json::json!({}),
-    };
-    materialize(
-        cp,
-        store.clone(),
-        MaterializeRequest {
-            table,
-            schema,
-            batches: &[batch],
-            file_prefix: "run-1",
-            gate: None,
-            lineage,
-        },
-    )
-    .await
-    .unwrap();
-}
+use transform_e2e_support::{cols, lineage, make_catalog, scalar_i64, seed_table, tref};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn transform_joins_two_inputs_into_a_new_snapshot() {
     let fx = PgFixture::start();
-    let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let warehouse = wh.path().display().to_string();
+    let root_url = format!("file://{warehouse}");
+    let catalog = make_catalog(fx.pg_dsn(&db), &warehouse).await;
     let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+        Arc::new(LocalFileSystem::new_with_prefix(wh.path()).expect("store"));
+    let cp = IcebergControlPlane::new(pg.clone(), catalog);
 
     let customers = tref("main", "customers");
+    let cust_cols = cols(&[("id", "long", false), ("region", "string", true)]);
     let cust_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("region", DataType::Utf8, true),
     ]));
-    land(
+    seed_table(
         &cp,
         &store,
         &customers,
+        &cust_cols,
         cust_schema.clone(),
         RecordBatch::try_new(
             cust_schema,
@@ -86,18 +56,21 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
             ],
         )
         .unwrap(),
+        "seed-c",
     )
     .await;
 
     let orders = tref("main", "orders");
+    let ord_cols = cols(&[("id", "long", false), ("customer_id", "long", false)]);
     let ord_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("customer_id", DataType::Int64, false),
     ]));
-    land(
+    seed_table(
         &cp,
         &store,
         &orders,
+        &ord_cols,
         ord_schema.clone(),
         RecordBatch::try_new(
             ord_schema,
@@ -107,10 +80,11 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
             ],
         )
         .unwrap(),
+        "seed-o",
     )
     .await;
 
-    cp.enqueue(NewJob {
+    pg.enqueue(NewJob {
         kind: "transform".into(),
         payload: serde_json::json!({
             "inputs": [
@@ -127,18 +101,25 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
     .await
     .unwrap();
 
+    // The queue is backend-neutral (dequeue through `pg`); the handler commits output
+    // through the Iceberg control plane (`cp`), mirroring the transform binary.
+    let cp_h: Arc<dyn ControlPlane> = Arc::new(IcebergControlPlane::new(
+        pg.clone(),
+        make_catalog(fx.pg_dsn(&db), &warehouse).await,
+    ));
     let store_h = store.clone();
+    let root_h = root_url.clone();
     let token = CancellationToken::new();
     let t = token.clone();
-    let worker = Worker::new(cp.clone(), "transform-test", Duration::from_millis(300))
+    let worker = Worker::new(pg.clone(), "transform-test", Duration::from_millis(300))
         .with_poll_interval(Duration::from_millis(50));
-    let cp_h: Arc<dyn ControlPlane> = Arc::new(cp.clone());
     let handle = tokio::spawn(async move {
         worker
             .run(&["transform".to_string()], t, move |job| {
                 let cp = cp_h.clone();
                 let store = store_h.clone();
-                async move { transform_handler(cp.as_ref(), store, job).await }
+                let root_url = root_h.clone();
+                async move { transform_handler(cp.as_ref(), store, &root_url, job).await }
             })
             .await
     });
@@ -147,24 +128,43 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
     handle.await.unwrap().unwrap();
 
     assert!(
-        cp.dequeue(&["transform".to_string()], "probe")
+        pg.dequeue(&["transform".to_string()], "probe")
             .await
             .unwrap()
             .is_none(),
         "transform job completed"
     );
 
-    let count = writer
-        .query_scalar("SELECT count(*) FROM lake.main.orders_enriched;")
-        .await;
-    assert_eq!(count, "3", "DuckDB reads the transform output");
-    let regions = writer
-        .query_scalar("SELECT string_agg(region, ',' ORDER BY id) FROM lake.main.orders_enriched;")
-        .await;
-    assert_eq!(regions, "CA,CA,NY", "join produced the right regions");
+    // Read the output back through the serving engine.
+    let serving = IcebergCatalog::new(fx.pool_for(&db).await);
+    let count = engine_serving::execute_query(
+        &serving,
+        "SELECT count(*) FROM \"main\".\"orders_enriched\"",
+        None,
+    )
+    .await
+    .expect("serving count");
+    assert_eq!(
+        scalar_i64(&count),
+        3,
+        "serving reads the transform output (3 rows)"
+    );
+
+    let rows = engine_serving::execute_query(
+        &serving,
+        "SELECT \"id\", \"region\" FROM \"main\".\"orders_enriched\" ORDER BY \"id\"",
+        None,
+    )
+    .await
+    .expect("serving rows");
+    assert_eq!(
+        transform_e2e_support::col_csv(&rows),
+        "CA,CA,NY",
+        "join produced the right regions"
+    );
 
     let out_ds = DatasetRef::from(&tref("main", "orders_enriched"));
-    let ups = cp
+    let ups = pg
         .lineage()
         .upstream(&out_ds, PageReq::unbounded())
         .await
@@ -180,21 +180,21 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
 
 /// Create an input table with a schema but NO data files (current_snapshot exists,
 /// `files` is empty, `schema` resolves) — the empty-input fixture the edge-2 cases need.
-async fn create_empty_table(cp: &PgControlPlane, table: &TableRef, columns: &[ColumnSpec]) {
+async fn create_empty_table(cp: &IcebergControlPlane, table: &TableRef, columns: &[ColumnSpec]) {
     let mut tx = cp.begin().await.unwrap();
     tx.create_table(table, columns).await.unwrap();
+    // Register the table in the mirror with an EMPTY file list: the table/columns/schema
+    // are projected at the snapshot (so `current_snapshot`/`schema` resolve), but no data
+    // files exist — the "live input with zero files" fixture. A create-only commit would
+    // allocate a snapshot without a mirror `table` row, so the input would read as NotFound.
+    tx.append_files(table, &[]).await.unwrap();
     tx.commit().await.unwrap();
 }
 
 fn empty_input_lineage(input: &TableRef, output: &TableRef) -> LineageEvent {
-    LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![DatasetRef::from(input)],
-        outputs: vec![DatasetRef::from(output)],
-        payload: serde_json::json!({}),
-    }
+    let mut ev = lineage(output);
+    ev.inputs = vec![DatasetRef::from(input)];
+    ev
 }
 
 /// Edge 2a: a live input with zero files registers as an empty relation, so
@@ -203,28 +203,19 @@ fn empty_input_lineage(input: &TableRef, output: &TableRef) -> LineageEvent {
 #[tokio::test(flavor = "multi_thread")]
 async fn empty_input_runs_transform_count_is_zero() {
     let fx = PgFixture::start();
-    let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let warehouse = wh.path().display().to_string();
+    let catalog = make_catalog(fx.pg_dsn(&db), &warehouse).await;
     let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+        Arc::new(LocalFileSystem::new_with_prefix(wh.path()).expect("store"));
+    let cp = IcebergControlPlane::new(pg, catalog);
 
     let input = tref("main", "empty_in");
     create_empty_table(
         &cp,
         &input,
-        &[
-            ColumnSpec {
-                name: "id".into(),
-                ty: "long".into(),
-                nullable: false,
-            },
-            ColumnSpec {
-                name: "region".into(),
-                ty: "string".into(),
-                nullable: true,
-            },
-        ],
+        &cols(&[("id", "long", false), ("region", "string", true)]),
     )
     .await;
 
@@ -232,6 +223,7 @@ async fn empty_input_runs_transform_count_is_zero() {
     transform::run_transform(
         &cp,
         store.clone(),
+        &format!("file://{warehouse}"),
         "run-empty-count",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {
@@ -248,10 +240,12 @@ async fn empty_input_runs_transform_count_is_zero() {
     .await
     .expect("empty input is an empty relation, not a scan error");
 
-    let n = writer
-        .query_scalar("SELECT n FROM lake.main.empty_count;")
-        .await;
-    assert_eq!(n, "0", "count(*) over the empty input is 0");
+    let serving = IcebergCatalog::new(fx.pool_for(&db).await);
+    let n =
+        engine_serving::execute_query(&serving, "SELECT \"n\" FROM \"main\".\"empty_count\"", None)
+            .await
+            .expect("serving read");
+    assert_eq!(scalar_i64(&n), 0, "count(*) over the empty input is 0");
 }
 
 /// Edge 2b: `SELECT *` over a zero-file input commits an EMPTY output (zero rows)
@@ -260,28 +254,19 @@ async fn empty_input_runs_transform_count_is_zero() {
 #[tokio::test(flavor = "multi_thread")]
 async fn empty_input_select_star_commits_empty_output() {
     let fx = PgFixture::start();
-    let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let warehouse = wh.path().display().to_string();
+    let catalog = make_catalog(fx.pg_dsn(&db), &warehouse).await;
     let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+        Arc::new(LocalFileSystem::new_with_prefix(wh.path()).expect("store"));
+    let cp = IcebergControlPlane::new(pg, catalog);
 
     let input = tref("main", "empty_src");
     create_empty_table(
         &cp,
         &input,
-        &[
-            ColumnSpec {
-                name: "id".into(),
-                ty: "long".into(),
-                nullable: false,
-            },
-            ColumnSpec {
-                name: "region".into(),
-                ty: "string".into(),
-                nullable: true,
-            },
-        ],
+        &cols(&[("id", "long", false), ("region", "string", true)]),
     )
     .await;
 
@@ -289,6 +274,7 @@ async fn empty_input_select_star_commits_empty_output() {
     transform::run_transform(
         &cp,
         store.clone(),
+        &format!("file://{warehouse}"),
         "run-empty-star",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {
@@ -305,8 +291,15 @@ async fn empty_input_select_star_commits_empty_output() {
     .await
     .expect("SELECT * over the empty input commits an empty output, not a scan error");
 
-    let count = writer
-        .query_scalar("SELECT count(*) FROM lake.main.empty_passthrough;")
-        .await;
-    assert_eq!(count, "0", "the passthrough output is empty");
+    // The output is a row-less snapshot (zero data files). An empty table is not
+    // registered by the serving engine (nothing to scan), so the row count is read
+    // from the catalog's file list (sum of record counts == 0) rather than via SQL.
+    let snap = cp.catalog().current_snapshot(&out).await.unwrap().id;
+    let files = cp
+        .catalog()
+        .files(&out, snap, PageReq::unbounded())
+        .await
+        .unwrap();
+    let rows: i64 = files.items.iter().map(|f| f.record_count).sum();
+    assert_eq!(rows, 0, "the passthrough output is empty");
 }

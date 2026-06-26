@@ -1,6 +1,6 @@
 //! Graph multi-edge union e2e: GET /objects/:type/graph?links=… over the real HTTP router
-//! backed by DuckDB-over-DuckLake. Proves the union reachability shape {objects:[...]} where
-//! each step follows ANY ONE of a set of self-links:
+//! backed by an in-process Iceberg/DataFusion serving engine. Proves the union reachability
+//! shape {objects:[...]} where each step follows ANY ONE of a set of self-links:
 //!   - ?links=knows,colleagues unions both edge sets (reaches more than either alone),
 //!   - ?links=knows alone is a strict subset (a colleagues-only node is absent),
 //!   - a cycle formed ACROSS the union (5--knows-->6, 6--colleagues-->5) terminates + dedups,
@@ -13,35 +13,32 @@
 //! adds the colleagues-only node 4); no edge returns to 1, keeping the {1}-seeded sets free of the
 //! seed. Component B (nodes 5,6): 5--knows-->6 and 6--colleagues-->5 form a 2-cycle that exists
 //! ONLY across the union of both backings — exercising termination + dedup over the union
-//! edge-relation CTE (a distinct shape from the path compiler) on real DuckDB. Person declares
-//! identity `id`.
+//! edge-relation CTE on real DataFusion. Person declares identity `id`.
 
 use std::sync::Arc;
 
-use arrow::array::{BooleanArray, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
 use axum::http::StatusCode;
 use control_plane_core::{
     Acl, Action, Cardinality, CompareOp, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
     PolicyTarget, RowFilter, ScalarValue, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{DuckLakeWriter, PgFixture};
-use e2e_support::{get, grant_read, ids_i64 as ids, land, prop, subject_with_role, tref};
-use object_store::ObjectStore;
-use object_store::local::LocalFileSystem;
-use query_api::serving::EmbeddedDuckDb;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use e2e_support::{
+    InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role, tref,
+};
 
 /// Seed a `Person` table with a `knows_id` FK self-link (edges 1->2, 2->3) and a
 /// `colleagues(a, b)` join-table self-link (edge 1->4), plus a boolean `active` column
 /// (node 2 inactive). Person declares identity `id`. The caller MUST keep the returned
-/// `DuckLakeWriter` alive (its TempDir holds the Parquet read).
-async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWriter) {
+/// `IcebergWriter` alive (its TempDir holds the Parquet read).
+async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
     let (cp, db) = fx.fresh_db().await;
-    let writer = DuckLakeWriter::new(fx.socket_path(), &db);
-    writer.bootstrap().await;
-    let store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(writer.data_path()).unwrap());
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+
+    let writer = IcebergWriter::new(pool.clone(), dsn);
 
     // person(id, name, active, knows_id): the FK self-link edges 1->2, 2->3 live in knows_id.
     // node 2 (bob) is INACTIVE (governance test). node 4 has no knows_id (colleagues-only).
@@ -50,65 +47,42 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     // (neither link alone closes it). They are disconnected from 1..4, so the {1}-seeded
     // assertions are unaffected.
     let person = tref("main", "person");
-    let person_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-        Field::new("active", DataType::Boolean, false),
-        Field::new("knows_id", DataType::Int64, true),
-    ]));
-    let person_batch = RecordBatch::try_new(
-        person_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6])),
-            Arc::new(StringArray::from(vec![
-                Some("ann"),
-                Some("bob"),
-                Some("cal"),
-                Some("dee"),
-                Some("eve"),
-                Some("fin"),
-            ])),
-            Arc::new(BooleanArray::from(vec![
-                true, false, true, true, true, true,
-            ])),
-            // 1->2, 2->3 (3,4 have no outbound knows edge); 5->6 (6 has none).
-            Arc::new(Int64Array::from(vec![
-                Some(2),
-                Some(3),
-                None,
-                None,
-                Some(6),
-                None,
-            ])),
-        ],
-    )
-    .unwrap();
-    land(&cp, &store, &person, person_schema, person_batch).await;
+    writer
+        .seed_arrays(
+            "main",
+            "person",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("name".to_string(), "string".to_string(), true),
+                ("active".to_string(), "boolean".to_string(), false),
+                ("knows_id".to_string(), "long".to_string(), true),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3, 4, 5, 6]),
+                SeedCol::Str(vec!["ann", "bob", "cal", "dee", "eve", "fin"]),
+                // node 2 (bob) inactive; the rest active.
+                SeedCol::Bool(vec![true, false, true, true, true, true]),
+                // 1->2, 2->3 (3,4 have no outbound knows edge); 5->6 (6 has none).
+                SeedCol::NullableLong(vec![Some(2), Some(3), None, None, Some(6), None]),
+            ],
+        )
+        .await;
 
     // colleagues(a, b): join-table self-link edges 1->4 and 6->5. knows never touches 4, so the
     // union adds 4 over knows alone (no back-edge to 1 -> the {1} seed stays out of its own
     // result). 6->5 closes the 5<->6 union-cycle (5->6 is the knows edge).
     let colleagues = tref("main", "colleagues");
-    let colleagues_schema = Arc::new(Schema::new(vec![
-        Field::new("a", DataType::Int64, false),
-        Field::new("b", DataType::Int64, false),
-    ]));
-    let colleagues_batch = RecordBatch::try_new(
-        colleagues_schema.clone(),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 6])),
-            Arc::new(Int64Array::from(vec![4, 5])),
-        ],
-    )
-    .unwrap();
-    land(
-        &cp,
-        &store,
-        &colleagues,
-        colleagues_schema,
-        colleagues_batch,
-    )
-    .await;
+    writer
+        .seed_arrays(
+            "main",
+            "colleagues",
+            &[
+                ("a".to_string(), "long".to_string(), false),
+                ("b".to_string(), "long".to_string(), false),
+            ],
+            &[SeedCol::Long(vec![1, 6]), SeedCol::Long(vec![4, 5])],
+        )
+        .await;
 
     cp.define_type(ObjectType {
         name: TypeName("Person".into()),
@@ -155,16 +129,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, EmbeddedDuckDb, DuckLakeWrite
     .await
     .unwrap();
 
-    let eng = EmbeddedDuckDb::attach(
-        &format!(
-            "dbname={} host={} user=postgres",
-            db,
-            fx.socket_path().display()
-        ),
-        writer.data_path(),
-    )
-    .await
-    .unwrap();
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
     (cp, eng, writer)
 }
 
