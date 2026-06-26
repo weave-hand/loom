@@ -21,7 +21,6 @@ pub struct ObjectRows {
     pub rows: Vec<Vec<SqlValue>>,
 }
 
-const DEFAULT_LIMIT: u32 = 1000;
 
 /// A read request: an ontology type plus optional equality filters on allowed columns.
 pub struct ObjectQuery {
@@ -37,6 +36,7 @@ pub struct QueryDeps<'a> {
     pub ontology: &'a (dyn Ontology + Send + Sync),
     pub acl: &'a (dyn Acl + Send + Sync),
     pub serving: &'a dyn ServingEngine,
+    pub default_limit: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -303,7 +303,7 @@ pub async fn read_object(
         &row_filters,
         &predicates,
         &derived_selects,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     // Output columns = physical `allowed` (in order) ++ surviving derived (in order).
@@ -661,7 +661,7 @@ pub async fn read_linked_chain(
         &hops,
         &to_allowed,
         &to_mask_cols,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = to_allowed
@@ -757,7 +757,7 @@ pub async fn read_associations(
         &hops,
         &source_id,
         &target_id,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let pairs: Vec<(SqlValue, SqlValue)> = served
@@ -897,7 +897,7 @@ pub async fn read_graph_reach(
         &allowed,
         &mask_cols,
         q.depth,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = allowed
@@ -1024,7 +1024,7 @@ pub async fn read_graph_reach_union(
         &allowed,
         &mask_cols,
         q.depth,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = allowed
@@ -1215,7 +1215,7 @@ pub async fn read_graph_reach_with_tail(
         &allowed,
         &mask_cols,
         q.depth,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = allowed

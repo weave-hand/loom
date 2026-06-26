@@ -34,6 +34,7 @@ pub struct AppState {
     pub cp: Arc<dyn ControlPlane>,
     pub serving: Arc<dyn ServingEngine>,
     pub action_engine: Arc<dyn ActionEngine>,
+    pub default_limit: u32,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -101,6 +102,7 @@ async fn get_object(
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
+        default_limit: st.default_limit,
     };
     match read_object(
         &ObjectQuery {
@@ -173,6 +175,7 @@ async fn get_linked(
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
+        default_limit: st.default_limit,
     };
     let query = ChainQuery {
         from_type,
@@ -233,6 +236,7 @@ async fn get_linked_chain(
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
+        default_limit: st.default_limit,
     };
     let query = ChainQuery {
         from_type,
@@ -487,6 +491,7 @@ async fn graph_respond(
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
+        default_limit: st.default_limit,
     };
     match read_graph_reach(
         &GraphQuery {
@@ -521,6 +526,7 @@ async fn graph_union_respond(
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
+        default_limit: st.default_limit,
     };
     match read_graph_reach_union(
         &GraphUnionQuery {
@@ -560,6 +566,7 @@ async fn graph_tail_respond(
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
         serving: st.serving.as_ref(),
+        default_limit: st.default_limit,
     };
     match read_graph_reach_with_tail(
         &GraphTailQuery {

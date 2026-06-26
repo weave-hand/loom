@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cp,
             serving,
             action_engine,
+            default_limit: 1000,
         }),
         auth_state.clone(),
     )
