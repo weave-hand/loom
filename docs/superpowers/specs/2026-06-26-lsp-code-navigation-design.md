@@ -1,8 +1,23 @@
 # LSP-first code navigation for loom
 
-**Status:** designed (revised). Builds on the hermetic rust-analyzer work
-(`2026-06-26-cloud-rust-analyzer-design.md`, merged in PR #197), which makes the
-`LSP` tool usable in loom (local + cloud).
+**Status:** superseded — LSP backed out of cloud. The hermetic rust-analyzer work
+(`2026-06-26-cloud-rust-analyzer-design.md`, PR #197) made the `LSP` tool usable
+locally, but in cloud/automated sessions driving rust-analyzer makes the buck2
+rust-project integration run check builds in a **second `rust-analyzer`
+isolation-dir buck-out**, and cloud sessions don't have the disk for it. So this
+PR backs the LSP out of the cloud setup instead of building on it: the
+`rust-analyzer-lsp` plugin enablement is removed from `.claude/settings.json`, the
+cloud pre-warm of `//tools:rust-analyzer`/`//tools:rust-project` and the
+per-session `rust-project.json` regeneration are removed from
+`tools/cloud-setup.sh` / `tools/cloud-session-start.sh`, and the
+`loom-code-navigation` skill is repurposed to **grep/Glob/Read navigation**,
+stating the LSP is not available. Local dev can still wire rust-analyzer up
+per-developer (see `DEVELOPING.md`). The LSP-first design below is retained for
+history.
+
+---
+
+**Original design (LSP-first, not shipped):**
 
 ## Problem
 

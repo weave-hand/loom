@@ -146,42 +146,4 @@ if [ -x "$REPO/tools/env.sh" ]; then
     echo "WARN: tools/env.sh activation failed (non-fatal); see /tmp/loom-env.log"
 fi
 
-# Regenerate rust-project.json so the rust-analyzer-lsp plugin can load loom's
-# buck2 crate graph (RA reads it from the repo root). It is gitignored — it bakes
-# absolute buck-out paths, so it is machine-specific and must be regenerated in
-# each ephemeral cloud session rather than committed. Uses the VENDORED
-# //tools:rust-project (.loom/bin, via env.sh) and the HERMETIC rustc (toolchain
-# bin): --prefer-rustup-managed-toolchain merely runs `rustc --print sysroot`,
-# which resolves to loom's hermetic sysroot (no host rustup exists here). We
-# eval env.sh into THIS shell first so both are on PATH (the block above only
-# appends env.sh's exports to the profile, which non-interactive tool shells skip).
-#
-# Backgrounded + non-fatal: the `buck2 bxl` over root//src/... is heavy and must
-# not delay session start, and the census routines (complexity/duplication/STPA/
-# docs) don't use RA at all — only the implementation routines benefit, and they
-# pick up rust-project.json once the background job finishes. nohup detaches it
-# from the hook's process group so it survives the hook returning.
-if [ -x "$REPO/tools/env.sh" ]; then
-  REPO="$REPO" nohup bash -c '
-    eval "$(cd "$REPO" && ./tools/env.sh 2>/dev/null)" || exit 0
-    cd "$REPO" || exit 0
-    # Generate to a sibling temp path and atomically swap it in only on success.
-    # `rust-project develop` is heavy (a buck2 bxl over root//src/...) and writes
-    # its output only at the very end, so a direct write leaves rust-project.json
-    # at 0 bytes for minutes — which reads as a broken/empty config to editors and
-    # to anyone inspecting it. Writing to .tmp and `mv`-ing on success (same dir =
-    # atomic rename) means the file is only ever absent or complete, and any prior
-    # json survives a failed regeneration. -o sets the output path.
-    tmp="$REPO/rust-project.json.tmp"
-    if rust-project develop --prefer-rustup-managed-toolchain -o "$tmp" root//src/... && [ -s "$tmp" ]; then
-      mv -f "$tmp" "$REPO/rust-project.json"
-      echo "rust-project.json ready ($(wc -c < "$REPO/rust-project.json") bytes)"
-    else
-      rm -f "$tmp"
-      echo "rust-project develop failed; left existing rust-project.json untouched"
-    fi
-  ' >/tmp/loom-rust-project.log 2>&1 &
-  echo "rust-project.json generation started in background (~3-5 min on a cold cache; appears atomically when ready; PID $!; log /tmp/loom-rust-project.log)"
-fi
-
 echo "loom cloud session ready (REMOTE_ENV=true): buck2 + gh + remote execution configured"

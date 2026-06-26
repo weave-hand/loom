@@ -1,8 +1,23 @@
 # Cloud rust-analyzer: hermetic binary + vendored rust-project + per-session graph
 
-**Status:** landed. Layers 1–3 complete — `rust-project` is vendored from the
-weave-hand/buck2 fork release `rust-project/v2026.06.26.00`, and
-`tools/cloud-session-start.sh` regenerates `rust-project.json` per session.
+**Status:** backed out of cloud (see `2026-06-26-lsp-code-navigation-design.md`).
+Driving rust-analyzer in a cloud session makes the buck2 rust-project integration
+run check builds in a **second `rust-analyzer` isolation-dir buck-out**, and cloud
+sessions don't have the disk for it. So the cloud wiring described below was
+removed: the `rust-analyzer-lsp` plugin enablement (Layer 1) is dropped from
+`.claude/settings.json`, the snapshot pre-warm of `//tools:rust-analyzer` /
+`//tools:rust-project` is removed from `tools/cloud-setup.sh`, and the per-session
+`rust-project.json` regeneration is removed from `tools/cloud-session-start.sh`.
+The hermetic `//tools:rust-analyzer` / `//tools:rust-project` targets and their
+`tools/env.sh` entries are **kept** — they're harmless to leave and still serve
+local dev (`DEVELOPING.md`); only the cloud-specific enablement is gone. The
+original landed design is retained below for history.
+
+---
+
+**Original design (Layers 1–3, since backed out of cloud):** `rust-project` is
+vendored from the weave-hand/buck2 fork release `rust-project/v2026.06.26.00`, and
+`tools/cloud-session-start.sh` regenerated `rust-project.json` per session.
 
 ## Problem
 

@@ -50,18 +50,19 @@ Remote execution runs through BuildBuddy (configured under `[buck2_re_client]` i
 
 ## Code navigation
 
-For navigating loom's Rust, **prefer rust-analyzer's semantic navigation over raw
-grep** — it resolves the real definition behind a name, every genuine use, trait
-implementations, types, and call graphs, including macro-generated symbols (e.g.
-the tonic `pb::*` types) and re-exports that grep can't see. The `rust-analyzer`
-LSP is wired hermetically (`//tools:rust-analyzer`; the `LSP` tool is *deferred* —
-load it with `ToolSearch "select:LSP"`). See the **`loom-code-navigation`** skill
-for when/how to use LSP vs grep. The `LSP` tool is **main-session-only** — drive it
-from the main loop; subagents can't use it (they inherit internal + MCP tools, not
-LSP), so resolve locations with the LSP yourself and hand subagents the `file:line`
-targets. In cloud sessions (`CLAUDE_CODE_REMOTE=true`) the LSP warms up a few
-minutes in (background `rust-project.json` regen + indexing), so probe and
-interleave with grep until it answers — the skill documents the protocol.
+Navigate loom's Rust with `Grep` / `Glob` / `Read` (and `Explore` subagents for
+breadth). The **`rust-analyzer` LSP is NOT available in cloud / automated
+sessions** — it was backed out of the cloud setup because driving it makes the
+buck2 rust-project integration run check builds in a *second* `rust-analyzer`
+isolation-dir buck-out, and cloud sessions lack the disk for it. So the
+`rust-analyzer-lsp` plugin is not enabled in this repo's `.claude/settings.json`,
+`tools/cloud-setup.sh` no longer pre-warms `//tools:rust-analyzer`, and
+`tools/cloud-session-start.sh` no longer regenerates `rust-project.json`. **Don't
+reach for the `LSP` tool** — `ToolSearch "select:LSP"` returns nothing here. The
+**`loom-code-navigation`** skill documents grep-based navigation patterns. Local
+dev can still run rust-analyzer if a developer wires it up themselves (see
+`DEVELOPING.md` + their own user-global plugin enablement) — that's a per-developer
+choice, not something these routines depend on.
 
 ## Third-party Rust deps
 
