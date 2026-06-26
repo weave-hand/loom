@@ -65,6 +65,7 @@ loom_fixture_test(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/control-plane/worker:worker",
+        "//src/loom-config:loom-config",
         "//src/services/engine:engine",
         "//src/services/engine-wire:engine-wire",
         "//third-party:arrow-array",
