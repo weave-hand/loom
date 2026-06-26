@@ -54,6 +54,12 @@ pub enum QueryError {
     Forbidden,
     #[error("filter column not permitted: {0}")]
     BadFilter(String),
+    /// A caller filter value did not coerce to its column's declared logical type. Carries
+    /// the underlying `FilterError` (whose message already names the column) so the parse
+    /// detail survives to the HTTP layer instead of being discarded. Distinct from
+    /// `BadFilter`, which is a governance denial (column not permitted), not a parse fault.
+    #[error(transparent)]
+    BadFilterValue(#[from] crate::filter::FilterError),
     /// The traversal chain is malformed (empty path, or depth over the cap).
     #[error("malformed traversal chain: {0}")]
     BadChain(String),
@@ -124,10 +130,6 @@ fn project_allowed(
 /// column, governed like any caller filter. `None` when `ids` is empty. Errors: no
 /// declared identity (`NoIdentity`); the identity column is denied or masked, so it is not
 /// a permitted filter column (`BadFilter`); or a value does not coerce (`BadFilter`).
-#[expect(
-    clippy::map_err_ignore,
-    reason = "error-handling debt — see docs/error-handling-debt.md"
-)]
 pub fn identity_in_predicate(
     otype: &ObjectType,
     denied: &std::collections::HashSet<String>,
@@ -153,10 +155,7 @@ pub fn identity_in_predicate(
         .unwrap_or("");
     let mut values = Vec::with_capacity(ids.len());
     for raw in ids {
-        values.push(
-            crate::filter::coerce_filter(&identity, ty, raw)
-                .map_err(|_| QueryError::BadFilter(identity.clone()))?,
-        );
+        values.push(crate::filter::coerce_filter(&identity, ty, raw)?);
     }
     Ok(Some(crate::filter::CallerPredicate {
         column: identity,
@@ -174,10 +173,6 @@ fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
     }
 }
 
-#[expect(
-    clippy::map_err_ignore,
-    reason = "error-handling debt — see docs/error-handling-debt.md"
-)]
 pub async fn read_object(
     q: &ObjectQuery,
     subject: &Subject,
@@ -234,8 +229,7 @@ pub async fn read_object(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        let p = crate::filter::coerce_predicate(col, ty, raw)
-            .map_err(|_| QueryError::BadFilter(col.clone()))?;
+        let p = crate::filter::coerce_predicate(col, ty, raw)?;
         predicates.push(p);
     }
 
@@ -472,10 +466,6 @@ pub struct GraphUnionQuery {
 /// caller-filter coercion/visibility. Returns the per-position metadata, the compiler
 /// `ChainType`s (row-filters + caller predicates), and the hop backings. Shared by the
 /// object-projection read and the association read so governance lives in one place.
-#[expect(
-    clippy::map_err_ignore,
-    reason = "error-handling debt — see docs/error-handling-debt.md"
-)]
 async fn resolve_chain(
     q: &ChainQuery,
     subject: &Subject,
@@ -622,8 +612,7 @@ async fn resolve_chain(
             .find(|p| p.name == f.column)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        let p = crate::filter::coerce_predicate(&f.column, ty, &f.raw)
-            .map_err(|_| QueryError::BadFilter(f.column.clone()))?;
+        let p = crate::filter::coerce_predicate(&f.column, ty, &f.raw)?;
         ctypes
             .get_mut(f.position)
             .ok_or_else(|| QueryError::BadFilter(f.column.clone()))?
@@ -794,10 +783,6 @@ pub async fn read_associations(
 /// type in the cycle, row-filters at the seed/every recursive expansion/projection, declared
 /// identity (dedup key; visibility not required since it is never projected unless it is
 /// itself a visible column).
-#[expect(
-    clippy::map_err_ignore,
-    reason = "error-handling debt — see docs/error-handling-debt.md"
-)]
 pub async fn read_graph_reach(
     q: &GraphQuery,
     subject: &Subject,
@@ -896,10 +881,7 @@ pub async fn read_graph_reach(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        seed_predicates.push(
-            crate::filter::coerce_predicate(col, ty, raw)
-                .map_err(|_| QueryError::BadFilter(col.clone()))?,
-        );
+        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
     }
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
         seed_predicates.push(p);
@@ -947,10 +929,6 @@ pub async fn read_graph_reach(
 /// (dedup key). Every named link must be a self-link (its `to` is the queried type) -> else
 /// NotCyclicPath; an unknown link -> UnknownLink. Because every link lands on the already-gated
 /// queried type, there are no intermediate types and no per-link Read gate.
-#[expect(
-    clippy::map_err_ignore,
-    reason = "error-handling debt — see docs/error-handling-debt.md"
-)]
 pub async fn read_graph_reach_union(
     q: &GraphUnionQuery,
     subject: &Subject,
@@ -1030,10 +1008,7 @@ pub async fn read_graph_reach_union(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        seed_predicates.push(
-            crate::filter::coerce_predicate(col, ty, raw)
-                .map_err(|_| QueryError::BadFilter(col.clone()))?,
-        );
+        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
     }
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
         seed_predicates.push(p);
@@ -1095,10 +1070,6 @@ pub struct GraphTailQuery {
 /// (row-filters at each), declared identity on the queried type (the recursion's dedup key + the
 /// join key from the tail back to the reachable set). The core link must be a self-link and the
 /// tail non-empty, else `BadGraphPath`; an unknown core/tail link -> `UnknownLink`.
-#[expect(
-    clippy::map_err_ignore,
-    reason = "error-handling debt — see docs/error-handling-debt.md"
-)]
 pub async fn read_graph_reach_with_tail(
     q: &GraphTailQuery,
     subject: &Subject,
@@ -1226,10 +1197,7 @@ pub async fn read_graph_reach_with_tail(
             .find(|p| &p.name == col)
             .map(|p| p.ty.as_str())
             .unwrap_or("");
-        seed_predicates.push(
-            crate::filter::coerce_predicate(col, ty, raw)
-                .map_err(|_| QueryError::BadFilter(col.clone()))?,
-        );
+        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
     }
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
         seed_predicates.push(p);

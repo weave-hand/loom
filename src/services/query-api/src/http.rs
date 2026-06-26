@@ -117,6 +117,9 @@ async fn get_object(
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
+        Err(QueryError::BadFilterValue(e)) => {
+            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+        }
         Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
         Err(e) => internal_error("object read serving fault", e),
     }
@@ -272,6 +275,7 @@ fn chain_error(e: QueryError) -> axum::response::Response {
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
+        QueryError::BadFilterValue(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         other => internal_error("chain/association read serving fault", other),
     }
 }
@@ -462,6 +466,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
         QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
+        QueryError::BadFilterValue(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         other => internal_error("graph read serving fault", other),
     }

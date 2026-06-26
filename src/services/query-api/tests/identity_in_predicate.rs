@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use control_plane_core::{CompareOp, ObjectType, PropertyDef, TableRef, TypeName};
+use query_api::filter::FilterError;
 use query_api::handler::{QueryError, identity_in_predicate};
 use query_api::serving::SqlValue;
 
@@ -91,7 +92,7 @@ fn masked_identity_is_bad_filter() {
 }
 
 #[test]
-fn uncoercible_value_is_bad_filter() {
+fn uncoercible_value_is_bad_filter_value() {
     let err = identity_in_predicate(
         &customer(Some("id".into())),
         &empty(),
@@ -99,5 +100,10 @@ fn uncoercible_value_is_bad_filter() {
         &["notanumber".to_string()],
     )
     .unwrap_err();
-    assert!(matches!(err, QueryError::BadFilter(c) if c == "id"));
+    // A value that does not coerce is BadFilterValue (a parse fault carrying the source
+    // FilterError), distinct from BadFilter (a column-permission denial).
+    assert!(
+        matches!(&err, QueryError::BadFilterValue(FilterError::BadValue(c, _)) if c == "id"),
+        "got {err:?}",
+    );
 }
