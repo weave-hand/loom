@@ -15,14 +15,17 @@ rust_library(
         "//src/services/runtime:runtime",
         "//src/loom-config:loom-config",
         "//third-party:arrow",
+        "//third-party:arrow-flight",
         "//third-party:async-trait",
         "//third-party:axum",
+        "//third-party:futures",
         "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:tonic",
         "//third-party:tracing",
         "//third-party:uuid",
     ],
@@ -37,11 +40,16 @@ rust_binary(
     edition = "2024",
     deps = [
         ":query-api",
+        "//src/services/engine-wire:engine-wire",
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-flight",
         "//third-party:iceberg",
         "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:tracing",
     ],
     env = {"CARGO_PKG_VERSION": "0.1.0"},
     visibility = ["PUBLIC"],
@@ -354,6 +362,34 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "governed-flight-export-e2e",
+    crate = "governed_flight_export_e2e",
+    srcs = ["tests/governed_flight_export_e2e.rs"],
+    crate_root = "tests/governed_flight_export_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:futures",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "datafusion-inline-union",
     crate = "datafusion_inline_union",
     srcs = ["tests/datafusion_inline_union.rs"],
@@ -471,6 +507,19 @@ rust_test(
     edition = "2024",
     deps = [
         ":query-api",
+        "//third-party:arrow",
+    ],
+)
+
+rust_test(
+    name = "export-command",
+    crate = "export_command",
+    srcs = ["tests/export_command.rs"],
+    crate_root = "tests/export_command.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
         "//third-party:arrow",
     ],
 )

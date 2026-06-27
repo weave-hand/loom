@@ -16,6 +16,10 @@ use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, ServingEngine};
 use query_api::serving_datafusion::IcebergActionWriter;
 
+/// Default per-export row cap (`LOOM_EXPORT_MAX_ROWS`). Bounds a runaway governed export; an
+/// operator hydrating a large working set raises it.
+const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     service_runtime::init_tracing();
@@ -33,12 +37,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let cp: Arc<dyn ControlPlane> = pg.clone();
 
+    let engine_socket =
+        std::env::var("LOOM_ENGINE_SOCKET").map_err(|e| -> Box<dyn std::error::Error> {
+            format!("LOOM_ENGINE_SOCKET must be set for the Iceberg serving backend: {e}").into()
+        })?;
+
     let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = {
-        let engine_socket =
-            std::env::var("LOOM_ENGINE_SOCKET").map_err(|e| -> Box<dyn std::error::Error> {
-                format!("LOOM_ENGINE_SOCKET must be set for the Iceberg serving backend: {e}")
-                    .into()
-            })?;
         let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
         let action: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
             catalog,
@@ -47,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app_cfg.routing.flush_byte_threshold,
         ));
         (
-            Arc::new(EngineServingClient::connect(engine_socket).await?),
+            Arc::new(EngineServingClient::connect(engine_socket.clone()).await?),
             action,
         )
     };
@@ -64,6 +68,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         service_runtime::bootstrap_admin(pg.as_ref(), &user, &pass).await?;
     }
 
+    // Clones for the optional Flight export server, captured before `cp` is moved into AppState.
+    let cp_flight = cp.clone();
+    let auth_flight: std::sync::Arc<dyn control_plane_core::Auth + Send + Sync> = pg.clone();
+
     let app = service_runtime::protect(
         router(AppState {
             cp,
@@ -75,6 +83,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .merge(service_runtime::login_routes(auth_state.clone()))
     .merge(service_runtime::session_routes(auth_state));
+
+    // Optional external Arrow Flight export listener (opt-in via LOOM_FLIGHT_BIND_ADDR).
+    if let Ok(bind) = std::env::var("LOOM_FLIGHT_BIND_ADDR") {
+        use arrow_flight::flight_service_server::FlightServiceServer;
+        use query_api::flight_export::FlightExportService;
+
+        let max_rows = std::env::var("LOOM_EXPORT_MAX_ROWS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_EXPORT_MAX_ROWS);
+        let addr: std::net::SocketAddr =
+            bind.parse().map_err(|e| -> Box<dyn std::error::Error> {
+                format!("LOOM_FLIGHT_BIND_ADDR `{bind}` is not a valid socket address: {e}").into()
+            })?;
+        let flight_engine =
+            engine_wire::flight::FlightSqlClient::connect(engine_socket.clone()).await?;
+        let export = FlightExportService::new(auth_flight, cp_flight, flight_engine, max_rows);
+
+        // Bind eagerly so an operator who explicitly requested the export endpoint gets a hard
+        // startup failure (port in use, permission) rather than a silently-down listener.
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(
+            |e| -> Box<dyn std::error::Error> {
+                format!("binding LOOM_FLIGHT_BIND_ADDR `{addr}` failed: {e}").into()
+            },
+        )?;
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        tokio::spawn(async move {
+            tracing::info!(%addr, "starting governed Flight export server");
+            if let Err(e) = tonic::transport::Server::builder()
+                .add_service(FlightServiceServer::new(export))
+                .serve_with_incoming(incoming)
+                .await
+            {
+                tracing::error!(error = %e, "Flight export server exited");
+            }
+        });
+    }
 
     service_runtime::serve(cfg.bind_addr, app).await?;
     Ok(())

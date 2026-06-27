@@ -10,9 +10,10 @@ use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{FlightDescriptor, Ticket};
 use control_plane_core::Result;
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use std::pin::Pin;
 use tonic::transport::Channel;
 
 /// What a Flight `Ticket` names: an explicit set of a table's data files to
@@ -131,5 +132,52 @@ impl FlightSqlClient {
         );
         let batches: Vec<RecordBatch> = stream.try_collect().await.map_err(crate::client::be)?;
         Ok(batches)
+    }
+
+    /// Like [`execute`](Self::execute) but returns the decoded `do_get` result as a
+    /// **stream** of `RecordBatch`es instead of buffering them into a `Vec`. The caller
+    /// (query-api's governed Flight export) re-encodes this stream straight out, so the
+    /// engine→consumer path stays back-pressured and a large export never materialises
+    /// in query-api's memory. Performs the same `CommandStatementQuery` get_flight_info →
+    /// do_get dance as `execute`.
+    pub async fn execute_stream(
+        &self,
+        sql: String,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>> {
+        let cmd = CommandStatementQuery {
+            query: sql,
+            transaction_id: None,
+        };
+        let descriptor = FlightDescriptor::new_cmd(cmd.as_any().encode_to_vec());
+
+        let info = self
+            .inner
+            .clone()
+            .get_flight_info(descriptor)
+            .await
+            .map_err(crate::client::be)?
+            .into_inner();
+        let ticket = info
+            .endpoint
+            .into_iter()
+            .next()
+            .and_then(|e| e.ticket)
+            .ok_or_else(|| crate::client::be("flight info carried no ticket"))?;
+
+        let resp = self
+            .inner
+            .clone()
+            .do_get(ticket)
+            .await
+            .map_err(crate::client::be)?;
+        // Decode the schema-first FlightData stream into RecordBatches, mapping the
+        // stream's FlightError items to control-plane errors (same `be` mapping the
+        // buffered path uses). The stream owns the (cloned) response, so it is 'static.
+        let stream = FlightRecordBatchStream::new_from_flight_data(
+            resp.into_inner()
+                .map_err(arrow_flight::error::FlightError::from),
+        )
+        .map_err(crate::client::be);
+        Ok(Box::pin(stream))
     }
 }
