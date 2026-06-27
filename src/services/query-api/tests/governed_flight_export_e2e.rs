@@ -263,7 +263,12 @@ async fn export_streams_vectors_value_exact() {
     let (addr, token, _cp, _wh, _sock) = setup(&fx).await;
 
     let url = format!("http://{addr}");
-    let mut client = FlightServiceClient::connect(url).await.expect("client");
+    let channel = tonic::transport::Endpoint::try_from(url)
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+    let mut client = FlightServiceClient::new(channel);
     let desc = FlightDescriptor::new_cmd(chunk_cmd().encode());
     let info = client
         .get_flight_info(authed(desc, &token))
@@ -335,7 +340,12 @@ async fn export_denied_without_grant() {
     let token = e2e_support::session_token(cp.as_ref(), "intruder").await;
 
     let url = format!("http://{addr}");
-    let mut client = FlightServiceClient::connect(url).await.expect("client");
+    let channel = tonic::transport::Endpoint::try_from(url)
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+    let mut client = FlightServiceClient::new(channel);
     let desc = FlightDescriptor::new_cmd(chunk_cmd().encode());
     let result = client.get_flight_info(authed(desc, &token)).await;
     assert_eq!(
@@ -352,7 +362,12 @@ async fn export_requires_bearer_token() {
     let (addr, _token, _cp, _wh, _sock) = setup(&fx).await;
 
     let url = format!("http://{addr}");
-    let mut client = FlightServiceClient::connect(url).await.expect("client");
+    let channel = tonic::transport::Endpoint::try_from(url)
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+    let mut client = FlightServiceClient::new(channel);
     let desc = FlightDescriptor::new_cmd(chunk_cmd().encode());
     let result = client.get_flight_info(tonic::Request::new(desc)).await;
     assert_eq!(
