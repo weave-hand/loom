@@ -165,6 +165,32 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         }))
     }
 
+    async fn build_vector_index(
+        &self,
+        req: Request<pb::BuildVectorIndexRequest>,
+    ) -> std::result::Result<Response<pb::BuildVectorIndexResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let built = control_plane_postgres::vector_index::build_vector_index(
+            &self.catalog,
+            &self.pool,
+            &table,
+            &r.column,
+            control_plane_core::Metric::Cosine,
+            RunId(uuid::Uuid::new_v4()),
+        )
+        .await
+        .map_err(status)?;
+        Ok(Response::new(pb::BuildVectorIndexResponse {
+            covered_snapshot: built.covered_snapshot,
+            puffin_path: built.puffin_path,
+            row_count: built.row_count,
+        }))
+    }
+
     async fn compact_table(
         &self,
         req: Request<pb::CompactTableRequest>,

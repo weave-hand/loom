@@ -79,6 +79,28 @@ impl GrpcQueueClient {
             .collect())
     }
 
+    /// Build (or rebuild) the flat vector index for `(schema, name, column)`.
+    /// Returns `(covered_snapshot, puffin_path, row_count)`.
+    pub async fn build_vector_index(
+        &self,
+        schema: String,
+        name: String,
+        column: String,
+    ) -> Result<(i64, String, i64)> {
+        let resp = self
+            .inner
+            .clone()
+            .build_vector_index(pb::BuildVectorIndexRequest {
+                schema,
+                name,
+                column,
+            })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok((resp.covered_snapshot, resp.puffin_path, resp.row_count))
+    }
+
     /// Commit a compaction swap: expire `expire` (absolute paths) + register `write`
     /// (already written). Returns the new snapshot id (or `None` if the table was
     /// never written). Each `DataFile` is sent as a JSON string in `write_json`.

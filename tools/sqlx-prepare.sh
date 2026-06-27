@@ -12,9 +12,14 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-# 1. Build/cache sqlx-cli 0.9 via the hermetic toolchain (skip if present).
+# 1. Put the hermetic Rust toolchain (cargo/rustc) on PATH. Required both to
+# install sqlx-cli below AND for the `cargo sqlx prepare` in step 5 — so it must
+# run unconditionally, not only when sqlx-cli is missing. (env.sh is idempotent
+# and cached after the first run.)
+eval "$(./tools/env.sh)"
+
+# Build/cache sqlx-cli 0.9 via that toolchain (skip if already present).
 if [ ! -x .loom/bin/sqlx ]; then
-  eval "$(./tools/env.sh)"
   cargo install --root "$PWD/.loom" --version '^0.9' --no-default-features --features postgres,rustls sqlx-cli
 fi
 export PATH="$PWD/.loom/bin:$PATH"
