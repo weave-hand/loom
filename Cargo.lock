@@ -1948,6 +1948,7 @@ dependencies = [
  "control-plane-core",
  "control-plane-postgres",
  "datafusion",
+ "iceberg",
  "object_store",
  "sqlx",
  "thiserror 1.0.69",
