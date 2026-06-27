@@ -96,15 +96,27 @@ impl WriteDenialReason {
     }
 }
 
-/// Validate that `action`'s parameters conform to `target`'s properties: every parameter names a
-/// real property of a compatible logical type (same `BaseType`), and every required property is
-/// covered by a required parameter. Pure; collects ALL violations into one message so an operator
+/// Validate that `action`'s parameters conform to `target`'s properties. Dispatches on
+/// `action.kind`: Insert enforces full required-property coverage; Update/Delete enforce
+/// identity-based mutate rules. Pure; collects ALL violations into one message so an operator
 /// sees every problem at once. `Ok(())` if conformant, else `ActionError::Misconfigured`.
 pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
-    let target_name = &target.name.0;
-    let mut violations: Vec<String> = Vec::new();
+    use control_plane_core::ActionKind;
+    match action.kind {
+        ActionKind::Insert => check_insert_conformance(action, target),
+        ActionKind::Update => check_mutate_conformance(action, target, true),
+        ActionKind::Delete => check_mutate_conformance(action, target, false),
+    }
+}
 
-    // Rules 1 & 2: every param names a real property, of a compatible (same-BaseType) logical type.
+/// Rules 1 & 2 (shared): every param names a real property of a compatible (same-BaseType)
+/// logical type. Violations are appended to `violations`.
+fn check_param_property_types(
+    action: &ActionDef,
+    target: &ObjectType,
+    violations: &mut Vec<String>,
+) {
+    let target_name = &target.name.0;
     for p in &action.parameters {
         match target.properties.iter().find(|prop| prop.name == p.name) {
             None => violations.push(format!(
@@ -133,6 +145,15 @@ pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), 
             }
         }
     }
+}
+
+/// INSERT conformance: rules 1 & 2 (param/property name+type) plus rule 3 (every required
+/// property covered by a required parameter).
+fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
+    let target_name = &target.name.0;
+    let mut violations: Vec<String> = Vec::new();
+
+    check_param_property_types(action, target, &mut violations);
 
     // Rule 3: every required property is covered by a required parameter.
     for prop in &target.properties {
@@ -158,6 +179,58 @@ pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), 
             "action `{}` does not conform to type `{}`: {}",
             action.name.0,
             target_name,
+            violations.join("; ")
+        )))
+    }
+}
+
+/// UPDATE/DELETE conformance. Both require a declared `identity` on the target and a required
+/// parameter naming it; every parameter must name a real property of compatible type.
+/// DELETE takes ONLY the identity parameter (no extras). UPDATE relaxes required-property
+/// coverage (PATCH semantics) — only the supplied params are validated.
+fn check_mutate_conformance(
+    action: &ActionDef,
+    target: &ObjectType,
+    is_update: bool,
+) -> Result<(), ActionError> {
+    let target_name = &target.name.0;
+    let mut violations: Vec<String> = Vec::new();
+
+    check_param_property_types(action, target, &mut violations);
+
+    match &target.identity {
+        None => violations.push(format!(
+            "type `{target_name}` has no declared identity; UPDATE/DELETE require one"
+        )),
+        Some(idprop) => {
+            match action.parameters.iter().find(|p| &p.name == idprop) {
+                None => violations.push(format!(
+                    "UPDATE/DELETE on `{target_name}` requires a parameter for the identity property `{idprop}`"
+                )),
+                Some(p) if !p.required => violations.push(format!(
+                    "identity parameter `{idprop}` must be required"
+                )),
+                Some(_) => {}
+            }
+            if !is_update {
+                for p in &action.parameters {
+                    if &p.name != idprop {
+                        violations.push(format!(
+                            "DELETE on `{target_name}` takes only the identity parameter; `{}` is extra",
+                            p.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(ActionError::Misconfigured(format!(
+            "action `{}` does not conform to type `{target_name}`: {}",
+            action.name.0,
             violations.join("; ")
         )))
     }

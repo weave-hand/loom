@@ -882,6 +882,18 @@ rust_test(
 )
 
 rust_test(
+    name = "mutate-conformance",
+    crate = "mutate_conformance",
+    srcs = ["tests/mutate_conformance.rs"],
+    crate_root = "tests/mutate_conformance.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
     name = "action-conformance-http",
     crate = "action_conformance_http",
     srcs = ["tests/action_conformance_http.rs"],
