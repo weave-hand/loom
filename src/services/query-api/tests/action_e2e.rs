@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, CompareOp, ControlPlane, DatasetRef, Effect, ObjectType,
-    PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, CompareOp, ControlPlane, DatasetRef, Effect,
+    ObjectType, PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -103,6 +103,7 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
                     required: false,
                 },
             ],
+            kind: ActionKind::Insert,
         })
         .await
         .unwrap();
@@ -287,6 +288,7 @@ async fn ungranted_subject_is_forbidden() {
                 ty: "Long".into(),
                 required: true,
             }],
+            kind: ActionKind::Insert,
         })
         .await
         .unwrap();

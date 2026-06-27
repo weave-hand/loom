@@ -10,9 +10,9 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, CompareOp, ControlPlane, Effect, ObjectType, Ontology,
-    ParamDef, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, CompareOp, ControlPlane, Effect, ObjectType,
+    Ontology, ParamDef, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -86,6 +86,7 @@ async fn seed() -> (MemoryControlPlane, RoleId) {
         name: ActionName("createWidget".into()),
         target: TypeName("Widget".into()),
         parameters: vec![param("id", "Long", true), param("name", "String", false)],
+        kind: ActionKind::Insert,
     })
     .await
     .unwrap();

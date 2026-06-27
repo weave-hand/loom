@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ActionDef, ActionName, Aggregation, ControlPlaneError, DerivedPropertyDef, LinkBacking,
-    LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef, Result, TableRef,
-    TypeName,
+    ActionDef, ActionKind, ActionName, Aggregation, ControlPlaneError, DerivedPropertyDef,
+    LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef, Result,
+    TableRef, TypeName,
 };
 
 use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
@@ -366,6 +366,7 @@ impl Ontology for PgControlPlane {
                     required: r.required,
                 })
                 .collect(),
+            kind: ActionKind::Insert,
         })
     }
 }

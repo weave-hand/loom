@@ -17,11 +17,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, Aggregation, Auth, Cardinality, Catalog, CompareOp,
-    ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect, EventType,
-    Lineage, LineageEvent, LinkBacking, LinkDef, NewJob, NewUser, ObjectType, Ontology, Page,
-    PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter,
-    RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
+    CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect,
+    EventType, Lineage, LineageEvent, LinkBacking, LinkDef, NewJob, NewUser, ObjectType, Ontology,
+    Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId,
+    RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
 };
 use time::OffsetDateTime;
 
@@ -827,6 +827,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 required: false,
             },
         ],
+        kind: ActionKind::Insert,
     };
     o.define_action(create_widget.clone())
         .await
@@ -858,6 +859,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             ty: "Long".into(),
             required: true,
         }],
+        kind: ActionKind::Insert,
     })
     .await
     .expect("redefine action");
@@ -1753,6 +1755,7 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
         name: ActionName("act".into()),
         target: tn("T"),
         parameters: vec![],
+        kind: ActionKind::Insert,
     })
     .await
     .expect("define_action on existing target");
@@ -1762,6 +1765,7 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
                 name: ActionName("actBad".into()),
                 target: tn("Nope"),
                 parameters: vec![],
+                kind: ActionKind::Insert,
             })
             .await,
             Err(ControlPlaneError::Validation(_))

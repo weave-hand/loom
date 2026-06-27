@@ -7,8 +7,9 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, ControlPlane, Effect, LineageEvent, ObjectType, Ontology,
-    ParamDef, PolicyTarget, PropertyDef, RoleId, RunId, SnapshotId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, Effect, LineageEvent, ObjectType,
+    Ontology, ParamDef, PolicyTarget, PropertyDef, RoleId, RunId, SnapshotId, SubjectId, TableRef,
+    TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::http::{AppState, router};
@@ -86,6 +87,7 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
                 required: false,
             },
         ],
+        kind: ActionKind::Insert,
     })
     .await
     .unwrap();

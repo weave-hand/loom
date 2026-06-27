@@ -135,6 +135,17 @@ pub struct DerivedPropertyDef {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ActionName(pub String);
 
+/// Which kind of mutation an action performs against its target type. `Insert`
+/// (part-1) creates a new object; `Update`/`Delete` (A5) mutate or remove one
+/// existing object located by the target type's declared `identity`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ActionKind {
+    #[default]
+    Insert,
+    Update,
+    Delete,
+}
+
 /// A typed input to an action. `ty` is the ontology's logical vocabulary (like `PropertyDef.ty`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParamDef {
@@ -151,6 +162,9 @@ pub struct ActionDef {
     pub target: TypeName,
     /// Ordered.
     pub parameters: Vec<ParamDef>,
+    /// The mutation kind. `Insert` (part-1 default) creates; `Update`/`Delete` mutate
+    /// one existing object by `target`'s declared `identity`.
+    pub kind: ActionKind,
 }
 
 #[async_trait]

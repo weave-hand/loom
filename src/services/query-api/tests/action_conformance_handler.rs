@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, ControlPlane, DatasetRef, Effect, LineageEvent, ObjectType,
-    Ontology, PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId, SnapshotId, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, DatasetRef, Effect, LineageEvent,
+    ObjectType, Ontology, PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId, SnapshotId,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::action::{ActionDeps, ActionError, run_action};
@@ -86,6 +86,7 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
         name: ActionName("createWidget".into()),
         target: TypeName("Widget".into()),
         parameters: vec![param("id", "Long", true), param("name", "String", false)],
+        kind: ActionKind::Insert,
     })
     .await
     .unwrap();
@@ -98,6 +99,7 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
             param("name", "String", false),
             param("naem", "String", false),
         ],
+        kind: ActionKind::Insert,
     })
     .await
     .unwrap();

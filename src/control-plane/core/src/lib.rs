@@ -33,8 +33,8 @@ pub use logical_type::{
     BaseType, JsonRepr, UnknownLogicalType, json_repr_of, resolve_logical, satisfies,
 };
 pub use ontology::{
-    ActionDef, ActionName, Aggregation, Cardinality, DerivedPropertyDef, LinkBacking, LinkDef,
-    ObjectType, Ontology, ParamDef, PropertyDef, TypeName,
+    ActionDef, ActionKind, ActionName, Aggregation, Cardinality, DerivedPropertyDef, LinkBacking,
+    LinkDef, ObjectType, Ontology, ParamDef, PropertyDef, TypeName,
 };
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};

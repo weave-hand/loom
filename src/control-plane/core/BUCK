@@ -151,3 +151,13 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "action_kind",
+    crate = "action_kind",
+    srcs = ["tests/action_kind.rs"],
+    crate_root = "tests/action_kind.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)

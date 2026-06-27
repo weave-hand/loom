@@ -11,8 +11,8 @@ use std::sync::Arc;
 // inherent method, so the `Catalog` trait is intentionally NOT imported (importing
 // it unused fails the clippy/lint gate).
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, ControlPlane, DatasetRef, Effect, ObjectType, PageReq,
-    ParamDef, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, DatasetRef, Effect, ObjectType,
+    PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -90,6 +90,7 @@ async fn define_widget(cp: &PgControlPlane) -> TypeName {
                     required: false,
                 },
             ],
+            kind: ActionKind::Insert,
         })
         .await
         .unwrap();
