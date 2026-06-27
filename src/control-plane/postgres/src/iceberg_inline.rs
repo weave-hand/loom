@@ -58,7 +58,10 @@ pub(crate) async fn end_cap_live_inline_rows(
     if exists.is_none() {
         return Ok(());
     }
-    let sql = format!("update {name} set end_snapshot = {} where end_snapshot is null", at.0);
+    let sql = format!(
+        "update {name} set end_snapshot = {} where end_snapshot is null",
+        at.0
+    );
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .execute(&mut *conn)
         .await

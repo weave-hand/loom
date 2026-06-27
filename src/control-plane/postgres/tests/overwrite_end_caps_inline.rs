@@ -90,16 +90,9 @@ async fn overwrite_end_caps_stale_inline_row() {
     };
 
     // Step 1: inline-append {id:1} -> S1 (mirror-only, no Parquet).
-    let s1 = inline_append(
-        &pool,
-        &t,
-        &columns(),
-        &inline_batch(&[1]),
-        lineage(),
-        None,
-    )
-    .await
-    .expect("inline append id=1");
+    let s1 = inline_append(&pool, &t, &columns(), &inline_batch(&[1]), lineage(), None)
+        .await
+        .expect("inline append id=1");
 
     // Resolve the mirror table_id for direct inline-table queries.
     let tid: i64 = sqlx::query_scalar(
@@ -161,8 +154,8 @@ async fn overwrite_end_caps_stale_inline_row() {
         .inline_live_batch(&t, s1)
         .await
         .expect("inline_live_batch at S1");
-    let (_tid2, _row_ids, batch_s1) = inline_at_s1
-        .expect("inline_live_batch must return Some at S1 (time travel)");
+    let (_tid2, _row_ids, batch_s1) =
+        inline_at_s1.expect("inline_live_batch must return Some at S1 (time travel)");
     let ids = batch_s1
         .column(0)
         .as_any()
