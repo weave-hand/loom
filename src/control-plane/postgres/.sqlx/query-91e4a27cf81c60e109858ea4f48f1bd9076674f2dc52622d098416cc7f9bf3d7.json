@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select target_type from ontology.action where name = $1",
+  "query": "select target_type, kind from ontology.action where name = $1",
   "describe": {
     "columns": [
       {
@@ -13,6 +13,17 @@
             "name": "target_type"
           }
         }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action",
+            "name": "kind"
+          }
+        }
       }
     ],
     "parameters": {
@@ -21,8 +32,9 @@
       ]
     },
     "nullable": [
+      false,
       false
     ]
   },
-  "hash": "c2dd98d0b31ee615a127b6535dfc2847e0fc5ba14d2064d00b1e6804dc0a69a5"
+  "hash": "91e4a27cf81c60e109858ea4f48f1bd9076674f2dc52622d098416cc7f9bf3d7"
 }

@@ -304,11 +304,17 @@ impl Ontology for PgControlPlane {
                 action.name.0, action.target.0
             )));
         }
+        let kind = match action.kind {
+            ActionKind::Insert => "insert",
+            ActionKind::Update => "update",
+            ActionKind::Delete => "delete",
+        };
         sqlx::query!(
-            "insert into ontology.action (name, target_type) values ($1, $2) \
-             on conflict (name) do update set target_type = excluded.target_type",
+            "insert into ontology.action (name, target_type, kind) values ($1, $2, $3) \
+             on conflict (name) do update set target_type = excluded.target_type, kind = excluded.kind",
             action.name.0,
             action.target.0,
+            kind,
         )
         .execute(&mut *tx)
         .await
@@ -340,7 +346,7 @@ impl Ontology for PgControlPlane {
 
     async fn get_action(&self, name: &ActionName) -> Result<ActionDef> {
         let row = sqlx::query!(
-            "select target_type from ontology.action where name = $1",
+            "select target_type, kind from ontology.action where name = $1",
             name.0,
         )
         .fetch_optional(&self.pool)
@@ -355,6 +361,11 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
+        let kind = match row.kind.as_str() {
+            "update" => ActionKind::Update,
+            "delete" => ActionKind::Delete,
+            _ => ActionKind::Insert,
+        };
         Ok(ActionDef {
             name: name.clone(),
             target: TypeName(row.target_type),
@@ -366,7 +377,7 @@ impl Ontology for PgControlPlane {
                     required: r.required,
                 })
                 .collect(),
-            kind: ActionKind::Insert,
+            kind,
         })
     }
 }
