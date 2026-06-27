@@ -17,36 +17,72 @@ use engine_wire::flight::FlightTableClient;
 use tokio_util::sync::CancellationToken;
 use worker::compact::{CompactCtx, handle_compact};
 
+/// Thin composed config struct for the worker binary. Loaded via `loom_config::load`
+/// (defaults < file (`LOOM_CONFIG_FILE`) < env) through the `LayeredConfig` impl below.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct WorkerConfig {
+    worker: loom_config::WorkerTuning,
+    write: datafusion_io::WriteConfig,
+}
+
+impl loom_config::LayeredConfig for WorkerConfig {
+    fn overlay_env(
+        &mut self,
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<(), loom_config::ConfigError> {
+        self.worker.overlay_env(env)?;
+        self.write.overlay_env(env)?;
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), loom_config::ConfigError> {
+        self.worker.validate()?;
+        self.write.validate()?;
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let socket = std::env::var("LOOM_ENGINE_SOCKET")?;
-    let worker_id =
-        std::env::var("LOOM_WORKER_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
-    let lease = Duration::from_millis(
-        std::env::var("LOOM_LOCK_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5000),
-    );
+    // One env snapshot drives both the bootstrap reads and the composed config.
+    let env = loom_config::env_map();
+    let socket = env
+        .get("LOOM_ENGINE_SOCKET")
+        .ok_or("LOOM_ENGINE_SOCKET must be set")?
+        .clone();
+    let worker_id = env
+        .get("LOOM_WORKER_ID")
+        .cloned()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // Strict parse (matches `service_runtime::Config`): a malformed value fails startup
+    // rather than silently falling back — the same no-lossy-`.ok()` rule as the tuning seam.
+    let mut lease_ms: u64 = 5000;
+    loom_config::overlay_opt(&env, "LOOM_LOCK_TIMEOUT_MS", &mut lease_ms)?;
+    let lease = Duration::from_millis(lease_ms);
 
-    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    // Compose worker config as defaults < file < env (see `WorkerConfig`'s `LayeredConfig`).
+    let wcfg: WorkerConfig = loom_config::load(&env)?;
+
     let store_cfg = store_config::ObjectStoreConfig::parse_from_env(&env)?;
     let write = Arc::new(store_config::build_write_store(&store_cfg)?);
     let flight = FlightTableClient::connect(&socket).await?;
-    let threshold_bytes = std::env::var("LOOM_COMPACT_THRESHOLD_BYTES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(128 * 1024 * 1024_i64);
+    let mut threshold_bytes: i64 = 128 * 1024 * 1024;
+    loom_config::overlay_opt(&env, "LOOM_COMPACT_THRESHOLD_BYTES", &mut threshold_bytes)?;
 
     let client = GrpcQueueClient::connect(&socket).await?;
     let flush = client.clone();
+    let worker_tuning = wcfg.worker;
     let cctx = CompactCtx {
         control: client.clone(),
         flight,
         write,
         threshold_bytes,
+        write_cfg: wcfg.write.clone(),
+        worker_tuning,
     };
-    let worker = Worker::new(client, worker_id, lease);
+    let worker =
+        Worker::new(client, worker_id, lease).with_poll_interval(wcfg.worker.poll_interval());
 
     let shutdown = CancellationToken::new();
     let sig = shutdown.clone();
@@ -68,8 +104,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cctx = cctx.clone();
                 async move {
                     match job.kind.as_str() {
-                        k if k == FLUSH_JOB_KIND => worker::handler::handle_flush(flush, job).await,
-                        k if k == GC_JOB_KIND => worker::handler::handle_gc(flush, job).await,
+                        k if k == FLUSH_JOB_KIND => {
+                            worker::handler::handle_flush(flush, worker_tuning, job).await
+                        }
+                        k if k == GC_JOB_KIND => {
+                            worker::handler::handle_gc(flush, worker_tuning, job).await
+                        }
                         k if k == COMPACT_JOB_KIND => handle_compact(&cctx, job).await,
                         other => Err(JobFailure {
                             error: format!("unknown job kind: {other}"),

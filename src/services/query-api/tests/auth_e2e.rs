@@ -37,6 +37,7 @@ fn app(cp: Arc<PgControlPlane>, eng: Arc<dyn query_api::serving::ServingEngine>)
             cp: cp as Arc<dyn ControlPlane>,
             serving: eng,
             action_engine: Arc::new(StubAction),
+            default_limit: 1000,
         }),
         auth.clone(),
     )

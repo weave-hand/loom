@@ -21,8 +21,6 @@ pub struct ObjectRows {
     pub rows: Vec<Vec<SqlValue>>,
 }
 
-const DEFAULT_LIMIT: u32 = 1000;
-
 /// A read request: an ontology type plus optional equality filters on allowed columns.
 pub struct ObjectQuery {
     pub type_name: String,
@@ -37,6 +35,7 @@ pub struct QueryDeps<'a> {
     pub ontology: &'a (dyn Ontology + Send + Sync),
     pub acl: &'a (dyn Acl + Send + Sync),
     pub serving: &'a dyn ServingEngine,
+    pub default_limit: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -303,7 +302,7 @@ pub async fn read_object(
         &row_filters,
         &predicates,
         &derived_selects,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     // Output columns = physical `allowed` (in order) ++ surviving derived (in order).
@@ -405,7 +404,9 @@ pub async fn read_linked_objects(
 }
 
 /// Maximum chain depth (number of hops). A request beyond this is rejected before
-/// any catalog/ACL work — bounds the join count.
+/// any catalog/ACL work — bounds the join count. Deliberately `const`, not config: a
+/// safety guardrail an operator must not be able to lift per-deployment. See
+/// road-config-seam-unification.
 const MAX_CHAIN_DEPTH: usize = 4;
 
 /// Per-position governance metadata for a resolved chain, aligned with the `ChainType`
@@ -661,7 +662,7 @@ pub async fn read_linked_chain(
         &hops,
         &to_allowed,
         &to_mask_cols,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = to_allowed
@@ -757,7 +758,7 @@ pub async fn read_associations(
         &hops,
         &source_id,
         &target_id,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let pairs: Vec<(SqlValue, SqlValue)> = served
@@ -897,7 +898,7 @@ pub async fn read_graph_reach(
         &allowed,
         &mask_cols,
         q.depth,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = allowed
@@ -1024,7 +1025,7 @@ pub async fn read_graph_reach_union(
         &allowed,
         &mask_cols,
         q.depth,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = allowed
@@ -1215,7 +1216,7 @@ pub async fn read_graph_reach_with_tail(
         &allowed,
         &mask_cols,
         q.depth,
-        DEFAULT_LIMIT,
+        deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     let logical_types: Vec<String> = allowed

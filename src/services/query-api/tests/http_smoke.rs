@@ -91,6 +91,7 @@ async fn get_objects_returns_json_rows() {
         cp: Arc::new(seeded_control_plane().await),
         serving: Arc::new(StubServing),
         action_engine: Arc::new(StubAction),
+        default_limit: 1000,
     });
     let mut req = Request::builder()
         .uri("/objects/Order")

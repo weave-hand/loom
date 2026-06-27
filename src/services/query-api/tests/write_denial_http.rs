@@ -116,6 +116,7 @@ async fn post_json(
         cp: Arc::new(cp) as Arc<dyn ControlPlane>,
         serving: Arc::new(StubServing),
         action_engine: Arc::new(OkEngine),
+        default_limit: 1000,
     };
     let app = router(state);
     let mut req = Request::builder()

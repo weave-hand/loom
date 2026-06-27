@@ -173,6 +173,7 @@ async fn derived_aggregates_are_served_and_governed() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
 
     // ---- subject A: Read on Customer AND Order -> sees derived ----

@@ -3,10 +3,13 @@
 //! optional model-conformance gate. See the spec under docs/superpowers/specs/.
 
 pub mod bind;
+pub mod config;
 pub mod gate;
 pub mod http;
 pub mod landing;
 pub mod materialize;
+
+pub use config::RoutingTuning;
 
 pub use bind::{BindError, BindViolation, BindViolationReason, bind, bind_link};
 pub use gate::{ColumnShape, ModelShape, Violation, ViolationReason};

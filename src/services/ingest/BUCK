@@ -10,6 +10,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//src/loom-config:loom-config",
         "//src/services/datafusion-io:datafusion-io",
         "//third-party:arrow",
         "//third-party:async-trait",
@@ -134,6 +135,7 @@ rust_test(
         ":ingest",
         "//src/control-plane/core:core",
         "//src/control-plane/memory:memory",
+        "//src/services/datafusion-io:datafusion-io",
         "//third-party:arrow",
         "//third-party:object_store",
         "//third-party:serde_json",
@@ -163,6 +165,18 @@ loom_fixture_test(
         "//third-party:tempfile",
         "//third-party:tokio",
         "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "routing-tuning",
+    crate = "routing_tuning",
+    srcs = ["tests/routing_tuning.rs"],
+    crate_root = "tests/routing_tuning.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//third-party:serde_json",
     ],
 )
 

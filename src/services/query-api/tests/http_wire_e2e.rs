@@ -109,6 +109,7 @@ async fn iceberg_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
             INLINE_BYTE_LIMIT,
             i64::MAX,
         )),
+        default_limit: 1000,
     });
 
     (WireBackend { ingest, query, cp }, Box::new(warehouse))

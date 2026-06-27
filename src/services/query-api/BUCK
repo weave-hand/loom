@@ -11,10 +11,13 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/services/engine-wire:engine-wire",
+        "//src/services/ingest:ingest",
         "//src/services/runtime:runtime",
+        "//src/loom-config:loom-config",
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",
+        "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:thiserror",
@@ -61,6 +64,18 @@ rust_test(
         "//third-party:serde_json",
         "//third-party:tokio",
         "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "serving-tuning",
+    crate = "serving_tuning",
+    srcs = ["tests/serving_tuning.rs"],
+    crate_root = "tests/serving_tuning.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:serde_json",
     ],
 )
 

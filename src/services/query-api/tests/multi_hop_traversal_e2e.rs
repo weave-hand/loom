@@ -57,6 +57,7 @@ async fn multi_hop_served_and_governed() {
         ontology: &cp,
         acl: &cp,
         serving: &*eng,
+        default_limit: 1000,
     };
 
     // ---- subject A: Read on all three -> sees the reachable LineItems ----
@@ -148,6 +149,7 @@ async fn target_filter_narrows_final_set() {
         ontology: &cp,
         acl: &cp,
         serving: &*eng,
+        default_limit: 1000,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -182,6 +184,7 @@ async fn intermediate_typed_filter_coerces_and_narrows() {
         ontology: &cp,
         acl: &cp,
         serving: &*eng,
+        default_limit: 1000,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -216,6 +219,7 @@ async fn source_and_intermediate_filters_combine() {
         ontology: &cp,
         acl: &cp,
         serving: &*eng,
+        default_limit: 1000,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -246,6 +250,7 @@ async fn bad_positioned_filters_are_rejected() {
         ontology: &cp,
         acl: &cp,
         serving: &*eng,
+        default_limit: 1000,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -328,6 +333,7 @@ async fn intermediate_comparison_operator_narrows() {
         ontology: &cp,
         acl: &cp,
         serving: &*eng,
+        default_limit: 1000,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;

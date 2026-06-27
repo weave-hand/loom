@@ -102,6 +102,7 @@ async fn landed_then_bound_dataset_is_queryable() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let rows = read_object(
         &ObjectQuery {

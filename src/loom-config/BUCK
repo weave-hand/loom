@@ -1,0 +1,49 @@
+load("//src:loom_test.bzl", "rust_test")
+
+rust_library(
+    name = "loom-config",
+    crate = "loom_config",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:thiserror",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "overlay",
+    crate = "overlay",
+    srcs = ["tests/overlay.rs"],
+    crate_root = "tests/overlay.rs",
+    edition = "2024",
+    deps = [":loom-config"],
+)
+
+rust_test(
+    name = "worker-tuning",
+    crate = "worker_tuning",
+    srcs = ["tests/worker_tuning.rs"],
+    crate_root = "tests/worker_tuning.rs",
+    edition = "2024",
+    deps = [
+        ":loom-config",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "load",
+    crate = "load",
+    srcs = ["tests/load.rs"],
+    crate_root = "tests/load.rs",
+    edition = "2024",
+    deps = [
+        ":loom-config",
+        "//third-party:serde",
+        "//third-party:tempfile",
+    ],
+)

@@ -189,6 +189,7 @@ async fn fk_traversal_returns_linked_targets() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let rows = read_linked_objects(
         &LinkQuery {
@@ -216,6 +217,7 @@ async fn missing_read_on_source_is_forbidden() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let err = read_linked_objects(
         &LinkQuery {
@@ -242,6 +244,7 @@ async fn missing_read_on_target_is_forbidden() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let err = read_linked_objects(
         &LinkQuery {
@@ -285,6 +288,7 @@ async fn source_row_filter_closes_the_leak() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let rows = read_linked_objects(
         &LinkQuery {
@@ -332,6 +336,7 @@ async fn target_row_filter_and_projection_apply() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let rows = read_linked_objects(
         &LinkQuery {
@@ -375,6 +380,7 @@ async fn source_filter_on_denied_column_is_bad_filter() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let err = read_linked_objects(
         &LinkQuery {
@@ -432,6 +438,7 @@ async fn many_to_many_dedups_shared_targets() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let rows = read_linked_objects(
         &LinkQuery {
@@ -459,6 +466,7 @@ async fn unknown_link_is_reported() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let err = read_linked_objects(
         &LinkQuery {

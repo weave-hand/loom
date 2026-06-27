@@ -109,6 +109,7 @@ async fn typed_filters_match_and_reject() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
         let body = objects_to_json(rows);
@@ -188,6 +189,7 @@ async fn comparison_set_and_null_operators() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
         let body = objects_to_json(rows);

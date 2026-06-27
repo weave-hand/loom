@@ -117,6 +117,7 @@ async fn created_response_carries_run_id_header() {
         cp: Arc::new(cp) as Arc<dyn ControlPlane>,
         serving,
         action_engine: engine.clone(),
+        default_limit: 1000,
     });
     let mut req = Request::builder()
         .method("POST")

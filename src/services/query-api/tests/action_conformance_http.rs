@@ -118,6 +118,7 @@ async fn seeded_state() -> AppState {
         cp: Arc::new(cp) as Arc<dyn ControlPlane>,
         serving: Arc::new(StubServing),
         action_engine: Arc::new(OkEngine),
+        default_limit: 1000,
     }
 }
 
