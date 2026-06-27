@@ -54,6 +54,37 @@ impl FlightDataService {
             .map_err(|e| Status::internal(e.to_string()));
         Ok(Response::new(Box::pin(out)))
     }
+
+    /// Run a k-NN vector search and Flight-encode the single resulting
+    /// `RecordBatch`. `EngineServingError::NoIndex` maps to `not_found` so the
+    /// caller can distinguish a missing index from an internal error.
+    async fn do_get_vector_search(
+        &self,
+        vs: engine_wire::flight::VectorSearchTicket,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let table = TableRef {
+            schema: vs.schema,
+            name: vs.name,
+        };
+        let batch = engine_serving::vector_search(
+            &self.catalog,
+            &self.pool,
+            &table,
+            &vs.column,
+            &vs.query,
+            vs.k as usize,
+        )
+        .await
+        .map_err(|e| match e {
+            engine_serving::EngineServingError::NoIndex(msg) => Status::not_found(msg),
+            other => Status::internal(other.to_string()),
+        })?;
+        let input = futures::stream::iter(std::iter::once(Ok(batch)));
+        let stream = FlightDataEncoderBuilder::new()
+            .build(input)
+            .map_err(|e| Status::internal(e.to_string()));
+        Ok(Response::new(Box::pin(stream)))
+    }
 }
 
 #[tonic::async_trait]
@@ -90,6 +121,12 @@ impl FlightService for FlightDataService {
             let sql = String::from_utf8(tsq.statement_handle.to_vec())
                 .map_err(|e| Status::invalid_argument(format!("non-utf8 sql: {e}")))?;
             return self.do_get_sql(sql).await;
+        }
+
+        // loom-native k-NN ticket (JSON). Disjoint fields from FlightTicket
+        // (deny_unknown_fields on both) make this unambiguous.
+        if let Ok(vs) = engine_wire::flight::VectorSearchTicket::decode(&ticket.ticket) {
+            return self.do_get_vector_search(vs).await;
         }
 
         // File-ticket data plane (existing): a JSON `FlightTicket` naming data files.
