@@ -90,7 +90,11 @@ impl GrpcQueueClient {
         let resp = self
             .inner
             .clone()
-            .build_vector_index(pb::BuildVectorIndexRequest { schema, name, column })
+            .build_vector_index(pb::BuildVectorIndexRequest {
+                schema,
+                name,
+                column,
+            })
             .await
             .map_err(be)?
             .into_inner();

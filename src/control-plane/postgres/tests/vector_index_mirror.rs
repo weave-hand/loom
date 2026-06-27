@@ -38,10 +38,12 @@ async fn insert_then_lookup_latest_le_q() {
     insert_vector_index(&mut conn, &row).await.unwrap();
 
     // Q below the covered snapshot → no binding.
-    assert!(lookup_vector_index(&pool, table_id, "embedding", 4)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        lookup_vector_index(&pool, table_id, "embedding", 4)
+            .await
+            .unwrap()
+            .is_none()
+    );
     // Q at/after → the row.
     let got = lookup_vector_index(&pool, table_id, "embedding", 9)
         .await

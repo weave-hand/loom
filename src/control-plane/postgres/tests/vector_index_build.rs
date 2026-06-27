@@ -11,8 +11,8 @@ use arrow_array::{Float32Array, Int64Array, ListArray, RecordBatch};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, Lineage, LineageEvent, Metric, ObjectType,
-    Ontology, PageReq, PropertyDef, RunId, TableRef, TypeName, VectorIndex,
+    Catalog, ColumnSpec, DatasetId, EventType, Lineage, LineageEvent, Metric, ObjectType, Ontology,
+    PageReq, PropertyDef, RunId, TableRef, TypeName, VectorIndex,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -137,14 +137,8 @@ async fn build_covers_all_rows_live_at_s() {
     // 2. Land rows 1..=4.  Vector columns can't inline, so we force Parquet
     //    with limit 0 for all batches.
     let run = RunId(uuid::Uuid::new_v4());
-    let rows_1_2: &[(i64, [f32; 4])] = &[
-        (1, [1.0, 0.0, 0.0, 0.0]),
-        (2, [0.0, 1.0, 0.0, 0.0]),
-    ];
-    let rows_3_4: &[(i64, [f32; 4])] = &[
-        (3, [0.0, 0.0, 1.0, 0.0]),
-        (4, [0.0, 0.0, 0.0, 1.0]),
-    ];
+    let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
+    let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
     // First batch: rows 1-2 (limit 0 forces Parquet).
     land(
         &pool,
@@ -175,7 +169,10 @@ async fn build_covers_all_rows_live_at_s() {
 
     // 3. Resolve table_id for lookup assertions.
     let ice = IcebergCatalog::new(pool.clone());
-    let cur = ice.current_snapshot(&table).await.expect("current snapshot");
+    let cur = ice
+        .current_snapshot(&table)
+        .await
+        .expect("current snapshot");
     let files = ice
         .files_with_stats(&table, cur.id)
         .await
@@ -185,9 +182,16 @@ async fn build_covers_all_rows_live_at_s() {
 
     // 4. Run build_vector_index.
     let build_run = RunId(uuid::Uuid::new_v4());
-    let built = build_vector_index(&catalog, &pool, &table, "embedding", Metric::Cosine, build_run)
-        .await
-        .expect("build_vector_index");
+    let built = build_vector_index(
+        &catalog,
+        &pool,
+        &table,
+        "embedding",
+        Metric::Cosine,
+        build_run,
+    )
+    .await
+    .expect("build_vector_index");
 
     // 5. Assert row_count covers all 4 rows.
     assert_eq!(built.row_count, 4, "all 4 rows covered");
@@ -240,13 +244,11 @@ async fn build_covers_all_rows_live_at_s() {
         .expect("events_for");
     assert_eq!(events.items.len(), 1, "exactly one lineage event");
     assert_eq!(
-        events.items[0].outputs[0].namespace,
-        "loom-vector-index",
+        events.items[0].outputs[0].namespace, "loom-vector-index",
         "output namespace is loom-vector-index"
     );
     assert_eq!(
-        events.items[0].outputs[0].name,
-        built.puffin_path,
+        events.items[0].outputs[0].name, built.puffin_path,
         "output name is the puffin path"
     );
 }

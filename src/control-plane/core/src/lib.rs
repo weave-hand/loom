@@ -29,7 +29,6 @@ pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
 pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};
 pub use gc::{GC_JOB_KIND, GcJob};
-pub use vector_index_job::{BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob};
 pub use identity::{DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TypeId};
 pub use lineage::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
 pub use logical_type::{
@@ -44,3 +43,4 @@ pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use transaction::{ControlPlane, Tx};
 pub use vector_index::{FlatIndex, IndexKind, Metric, VectorIndex, VectorKey, distance};
+pub use vector_index_job::{BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob};

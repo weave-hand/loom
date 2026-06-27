@@ -108,11 +108,14 @@ impl FlightTableClient {
         let resp = self
             .inner
             .clone()
-            .do_get(Ticket { ticket: ticket.encode().into() })
+            .do_get(Ticket {
+                ticket: ticket.encode().into(),
+            })
             .await
             .map_err(crate::client::be)?;
         let stream = FlightRecordBatchStream::new_from_flight_data(
-            resp.into_inner().map_err(arrow_flight::error::FlightError::from),
+            resp.into_inner()
+                .map_err(arrow_flight::error::FlightError::from),
         );
         stream.try_collect().await.map_err(crate::client::be)
     }

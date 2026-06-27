@@ -168,10 +168,7 @@ async fn seed_and_build(
     let run = RunId(uuid::Uuid::new_v4());
 
     // Land rows 1–2 (forced to Parquet: inline_byte_limit = 0).
-    let rows_1_2: &[(i64, [f32; 4])] = &[
-        (1, [1.0, 0.0, 0.0, 0.0]),
-        (2, [0.0, 1.0, 0.0, 0.0]),
-    ];
+    let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
     land(
         &pool,
         &catalog,
@@ -186,10 +183,7 @@ async fn seed_and_build(
     .expect("land rows 1-2");
 
     // Land rows 3–4 (also Parquet).
-    let rows_3_4: &[(i64, [f32; 4])] = &[
-        (3, [0.0, 0.0, 1.0, 0.0]),
-        (4, [0.0, 0.0, 0.0, 1.0]),
-    ];
+    let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
     land(
         &pool,
         &catalog,

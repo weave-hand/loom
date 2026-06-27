@@ -199,10 +199,8 @@ fn extract_rows(
             .downcast_ref::<Float32Array>()
             .ok_or_else(|| {
                 ControlPlaneError::Backend(
-                    format!(
-                        "vector column '{vector_col}' child is not Float32 at row {row}"
-                    )
-                    .into(),
+                    format!("vector column '{vector_col}' child is not Float32 at row {row}")
+                        .into(),
                 )
             })?;
         let vec: Vec<f32> = f32arr.values().to_vec();
@@ -224,8 +222,8 @@ pub async fn inline_delta_batch(
     born_after: i64,
     at: i64,
 ) -> Result<Option<RecordBatch>> {
-    use crate::iceberg_mirror::live_table_id;
     use crate::iceberg_inline::inline_table_name;
+    use crate::iceberg_mirror::live_table_id;
 
     let mut conn = pool.acquire().await.map_err(backend)?;
     let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
@@ -260,8 +258,11 @@ pub async fn inline_delta_batch(
             .map(|c| c.name)
             .ok_or_else(|| {
                 ControlPlaneError::Backend(
-                    format!("no vector column in schema for {}.{}", table.schema, table.name)
-                        .into(),
+                    format!(
+                        "no vector column in schema for {}.{}",
+                        table.schema, table.name
+                    )
+                    .into(),
                 )
             })?
     };
@@ -311,9 +312,7 @@ pub async fn inline_delta_batch(
             .map(|v| {
                 v.as_f64()
                     .ok_or_else(|| {
-                        ControlPlaneError::Backend(
-                            "inline vector element is not a float".into(),
-                        )
+                        ControlPlaneError::Backend("inline vector element is not a float".into())
                     })
                     .map(|f| f as f32)
             })
@@ -327,11 +326,7 @@ pub async fn inline_delta_batch(
 
     let schema = Arc::new(Schema::new(vec![
         Field::new(&identity_col, DataType::Int64, false),
-        Field::new(
-            &vector_col,
-            DataType::List(item_field),
-            false,
-        ),
+        Field::new(&vector_col, DataType::List(item_field), false),
     ]));
     let batch = RecordBatch::try_new(schema, vec![id_array, vec_array])
         .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
@@ -420,10 +415,8 @@ pub async fn build_vector_index(
     let index = FlatIndex::build(dim, metric, all_rows)?;
 
     // 8. Resolve the Iceberg field id for the vector column (informational).
-    let ident =
-        TableIdent::from_strs([table.schema.as_str(), table.name.as_str()]).map_err(|e| {
-            ControlPlaneError::Backend(e.to_string().into())
-        })?;
+    let ident = TableIdent::from_strs([table.schema.as_str(), table.name.as_str()])
+        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
     let tbl = catalog
         .load_table(&ident)
         .await
@@ -445,7 +438,16 @@ pub async fn build_vector_index(
         uuid::Uuid::new_v4()
     );
     let file_io = tbl.file_io().clone();
-    write_flat_index(&file_io, &puffin_path, &index, s, field_id, column, &identity_col).await?;
+    write_flat_index(
+        &file_io,
+        &puffin_path,
+        &index,
+        s,
+        field_id,
+        column,
+        &identity_col,
+    )
+    .await?;
 
     // 10. One Postgres tx: insert vector_index mirror row + lineage event.
     let lineage = LineageEvent {

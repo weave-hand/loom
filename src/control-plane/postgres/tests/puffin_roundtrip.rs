@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use control_plane_core::{FlatIndex, Metric, VectorKey, VectorIndex};
+use control_plane_core::{FlatIndex, Metric, VectorIndex, VectorKey};
 use control_plane_postgres::puffin::{
     LOOM_VECTOR_INDEX_BLOB_TYPE, read_flat_index, read_index_blob, write_flat_index,
     write_index_blob,
@@ -28,17 +28,17 @@ async fn puffin_blob_roundtrips_byte_exact() {
         .unwrap();
 
     let loaded = read_index_blob(&file_io, &path).await.unwrap();
-    assert_eq!(loaded.payload, payload, "payload must round-trip byte-exact");
+    assert_eq!(
+        loaded.payload, payload,
+        "payload must round-trip byte-exact"
+    );
     assert_eq!(loaded.snapshot_id, 7);
     assert_eq!(loaded.fields, vec![3]);
     assert_eq!(
         loaded.properties.get("index-kind").map(String::as_str),
         Some("flat")
     );
-    assert_eq!(
-        loaded.properties.get("dim").map(String::as_str),
-        Some("4")
-    );
+    assert_eq!(loaded.properties.get("dim").map(String::as_str), Some("4"));
     assert_eq!(
         loaded.properties.get("metric").map(String::as_str),
         Some("cosine")

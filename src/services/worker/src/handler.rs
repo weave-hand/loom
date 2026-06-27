@@ -52,11 +52,14 @@ pub async fn handle_build_vector_index(
     tuning: WorkerTuning,
     job: Job,
 ) -> std::result::Result<(), JobFailure> {
-    let BuildVectorIndexJob { schema, name, column } =
-        serde_json::from_value(job.payload).map_err(|e| JobFailure {
-            error: format!("bad build_vector_index payload: {e}"),
-            policy: RetryPolicy::Abandon,
-        })?;
+    let BuildVectorIndexJob {
+        schema,
+        name,
+        column,
+    } = serde_json::from_value(job.payload).map_err(|e| JobFailure {
+        error: format!("bad build_vector_index payload: {e}"),
+        policy: RetryPolicy::Abandon,
+    })?;
     client
         .build_vector_index(schema, name, column)
         .await

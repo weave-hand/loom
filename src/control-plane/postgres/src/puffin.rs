@@ -44,10 +44,7 @@ pub async fn write_index_blob(
         .data(payload.to_vec())
         .properties(properties)
         .build();
-    writer
-        .add(blob, CompressionCodec::None)
-        .await
-        .map_err(be)?;
+    writer.add(blob, CompressionCodec::None).await.map_err(be)?;
     writer.close().await.map_err(be)?;
     Ok(())
 }
@@ -72,9 +69,7 @@ pub async fn read_index_blob(file_io: &FileIO, path: &str) -> Result<LoadedBlob>
         .iter()
         .find(|b| b.blob_type() == LOOM_VECTOR_INDEX_BLOB_TYPE)
         .ok_or_else(|| {
-            ControlPlaneError::NotFound(format!(
-                "no {LOOM_VECTOR_INDEX_BLOB_TYPE} blob in {path}"
-            ))
+            ControlPlaneError::NotFound(format!("no {LOOM_VECTOR_INDEX_BLOB_TYPE} blob in {path}"))
         })?;
     let blob = reader.blob(bm).await.map_err(be)?;
     Ok(LoadedBlob {
@@ -106,10 +101,7 @@ pub async fn write_flat_index(
     props.insert("column".to_string(), column.to_string());
     props.insert("identity-column".to_string(), identity_column.to_string());
     props.insert("row-count".to_string(), index.row_count().to_string());
-    props.insert(
-        "covered-snapshot".to_string(),
-        covered_snapshot.to_string(),
-    );
+    props.insert("covered-snapshot".to_string(), covered_snapshot.to_string());
     let payload = index.serialize();
     write_index_blob(file_io, path, &payload, covered_snapshot, field_id, props).await
 }

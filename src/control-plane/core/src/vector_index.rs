@@ -89,7 +89,12 @@ impl FlatIndex {
             keys.push(key);
             data.extend_from_slice(&v);
         }
-        Ok(FlatIndex { dim, metric, keys, data })
+        Ok(FlatIndex {
+            dim,
+            metric,
+            keys,
+            data,
+        })
     }
 
     #[must_use]
@@ -97,7 +102,10 @@ impl FlatIndex {
         self.keys.len() as u32
     }
 
-    #[expect(clippy::indexing_slicing, reason = "i < keys.len(); data is keys.len()*dim")]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "i < keys.len(); data is keys.len()*dim"
+    )]
     fn row(&self, i: usize) -> &[f32] {
         let d = self.dim as usize;
         &self.data[i * d..(i + 1) * d]
@@ -181,7 +189,12 @@ impl FlatIndex {
                 _ => return Err(bad("bad key kind")),
             }
         }
-        Ok(FlatIndex { dim, metric, keys, data })
+        Ok(FlatIndex {
+            dim,
+            metric,
+            keys,
+            data,
+        })
     }
 }
 

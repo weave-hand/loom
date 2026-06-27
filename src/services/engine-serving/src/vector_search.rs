@@ -55,12 +55,7 @@ pub async fn vector_search(
 
     // 1. Snapshot Q: MVCC anchor for the search.
     let ice = IcebergCatalog::new(pool.clone());
-    let q: i64 = ice
-        .current_snapshot(table)
-        .await
-        .map_err(to_serving)?
-        .id
-        .0;
+    let q: i64 = ice.current_snapshot(table).await.map_err(to_serving)?.id.0;
 
     // 2. Resolve the mirror table_id.
     let mut conn = pool.acquire().await.map_err(to_serving)?;
@@ -100,9 +95,8 @@ pub async fn vector_search(
     //    alive at Q. For vector tables this slice, `inline_delta_batch` always
     //    returns `None` (vectors can't inline). The code path is written correctly
     //    so it lights up when inline-vector support lands.
-    let metric = Metric::from_str(&row.metric).ok_or_else(|| {
-        EngineServingError::Engine(format!("unknown metric '{}'", row.metric))
-    })?;
+    let metric = Metric::from_str(&row.metric)
+        .ok_or_else(|| EngineServingError::Engine(format!("unknown metric '{}'", row.metric)))?;
     let hot: Vec<(VectorKey, f32)> = match inline_delta_batch(pool, table, row.covered_snapshot, q)
         .await
         .map_err(to_serving)?
@@ -129,9 +123,7 @@ fn score_inline_batch(
     let schema = batch.schema();
     let id_idx = 0;
     let vec_idx = schema.index_of(vector_col).map_err(|e| {
-        EngineServingError::Engine(format!(
-            "vector column '{vector_col}' not in schema: {e}"
-        ))
+        EngineServingError::Engine(format!("vector column '{vector_col}' not in schema: {e}"))
     })?;
 
     let id_col = batch.column(id_idx);

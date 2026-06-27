@@ -116,12 +116,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         k if k == COMPACT_JOB_KIND => handle_compact(&cctx, job).await,
                         k if k == BUILD_VECTOR_INDEX_JOB_KIND => {
-                            worker::handler::handle_build_vector_index(
-                                flush,
-                                worker_tuning,
-                                job,
-                            )
-                            .await
+                            worker::handler::handle_build_vector_index(flush, worker_tuning, job)
+                                .await
                         }
                         other => Err(JobFailure {
                             error: format!("unknown job kind: {other}"),

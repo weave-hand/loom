@@ -108,11 +108,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 
 /// Spawn a `FlightDataService` on a UDS. Returns the socket dir (keep alive)
 /// and the socket path string.
-async fn spawn_flight(
-    fx: &PgFixture,
-    db: &str,
-    warehouse: &str,
-) -> (tempfile::TempDir, String) {
+async fn spawn_flight(fx: &PgFixture, db: &str, warehouse: &str) -> (tempfile::TempDir, String) {
     let sock_dir = tempfile::tempdir().expect("socket dir");
     let sock_path = sock_dir.path().join("engine.sock");
     let sock_str = sock_path.to_string_lossy().to_string();
@@ -206,10 +202,7 @@ async fn vector_search_flight_top_k() {
     let run = RunId(uuid::Uuid::new_v4());
 
     // Land rows 1–2 (forced to Parquet: inline_byte_limit = 0).
-    let rows_1_2: &[(i64, [f32; 4])] = &[
-        (1, [1.0, 0.0, 0.0, 0.0]),
-        (2, [0.0, 1.0, 0.0, 0.0]),
-    ];
+    let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
     land(
         &pool,
         &catalog,
@@ -224,10 +217,7 @@ async fn vector_search_flight_top_k() {
     .expect("land rows 1-2");
 
     // Land rows 3–4.
-    let rows_3_4: &[(i64, [f32; 4])] = &[
-        (3, [0.0, 0.0, 1.0, 0.0]),
-        (4, [0.0, 0.0, 0.0, 1.0]),
-    ];
+    let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
     land(
         &pool,
         &catalog,
@@ -243,9 +233,16 @@ async fn vector_search_flight_top_k() {
 
     // Build the cosine vector index.
     let build_run = RunId(uuid::Uuid::new_v4());
-    build_vector_index(&catalog, &pool, &table, "embedding", Metric::Cosine, build_run)
-        .await
-        .expect("build_vector_index");
+    build_vector_index(
+        &catalog,
+        &pool,
+        &table,
+        "embedding",
+        Metric::Cosine,
+        build_run,
+    )
+    .await
+    .expect("build_vector_index");
 
     // Spawn the Flight server.
     let (_sock_dir, sock) = spawn_flight(&fx, &db, &wh.path().display().to_string()).await;

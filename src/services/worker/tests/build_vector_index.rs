@@ -16,8 +16,7 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ColumnSpec, DatasetId, EventType,
-    Job, JobId, LineageEvent, Metric, ObjectType, Ontology, PropertyDef, RunId, TableRef,
-    TypeName,
+    Job, JobId, LineageEvent, Metric, ObjectType, Ontology, PropertyDef, RunId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -115,8 +114,7 @@ async fn spawn_server(fx: &PgFixture, db: &str, wh_path: &str) -> (tempfile::Tem
     let sock_str = sock_path.to_string_lossy().to_string();
 
     let pool = fx.pool_for(db).await;
-    let cp =
-        control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
+    let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let control_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
     let flight_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
 
