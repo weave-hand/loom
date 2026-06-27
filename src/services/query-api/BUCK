@@ -15,6 +15,7 @@ rust_library(
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",
+        "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:thiserror",
@@ -456,6 +457,19 @@ rust_test(
     edition = "2024",
     deps = [
         ":query-api",
+        "//third-party:arrow",
+    ],
+)
+
+rust_test(
+    name = "export-command",
+    crate = "export_command",
+    srcs = ["tests/export_command.rs"],
+    crate_root = "tests/export_command.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
         "//third-party:arrow",
     ],
 )
