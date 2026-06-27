@@ -20,7 +20,7 @@ use arrow_flight::{
 use control_plane_core::{Auth, ControlPlane, SubjectId};
 use control_plane_core::{BaseType, resolve_logical};
 use engine_wire::flight::FlightSqlClient;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use service_runtime::{Subject, token_sha256};
 use time::OffsetDateTime;
