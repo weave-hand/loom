@@ -9,6 +9,7 @@ use arrow::array::{
     ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
     StringArray, TimestampMicrosecondArray,
 };
+use arrow::compute::concat;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use async_trait::async_trait;
 use control_plane_core::{BaseType, ColumnSpec, resolve_logical};
@@ -80,6 +81,57 @@ pub fn build_object_batch(
         let base = resolve_logical(logical)
             .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{logical}`")))?;
         let (dt, array) = one_cell(base, value, name)?;
+        fields.push(Field::new(name, dt, true));
+        arrays.push(array);
+        specs.push(ColumnSpec {
+            name: name.clone(),
+            ty: base.canonical_name(),
+            nullable: true,
+        });
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema.clone(), arrays)
+        .map_err(|e| ServingError::Engine(e.to_string()))?;
+    Ok((schema, batch, specs))
+}
+
+/// Build a single multi-row `RecordBatch` (+ schema + `ColumnSpec`s) from `rows`
+/// (row-major, each aligned to `columns`). Generalizes [`build_object_batch`] to N rows
+/// for the copy-on-write overwrite path. Every field is nullable. Rejects empty `rows`
+/// (the empty/truncate case is handled by the caller before this is reached) and any
+/// shape mismatch or value/type mismatch (via `one_cell`).
+pub fn build_object_batches(
+    columns: &[String],
+    rows: &[Vec<SqlValue>],
+    logical_types: &[String],
+) -> Result<(Arc<Schema>, RecordBatch, Vec<ColumnSpec>), ServingError> {
+    if columns.is_empty() || columns.len() != logical_types.len() || rows.is_empty() {
+        return Err(ServingError::Engine(format!(
+            "build_object_batches: {} columns / {} types / {} rows (need >=1 col, >=1 row, equal col/type counts)",
+            columns.len(),
+            logical_types.len(),
+            rows.len()
+        )));
+    }
+    let mut fields: Vec<Field> = Vec::with_capacity(columns.len());
+    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
+    let mut specs: Vec<ColumnSpec> = Vec::with_capacity(columns.len());
+    for (ci, (name, logical)) in columns.iter().zip(logical_types).enumerate() {
+        let base = resolve_logical(logical)
+            .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{logical}`")))?;
+        let mut col_dt: Option<DataType> = None;
+        let mut cells: Vec<ArrayRef> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let value = row.get(ci).ok_or_else(|| {
+                ServingError::Engine(format!("row shorter than columns at index {ci}"))
+            })?;
+            let (dt, array) = one_cell(base, value, name)?;
+            col_dt = Some(dt);
+            cells.push(array);
+        }
+        let refs: Vec<&dyn arrow::array::Array> = cells.iter().map(|a| a.as_ref()).collect();
+        let array = concat(&refs).map_err(|e| ServingError::Engine(e.to_string()))?;
+        let dt = col_dt.ok_or_else(|| ServingError::Engine("no rows".into()))?;
         fields.push(Field::new(name, dt, true));
         arrays.push(array);
         specs.push(ColumnSpec {

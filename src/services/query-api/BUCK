@@ -512,6 +512,17 @@ rust_test(
 )
 
 rust_test(
+    name = "build-object-batches",
+    crate = "build_object_batches",
+    srcs = ["tests/build_object_batches.rs"],
+    crate_root = "tests/build_object_batches.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+    ],
+)
+
+rust_test(
     name = "export-command",
     crate = "export_command",
     srcs = ["tests/export_command.rs"],
