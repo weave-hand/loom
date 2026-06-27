@@ -115,6 +115,39 @@ loom_fixture_test(
     ],
 )
 
+# Build-vector-index e2e: land vector rows, run handle_build_vector_index over the
+# wire (→ engine RPC → postgres build primitive), assert the mirror row + puffin
+# sidecar exist and match a direct primitive call.
+loom_fixture_test(
+    name = "build-vector-index",
+    crate = "build_vector_index",
+    srcs = ["tests/build_vector_index.rs"],
+    crate_root = "tests/build_vector_index.rs",
+    edition = "2024",
+    deps = [
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/worker:worker",
+        "//src/loom-config:loom-config",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
 # Compaction e2e: land 3 small files, run the compact handler over the wire,
 # verify they coalesce into 1, rows are preserved, and prior snapshot time-travels.
 loom_fixture_test(

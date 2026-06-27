@@ -10,7 +10,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use control_plane_core::{COMPACT_JOB_KIND, FLUSH_JOB_KIND, GC_JOB_KIND, JobFailure, RetryPolicy};
+use control_plane_core::{
+    BUILD_VECTOR_INDEX_JOB_KIND, COMPACT_JOB_KIND, FLUSH_JOB_KIND, GC_JOB_KIND, JobFailure,
+    RetryPolicy,
+};
 use control_plane_worker::Worker;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::FlightTableClient;
@@ -97,6 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 FLUSH_JOB_KIND.to_string(),
                 GC_JOB_KIND.to_string(),
                 COMPACT_JOB_KIND.to_string(),
+                BUILD_VECTOR_INDEX_JOB_KIND.to_string(),
             ],
             shutdown,
             move |job| {
@@ -111,6 +115,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             worker::handler::handle_gc(flush, worker_tuning, job).await
                         }
                         k if k == COMPACT_JOB_KIND => handle_compact(&cctx, job).await,
+                        k if k == BUILD_VECTOR_INDEX_JOB_KIND => {
+                            worker::handler::handle_build_vector_index(
+                                flush,
+                                worker_tuning,
+                                job,
+                            )
+                            .await
+                        }
                         other => Err(JobFailure {
                             error: format!("unknown job kind: {other}"),
                             policy: RetryPolicy::Abandon,
