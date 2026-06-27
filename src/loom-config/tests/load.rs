@@ -63,7 +63,8 @@ fn load_reads_file_then_env_wins() {
     let from_file: TestCfg = load(&map(&[("LOOM_CONFIG_FILE", &path)])).unwrap();
     assert_eq!(from_file.n, 3, "file value applies over default");
     // File + env: env overlays the file (defaults < file < env).
-    let env_wins: TestCfg = load(&map(&[("LOOM_CONFIG_FILE", &path), ("LOOM_TEST_N", "7")])).unwrap();
+    let env_wins: TestCfg =
+        load(&map(&[("LOOM_CONFIG_FILE", &path), ("LOOM_TEST_N", "7")])).unwrap();
     assert_eq!(env_wins.n, 7, "env overlays file");
     // `f` drops at end of scope, removing the temp file — no manual cleanup.
 }
