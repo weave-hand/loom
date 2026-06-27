@@ -109,11 +109,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             engine_wire::flight::FlightSqlClient::connect(engine_socket.clone()).await?;
         let export = FlightExportService::new(auth_flight, cp_flight, flight_engine, max_rows);
 
+        // Bind eagerly so an operator who explicitly requested the export endpoint gets a hard
+        // startup failure (port in use, permission) rather than a silently-down listener.
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(
+            |e| -> Box<dyn std::error::Error> {
+                format!("binding LOOM_FLIGHT_BIND_ADDR `{addr}` failed: {e}").into()
+            },
+        )?;
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         tokio::spawn(async move {
             tracing::info!(%addr, "starting governed Flight export server");
             if let Err(e) = tonic::transport::Server::builder()
                 .add_service(FlightServiceServer::new(export))
-                .serve(addr)
+                .serve_with_incoming(incoming)
                 .await
             {
                 tracing::error!(error = %e, "Flight export server exited");

@@ -50,8 +50,11 @@ as the *transport* (streaming, Arrow-native, standard clients), not arbitrary Fl
 
 ```jsonc
 // ExportCommand — the governed slice to export. Mirrors GET /objects/{type} params.
+// `filters` is an ARRAY OF [column, value] pairs (not an object), mirroring the read path's
+// `eq_filters: Vec<(String,String)>` exactly — so a column may carry several predicates (e.g. a
+// range), and the value may embed an operator (e.g. ">10"), validated vs allowed/masked cols.
 { "type": "Chunk",
-  "filters": { "sourcebook": "PHB" },   // optional eq_filters (validated vs allowed/masked cols)
+  "filters": [["sourcebook", "PHB"]],   // optional; [] or omitted = no filters
   "ids": [/* optional object-set identity values → an `In` predicate */] }
 ```
 

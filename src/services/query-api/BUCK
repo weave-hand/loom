@@ -45,6 +45,7 @@ rust_binary(
         "//third-party:arrow-flight",
         "//third-party:iceberg",
         "//third-party:tokio",
+        "//third-party:tokio-stream",
         "//third-party:tonic",
         "//third-party:tracing",
     ],

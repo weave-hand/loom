@@ -23,6 +23,30 @@ fn export_command_decodes_minimal() {
 }
 
 #[test]
+fn export_command_wire_shape_is_array_of_pairs() {
+    // Pin the exact external wire contract (the Grimoire A4 consumer builds this JSON):
+    // `filters` is an ARRAY of [column, value] pairs, NOT a JSON object — so repeated-key
+    // predicates (e.g. a range on one column) are expressible, matching `eq_filters`.
+    let json = r#"{"type":"Chunk","filters":[["sourcebook","PHB"],["page",">10"]],"ids":["c1"]}"#;
+    let cmd = ExportCommand::decode(json.as_bytes()).expect("decode wire shape");
+    assert_eq!(cmd.type_name, "Chunk");
+    assert_eq!(
+        cmd.filters,
+        vec![
+            ("sourcebook".to_string(), "PHB".to_string()),
+            ("page".to_string(), ">10".to_string()),
+        ]
+    );
+    assert_eq!(cmd.ids, vec!["c1".to_string()]);
+    // And encode() emits that same array-of-pairs shape.
+    let reser = String::from_utf8(cmd.encode()).expect("utf8");
+    assert!(
+        reser.contains(r#""filters":[["sourcebook","PHB"],["page",">10"]]"#),
+        "filters must serialize as an array of pairs, got: {reser}"
+    );
+}
+
+#[test]
 fn export_schema_maps_scalars_and_vector() {
     let cols = vec!["id".to_string(), "embedding".to_string()];
     let types = vec!["string".to_string(), "vector(4)".to_string()];

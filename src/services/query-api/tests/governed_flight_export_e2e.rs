@@ -176,6 +176,20 @@ async fn setup(
     tempfile::TempDir,
     tempfile::TempDir,
 ) {
+    setup_with_cap(fx, 100_000).await
+}
+
+/// Like [`setup`] but with a configurable `max_rows` export cap, for the row-cap test.
+async fn setup_with_cap(
+    fx: &PgFixture,
+    max_rows: u32,
+) -> (
+    std::net::SocketAddr,
+    String,
+    Arc<PgControlPlane>,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -237,7 +251,7 @@ async fn setup(
     let flight_engine = FlightSqlClient::connect(sock_str)
         .await
         .expect("engine connect");
-    let export = FlightExportService::new(auth, cp_dyn, flight_engine, 100_000);
+    let export = FlightExportService::new(auth, cp_dyn, flight_engine, max_rows);
 
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -374,5 +388,74 @@ async fn export_requires_bearer_token() {
         result.unwrap_err().code(),
         tonic::Code::Unauthenticated,
         "a request with no bearer token must be unauthenticated"
+    );
+}
+
+/// A well-formed but unrecognised bearer token is `Unauthenticated` (not just a missing one).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_rejects_invalid_token() {
+    let fx = PgFixture::start();
+    let (addr, _token, _cp, _wh, _sock) = setup(&fx).await;
+
+    let url = format!("http://{addr}");
+    let channel = tonic::transport::Endpoint::try_from(url)
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+    let mut client = FlightServiceClient::new(channel);
+    let desc = FlightDescriptor::new_cmd(chunk_cmd().encode());
+    // A syntactically valid bearer header carrying a token that resolves to no session.
+    let result = client
+        .get_flight_info(authed(desc, "not-a-real-session-token"))
+        .await;
+    assert_eq!(
+        result.unwrap_err().code(),
+        tonic::Code::Unauthenticated,
+        "an invalid/unknown bearer token must be unauthenticated"
+    );
+}
+
+/// The `LOOM_EXPORT_MAX_ROWS` cap is a real guard: an export whose governed slice exceeds the
+/// cap ends the `do_get` stream with an ERROR (compiled with `LIMIT max_rows+1`, the stream
+/// errors past `max_rows`) rather than silently truncating. Cap 1000 against the 1500-row
+/// dataset must fail the stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_cap_exceeded_errors_stream() {
+    let fx = PgFixture::start();
+    let (addr, token, _cp, _wh, _sock) = setup_with_cap(&fx, 1000).await;
+
+    let url = format!("http://{addr}");
+    let channel = tonic::transport::Endpoint::try_from(url)
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+    let mut client = FlightServiceClient::new(channel);
+    let desc = FlightDescriptor::new_cmd(chunk_cmd().encode());
+    let info = client
+        .get_flight_info(authed(desc, &token))
+        .await
+        .expect("get_flight_info")
+        .into_inner();
+    let ticket = info
+        .endpoint
+        .into_iter()
+        .next()
+        .and_then(|e| e.ticket)
+        .expect("ticket");
+    let stream = client
+        .do_get(authed(ticket, &token))
+        .await
+        .expect("do_get")
+        .into_inner();
+    let data = stream.map_err(FlightError::from);
+    let collected: Result<Vec<RecordBatch>, _> =
+        FlightRecordBatchStream::new_from_flight_data(data)
+            .try_collect()
+            .await;
+    assert!(
+        collected.is_err(),
+        "an export exceeding LOOM_EXPORT_MAX_ROWS must fail the stream, not truncate silently"
     );
 }

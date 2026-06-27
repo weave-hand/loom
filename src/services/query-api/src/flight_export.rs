@@ -156,13 +156,24 @@ async fn authenticate(
     match auth.resolve_session(&hash, OffsetDateTime::now_utc()).await {
         Ok(Some(sid)) => Ok(sid),
         Ok(None) => Err(Status::unauthenticated("invalid or expired token")),
-        Err(_) => Err(Status::internal("auth error")),
+        Err(e) => Err(internal("flight export auth store fault", e)),
     }
+}
+
+/// Log a backend/internal fault server-side and return an opaque gRPC `Internal` status. The
+/// detail (`error = %e`) is for operators only — no internal detail (SQL fragments, table/column
+/// names, engine messages) reaches the external client. Mirrors the HTTP path's `internal_error`
+/// (`http.rs`); this is the external Flight boundary, so scrubbing matters even more.
+fn internal(context: &str, e: impl std::fmt::Display) -> Status {
+    tracing::error!(error = %e, "{context}");
+    Status::internal("internal error")
 }
 
 /// Map a governance error to a gRPC status. A denied type is `PermissionDenied` (before
 /// existence is revealed); unknown type / bad filter is `InvalidArgument` (same validation as
-/// `read_object`); backend faults are `Internal` (no internal detail leaked).
+/// `read_object`); backend faults are an opaque `Internal` (detail logged, never sent to the
+/// client). The `InvalidArgument` messages carry only the client-supplied type/column/link name
+/// (which the caller already knows), never internal SQL or schema detail.
 fn map_query_err(e: QueryError) -> Status {
     match e {
         QueryError::Forbidden => Status::permission_denied("forbidden"),
@@ -171,7 +182,7 @@ fn map_query_err(e: QueryError) -> Status {
         QueryError::BadFilter(c) => Status::invalid_argument(format!("filter not permitted: {c}")),
         QueryError::BadFilterValue(e) => Status::invalid_argument(e.to_string()),
         QueryError::NoIdentity(t) => Status::invalid_argument(format!("type has no identity: {t}")),
-        other => Status::internal(other.to_string()),
+        other => internal("flight export governance fault", other),
     }
 }
 
@@ -216,13 +227,13 @@ impl FlightService for FlightExportService {
             &governed.logical_types,
             &governed.masked_columns,
         )
-        .map_err(Status::internal)?;
+        .map_err(|e| internal("flight export schema build", e))?;
         let endpoint = FlightEndpoint::new().with_ticket(Ticket {
             ticket: cmd.encode().into(),
         });
         let info = FlightInfo::new()
             .try_with_schema(&schema)
-            .map_err(|e| Status::internal(format!("schema encode: {e}")))?
+            .map_err(|e| internal("flight export schema encode", e))?
             .with_endpoint(endpoint)
             .with_descriptor(descriptor);
         Ok(Response::new(info))
@@ -257,11 +268,15 @@ impl FlightService for FlightExportService {
             .engine
             .execute_stream(sql)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| internal("flight export engine stream open", e))?;
 
         // Row cap: count rows as they stream; once cumulative rows exceed `max_rows`, emit a
-        // stream error so the export fails explicitly instead of truncating. Engine/stream
-        // faults are surfaced as stream errors too.
+        // stream error so the export fails explicitly instead of truncating. The cap message is
+        // safe to surface (a fixed string + the limit). An engine/stream fault is logged
+        // server-side and surfaced to the client as an OPAQUE stream error — the consumer sees a
+        // failed stream (not a silent short read), but no internal detail leaks. NOTE: the cap's
+        // explicit-failure guarantee holds only for `max_rows < u32::MAX` (the compile uses
+        // `saturating_add(1)`); a cap of exactly `u32::MAX` cannot over-fetch the +1 sentinel.
         let max = u64::from(self.max_rows);
         let mut seen: u64 = 0;
         let capped = batches.map(move |item| match item {
@@ -278,11 +293,16 @@ impl FlightService for FlightExportService {
                     Ok(batch)
                 }
             }
-            Err(e) => Err(FlightError::from_external_error(Box::new(e))),
+            Err(e) => {
+                tracing::error!(error = %e, "flight export engine stream fault");
+                Err(FlightError::from_external_error(Box::new(
+                    std::io::Error::other("export stream error"),
+                )))
+            }
         });
         let out = FlightDataEncoderBuilder::new()
             .build(capped)
-            .map_err(|e| Status::internal(e.to_string()));
+            .map_err(|e| internal("flight export encode", e));
         Ok(Response::new(Box::pin(out)))
     }
 
