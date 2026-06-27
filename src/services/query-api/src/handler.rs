@@ -222,13 +222,10 @@ pub async fn compile_object_read(
     // resolve: type -> ObjectType (table + ordered properties). A genuine miss is a
     // client 404 (UnknownType); a backend fault must propagate as itself (-> 500),
     // not masquerade as an unknown type.
-    let object_type = ontology
-        .get_type(&type_name)
-        .await
-        .map_err(|e| match e {
-            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
-            other => QueryError::ControlPlane(other),
-        })?;
+    let object_type = ontology.get_type(&type_name).await.map_err(|e| match e {
+        ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
+        other => QueryError::ControlPlane(other),
+    })?;
 
     let (row_filters, denied, masked) = load_policy(acl, &subject.0, &target).await?;
 
@@ -275,9 +272,7 @@ pub async fn compile_object_read(
     let mut derived_types: Vec<String> = Vec::new();
     let mut derived_selects: Vec<crate::sql::DerivedSelect> = Vec::new();
     if !object_type.derived.is_empty() {
-        let links = ontology
-            .links(&type_name, PageReq::unbounded())
-            .await?;
+        let links = ontology.links(&type_name, PageReq::unbounded()).await?;
         for d in &object_type.derived {
             if denied.contains(&d.name) {
                 continue;
@@ -301,8 +296,7 @@ pub async fn compile_object_read(
                 Err(ControlPlaneError::NotFound(_)) => continue, // target type gone -> omit
                 Err(other) => return Err(QueryError::ControlPlane(other)),
             };
-            let (t_filters, t_denied, _t_masked) =
-                load_policy(acl, &subject.0, &target_pt).await?;
+            let (t_filters, t_denied, _t_masked) = load_policy(acl, &subject.0, &target_pt).await?;
             // Don't leak a target column the subject may not see, via an aggregate over it.
             if let Some(col) = agg_column(&d.agg)
                 && t_denied.contains(col)
@@ -355,8 +349,11 @@ pub async fn compile_object_read(
     logical_types.extend(derived_types.iter().cloned());
     // Which projected output columns were masked (SELECTed as the constant mask marker, so
     // streamed back as Utf8). Load-bearing for the export Arrow schema; see `GovernedRead`.
-    let masked_columns: Vec<String> =
-        columns.iter().filter(|c| masked.contains(*c)).cloned().collect();
+    let masked_columns: Vec<String> = columns
+        .iter()
+        .filter(|c| masked.contains(*c))
+        .cloned()
+        .collect();
     Ok(GovernedRead {
         sql,
         params,

@@ -101,9 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(DEFAULT_EXPORT_MAX_ROWS);
-        let addr: std::net::SocketAddr = bind.parse().map_err(|e| -> Box<dyn std::error::Error> {
-            format!("LOOM_FLIGHT_BIND_ADDR `{bind}` is not a valid socket address: {e}").into()
-        })?;
+        let addr: std::net::SocketAddr =
+            bind.parse().map_err(|e| -> Box<dyn std::error::Error> {
+                format!("LOOM_FLIGHT_BIND_ADDR `{bind}` is not a valid socket address: {e}").into()
+            })?;
         let flight_engine =
             engine_wire::flight::FlightSqlClient::connect(engine_socket.clone()).await?;
         let export = FlightExportService::new(auth_flight, cp_flight, flight_engine, max_rows);
