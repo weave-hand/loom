@@ -275,6 +275,7 @@ git commit -m "feat(postgres): puffin loom-vector-index-v1 blob read/write helpe
   - `pub enum IndexKind { Flat }` — `as_str()` = `"flat"`.
   - `pub enum VectorKey { Int(i64), Str(String) }` — the object identity value; `Eq` + `Clone` + `Debug`.
   - `pub trait VectorIndex { fn metric(&self) -> Metric; fn dim(&self) -> u32; fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)>; }`
+  - `pub fn distance(metric: Metric, a: &[f32], b: &[f32]) -> f32` — the single scoring function shared by the cold index (`search`) and the hot delta (Task 7), so cold and hot are scored identically (guards Acceptance 4 against a metric mismatch).
   - `pub struct FlatIndex { … }` with:
     - `pub fn build(dim: u32, metric: Metric, rows: Vec<(VectorKey, Vec<f32>)>) -> Result<FlatIndex>` (errors if any row's len != dim)
     - `pub fn serialize(&self) -> Vec<u8>`
@@ -354,6 +355,16 @@ fn string_keys_round_trip() {
 fn build_rejects_dim_mismatch() {
     let r = vec![(VectorKey::Int(1), vec![1.0, 0.0, 0.0])];
     assert!(FlatIndex::build(4, Metric::Cosine, r).is_err());
+}
+
+#[test]
+fn distance_fn_matches_metrics() {
+    use control_plane_core::distance;
+    // L2 of identical vectors is 0; cosine of identical (non-zero) is ~0.
+    assert!((distance(Metric::L2, &[1.0, 2.0], &[1.0, 2.0]) - 0.0).abs() < 1e-6);
+    assert!((distance(Metric::Cosine, &[1.0, 0.0], &[1.0, 0.0]) - 0.0).abs() < 1e-6);
+    // Orthogonal cosine distance is 1.
+    assert!((distance(Metric::Cosine, &[1.0, 0.0], &[0.0, 1.0]) - 1.0).abs() < 1e-6);
 }
 ```
 
@@ -589,6 +600,16 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// The scoring function for `metric`, ascending = nearer. Public so the engine's
+/// hot-delta brute-force (Task 7) scores identically to the cold index.
+#[must_use]
+pub fn distance(metric: Metric, a: &[f32], b: &[f32]) -> f32 {
+    match metric {
+        Metric::Cosine => cosine_distance(a, b),
+        Metric::L2 => l2_distance(a, b),
+    }
+}
+
 fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     let mut dot = 0.0f32;
     let mut na = 0.0f32;
@@ -623,13 +644,7 @@ impl VectorIndex for FlatIndex {
     }
     fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)> {
         let mut scored: Vec<(usize, f32)> = (0..self.keys.len())
-            .map(|i| {
-                let dist = match self.metric {
-                    Metric::Cosine => cosine_distance(query, self.row(i)),
-                    Metric::L2 => l2_distance(query, self.row(i)),
-                };
-                (i, dist)
-            })
+            .map(|i| (i, distance(self.metric, query, self.row(i))))
             .collect();
         // Stable sort by distance; ties keep insertion order.
         scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -649,7 +664,7 @@ impl VectorIndex for FlatIndex {
 In `src/control-plane/core/src/lib.rs`: add `mod vector_index;` in the module block and to the re-exports:
 
 ```rust
-pub use vector_index::{FlatIndex, IndexKind, Metric, VectorIndex, VectorKey};
+pub use vector_index::{FlatIndex, IndexKind, Metric, VectorIndex, VectorKey, distance};
 ```
 
 In `src/control-plane/core/BUCK`, add (mirror the `page` test target):
@@ -1126,18 +1141,39 @@ Read all vectors live at `S` over the serving read path (cold Parquet ∪ hot in
 **Interfaces:**
 - Produces:
   - `pub struct BuiltIndex { pub covered_snapshot: i64, pub puffin_path: String, pub row_count: i64 }`
-  - `pub async fn build_vector_index(catalog: &SqlCatalog, pool: &PgPool, table: &TableRef, column: &str, run_id: RunId) -> Result<BuiltIndex>`
+  - `pub async fn build_vector_index(catalog: &SqlCatalog, pool: &PgPool, table: &TableRef, column: &str, metric: control_plane_core::Metric, run_id: RunId) -> Result<BuiltIndex>` — `metric` is recorded in the blob + mirror row; slice-1 callers (RPC/worker) pass `Metric::Cosine`.
   - `pub async fn inline_delta_batch(pool: &PgPool, table: &TableRef, born_after: i64, at: i64) -> Result<Option<arrow_array::RecordBatch>>` (used by Task 8)
 - Consumes: `IcebergCatalog::{current_snapshot, files_with_stats, inline_live_batch}`, `read_files_as_batches`, `puffin::write_flat_index`, `vector_index::insert_vector_index`, `pg_emit` (lineage), `core::{FlatIndex, Metric, VectorKey, ObjectType-identity via ontology}`.
 
 **Design notes for the implementer (read before coding):**
-- Resolve the identity column: the build needs the object's identity property name to populate `VectorKey`. The ontology maps a type → `ObjectType.identity: Option<String>`. For slice 1 the *table* is the addressing unit; obtain the identity column name by looking up the ontology type whose `table` matches `(schema, name)`. If no identity is declared, error deterministically (`ControlPlaneError::Backend("no identity column for <table>")`). Grep `src/control-plane/postgres/src/ontology.rs` / `iceberg_type.rs` for the type↔table resolver; if none exists cheaply, accept the identity column name as the table's declared identity via the ontology read API the query-api already uses. Keep the resolution in one small helper `identity_column_for(pool, table) -> Result<String>`.
-- Extract vectors: the vector column is Arrow `List<Float32>`. For each row, downcast the column to `ListArray`, get the child `Float32Array` slice for that row → `Vec<f32>`. The identity column downcasts to `Int64Array`/`Int32Array` (→ `VectorKey::Int`) or `StringArray` (→ `VectorKey::Str`). Mirror the arrow downcast patterns already in `engine-serving/src/provider.rs` (`pg_rows_to_arrays`) and `iceberg_inline.rs` (`cell_from_arrow`).
-- The covered snapshot `S` = `IcebergCatalog::current_snapshot(table)?.id`.
-- Field id of the vector column: obtain from the loaded iceberg `Table`'s current schema (`tbl.metadata().current_schema().field_id_by_name(column)`), or fall back to `0` if the helper isn't available — the field id is informational in the blob footer. Prefer the real id; grep iceberg-rust `Schema` for `field_id_by_name`.
+- **Snapshot/Catalog visibility (BLOCKER fix).** `IcebergCatalog::current_snapshot` is a method of the `control_plane_core::Catalog` **trait**, not an inherent method, so the caller MUST have `use control_plane_core::Catalog;` in scope (exactly as `inline_live_batch` does internally). `current_snapshot` returns a `Snapshot` whose `id` is a `SnapshotId(pub i64)` newtype — extract the raw `i64` as `.id.0`, never `.id`. So: the covered snapshot `S: i64 = IcebergCatalog::new(pool.clone()).current_snapshot(table).await?.id.0;`.
+- **`table_id` resolver (BLOCKER fix — unify across Tasks 4/6/7).** Use the existing public helper `crate::iceberg_mirror::live_table_id(conn: &mut PgConnection, ns: &str, name: &str) -> Result<Option<i64>>` (defined at `iceberg_mirror.rs:177`, already reused by inline/flush/gc). Acquire a conn from the pool, call `live_table_id(&mut conn, &table.schema, &table.name).await?`, and map `None` → `ControlPlaneError::NotFound`. Do NOT invent a new resolver; Task 7 uses this same helper for its lookup.
+- **Identity column resolver (BLOCKER fix — concrete query).** The build needs the object's identity property name to populate `VectorKey`. The ontology stores it in `ontology.object_type(name, table_schema, table_name, identity)` where `identity text` is **nullable** (opt-in). Resolve it with a compile-time query keyed by `(schema, name)`:
+  ```rust
+  async fn identity_column_for(pool: &PgPool, table: &TableRef) -> Result<String> {
+      let id: Option<String> = sqlx::query_scalar!(
+          "select identity from ontology.object_type \
+           where table_schema = $1 and table_name = $2",
+          table.schema,
+          table.name,
+      )
+      .fetch_optional(pool)
+      .await
+      .map_err(backend)?
+      .flatten(); // Option<Option<String>> -> Option<String> (row missing OR identity NULL)
+      id.ok_or_else(|| {
+          ControlPlaneError::Backend(
+              format!("no identity column declared for {}.{}", table.schema, table.name).into(),
+          )
+      })
+  }
+  ```
+  (This adds a compile-time `query_scalar!` → it is part of the `.sqlx` regen in Step 4.)
+- Extract vectors: the vector column is Arrow `List<Float32>`. For each row, downcast the column to `ListArray`, get the child `Float32Array` slice for that row → `Vec<f32>`. The identity column downcasts to `Int64Array`/`Int32Array` (→ `VectorKey::Int`) or `StringArray` (→ `VectorKey::Str`). Mirror the arrow downcast patterns already in `engine-serving/src/provider.rs` (`pg_rows_to_arrays`) and `iceberg_inline.rs` (`cell_from_arrow`). Use `.as_any().downcast_ref::<ListArray>().ok_or_else(...)` (no `unwrap`).
+- Field id of the vector column: obtain from the loaded iceberg `Table`'s current schema (prefer the real id via the schema's field-id-by-name accessor on this rev — grep iceberg-rust `spec::Schema` for `field_id_by_name`). If the accessor name differs, a `0` fallback is acceptable: the footer `fields` is informational for decode in slice 1.
 - Puffin path: `format!("{}/metadata/loom-vector-index-{}.puffin", tbl.metadata().location(), uuid::Uuid::new_v4())`. `tbl.metadata().location()` is absolute (file://… or s3://…) so the FileIO resolves it.
-- FileIO: `let tbl = catalog.load_table(&ident).await?; let file_io = tbl.file_io().clone();`.
-- Transaction: `write_flat_index` happens **before** the tx (it is an object-store write, mirroring how `append_parquet_snapshot` does object-store reads before its tx). Then `pool.begin()`, `insert_vector_index(&mut tx, …)`, `pg_emit(&mut tx, &lineage)`, `tx.commit()`. Resolve `table_id` for the insert via the existing `live_table_id`/`resolve_table` (the latter is private to `iceberg_catalog`; either add a small `pub(crate)`/`pub` resolver or query `iceberg_mirror.table` directly with a compile-time `query_scalar!`).
+- FileIO: `let tbl = catalog.load_table(&ident).await.map_err(backend)?; let file_io = tbl.file_io().clone();`.
+- Transaction: `write_flat_index` happens **before** the tx (it is an object-store write, mirroring how `append_parquet_snapshot` does object-store reads before its tx). Then `pool.begin()`, resolve `table_id` via `live_table_id(&mut tx, …)`, `insert_vector_index(&mut tx, …)`, `pg_emit(&mut tx, &lineage)`, `tx.commit()`. (`pg_emit(conn, &LineageEvent)` is reused exactly as `iceberg_control_plane.rs` does.)
 - Lineage: `LineageEvent { run_id, event_type: EventType::Complete, event_time: OffsetDateTime::now_utc(), inputs: vec![DatasetRef{namespace: schema, name}], outputs: vec![DatasetRef{namespace:"loom-vector-index", name: puffin_path}], payload: json!({"column": column, "covered_snapshot": S, "row_count": n}) }`. Confirm `pg_emit`'s signature in `src/control-plane/postgres/src/lineage.rs` (`pg_emit(conn, &LineageEvent)`).
 
 - [ ] **Step 1: Write the failing fixture test**
@@ -1218,11 +1254,11 @@ git commit -m "feat(postgres): build_vector_index primitive (serving-read -> puf
 - Consumes: `vector_index::{lookup_vector_index}`, `puffin::read_flat_index`, `vector_index::inline_delta_batch`, `IcebergCatalog::current_snapshot`, `core::{FlatIndex, VectorIndex, VectorKey}`.
 
 **Design notes:**
-- `Q` = `IcebergCatalog::new(pool.clone()).current_snapshot(table)?.id`.
-- Resolve `table_id` (reuse the resolver added in Task 6, or `IcebergCatalog::files_with_stats` already resolves internally — expose a small `pub async fn table_id_at(pool, table, at) -> Result<i64>` in `iceberg_catalog.rs` if not present).
-- `lookup_vector_index(pool, table_id, column, Q)` → `None` ⇒ `Err(EngineServingError::NoIndex(...))`.
+- `Q` (BLOCKER fix, same as Task 6): `use control_plane_core::Catalog;` in scope, then `let q: i64 = IcebergCatalog::new(pool.clone()).current_snapshot(table).await.map_err(to_serving)?.id.0;` — `.id.0`, not `.id`.
+- Resolve `table_id` with the SAME helper as Tasks 4/6: `crate::iceberg_mirror::live_table_id` (acquire a conn from `pool`). Do not introduce a new resolver.
+- `lookup_vector_index(pool, table_id, column, q)` → `None` ⇒ `Err(EngineServingError::NoIndex(...))`.
 - Cold: load the table via `catalog`, `read_flat_index(&tbl.file_io(), &row.puffin_path)`, `idx.search(query, k)`.
-- Hot: `inline_delta_batch(pool, table, row.covered_snapshot, Q)` → if `Some(batch)`, brute-force top-k over its rows using the **index's metric** (reuse `core` distance fns — expose them as `pub` in `core::vector_index`, e.g. `pub fn distance(metric: Metric, a: &[f32], b: &[f32]) -> f32`, and add a tiny core test; or re-derive locally). Pull identity + vector from the batch with the same downcasts as Task 6.
+- Hot: `inline_delta_batch(pool, table, row.covered_snapshot, q)` → if `Some(batch)`, brute-force top-k over its rows using `control_plane_core::distance(metric, query, row_vec)` with `metric = Metric::from_str(&row.metric).ok_or(...)` — the SAME scoring function the cold index uses (added as `pub` in Task 2), so cold and hot can never diverge. Pull identity + vector from the batch with the same downcasts as Task 6.
 - Merge: concatenate cold `(VectorKey, f32)` + hot `(VectorKey, f32)`, stable-sort ascending by distance, take `k`.
 - Build the output `RecordBatch`: identity column typed from the `VectorKey` variants (all `Int` ⇒ `Int64Array`; all `Str` ⇒ `StringArray`), `_distance` ⇒ `Float32Array`.
 
@@ -1236,27 +1272,54 @@ git commit -m "feat(postgres): build_vector_index primitive (serving-read -> puf
 //! inline, no double-count and none missed — including a row flushed between S
 //! and Q. Cosine and L2 both verified. Plus the no-index deterministic error.
 
-#[tokio::test]
-async fn knn_merges_cold_and_hot_exactly_cosine() {
-    // 1. seed wh.docs (id: Long, embedding: vector(4)); land+flush ids 1..=2; build index @S.
-    // 2. insert inline ids 3..=4 (born after S). flush id 3 (so it moves cold but begin>S).
-    // 3. let batch = vector_search(&catalog, pool, &table, "embedding", &q, 3).await.unwrap();
-    // 4. extract ids; assert == expected exact top-3 with no id repeated.
-    todo!("flesh out from tests/iceberg_landing.rs + vector_index_build.rs helpers");
+// Shared seed: extract the (id, distance) pairs from a vector_search result batch.
+// `ids` downcasts the identity column (Int64Array) and returns Vec<i64> in row order.
+fn ids(batch: &arrow_array::RecordBatch) -> Vec<i64> {
+    use arrow_array::{Array, Int64Array};
+    let col = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    (0..col.len()).map(|i| col.value(i)).collect()
 }
 
 #[tokio::test]
-async fn knn_l2_exact() { todo!() }
+async fn knn_merges_cold_and_hot_exactly_cosine() {
+    // 1. seed wh.docs (id: Long identity, embedding: vector(4)); land ids 1,2 and FLUSH
+    //    them to Parquet; build_vector_index @S so the index covers {1,2}. record S.
+    // 2. land ids 3,4 INLINE (begin_snapshot > S). FLUSH id 3 between S and Q (it moves
+    //    to Parquet but keeps begin_snapshot > S, so it is hot-delta, not in the index).
+    // 3. query nearest to id 1's embedding, k=3:
+    //    let batch = vector_search(&catalog, pool, &table, "embedding", &q, 3).await.unwrap();
+    //    let got = ids(&batch);
+    // 4. EXACT assertions (the load-bearing proof):
+    //    assert_eq!(got.len(), 3);
+    //    let set: std::collections::HashSet<i64> = got.iter().copied().collect();
+    //    assert_eq!(set.len(), got.len(), "no id double-counted");          // no dup
+    //    assert_eq!(set, [1, 3, 4].into_iter().collect());                  // exact membership
+    //    // distances ascending:
+    //    let d = distances(&batch); assert!(d.windows(2).all(|w| w[0] <= w[1]));
+    //    Choose embeddings so the true cosine top-3 to q is exactly {1,3,4} (2 is farthest),
+    //    including id 3 which was flushed between S and Q — counted once via the hot delta,
+    //    NOT via the index. This is Acceptance 4's "flushed-between row counted exactly once".
+    panic!("REPLACE: implement using tests/iceberg_landing.rs + vector_index_build.rs seed helpers");
+}
+
+#[tokio::test]
+async fn knn_l2_exact() {
+    // Same seed shape, but build the index with Metric::L2 (the build primitive must let
+    // the metric be chosen — default Cosine; for L2 either add a metric arg to the queue
+    // payload later or build the FlatIndex with L2 directly in this test via the primitive's
+    // metric parameter). Assert the L2 nearest top-k matches the hand-computed euclidean order.
+    panic!("REPLACE: L2 variant of the merge proof");
+}
 
 #[tokio::test]
 async fn no_bound_index_is_deterministic_error() {
     // seed a table with a vector column but DO NOT build an index; assert
     // vector_search returns Err(EngineServingError::NoIndex(_)), never panics.
-    todo!()
+    panic!("REPLACE: assert matches!(err, EngineServingError::NoIndex(_))");
 }
 ```
 
-> Replace all `todo!()` with concrete bodies before committing (see Task 6 note on the `todo!` scaffold rule). Reuse the seed helpers; this is the most important test in the slice — assert exact membership AND no duplicates AND the flushed-between-S-and-Q row is counted exactly once.
+> The three bodies above are spelled out as concrete assertion plans (exact id set, no-dup, ascending distance, the flushed-between case). Replace each `panic!("REPLACE…")` with the real body before committing Task 7 — `panic!` (not `todo!`) is used deliberately so a forgotten scaffold fails the test run loudly rather than compiling green. Also add a `distances(&batch) -> Vec<f32>` helper (downcast column 1 to `Float32Array`). **Metric decision for `knn_l2_exact`:** the build primitive (Task 6) builds with `Metric::Cosine` by default; to test L2, give `build_vector_index` an explicit `metric: Metric` parameter (thread it through, default Cosine at the job/RPC layer for slice 1). Update Task 6's `build_vector_index` signature to `build_vector_index(catalog, pool, table, column, metric, run_id)` and the RPC/worker to pass `Metric::Cosine` — record this as a cross-task signature so Task 9's RPC impl matches.
 
 - [ ] **Step 2: Implement `vector_search.rs` + lib wiring**
 
@@ -1264,7 +1327,9 @@ Add `pub mod vector_search;` and `pub use vector_search::vector_search;` to `eng
 
 - [ ] **Step 3: BUCK + run**
 
-Add a `vector-search` `loom_fixture_test` in `engine-serving/BUCK` (deps: `:engine-serving`, core, postgres, arrow, iceberg, sqlx, tokio, serde_json, tempfile, time, uuid). The engine-serving lib may need `//third-party:iceberg` added to its `deps` (for `SqlCatalog`/`FileIO` in the new module) — add it if the build complains.
+**Definite (not conditional):** the engine-serving lib currently has NO `iceberg` dep, but `vector_search` takes `&SqlCatalog` and calls `tbl.file_io()` (an `iceberg::io::FileIO`). Add `iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950b2cd8d99c0243242ef45f3948c5" }` to `src/services/engine-serving/Cargo.toml`, run `cargo generate-lockfile` + `./tools/buckify.sh` (the `reindeer-check` hook enforces Cargo/BUCK sync), and add `"//third-party:iceberg"` to the `engine-serving` `rust_library` `deps` in `BUCK`. Then add a `vector-search` `loom_fixture_test` (deps: `:engine-serving`, `//src/control-plane/core:core`, `//src/control-plane/postgres:postgres`, arrow, iceberg, sqlx, tokio, serde_json, tempfile, time, uuid).
+
+> NOTE: adding iceberg pins a 4th consumer of the git dep — that is fine (it shares the existing pinned rev). Do NOT bump the rev. After `buckify.sh`, `git diff third-party/BUCK` should be empty (the crate is already in the graph via postgres/engine/worker).
 
 Run: `buck2 test //src/services/engine-serving:vector-search > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t7.log`
 Expected: PASS (3 tests).
@@ -1338,6 +1403,17 @@ fn file_ticket_is_not_a_vector_ticket() {
     let ft = FlightTicket { schema: "wh".into(), name: "docs".into(), files: vec!["a".into()] };
     assert!(VectorSearchTicket::decode(&ft.encode()).is_err());
 }
+
+#[test]
+fn vector_ticket_is_not_a_file_ticket() {
+    // Symmetric: a VectorSearchTicket must NOT decode as a FlightTicket, so the
+    // engine's file-path branch never swallows a k-NN ticket.
+    let vt = VectorSearchTicket {
+        schema: "wh".into(), name: "docs".into(), column: "embedding".into(),
+        query: vec![1.0], k: 1,
+    };
+    assert!(FlightTicket::decode(&vt.encode()).is_err());
+}
 ```
 
 - [ ] **Step 3: Implement**
@@ -1368,7 +1444,9 @@ impl VectorSearchTicket {
 }
 ```
 
-> NOTE: `FlightTicket` must also be `#[serde(deny_unknown_fields)]` for the disjointness to be symmetric — add it if not present (it has only `schema/name/files`, so a vector ticket's extra fields make it fail to decode). Verify the existing `FlightTicket` derive and add `deny_unknown_fields`.
+**REQUIRED (verified necessary):** `FlightTicket` (`engine-wire/src/flight.rs:22`) currently has **no** `#[serde(deny_unknown_fields)]`. Add it to `FlightTicket`'s derive in this task. Without it, a `VectorSearchTicket` JSON could be silently accepted by `FlightTicketReq::decode` in the engine's `do_get` (the file-path branch), misrouting the query. Both tickets carry `schema`/`name`; the disjoint extra fields (`files` vs `column`/`query`/`k`) make decode unambiguous **only** when both have `deny_unknown_fields`. The Task 8 disjointness test (`file_ticket_is_not_a_vector_ticket`) plus a symmetric `vector_ticket_is_not_a_file_ticket` assertion guard this — add the second assertion too.
+
+> NOTE (encode `.expect`): mirror `FlightTicket::encode` verbatim — it uses an unannotated `serde_json::to_vec(...).expect(...)` and already passes the clippy gate, so `VectorSearchTicket::encode` needs no extra `#[expect(clippy::expect_used)]`. If clippy unexpectedly flags it, add the annotation, but the existing twin shows it will not.
 
 Add `FlightTableClient::vector_search` (mirror `fetch`, but encode a `VectorSearchTicket`):
 
@@ -1454,6 +1532,7 @@ async fn build_vector_index(
         &self.pool,
         &table,
         &r.column,
+        control_plane_core::Metric::Cosine, // slice 1: Cosine default; metric arg reserved
         RunId(uuid::Uuid::new_v4()),
     )
     .await
@@ -1647,8 +1726,10 @@ git commit -m "chore: full-suite green, clippy clean, close road-puffin-vector-i
 - `buck2 test //src/...` green, defaults unchanged → **Task 11**. ✓ (Acceptance 6)
 - Tests: Puffin round-trip (T1/T5), FlatIndex pure (T2), build primitive fixture (T6), query merge fixture (T7), no-index (T7/T9), job wiring (T10), defaults (T11). ✓
 
-**2. Placeholder scan:** The only `todo!()`s are the three fixture-test scaffolds (T6, T7, T10) — each is explicitly flagged as a marker that MUST be replaced with concrete assertions before that task's commit, because those bodies depend on copying the *exact* seed/bootstrap helpers from existing fixture tests (`iceberg_landing.rs`, `flight-sql`, `compact-e2e`) which the implementing subagent must read in-context. This is a deliberate "read the neighbor and mirror it" instruction, not a vague placeholder. All production code is complete.
+**2. Placeholder scan:** Fixture-test bodies (T6, T7, T10) use `panic!("REPLACE…")` markers (not `todo!()`, so a forgotten scaffold fails loudly at runtime rather than compiling green). Each carries a concrete assertion plan — for the headline merge test (T7) the exact id-set / no-dup / ascending-distance / flushed-between-S-and-Q assertions are spelled out; only the seed/bootstrap boilerplate is delegated to "mirror `iceberg_landing.rs`/`flight-sql`/`compact-e2e`", which the implementing subagent reads in-context. (Task 6's build-primitive test still notes a `todo!()` scaffold for its seed boilerplate only — replace before commit.) All production code is complete.
 
-**3. Type consistency:** `VectorKey`/`Metric`/`FlatIndex`/`IndexKind` names are consistent across core (T2), the puffin wrapper (T5), the build primitive (T6), and the merge (T7). `VectorIndexRow` fields match between insert/lookup (T4) and the primitive (T6). The proto `BuildVectorIndexResponse {covered_snapshot, puffin_path, row_count}` matches `BuiltIndex` (T6), the client tuple `(i64, String, i64)` (T8), and the RPC impl (T9). `VectorSearchTicket {schema,name,column,query,k}` matches between engine-wire (T8) and the engine branch (T9). `vector_search(catalog, pool, table, column, query, k)` signature matches between T7 (def) and T9 (call). The `build_vector_index(catalog, pool, table, column, run_id)` signature matches between T6 (def) and T9 (call).
+**3. Type consistency:** `VectorKey`/`Metric`/`FlatIndex`/`IndexKind`/`distance` names are consistent across core (T2), the puffin wrapper (T5), the build primitive (T6), and the merge (T7). `VectorIndexRow` fields match between insert/lookup (T4) and the primitive (T6). The proto `BuildVectorIndexResponse {covered_snapshot, puffin_path, row_count}` matches `BuiltIndex` (T6), the client tuple `(i64, String, i64)` (T8), and the RPC impl (T9). `VectorSearchTicket {schema,name,column,query,k}` matches between engine-wire (T8) and the engine branch (T9). `vector_search(catalog, pool, table, column, query, k)` matches between T7 (def) and T9 (call). `build_vector_index(catalog, pool, table, column, **metric**, run_id)` matches between T6 (def), the T9 RPC call (passes `Metric::Cosine`), and the T7 L2 test.
 
-**Open implementation risks flagged for subagents** (resolve by reading the named files, not by guessing): (a) exact iceberg-rust puffin builder/FileIO constructor names on the pinned rev (T1); (b) the type↔table identity resolver in the ontology layer (T6); (c) the exact fixture bootstrap APIs (`Fixture`, engine UDS server) reused across T4/T6/T7/T9/T10.
+**Blockers from the plan review — all resolved in-plan:** (1) `current_snapshot` is a `Catalog` *trait* method and `Snapshot.id` is `SnapshotId(pub i64)` → T6/T7 now specify `use control_plane_core::Catalog;` and `.id.0`. (2) identity resolver → T6 now carries the concrete `query_scalar!` against `ontology.object_type(table_schema, table_name, identity)` with the nullable-`identity` `.flatten()` + deterministic error. (3) `table_id` resolver → unified on the existing `pub crate::iceberg_mirror::live_table_id` across T4/T6/T7. (4) engine-serving `iceberg` dep → T7 makes adding it to `Cargo.toml` + `BUCK` (+ `buckify.sh`) a definite step. (5) `FlightTicket` `deny_unknown_fields` → T8 required action + symmetric disjointness tests.
+
+**Residual risks for subagents** (resolve by reading the named files, not guessing): (a) exact iceberg-rust puffin builder field-method + local-FileIO constructor names on the pinned rev (T1); (b) the exact field-id-by-name accessor on `iceberg::spec::Schema` (T6; `0` fallback acceptable); (c) the exact fixture bootstrap APIs (`Fixture`, engine UDS server) reused across T4/T6/T7/T9/T10.
