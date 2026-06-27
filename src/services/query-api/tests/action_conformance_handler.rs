@@ -54,9 +54,10 @@ impl ActionEngine for RecordingEngine {
         _columns: &[String],
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
-        _event: LineageEvent,
+        event: LineageEvent,
     ) -> Result<SnapshotId, ServingError> {
-        Err(ServingError::Engine("overwrite_table unsupported".into()))
+        self.events.lock().unwrap().push(event);
+        Ok(SnapshotId(1))
     }
 }
 
