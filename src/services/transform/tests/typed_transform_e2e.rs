@@ -304,6 +304,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
         ontology: &pg,
         acl: &pg,
         serving: &eng,
+        default_limit: 1000,
     };
     let rows = read_object(
         &ObjectQuery {

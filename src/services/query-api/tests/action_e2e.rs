@@ -162,6 +162,7 @@ async fn widget_count(cp: &PgControlPlane, pool: &sqlx::PgPool, subj: &SubjectId
         ontology: cp.ontology(),
         acl: cp.acl(),
         serving: &eng,
+        default_limit: 1000,
     };
     let rows = read_object(
         &ObjectQuery {
@@ -212,6 +213,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
         ontology: cp.ontology(),
         acl: cp.acl(),
         serving: &reader,
+        default_limit: 1000,
     };
     let rows = read_object(
         &ObjectQuery {

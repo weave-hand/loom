@@ -220,6 +220,7 @@ async fn rejects_a_non_cyclic_single_link() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     // `employer` lands on Company, not back on Person -> not a cycle.
     let err = read_graph_reach(&graph_query(&["employer"]), &Subject(subj), &deps)
@@ -239,6 +240,7 @@ async fn rejects_a_non_cyclic_multi_link_path() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     // Person --memberOf--> Team --worksAt--> Company: lands on Company, not Person.
     let err = read_graph_reach(
@@ -262,6 +264,7 @@ async fn rejects_a_type_without_identity() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach(&graph_query(&["knows"]), &Subject(subj), &deps)
         .await
@@ -285,6 +288,7 @@ async fn returns_reachable_objects_for_a_self_link() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let rows = read_graph_reach(&graph_query(&["knows"]), &Subject(subj), &deps)
         .await
@@ -318,6 +322,7 @@ async fn returns_reachable_objects_for_a_cyclic_path() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let rows = read_graph_reach(
         &graph_query(&["memberOf", "hasMember"]),
