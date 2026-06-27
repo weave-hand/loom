@@ -37,6 +37,11 @@ use crate::provider::PgTableProvider;
 pub enum EngineServingError {
     #[error("engine serving: {0}")]
     Engine(String),
+    /// No vector index has been built for the requested (table, column) at the
+    /// current snapshot. Callers should surface this as a 404/not-found, never
+    /// panic. See FUTURE `fut-inline-vector-hot-delta`.
+    #[error("no vector index: {0}")]
+    NoIndex(String),
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.

@@ -6,9 +6,11 @@
 
 pub mod provider;
 pub mod serving;
+pub mod vector_search;
 
 pub use provider::PgTableProvider;
 pub use serving::{
     EngineServingError, IcebergMirrorTableProvider, execute_query, execute_query_stream,
     prune_files, register_iceberg_table,
 };
+pub use vector_search::{merge_topk, vector_search};
