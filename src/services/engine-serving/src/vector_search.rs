@@ -95,7 +95,7 @@ pub async fn vector_search(
     //    alive at Q. For vector tables this slice, `inline_delta_batch` always
     //    returns `None` (vectors can't inline). The code path is written correctly
     //    so it lights up when inline-vector support lands.
-    let metric = Metric::from_str(&row.metric)
+    let metric = Metric::from_label(&row.metric)
         .ok_or_else(|| EngineServingError::Engine(format!("unknown metric '{}'", row.metric)))?;
     let hot: Vec<(VectorKey, f32)> = match inline_delta_batch(pool, table, row.covered_snapshot, q)
         .await

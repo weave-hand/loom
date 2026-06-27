@@ -17,8 +17,8 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, Metric, ObjectType, Ontology,
-    PropertyDef, RunId, TableRef, TypeName,
+    ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, Metric, ObjectType, PropertyDef,
+    RunId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;

@@ -14,10 +14,17 @@ async fn insert_then_lookup_latest_le_q() {
     let pool = cp.pool().clone();
 
     // Create a real table row via the mirror so the FK resolves. Insert a
-    // snapshot and a table row directly so we get a valid table_id.
+    // snapshot and a table row directly so we get a valid table_id. These must be
+    // separate statements: sqlx prepares each query, and Postgres rejects multiple
+    // commands in one prepared statement (error 42601).
+    sqlx::query(AssertSqlSafe(
+        "insert into iceberg_mirror.snapshot (snapshot_id) values (1) on conflict do nothing",
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     let table_id: i64 = sqlx::query_scalar(AssertSqlSafe(
-        "insert into iceberg_mirror.snapshot (snapshot_id) values (1) on conflict do nothing; \
-         insert into iceberg_mirror.\"table\" (table_namespace, table_name, begin_snapshot) \
+        "insert into iceberg_mirror.\"table\" (table_namespace, table_name, begin_snapshot) \
          values ('wh','docs',1) returning table_id",
     ))
     .fetch_one(&pool)

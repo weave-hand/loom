@@ -12,11 +12,10 @@ use arrow_array::{Float32Array, Int64Array, RecordBatch};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, Metric, ObjectType, Ontology,
-    PropertyDef, RunId, TableRef, TypeName,
+    ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, Metric, ObjectType, PropertyDef,
+    RunId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::land;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use control_plane_core::{ControlPlaneError, FlatIndex, IndexKind, Metric, Result, VectorIndex};
+use control_plane_core::{ControlPlaneError, FlatIndex, IndexKind, Result, VectorIndex};
 use iceberg::io::FileIO;
 use iceberg::puffin::{Blob, CompressionCodec, PuffinReader, PuffinWriter};
 

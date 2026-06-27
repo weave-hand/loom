@@ -15,8 +15,8 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ColumnSpec, DatasetId, EventType,
-    Job, JobId, LineageEvent, Metric, ObjectType, Ontology, PropertyDef, RunId, TableRef, TypeName,
+    BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ColumnSpec, ControlPlane, DatasetId,
+    EventType, Job, JobId, LineageEvent, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -259,7 +259,8 @@ async fn worker_builds_vector_index_over_the_wire() {
 
     // Look up the vector_index mirror row via the same table_id.
     let table_id: i64 = sqlx::query_scalar(
-        "select id from iceberg_mirror.tables where schema_name = $1 and table_name = $2",
+        "select table_id from iceberg_mirror.\"table\" \
+         where table_namespace = $1 and table_name = $2 and end_snapshot is null",
     )
     .bind(&table.schema)
     .bind(&table.name)
@@ -267,14 +268,14 @@ async fn worker_builds_vector_index_over_the_wire() {
     .await
     .expect("fetch table_id");
 
-    let mirror_row = lookup_vector_index(&pool, table_id, "embedding", snap.id)
+    let mirror_row = lookup_vector_index(&pool, table_id, "embedding", snap.id.0)
         .await
         .expect("lookup_vector_index")
         .expect("mirror row must exist after handler ran");
 
     // Verify the mirror row is coherent.
     assert_eq!(
-        mirror_row.covered_snapshot, snap.id,
+        mirror_row.covered_snapshot, snap.id.0,
         "covered_snapshot matches current snapshot"
     );
     assert_eq!(mirror_row.row_count, 3, "all three rows indexed");

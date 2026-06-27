@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{Float32Array, Int64Array, ListArray, RecordBatch};
+use arrow_array::{Int64Array, RecordBatch};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, Lineage, LineageEvent, Metric, ObjectType, Ontology,
+    Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, Metric, ObjectType,
     PageReq, PropertyDef, RunId, TableRef, TypeName, VectorIndex,
 };
 use control_plane_postgres::fixture::PgFixture;

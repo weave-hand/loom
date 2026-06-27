@@ -23,7 +23,7 @@ impl Metric {
     }
 
     #[must_use]
-    pub fn from_str(s: &str) -> Option<Metric> {
+    pub fn from_label(s: &str) -> Option<Metric> {
         match s {
             "cosine" => Some(Metric::Cosine),
             "l2" => Some(Metric::L2),
@@ -218,17 +218,17 @@ impl<'a> Cursor<'a> {
     }
     fn u32(&mut self) -> Result<u32> {
         let s = self.take(4)?;
-        let arr: [u8; 4] = s.try_into().map_err(|_| bad("u32"))?;
+        let arr: [u8; 4] = s.try_into().map_err(|e| bad(&format!("u32: {e}")))?;
         Ok(u32::from_le_bytes(arr))
     }
     fn i64(&mut self) -> Result<i64> {
         let s = self.take(8)?;
-        let arr: [u8; 8] = s.try_into().map_err(|_| bad("i64"))?;
+        let arr: [u8; 8] = s.try_into().map_err(|e| bad(&format!("i64: {e}")))?;
         Ok(i64::from_le_bytes(arr))
     }
     fn f32(&mut self) -> Result<f32> {
         let s = self.take(4)?;
-        let arr: [u8; 4] = s.try_into().map_err(|_| bad("f32"))?;
+        let arr: [u8; 4] = s.try_into().map_err(|e| bad(&format!("f32: {e}")))?;
         Ok(f32::from_le_bytes(arr))
     }
 }
