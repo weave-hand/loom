@@ -41,12 +41,26 @@ pub struct VectorIndexRow {
 // bound `$n` param, so AssertSqlSafe carries no injection risk — the same runtime
 // pattern used in `iceberg_inline.rs`/`fixture.rs`.
 
-/// Insert a `vector_index` binding row in the caller's transaction.
+/// Upsert a `vector_index` binding row in the caller's transaction.
+///
+/// Keyed on `(table_id, column_name, covered_snapshot)` (the table's primary
+/// key): re-building the index for the same column at the same covered snapshot
+/// replaces the binding so it points at the freshly written Puffin sidecar. This
+/// keeps `build_vector_index` idempotent — a re-run or queue-retried build job at
+/// an unchanged snapshot refreshes the pointer instead of failing on a duplicate
+/// key (which would poison the job).
 pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) -> Result<()> {
     sqlx::query!(
         "insert into iceberg_mirror.vector_index \
          (table_id, column_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8)",
+         values ($1, $2, $3, $4, $5, $6, $7, $8) \
+         on conflict (table_id, column_name, covered_snapshot) do update set \
+             metric = excluded.metric, \
+             index_kind = excluded.index_kind, \
+             dim = excluded.dim, \
+             row_count = excluded.row_count, \
+             puffin_path = excluded.puffin_path, \
+             created_at = now()",
         row.table_id,
         row.column,
         row.covered_snapshot,
