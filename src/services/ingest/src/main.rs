@@ -38,22 +38,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         service_runtime::bootstrap_admin(pg.as_ref(), &user, &pass).await?;
     }
 
-    // Compose ingest config from defaults < file < env.
+    // Compose ingest config as defaults < file < env (see `IngestConfig`'s `LayeredConfig`).
+    // `app_cfg.write` is composed and validated here so LOOM_WRITE_* env vars parse and
+    // validate at startup. The live HTTP landing path (IcebergMaterializer) does not consume
+    // WriteConfig — only the datafusion write path (materialize::land) does. Do not add a
+    // WriteConfig field to IcebergMaterializer this slice.
     let env = service_runtime::env_map();
-    let mut app_cfg = ingest::config::IngestConfig::default();
-    if let Some(path) = env.get("LOOM_CONFIG_FILE") {
-        let doc = std::fs::read_to_string(path)
-            .map_err(|e| service_runtime::invalid("LOOM_CONFIG_FILE", e))?;
-        app_cfg = service_runtime::parse_config_doc(&doc)?;
-    }
-    app_cfg.routing.overlay_env(&env)?;
-    app_cfg.write.overlay_env(&env)?;
-    app_cfg.routing.validate()?;
-    // `app_cfg.write` is composed and validated here so LOOM_WRITE_* env vars parse
-    // and validate at startup. The live HTTP landing path (IcebergMaterializer) does
-    // not consume WriteConfig — only the datafusion write path (materialize::land) does.
-    // Do not add a WriteConfig field to IcebergMaterializer this slice.
-    app_cfg.write.validate()?;
+    let app_cfg: ingest::config::IngestConfig = service_runtime::load(&env)?;
 
     let materializer: Arc<dyn LandingMaterializer> = {
         let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);

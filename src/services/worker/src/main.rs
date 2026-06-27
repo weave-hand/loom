@@ -17,8 +17,8 @@ use engine_wire::flight::FlightTableClient;
 use tokio_util::sync::CancellationToken;
 use worker::compact::{CompactCtx, handle_compact};
 
-/// Thin composed config struct for the worker binary.
-/// Defaults < file (`LOOM_CONFIG_FILE`) < env overlays.
+/// Thin composed config struct for the worker binary. Loaded via `loom_config::load`
+/// (defaults < file (`LOOM_CONFIG_FILE`) < env) through the `LayeredConfig` impl below.
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 struct WorkerConfig {
@@ -26,30 +26,43 @@ struct WorkerConfig {
     write: datafusion_io::WriteConfig,
 }
 
+impl loom_config::LayeredConfig for WorkerConfig {
+    fn overlay_env(
+        &mut self,
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<(), loom_config::ConfigError> {
+        self.worker.overlay_env(env)?;
+        self.write.overlay_env(env)?;
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), loom_config::ConfigError> {
+        self.worker.validate()?;
+        self.write.validate()?;
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let socket = std::env::var("LOOM_ENGINE_SOCKET")?;
-    let worker_id =
-        std::env::var("LOOM_WORKER_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    // One env snapshot drives both the bootstrap reads and the composed config.
+    let env = loom_config::env_map();
+    let socket = env
+        .get("LOOM_ENGINE_SOCKET")
+        .ok_or("LOOM_ENGINE_SOCKET must be set")?
+        .clone();
+    let worker_id = env
+        .get("LOOM_WORKER_ID")
+        .cloned()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let lease = Duration::from_millis(
-        std::env::var("LOOM_LOCK_TIMEOUT_MS")
-            .ok()
+        env.get("LOOM_LOCK_TIMEOUT_MS")
             .and_then(|v| v.parse().ok())
             .unwrap_or(5000),
     );
 
-    // Build the composed config: defaults < file < env.
-    let env = loom_config::env_map();
-    let mut wcfg = WorkerConfig::default();
-    if let Some(path) = env.get("LOOM_CONFIG_FILE") {
-        let doc = std::fs::read_to_string(path)
-            .map_err(|e| loom_config::invalid("LOOM_CONFIG_FILE", e))?;
-        wcfg = loom_config::parse_config_doc(&doc)?;
-    }
-    wcfg.worker.overlay_env(&env)?;
-    wcfg.write.overlay_env(&env)?;
-    wcfg.worker.validate()?;
-    wcfg.write.validate()?;
+    // Compose worker config as defaults < file < env (see `WorkerConfig`'s `LayeredConfig`).
+    let wcfg: WorkerConfig = loom_config::load(&env)?;
 
     let store_cfg = store_config::ObjectStoreConfig::parse_from_env(&env)?;
     let write = Arc::new(store_config::build_write_store(&store_cfg)?);

@@ -60,3 +60,33 @@ pub fn env_map() -> HashMap<String, String> {
 pub fn parse_config_doc<T: serde::de::DeserializeOwned>(doc: &str) -> Result<T, ConfigError> {
     serde_json::from_str(doc).map_err(|e| invalid("LOOM_CONFIG_FILE", e))
 }
+
+/// A binary's composed config: a `Default`-able, file-deserializable struct that knows how
+/// to overlay its `LOOM_*` env vars and validate itself. Implemented by each service's
+/// top-level config (e.g. `IngestConfig`) by delegating to its per-domain tuning sub-structs;
+/// [`load`] drives the three layers generically so no `main` hand-rolls the sequence.
+pub trait LayeredConfig: Default + serde::de::DeserializeOwned {
+    /// Overlay `LOOM_*` env vars over `self` (already file-or-defaulted). A present-but-
+    /// malformed value is a `ConfigError`, not a silent fallback.
+    fn overlay_env(&mut self, env: &HashMap<String, String>) -> Result<(), ConfigError>;
+    /// Reject out-of-range values — a bad value fails startup with a `ConfigError` naming it.
+    fn validate(&self) -> Result<(), ConfigError>;
+}
+
+/// Compose a config as **defaults < file < env**: start from `Default`, deserialize the
+/// `LOOM_CONFIG_FILE` JSON document over it when that var is set, overlay `LOOM_*` env vars,
+/// then validate. A set-but-unreadable file or any malformed/out-of-range value fails startup
+/// with a `ConfigError` naming the offending key. This is the single config-composition seam
+/// every binary `main` calls instead of hand-rolling the layering.
+pub fn load<T: LayeredConfig>(env: &HashMap<String, String>) -> Result<T, ConfigError> {
+    let mut cfg: T = match env.get("LOOM_CONFIG_FILE") {
+        Some(path) => {
+            let doc = std::fs::read_to_string(path).map_err(|e| invalid("LOOM_CONFIG_FILE", e))?;
+            parse_config_doc(&doc)?
+        }
+        None => T::default(),
+    };
+    cfg.overlay_env(env)?;
+    cfg.validate()?;
+    Ok(cfg)
+}

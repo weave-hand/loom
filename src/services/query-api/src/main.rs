@@ -22,17 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
 
+    // Compose query-api config as defaults < file < env (see `QueryApiConfig`'s `LayeredConfig`).
     let env = service_runtime::env_map();
-    let mut app_cfg = query_api::config::QueryApiConfig::default();
-    if let Some(path) = env.get("LOOM_CONFIG_FILE") {
-        let doc = std::fs::read_to_string(path)
-            .map_err(|e| service_runtime::invalid("LOOM_CONFIG_FILE", e))?;
-        app_cfg = service_runtime::parse_config_doc(&doc)?;
-    }
-    app_cfg.routing.overlay_env(&env)?;
-    app_cfg.serving.overlay_env(&env)?;
-    app_cfg.routing.validate()?;
-    app_cfg.serving.validate()?;
+    let app_cfg: query_api::config::QueryApiConfig = service_runtime::load(&env)?;
 
     // Concrete PgControlPlane: serves both ControlPlane (read path) and Auth.
     let pg = Arc::new(service_runtime::control_plane(

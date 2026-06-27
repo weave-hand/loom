@@ -7,12 +7,27 @@ use std::collections::HashMap;
 use loom_config::{ConfigError, invalid, overlay_opt};
 
 /// The ingest binary's composed config: routing + write tuning. `#[serde(default)]` so a
-/// partial config file deserializes (omitted domains fall to their `Default`).
+/// partial config file deserializes (omitted domains fall to their `Default`). Loaded via
+/// `loom_config::load` (defaults < file < env) through the `LayeredConfig` impl below.
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 pub struct IngestConfig {
     pub routing: RoutingTuning,
     pub write: datafusion_io::WriteConfig,
+}
+
+impl loom_config::LayeredConfig for IngestConfig {
+    fn overlay_env(&mut self, env: &HashMap<String, String>) -> Result<(), ConfigError> {
+        self.routing.overlay_env(env)?;
+        self.write.overlay_env(env)?;
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        self.routing.validate()?;
+        self.write.validate()?;
+        Ok(())
+    }
 }
 
 /// Inline/flush byte routing knobs.

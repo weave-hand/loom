@@ -29,7 +29,9 @@ pub use store_config::{
     build_serving_object_store, build_write_store, local_store,
 };
 
-pub use loom_config::{ConfigError, env_map, invalid, overlay_opt, parse_config_doc};
+pub use loom_config::{
+    ConfigError, LayeredConfig, env_map, invalid, load, overlay_opt, parse_config_doc,
+};
 
 /// Discrete Postgres connection fields. Feeds the sqlx control-plane pool and the
 /// Iceberg SQL catalog, with no URL parsing in between.

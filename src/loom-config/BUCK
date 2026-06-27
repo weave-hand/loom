@@ -34,3 +34,16 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "load",
+    crate = "load",
+    srcs = ["tests/load.rs"],
+    crate_root = "tests/load.rs",
+    edition = "2024",
+    deps = [
+        ":loom-config",
+        "//third-party:serde",
+        "//third-party:tempfile",
+    ],
+)

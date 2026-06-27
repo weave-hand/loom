@@ -23,18 +23,25 @@ struct TransformConfig {
     worker: loom_config::WorkerTuning,
 }
 
+impl loom_config::LayeredConfig for TransformConfig {
+    fn overlay_env(
+        &mut self,
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<(), loom_config::ConfigError> {
+        self.worker.overlay_env(env)
+    }
+
+    fn validate(&self) -> Result<(), loom_config::ConfigError> {
+        self.worker.validate()
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
+    // Compose transform config as defaults < file < env (see `TransformConfig`'s `LayeredConfig`).
     let env = service_runtime::env_map();
-    let mut tcfg = TransformConfig::default();
-    if let Some(path) = env.get("LOOM_CONFIG_FILE") {
-        let doc = std::fs::read_to_string(path)
-            .map_err(|e| service_runtime::invalid("LOOM_CONFIG_FILE", e))?;
-        tcfg = service_runtime::parse_config_doc(&doc)?;
-    }
-    tcfg.worker.overlay_env(&env)?;
-    tcfg.worker.validate()?;
+    let tcfg: TransformConfig = service_runtime::load(&env)?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
     // The queue is backend-neutral (same Postgres tables either way), so the Worker
     // always dequeues through the `PgControlPlane`; the *handler's* `ControlPlane`
