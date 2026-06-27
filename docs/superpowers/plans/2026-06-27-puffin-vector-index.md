@@ -1266,33 +1266,72 @@ git commit -m "feat(postgres): build_vector_index primitive (serving-read -> puf
 - Modify: `src/services/engine-serving/BUCK`
 - Test: `src/services/engine-serving/tests/vector_search.rs`
 
+> **SCOPE NOTE (cold-only this slice — see plan "HOT-TIER GAP DECISION" / FUTURE `fut-inline-vector-hot-delta`).** loom's inline tier cannot store `vector(N)` today, so for a vector table `inline_delta_batch` always returns `None` and the **hot delta is empty in practice** this slice. The merge SEAM is still built correctly (cold ∪ hot, merged by a pure `merge_topk`); it simply has an empty hot side until inline-vector support lands. So: the merge combiner is proven by a **pure unit test** (locally runnable), the **cold path** is proven by a fixture kNN test, and the no-index error by a fixture test. The "row flushed between S and Q via the inline delta" scenario is deferred with inline-vector support — do NOT write a test that lands inline vector rows (it would error: vectors can't inline).
+
 **Interfaces:**
 - Produces (in `engine_serving`):
   - `pub async fn vector_search(catalog: &SqlCatalog, pool: &PgPool, table: &TableRef, column: &str, query: &[f32], k: usize) -> Result<RecordBatch, EngineServingError>` — returns a 2-column batch: identity (`Int64` or `Utf8`, matching the index's identity kind) + `_distance` (`Float32`), ascending distance, at most `k` rows.
+  - `pub fn merge_topk(cold: Vec<(VectorKey, f32)>, hot: Vec<(VectorKey, f32)>, k: usize) -> Vec<(VectorKey, f32)>` — pure: concatenate, stable-sort ascending by distance, take `k`. The single combiner `vector_search` uses; unit-tested directly (locally runnable). With an empty `hot` (this slice) it returns the cold top-k unchanged.
   - Add an `EngineServingError::NoIndex(String)` variant for the deterministic no-index error.
-- Consumes: `vector_index::{lookup_vector_index}`, `puffin::read_flat_index`, `vector_index::inline_delta_batch`, `IcebergCatalog::current_snapshot`, `core::{FlatIndex, VectorIndex, VectorKey}`.
+- Consumes: `vector_index::{lookup_vector_index}`, `puffin::read_flat_index`, `vector_index::inline_delta_batch`, `IcebergCatalog::current_snapshot`, `core::{FlatIndex, VectorIndex, VectorKey, Metric, distance}`.
 
 **Design notes:**
 - `Q` (BLOCKER fix, same as Task 6): `use control_plane_core::Catalog;` in scope, then `let q: i64 = IcebergCatalog::new(pool.clone()).current_snapshot(table).await.map_err(to_serving)?.id.0;` — `.id.0`, not `.id`.
 - Resolve `table_id` with the SAME helper as Tasks 4/6: `crate::iceberg_mirror::live_table_id` (acquire a conn from `pool`). Do not introduce a new resolver.
 - `lookup_vector_index(pool, table_id, column, q)` → `None` ⇒ `Err(EngineServingError::NoIndex(...))`.
-- Cold: load the table via `catalog`, `read_flat_index(&tbl.file_io(), &row.puffin_path)`, `idx.search(query, k)`.
-- Hot: `inline_delta_batch(pool, table, row.covered_snapshot, q)` → if `Some(batch)`, brute-force top-k over its rows using `control_plane_core::distance(metric, query, row_vec)` with `metric = Metric::from_str(&row.metric).ok_or(...)` — the SAME scoring function the cold index uses (added as `pub` in Task 2), so cold and hot can never diverge. Pull identity + vector from the batch with the same downcasts as Task 6.
-- Merge: concatenate cold `(VectorKey, f32)` + hot `(VectorKey, f32)`, stable-sort ascending by distance, take `k`.
-- Build the output `RecordBatch`: identity column typed from the `VectorKey` variants (all `Int` ⇒ `Int64Array`; all `Str` ⇒ `StringArray`), `_distance` ⇒ `Float32Array`.
+- Cold: load the table via `catalog`, `read_flat_index(&tbl.file_io(), &row.puffin_path)`, `idx.search(query, k)` → `Vec<(VectorKey, f32)>`.
+- Hot: `inline_delta_batch(pool, table, row.covered_snapshot, q)` → if `Some(batch)`, brute-force top-k over its rows using `control_plane_core::distance(metric, query, row_vec)` with `metric = Metric::from_str(&row.metric).ok_or(...)` — the SAME scoring function the cold index uses, so cold and hot can never diverge. Pull identity + vector from the batch with the same downcasts as Task 6. (This slice: the batch is `None` for vector tables → hot is `vec![]`. The code path is still written correctly so it lights up when inline-vector lands.)
+- Merge: `merge_topk(cold, hot, k)` (the pure combiner above).
+- Build the output `RecordBatch`: identity column typed from the `VectorKey` variants (all `Int` ⇒ `Int64Array`; all `Str` ⇒ `StringArray`; empty result → default to `Int64Array`), `_distance` ⇒ `Float32Array`.
 
-- [ ] **Step 1: Write the failing fixture test (headline)**
+- [ ] **Step 1a: Write the PURE merge-combiner test (locally runnable)**
+
+`src/services/engine-serving/tests/vector_merge.rs` — a pure `rust_test` (no Postgres, runs locally) proving the merge logic that is the heart of Acceptance 4's "no double-count, global top-k, ascending":
+
+```rust
+use control_plane_core::VectorKey;
+use engine_serving::merge_topk;
+
+#[test]
+fn merge_takes_global_topk_ascending() {
+    let cold = vec![(VectorKey::Int(1), 0.0_f32), (VectorKey::Int(2), 0.9)];
+    let hot = vec![(VectorKey::Int(3), 0.2_f32), (VectorKey::Int(4), 0.5)];
+    let got = merge_topk(cold, hot, 3);
+    // Global ascending top-3 across both sides: 1(0.0), 3(0.2), 4(0.5); 2(0.9) dropped.
+    assert_eq!(got.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+        vec![VectorKey::Int(1), VectorKey::Int(3), VectorKey::Int(4)]);
+    // distances ascending
+    assert!(got.windows(2).all(|w| w[0].1 <= w[1].1));
+}
+
+#[test]
+fn merge_empty_hot_returns_cold_topk() {
+    // This slice's reality: hot delta is empty for vector tables.
+    let cold = vec![(VectorKey::Int(7), 0.1_f32), (VectorKey::Int(8), 0.3)];
+    let got = merge_topk(cold.clone(), vec![], 5);
+    assert_eq!(got, cold);
+}
+
+#[test]
+fn merge_k_caps_result() {
+    let cold = vec![(VectorKey::Int(1), 0.1_f32)];
+    let hot = vec![(VectorKey::Int(2), 0.2_f32), (VectorKey::Int(3), 0.3)];
+    assert_eq!(merge_topk(cold, hot, 2).len(), 2);
+}
+```
+
+- [ ] **Step 1b: Write the cold-path fixture test (CI-only) + no-index error**
 
 `src/services/engine-serving/tests/vector_search.rs`:
 
 ```rust
-//! Headline: with an index built at S, insert further inline rows (born after S),
-//! query at Q > S; assert the exact global nearest set across cold-index + hot
-//! inline, no double-count and none missed — including a row flushed between S
-//! and Q. Cosine and L2 both verified. Plus the no-index deterministic error.
+//! Cold-path k-NN: build an index over flushed (Parquet) vector rows, then
+//! vector_search returns the exact top-k. Cosine and L2 both verified. Plus the
+//! no-index deterministic error. (Hot inline delta is empty this slice — vectors
+//! can't inline; see FUTURE fut-inline-vector-hot-delta. Do NOT land inline
+//! vector rows here — it errors.)
 
-// Shared seed: extract the (id, distance) pairs from a vector_search result batch.
-// `ids` downcasts the identity column (Int64Array) and returns Vec<i64> in row order.
+// `ids` downcasts the identity column (Int64Array) → Vec<i64> in row order.
 fn ids(batch: &arrow_array::RecordBatch) -> Vec<i64> {
     use arrow_array::{Array, Int64Array};
     let col = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
@@ -1300,34 +1339,18 @@ fn ids(batch: &arrow_array::RecordBatch) -> Vec<i64> {
 }
 
 #[tokio::test]
-async fn knn_merges_cold_and_hot_exactly_cosine() {
-    // 1. seed wh.docs (id: Long identity, embedding: vector(4)); land ids 1,2 and FLUSH
-    //    them to Parquet; build_vector_index @S so the index covers {1,2}. record S.
-    // 2. land ids 3,4 INLINE (begin_snapshot > S). FLUSH id 3 between S and Q (it moves
-    //    to Parquet but keeps begin_snapshot > S, so it is hot-delta, not in the index).
-    // 3. query nearest to id 1's embedding, k=3:
-    //    let batch = vector_search(&catalog, pool, &table, "embedding", &q, 3).await.unwrap();
-    //    let got = ids(&batch);
-    // 4. EXACT assertions (the load-bearing proof):
-    //    assert_eq!(got.len(), 3);
-    //    let set: std::collections::HashSet<i64> = got.iter().copied().collect();
-    //    assert_eq!(set.len(), got.len(), "no id double-counted");          // no dup
-    //    assert_eq!(set, [1, 3, 4].into_iter().collect());                  // exact membership
-    //    // distances ascending:
-    //    let d = distances(&batch); assert!(d.windows(2).all(|w| w[0] <= w[1]));
-    //    Choose embeddings so the true cosine top-3 to q is exactly {1,3,4} (2 is farthest),
-    //    including id 3 which was flushed between S and Q — counted once via the hot delta,
-    //    NOT via the index. This is Acceptance 4's "flushed-between row counted exactly once".
-    panic!("REPLACE: implement using tests/iceberg_landing.rs + vector_index_build.rs seed helpers");
+async fn knn_cold_exact_cosine() {
+    // seed wh.docs (id: Long identity, embedding: vector(4)); land ids 1..=4 FORCED
+    // to Parquet (inline_byte_limit 0, as in vector_index_build.rs); build_vector_index
+    // with Metric::Cosine; vector_search nearest to id 1's embedding, k=2.
+    // assert ids(&batch) == [1, <next-nearest>] (exact), distances ascending, len==2.
+    panic!("REPLACE: mirror tests/vector_index_build.rs seed+land+build, then call vector_search");
 }
 
 #[tokio::test]
-async fn knn_l2_exact() {
-    // Same seed shape, but build the index with Metric::L2 (the build primitive must let
-    // the metric be chosen — default Cosine; for L2 either add a metric arg to the queue
-    // payload later or build the FlatIndex with L2 directly in this test via the primitive's
-    // metric parameter). Assert the L2 nearest top-k matches the hand-computed euclidean order.
-    panic!("REPLACE: L2 variant of the merge proof");
+async fn knn_cold_exact_l2() {
+    // Same seed; build_vector_index with Metric::L2; assert the euclidean nearest order.
+    panic!("REPLACE: L2 variant over the cold path");
 }
 
 #[tokio::test]
@@ -1338,28 +1361,33 @@ async fn no_bound_index_is_deterministic_error() {
 }
 ```
 
-> The three bodies above are spelled out as concrete assertion plans (exact id set, no-dup, ascending distance, the flushed-between case). Replace each `panic!("REPLACE…")` with the real body before committing Task 7 — `panic!` (not `todo!`) is used deliberately so a forgotten scaffold fails the test run loudly rather than compiling green. Also add a `distances(&batch) -> Vec<f32>` helper (downcast column 1 to `Float32Array`). **Metric decision for `knn_l2_exact`:** the build primitive (Task 6) builds with `Metric::Cosine` by default; to test L2, give `build_vector_index` an explicit `metric: Metric` parameter (thread it through, default Cosine at the job/RPC layer for slice 1). Update Task 6's `build_vector_index` signature to `build_vector_index(catalog, pool, table, column, metric, run_id)` and the RPC/worker to pass `Metric::Cosine` — record this as a cross-task signature so Task 9's RPC impl matches.
+> Replace each `panic!("REPLACE…")` with the real body before committing (`panic!`, not `todo!`, so a forgotten scaffold fails loudly). Mirror the exact seed/land/build helpers from `tests/vector_index_build.rs` (Task 6) — same `PgFixture`/`make_catalog`/`ipc_body`/`columns()` shape, landing with `inline_byte_limit = 0` to force Parquet. Add a `distances(&batch) -> Vec<f32>` helper (downcast column 1 to `Float32Array`) if you assert ordering.
 
-- [ ] **Step 2: Implement `vector_search.rs` + lib wiring**
+- [ ] **Step 2: Implement `vector_search.rs` + `merge_topk` + lib wiring**
 
-Add `pub mod vector_search;` and `pub use vector_search::vector_search;` to `engine-serving/src/lib.rs`. Implement per the design notes. Add the `NoIndex` error variant to `EngineServingError` in `serving.rs`.
+Add `pub mod vector_search;` and `pub use vector_search::{vector_search, merge_topk};` to `engine-serving/src/lib.rs`. Implement `merge_topk` (pure) and `vector_search` per the design notes. Add the `NoIndex` error variant to `EngineServingError` in `serving.rs`. Confirm the lib compiles: `buck2 build //src/services/engine-serving:engine-serving > /tmp/b7.log 2>&1; grep -E "BUILD (SUCCEEDED|FAILED)|error\[" /tmp/b7.log`.
 
-- [ ] **Step 3: BUCK + run**
+- [ ] **Step 3: BUCK + deps + run the PURE test (fixture is CI-only)**
 
-**Definite (not conditional):** the engine-serving lib currently has NO `iceberg` dep, but `vector_search` takes `&SqlCatalog` and calls `tbl.file_io()` (an `iceberg::io::FileIO`). Add `iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950b2cd8d99c0243242ef45f3948c5" }` to `src/services/engine-serving/Cargo.toml`, run `cargo generate-lockfile` + `./tools/buckify.sh` (the `reindeer-check` hook enforces Cargo/BUCK sync), and add `"//third-party:iceberg"` to the `engine-serving` `rust_library` `deps` in `BUCK`. Then add a `vector-search` `loom_fixture_test` (deps: `:engine-serving`, `//src/control-plane/core:core`, `//src/control-plane/postgres:postgres`, arrow, iceberg, sqlx, tokio, serde_json, tempfile, time, uuid).
+**Definite (not conditional):** the engine-serving lib currently has NO `iceberg` dep, but `vector_search` takes `&SqlCatalog` and calls `tbl.file_io()` (an `iceberg::io::FileIO`). Add `iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950b2cd8d99c0243242ef45f3948c5" }` to `src/services/engine-serving/Cargo.toml`, run `cargo generate-lockfile` (hermetic: `eval "$(./tools/env.sh)"` first) + `./tools/buckify.sh` (the `reindeer-check` hook enforces Cargo/BUCK sync), and add `"//third-party:iceberg"` to the `engine-serving` `rust_library` `deps` in `BUCK`.
 
-> NOTE: adding iceberg pins a 4th consumer of the git dep — that is fine (it shares the existing pinned rev). Do NOT bump the rev. After `buckify.sh`, `git diff third-party/BUCK` should be empty (the crate is already in the graph via postgres/engine/worker).
+> If `cargo generate-lockfile`/`buckify.sh` can't run in this env (hermetic cargo/python issues), and `//third-party:iceberg` already exists in `third-party/BUCK` (it does — postgres/engine/worker use it), you may add only the BUCK `deps` entry + the `Cargo.toml` line and SKIP regenerating `third-party/BUCK` (it won't change — iceberg is already in the graph). Confirm `git diff third-party/BUCK` is empty either way.
 
-Run: `buck2 test //src/services/engine-serving:vector-search > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t7.log`
-Expected: PASS (3 tests).
+Add two test targets to `engine-serving/BUCK`:
+- `vector-merge` — a PURE `rust_test` (deps `:engine-serving`, `//src/control-plane/core:core`) — this RUNS LOCALLY.
+- `vector-search` — a `loom_fixture_test` (deps: `:engine-serving`, core, postgres, arrow, iceberg, sqlx, tokio, serde_json, tempfile, time, uuid) — CI-ONLY (boots Postgres + libxml2; cannot build/run in this env).
+
+Run ONLY the pure test locally: `buck2 test //src/services/engine-serving:vector-merge > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t7.log` → PASS (3 tests). Do NOT build/run the `vector-search` fixture target here (libxml2 403). Confirm the lib build (Step 2).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add src/services/engine-serving/src/vector_search.rs src/services/engine-serving/src/lib.rs \
         src/services/engine-serving/src/serving.rs src/services/engine-serving/BUCK \
+        src/services/engine-serving/Cargo.toml \
+        src/services/engine-serving/tests/vector_merge.rs \
         src/services/engine-serving/tests/vector_search.rs
-git commit -m "feat(engine-serving): exact k-NN cold/hot merge (vector_search)"
+git commit -m "feat(engine-serving): exact k-NN cold/hot merge seam (vector_search + merge_topk)"
 ```
 
 ---
