@@ -428,6 +428,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "overwrite-end-caps-inline",
+    crate = "overwrite_end_caps_inline",
+    srcs = ["tests/overwrite_end_caps_inline.rs"],
+    crate_root = "tests/overwrite_end_caps_inline.rs",
+    deps = [
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-compact",
     crate = "iceberg_compact",
     srcs = ["tests/iceberg_compact.rs"],

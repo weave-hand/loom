@@ -39,6 +39,33 @@ pub fn inline_table_name(table_id: i64) -> String {
     format!("iceberg_mirror.inline_{table_id}")
 }
 
+/// End-cap EVERY live inline row of `table_id` at snapshot `at` (`end_snapshot = at`
+/// where `end_snapshot is null`). Used by the overwrite/replace commit so a replace
+/// supersedes the inline tier as well as the file tier. No-op if the inline table was
+/// never created. Runs in the caller's transaction.
+pub(crate) async fn end_cap_live_inline_rows(
+    conn: &mut PgConnection,
+    table_id: i64,
+    at: control_plane_core::SnapshotId,
+) -> control_plane_core::Result<()> {
+    let name = inline_table_name(table_id);
+    // to_regclass returns NULL for a non-existent relation -> skip.
+    let exists: Option<String> = sqlx::query_scalar("select to_regclass($1)::text")
+        .bind(&name)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| control_plane_core::ControlPlaneError::Backend(Box::new(e)))?;
+    if exists.is_none() {
+        return Ok(());
+    }
+    let sql = format!("update {name} set end_snapshot = {} where end_snapshot is null", at.0);
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| control_plane_core::ControlPlaneError::Backend(Box::new(e)))?;
+    Ok(())
+}
+
 /// True if `table` has any live inline row at `at`. Used to refuse an additive
 /// Parquet land while un-flushed inline rows exist: such a land would project a
 /// new column into the mirror that the physical `inline_<tid>` table lacks, so

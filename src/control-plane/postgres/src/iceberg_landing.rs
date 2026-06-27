@@ -600,6 +600,7 @@ async fn overwrite_truncate(
     let at = next_snapshot(conn, None).await?;
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
     end_cap_live_data_files(conn, tid, at).await?;
+    crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
     if let Some(ev) = lineage {
         pg_emit(&mut *conn, ev).await?;
     }
