@@ -155,6 +155,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
         ontology: cp.ontology(),
         acl: cp.acl(),
         serving: &serving,
+        default_limit: 1000,
     };
     let rows = read_object(
         &ObjectQuery {

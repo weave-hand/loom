@@ -211,7 +211,7 @@ async fn inline_threshold_enqueues_and_worker_flushes() {
 
     // Run the handler — calls flush_table over the wire, draining inline rows
     // into a Parquet file.
-    handle_flush(client.clone(), job)
+    handle_flush(client.clone(), loom_config::WorkerTuning::default(), job)
         .await
         .expect("handle_flush must succeed");
 
@@ -398,7 +398,9 @@ async fn gc_job_flows_through_worker_and_reclaims_object() {
         .expect("a gc_table job must be present");
     assert_eq!(job.kind, GC_JOB_KIND, "dequeued job kind must be gc_table");
     let job_id = job.id;
-    handle_gc(client.clone(), job).await.expect("handle_gc");
+    handle_gc(client.clone(), loom_config::WorkerTuning::default(), job)
+        .await
+        .expect("handle_gc");
     client.complete(job_id).await.expect("complete");
 
     // Aged object A reclaimed over the wire; current data intact; queue drained.

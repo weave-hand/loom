@@ -6,6 +6,7 @@
 
 pub mod action;
 pub mod chain_filter;
+pub mod config;
 pub mod engine_client;
 pub mod filter;
 pub mod flight_export;

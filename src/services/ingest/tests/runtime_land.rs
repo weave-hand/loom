@@ -62,6 +62,7 @@ async fn lands_through_real_runtime_wiring() {
         user: "postgres".into(),
         password: String::new(),
         dbname: db.clone(),
+        max_connections: None,
     };
     let pool = service_runtime::build_pool(&db_cfg)
         .await

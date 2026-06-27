@@ -113,6 +113,7 @@ async fn governed_object_read() {
         ontology: &cp,
         acl: &cp,
         serving: &eng,
+        default_limit: 1000,
     };
     let rows = read_object(
         &ObjectQuery {

@@ -10,7 +10,9 @@ use crate::ontology::TypeName;
 /// loom's canonical logical namespace for datasets it governs. Deployment-independent:
 /// a loom table's logical identity is stable regardless of which Postgres host backs the
 /// catalog. External datasets (`s3://bucket`, `postgres://host`) keep their own
-/// datasource-derived namespaces and are NOT loom-namespaced.
+/// datasource-derived namespaces and are NOT loom-namespaced. Deliberately `const`, not
+/// config: an identity/protocol invariant, not a deployment tunable. See
+/// road-config-seam-unification.
 pub const LOOM_DATASET_NAMESPACE: &str = "loom";
 
 /// loom's canonical identity for a dataset it governs — a physical Iceberg table. The
@@ -69,6 +71,8 @@ impl From<&TableRef> for DatasetRef {
 
 /// loom's canonical logical namespace for ontology *types* it governs. Distinct from
 /// `LOOM_DATASET_NAMESPACE` so a type "Customer" and a table "x.Customer" never collide.
+/// Deliberately `const`, not config: an identity/protocol invariant, not a deployment
+/// tunable. See road-config-seam-unification.
 pub const LOOM_TYPE_NAMESPACE: &str = "loom:type";
 
 /// loom's canonical lineage identity for an ontology type. Parallel to [`DatasetId`]

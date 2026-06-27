@@ -16,11 +16,6 @@ use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, ServingEngine};
 use query_api::serving_datafusion::IcebergActionWriter;
 
-/// Inline routing threshold (in-memory uncompressed Arrow). Below this an action row
-/// inlines (mirror-only); tunable via `LOOM_INLINE_BYTE_LIMIT`. Matches ingest.
-const DEFAULT_INLINE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
-/// Live-inline-byte total that triggers a flush, via `LOOM_FLUSH_BYTE_THRESHOLD`.
-const DEFAULT_FLUSH_BYTE_THRESHOLD: i64 = 64 * 1024 * 1024;
 /// Default per-export row cap (`LOOM_EXPORT_MAX_ROWS`). Bounds a runaway governed export; an
 /// operator hydrating a large working set raises it.
 const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
@@ -30,6 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     service_runtime::init_tracing();
     let cfg = service_runtime::Config::from_env()?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
+
+    // Compose query-api config as defaults < file < env (see `QueryApiConfig`'s `LayeredConfig`).
+    let env = service_runtime::env_map();
+    let app_cfg: query_api::config::QueryApiConfig = service_runtime::load(&env)?;
 
     // Concrete PgControlPlane: serves both ControlPlane (read path) and Auth.
     let pg = Arc::new(service_runtime::control_plane(
@@ -44,20 +43,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
 
     let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = {
-        let inline_byte_limit = std::env::var("LOOM_INLINE_BYTE_LIMIT")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_INLINE_BYTE_LIMIT);
-        let flush_byte_threshold = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD);
         let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
         let action: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
             catalog,
             pool.clone(),
-            inline_byte_limit,
-            flush_byte_threshold,
+            app_cfg.routing.inline_byte_limit,
+            app_cfg.routing.flush_byte_threshold,
         ));
         (
             Arc::new(EngineServingClient::connect(engine_socket.clone()).await?),
@@ -86,6 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cp,
             serving,
             action_engine,
+            default_limit: app_cfg.serving.default_limit,
         }),
         auth_state.clone(),
     )

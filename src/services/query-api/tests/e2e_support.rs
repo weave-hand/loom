@@ -167,6 +167,7 @@ pub async fn get(
             cp: cp.clone() as Arc<dyn ControlPlane>,
             serving: eng,
             action_engine: Arc::new(StubAction),
+            default_limit: 1000,
         }),
         AuthState {
             auth: cp.clone(),

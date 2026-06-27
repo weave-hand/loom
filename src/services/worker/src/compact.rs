@@ -2,12 +2,12 @@
 //! pick the small ones, stream them via Flight, rewrite coalesced to object store,
 //! and commit the swap over CompactTable. Zero Postgres — the engine owns it.
 use std::sync::Arc;
-use std::time::Duration;
 
 use control_plane_core::{CompactJob, DataFile, Job, JobFailure, RetryPolicy};
 use datafusion_io::{WriteConfig, absolute_data_files, write_dataset};
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
+use loom_config::WorkerTuning;
 use store_config::WriteStore;
 use transform::small_files;
 
@@ -17,17 +17,15 @@ pub struct CompactCtx {
     pub flight: FlightTableClient,
     pub write: Arc<WriteStore>,
     pub threshold_bytes: i64,
+    pub write_cfg: WriteConfig,
+    pub worker_tuning: WorkerTuning,
 }
 
-fn retry(attempts: i32, error: String) -> JobFailure {
-    let secs = 1u64
-        .checked_shl(attempts.clamp(0, 6) as u32)
-        .unwrap_or(64)
-        .min(60);
+fn retry(tuning: &WorkerTuning, attempts: i32, error: String) -> JobFailure {
     JobFailure {
         error,
         policy: RetryPolicy::Retry {
-            delay: Duration::from_secs(secs),
+            delay: tuning.backoff(attempts),
         },
     }
 }
@@ -44,7 +42,7 @@ pub async fn handle_compact(ctx: &CompactCtx, job: Job) -> std::result::Result<(
         .control
         .list_files(schema.clone(), name.clone())
         .await
-        .map_err(|e| retry(attempts, format!("list_files: {e}")))?;
+        .map_err(|e| retry(&ctx.worker_tuning, attempts, format!("list_files: {e}")))?;
     let small = small_files(&live, ctx.threshold_bytes);
     if small.len() < 2 {
         return Ok(()); // no-op: nothing worth coalescing (converges).
@@ -59,7 +57,7 @@ pub async fn handle_compact(ctx: &CompactCtx, job: Job) -> std::result::Result<(
             files: small_paths.clone(),
         })
         .await
-        .map_err(|e| retry(attempts, format!("flight fetch: {e}")))?;
+        .map_err(|e| retry(&ctx.worker_tuning, attempts, format!("flight fetch: {e}")))?;
     let Some(first) = batches.first() else {
         return Ok(());
     };
@@ -71,10 +69,10 @@ pub async fn handle_compact(ctx: &CompactCtx, job: Job) -> std::result::Result<(
         &dir_prefix,
         arrow_schema,
         &batches,
-        &WriteConfig::default(),
+        &ctx.write_cfg,
     )
     .await
-    .map_err(|e| retry(attempts, format!("write_dataset: {e}")))?;
+    .map_err(|e| retry(&ctx.worker_tuning, attempts, format!("write_dataset: {e}")))?;
 
     let new_files: Vec<DataFile> =
         absolute_data_files(written, &ctx.write.root_url, &schema, &name);
@@ -82,6 +80,6 @@ pub async fn handle_compact(ctx: &CompactCtx, job: Job) -> std::result::Result<(
     ctx.control
         .compact_table(schema, name, small_paths, &new_files)
         .await
-        .map_err(|e| retry(attempts, format!("compact_table: {e}")))?;
+        .map_err(|e| retry(&ctx.worker_tuning, attempts, format!("compact_table: {e}")))?;
     Ok(())
 }

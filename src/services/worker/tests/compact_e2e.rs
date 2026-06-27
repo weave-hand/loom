@@ -213,6 +213,8 @@ async fn worker_compacts_small_files_over_the_wire() {
         flight,
         write,
         threshold_bytes: 10 * 1024 * 1024, // 10 MiB — all 1-row files qualify
+        write_cfg: datafusion_io::WriteConfig::default(),
+        worker_tuning: loom_config::WorkerTuning::default(),
     };
 
     // Run the compaction handler.

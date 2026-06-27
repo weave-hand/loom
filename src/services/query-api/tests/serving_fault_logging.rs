@@ -81,6 +81,7 @@ async fn build_faulting_app() -> axum::Router {
         cp: cp as Arc<dyn ControlPlane>,
         serving: Arc::new(FaultEngine),
         action_engine: Arc::new(NullAction),
+        default_limit: 1000,
     })
 }
 

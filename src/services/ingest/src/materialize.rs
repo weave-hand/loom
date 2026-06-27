@@ -56,7 +56,7 @@ pub fn resolve_columns(
 /// already-resolved physical schema (see [`resolve_columns`]).
 #[allow(
     clippy::too_many_arguments,
-    reason = "land requires cp, store, table, schema, columns, batches, file_prefix, and lineage — all structurally distinct args"
+    reason = "land requires cp, store, table, schema, columns, batches, file_prefix, lineage, and write_cfg — all structurally distinct args"
 )]
 pub async fn land(
     cp: &dyn ControlPlane,
@@ -67,17 +67,11 @@ pub async fn land(
     batches: &[RecordBatch],
     file_prefix: &str,
     lineage: LineageEvent,
+    write_cfg: &WriteConfig,
 ) -> Result<SnapshotId, IngestError> {
     // DataFusion write: N Snappy Parquet files straight to object storage.
     let dir_prefix = format!("{}/{}/{}", table.schema, table.name, file_prefix);
-    let files = write_dataset(
-        object_store,
-        &dir_prefix,
-        schema,
-        batches,
-        &WriteConfig::default(),
-    )
-    .await?;
+    let files = write_dataset(object_store, &dir_prefix, schema, batches, write_cfg).await?;
 
     // One atomic transaction: create_table (idempotent) + append_files + emit.
     let data_files: Vec<DataFile> = files
@@ -107,6 +101,7 @@ pub async fn materialize(
     cp: &dyn ControlPlane,
     object_store: Arc<dyn ObjectStore>,
     req: MaterializeRequest<'_>,
+    write_cfg: &WriteConfig,
 ) -> Result<SnapshotId, IngestError> {
     let columns = resolve_columns(&req.schema, req.gate)?;
     land(
@@ -118,6 +113,7 @@ pub async fn materialize(
         req.batches,
         req.file_prefix,
         req.lineage,
+        write_cfg,
     )
     .await
 }

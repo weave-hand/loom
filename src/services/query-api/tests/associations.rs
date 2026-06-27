@@ -147,6 +147,7 @@ async fn read_associations_returns_id_pairs() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let Associations {
         from_id_type,
@@ -175,6 +176,7 @@ async fn read_associations_rejects_source_without_identity() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_associations(&assoc_query(), &Subject(subj), &deps)
         .await
@@ -193,6 +195,7 @@ async fn read_associations_rejects_target_without_identity() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_associations(&assoc_query(), &Subject(subj), &deps)
         .await
@@ -232,6 +235,7 @@ async fn read_associations_forbids_a_denied_source_identity() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_associations(&assoc_query(), &Subject(subj), &deps)
         .await
@@ -267,6 +271,7 @@ async fn read_associations_forbids_a_masked_target_identity() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_associations(&assoc_query(), &Subject(subj), &deps)
         .await

@@ -167,6 +167,7 @@ async fn rejects_a_non_self_link() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     // `employer` lands on Company, not back on Person -> not a self-link.
     let err = read_graph_reach_union(&union_query(&["knows", "employer"]), &Subject(subj), &deps)
@@ -186,6 +187,7 @@ async fn rejects_an_unknown_link() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach_union(&union_query(&["knows", "nope"]), &Subject(subj), &deps)
         .await
@@ -204,6 +206,7 @@ async fn rejects_an_empty_link_set() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach_union(&union_query(&[]), &Subject(subj), &deps)
         .await
@@ -222,6 +225,7 @@ async fn rejects_a_type_without_identity() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach_union(&union_query(&["knows"]), &Subject(subj), &deps)
         .await
@@ -245,6 +249,7 @@ async fn returns_reachable_objects_for_a_self_link_union() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let rows = read_graph_reach_union(
         &union_query(&["knows", "colleagues"]),
@@ -278,6 +283,7 @@ async fn duplicate_link_names_collapse() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let rows = read_graph_reach_union(&union_query(&["knows", "knows"]), &Subject(subj), &deps)
         .await

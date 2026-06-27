@@ -7,12 +7,14 @@ rust_library(
     edition = "2024",
     deps = [
         "//src/control-plane/core:core",
+        "//src/loom-config:loom-config",
         "//third-party:arrow",
         "//third-party:bytes",
         "//third-party:datafusion",
         "//third-party:futures",
         "//third-party:object_store",
         "//third-party:parquet",
+        "//third-party:serde",
         "//third-party:thiserror",
     ],
     visibility = ["PUBLIC"],
@@ -70,6 +72,18 @@ rust_test(
         "//third-party:datafusion",
         "//third-party:object_store",
         "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "write-tuning",
+    crate = "write_tuning",
+    srcs = ["tests/write_tuning.rs"],
+    crate_root = "tests/write_tuning.rs",
+    edition = "2024",
+    deps = [
+        ":datafusion-io",
+        "//third-party:serde_json",
     ],
 )
 

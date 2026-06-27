@@ -161,6 +161,7 @@ async fn rejects_a_non_self_core_link() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     // `worksAt` lands on Company, not back on Person -> not a self-link core.
     let err = read_graph_reach_with_tail(&tail_query("worksAt", &["knows"]), &Subject(subj), &deps)
@@ -180,6 +181,7 @@ async fn rejects_an_unknown_core_link() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach_with_tail(&tail_query("nope", &["worksAt"]), &Subject(subj), &deps)
         .await
@@ -198,6 +200,7 @@ async fn rejects_an_unknown_tail_link() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach_with_tail(&tail_query("knows", &["nope"]), &Subject(subj), &deps)
         .await
@@ -216,6 +219,7 @@ async fn rejects_an_empty_tail() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach_with_tail(&tail_query("knows", &[]), &Subject(subj), &deps)
         .await
@@ -234,6 +238,7 @@ async fn rejects_a_type_without_identity() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
         .await
@@ -253,6 +258,7 @@ async fn forbids_when_tail_type_not_granted() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let err = read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
         .await
@@ -276,6 +282,7 @@ async fn returns_projected_tail_objects() {
         ontology: &cp,
         acl: &cp,
         serving: &serving,
+        default_limit: 1000,
     };
     let rows =
         read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
