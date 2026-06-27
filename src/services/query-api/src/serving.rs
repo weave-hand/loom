@@ -263,6 +263,19 @@ pub trait ActionEngine: Send + Sync {
         logical_types: &[String],
         event: control_plane_core::LineageEvent,
     ) -> Result<control_plane_core::SnapshotId, ServingError>;
+
+    /// Replace the ENTIRE live contents of `table` with `rows` (the copy-on-write
+    /// overwrite path for UPDATE/DELETE), committing `event` atomically with the new
+    /// snapshot. `rows.is_empty()` truncates the table (delete-all). Both MVCC tiers
+    /// (files + inline) are superseded; time travel is preserved.
+    async fn overwrite_table(
+        &self,
+        table: &control_plane_core::TableRef,
+        columns: &[String],
+        rows: &[Vec<SqlValue>],
+        logical_types: &[String],
+        event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError>;
 }
 
 /// Escape a string for embedding in a DuckDB single-quoted literal: double every

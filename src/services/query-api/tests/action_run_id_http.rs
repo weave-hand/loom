@@ -34,6 +34,17 @@ impl ActionEngine for CapturingEngine {
         *self.run_id.lock().unwrap() = Some(event.run_id);
         Ok(SnapshotId(1))
     }
+
+    async fn overwrite_table(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _rows: &[Vec<SqlValue>],
+        _logical_types: &[String],
+        _event: LineageEvent,
+    ) -> Result<SnapshotId, ServingError> {
+        Err(ServingError::Engine("overwrite_table unsupported".into()))
+    }
 }
 
 /// No-op read engine: the action path never queries it, so a plain `rust_test`

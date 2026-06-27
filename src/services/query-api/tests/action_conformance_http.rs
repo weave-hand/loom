@@ -49,6 +49,17 @@ impl ActionEngine for OkEngine {
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
         Ok(control_plane_core::SnapshotId(1))
     }
+
+    async fn overwrite_table(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _rows: &[Vec<SqlValue>],
+        _logical_types: &[String],
+        _event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        Err(ServingError::Engine("overwrite_table unsupported".into()))
+    }
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {

@@ -47,6 +47,17 @@ impl ActionEngine for RecordingEngine {
         self.events.lock().unwrap().push(event);
         Ok(SnapshotId(1))
     }
+
+    async fn overwrite_table(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _rows: &[Vec<SqlValue>],
+        _logical_types: &[String],
+        _event: LineageEvent,
+    ) -> Result<SnapshotId, ServingError> {
+        Err(ServingError::Engine("overwrite_table unsupported".into()))
+    }
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {

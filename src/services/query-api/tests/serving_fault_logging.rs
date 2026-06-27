@@ -44,6 +44,17 @@ impl ActionEngine for NullAction {
     ) -> Result<SnapshotId, ServingError> {
         Ok(SnapshotId(0))
     }
+
+    async fn overwrite_table(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _rows: &[Vec<SqlValue>],
+        _logical_types: &[String],
+        _event: control_plane_core::LineageEvent,
+    ) -> Result<SnapshotId, ServingError> {
+        Err(ServingError::Engine("overwrite_table unsupported".into()))
+    }
 }
 
 async fn build_faulting_app() -> axum::Router {
