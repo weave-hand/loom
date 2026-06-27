@@ -1,5 +1,5 @@
 use arrow::datatypes::DataType;
-use query_api::flight_export::{export_arrow_schema, ExportCommand};
+use query_api::flight_export::{ExportCommand, export_arrow_schema};
 
 #[test]
 fn export_command_json_round_trips() {
