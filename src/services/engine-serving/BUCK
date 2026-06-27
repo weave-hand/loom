@@ -13,6 +13,7 @@ rust_library(
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:datafusion",
+        "//third-party:iceberg",
         "//third-party:object_store",
         "//third-party:sqlx",
         "//third-party:thiserror",
@@ -44,6 +45,41 @@ loom_fixture_test(
         ":engine-serving",
         "//src/control-plane/postgres:postgres",
         "//third-party:arrow",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+rust_test(
+    name = "vector-merge",
+    crate = "vector_merge",
+    srcs = ["tests/vector_merge.rs"],
+    crate_root = "tests/vector_merge.rs",
+    edition = "2024",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+    ],
+)
+
+loom_fixture_test(
+    name = "vector-search",
+    crate = "vector_search",
+    srcs = ["tests/vector_search.rs"],
+    crate_root = "tests/vector_search.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
     ],
