@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use control_plane_core::{ControlPlaneError, Result};
+use control_plane_core::{ControlPlaneError, FlatIndex, IndexKind, Metric, Result, VectorIndex};
 use iceberg::io::FileIO;
 use iceberg::puffin::{Blob, CompressionCodec, PuffinReader, PuffinWriter};
 
@@ -83,4 +83,39 @@ pub async fn read_index_blob(file_io: &FileIO, path: &str) -> Result<LoadedBlob>
         snapshot_id: blob.snapshot_id(),
         fields: blob.fields().to_vec(),
     })
+}
+
+/// Serialize a `FlatIndex` into a `loom-vector-index-v1` Puffin blob with the
+/// self-describing properties the spec mandates.
+pub async fn write_flat_index(
+    file_io: &FileIO,
+    path: &str,
+    index: &FlatIndex,
+    covered_snapshot: i64,
+    field_id: i32,
+    column: &str,
+    identity_column: &str,
+) -> Result<()> {
+    let mut props = HashMap::new();
+    props.insert("dim".to_string(), index.dim().to_string());
+    props.insert("metric".to_string(), index.metric().as_str().to_string());
+    props.insert(
+        "index-kind".to_string(),
+        IndexKind::Flat.as_str().to_string(),
+    );
+    props.insert("column".to_string(), column.to_string());
+    props.insert("identity-column".to_string(), identity_column.to_string());
+    props.insert("row-count".to_string(), index.row_count().to_string());
+    props.insert(
+        "covered-snapshot".to_string(),
+        covered_snapshot.to_string(),
+    );
+    let payload = index.serialize();
+    write_index_blob(file_io, path, &payload, covered_snapshot, field_id, props).await
+}
+
+/// Read and decode the `FlatIndex` from a `loom-vector-index-v1` Puffin file.
+pub async fn read_flat_index(file_io: &FileIO, path: &str) -> Result<FlatIndex> {
+    let loaded = read_index_blob(file_io, path).await?;
+    FlatIndex::deserialize(&loaded.payload)
 }

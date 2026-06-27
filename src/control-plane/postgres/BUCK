@@ -713,6 +713,7 @@ rust_test(
     remote_execution = "disabled",
     deps = [
         ":postgres",
+        "//src/control-plane/core:core",
         "//third-party:iceberg",
         "//third-party:tempfile",
         "//third-party:tokio",

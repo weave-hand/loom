@@ -3,8 +3,10 @@
 
 use std::collections::HashMap;
 
+use control_plane_core::{FlatIndex, Metric, VectorKey, VectorIndex};
 use control_plane_postgres::puffin::{
-    LOOM_VECTOR_INDEX_BLOB_TYPE, read_index_blob, write_index_blob,
+    LOOM_VECTOR_INDEX_BLOB_TYPE, read_flat_index, read_index_blob, write_flat_index,
+    write_index_blob,
 };
 use iceberg::io::FileIO;
 
@@ -48,4 +50,32 @@ async fn puffin_blob_roundtrips_byte_exact() {
 #[test]
 fn blob_type_constant_value() {
     assert_eq!(LOOM_VECTOR_INDEX_BLOB_TYPE, "loom-vector-index-v1");
+}
+
+#[tokio::test]
+async fn flat_index_round_trips_through_puffin() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_io = FileIO::new_with_fs();
+    let path = format!("{}/flat.puffin", dir.path().display());
+
+    let idx = FlatIndex::build(
+        4,
+        Metric::Cosine,
+        vec![
+            (VectorKey::Int(10), vec![1.0, 0.0, 0.0, 0.0]),
+            (VectorKey::Int(20), vec![0.0, 1.0, 0.0, 0.0]),
+        ],
+    )
+    .unwrap();
+
+    write_flat_index(&file_io, &path, &idx, 5, 3, "embedding", "id")
+        .await
+        .unwrap();
+    let back = read_flat_index(&file_io, &path).await.unwrap();
+    assert_eq!(back.dim(), 4);
+    assert_eq!(back.metric(), Metric::Cosine);
+    assert_eq!(
+        back.search(&[1.0, 0.0, 0.0, 0.0], 1)[0].0,
+        VectorKey::Int(10)
+    );
 }
