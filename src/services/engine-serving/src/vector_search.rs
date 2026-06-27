@@ -127,10 +127,12 @@ fn score_inline_batch(
     vector_col: &str,
 ) -> Result<Vec<(VectorKey, f32)>, EngineServingError> {
     let schema = batch.schema();
-    let id_idx = schema.index_of(batch.schema().field(0).name()).map_err(|e| {
-        EngineServingError::Engine(format!("identity column index error: {e}"))
+    let id_idx = 0;
+    let vec_idx = schema.index_of(vector_col).map_err(|e| {
+        EngineServingError::Engine(format!(
+            "vector column '{vector_col}' not in schema: {e}"
+        ))
     })?;
-    let vec_idx = schema.index_of(vector_col).unwrap_or(1);
 
     let id_col = batch.column(id_idx);
     let vec_col = batch.column(vec_idx);
@@ -180,7 +182,7 @@ fn build_result_batch(merged: Vec<(VectorKey, f32)>) -> Result<RecordBatch, Engi
     let distances: Vec<f32> = merged.iter().map(|(_, d)| *d).collect();
     let dist_array: Arc<Float32Array> = Arc::new(Float32Array::from(distances));
 
-    let all_str = merged.iter().any(|(k, _)| matches!(k, VectorKey::Str(_)));
+    let all_str = !merged.is_empty() && merged.iter().all(|(k, _)| matches!(k, VectorKey::Str(_)));
 
     let (id_field, id_array): (Field, Arc<dyn arrow::array::Array>) = if all_str {
         let values: Vec<&str> = merged

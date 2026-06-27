@@ -117,12 +117,18 @@ fn distances(batch: &RecordBatch) -> Vec<f32> {
 
 /// Seed the wh.docs table: register type, land rows 1..=4 forced to Parquet
 /// (inline_byte_limit 0), and build a vector index with the given metric.
-/// Returns the `SqlCatalog` and `PgPool`.
+/// Returns the `SqlCatalog`, `PgPool`, control plane, and the `TempDir` guard
+/// (caller must keep it alive across all `vector_search` calls).
 async fn seed_and_build(
     fx: &PgFixture,
     db: &str,
     metric: Metric,
-) -> (SqlCatalog, sqlx::PgPool, control_plane_postgres::PgControlPlane) {
+) -> (
+    SqlCatalog,
+    sqlx::PgPool,
+    control_plane_postgres::PgControlPlane,
+    tempfile::TempDir,
+) {
     use control_plane_postgres::PgControlPlane;
     use std::time::Duration;
 
@@ -203,7 +209,7 @@ async fn seed_and_build(
         .await
         .expect("build_vector_index");
 
-    (catalog, pool, cp)
+    (catalog, pool, cp, wh)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -216,7 +222,7 @@ async fn knn_cold_exact_cosine() {
         name: "docs".into(),
     };
 
-    let (catalog, pool, _cp) = seed_and_build(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
 
     // Query: nearest to id=1's embedding [1,0,0,0] with cosine, k=2.
     let batch = engine_serving::vector_search(
@@ -249,7 +255,7 @@ async fn knn_cold_exact_l2() {
         name: "docs".into(),
     };
 
-    let (catalog, pool, _cp) = seed_and_build(&fx, &db, Metric::L2).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::L2).await;
 
     // Query: nearest to id=2's embedding [0,1,0,0] with L2, k=2.
     let batch = engine_serving::vector_search(
