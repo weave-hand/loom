@@ -30,31 +30,32 @@ pub struct VectorIndexRow {
     pub puffin_path: String,
 }
 
-// SQL-STYLE (env-forced runtime, see plan "Decisions"): this cloud session cannot
-// regenerate the .sqlx cache (Postgres won't boot as root; libxml2 egress is
-// policy-blocked), so the new vector_index queries use RUNTIME
-// `sqlx::query(AssertSqlSafe(...))` + bind params instead of compile-time
-// `query!`/`query_scalar!`. The SQL is a fixed literal (no interpolation — every
-// value is a bound `$n` param), so AssertSqlSafe carries no injection risk. This
-// mirrors the runtime pattern already used in `iceberg_inline.rs`/`fixture.rs`.
-// (Promotable to compile-time `query!` in a follow-up when a Postgres-capable env
-// is available — tracked as a FUTURE item.)
+// SQL-STYLE: the fixed-relation queries below (insert_vector_index,
+// lookup_vector_index, identity_column_for) use compile-time `query!`/
+// `query_scalar!` against the committed `.sqlx` cache, like the rest of the
+// adapter. Only the queries in `inline_delta_batch` stay RUNTIME
+// `sqlx::query(AssertSqlSafe(...))`: they interpolate the per-table inline
+// relation name (`inline_table_name(tid)`) and the ontology-declared identity/
+// vector column names, which a compile-time macro cannot accept. Those interpolated
+// fragments are loom-controlled identifiers (not user input), and every value is a
+// bound `$n` param, so AssertSqlSafe carries no injection risk — the same runtime
+// pattern used in `iceberg_inline.rs`/`fixture.rs`.
 
 /// Insert a `vector_index` binding row in the caller's transaction.
 pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) -> Result<()> {
-    sqlx::query(AssertSqlSafe(
+    sqlx::query!(
         "insert into iceberg_mirror.vector_index \
          (table_id, column_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path) \
          values ($1, $2, $3, $4, $5, $6, $7, $8)",
-    ))
-    .bind(row.table_id)
-    .bind(&row.column)
-    .bind(row.covered_snapshot)
-    .bind(&row.metric)
-    .bind(&row.index_kind)
-    .bind(row.dim)
-    .bind(row.row_count)
-    .bind(&row.puffin_path)
+        row.table_id,
+        row.column,
+        row.covered_snapshot,
+        row.metric,
+        row.index_kind,
+        row.dim,
+        row.row_count,
+        row.puffin_path,
+    )
     .execute(&mut *tx)
     .await
     .map_err(backend)?;
@@ -69,32 +70,29 @@ pub async fn lookup_vector_index(
     column: &str,
     at: i64,
 ) -> Result<Option<VectorIndexRow>> {
-    let row = sqlx::query(AssertSqlSafe(
+    let row = sqlx::query!(
         "select table_id, column_name, covered_snapshot, metric, index_kind, dim, \
                 row_count, puffin_path \
          from iceberg_mirror.vector_index \
          where table_id = $1 and column_name = $2 and covered_snapshot <= $3 \
          order by covered_snapshot desc limit 1",
-    ))
-    .bind(table_id)
-    .bind(column)
-    .bind(at)
+        table_id,
+        column,
+        at,
+    )
     .fetch_optional(pool)
     .await
     .map_err(backend)?;
-    row.map(|r| {
-        Ok(VectorIndexRow {
-            table_id: r.try_get("table_id").map_err(backend)?,
-            column: r.try_get("column_name").map_err(backend)?,
-            covered_snapshot: r.try_get("covered_snapshot").map_err(backend)?,
-            metric: r.try_get("metric").map_err(backend)?,
-            index_kind: r.try_get("index_kind").map_err(backend)?,
-            dim: r.try_get("dim").map_err(backend)?,
-            row_count: r.try_get("row_count").map_err(backend)?,
-            puffin_path: r.try_get("puffin_path").map_err(backend)?,
-        })
-    })
-    .transpose()
+    Ok(row.map(|r| VectorIndexRow {
+        table_id: r.table_id,
+        column: r.column_name,
+        covered_snapshot: r.covered_snapshot,
+        metric: r.metric,
+        index_kind: r.index_kind,
+        dim: r.dim,
+        row_count: r.row_count,
+        puffin_path: r.puffin_path,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -117,20 +115,16 @@ pub struct BuiltIndex {
 /// Returns an error if the type row is absent or the identity field is `NULL`
 /// (the build requires a declared identity to populate `VectorKey`).
 async fn identity_column_for(pool: &PgPool, table: &TableRef) -> Result<String> {
-    let row = sqlx::query(AssertSqlSafe(
+    let id = sqlx::query_scalar!(
         "select identity from ontology.object_type \
-         where table_schema = $1 and table_name = $2"
-            .to_string(),
-    ))
-    .bind(&table.schema)
-    .bind(&table.name)
+         where table_schema = $1 and table_name = $2",
+        table.schema,
+        table.name,
+    )
     .fetch_optional(pool)
     .await
-    .map_err(backend)?;
-    let id: Option<String> = match row {
-        Some(r) => r.try_get("identity").map_err(backend)?,
-        None => None,
-    };
+    .map_err(backend)?
+    .flatten();
     id.ok_or_else(|| {
         ControlPlaneError::Backend(
             format!(
