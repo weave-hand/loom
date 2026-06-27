@@ -232,6 +232,13 @@ param, Delete-has-only-identity, Update PATCH relaxation).
   the thin follow-on composing this primitive.
 - **File-granular copy-on-write** (prune to containing files, rewrite only those) — the
   O(table)→O(touched) optimization.
+- **Inline-shadow + merge-on-read + compaction-consolidation** — the scalable destination
+  (PR #208 review): an UPDATE writes a new inline row-version and a DELETE writes an inline
+  **tombstone**; the engine read path makes inline rows **shadow** file-tier rows by
+  identity (today's union is additive), and compaction consolidates the inline deltas into
+  files and clears them. O(change) per mutation, but it changes the **engine read path** and
+  **compaction** (not just query-api) and needs a tombstone concept the inline tier lacks —
+  hence sequenced after this whole-table-COW slice rather than built first.
 - **Iceberg-native delete-files** (positional/equality deletes + merge-on-read) — blocked
   by iceberg-rust 0.9; the long-term ideal.
 - **Identity change** and **upsert** (insert-on-miss).
