@@ -55,11 +55,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get("LOOM_WORKER_ID")
         .cloned()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let lease = Duration::from_millis(
-        env.get("LOOM_LOCK_TIMEOUT_MS")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5000),
-    );
+    // Strict parse (matches `service_runtime::Config`): a malformed value fails startup
+    // rather than silently falling back — the same no-lossy-`.ok()` rule as the tuning seam.
+    let mut lease_ms: u64 = 5000;
+    loom_config::overlay_opt(&env, "LOOM_LOCK_TIMEOUT_MS", &mut lease_ms)?;
+    let lease = Duration::from_millis(lease_ms);
 
     // Compose worker config as defaults < file < env (see `WorkerConfig`'s `LayeredConfig`).
     let wcfg: WorkerConfig = loom_config::load(&env)?;
@@ -67,10 +67,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store_cfg = store_config::ObjectStoreConfig::parse_from_env(&env)?;
     let write = Arc::new(store_config::build_write_store(&store_cfg)?);
     let flight = FlightTableClient::connect(&socket).await?;
-    let threshold_bytes = env
-        .get("LOOM_COMPACT_THRESHOLD_BYTES")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(128 * 1024 * 1024_i64);
+    let mut threshold_bytes: i64 = 128 * 1024 * 1024;
+    loom_config::overlay_opt(&env, "LOOM_COMPACT_THRESHOLD_BYTES", &mut threshold_bytes)?;
 
     let client = GrpcQueueClient::connect(&socket).await?;
     let flush = client.clone();
