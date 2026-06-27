@@ -151,3 +151,13 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "vector-index",
+    crate = "vector_index",
+    srcs = ["tests/vector_index.rs"],
+    crate_root = "tests/vector_index.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)

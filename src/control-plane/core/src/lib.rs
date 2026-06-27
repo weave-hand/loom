@@ -16,6 +16,7 @@ mod page;
 mod queue;
 pub mod snapshot;
 mod transaction;
+mod vector_index;
 
 pub use acl::{
     Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
@@ -40,3 +41,4 @@ pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use transaction::{ControlPlane, Tx};
+pub use vector_index::{FlatIndex, IndexKind, Metric, VectorIndex, VectorKey, distance};
