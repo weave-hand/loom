@@ -604,6 +604,7 @@ async fn post_action(
     let deps = crate::action::ActionDeps {
         cp: st.cp.as_ref(),
         action_engine: st.action_engine.as_ref(),
+        serving: st.serving.as_ref(),
     };
     match crate::action::run_action(&action_name, &obj, &subject.0, &deps).await {
         Ok((rows, run_id)) => {
@@ -640,6 +641,10 @@ async fn post_action(
         // from the opaque catch-all 500 below) so the operator can fix the ActionDef.
         Err(crate::action::ActionError::Misconfigured(m)) => {
             (StatusCode::INTERNAL_SERVER_ERROR, m).into_response()
+        }
+        Err(crate::action::ActionError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(crate::action::ActionError::Unsupported(m)) => {
+            (StatusCode::UNPROCESSABLE_ENTITY, m).into_response()
         }
         Err(e) => internal_error("action serving fault", e),
     }

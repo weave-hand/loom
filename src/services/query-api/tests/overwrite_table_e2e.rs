@@ -131,9 +131,11 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
 
     // Large flush threshold so inline rows never enqueue a flush job.
     let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &serving,
     };
 
     // Land two rows via the action insert path.
@@ -268,9 +270,11 @@ async fn overwrite_table_empty_rows_truncates() {
     let subj = grant_writer(&cp, &widget).await;
 
     let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &serving,
     };
 
     // Land one row.

@@ -137,9 +137,11 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
 
     // Large flush threshold so the single inline row never enqueues a flush job.
     let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &serving,
     };
     let body = json!({ "id": "42", "name": "gadget" });
     let (created, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
@@ -205,9 +207,11 @@ async fn ungranted_subject_is_forbidden_and_writes_nothing() {
 
     let _widget = define_widget(&cp).await; // type + action defined, NO grant.
     let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &serving,
     };
 
     let subj = SubjectId("nobody".into());

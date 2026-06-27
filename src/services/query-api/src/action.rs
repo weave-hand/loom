@@ -18,6 +18,7 @@ use crate::write_filter::{self, WriteVerdict};
 pub struct ActionDeps<'a> {
     pub cp: &'a dyn ControlPlane,
     pub action_engine: &'a dyn ActionEngine,
+    pub serving: &'a dyn crate::serving::ServingEngine,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +40,13 @@ pub enum ActionError {
     /// `Forbidden`, which is the coarse Write-gate denial.
     #[error("write denied")]
     WriteDenied(WriteDenialReason),
+    /// The targeted object does not exist (no live row for the supplied identity).
+    #[error("object not found")]
+    NotFound,
+    /// The mutation is unsupported for this target type (e.g. a vector-bearing type,
+    /// which the scalar copy-on-write path cannot rewrite without dropping vectors).
+    #[error("unsupported: {0}")]
+    Unsupported(String),
     #[error(transparent)]
     ControlPlane(#[from] ControlPlaneError),
     #[error(transparent)]

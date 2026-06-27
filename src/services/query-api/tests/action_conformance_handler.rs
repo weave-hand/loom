@@ -15,7 +15,7 @@ use control_plane_core::{
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::action::{ActionDeps, ActionError, run_action};
-use query_api::serving::{ActionEngine, ServingError, SqlValue};
+use query_api::serving::{ActionEngine, Rows, ServingError, SqlValue};
 use serde_json::json;
 
 /// An ActionEngine that records every LineageEvent it is handed (the atomic seam).
@@ -58,6 +58,20 @@ impl ActionEngine for RecordingEngine {
     ) -> Result<SnapshotId, ServingError> {
         self.events.lock().unwrap().push(event);
         Ok(SnapshotId(1))
+    }
+}
+
+/// A no-op `ServingEngine` stub for action handler tests that only exercise write
+/// paths and never issue read queries against the serving engine.
+struct NullServing;
+
+#[async_trait]
+impl query_api::serving::ServingEngine for NullServing {
+    async fn fetch_rows(&self, _sql: &str, _params: &[SqlValue]) -> Result<Rows, ServingError> {
+        Ok(Rows {
+            columns: vec![],
+            rows: vec![],
+        })
     }
 }
 
@@ -136,9 +150,11 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
 async fn misconfigured_action_is_rejected_before_insert() {
     let (cp, subj) = seeded().await;
     let engine = RecordingEngine::new();
+    let null_serving = NullServing;
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &null_serving,
     };
     let body = json!({"id": "1", "name": "g", "naem": "x"});
     let err = run_action("createBad", body.as_object().unwrap(), &subj, &deps)
@@ -162,9 +178,11 @@ async fn write_denied_subject_is_forbidden_not_misconfigured() {
     let stranger = SubjectId("stranger".into());
     cp.define_subject(&stranger).await.unwrap();
     let engine = RecordingEngine::new();
+    let null_serving = NullServing;
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &null_serving,
     };
     let body = json!({"id": "1", "name": "g", "naem": "x"});
     let err = run_action("createBad", body.as_object().unwrap(), &stranger, &deps)
@@ -181,9 +199,11 @@ async fn write_denied_subject_is_forbidden_not_misconfigured() {
 async fn conformant_action_runs_the_insert() {
     let (cp, subj) = seeded().await;
     let engine = RecordingEngine::new();
+    let null_serving = NullServing;
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &null_serving,
     };
     let body = json!({"id": "42", "name": "gadget"});
     let (rows, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
