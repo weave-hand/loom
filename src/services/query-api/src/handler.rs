@@ -10,6 +10,7 @@ pub use service_runtime::Subject;
 
 use crate::serving::{ServingEngine, SqlValue};
 use crate::sql::{compile_chain_with, compile_select_with};
+use crate::sql::SqlDialect;
 
 /// A governed read result: rows plus, for each projected column, the ontology
 /// property's logical type — the input the wire renderer needs to type each value.
@@ -19,6 +20,26 @@ pub struct ObjectRows {
     pub columns: Vec<String>,
     pub logical_types: Vec<String>,
     pub rows: Vec<Vec<SqlValue>>,
+}
+
+/// The governed, compiled-but-not-yet-executed form of an object read: the SQL string +
+/// positional params, plus the projected output columns and their logical types (in SELECT
+/// order), and which of those output columns were **masked**. Shared by `read_object`
+/// (executes → `ObjectRows`) and the Flight export path (streams the engine result + builds
+/// the Arrow schema from `columns`/`logical_types`/`masked_columns`).
+///
+/// `masked_columns` is load-bearing for the export schema: a masked column is SELECTed as the
+/// constant `'***'` (`sql.rs` `MASK_MARKER`), so the engine streams it back as **Utf8**, not as
+/// its declared logical type. The export schema builder must therefore advertise masked columns
+/// as `Utf8` — otherwise `get_flight_info`'s schema (e.g. `Float64`/`List<Float32>`) disagrees
+/// with the `do_get` data schema and a strict Flight client errors.
+#[derive(Debug)]
+pub struct GovernedRead {
+    pub sql: String,
+    pub params: Vec<SqlValue>,
+    pub columns: Vec<String>,
+    pub logical_types: Vec<String>,
+    pub masked_columns: Vec<String>,
 }
 
 const DEFAULT_LIMIT: u32 = 1000;
@@ -173,11 +194,20 @@ fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
     }
 }
 
-pub async fn read_object(
+/// Govern + compile an object read without executing it. Resolves the type, applies the
+/// deny-by-default Read gate, loads row/column policy, projects allowed columns, resolves
+/// governed derived (aggregate-over-link) columns, and compiles the SELECT (with `limit`).
+/// Returns the SQL + params + projected `columns`/`logical_types` (SELECT order) + which
+/// output columns were masked. Shared by the HTTP read path and the Flight export path so
+/// governance lives in exactly one place.
+pub async fn compile_object_read(
     q: &ObjectQuery,
     subject: &Subject,
-    deps: &QueryDeps<'_>,
-) -> Result<ObjectRows, QueryError> {
+    ontology: &(dyn Ontology + Send + Sync),
+    acl: &(dyn Acl + Send + Sync),
+    dialect: &dyn SqlDialect,
+    limit: u32,
+) -> Result<GovernedRead, QueryError> {
     let type_name = TypeName(q.type_name.clone());
     let target = PolicyTarget::Type(type_name.clone());
 
@@ -185,15 +215,14 @@ pub async fn read_object(
     // No grant — including an unknown/anonymous subject — is Forbidden, returned BEFORE
     // we reveal whether the type exists. Fine-grained row/column policy below only
     // narrows what an already-permitted subject sees.
-    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
+    if acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
         return Err(QueryError::Forbidden);
     }
 
     // resolve: type -> ObjectType (table + ordered properties). A genuine miss is a
     // client 404 (UnknownType); a backend fault must propagate as itself (-> 500),
     // not masquerade as an unknown type.
-    let object_type = deps
-        .ontology
+    let object_type = ontology
         .get_type(&type_name)
         .await
         .map_err(|e| match e {
@@ -201,7 +230,7 @@ pub async fn read_object(
             other => QueryError::ControlPlane(other),
         })?;
 
-    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+    let (row_filters, denied, masked) = load_policy(acl, &subject.0, &target).await?;
 
     // projection: type properties minus denied columns, preserving property order.
     let allowed: Vec<String> = project_allowed(&object_type.properties, &denied);
@@ -246,8 +275,7 @@ pub async fn read_object(
     let mut derived_types: Vec<String> = Vec::new();
     let mut derived_selects: Vec<crate::sql::DerivedSelect> = Vec::new();
     if !object_type.derived.is_empty() {
-        let links = deps
-            .ontology
+        let links = ontology
             .links(&type_name, PageReq::unbounded())
             .await?;
         for d in &object_type.derived {
@@ -265,16 +293,16 @@ pub async fn read_object(
             };
             let target_pt = PolicyTarget::Type(link.to.clone());
             // Both-ends: the subject must be permitted to read the linked type.
-            if deps.acl.check(&subject.0, Action::Read, &target_pt).await? == Decision::Deny {
+            if acl.check(&subject.0, Action::Read, &target_pt).await? == Decision::Deny {
                 continue;
             }
-            let target_type = match deps.ontology.get_type(&link.to).await {
+            let target_type = match ontology.get_type(&link.to).await {
                 Ok(t) => t,
                 Err(ControlPlaneError::NotFound(_)) => continue, // target type gone -> omit
                 Err(other) => return Err(QueryError::ControlPlane(other)),
             };
             let (t_filters, t_denied, _t_masked) =
-                load_policy(deps.acl, &subject.0, &target_pt).await?;
+                load_policy(acl, &subject.0, &target_pt).await?;
             // Don't leak a target column the subject may not see, via an aggregate over it.
             if let Some(col) = agg_column(&d.agg)
                 && t_denied.contains(col)
@@ -296,21 +324,20 @@ pub async fn read_object(
     }
 
     let (sql, params) = compile_select_with(
-        deps.serving.dialect(),
+        dialect,
         &object_type.table,
         &allowed,
         &mask_cols,
         &row_filters,
         &predicates,
         &derived_selects,
-        DEFAULT_LIMIT,
+        limit,
     )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
     // Output columns = physical `allowed` (in order) ++ surviving derived (in order).
     let mut columns = allowed.clone();
     columns.extend(derived_names.iter().cloned());
     // Logical type per projected column, in output order — which is the SELECT order
-    // compile_select emits, hence the order of `served.rows`' cells. Physical columns map
+    // compile_select emits, hence the order of a served row's cells. Physical columns map
     // from the type's properties (a column with no matching property — cannot happen
     // post-projection — maps to "" -> the renderer's natural fallback); derived columns
     // carry their declared `ty`.
@@ -326,18 +353,43 @@ pub async fn read_object(
         })
         .collect();
     logical_types.extend(derived_types.iter().cloned());
-    // compile_select SELECTs `allowed` then the surviving derived columns, in order, so
-    // the serving engine must echo those exact column names — that is the contract that
-    // lets us zip `logical_types`/`columns` onto each row's cells by position. Guard it in
-    // debug so any future SQL-rewrite that reorders columns is caught by the test suite
-    // rather than silently mis-typing the output.
+    // Which projected output columns were masked (SELECTed as the constant mask marker, so
+    // streamed back as Utf8). Load-bearing for the export Arrow schema; see `GovernedRead`.
+    let masked_columns: Vec<String> =
+        columns.iter().filter(|c| masked.contains(*c)).cloned().collect();
+    Ok(GovernedRead {
+        sql,
+        params,
+        columns,
+        logical_types,
+        masked_columns,
+    })
+}
+
+pub async fn read_object(
+    q: &ObjectQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    let g = compile_object_read(
+        q,
+        subject,
+        deps.ontology,
+        deps.acl,
+        deps.serving.dialect(),
+        DEFAULT_LIMIT,
+    )
+    .await?;
+    let served = deps.serving.fetch_rows(&g.sql, &g.params).await?;
+    // The serving engine must echo the projected columns in SELECT order — the contract
+    // that lets the renderer zip logical_types/columns onto each row's cells by position.
     debug_assert_eq!(
-        served.columns, columns,
+        served.columns, g.columns,
         "serving engine returned columns out of the projected order"
     );
     Ok(ObjectRows {
-        columns,
-        logical_types,
+        columns: g.columns,
+        logical_types: g.logical_types,
         rows: served.rows,
     })
 }
