@@ -907,7 +907,7 @@ async fn insert_then_lookup_latest_le_q() {
 //! puffin_path` as a mirror row in lieu of a REST catalog.
 
 use control_plane_core::{ControlPlaneError, Result};
-use sqlx::{PgConnection, PgPool};
+use sqlx::{AssertSqlSafe, PgConnection, PgPool, Row};
 
 fn backend<E: std::fmt::Display>(e: E) -> ControlPlaneError {
     ControlPlaneError::Backend(e.to_string().into())
@@ -926,21 +926,32 @@ pub struct VectorIndexRow {
     pub puffin_path: String,
 }
 
+// SQL-STYLE (env-forced runtime, see plan "Decisions"): this cloud session cannot
+// regenerate the .sqlx cache (Postgres won't boot as root; libxml2 egress is
+// policy-blocked), so the new vector_index queries use RUNTIME
+// `sqlx::query(AssertSqlSafe(...))` + bind params instead of compile-time
+// `query!`/`query_scalar!`. The SQL is a fixed literal (no interpolation — every
+// value is a bound `$n` param), so AssertSqlSafe carries no injection risk. This
+// mirrors the runtime pattern already used in `iceberg_inline.rs`/`fixture.rs`.
+// (Promotable to compile-time `query!` in a follow-up when a Postgres-capable env
+// is available — tracked as a FUTURE item.)
+
 /// Insert a `vector_index` binding row in the caller's transaction.
 pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) -> Result<()> {
-    sqlx::query!(
+    sqlx::query(AssertSqlSafe(
         "insert into iceberg_mirror.vector_index \
          (table_id, column_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8)",
-        row.table_id,
-        row.column,
-        row.covered_snapshot,
-        row.metric,
-        row.index_kind,
-        row.dim,
-        row.row_count,
-        row.puffin_path,
-    )
+         values ($1, $2, $3, $4, $5, $6, $7, $8)"
+            .to_string(),
+    ))
+    .bind(row.table_id)
+    .bind(&row.column)
+    .bind(row.covered_snapshot)
+    .bind(&row.metric)
+    .bind(&row.index_kind)
+    .bind(row.dim)
+    .bind(row.row_count)
+    .bind(&row.puffin_path)
     .execute(&mut *tx)
     .await
     .map_err(backend)?;
@@ -955,42 +966,46 @@ pub async fn lookup_vector_index(
     column: &str,
     at: i64,
 ) -> Result<Option<VectorIndexRow>> {
-    let row = sqlx::query!(
-        "select table_id as \"table_id!\", column_name as \"column_name!\", \
-                covered_snapshot as \"covered_snapshot!\", metric as \"metric!\", \
-                index_kind as \"index_kind!\", dim as \"dim!\", row_count as \"row_count!\", \
-                puffin_path as \"puffin_path!\" \
+    let row = sqlx::query(AssertSqlSafe(
+        "select table_id, column_name, covered_snapshot, metric, index_kind, dim, \
+                row_count, puffin_path \
          from iceberg_mirror.vector_index \
          where table_id = $1 and column_name = $2 and covered_snapshot <= $3 \
-         order by covered_snapshot desc limit 1",
-        table_id,
-        column,
-        at,
-    )
+         order by covered_snapshot desc limit 1"
+            .to_string(),
+    ))
+    .bind(table_id)
+    .bind(column)
+    .bind(at)
     .fetch_optional(pool)
     .await
     .map_err(backend)?;
-    Ok(row.map(|r| VectorIndexRow {
-        table_id: r.table_id,
-        column: r.column_name,
-        covered_snapshot: r.covered_snapshot,
-        metric: r.metric,
-        index_kind: r.index_kind,
-        dim: r.dim,
-        row_count: r.row_count,
-        puffin_path: r.puffin_path,
-    }))
+    row.map(|r| {
+        Ok(VectorIndexRow {
+            table_id: r.try_get("table_id").map_err(backend)?,
+            column: r.try_get("column_name").map_err(backend)?,
+            covered_snapshot: r.try_get("covered_snapshot").map_err(backend)?,
+            metric: r.try_get("metric").map_err(backend)?,
+            index_kind: r.try_get("index_kind").map_err(backend)?,
+            dim: r.try_get("dim").map_err(backend)?,
+            row_count: r.try_get("row_count").map_err(backend)?,
+            puffin_path: r.try_get("puffin_path").map_err(backend)?,
+        })
+    })
+    .transpose()
 }
 ```
 
 In `src/control-plane/postgres/src/lib.rs`: add `pub mod vector_index;`.
 
-- [ ] **Step 4: Regenerate the `.sqlx` cache**
+> NOTE (verify AssertSqlSafe form): confirm the exact `AssertSqlSafe(...)` call shape and the `Row::try_get` import against `iceberg_inline.rs` (it uses `sqlx::query_scalar(AssertSqlSafe(format!(...)))`). If `AssertSqlSafe` wraps a `&str` rather than `String` on this sqlx version, drop the `.to_string()`. The library MUST compile with `buck2 build //src/control-plane/postgres:postgres` (no `.sqlx` change, since there are no compile-time macros here).
 
-Because Task added compile-time `query!` macros, regenerate the offline cache against the live schema (which now includes the new migration):
+- [ ] **Step 4: Confirm the library compiles (no `.sqlx` regen needed)**
 
-Run: `./tools/sqlx-prepare.sh > /tmp/sqlx.log 2>&1; tail -5 /tmp/sqlx.log`
-Expected: success; `git status` shows new/changed files under `src/control-plane/postgres/.sqlx/`.
+These are runtime queries, so there is NO `query!` macro and NO `.sqlx` cache entry to regenerate. Just confirm the production library still builds:
+
+Run: `buck2 build //src/control-plane/postgres:postgres > /tmp/b4.log 2>&1; grep -E "BUILD (SUCCEEDED|FAILED)|error\[" /tmp/b4.log`
+Expected: BUILD SUCCEEDED. (The `sqlx-cache-check` test stays green automatically — no new cache entries.)
 
 - [ ] **Step 5: Add the BUCK test target**
 
@@ -1011,18 +1026,18 @@ loom_fixture_test(
 )
 ```
 
-- [ ] **Step 6: Run the test**
+- [ ] **Step 6: Build the test target (run is CI-only in this env)**
 
-Run: `buck2 test //src/control-plane/postgres:vector-index-mirror //src/control-plane/postgres:sqlx-cache-check > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t4.log`
-Expected: PASS for both (the cache-check confirms the regenerated `.sqlx` matches the schema).
+The fixture test boots hermetic Postgres and needs the `:libxml2` http_archive — both impossible in this cloud session (root + egress-blocked vault.centos.org). So you CANNOT run it here; it is verified by the PR's BuildBuddy CI. Do confirm the production library + pure code compile (Step 4). Do NOT attempt to build the `vector-index-mirror` fixture target locally (the libxml2 download will 403). Write the test correctly per the brief so CI can run it.
 
-- [ ] **Step 7: Commit**
+> If you have any way to sanity-check the SQL/decoding logic without Postgres, do so; otherwise rely on CI. Note in your report that the fixture test is unrun-locally-by-design.
+
+- [ ] **Step 7: Commit** (no `.sqlx` to add — runtime queries)
 
 ```bash
 git add src/control-plane/postgres/migrations/0018_vector_index.sql \
         src/control-plane/postgres/src/vector_index.rs src/control-plane/postgres/src/lib.rs \
-        src/control-plane/postgres/BUCK src/control-plane/postgres/tests/vector_index_mirror.rs \
-        src/control-plane/postgres/.sqlx
+        src/control-plane/postgres/BUCK src/control-plane/postgres/tests/vector_index_mirror.rs
 git commit -m "feat(postgres): vector_index mirror table + insert/lookup binding"
 ```
 
@@ -1148,19 +1163,24 @@ Read all vectors live at `S` over the serving read path (cold Parquet ∪ hot in
 **Design notes for the implementer (read before coding):**
 - **Snapshot/Catalog visibility (BLOCKER fix).** `IcebergCatalog::current_snapshot` is a method of the `control_plane_core::Catalog` **trait**, not an inherent method, so the caller MUST have `use control_plane_core::Catalog;` in scope (exactly as `inline_live_batch` does internally). `current_snapshot` returns a `Snapshot` whose `id` is a `SnapshotId(pub i64)` newtype — extract the raw `i64` as `.id.0`, never `.id`. So: the covered snapshot `S: i64 = IcebergCatalog::new(pool.clone()).current_snapshot(table).await?.id.0;`.
 - **`table_id` resolver (BLOCKER fix — unify across Tasks 4/6/7).** Use the existing public helper `crate::iceberg_mirror::live_table_id(conn: &mut PgConnection, ns: &str, name: &str) -> Result<Option<i64>>` (defined at `iceberg_mirror.rs:177`, already reused by inline/flush/gc). Acquire a conn from the pool, call `live_table_id(&mut conn, &table.schema, &table.name).await?`, and map `None` → `ControlPlaneError::NotFound`. Do NOT invent a new resolver; Task 7 uses this same helper for its lookup.
-- **Identity column resolver (BLOCKER fix — concrete query).** The build needs the object's identity property name to populate `VectorKey`. The ontology stores it in `ontology.object_type(name, table_schema, table_name, identity)` where `identity text` is **nullable** (opt-in). Resolve it with a compile-time query keyed by `(schema, name)`:
+- **Identity column resolver (BLOCKER fix — concrete query, runtime SQL).** The build needs the object's identity property name to populate `VectorKey`. The ontology stores it in `ontology.object_type(name, table_schema, table_name, identity)` where `identity text` is **nullable** (opt-in). Resolve it with a RUNTIME query (env-forced; see Task 4's SQL-style note — no `.sqlx` regen possible here):
   ```rust
   async fn identity_column_for(pool: &PgPool, table: &TableRef) -> Result<String> {
-      let id: Option<String> = sqlx::query_scalar!(
+      let row = sqlx::query(AssertSqlSafe(
           "select identity from ontology.object_type \
-           where table_schema = $1 and table_name = $2",
-          table.schema,
-          table.name,
-      )
+           where table_schema = $1 and table_name = $2"
+              .to_string(),
+      ))
+      .bind(&table.schema)
+      .bind(&table.name)
       .fetch_optional(pool)
       .await
-      .map_err(backend)?
-      .flatten(); // Option<Option<String>> -> Option<String> (row missing OR identity NULL)
+      .map_err(backend)?;
+      // `identity` is nullable: try_get yields Option<String>; row-missing also -> None.
+      let id: Option<String> = match row {
+          Some(r) => r.try_get("identity").map_err(backend)?,
+          None => None,
+      };
       id.ok_or_else(|| {
           ControlPlaneError::Backend(
               format!("no identity column declared for {}.{}", table.schema, table.name).into(),
@@ -1168,7 +1188,7 @@ Read all vectors live at `S` over the serving read path (cold Parquet ∪ hot in
       })
   }
   ```
-  (This adds a compile-time `query_scalar!` → it is part of the `.sqlx` regen in Step 4.)
+  (Runtime query → no `.sqlx` entry. `Row`/`AssertSqlSafe` are already imported for Task 4's queries in this module.)
 - Extract vectors: the vector column is Arrow `List<Float32>`. For each row, downcast the column to `ListArray`, get the child `Float32Array` slice for that row → `Vec<f32>`. The identity column downcasts to `Int64Array`/`Int32Array` (→ `VectorKey::Int`) or `StringArray` (→ `VectorKey::Str`). Mirror the arrow downcast patterns already in `engine-serving/src/provider.rs` (`pg_rows_to_arrays`) and `iceberg_inline.rs` (`cell_from_arrow`). Use `.as_any().downcast_ref::<ListArray>().ok_or_else(...)` (no `unwrap`).
 - Field id of the vector column: obtain from the loaded iceberg `Table`'s current schema (prefer the real id via the schema's field-id-by-name accessor on this rev — grep iceberg-rust `spec::Schema` for `field_id_by_name`). If the accessor name differs, a `0` fallback is acceptable: the footer `fields` is informational for decode in slice 1.
 - Puffin path: `format!("{}/metadata/loom-vector-index-{}.puffin", tbl.metadata().location(), uuid::Uuid::new_v4())`. `tbl.metadata().location()` is absolute (file://… or s3://…) so the FileIO resolves it.
@@ -1195,7 +1215,7 @@ Read all vectors live at `S` over the serving read path (cold Parquet ∪ hot in
 async fn build_covers_all_rows_live_at_s() {
     // 1. fixture + seed type `wh.docs` (id: Long identity, embedding: vector(4)).
     // 2. land rows {id:1..=4, embedding:…}; flush ids 1..=2 to Parquet, leave 3..=4 inline.
-    // 3. let run = build_vector_index(&catalog, pool, &table, "embedding", RunId(uuid)).await.unwrap();
+    // 3. let run = build_vector_index(&catalog, pool, &table, "embedding", Metric::Cosine, RunId(uuid)).await.unwrap();
     // 4. assert run.row_count == 4 (cold 2 + hot 2).
     // 5. lookup_vector_index(pool, table_id, "embedding", run.covered_snapshot) is Some.
     // 6. read_flat_index over run.puffin_path returns an index whose search finds id 1
@@ -1218,22 +1238,21 @@ Provide the full `build_vector_index`, `inline_delta_batch`, the arrow extractor
 
 > Implementer: keep `inline_delta_batch` returning a `RecordBatch` with just the identity + vector columns to keep arrow assembly small; reuse the `cell`/arrow-builder helpers from `iceberg_inline.rs` if accessible, else build `Int64Builder`/`Float32`-list builders inline.
 
-- [ ] **Step 4: Regenerate `.sqlx`** (the primitive added a compile-time `query_scalar!` for table_id resolution, if used).
+- [ ] **Step 4: Confirm the library compiles (no `.sqlx` regen — all runtime queries)**
 
-Run: `./tools/sqlx-prepare.sh > /tmp/sqlx.log 2>&1; tail -3 /tmp/sqlx.log`
+All new queries in this task are runtime `sqlx::query(AssertSqlSafe(...))`, so there is no `.sqlx` cache to regenerate. Confirm the production lib builds:
+Run: `buck2 build //src/control-plane/postgres:postgres > /tmp/b6.log 2>&1; grep -E "BUILD (SUCCEEDED|FAILED)|error\[" /tmp/b6.log`
+Expected: BUILD SUCCEEDED.
 
-- [ ] **Step 5: Add BUCK target + run**
+- [ ] **Step 5: Add BUCK target (run is CI-only in this env)**
 
-Add `vector-index-build` `loom_fixture_test` (deps mirror `iceberg-landing`: arrow-array, arrow-schema, arrow-ipc, iceberg, serde_json, tempfile, time, tokio, uuid, core, postgres). Then:
+Add `vector-index-build` `loom_fixture_test` (deps mirror `iceberg-landing`: arrow-array, arrow-schema, arrow-ipc, iceberg, serde_json, tempfile, time, tokio, uuid, core, postgres). The fixture test boots Postgres + needs `:libxml2` → it CANNOT build/run in this cloud session (root + egress-blocked); it is verified by the PR's BuildBuddy CI. Do NOT attempt to build the fixture target locally. Confirm only the library build (Step 4).
 
-Run: `buck2 test //src/control-plane/postgres:vector-index-build //src/control-plane/postgres:sqlx-cache-check > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t6.log`
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Commit** (no `.sqlx` — runtime queries)
 
 ```bash
 git add src/control-plane/postgres/src/vector_index.rs src/control-plane/postgres/BUCK \
-        src/control-plane/postgres/tests/vector_index_build.rs src/control-plane/postgres/.sqlx
+        src/control-plane/postgres/tests/vector_index_build.rs
 git commit -m "feat(postgres): build_vector_index primitive (serving-read -> puffin + mirror + lineage)"
 ```
 
