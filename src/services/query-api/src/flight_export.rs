@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use control_plane_core::{resolve_logical, BaseType};
+use control_plane_core::{BaseType, resolve_logical};
 use serde::{Deserialize, Serialize};
 
 /// The governed slice to export — mirrors `GET /objects/{type}` params. JSON in the Flight
@@ -86,8 +86,7 @@ pub fn export_arrow_schema(
         let dt = if masked_columns.iter().any(|m| m == name) {
             DataType::Utf8 // masked → '***' constant streams as Utf8
         } else {
-            let base =
-                resolve_logical(lt).ok_or_else(|| format!("unknown logical type `{lt}`"))?;
+            let base = resolve_logical(lt).ok_or_else(|| format!("unknown logical type `{lt}`"))?;
             base_to_arrow(base)
         };
         fields.push(Field::new(name, dt, true));

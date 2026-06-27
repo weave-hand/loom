@@ -9,8 +9,8 @@ use control_plane_core::{
 pub use service_runtime::Subject;
 
 use crate::serving::{ServingEngine, SqlValue};
-use crate::sql::{compile_chain_with, compile_select_with};
 use crate::sql::SqlDialect;
+use crate::sql::{compile_chain_with, compile_select_with};
 
 /// A governed read result: rows plus, for each projected column, the ontology
 /// property's logical type — the input the wire renderer needs to type each value.
