@@ -189,7 +189,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
     };
     let run_id = RunId(uuid::Uuid::new_v4());
     let event = LineageEvent {
-        run_id: run_id.clone(),
+        run_id,
         event_type: control_plane_core::EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
         inputs: vec![],
@@ -290,7 +290,7 @@ async fn overwrite_table_empty_rows_truncates() {
     };
     let run_id = RunId(uuid::Uuid::new_v4());
     let event = LineageEvent {
-        run_id: run_id.clone(),
+        run_id,
         event_type: control_plane_core::EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
         inputs: vec![],
