@@ -739,3 +739,16 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "vector-index-mirror",
+    crate = "vector_index_mirror",
+    srcs = ["tests/vector_index_mirror.rs"],
+    crate_root = "tests/vector_index_mirror.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
