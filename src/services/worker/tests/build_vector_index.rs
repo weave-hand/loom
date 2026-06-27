@@ -16,7 +16,8 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ColumnSpec, ControlPlane, DatasetId,
-    EventType, Job, JobId, LineageEvent, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
+    EventType, Job, JobId, LineageEvent, Metric, ObjectType, PropertyDef, RunId, TableRef,
+    TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
