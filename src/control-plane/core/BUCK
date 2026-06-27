@@ -161,3 +161,16 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "vector-index-job",
+    crate = "vector_index_job",
+    srcs = ["tests/vector_index_job.rs"],
+    crate_root = "tests/vector_index_job.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)

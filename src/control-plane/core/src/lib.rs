@@ -17,6 +17,7 @@ mod queue;
 pub mod snapshot;
 mod transaction;
 mod vector_index;
+mod vector_index_job;
 
 pub use acl::{
     Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
@@ -28,6 +29,7 @@ pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
 pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};
 pub use gc::{GC_JOB_KIND, GcJob};
+pub use vector_index_job::{BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob};
 pub use identity::{DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TypeId};
 pub use lineage::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
 pub use logical_type::{
