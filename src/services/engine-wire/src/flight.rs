@@ -19,6 +19,7 @@ use tonic::transport::Channel;
 /// stream. `files` are the data-file path strings exactly as stored in the
 /// iceberg mirror (passed verbatim to the engine's `FileIO::new_input`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FlightTicket {
     pub schema: String,
     pub name: String,
@@ -29,6 +30,31 @@ impl FlightTicket {
     /// JSON-encode for the `Ticket.ticket` bytes.
     pub fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("FlightTicket is always serializable")
+    }
+
+    /// Decode from `Ticket.ticket` bytes.
+    pub fn decode(bytes: &[u8]) -> std::result::Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+/// A loom-native Flight `do_get` ticket requesting an engine-side k-NN search.
+/// JSON-encoded; `deny_unknown_fields` guarantees it never aliases a `FlightTicket`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VectorSearchTicket {
+    pub schema: String,
+    pub name: String,
+    pub column: String,
+    pub query: Vec<f32>,
+    pub k: u32,
+}
+
+impl VectorSearchTicket {
+    /// JSON-encode for the `Ticket.ticket` bytes.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("VectorSearchTicket is always serializable")
     }
 
     /// Decode from `Ticket.ticket` bytes.
@@ -74,6 +100,21 @@ impl FlightTableClient {
         );
         let batches: Vec<RecordBatch> = stream.try_collect().await.map_err(crate::client::be)?;
         Ok(batches)
+    }
+
+    /// Send a [`VectorSearchTicket`] via `do_get` and collect all returned
+    /// [`RecordBatch`]es (k-NN result rows streamed from the engine).
+    pub async fn vector_search(&self, ticket: VectorSearchTicket) -> Result<Vec<RecordBatch>> {
+        let resp = self
+            .inner
+            .clone()
+            .do_get(Ticket { ticket: ticket.encode().into() })
+            .await
+            .map_err(crate::client::be)?;
+        let stream = FlightRecordBatchStream::new_from_flight_data(
+            resp.into_inner().map_err(arrow_flight::error::FlightError::from),
+        );
+        stream.try_collect().await.map_err(crate::client::be)
     }
 }
 

@@ -88,3 +88,12 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "vector-search-ticket",
+    crate = "vector_search_ticket",
+    srcs = ["tests/vector_search_ticket.rs"],
+    crate_root = "tests/vector_search_ticket.rs",
+    edition = "2024",
+    deps = [":engine-wire", "//third-party:serde_json"],
+)
