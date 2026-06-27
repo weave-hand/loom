@@ -117,7 +117,7 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Wiring serving-engine selection (`EmbeddedDuckDb` vs Quack-client) into the HTTP service, plus production serving-process supervision, is a later slice.
 - [ ] **Multi-type queries / joins & schema sidecar** `{#fut-query-multitype-joins area:query status:deferred from:roadmap-where-we-are pr:- spec:-}`
   Rich ontology reads: multi-type queries/joins, a schema sidecar, and timezone-aware timestamps are deferred query follow-ups.
-- [x] **Upstream DuckDB multi-file LIMIT fix + workaround removal** `{#fut-multi-file-limit-upstream area:query status:dropped from:multi-file-limit-guard pr:- spec:2026-06-21-multi-file-limit-guard-design}`
+- [x] **Upstream DuckDB multi-file LIMIT fix + workaround removal** `{#fut-multi-file-limit-upstream area:query status:dropped from:multi-file-limit-guard pr:#205 spec:2026-06-21-multi-file-limit-guard-design}`
   Dropped (2026-06-27): superseded by the outright removal of DuckDB/DuckLake ([[road-remove-duckdb-ducklake]], #199). The serving-side `ORDER BY` barrier this item tracked, its `SqlDialect::limit_needs_order_barrier()` gate, and the bundled `duckdb` crate pin (`1.10503.1`) it was waiting on a fix for are all gone — DataFusion-over-Iceberg is now the sole serving path (`SqlDialect` has only `DataFusionDialect`), and that engine never exhibited the multi-file `LIMIT` corruption. There is no workaround left to remove and no reason for loom to file an upstream bug against a dependency it no longer uses. The original loom-side guard ([[iss-multi-file-limit-misread]], fixed in #131) was deleted along with DuckDB.
 
 ## acl
