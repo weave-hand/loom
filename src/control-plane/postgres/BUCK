@@ -699,6 +699,26 @@ loom_fixture_test(
     ],
 )
 
+# puffin-roundtrip: pure filesystem IO, no Postgres. Uses rust_test + local-only
+# execution rather than loom_fixture_test to avoid the :libxml2 / :postgres-bin
+# http_archive dependencies (those are needed for actual fixture tests that boot
+# initdb; this test only touches the local filesystem via iceberg's FileIO).
+# remote_execution = "disabled" pins the test-RUN to the local executor, matching
+# the intent of loom_fixture_test (which also keeps fixture tests local).
+rust_test(
+    name = "puffin-roundtrip",
+    crate = "puffin_roundtrip",
+    srcs = ["tests/puffin_roundtrip.rs"],
+    crate_root = "tests/puffin_roundtrip.rs",
+    remote_execution = "disabled",
+    deps = [
+        ":postgres",
+        "//third-party:iceberg",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "iceberg-read",
     crate = "iceberg_read",

@@ -36,6 +36,7 @@ pub mod iceberg_sql_catalog;
 pub mod iceberg_stats;
 pub mod iceberg_type;
 pub mod iceberg_writer;
+pub mod puffin;
 pub use iceberg_read::read_files_as_batches;
 mod lineage;
 mod ontology;
