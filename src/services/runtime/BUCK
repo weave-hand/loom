@@ -9,6 +9,7 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/loom-config:loom-config",
+        "//src/services/managed-postgres:managed-postgres",
         "//src/services/store-config:store-config",
         "//third-party:argon2",
         "//third-party:async-trait",
@@ -121,4 +122,13 @@ rust_test(
         "//src/control-plane/memory:memory",
         "//third-party:tokio",
     ],
+)
+
+rust_test(
+    name = "embedded-config",
+    crate = "embedded_config",
+    srcs = ["tests/embedded_config.rs"],
+    crate_root = "tests/embedded_config.rs",
+    edition = "2024",
+    deps = [":runtime"],
 )
