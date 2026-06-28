@@ -159,6 +159,8 @@ fn make_build_vector_index_job(schema: &str, name: &str, column: &str) -> Job {
             schema: schema.into(),
             name: name.into(),
             column: column.into(),
+            index_kind: None,
+            nlist: None,
         })
         .expect("serialize payload"),
         attempts: 0,
