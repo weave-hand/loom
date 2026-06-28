@@ -33,6 +33,14 @@ pub use loom_config::{
     ConfigError, LayeredConfig, env_map, invalid, load, overlay_opt, parse_config_doc,
 };
 
+/// Embedded-Postgres settings, present only when `LOOM_PG_MODE=embedded`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbeddedSettings {
+    pub cfg: managed_postgres::EmbeddedPgConfig,
+    /// Directory of `.sql` migrations applied after the cluster is ready.
+    pub migrations_dir: PathBuf,
+}
+
 /// Discrete Postgres connection fields. Feeds the sqlx control-plane pool and the
 /// Iceberg SQL catalog, with no URL parsing in between.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,6 +105,8 @@ pub struct Config {
     /// older than this are eligible for reclamation. From `LOOM_GC_RETENTION_SECS`
     /// (default 7 days). The `_SECS` unit suffix matches `LOOM_LOCK_TIMEOUT_MS`.
     pub gc_retention: Duration,
+    /// Present when running an embedded (loom-managed) Postgres cluster.
+    pub embedded: Option<EmbeddedSettings>,
 }
 
 impl Config {
@@ -153,6 +163,26 @@ impl Config {
             },
         })?;
 
+        let embedded = if vars.get("LOOM_PG_MODE").map(String::as_str) == Some("embedded") {
+            let bin_dir = PathBuf::from(req("LOOM_PG_BIN_DIR")?);
+            let migrations_dir = PathBuf::from(req("LOOM_MIGRATIONS_DIR")?);
+            Some(EmbeddedSettings {
+                cfg: managed_postgres::EmbeddedPgConfig {
+                    bin_dir,
+                    ld_library_path: vars
+                        .get("LOOM_PG_LD_LIBRARY_PATH")
+                        .cloned()
+                        .unwrap_or_default(),
+                    data_dir: data_path.join("pgdata"),
+                    socket_dir: data_path.join("pgrun"),
+                    database: req("LOOM_DB_NAME")?,
+                },
+                migrations_dir,
+            })
+        } else {
+            None
+        };
+
         Ok(Config {
             bind_addr,
             db: DbConfig {
@@ -167,6 +197,7 @@ impl Config {
             object_store,
             lock_timeout,
             gc_retention,
+            embedded,
         })
     }
 
@@ -187,6 +218,10 @@ pub enum RuntimeError {
     Bind(std::io::Error),
     #[error("serve: {0}")]
     Serve(std::io::Error),
+    #[error("embedded postgres: {0}")]
+    Embedded(managed_postgres::EmbeddedPgError),
+    #[error("migrate: {0}")]
+    Migrate(control_plane_core::ControlPlaneError),
 }
 
 /// Build the Iceberg `StorageFactory` the SQL catalog uses for metadata/data I/O.
@@ -217,6 +252,35 @@ pub async fn build_pool(db: &DbConfig) -> Result<PgPool, RuntimeError> {
     opts.connect_with(db.pg_connect_options())
         .await
         .map_err(RuntimeError::Pool)
+}
+
+/// Build a control-plane pool, owning an embedded Postgres cluster when configured.
+/// External mode is identical to `build_pool` and returns `None`. In embedded mode
+/// the returned `EmbeddedPg` must be kept alive for the process lifetime and
+/// `shutdown()` on exit.
+pub async fn build_pool_managed(
+    cfg: &Config,
+) -> Result<(PgPool, Option<managed_postgres::EmbeddedPg>), RuntimeError> {
+    match &cfg.embedded {
+        None => Ok((build_pool(&cfg.db).await?, None)),
+        Some(e) => {
+            let pg = managed_postgres::EmbeddedPg::start(e.cfg.clone())
+                .await
+                .map_err(RuntimeError::Embedded)?;
+            let mut opts = PgPoolOptions::new();
+            if let Some(n) = cfg.db.max_connections {
+                opts = opts.max_connections(n);
+            }
+            let pool = opts
+                .connect_with(pg.connect_options())
+                .await
+                .map_err(RuntimeError::Pool)?;
+            control_plane_postgres::run_migrations(&pool, &e.migrations_dir)
+                .await
+                .map_err(RuntimeError::Migrate)?;
+            Ok((pool, Some(pg)))
+        }
+    }
 }
 
 /// Wrap a pool as a `PgControlPlane`.

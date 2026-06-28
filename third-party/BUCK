@@ -17503,6 +17503,7 @@ cargo.rust_library(
         "macros",
         "mio",
         "net",
+        "process",
         "rt",
         "rt-multi-thread",
         "signal",

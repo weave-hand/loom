@@ -3067,6 +3067,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "managed-postgres"
+version = "0.1.0"
+dependencies = [
+ "control-plane-postgres",
+ "sqlx",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
