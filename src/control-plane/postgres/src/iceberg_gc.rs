@@ -73,8 +73,7 @@ pub async fn gc_table(
     // flush/overwrite take, so GC never races a concurrent flush on this table.
     let mut lock_tx = pool.begin().await.map_err(backend)?;
     let key = lock_key(&table.schema, &table.name);
-    sqlx::query("select pg_advisory_xact_lock($1)")
-        .bind(key)
+    sqlx::query!("select pg_advisory_xact_lock($1)", key)
         .execute(&mut *lock_tx)
         .await
         .map_err(backend)?;
@@ -105,10 +104,10 @@ async fn gc_locked(
     //    `now()` is taken in Rust; sub-second precision is irrelevant at GC scale.
     //    `max()` over zero matching rows yields NULL → None → a clean no-op.
     let cutoff = OffsetDateTime::now_utc() - time::Duration::seconds(retention.as_secs() as i64);
-    let horizon: Option<i64> = sqlx::query_scalar(
+    let horizon: Option<i64> = sqlx::query_scalar!(
         "select max(snapshot_id) from iceberg_mirror.snapshot where snapshot_time < $1",
+        cutoff,
     )
-    .bind(cutoff)
     .fetch_one(pool)
     .await
     .map_err(backend)?;
@@ -119,12 +118,12 @@ async fn gc_locked(
 
     // 3. Collect the Parquet paths of reclaimable data files (before deleting the
     //    rows that name them).
-    let paths: Vec<String> = sqlx::query_scalar(
+    let paths: Vec<String> = sqlx::query_scalar!(
         "select path from iceberg_mirror.data_file \
          where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
+        tid,
+        h,
     )
-    .bind(tid)
-    .bind(h)
     .fetch_all(pool)
     .await
     .map_err(backend)?;
@@ -132,24 +131,24 @@ async fn gc_locked(
     // 4. Delete mirror rows in one transaction: stats first (FK child), then the
     //    data_file rows, then end-capped inline rows.
     let mut tx = pool.begin().await.map_err(backend)?;
-    sqlx::query(
+    sqlx::query!(
         "delete from iceberg_mirror.data_file_column_stat \
          where data_file_id in ( \
              select data_file_id from iceberg_mirror.data_file \
              where table_id = $1 and end_snapshot is not null and end_snapshot <= $2)",
+        tid,
+        h,
     )
-    .bind(tid)
-    .bind(h)
     .execute(&mut *tx)
     .await
     .map_err(backend)?;
 
-    let data_file_rows = sqlx::query(
+    let data_file_rows = sqlx::query!(
         "delete from iceberg_mirror.data_file \
          where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
+        tid,
+        h,
     )
-    .bind(tid)
-    .bind(h)
     .execute(&mut *tx)
     .await
     .map_err(backend)?
