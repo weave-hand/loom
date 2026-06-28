@@ -78,10 +78,15 @@ fn distance_fn_matches_metrics() {
 }
 
 #[test]
-fn index_kind_as_str() {
+fn index_kind_as_str_and_parse() {
     use control_plane_core::IndexKind;
+    use std::str::FromStr;
     assert_eq!(IndexKind::Flat.as_str(), "flat");
     assert_eq!(IndexKind::IvfFlat.as_str(), "ivf_flat");
+    // FromStr round-trips the labels and errors (not None) on an unknown one.
+    assert_eq!(IndexKind::from_str("flat").unwrap(), IndexKind::Flat);
+    assert_eq!(IndexKind::from_str("ivf_flat").unwrap(), IndexKind::IvfFlat);
+    assert!(IndexKind::from_str("nope").is_err());
 }
 
 #[test]

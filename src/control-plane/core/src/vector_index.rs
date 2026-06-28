@@ -71,6 +71,22 @@ impl IndexKind {
     }
 }
 
+impl std::str::FromStr for IndexKind {
+    type Err = ControlPlaneError;
+
+    /// Parse the on-the-wire label (e.g. from a query parameter or the mirror
+    /// row) into an `IndexKind`, erroring on an unknown label.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "flat" => Ok(IndexKind::Flat),
+            "ivf_flat" => Ok(IndexKind::IvfFlat),
+            other => Err(ControlPlaneError::Backend(
+                format!("unknown index kind '{other}'").into(),
+            )),
+        }
+    }
+}
+
 /// The object identity value carried alongside each indexed vector so k-NN
 /// results map back to objects. Covers the realistic identity logical types
 /// (`Integer`/`Long` → `Int`, `String` → `Str`).
