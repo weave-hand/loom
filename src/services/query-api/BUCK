@@ -1039,3 +1039,40 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "update-delete-governance-e2e",
+    crate = "update_delete_governance_e2e",
+    srcs = ["tests/update_delete_governance_e2e.rs"],
+    crate_root = "tests/update_delete_governance_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "update-delete-tiers-e2e",
+    crate = "update_delete_tiers_e2e",
+    srcs = ["tests/update_delete_tiers_e2e.rs"],
+    crate_root = "tests/update_delete_tiers_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
