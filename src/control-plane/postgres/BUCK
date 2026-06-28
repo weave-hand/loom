@@ -577,6 +577,23 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "iceberg-inline-vector",
+    crate = "iceberg_inline_vector",
+    srcs = ["tests/iceberg_inline_vector.rs"],
+    crate_root = "tests/iceberg_inline_vector.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-live-tables",
     crate = "iceberg_live_tables",
     srcs = ["tests/iceberg_live_tables.rs"],

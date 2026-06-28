@@ -13,8 +13,8 @@ use arrow_array::builder::{
     TimestampMicrosecondBuilder,
 };
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
-    StringArray, TimestampMicrosecondArray,
+    Array, ArrayRef, BooleanArray, Date32Array, Float32Array, Float64Array, Int32Array, Int64Array,
+    ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use control_plane_core::{
@@ -114,6 +114,9 @@ pub(crate) enum Cell {
     Str(Option<String>),
     Date(Option<time::Date>),
     Ts(Option<time::PrimitiveDateTime>),
+    /// A dense f32 vector cell, bound as Postgres `real[]` / decoded from it.
+    /// `None` is SQL NULL.
+    Vec(Option<Vec<f32>>),
 }
 
 /// Pull cell `(col, row)` out of an arrow batch, typed per the logical column.
@@ -143,6 +146,21 @@ fn cell_from_arrow(batch: &RecordBatch, col: usize, row: usize, logical: &str) -
                 .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
             time::PrimitiveDateTime::new(odt.date(), odt.time())
         })),
+        v if v.starts_with("vector(") => {
+            if null {
+                Cell::Vec(None)
+            } else {
+                let list = dc!(ListArray);
+                let elems = list.value(row);
+                let f32s = elems
+                    .as_any()
+                    .downcast_ref::<Float32Array>()
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend("inline vector child is not Float32".into())
+                    })?;
+                Cell::Vec(Some(f32s.values().to_vec()))
+            }
+        }
         other => {
             return Err(ControlPlaneError::Backend(
                 format!("inline: unsupported column type {other:?}").into(),
@@ -165,6 +183,7 @@ fn bind_cell<'q>(
         Cell::Str(v) => q.bind(v.clone()),
         Cell::Date(v) => q.bind(*v),
         Cell::Ts(v) => q.bind(*v),
+        Cell::Vec(v) => q.bind(v.clone()),
     }
 }
 
@@ -311,6 +330,9 @@ fn arrow_field(name: &str, logical: &str, nullable: bool) -> Result<Field> {
         "string" => DataType::Utf8,
         "date" => DataType::Date32,
         "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, None),
+        v if v.starts_with("vector(") => {
+            DataType::List(Arc::new(Field::new("item", DataType::Float32, false)))
+        }
         other => {
             return Err(ControlPlaneError::Backend(
                 format!("inline read: unsupported type {other:?}").into(),
@@ -383,6 +405,21 @@ fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Resu
                         .try_into()
                         .unwrap_or(i64::MAX)
                 }));
+            }
+            Arc::new(b.finish())
+        }
+        v if v.starts_with("vector(") => {
+            use arrow_array::builder::{Float32Builder, ListBuilder};
+            let item = Arc::new(Field::new("item", DataType::Float32, false));
+            let mut b = ListBuilder::new(Float32Builder::new()).with_field(item);
+            for v in get!(Vec<f32>) {
+                match v {
+                    Some(xs) => {
+                        b.values().append_slice(&xs);
+                        b.append(true);
+                    }
+                    None => b.append(false),
+                }
             }
             Arc::new(b.finish())
         }
