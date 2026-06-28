@@ -31,7 +31,7 @@ use crate::iceberg_mirror::{
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
-use crate::iceberg_type::iceberg_physical_type;
+use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
 
 /// Boxing helper: wrap any boxable error as a control-plane `Backend` fault.
@@ -472,26 +472,20 @@ pub async fn register_files(
     Ok(())
 }
 
-/// Map loom `ColumnSpec`s to mirror `ProjectedColumn`s, storing the Iceberg primitive
-/// type name (`iceberg_physical_type`) — the exact `column_type` the normal write path
-/// records (via `columns_of`), so reads decode identically (`logical_from_iceberg`).
+/// Map loom `ColumnSpec`s to mirror `ProjectedColumn`s, storing the column type via
+/// `mirror_column_type` — the exact `column_type` the normal write path records (via
+/// `columns_of`), so reads decode identically (`logical_from_iceberg`). A vector column
+/// keeps its `vector(N)` form; the dimension is carried in the `column_type` text.
 fn projected_columns(columns: &[ColumnSpec]) -> Result<Vec<ProjectedColumn>> {
     columns
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            // A vector column's mirror type is `vector(N)` (matching `columns_of`'s decode
-            // of the list field doc); every other type maps to its iceberg primitive name.
-            let iceberg_type = match control_plane_core::resolve_logical(&c.ty) {
-                Some(control_plane_core::BaseType::Vector(n)) => format!("vector({n})"),
-                _ => iceberg_physical_type(&c.ty)
-                    .ok_or_else(|| {
-                        ControlPlaneError::Backend(
-                            format!("register: no iceberg type for {:?}", c.ty).into(),
-                        )
-                    })?
-                    .to_string(),
-            };
+            let iceberg_type = mirror_column_type(&c.ty).ok_or_else(|| {
+                ControlPlaneError::Backend(
+                    format!("register: no iceberg type for {:?}", c.ty).into(),
+                )
+            })?;
             Ok(ProjectedColumn {
                 order: (i + 1) as i64,
                 name: c.name.clone(),

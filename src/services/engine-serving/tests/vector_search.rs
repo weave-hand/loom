@@ -1,8 +1,7 @@
-//! Cold-path k-NN: build an index over flushed (Parquet) vector rows, then
-//! vector_search returns the exact top-k. Cosine and L2 both verified. Plus the
-//! no-index deterministic error. (Hot inline delta is empty this slice — vectors
-//! can't inline; see FUTURE fut-inline-vector-hot-delta. Do NOT land inline
-//! vector rows here — it errors.)
+//! k-NN over the cold Puffin index merged with the hot inline delta. Cold-only
+//! (knn_cold_exact_*), no-index error, AND the cold∪hot merge (knn_cold_hot_merge_*):
+//! a vector row landed inline AFTER the index's covered snapshot S is found in the
+//! hot delta and merged exactly once. Cosine and L2 both verified.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -346,4 +345,112 @@ async fn no_bound_index_is_deterministic_error() {
         matches!(err, EngineServingError::NoIndex(_)),
         "expected NoIndex, got: {err:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn knn_cold_hot_merge_cosine() {
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+
+    // Cold rows 1-4 + index built at S (covered_snapshot = S).
+    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
+
+    // Land row 5 INLINE (born after S): the unique nearest to the query, living
+    // only in the hot delta. inline_byte_limit = usize::MAX forces the inline path.
+    let run = RunId(uuid::Uuid::new_v4());
+    let inline: &[(i64, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(inline),
+        usize::MAX,
+        i64::MAX,
+        lineage_evt(run, &table),
+    )
+    .await
+    .expect("land inline row 5");
+
+    // Query close to [1,0,0,0]; row 5 is strictly nearer than the cold row 1.
+    let batch = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "embedding",
+        &[0.9_f32, 0.1, 0.0, 0.0],
+        2,
+    )
+    .await
+    .expect("vector_search cold+hot cosine");
+
+    assert_eq!(batch.num_rows(), 2, "k=2");
+    let id_vec = ids(&batch);
+    assert_eq!(id_vec[0], 5, "hot inline row is the nearest (no miss)");
+    assert_eq!(
+        id_vec[1], 1,
+        "cold row 1 is second (merge spans both tiers)"
+    );
+    assert_eq!(
+        id_vec.iter().filter(|&&x| x == 5).count(),
+        1,
+        "inline row counted once"
+    );
+    let dists = distances(&batch);
+    assert!(dists[0] <= dists[1], "distances ascending");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn knn_cold_hot_merge_l2() {
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+
+    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::L2).await;
+
+    let run = RunId(uuid::Uuid::new_v4());
+    let inline: &[(i64, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(inline),
+        usize::MAX,
+        i64::MAX,
+        lineage_evt(run, &table),
+    )
+    .await
+    .expect("land inline row 5");
+
+    // L2 nearest to [0.9,0.1,0,0]: row 5 (||·||²=0.005) beats cold row 1 (0.02).
+    let batch = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "embedding",
+        &[0.9_f32, 0.1, 0.0, 0.0],
+        2,
+    )
+    .await
+    .expect("vector_search cold+hot l2");
+
+    assert_eq!(batch.num_rows(), 2, "k=2");
+    let id_vec = ids(&batch);
+    assert_eq!(id_vec[0], 5, "hot inline row is the nearest (no miss)");
+    assert_eq!(id_vec[1], 1, "cold row 1 is second");
+    assert_eq!(
+        id_vec.iter().filter(|&&x| x == 5).count(),
+        1,
+        "inline row counted once"
+    );
+    let dists = distances(&batch);
+    assert!(dists[0] <= dists[1], "distances ascending");
 }
