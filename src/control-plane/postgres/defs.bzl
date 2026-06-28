@@ -37,7 +37,6 @@ def loom_fixture_test(
     fixture_env = {
         "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
         "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
-        "LOOM_MIGRATIONS_DIR": "$(location //src/control-plane/postgres:migrations)/migrations",
         # Host-stable shared dir so the fixture boot throttle's K slots are shared
         # across ALL fixture-test processes (buck2's local executor may hand each
         # action a per-action TMPDIR; keying the slot dir off that would

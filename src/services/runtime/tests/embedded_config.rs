@@ -29,7 +29,6 @@ fn embedded_mode_derives_pgdata_and_socket_under_data_path() {
     let mut vars = base();
     vars.insert("LOOM_PG_MODE".into(), "embedded".into());
     vars.insert("LOOM_PG_BIN_DIR".into(), "/opt/pg/bin".into());
-    vars.insert("LOOM_MIGRATIONS_DIR".into(), "/opt/loom/migrations".into());
     let cfg = Config::from_map(&vars).expect("parse embedded");
     let e = cfg.embedded.expect("embedded settings present");
     assert_eq!(e.cfg.bin_dir, std::path::PathBuf::from("/opt/pg/bin"));
@@ -42,8 +41,4 @@ fn embedded_mode_derives_pgdata_and_socket_under_data_path() {
         std::path::PathBuf::from("/tmp/loomdata/pgrun")
     );
     assert_eq!(e.cfg.database, "loom");
-    assert_eq!(
-        e.migrations_dir,
-        std::path::PathBuf::from("/opt/loom/migrations")
-    );
 }

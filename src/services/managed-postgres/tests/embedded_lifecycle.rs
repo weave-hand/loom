@@ -1,6 +1,6 @@
 //! Proves slice 1's contract: idempotent init, restart-adoption, data
 //! persistence, and clean shutdown. Uses the buck `:postgres-bin` via the
-//! fixture env (POSTGRES_BIN_DIR / POSTGRES_LD_LIBRARY_PATH / LOOM_MIGRATIONS_DIR).
+//! fixture env (POSTGRES_BIN_DIR / POSTGRES_LD_LIBRARY_PATH).
 
 use std::path::PathBuf;
 
@@ -22,9 +22,6 @@ async fn embedded_pg_is_idempotent_and_persistent() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let data = tmp.path().join("pgdata");
     let sock = tmp.path().join("pgrun");
-    let migrations =
-        PathBuf::from(std::env::var("LOOM_MIGRATIONS_DIR").expect("LOOM_MIGRATIONS_DIR"));
-
     // 1. Fresh start → initdb ran, db created, migrations applied, write a sentinel.
     let pg = EmbeddedPg::start(cfg(&data, &sock))
         .await
@@ -34,7 +31,7 @@ async fn embedded_pg_is_idempotent_and_persistent() {
         .connect_with(pg.connect_options())
         .await
         .expect("connect 1");
-    control_plane_postgres::run_migrations(&pool, &migrations)
+    control_plane_postgres::run_embedded_migrations(&pool)
         .await
         .expect("migrate 1");
     let count1: i64 = sqlx::query_scalar("select count(*) from _sqlx_migrations")
@@ -57,7 +54,7 @@ async fn embedded_pg_is_idempotent_and_persistent() {
         .connect_with(pg.connect_options())
         .await
         .expect("connect 2");
-    control_plane_postgres::run_migrations(&pool, &migrations)
+    control_plane_postgres::run_embedded_migrations(&pool)
         .await
         .expect("migrate 2");
     let count2: i64 = sqlx::query_scalar("select count(*) from _sqlx_migrations")
