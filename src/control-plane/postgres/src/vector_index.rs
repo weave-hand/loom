@@ -404,21 +404,17 @@ pub async fn build_vector_index(
             .unwrap_or(0)
     };
 
-    // 7. Build the chosen index (Flat exact, or IVF approximate) and immediately
-    //    extract the kind + serialized payload so no `dyn VectorIndex` crosses an
-    //    `.await` point (the trait is not `Send + Sync`, and gRPC handlers require
-    //    `Send` futures).
-    let (index_kind, index_payload, index_dim) = {
-        let index: Box<dyn control_plane_core::VectorIndex> = match index_spec {
-            IndexSpec::Flat => Box::new(FlatIndex::build(dim, metric, all_rows)?),
-            IndexSpec::IvfFlat { nlist } => {
-                Box::new(IvfFlatIndex::build(dim, metric, all_rows, nlist)?)
-            }
-        };
-        (index.index_kind(), index.serialize(), index.dim())
+    // 7. Build the chosen index (Flat exact, or IVF approximate). The `VectorIndex`
+    //    trait is `Send`, so the box may be held across `.await` points without
+    //    extracting fields early.
+    let index: Box<dyn control_plane_core::VectorIndex> = match index_spec {
+        IndexSpec::Flat => Box::new(FlatIndex::build(dim, metric, all_rows)?),
+        IndexSpec::IvfFlat { nlist } => {
+            Box::new(IvfFlatIndex::build(dim, metric, all_rows, nlist)?)
+        }
     };
     // dim may have been inferred as 0 for empty tables; prefer index's own dim.
-    let dim = if index_dim > 0 { index_dim } else { dim };
+    let dim = if index.dim() > 0 { index.dim() } else { dim };
 
     // 8. Resolve the Iceberg field id for the vector column (informational).
     let ident = TableIdent::from_strs([table.schema.as_str(), table.name.as_str()])
@@ -438,27 +434,23 @@ pub async fn build_vector_index(
         .unwrap_or(0);
 
     // 9. Write the Puffin sidecar (object-store write BEFORE the Postgres tx).
-    //    Build the blob properties here mirroring `write_vector_index` but using
-    //    the pre-extracted payload/kind so no `dyn VectorIndex` is alive.
+    //    `write_vector_index` is the single source of the 7-key property map.
     let puffin_path = format!(
         "{}/metadata/loom-vector-index-{}.puffin",
         tbl.metadata().location(),
         uuid::Uuid::new_v4()
     );
     let file_io = tbl.file_io().clone();
-    {
-        use std::collections::HashMap;
-        let mut props = HashMap::new();
-        props.insert("dim".to_string(), dim.to_string());
-        props.insert("metric".to_string(), metric.as_str().to_string());
-        props.insert("index-kind".to_string(), index_kind.as_str().to_string());
-        props.insert("column".to_string(), column.to_string());
-        props.insert("identity-column".to_string(), identity_col.clone());
-        props.insert("row-count".to_string(), row_count.to_string());
-        props.insert("covered-snapshot".to_string(), s.to_string());
-        crate::puffin::write_index_blob(&file_io, &puffin_path, &index_payload, s, field_id, props)
-            .await?;
-    }
+    crate::puffin::write_vector_index(
+        &file_io,
+        &puffin_path,
+        index.as_ref(),
+        s,
+        field_id,
+        column,
+        &identity_col,
+    )
+    .await?;
 
     // 10. One Postgres tx: insert vector_index mirror row + lineage event.
     let lineage = LineageEvent {
@@ -499,7 +491,7 @@ pub async fn build_vector_index(
             column: column.to_string(),
             covered_snapshot: s,
             metric: metric.as_str().to_string(),
-            index_kind: index_kind.as_str().to_string(),
+            index_kind: index.index_kind().as_str().to_string(),
             dim: dim as i32,
             row_count,
             puffin_path: puffin_path.clone(),

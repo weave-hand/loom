@@ -95,9 +95,11 @@ pub enum VectorKey {
 
 /// Exact-or-approximate top-k nearest-neighbour index.
 ///
-/// `Send` is required so that `Box<dyn VectorIndex>` can cross `await` points
-/// in multi-threaded async contexts (e.g. the engine gRPC `do_get` handler).
-pub trait VectorIndex: Send {
+/// `Send + Sync` are required so that `Box<dyn VectorIndex>` and `&dyn VectorIndex`
+/// can cross `await` points in multi-threaded async contexts (e.g. the engine gRPC
+/// handler). Both concrete implementations (`FlatIndex`, `IvfFlatIndex`) are pure
+/// data with no interior mutability, so the bounds hold trivially.
+pub trait VectorIndex: Send + Sync {
     fn metric(&self) -> Metric;
     fn dim(&self) -> u32;
     /// The algorithm family — recorded in the mirror row and Puffin properties.
