@@ -66,7 +66,7 @@ axis 1. To avoid hand-tagging — and forgetting to tag — every fixture target
 attribute lives in one macro:
 
 **`loom_fixture_test`** (`src/control-plane/postgres/defs.bzl`) wraps `rust_test`,
-injecting the shared fixture `env` block (POSTGRES_*, LOOM_MIGRATIONS_DIR, and —
+injecting the shared fixture `env` block (POSTGRES_*, and —
 with `duckdb = True` — the DUCKDB_* vars) **and** `remote_execution = "disabled"`.
 All 18 fixture targets across `src/control-plane/postgres`, `src/services/query-api`,
 and `src/control-plane/worker` use it; pure-logic tests (`sql-compile`,

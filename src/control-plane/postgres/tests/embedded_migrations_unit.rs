@@ -9,6 +9,15 @@ fn embedded_migrator_versions_are_contiguous_from_one() {
     versions.sort_unstable();
 
     assert!(!versions.is_empty(), "embedded migrations must not be empty");
+    // Floor guard: the embed must include at least the migrations shipped at
+    // this slice (19). A `>=` floor closes the prefix-truncation gap without
+    // a brittle exact count that would redden on every new migration (there is
+    // no migrations dir at runtime to derive the true count from).
+    assert!(
+        versions.len() >= 19,
+        "expected at least 19 embedded migrations, got {}",
+        versions.len()
+    );
     let expected: Vec<i64> = (1..=versions.len() as i64).collect();
     assert_eq!(
         versions, expected,
