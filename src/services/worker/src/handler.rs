@@ -58,13 +58,14 @@ pub async fn handle_build_vector_index(
         column,
         index_kind,
         nlist,
-        ..
+        m,
+        ef_construction,
     } = serde_json::from_value(job.payload).map_err(|e| JobFailure {
         error: format!("bad build_vector_index payload: {e}"),
         policy: RetryPolicy::Abandon,
     })?;
     client
-        .build_vector_index(schema, name, column, index_kind, nlist)
+        .build_vector_index(schema, name, column, index_kind, nlist, m, ef_construction)
         .await
         .map_err(|e| JobFailure {
             error: e.to_string(),
