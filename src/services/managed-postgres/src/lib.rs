@@ -123,7 +123,14 @@ impl EmbeddedPg {
         let out = pg_command(cfg.bin_dir.join("initdb"), &cfg.ld_library_path)
             .arg("-D")
             .arg(&cfg.data_dir)
-            .args(["--no-locale", "--encoding=UTF8", "-A", "trust", "-U", "postgres"])
+            .args([
+                "--no-locale",
+                "--encoding=UTF8",
+                "-A",
+                "trust",
+                "-U",
+                "postgres",
+            ])
             .output()
             .await?;
         if out.status.success() {
@@ -181,12 +188,13 @@ impl EmbeddedPg {
             .connect()
             .await
             .map_err(EmbeddedPgError::Connect)?;
-        let exists: bool = sqlx::query("select exists(select 1 from pg_database where datname = $1)")
-            .bind(&self.database)
-            .fetch_one(&mut conn)
-            .await
-            .map_err(EmbeddedPgError::CreateDatabase)?
-            .get(0);
+        let exists: bool =
+            sqlx::query("select exists(select 1 from pg_database where datname = $1)")
+                .bind(&self.database)
+                .fetch_one(&mut conn)
+                .await
+                .map_err(EmbeddedPgError::CreateDatabase)?
+                .get(0);
         if !exists {
             // db name is validated above; CREATE DATABASE cannot be parameterised.
             conn.execute(AssertSqlSafe(format!("create database {}", self.database)))

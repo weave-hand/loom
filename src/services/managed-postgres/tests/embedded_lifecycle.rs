@@ -22,10 +22,13 @@ async fn embedded_pg_is_idempotent_and_persistent() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let data = tmp.path().join("pgdata");
     let sock = tmp.path().join("pgrun");
-    let migrations = PathBuf::from(std::env::var("LOOM_MIGRATIONS_DIR").expect("LOOM_MIGRATIONS_DIR"));
+    let migrations =
+        PathBuf::from(std::env::var("LOOM_MIGRATIONS_DIR").expect("LOOM_MIGRATIONS_DIR"));
 
     // 1. Fresh start → initdb ran, db created, migrations applied, write a sentinel.
-    let pg = EmbeddedPg::start(cfg(&data, &sock)).await.expect("first start");
+    let pg = EmbeddedPg::start(cfg(&data, &sock))
+        .await
+        .expect("first start");
     assert!(data.join("PG_VERSION").exists(), "initdb ran");
     let pool = PgPoolOptions::new()
         .connect_with(pg.connect_options())
@@ -47,7 +50,9 @@ async fn embedded_pg_is_idempotent_and_persistent() {
     pg.shutdown().await.expect("first shutdown");
 
     // 2. Restart on the SAME dir → adopt (no re-initdb), zero new migrations, data survives.
-    let pg = EmbeddedPg::start(cfg(&data, &sock)).await.expect("second start");
+    let pg = EmbeddedPg::start(cfg(&data, &sock))
+        .await
+        .expect("second start");
     let pool = PgPoolOptions::new()
         .connect_with(pg.connect_options())
         .await
@@ -60,10 +65,11 @@ async fn embedded_pg_is_idempotent_and_persistent() {
         .await
         .expect("count migrations 2");
     assert_eq!(count1, count2, "no new migrations applied on restart");
-    let sentinel: i64 = sqlx::query_scalar("select count(*) from acl.subject where id = 'sentinel'")
-        .fetch_one(&pool)
-        .await
-        .expect("read sentinel");
+    let sentinel: i64 =
+        sqlx::query_scalar("select count(*) from acl.subject where id = 'sentinel'")
+            .fetch_one(&pool)
+            .await
+            .expect("read sentinel");
     assert_eq!(sentinel, 1, "data survived restart");
     pool.close().await;
     pg.shutdown().await.expect("second shutdown");
