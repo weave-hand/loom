@@ -8,9 +8,9 @@ use crate::vector_index::IndexSpec;
 /// The queue `kind` for a vector-index build. Protocol invariant, not a tunable.
 pub const BUILD_VECTOR_INDEX_JOB_KIND: &str = "build_vector_index";
 
-/// Payload of a `build_vector_index` job. `index_kind`/`nlist` are optional and
-/// default to absent (⇒ exact `Flat`) so payloads written before IVF existed
-/// still deserialize.
+/// Payload of a `build_vector_index` job. `index_kind`/`nlist`/`m`/`ef_construction`
+/// are optional and default to absent (⇒ exact `Flat`) so payloads written before
+/// IVF or HNSW existed still deserialize.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct BuildVectorIndexJob {
     pub schema: String,
@@ -20,11 +20,20 @@ pub struct BuildVectorIndexJob {
     pub index_kind: Option<String>,
     #[serde(default)]
     pub nlist: Option<u32>,
+    #[serde(default)]
+    pub m: Option<u32>,
+    #[serde(default)]
+    pub ef_construction: Option<u32>,
 }
 
 impl BuildVectorIndexJob {
-    /// Resolve the payload's `(index_kind, nlist)` into an `IndexSpec`.
+    /// Resolve the payload's `(index_kind, nlist, m, ef_construction)` into an `IndexSpec`.
     pub fn index_spec(&self) -> Result<IndexSpec> {
-        IndexSpec::from_label(self.index_kind.as_deref(), self.nlist)
+        IndexSpec::from_label(
+            self.index_kind.as_deref(),
+            self.nlist,
+            self.m,
+            self.ef_construction,
+        )
     }
 }

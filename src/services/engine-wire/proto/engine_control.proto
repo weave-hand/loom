@@ -47,5 +47,5 @@ message ListFilesResponse { repeated FileMeta files = 1; }
 message CompactTableRequest  { string schema = 1; string name = 2; repeated string expire = 3; repeated string write_json = 4; }
 message CompactTableResponse { optional int64 snapshot_id = 1; }
 
-message BuildVectorIndexRequest  { string schema = 1; string name = 2; string column = 3; string index_kind = 4; uint32 nlist = 5; }
+message BuildVectorIndexRequest  { string schema = 1; string name = 2; string column = 3; string index_kind = 4; uint32 nlist = 5; uint32 m = 6; uint32 ef_construction = 7; }
 message BuildVectorIndexResponse { int64 covered_snapshot = 1; string puffin_path = 2; int64 row_count = 3; }

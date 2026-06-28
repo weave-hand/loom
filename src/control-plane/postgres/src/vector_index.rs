@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use control_plane_core::{
-    Catalog, ControlPlaneError, DatasetRef, EventType, FlatIndex, IndexSpec, IvfFlatIndex,
-    LineageEvent, Metric, Result, RunId, SnapshotId, TableRef, VectorKey,
+    Catalog, ControlPlaneError, DatasetRef, EventType, FlatIndex, HnswIndex, IndexSpec,
+    IvfFlatIndex, LineageEvent, Metric, Result, RunId, SnapshotId, TableRef, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool, Row};
@@ -411,6 +411,9 @@ pub async fn build_vector_index(
         IndexSpec::Flat => Box::new(FlatIndex::build(dim, metric, all_rows)?),
         IndexSpec::IvfFlat { nlist } => {
             Box::new(IvfFlatIndex::build(dim, metric, all_rows, nlist)?)
+        }
+        IndexSpec::Hnsw { m, ef_construction } => {
+            Box::new(HnswIndex::build(dim, metric, all_rows, m, ef_construction)?)
         }
     };
     // dim may have been inferred as 0 for empty tables; prefer index's own dim.

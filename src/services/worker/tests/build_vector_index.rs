@@ -152,6 +152,15 @@ async fn spawn_server(fx: &PgFixture, db: &str, wh_path: &str) -> (tempfile::Tem
 }
 
 fn make_build_vector_index_job(schema: &str, name: &str, column: &str) -> Job {
+    make_build_vector_index_job_kind(schema, name, column, None)
+}
+
+fn make_build_vector_index_job_kind(
+    schema: &str,
+    name: &str,
+    column: &str,
+    index_kind: Option<&str>,
+) -> Job {
     Job {
         id: JobId(uuid::Uuid::new_v4()),
         kind: BUILD_VECTOR_INDEX_JOB_KIND.to_string(),
@@ -159,8 +168,10 @@ fn make_build_vector_index_job(schema: &str, name: &str, column: &str) -> Job {
             schema: schema.into(),
             name: name.into(),
             column: column.into(),
-            index_kind: None,
+            index_kind: index_kind.map(Into::into),
             nlist: None,
+            m: None,
+            ef_construction: None,
         })
         .expect("serialize payload"),
         attempts: 0,
@@ -245,9 +256,10 @@ async fn worker_builds_vector_index_over_the_wire() {
         .expect("connect control");
 
     // Run the handler over the wire.
+    let tuning = loom_config::WorkerTuning::default();
     handle_build_vector_index(
-        client,
-        loom_config::WorkerTuning::default(),
+        client.clone(),
+        tuning,
         make_build_vector_index_job("main", "vectors", "embedding"),
     )
     .await
@@ -287,6 +299,21 @@ async fn worker_builds_vector_index_over_the_wire() {
         "puffin_path is non-empty"
     );
     assert_eq!(mirror_row.column, "embedding");
+
+    // Build again as HNSW over the wire; the mirror records index_kind = "hnsw".
+    handle_build_vector_index(
+        client.clone(),
+        tuning,
+        make_build_vector_index_job_kind("main", "vectors", "embedding", Some("hnsw")),
+    )
+    .await
+    .expect("handle_build_vector_index hnsw");
+
+    let hnsw_row = lookup_vector_index(&pool, table_id, "embedding", snap.id.0)
+        .await
+        .expect("lookup_vector_index hnsw")
+        .expect("Some");
+    assert_eq!(hnsw_row.index_kind, "hnsw");
 
     // Cross-check: run the direct primitive and compare covered_snapshot + row_count.
     // A second build sees the same snapshot (idempotent — same data, new puffin written).

@@ -9,6 +9,8 @@ fn build_vector_index_job_serde_roundtrip_and_kind() {
         column: "embedding".into(),
         index_kind: None,
         nlist: None,
+        m: None,
+        ef_construction: None,
     };
     let v = serde_json::to_value(&j).unwrap();
     assert_eq!(v["schema"], "wh");
@@ -48,7 +50,7 @@ fn ivf_payload_maps_to_ivf_spec() {
 #[test]
 fn unknown_index_kind_is_error() {
     let v = serde_json::json!({
-        "schema": "wh", "name": "docs", "column": "embedding", "index_kind": "hnsw"
+        "schema": "wh", "name": "docs", "column": "embedding", "index_kind": "bogus"
     });
     let job: BuildVectorIndexJob = serde_json::from_value(v).unwrap();
     assert!(job.index_spec().is_err());
@@ -58,16 +60,40 @@ fn unknown_index_kind_is_error() {
 fn index_spec_from_label_table() {
     use control_plane_core::IndexSpec;
     assert!(matches!(
-        IndexSpec::from_label(None, None).unwrap(),
+        IndexSpec::from_label(None, None, None, None).unwrap(),
         IndexSpec::Flat
     ));
     assert!(matches!(
-        IndexSpec::from_label(Some("flat"), None).unwrap(),
+        IndexSpec::from_label(Some("flat"), None, None, None).unwrap(),
         IndexSpec::Flat
     ));
     assert!(matches!(
-        IndexSpec::from_label(Some("ivf_flat"), Some(8)).unwrap(),
+        IndexSpec::from_label(Some("ivf_flat"), Some(8), None, None).unwrap(),
         IndexSpec::IvfFlat { nlist: Some(8) }
     ));
-    assert!(IndexSpec::from_label(Some("bogus"), None).is_err());
+    assert!(matches!(
+        IndexSpec::from_label(Some("hnsw"), None, Some(32), Some(128)).unwrap(),
+        IndexSpec::Hnsw {
+            m: Some(32),
+            ef_construction: Some(128)
+        }
+    ));
+    assert!(IndexSpec::from_label(Some("bogus"), None, None, None).is_err());
+}
+
+#[test]
+fn hnsw_payload_maps_to_hnsw_spec() {
+    use control_plane_core::IndexSpec;
+    let v = serde_json::json!({
+        "schema": "wh", "name": "docs", "column": "embedding",
+        "index_kind": "hnsw", "m": 24, "ef_construction": 100
+    });
+    let job: BuildVectorIndexJob = serde_json::from_value(v).unwrap();
+    match job.index_spec().unwrap() {
+        IndexSpec::Hnsw { m, ef_construction } => {
+            assert_eq!(m, Some(24));
+            assert_eq!(ef_construction, Some(100));
+        }
+        other => panic!("expected Hnsw, got {other:?}"),
+    }
 }

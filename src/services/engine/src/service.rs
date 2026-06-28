@@ -180,7 +180,13 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             Some(r.index_kind.as_str())
         };
         let nlist = if r.nlist == 0 { None } else { Some(r.nlist) };
-        let index_spec = IndexSpec::from_label(kind, nlist).map_err(status)?;
+        let m = if r.m == 0 { None } else { Some(r.m) };
+        let ef_construction = if r.ef_construction == 0 {
+            None
+        } else {
+            Some(r.ef_construction)
+        };
+        let index_spec = IndexSpec::from_label(kind, nlist, m, ef_construction).map_err(status)?;
         let built = control_plane_postgres::vector_index::build_vector_index(
             &self.catalog,
             &self.pool,
