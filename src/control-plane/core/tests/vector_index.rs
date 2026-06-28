@@ -1,4 +1,4 @@
-use control_plane_core::{FlatIndex, IvfFlatIndex, Metric, VectorIndex, VectorKey};
+use control_plane_core::{FlatIndex, HnswIndex, IvfFlatIndex, Metric, VectorIndex, VectorKey};
 
 fn rows() -> Vec<(VectorKey, Vec<f32>)> {
     vec![
@@ -83,9 +83,10 @@ fn index_kind_as_str_and_parse() {
     use std::str::FromStr;
     assert_eq!(IndexKind::Flat.as_str(), "flat");
     assert_eq!(IndexKind::IvfFlat.as_str(), "ivf_flat");
-    // FromStr round-trips the labels and errors (not None) on an unknown one.
+    assert_eq!(IndexKind::Hnsw.as_str(), "hnsw");
     assert_eq!(IndexKind::from_str("flat").unwrap(), IndexKind::Flat);
     assert_eq!(IndexKind::from_str("ivf_flat").unwrap(), IndexKind::IvfFlat);
+    assert_eq!(IndexKind::from_str("hnsw").unwrap(), IndexKind::Hnsw);
     assert!(IndexKind::from_str("nope").is_err());
 }
 
@@ -271,6 +272,147 @@ fn decode_routes_on_kind_byte() {
 
     // Truncated header: fewer than 7 bytes -> bytes.get(6) is None -> error.
     assert!(control_plane_core::decode(&[0u8; 6]).is_err());
-    // Unknown kind byte: magic ok, version 1, metric 0, kind byte = 2 -> error.
-    assert!(control_plane_core::decode(&[b'L', b'V', b'I', b'X', 1, 0, 2]).is_err());
+    // Unknown kind byte: magic ok, version 1, metric 0, kind byte = 3 -> error.
+    assert!(control_plane_core::decode(&[b'L', b'V', b'I', b'X', 1, 0, 3]).is_err());
+}
+
+#[test]
+fn hnsw_recall_meets_threshold_cosine() {
+    let (rows, centers) = clustered_rows();
+    let flat = FlatIndex::build(8, Metric::Cosine, rows.clone()).unwrap();
+    let hnsw = HnswIndex::build(8, Metric::Cosine, rows, None, None).unwrap();
+    let mut hits = 0usize;
+    let mut total = 0usize;
+    for c in &centers {
+        let exact: std::collections::HashSet<_> =
+            flat.search(c, 10).into_iter().map(|(k, _)| k).collect();
+        let approx: std::collections::HashSet<_> =
+            hnsw.search(c, 10).into_iter().map(|(k, _)| k).collect();
+        hits += exact.intersection(&approx).count();
+        total += exact.len();
+    }
+    let recall = hits as f32 / total as f32;
+    assert!(recall >= 0.9, "cosine recall {recall} below 0.9");
+}
+
+#[test]
+fn hnsw_recall_meets_threshold_l2() {
+    let (rows, centers) = clustered_rows();
+    let flat = FlatIndex::build(8, Metric::L2, rows.clone()).unwrap();
+    let hnsw = HnswIndex::build(8, Metric::L2, rows, None, None).unwrap();
+    let mut hits = 0usize;
+    let mut total = 0usize;
+    for c in &centers {
+        let exact: std::collections::HashSet<_> =
+            flat.search(c, 10).into_iter().map(|(k, _)| k).collect();
+        let approx: std::collections::HashSet<_> =
+            hnsw.search(c, 10).into_iter().map(|(k, _)| k).collect();
+        hits += exact.intersection(&approx).count();
+        total += exact.len();
+    }
+    let recall = hits as f32 / total as f32;
+    assert!(recall >= 0.9, "l2 recall {recall} below 0.9");
+}
+
+#[test]
+fn hnsw_build_is_byte_deterministic() {
+    let (rows, _) = clustered_rows();
+    let a = HnswIndex::build(8, Metric::L2, rows.clone(), None, None).unwrap();
+    let b = HnswIndex::build(8, Metric::L2, rows, None, None).unwrap();
+    assert_eq!(
+        a.serialize(),
+        b.serialize(),
+        "same input order -> identical bytes"
+    );
+}
+
+#[test]
+fn hnsw_serialize_roundtrip_is_search_exact() {
+    let (rows, _) = clustered_rows();
+    let hnsw = HnswIndex::build(8, Metric::Cosine, rows, None, None).unwrap();
+    let bytes = hnsw.serialize();
+    let back = HnswIndex::deserialize(&bytes).unwrap();
+    assert_eq!(bytes, back.serialize(), "round-trip is byte-exact");
+    let q = vec![1.0f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(hnsw.search(&q, 10), back.search(&q, 10));
+}
+
+#[test]
+fn hnsw_string_keys_round_trip() {
+    let r = vec![
+        (VectorKey::Str("a".into()), vec![1.0, 0.0]),
+        (VectorKey::Str("b".into()), vec![0.0, 1.0]),
+    ];
+    let hnsw = HnswIndex::build(2, Metric::Cosine, r, None, None).unwrap();
+    let back = HnswIndex::deserialize(&hnsw.serialize()).unwrap();
+    let res = back.search(&[1.0, 0.0], 1);
+    assert_eq!(res[0].0, VectorKey::Str("a".into()));
+}
+
+#[test]
+fn hnsw_empty_is_searchable() {
+    let hnsw = HnswIndex::build(4, Metric::Cosine, vec![], None, None).unwrap();
+    assert_eq!(hnsw.row_count(), 0);
+    assert_eq!(hnsw.search(&[1.0, 0.0, 0.0, 0.0], 5), vec![]);
+    // Empty round-trips too.
+    let back = HnswIndex::deserialize(&hnsw.serialize()).unwrap();
+    assert_eq!(back.row_count(), 0);
+}
+
+#[test]
+fn hnsw_single_row_returns_it() {
+    let r = vec![(VectorKey::Int(7), vec![1.0, 0.0, 0.0, 0.0])];
+    let hnsw = HnswIndex::build(4, Metric::L2, r, None, None).unwrap();
+    let res = hnsw.search(&[1.0, 0.0, 0.0, 0.0], 3);
+    assert_eq!(res.len(), 1);
+    assert_eq!(res[0].0, VectorKey::Int(7));
+}
+
+#[test]
+fn hnsw_fewer_rows_than_m_builds_and_searches() {
+    // N < M (default 16): every node simply links to all reachable neighbors.
+    let rows = vec![
+        (VectorKey::Int(1), vec![1.0, 0.0]),
+        (VectorKey::Int(2), vec![0.0, 1.0]),
+        (VectorKey::Int(3), vec![0.9, 0.1]),
+    ];
+    let hnsw = HnswIndex::build(2, Metric::L2, rows, None, None).unwrap();
+    let res = hnsw.search(&[1.0, 0.0], 1);
+    assert_eq!(res[0].0, VectorKey::Int(1));
+}
+
+#[test]
+fn hnsw_build_rejects_dim_mismatch() {
+    let rows = vec![(VectorKey::Int(1), vec![1.0, 0.0, 0.0])];
+    assert!(HnswIndex::build(4, Metric::Cosine, rows, None, None).is_err());
+}
+
+#[test]
+fn hnsw_reports_kind_via_trait() {
+    let (rows, _) = clustered_rows();
+    let hnsw = HnswIndex::build(8, Metric::L2, rows, None, None).unwrap();
+    let dynidx: &dyn VectorIndex = &hnsw;
+    assert_eq!(dynidx.index_kind(), control_plane_core::IndexKind::Hnsw);
+    assert_eq!(dynidx.serialize(), hnsw.serialize());
+}
+
+#[test]
+fn hnsw_with_ef_search_clamps_and_searches() {
+    let (rows, _) = clustered_rows();
+    let hnsw = HnswIndex::build(8, Metric::L2, rows, None, None)
+        .unwrap()
+        .with_ef_search(0); // clamps to >= 1
+    let q = vec![0.0f32, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0];
+    assert_eq!(hnsw.search(&q, 5).len(), 5);
+}
+
+#[test]
+fn decode_routes_hnsw_kind_byte() {
+    use control_plane_core::{IndexKind, decode};
+    let (rows, _) = clustered_rows();
+    let hnsw = HnswIndex::build(8, Metric::L2, rows, None, None).unwrap();
+    let boxed = decode(&hnsw.serialize()).unwrap();
+    assert_eq!(boxed.index_kind(), IndexKind::Hnsw);
+    let q = vec![0.0f32, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0];
+    assert_eq!(boxed.search(&q, 5).len(), 5);
 }
