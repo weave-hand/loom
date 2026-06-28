@@ -69,19 +69,6 @@ impl IndexKind {
             IndexKind::IvfFlat => "ivf_flat",
         }
     }
-
-    #[must_use]
-    #[expect(
-        clippy::should_implement_trait,
-        reason = "returns Option<Self> not Result<Self, E>; does not match FromStr signature"
-    )]
-    pub fn from_str(s: &str) -> Option<IndexKind> {
-        match s {
-            "flat" => Some(IndexKind::Flat),
-            "ivf_flat" => Some(IndexKind::IvfFlat),
-            _ => None,
-        }
-    }
 }
 
 /// The object identity value carried alongside each indexed vector so k-NN

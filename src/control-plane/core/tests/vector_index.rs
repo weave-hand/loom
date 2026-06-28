@@ -78,13 +78,10 @@ fn distance_fn_matches_metrics() {
 }
 
 #[test]
-fn index_kind_string_roundtrip() {
+fn index_kind_as_str() {
     use control_plane_core::IndexKind;
     assert_eq!(IndexKind::Flat.as_str(), "flat");
     assert_eq!(IndexKind::IvfFlat.as_str(), "ivf_flat");
-    assert_eq!(IndexKind::from_str("flat"), Some(IndexKind::Flat));
-    assert_eq!(IndexKind::from_str("ivf_flat"), Some(IndexKind::IvfFlat));
-    assert_eq!(IndexKind::from_str("nope"), None);
 }
 
 #[test]
