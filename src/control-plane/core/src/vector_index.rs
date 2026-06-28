@@ -370,13 +370,107 @@ impl IvfFlatIndex {
         row_slice(&self.data, self.dim as usize, i)
     }
 
-    #[expect(
-        clippy::unimplemented,
-        reason = "IvfFlatIndex serialization is a Task 3 stub; callers never invoke this path"
-    )]
+    // --- compact binary format -------------------------------------------------
+    // magic "LVIX" | u8 version=1 | u8 metric | u8 kind=1 |
+    // u32 dim | u32 nlist | u32 nprobe | u32 row_count |
+    // centroids (nlist*dim f32 LE) | assignments (row_count u32 LE) |
+    // data (row_count*dim f32 LE) | u8 key_kind | keys (as FlatIndex)
     fn serialize_bytes(&self) -> Vec<u8> {
-        // Replaced with the real format in Task 3.
-        unimplemented!("IvfFlatIndex serialization lands in Task 3")
+        let mut out = Vec::new();
+        out.extend_from_slice(b"LVIX");
+        out.push(1); // version
+        out.push(match self.metric {
+            Metric::Cosine => 0,
+            Metric::L2 => 1,
+        });
+        out.push(1); // kind: ivf_flat
+        out.extend_from_slice(&self.dim.to_le_bytes());
+        out.extend_from_slice(&self.nlist.to_le_bytes());
+        out.extend_from_slice(&self.nprobe.to_le_bytes());
+        out.extend_from_slice(&self.row_count().to_le_bytes());
+        for &f in &self.centroids {
+            out.extend_from_slice(&f.to_le_bytes());
+        }
+        for &a in &self.assignments {
+            out.extend_from_slice(&a.to_le_bytes());
+        }
+        for &f in &self.data {
+            out.extend_from_slice(&f.to_le_bytes());
+        }
+        let key_kind: u8 = match self.keys.first() {
+            Some(VectorKey::Str(_)) => 1,
+            _ => 0,
+        };
+        out.push(key_kind);
+        for key in &self.keys {
+            match key {
+                VectorKey::Int(i) => out.extend_from_slice(&i.to_le_bytes()),
+                VectorKey::Str(s) => {
+                    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                    out.extend_from_slice(s.as_bytes());
+                }
+            }
+        }
+        out
+    }
+
+    pub fn deserialize(bytes: &[u8]) -> Result<IvfFlatIndex> {
+        let mut c = Cursor { b: bytes, p: 0 };
+        if c.take(4)? != b"LVIX" {
+            return Err(bad("bad magic"));
+        }
+        if c.u8()? != 1 {
+            return Err(bad("unsupported version"));
+        }
+        let metric = match c.u8()? {
+            0 => Metric::Cosine,
+            1 => Metric::L2,
+            _ => return Err(bad("bad metric")),
+        };
+        if c.u8()? != 1 {
+            return Err(bad("not an ivf_flat index"));
+        }
+        let dim = c.u32()?;
+        let nlist = c.u32()?;
+        let nprobe = c.u32()?;
+        let row_count = c.u32()?;
+        let d = dim as usize;
+        let mut centroids = Vec::with_capacity(nlist as usize * d);
+        for _ in 0..(nlist as usize * d) {
+            centroids.push(c.f32()?);
+        }
+        let mut assignments = Vec::with_capacity(row_count as usize);
+        for _ in 0..row_count {
+            assignments.push(c.u32()?);
+        }
+        let mut data = Vec::with_capacity(row_count as usize * d);
+        for _ in 0..(row_count as usize * d) {
+            data.push(c.f32()?);
+        }
+        let key_kind = c.u8()?;
+        let mut keys = Vec::with_capacity(row_count as usize);
+        for _ in 0..row_count {
+            match key_kind {
+                0 => keys.push(VectorKey::Int(c.i64()?)),
+                1 => {
+                    let len = c.u32()? as usize;
+                    let raw = c.take(len)?;
+                    let s = std::str::from_utf8(raw).map_err(|e| bad(&e.to_string()))?;
+                    keys.push(VectorKey::Str(s.to_string()));
+                }
+                _ => return Err(bad("bad key kind")),
+            }
+        }
+        Ok(IvfFlatIndex {
+            dim,
+            metric,
+            nlist,
+            nprobe,
+            centroids,
+            assignments,
+            keys,
+            data,
+        })
     }
 }
 
@@ -592,6 +686,18 @@ fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
         s += d * d;
     }
     s.sqrt()
+}
+
+/// Decode any serialized loom vector index into a boxed `VectorIndex`, routing on
+/// the `kind` byte (offset 6: magic[4] + version + metric). Used by the engine
+/// serving + postgres read paths.
+pub fn decode(bytes: &[u8]) -> Result<Box<dyn VectorIndex>> {
+    let kind = *bytes.get(6).ok_or_else(|| bad("truncated index header"))?;
+    match kind {
+        0 => Ok(Box::new(FlatIndex::deserialize(bytes)?)),
+        1 => Ok(Box::new(IvfFlatIndex::deserialize(bytes)?)),
+        _ => Err(bad("unknown index kind")),
+    }
 }
 
 impl VectorIndex for FlatIndex {

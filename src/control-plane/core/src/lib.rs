@@ -43,6 +43,6 @@ pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use transaction::{ControlPlane, Tx};
 pub use vector_index::{
-    FlatIndex, IndexKind, IvfFlatIndex, Metric, VectorIndex, VectorKey, distance,
+    FlatIndex, IndexKind, IvfFlatIndex, Metric, VectorIndex, VectorKey, decode, distance,
 };
 pub use vector_index_job::{BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob};

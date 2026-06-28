@@ -214,3 +214,44 @@ fn ivf_build_rejects_dim_mismatch() {
     let rows = vec![(VectorKey::Int(1), vec![1.0, 0.0, 0.0])];
     assert!(IvfFlatIndex::build(4, Metric::Cosine, rows, None).is_err());
 }
+
+#[test]
+fn ivf_serialize_roundtrip_is_search_exact() {
+    let (rows, _) = clustered_rows();
+    let ivf = IvfFlatIndex::build(8, Metric::Cosine, rows, None)
+        .unwrap()
+        .with_nprobe(3);
+    let bytes = ivf.serialize();
+    let back = IvfFlatIndex::deserialize(&bytes).unwrap();
+    let q = vec![1.0f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(ivf.search(&q, 10), back.search(&q, 10));
+}
+
+#[test]
+fn ivf_build_is_byte_deterministic() {
+    let (rows, _) = clustered_rows();
+    let a = IvfFlatIndex::build(8, Metric::L2, rows.clone(), None).unwrap();
+    let b = IvfFlatIndex::build(8, Metric::L2, rows, None).unwrap();
+    assert_eq!(
+        a.serialize(),
+        b.serialize(),
+        "same input order -> identical bytes"
+    );
+}
+
+#[test]
+fn decode_routes_on_kind_byte() {
+    use control_plane_core::{IndexKind, decode};
+    let (rows, _) = clustered_rows();
+    let flat = FlatIndex::build(8, Metric::L2, rows.clone()).unwrap();
+    let ivf = IvfFlatIndex::build(8, Metric::L2, rows, None).unwrap();
+
+    let dflat = decode(&flat.serialize()).unwrap();
+    assert_eq!(dflat.index_kind(), IndexKind::Flat);
+    let divf = decode(&ivf.serialize()).unwrap();
+    assert_eq!(divf.index_kind(), IndexKind::IvfFlat);
+
+    // Boxed trait object searches; the default nprobe recorded in the blob is used.
+    let q = vec![0.0f32, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0];
+    assert_eq!(divf.search(&q, 5).len(), 5);
+}
