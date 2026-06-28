@@ -204,7 +204,6 @@ The core of the slice: start/adopt a persistent cluster, hand back connect optio
 Add to the top of `src/services/managed-postgres/src/lib.rs` (after the existing `use`):
 
 ```rust
-use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::time::Duration;
 
@@ -213,8 +212,8 @@ use sqlx::{ConnectOptions, Connection, Executor, PgConnection, Row};
 use tokio::process::{Child, Command};
 
 /// A running, owned embedded Postgres. Prefer `shutdown()` for a clean
-/// `pg_ctl stop -m fast`; `Drop` is a best-effort fast stop so a panic does not
-/// leak a postmaster.
+/// `pg_ctl stop -m fast`; on `Drop` the child is killed (`kill_on_drop`) so a
+/// panic cannot leak a postmaster.
 pub struct EmbeddedPg {
     server: Option<Child>,
     bin_dir: PathBuf,
@@ -222,12 +221,17 @@ pub struct EmbeddedPg {
     data_dir: PathBuf,
     socket_dir: PathBuf,
     database: String,
-    // flock held for the handle's life; released on Drop / process exit.
-    _lock: std::fs::File,
 }
 ```
 
-- [ ] **Step 2: Add the private helpers (command builder, lock, initdb, spawn, readiness, ensure-db)**
+**No FFI / no `libc`.** The two guards Postgres also enforces are done with std
+only: the root check reads `/proc/self/status` (Linux) and otherwise defers to
+`initdb`'s own root refusal; single-owner reuses Postgres' `postmaster.pid` +
+`/proc/<pid>` liveness. This keeps the crate buck-only (no `Cargo.toml`, no
+third-party alias churn). `kill_on_drop(true)` on the server `Command` is the
+panic backstop, replacing a manual signal in `Drop`.
+
+- [ ] **Step 2: Add the private helpers (command builder, root/single-owner guards, initdb, spawn, readiness, ensure-db)**
 
 Append to `lib.rs`:
 
@@ -241,47 +245,72 @@ fn pg_command(program: PathBuf, ld_library_path: &str) -> Command {
     cmd
 }
 
-/// Acquire an exclusive, non-blocking advisory lock on `<data_dir>/loom-embedded.lock`.
-/// The returned file must be kept alive for the lock to hold.
-fn acquire_lock(data_dir: &Path) -> Result<std::fs::File, EmbeddedPgError> {
-    let path = data_dir.join("loom-embedded.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)?;
-    // SAFETY: flock on a valid open fd; LOCK_NB makes it return EWOULDBLOCK instead
-    // of blocking when another loom already holds the lock.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc != 0 {
-        return Err(EmbeddedPgError::AlreadyLocked(data_dir.to_path_buf()));
+/// Effective-uid root check, FFI-free. On Linux the effective uid is the 2nd
+/// field of the `Uid:` line in `/proc/self/status`. On platforms without `/proc`
+/// (macOS) this returns `false` and we fall back to `initdb`'s own root refusal.
+fn is_effective_root() -> bool {
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return false;
+    };
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        .and_then(|rest| rest.split_whitespace().nth(1)) // real *effective* saved fs
+        .is_some_and(|euid| euid == "0")
+}
+
+/// Reject a second owner of the same data dir, FFI-free. Postgres writes its pid
+/// on the first line of `<data_dir>/postmaster.pid`; if that pid is still alive
+/// (`/proc/<pid>` exists on Linux), another server already owns the cluster. A
+/// stale pidfile (process gone) is left for Postgres to clean on start.
+fn check_not_already_running(data_dir: &Path) -> Result<(), EmbeddedPgError> {
+    let Ok(contents) = std::fs::read_to_string(data_dir.join("postmaster.pid")) else {
+        return Ok(()); // no pidfile ⇒ not running
+    };
+    let alive = contents
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse::<u32>().ok())
+        .is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists());
+    if alive {
+        Err(EmbeddedPgError::AlreadyLocked(data_dir.to_path_buf()))
+    } else {
+        Ok(())
     }
-    Ok(file)
 }
 
 impl EmbeddedPg {
     async fn run_initdb(cfg: &EmbeddedPgConfig) -> Result<(), EmbeddedPgError> {
-        let status = pg_command(cfg.bin_dir.join("initdb"), &cfg.ld_library_path)
+        let out = pg_command(cfg.bin_dir.join("initdb"), &cfg.ld_library_path)
             .arg("-D")
             .arg(&cfg.data_dir)
             .args(["--no-locale", "--encoding=UTF8", "-A", "trust", "-U", "postgres"])
-            .status()
+            .output()
             .await?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(EmbeddedPgError::Initdb(status))
+        if out.status.success() {
+            return Ok(());
         }
+        // Fallback root detection for platforms where is_effective_root() couldn't
+        // tell (no /proc): initdb refuses root with a message naming "root".
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("root") {
+            return Err(EmbeddedPgError::RunningAsRoot);
+        }
+        Err(EmbeddedPgError::Initdb(out.status))
     }
 
     fn spawn_postgres(cfg: &EmbeddedPgConfig) -> Result<Child, EmbeddedPgError> {
         // Unix socket only (no TCP). Durability stays ON (real data, not a test).
+        // kill_on_drop: if the handle is dropped without shutdown() (e.g. a panic),
+        // tokio SIGKILLs the child so no postmaster is leaked; the durable data dir
+        // recovers on next start.
         let child = pg_command(cfg.bin_dir.join("postgres"), &cfg.ld_library_path)
             .arg("-D")
             .arg(&cfg.data_dir)
             .arg("-k")
             .arg(&cfg.socket_dir)
             .args(["-c", "listen_addresses="])
+            .kill_on_drop(true)
             .spawn()?;
         Ok(child)
     }
@@ -331,23 +360,25 @@ impl EmbeddedPg {
 }
 ```
 
-- [ ] **Step 3: Add `start`, `connect_options`, `socket_dir`, `shutdown`, and `Drop`**
+- [ ] **Step 3: Add `start`, `connect_options`, `socket_dir`, and `shutdown`**
 
-Append to the `impl EmbeddedPg` block (or a second `impl`):
+Append to the `impl EmbeddedPg` block (or a second `impl`). There is no manual
+`Drop` impl — `kill_on_drop(true)` on the server command is the leak backstop.
 
 ```rust
 impl EmbeddedPg {
     /// Boot (or adopt) a persistent cluster and return a ready handle.
     pub async fn start(cfg: EmbeddedPgConfig) -> Result<EmbeddedPg, EmbeddedPgError> {
-        // initdb/postgres reject uid 0; fail early with a clear message.
-        // SAFETY: geteuid is always safe.
-        if unsafe { libc::geteuid() } == 0 {
+        // initdb/postgres reject uid 0; fail early with a clear message (Linux).
+        // Non-/proc platforms fall through to run_initdb's stderr-based detection.
+        if is_effective_root() {
             return Err(EmbeddedPgError::RunningAsRoot);
         }
         validate_db_name(&cfg.database)?;
         std::fs::create_dir_all(&cfg.data_dir)?;
         std::fs::create_dir_all(&cfg.socket_dir)?;
-        let lock = acquire_lock(&cfg.data_dir)?;
+        // Single-owner guard against an already-running cluster on this data dir.
+        check_not_already_running(&cfg.data_dir)?;
 
         // Idempotent init: PG_VERSION present ⇒ adopt the existing cluster.
         if !cfg.data_dir.join("PG_VERSION").exists() {
@@ -361,7 +392,6 @@ impl EmbeddedPg {
             data_dir: cfg.data_dir,
             socket_dir: cfg.socket_dir,
             database: cfg.database,
-            _lock: lock,
         };
         pg.wait_ready().await?;
         pg.ensure_database().await?;
@@ -381,10 +411,8 @@ impl EmbeddedPg {
         &self.socket_dir
     }
 
-    /// Clean shutdown: `pg_ctl stop -m fast`, then release the lock (on `Drop`).
+    /// Clean shutdown: `pg_ctl stop -m fast` (waits for the server to exit).
     pub async fn shutdown(mut self) -> Result<(), EmbeddedPgError> {
-        // Take the child so Drop does not also try to signal it.
-        let _ = self.server.take();
         let status = pg_command(self.bin_dir.join("pg_ctl"), &self.ld_library_path)
             .arg("stop")
             .arg("-D")
@@ -392,23 +420,13 @@ impl EmbeddedPg {
             .args(["-m", "fast", "-w"])
             .status()
             .await?;
+        // The server has exited; dropping the child handle now is a no-op for
+        // kill_on_drop (the process is already gone).
+        let _ = self.server.take();
         if status.success() {
             Ok(())
         } else {
             Err(EmbeddedPgError::Stop(status))
-        }
-    }
-}
-
-impl Drop for EmbeddedPg {
-    fn drop(&mut self) {
-        // Best-effort fast stop if shutdown() was not called: SIGINT to the
-        // postmaster is Postgres' "fast shutdown". Ignore all errors.
-        if let Some(child) = self.server.take()
-            && let Some(pid) = child.id()
-        {
-            // SAFETY: kill with a known pid + signal; failure is ignored.
-            unsafe { libc::kill(pid as i32, libc::SIGINT) };
         }
     }
 }
