@@ -416,3 +416,120 @@ fn decode_routes_hnsw_kind_byte() {
     let q = vec![0.0f32, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0];
     assert_eq!(boxed.search(&q, 5).len(), 5);
 }
+
+// --- Malformed-blob hardening (iss-hnsw-deserialize-bounds) ---------------
+//
+// `HnswIndex::deserialize` must reject a corrupt-but-structurally-readable blob
+// with a `bad(...)` error instead of decoding it into an index that panics (or
+// over-allocates) at search time. Layout reminder for the fixed-size header:
+//   [0..4]   "LVIX"
+//   [4] version  [5] metric  [6] kind
+//   [7..11]  dim          [11..15] m         [15..19] ef_construction
+//   [19..23] ef_search    [23..27] entry_point  [27..31] max_layer
+//   [31..35] row_count    [35..]   data (row_count*dim f32) then adjacency...
+
+fn read_u32(b: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+}
+
+fn write_u32(b: &mut [u8], off: usize, v: u32) {
+    b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+#[test]
+fn hnsw_deserialize_rejects_oversized_row_count() {
+    // A header claiming far more rows than the buffer can hold must error rather
+    // than drive a giant speculative `Vec::with_capacity` on the data section.
+    let (rows, _) = clustered_rows();
+    let mut bytes = HnswIndex::build(8, Metric::L2, rows, None, None)
+        .unwrap()
+        .serialize();
+    write_u32(&mut bytes, 31, 100_000_000); // row_count
+    assert!(HnswIndex::deserialize(&bytes).is_err());
+}
+
+#[test]
+fn hnsw_deserialize_rejects_out_of_range_neighbor() {
+    // Point node 0's first layer-0 neighbor at an index == row_count (out of
+    // range). Decode must reject it; otherwise `row_slice`/`layers[c]` panics at
+    // search time.
+    let (rows, _) = clustered_rows();
+    let mut bytes = HnswIndex::build(8, Metric::L2, rows, None, None)
+        .unwrap()
+        .serialize();
+    let dim = read_u32(&bytes, 7) as usize;
+    let rc = read_u32(&bytes, 31) as usize;
+    let adj = 35 + rc * dim * 4; // node 0: [nml u8][layer0: cnt u32][nbr u32...]
+    let cnt0 = read_u32(&bytes, adj + 1);
+    assert!(
+        cnt0 >= 1,
+        "node 0 should have a layer-0 neighbor to corrupt"
+    );
+    let nbr_off = adj + 1 + 4;
+    write_u32(&mut bytes, nbr_off, rc as u32); // == row_count => out of range
+    assert!(HnswIndex::deserialize(&bytes).is_err());
+}
+
+#[test]
+fn hnsw_deserialize_rejects_out_of_range_entry_point() {
+    let (rows, _) = clustered_rows();
+    let mut bytes = HnswIndex::build(8, Metric::L2, rows, None, None)
+        .unwrap()
+        .serialize();
+    let rc = read_u32(&bytes, 31);
+    write_u32(&mut bytes, 23, rc); // entry_point == row_count => out of range
+    assert!(HnswIndex::deserialize(&bytes).is_err());
+}
+
+/// Build a minimal 2-node HNSW blob (dim 2, L2, int keys). `layer1_nbr` is the
+/// single neighbor listed in node 0's layer 1; node 1 has only layer 0. With
+/// `layer1_nbr == 0` the graph is layer-consistent (node 0 has layer 1); with
+/// `layer1_nbr == 1` it references node 1's absent layer 1.
+fn two_node_blob(layer1_nbr: u32) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(b"LVIX");
+    b.push(1); // version
+    b.push(1); // metric: L2
+    b.push(2); // kind: hnsw
+    b.extend_from_slice(&2u32.to_le_bytes()); // dim
+    b.extend_from_slice(&16u32.to_le_bytes()); // m
+    b.extend_from_slice(&200u32.to_le_bytes()); // ef_construction
+    b.extend_from_slice(&16u32.to_le_bytes()); // ef_search
+    b.extend_from_slice(&0u32.to_le_bytes()); // entry_point = node 0
+    b.extend_from_slice(&1u32.to_le_bytes()); // max_layer = 1
+    b.extend_from_slice(&2u32.to_le_bytes()); // row_count = 2
+    for f in [1.0f32, 0.0, 0.0, 1.0] {
+        b.extend_from_slice(&f.to_le_bytes()); // data: node0=[1,0], node1=[0,1]
+    }
+    // node 0: nml=1 (layers 0 and 1)
+    b.push(1);
+    b.extend_from_slice(&1u32.to_le_bytes()); // layer0 cnt
+    b.extend_from_slice(&1u32.to_le_bytes()); // layer0 -> node 1
+    b.extend_from_slice(&1u32.to_le_bytes()); // layer1 cnt
+    b.extend_from_slice(&layer1_nbr.to_le_bytes()); // layer1 -> param
+    // node 1: nml=0 (layer 0 only)
+    b.push(0);
+    b.extend_from_slice(&1u32.to_le_bytes()); // layer0 cnt
+    b.extend_from_slice(&0u32.to_le_bytes()); // layer0 -> node 0
+    b.push(0); // key_kind = int
+    b.extend_from_slice(&1i64.to_le_bytes()); // key 0
+    b.extend_from_slice(&2i64.to_le_bytes()); // key 1
+    b
+}
+
+#[test]
+fn two_node_blob_consistent_decodes_and_searches() {
+    // Sanity-anchor the synthetic builder: a layer-consistent blob still decodes
+    // and searches, so the rejection test below isolates the inconsistency.
+    let back = HnswIndex::deserialize(&two_node_blob(0)).unwrap();
+    assert_eq!(back.row_count(), 2);
+    let res = back.search(&[1.0, 0.0], 1);
+    assert_eq!(res[0].0, VectorKey::Int(1));
+}
+
+#[test]
+fn hnsw_deserialize_rejects_neighbor_referencing_absent_layer() {
+    // Node 0's layer 1 references node 1, which has no layer 1. Decode must
+    // reject it; otherwise `layers[c][lc]` panics at search time.
+    assert!(HnswIndex::deserialize(&two_node_blob(1)).is_err());
+}

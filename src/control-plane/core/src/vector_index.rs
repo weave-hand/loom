@@ -679,6 +679,12 @@ struct Cursor<'a> {
     p: usize,
 }
 impl<'a> Cursor<'a> {
+    /// Bytes left to read. An untrusted element count exceeding this cannot be
+    /// satisfied (every element occupies at least one byte), so it bounds
+    /// speculative `Vec::with_capacity` against a corrupt header.
+    fn remaining(&self) -> usize {
+        self.b.len().saturating_sub(self.p)
+    }
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         let end = self.p.checked_add(n).ok_or_else(|| bad("overflow"))?;
         let s = self.b.get(self.p..end).ok_or_else(|| bad("truncated"))?;
@@ -1118,26 +1124,64 @@ impl HnswIndex {
         let max_layer = c.u32()?;
         let row_count = c.u32()?;
         let d = dim as usize;
-        let mut data = Vec::with_capacity(row_count as usize * d);
-        for _ in 0..(row_count as usize * d) {
+        let rc = row_count as usize;
+        // Bound the data section against the buffer before allocating: a
+        // corrupt-but-self-consistent header otherwise drives a huge speculative
+        // allocation. Each f32 is 4 bytes, so `rc * d` elements cannot exceed the
+        // bytes left to read (conservative: never rejects a well-formed blob).
+        let data_len = rc
+            .checked_mul(d)
+            .ok_or_else(|| bad("row_count * dim overflow"))?;
+        if data_len > c.remaining() {
+            return Err(bad("data section exceeds buffer"));
+        }
+        if rc > 0 && entry_point as usize >= rc {
+            return Err(bad("entry_point out of range"));
+        }
+        let mut data = Vec::with_capacity(data_len);
+        for _ in 0..data_len {
             data.push(c.f32()?);
         }
-        let mut layers: Vec<Vec<Vec<u32>>> = Vec::with_capacity(row_count as usize);
+        let mut layers: Vec<Vec<Vec<u32>>> = Vec::with_capacity(rc.min(c.remaining()));
         for _ in 0..row_count {
             let nml = c.u8()? as usize;
             let mut node: Vec<Vec<u32>> = Vec::with_capacity(nml + 1);
             for _ in 0..=nml {
                 let cnt = c.u32()? as usize;
+                if cnt > c.remaining() {
+                    return Err(bad("neighbor list exceeds buffer"));
+                }
                 let mut nbrs = Vec::with_capacity(cnt);
                 for _ in 0..cnt {
-                    nbrs.push(c.u32()?);
+                    let nbr = c.u32()?;
+                    if nbr as usize >= rc {
+                        return Err(bad("neighbor index out of range"));
+                    }
+                    nbrs.push(nbr);
                 }
                 node.push(nbrs);
             }
             layers.push(node);
         }
+        // Layer consistency: a node listed in another node's layer-`l` adjacency
+        // must itself have a layer `l` (its own height >= l), or the search-time
+        // `layers[c][lc]` access panics. `layers[nbr]` exists (nbr < rc above).
+        for node in &layers {
+            for (l, layer) in node.iter().enumerate() {
+                for &nbr in layer {
+                    if layers.get(nbr as usize).map_or(0, Vec::len) <= l {
+                        return Err(bad("neighbor references absent layer"));
+                    }
+                }
+            }
+        }
+        // The greedy descent enters at `layers[entry_point][max_layer]`, so the
+        // entry node must reach that height.
+        if rc > 0 && max_layer as usize >= layers.get(entry_point as usize).map_or(0, Vec::len) {
+            return Err(bad("max_layer exceeds entry point height"));
+        }
         let key_kind = c.u8()?;
-        let mut keys = Vec::with_capacity(row_count as usize);
+        let mut keys = Vec::with_capacity(rc.min(c.remaining()));
         for _ in 0..row_count {
             match key_kind {
                 0 => keys.push(VectorKey::Int(c.i64()?)),
