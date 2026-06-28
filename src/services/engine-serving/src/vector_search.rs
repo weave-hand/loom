@@ -95,8 +95,7 @@ pub async fn vector_search(
     // 5. Hot path: `inline_delta_batch` returns the inline vector rows born after
     //    the index's covered snapshot S and alive at Q; they are brute-force scored
     //    and merged with the cold results.
-    let metric = Metric::from_label(&row.metric)
-        .ok_or_else(|| EngineServingError::Engine(format!("unknown metric '{}'", row.metric)))?;
+    let metric: Metric = row.metric.parse().map_err(to_serving)?;
     let hot: Vec<(VectorKey, f32)> = match inline_delta_batch(pool, table, row.covered_snapshot, q)
         .await
         .map_err(to_serving)?

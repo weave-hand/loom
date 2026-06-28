@@ -43,13 +43,20 @@ impl Metric {
             Metric::L2 => "l2",
         }
     }
+}
 
-    #[must_use]
-    pub fn from_label(s: &str) -> Option<Metric> {
+impl std::str::FromStr for Metric {
+    type Err = ControlPlaneError;
+
+    /// Parse the on-the-wire label (e.g. from a query parameter or the mirror
+    /// row) into a `Metric`, erroring on an unknown label.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "cosine" => Some(Metric::Cosine),
-            "l2" => Some(Metric::L2),
-            _ => None,
+            "cosine" => Ok(Metric::Cosine),
+            "l2" => Ok(Metric::L2),
+            other => Err(ControlPlaneError::Backend(
+                format!("unknown metric '{other}'").into(),
+            )),
         }
     }
 }

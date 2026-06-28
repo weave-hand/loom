@@ -90,6 +90,18 @@ fn index_kind_as_str_and_parse() {
 }
 
 #[test]
+fn metric_as_str_and_parse() {
+    use control_plane_core::Metric;
+    use std::str::FromStr;
+    assert_eq!(Metric::Cosine.as_str(), "cosine");
+    assert_eq!(Metric::L2.as_str(), "l2");
+    // FromStr round-trips the labels and errors (not None) on an unknown one.
+    assert_eq!(Metric::from_str("cosine").unwrap(), Metric::Cosine);
+    assert_eq!(Metric::from_str("l2").unwrap(), Metric::L2);
+    assert!(Metric::from_str("nope").is_err());
+}
+
+#[test]
 fn flat_index_reports_kind_and_serializes_via_trait() {
     // Exercise the new trait methods through a trait object.
     let idx = FlatIndex::build(4, Metric::L2, rows()).unwrap();
