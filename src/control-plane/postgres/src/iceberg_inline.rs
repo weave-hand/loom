@@ -31,7 +31,7 @@ use crate::iceberg_mirror::{
     live_table_id, next_snapshot, project_columns,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
-use crate::iceberg_type::{iceberg_physical_type, pg_type_for};
+use crate::iceberg_type::{mirror_column_type, pg_type_for};
 use crate::lineage::pg_emit;
 
 /// The Postgres name of a table's inline storage. `table_id` is an internal i64.
@@ -218,13 +218,11 @@ pub async fn inline_append(
             Ok(ProjectedColumn {
                 order: i as i64,
                 name: c.name.clone(),
-                iceberg_type: iceberg_physical_type(&c.ty)
-                    .ok_or_else(|| {
-                        ControlPlaneError::Backend(
-                            format!("inline: no iceberg type for {:?}", c.ty).into(),
-                        )
-                    })?
-                    .to_string(),
+                iceberg_type: mirror_column_type(&c.ty).ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        format!("inline: no iceberg type for {:?}", c.ty).into(),
+                    )
+                })?,
                 nullable: c.nullable,
             })
         })

@@ -42,6 +42,18 @@ pub fn iceberg_physical_type(logical: &str) -> Option<&'static str> {
     }
 }
 
+/// loom logical type -> the `iceberg_mirror.column.column_type` string written by
+/// BOTH the cold (Parquet) and inline write paths. A `vector(N)` column keeps its
+/// parameterized form verbatim — the dimension lives in this text and is decoded
+/// back by `logical_from_iceberg` — while every other type maps to its Iceberg
+/// primitive name. `None` if loom has no Iceberg mapping for the type.
+pub fn mirror_column_type(logical: &str) -> Option<String> {
+    match control_plane_core::resolve_logical(logical) {
+        Some(control_plane_core::BaseType::Vector(n)) => Some(format!("vector({n})")),
+        _ => iceberg_physical_type(logical).map(str::to_string),
+    }
+}
+
 /// loom logical type name -> Postgres column type for the per-table inline storage
 /// (`iceberg_mirror.inline_<table_id>`). `None` for an unsupported name.
 pub fn pg_type_for(logical: &str) -> Option<&'static str> {
@@ -53,6 +65,10 @@ pub fn pg_type_for(logical: &str) -> Option<&'static str> {
         "string" => Some("text"),
         "date" => Some("date"),
         "timestamp" => Some("timestamp"),
+        // A vector(N) column stores as a Postgres real[] — native f32, exact and
+        // compact. The dimension N is carried by the mirror column_type text, not
+        // the Postgres type, so this arm is dimension-independent.
+        v if v.starts_with("vector(") => Some("real[]"),
         _ => None,
     }
 }
