@@ -308,23 +308,8 @@ pub async fn inline_delta_batch(
         let id_val: i64 = r.try_get(0).map_err(backend)?;
         id_builder.append_value(id_val);
 
-        // Vector: stored as jsonb array of floats in the inline table.
-        // The vector column is stored as a jsonb array in the inline table.
-        let json_val: serde_json::Value = r.try_get(1).map_err(backend)?;
-        let floats: Vec<f32> = json_val
-            .as_array()
-            .ok_or_else(|| {
-                ControlPlaneError::Backend("inline vector column is not a JSON array".into())
-            })?
-            .iter()
-            .map(|v| {
-                v.as_f64()
-                    .ok_or_else(|| {
-                        ControlPlaneError::Backend("inline vector element is not a float".into())
-                    })
-                    .map(|f| f as f32)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        // Vector: stored as a Postgres real[] (native f32) in the inline table.
+        let floats: Vec<f32> = r.try_get(1).map_err(backend)?;
         vec_builder.values().append_slice(&floats);
         vec_builder.append(true);
     }
