@@ -79,13 +79,16 @@ impl GrpcQueueClient {
             .collect())
     }
 
-    /// Build (or rebuild) the flat vector index for `(schema, name, column)`.
+    /// Build (or rebuild) the vector index for `(schema, name, column)`.
+    /// `index_kind` and `nlist` select the IVF variant; `None` means flat/auto.
     /// Returns `(covered_snapshot, puffin_path, row_count)`.
     pub async fn build_vector_index(
         &self,
         schema: String,
         name: String,
         column: String,
+        index_kind: Option<String>,
+        nlist: Option<u32>,
     ) -> Result<(i64, String, i64)> {
         let resp = self
             .inner
@@ -94,6 +97,8 @@ impl GrpcQueueClient {
                 schema,
                 name,
                 column,
+                index_kind: index_kind.unwrap_or_default(),
+                nlist: nlist.unwrap_or(0),
             })
             .await
             .map_err(be)?

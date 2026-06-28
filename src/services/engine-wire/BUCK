@@ -97,3 +97,12 @@ rust_test(
     edition = "2024",
     deps = [":engine-wire", "//third-party:serde_json"],
 )
+
+rust_test(
+    name = "build-vector-index-request",
+    crate = "build_vector_index_request",
+    srcs = ["tests/build_vector_index_request.rs"],
+    crate_root = "tests/build_vector_index_request.rs",
+    edition = "2024",
+    deps = [":engine-wire", "//third-party:prost"],
+)
