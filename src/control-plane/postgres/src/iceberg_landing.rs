@@ -472,9 +472,10 @@ pub async fn register_files(
     Ok(())
 }
 
-/// Map loom `ColumnSpec`s to mirror `ProjectedColumn`s, storing the Iceberg primitive
-/// type name (`iceberg_physical_type`) — the exact `column_type` the normal write path
-/// records (via `columns_of`), so reads decode identically (`logical_from_iceberg`).
+/// Map loom `ColumnSpec`s to mirror `ProjectedColumn`s, storing the column type via
+/// `mirror_column_type` — the exact `column_type` the normal write path records (via
+/// `columns_of`), so reads decode identically (`logical_from_iceberg`). A vector column
+/// keeps its `vector(N)` form; the dimension is carried in the `column_type` text.
 fn projected_columns(columns: &[ColumnSpec]) -> Result<Vec<ProjectedColumn>> {
     columns
         .iter()

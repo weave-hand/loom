@@ -412,8 +412,8 @@ fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Resu
             use arrow_array::builder::{Float32Builder, ListBuilder};
             let item = Arc::new(Field::new("item", DataType::Float32, false));
             let mut b = ListBuilder::new(Float32Builder::new()).with_field(item);
-            for v in get!(Vec<f32>) {
-                match v {
+            for xs in get!(Vec<f32>) {
+                match xs {
                     Some(xs) => {
                         b.values().append_slice(&xs);
                         b.append(true);

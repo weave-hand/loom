@@ -21,7 +21,7 @@ fn merge_takes_global_topk_ascending() {
 
 #[test]
 fn merge_empty_hot_returns_cold_topk() {
-    // This slice's reality: hot delta is empty for vector tables.
+    // Empty-hot case: cold top-k passes through unchanged.
     let cold = vec![(VectorKey::Int(7), 0.1_f32), (VectorKey::Int(8), 0.3)];
     let got = merge_topk(cold.clone(), vec![], 5);
     assert_eq!(got, cold);

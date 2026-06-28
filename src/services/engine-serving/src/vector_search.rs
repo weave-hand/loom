@@ -1,8 +1,9 @@
 //! Cold/hot k-NN merge seam for the engine serving layer.
 //!
 //! `vector_search` looks up the bound Puffin flat index (cold path), reads the
-//! inline delta (hot path — empty for vector tables this slice; see FUTURE
-//! `fut-inline-vector-hot-delta`), merges via `merge_topk`, and returns a
+//! inline delta (hot path — now live for vector tables: inline rows born after
+//! the index's covered snapshot S and alive at query snapshot Q are scored and
+//! merged with the cold Puffin results), merges via `merge_topk`, and returns a
 //! 2-column `RecordBatch` (identity + `_distance`).
 
 use std::sync::Arc;
@@ -91,10 +92,9 @@ pub async fn vector_search(
         .map_err(to_serving)?;
     let cold: Vec<(VectorKey, f32)> = idx.search(query, k);
 
-    // 5. Hot path: inline delta rows born after the index's covered snapshot and
-    //    alive at Q. For vector tables this slice, `inline_delta_batch` always
-    //    returns `None` (vectors can't inline). The code path is written correctly
-    //    so it lights up when inline-vector support lands.
+    // 5. Hot path: `inline_delta_batch` returns the inline vector rows born after
+    //    the index's covered snapshot S and alive at Q; they are brute-force scored
+    //    and merged with the cold results.
     let metric = Metric::from_label(&row.metric)
         .ok_or_else(|| EngineServingError::Engine(format!("unknown metric '{}'", row.metric)))?;
     let hot: Vec<(VectorKey, f32)> = match inline_delta_batch(pool, table, row.covered_snapshot, q)
