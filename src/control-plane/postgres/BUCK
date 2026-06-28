@@ -96,9 +96,11 @@ command_alias(
     visibility = ["PUBLIC"],
 )
 
-# Runtime migrations dir for sqlx Migrator::new (the compile-time sqlx::migrate!
-# macro needs an absolute CARGO_MANIFEST_DIR, which buck2 can't provide). The
-# filegroup preserves the glob's "migrations/" prefix, hence the env appends it.
+# Migrations are embedded into the binary at compile time via sqlx::migrate!
+# (see control_plane_postgres::embedded_migrator). The `mapped_srcs` on the
+# :postgres library declares migrations/*.sql into the compile sandbox so the
+# macro reads them hermetically; this filegroup remains only as a PUBLIC
+# input for any out-of-tree consumer.
 filegroup(
     name = "migrations",
     srcs = glob(["migrations/**/*.sql"]),
@@ -117,6 +119,7 @@ rust_library(
     name = "postgres",
     crate = "control_plane_postgres",
     srcs = glob(["src/**/*.rs"]),
+    mapped_srcs = {f: f for f in glob(["migrations/*.sql"])},
     crate_root = "src/lib.rs",
     edition = "2024",
     env = {
@@ -174,6 +177,15 @@ rust_test(
     crate_root = "tests/iceberg_schema_evolution.rs",
     edition = "2024",
     deps = [":postgres"],
+)
+
+rust_test(
+    name = "embedded-migrations-unit",
+    crate = "embedded_migrations_unit",
+    srcs = ["tests/embedded_migrations_unit.rs"],
+    crate_root = "tests/embedded_migrations_unit.rs",
+    edition = "2024",
+    deps = [":postgres", "//third-party:sqlx"],
 )
 
 rust_test(

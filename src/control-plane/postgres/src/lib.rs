@@ -89,6 +89,25 @@ pub async fn run_migrations(pool: &PgPool, migrations_dir: &Path) -> Result<()> 
     Ok(())
 }
 
+/// The control-plane migrations, baked into the binary at compile time via
+/// `sqlx::migrate!` (no migrations-on-disk). The `./` prefix is required: sqlx
+/// rejects a bare single-component path. The `migrations/*.sql` files are
+/// declared into the compile sandbox by the `mapped_srcs` on this crate's
+/// buck target, so the macro reads them hermetically (incl. on RE).
+pub fn embedded_migrator() -> sqlx::migrate::Migrator {
+    sqlx::migrate!("./migrations")
+}
+
+/// Apply the embedded migrations (tracked in `_sqlx_migrations`; idempotent —
+/// re-runs as a no-op).
+pub async fn run_embedded_migrations(pool: &PgPool) -> Result<()> {
+    embedded_migrator()
+        .run(pool)
+        .await
+        .map_err(|e| ControlPlaneError::Backend(Box::new(e)))?;
+    Ok(())
+}
+
 #[async_trait]
 impl ControlPlane for PgControlPlane {
     fn catalog(&self) -> &(dyn Catalog + Send + Sync) {
