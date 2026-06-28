@@ -12,7 +12,6 @@ cargo.rust_library(
         "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:tokio",
-        "//third-party:tracing",
     ],
     visibility = ["PUBLIC"],
 )
@@ -24,4 +23,18 @@ rust_test(
     crate_root = "tests/db_name.rs",
     edition = "2024",
     deps = [":managed-postgres"],
+)
+
+loom_fixture_test(
+    name = "embedded-lifecycle",
+    crate = "embedded_lifecycle",
+    srcs = ["tests/embedded_lifecycle.rs"],
+    crate_root = "tests/embedded_lifecycle.rs",
+    deps = [
+        ":managed-postgres",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
 )
