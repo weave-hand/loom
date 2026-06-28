@@ -34,7 +34,9 @@ This spec covers **slice 1 only**. The full single-binary target decomposes as:
    promoted to persistent runtime.
 2. **Embed + self-extract** — compress the PG distribution into the loom binary
    (`include_bytes!`), extract to a content-addressed cache dir at startup, so
-   no PG binaries need to exist on disk beforehand. Makes it a true single file.
+   no PG binaries need to exist on disk beforehand. Also adds the embedded
+   `sqlx::migrate!` runner (no migrations-on-disk), solved with the same buck
+   asset-materialization mechanism. Makes it a true single file.
 3. **All-in-one in-process binary** — one process boots the embedded PG once and
    runs engine (tonic/UDS) + ingest (HTTP) + query-api (HTTP) as tasks in one
    tokio runtime against the local warehouse.
@@ -49,8 +51,12 @@ specs.
 - A new crate `src/services/managed-postgres/` exposing an `EmbeddedPg`
   lifecycle type.
 - A `service_runtime` seam selecting external vs embedded Postgres.
-- An embedded migration runner (so a managed cluster self-migrates with no
-  migrations-on-disk).
+- Migration-on-start via the **existing** directory-based
+  `control_plane_postgres::run_migrations(pool, dir)`. (The true no-disk
+  `sqlx::migrate!` embed is **deferred to slice 2** — there is no precedent for
+  compile-time file embedding under buck2 in this repo, and slice 1's test
+  already receives `LOOM_MIGRATIONS_DIR` from the fixture, so the embed is solved
+  alongside the PG-binary embedding with the same extract-to-dir mechanism.)
 - A fixture-backed test proving idempotent init, restart, and data persistence.
 
 **Out (later slices / explicitly deferred):**
@@ -137,28 +143,22 @@ impl EmbeddedPg {
   advisory and released on process exit, so a crashed loom does not wedge the
   data dir.
 
-### Migrations (embedded)
+### Migrations
 
-`control-plane-postgres` already exposes
-`run_migrations(pool, migrations_dir)` using `sqlx::migrate::Migrator::new(dir)`
-(idempotent via `_sqlx_migrations`). For a self-contained binary that needs no
-migrations-on-disk, add an **embedded** sibling that bakes the SQL into the
-binary at compile time:
+**Slice 1** reuses the **existing** `control_plane_postgres::run_migrations(pool,
+migrations_dir)` (a `sqlx::migrate::Migrator::new(dir)`, idempotent via
+`_sqlx_migrations`). `EmbeddedPg::start` does **not** migrate by itself —
+migration is `service_runtime::build_pool_managed`'s job after it has the pool
+(keeps the lifecycle crate free of the control-plane dep). The migrations are
+plain SQL (verified: no `psql` meta-commands, no manual `BEGIN/COMMIT`, no
+extensions), so the runner applies them as-is and re-runs as a no-op.
 
-```rust
-// in control-plane-postgres
-static EMBEDDED: sqlx::migrate::Migrator =
-    sqlx::migrate!("migrations"); // path relative to the crate manifest
-
-pub async fn run_embedded_migrations(pool: &PgPool) -> Result<()> { /* EMBEDDED.run(pool) */ }
-```
-
-The migrations are plain SQL (verified: no `psql` meta-commands, no manual
-`BEGIN/COMMIT`, no extensions), so the `sqlx::migrate!` runner applies them as-is
-and is idempotent across restarts. The existing directory-based `run_migrations`
-stays for the test fixture and any external-dir use. `EmbeddedPg::start` does
-**not** migrate by itself — migration is the `service_runtime` layer's job after
-it has the pool (keeps the lifecycle crate free of the control-plane dep).
+**Slice 2** adds the true no-disk variant — an embedded `sqlx::migrate!("migrations")`
+runner that bakes the SQL into the binary at compile time — so the self-contained
+binary needs no migrations on disk. This is deferred because compile-time file
+embedding under buck2 is untrodden in this repo (no existing `include_str!` /
+`include_bytes!` / `sqlx::migrate!`), so its buck materialization is solved
+together with the PG-binary embedding (same mechanism), not on slice 1's path.
 
 ### `service_runtime` seam
 
