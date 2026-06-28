@@ -1021,3 +1021,21 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "update-delete-e2e",
+    crate = "update_delete_e2e",
+    srcs = ["tests/update_delete_e2e.rs"],
+    crate_root = "tests/update_delete_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
