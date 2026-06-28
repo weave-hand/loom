@@ -3,9 +3,12 @@
 //! (`write_object`), which commits the row and its lineage event in one transaction,
 //! and returns the action's `run_id`.
 
+use std::collections::BTreeMap;
+
 use control_plane_core::{
-    Action, ActionDef, ActionName, ControlPlane, ControlPlaneError, DatasetRef, Decision,
-    EventType, LineageEvent, ObjectType, PageReq, PolicyTarget, RunId, SubjectId, resolve_logical,
+    Action, ActionDef, ActionKind, ActionName, ControlPlane, ControlPlaneError, DatasetRef,
+    Decision, EventType, LineageEvent, ObjectType, PageReq, Policy, PolicyTarget, RunId, SubjectId,
+    resolve_logical,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -18,6 +21,7 @@ use crate::write_filter::{self, WriteVerdict};
 pub struct ActionDeps<'a> {
     pub cp: &'a dyn ControlPlane,
     pub action_engine: &'a dyn ActionEngine,
+    pub serving: &'a dyn crate::serving::ServingEngine,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +43,13 @@ pub enum ActionError {
     /// `Forbidden`, which is the coarse Write-gate denial.
     #[error("write denied")]
     WriteDenied(WriteDenialReason),
+    /// The targeted object does not exist (no live row for the supplied identity).
+    #[error("object not found")]
+    NotFound,
+    /// The mutation is unsupported for this target type (e.g. a vector-bearing type,
+    /// which the scalar copy-on-write path cannot rewrite without dropping vectors).
+    #[error("unsupported: {0}")]
+    Unsupported(String),
     #[error(transparent)]
     ControlPlane(#[from] ControlPlaneError),
     #[error(transparent)]
@@ -88,15 +99,27 @@ impl WriteDenialReason {
     }
 }
 
-/// Validate that `action`'s parameters conform to `target`'s properties: every parameter names a
-/// real property of a compatible logical type (same `BaseType`), and every required property is
-/// covered by a required parameter. Pure; collects ALL violations into one message so an operator
+/// Validate that `action`'s parameters conform to `target`'s properties. Dispatches on
+/// `action.kind`: Insert enforces full required-property coverage; Update/Delete enforce
+/// identity-based mutate rules. Pure; collects ALL violations into one message so an operator
 /// sees every problem at once. `Ok(())` if conformant, else `ActionError::Misconfigured`.
 pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
-    let target_name = &target.name.0;
-    let mut violations: Vec<String> = Vec::new();
+    use control_plane_core::ActionKind;
+    match action.kind {
+        ActionKind::Insert => check_insert_conformance(action, target),
+        ActionKind::Update => check_mutate_conformance(action, target, true),
+        ActionKind::Delete => check_mutate_conformance(action, target, false),
+    }
+}
 
-    // Rules 1 & 2: every param names a real property, of a compatible (same-BaseType) logical type.
+/// Rules 1 & 2 (shared): every param names a real property of a compatible (same-BaseType)
+/// logical type. Violations are appended to `violations`.
+fn check_param_property_types(
+    action: &ActionDef,
+    target: &ObjectType,
+    violations: &mut Vec<String>,
+) {
+    let target_name = &target.name.0;
     for p in &action.parameters {
         match target.properties.iter().find(|prop| prop.name == p.name) {
             None => violations.push(format!(
@@ -125,6 +148,15 @@ pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), 
             }
         }
     }
+}
+
+/// INSERT conformance: rules 1 & 2 (param/property name+type) plus rule 3 (every required
+/// property covered by a required parameter).
+fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
+    let target_name = &target.name.0;
+    let mut violations: Vec<String> = Vec::new();
+
+    check_param_property_types(action, target, &mut violations);
 
     // Rule 3: every required property is covered by a required parameter.
     for prop in &target.properties {
@@ -155,9 +187,63 @@ pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), 
     }
 }
 
-/// Run one action: insert a new instance of the action's target type from `body`.
-/// Returns the created object as a single-row `ObjectRows` plus the `RunId` so the
-/// caller can locate the action's lineage (committed atomically with the row).
+/// UPDATE/DELETE conformance. Both require a declared `identity` on the target and a required
+/// parameter naming it; every parameter must name a real property of compatible type.
+/// DELETE takes ONLY the identity parameter (no extras). UPDATE relaxes required-property
+/// coverage (PATCH semantics) — only the supplied params are validated.
+fn check_mutate_conformance(
+    action: &ActionDef,
+    target: &ObjectType,
+    is_update: bool,
+) -> Result<(), ActionError> {
+    let target_name = &target.name.0;
+    let mut violations: Vec<String> = Vec::new();
+
+    check_param_property_types(action, target, &mut violations);
+
+    match &target.identity {
+        None => violations.push(format!(
+            "type `{target_name}` has no declared identity; UPDATE/DELETE require one"
+        )),
+        Some(idprop) => {
+            match action.parameters.iter().find(|p| &p.name == idprop) {
+                None => violations.push(format!(
+                    "UPDATE/DELETE on `{target_name}` requires a parameter for the identity property `{idprop}`"
+                )),
+                Some(p) if !p.required => violations.push(format!(
+                    "identity parameter `{idprop}` must be required"
+                )),
+                Some(_) => {}
+            }
+            if !is_update {
+                for p in &action.parameters {
+                    if &p.name != idprop {
+                        violations.push(format!(
+                            "DELETE on `{target_name}` takes only the identity parameter; `{}` is extra",
+                            p.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(ActionError::Misconfigured(format!(
+            "action `{}` does not conform to type `{target_name}`: {}",
+            action.name.0,
+            violations.join("; ")
+        )))
+    }
+}
+
+/// Run one named action against its target type from `body`. Dispatches on the action's
+/// `kind`: `Insert` creates a new instance; `Update`/`Delete` mutate or remove one existing
+/// instance located by the target type's declared identity (whole-table copy-on-write).
+/// Returns the affected object as a single-row `ObjectRows` plus the `RunId` so the caller
+/// can locate the action's lineage (committed atomically with the new snapshot).
 pub async fn run_action(
     action_name: &str,
     body: &serde_json::Map<String, Value>,
@@ -193,10 +279,32 @@ pub async fn run_action(
     }
 
     // 3b. Conformance: the action's parameters must mirror the target type's properties (names,
-    //     compatible logical types, required-property coverage). A misconfigured ActionDef is
-    //     surfaced here as a clear error instead of an opaque insert-time fault. Runs after the
-    //     Write gate (no definition-validity leak to unauthorized callers) and before any insert.
+    //     compatible logical types, required-property/identity coverage). A misconfigured ActionDef
+    //     is surfaced here as a clear error instead of an opaque write-time fault. Runs after the
+    //     Write gate (no definition-validity leak to unauthorized callers) and before any write.
     check_conformance(&action, &target)?;
+
+    // 4. Dispatch on the mutation kind. The coarse Write gate + conformance above are shared;
+    //    the fine-grained write policy and the actual write differ per kind.
+    match action.kind {
+        ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await,
+        ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await,
+        ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await,
+    }
+}
+
+/// INSERT: parse the body into a new row, gate it through the fine-grained Write policy
+/// (deny-column over the set columns + row-filter on the inserted row), then atomically
+/// commit the row and its lineage event via `write_object`.
+async fn run_insert(
+    action: &ActionDef,
+    target: &ObjectType,
+    body: &serde_json::Map<String, Value>,
+    subject: &SubjectId,
+    deps: &ActionDeps<'_>,
+) -> Result<(ObjectRows, RunId), ActionError> {
+    let action_name = action.name.0.as_str();
+    let policy_target = PolicyTarget::Type(action.target.clone());
 
     // 4. Parse + validate the typed params (ordered by the action's parameter list).
     let pairs = parse_params(&action.parameters, body)?;
@@ -308,6 +416,231 @@ pub async fn run_action(
             columns,
             logical_types,
             rows: vec![values],
+        },
+        run_id,
+    ))
+}
+
+/// Reject UPDATE/DELETE on a type with any vector property: the scalar copy-on-write
+/// read/write path cannot represent list columns, so a whole-table rewrite would drop
+/// every other row's vectors (data loss). Lifted when an Arrow-native COW read leg lands.
+fn ensure_cow_supported(target: &ObjectType) -> Result<(), ActionError> {
+    for p in &target.properties {
+        if let Some(control_plane_core::BaseType::Vector(_)) =
+            control_plane_core::resolve_logical(&p.ty)
+        {
+            return Err(ActionError::Unsupported(format!(
+                "UPDATE/DELETE not supported on type `{}`: it has a vector column (`{}`)",
+                target.name.0, p.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `SELECT "c1", "c2", ... FROM "schema"."table"` over all properties (identifiers
+/// double-quoted, embedded quotes doubled). The privileged, ACL-unfiltered full-table
+/// read backing copy-on-write. Column order = property order.
+fn select_all_sql(target: &ObjectType) -> String {
+    let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    let cols = target
+        .properties
+        .iter()
+        .map(|p| q(&p.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT {cols} FROM {}.{}",
+        q(&target.table.schema),
+        q(&target.table.name)
+    )
+}
+
+/// Does the candidate row pass EVERY policy's `row_filter`? Evaluates ONLY the row-filter
+/// leg (via [`write_filter::eval`]) against a FULL row — all property columns aligned to
+/// their values — so unset columns keep their existing values rather than reading as NULL.
+/// Deliberately NOT `check_write_policy`, which would also run deny-column over all columns
+/// (correct for INSERT, wrong for a whole-row mutate verdict). A policy with no `row_filter`
+/// adds no constraint; no policies ⇒ admitted.
+fn row_filter_admits(policies: &[Policy], columns: &[String], values: &[SqlValue]) -> bool {
+    let row: BTreeMap<&str, &SqlValue> = columns
+        .iter()
+        .map(|c| c.as_str())
+        .zip(values.iter())
+        .collect();
+    policies.iter().all(|p| match &p.row_filter {
+        Some(f) => write_filter::eval(f, &row) == Some(true),
+        None => true,
+    })
+}
+
+/// UPDATE/DELETE via whole-table copy-on-write. Locates the row by the target type's
+/// declared identity through a privileged (ACL-unfiltered) full-table read, applies the
+/// mutation in memory (DELETE drops the row; UPDATE PATCHes the named non-identity columns),
+/// governs the affected row(s), then atomically rewrites the full live row set + lineage via
+/// `overwrite_table`. Returns the affected object (UPDATE: the new version; DELETE: the
+/// removed row) + run id. `NotFound` if no live row matches the supplied identity.
+async fn run_mutate(
+    action: &ActionDef,
+    target: &ObjectType,
+    body: &serde_json::Map<String, Value>,
+    subject: &SubjectId,
+    deps: &ActionDeps<'_>,
+    is_update: bool,
+) -> Result<(ObjectRows, RunId), ActionError> {
+    ensure_cow_supported(target)?;
+    let action_name = action.name.0.as_str();
+    let policy_target = PolicyTarget::Type(action.target.clone());
+
+    // The identity property + the supplied identity value (parsed/typed via the params).
+    let idprop = target.identity.clone().ok_or_else(|| {
+        ActionError::Misconfigured(format!("type `{}` has no declared identity", target.name.0))
+    })?;
+    let pairs = parse_params(&action.parameters, body)?;
+    let id_value = pairs
+        .iter()
+        .find(|(c, _)| c == &idprop)
+        .map(|(_, v)| v.clone())
+        .ok_or_else(|| {
+            ActionError::Misconfigured(format!("missing identity parameter `{idprop}`"))
+        })?;
+
+    // The target type's full ordered property set (column names + logical types).
+    let columns: Vec<String> = target.properties.iter().map(|p| p.name.clone()).collect();
+    let logical: Vec<String> = target.properties.iter().map(|p| p.ty.clone()).collect();
+    let id_idx = columns.iter().position(|c| c == &idprop).ok_or_else(|| {
+        ActionError::Misconfigured(format!("identity `{idprop}` is not a property"))
+    })?;
+
+    // Privileged full-table read (ACL-unfiltered): COW must see every live row to rewrite
+    // the table without dropping rows the caller cannot read.
+    let live = deps
+        .serving
+        .fetch_rows(&select_all_sql(target), &[])
+        .await?;
+
+    // Locate the target row. The identity is a primary key, so at most one live match.
+    let mut matches = live
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.get(id_idx) == Some(&id_value))
+        .map(|(i, _)| i);
+    let target_idx = match matches.next() {
+        None => return Err(ActionError::NotFound),
+        Some(i) => i,
+    };
+    if matches.next().is_some() {
+        // >1 live row for a primary key is a corrupt invariant, not a client error.
+        return Err(ActionError::ControlPlane(ControlPlaneError::Backend(
+            format!("identity `{idprop}` matches more than one live row").into(),
+        )));
+    }
+    let existing = live
+        .rows
+        .get(target_idx)
+        .cloned()
+        .ok_or_else(|| ActionError::NotFound)?;
+
+    // The PATCH columns the caller actually SET (non-identity, non-null). An omitted optional
+    // param materializes as `SqlValue::Null`; PATCH semantics leave it untouched, so it is
+    // excluded both from the column-denial check and from the in-memory overwrite.
+    let set_pairs: Vec<(String, SqlValue)> = pairs
+        .iter()
+        .filter(|(c, v)| c != &idprop && !matches!(v, SqlValue::Null))
+        .cloned()
+        .collect();
+
+    // Compute the resulting row (UPDATE = existing with the SET columns overwritten).
+    let new_row: Option<Vec<SqlValue>> = is_update.then(|| {
+        let mut row = existing.clone();
+        for (col, val) in &set_pairs {
+            if let Some(ci) = columns.iter().position(|c| c == col)
+                && let Some(slot) = row.get_mut(ci)
+            {
+                *slot = val.clone();
+            }
+        }
+        row
+    });
+
+    // Fine-grained Write policy on the affected row(s), with the legs isolated (a whole-row
+    // mutate verdict, not the INSERT gate).
+    let write_policies = deps
+        .cp
+        .acl()
+        .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
+        .await?;
+    let policies = &write_policies.items;
+
+    // The existing row must pass every row-filter (both UPDATE and DELETE).
+    if !row_filter_admits(policies, &columns, &existing) {
+        tracing::info!(
+            action = action_name,
+            "mutate denied: existing row fails write policy filter"
+        );
+        return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
+    }
+    if let Some(row) = &new_row {
+        // Deny-column over the SET columns only (UPDATE writes those columns).
+        if let Some(col) = set_pairs.iter().map(|(c, _)| c).find(|c| {
+            policies
+                .iter()
+                .any(|p| p.deny_columns.iter().any(|d| d == *c))
+        }) {
+            tracing::info!(action = action_name, column = %col, "update write denied: policy denies column");
+            return Err(ActionError::WriteDenied(WriteDenialReason::Column(
+                col.clone(),
+            )));
+        }
+        // The resulting row must also pass every row-filter.
+        if !row_filter_admits(policies, &columns, row) {
+            tracing::info!(
+                action = action_name,
+                "update denied: resulting row fails write policy filter"
+            );
+            return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
+        }
+    }
+
+    // Build the new full live set: existing rows minus the target (DELETE) or with the
+    // target replaced by its new version (UPDATE).
+    let mut rows: Vec<Vec<SqlValue>> = live.rows.clone();
+    match &new_row {
+        Some(row) => {
+            if let Some(slot) = rows.get_mut(target_idx) {
+                slot.clone_from(row);
+            }
+        }
+        None => {
+            if target_idx < rows.len() {
+                rows.remove(target_idx);
+            }
+        }
+    }
+
+    // Lineage + atomic copy-on-write commit.
+    let run_id = RunId(Uuid::new_v4());
+    let op = if is_update { "update" } else { "delete" };
+    let event = LineageEvent {
+        run_id,
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![DatasetRef::from(&action.target)],
+        outputs: vec![DatasetRef::from(&action.target)],
+        payload: serde_json::json!({ "action": action_name, "op": op }),
+    };
+    deps.action_engine
+        .overwrite_table(&target.table, &columns, &rows, &logical, event)
+        .await?;
+
+    // Return the affected object (UPDATE: the new version; DELETE: the removed values).
+    let returned = new_row.unwrap_or(existing);
+    Ok((
+        ObjectRows {
+            columns,
+            logical_types: logical,
+            rows: vec![returned],
         },
         run_id,
     ))

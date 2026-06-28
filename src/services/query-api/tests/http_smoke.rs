@@ -48,6 +48,17 @@ impl ActionEngine for StubAction {
     ) -> std::result::Result<control_plane_core::SnapshotId, ServingError> {
         Ok(control_plane_core::SnapshotId(0))
     }
+
+    async fn overwrite_table(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _rows: &[Vec<SqlValue>],
+        _logical_types: &[String],
+        _event: control_plane_core::LineageEvent,
+    ) -> std::result::Result<control_plane_core::SnapshotId, ServingError> {
+        Err(ServingError::Engine("overwrite_table unsupported".into()))
+    }
 }
 
 /// A control plane with the `Order` type and an analyst granted `Read` on it.

@@ -4,7 +4,7 @@
 //! into one ActionError::Misconfigured message.
 
 use control_plane_core::{
-    ActionDef, ActionName, ObjectType, ParamDef, PropertyDef, TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, ObjectType, ParamDef, PropertyDef, TableRef, TypeName,
 };
 use query_api::action::{ActionError, check_conformance};
 
@@ -43,6 +43,7 @@ fn action(params: Vec<ParamDef>) -> ActionDef {
         name: ActionName("createWidget".into()),
         target: TypeName("Widget".into()),
         parameters: params,
+        kind: ActionKind::Insert,
     }
 }
 

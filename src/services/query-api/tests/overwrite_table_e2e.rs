@@ -1,18 +1,15 @@
-//! Iceberg ActionEngine e2e: a governed typed-insert on the Iceberg serving backend
-//! lands the row + its lineage atomically (one PG tx), reads back through the
-//! loom-native DataFusion serving engine, and is governed by write-enforcement.
-//! loom_fixture_test (Postgres + LocalFsStorage warehouse; no DuckDB).
+//! `ActionEngine::overwrite_table` e2e: land a 2-row table via the action insert path,
+//! then call `overwrite_table` with a 1-row replacement set, assert the governed read
+//! returns exactly that 1 new row, and the lineage event is findable by run_id.
+//! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// `Acl` is needed in scope to call `define_subject`/`define_role`/`assign_role`/
-// `grant` on the concrete `PgControlPlane`. `IcebergCatalog::live_tables` is an
-// inherent method, so the `Catalog` trait is intentionally NOT imported (importing
-// it unused fails the clippy/lint gate).
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, DatasetRef, Effect, ObjectType,
-    PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, DatasetRef, Effect, LineageEvent,
+    ObjectType, PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId, RunId, SubjectId, TableRef,
+    TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -23,16 +20,13 @@ use control_plane_postgres::iceberg_sql_catalog::{
 use e2e_support::InProcessServingEngine;
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
-use query_api::action::{ActionDeps, ActionError, run_action};
+use query_api::action::{ActionDeps, run_action};
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
-use query_api::serving::ActionEngine;
+use query_api::serving::{ActionEngine, SqlValue};
 use query_api::serving_datafusion::IcebergActionWriter;
 use serde_json::json;
 
-/// Build a vendored SqlCatalog over `dsn` + a `file://warehouse` (the action writer
-/// needs one even though a single inline row never touches it — `land` only uses the
-/// catalog on the Parquet branch).
 async fn build_catalog(dsn: &str, warehouse: &std::path::Path) -> SqlCatalog {
     let mut props = HashMap::new();
     props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn.to_string());
@@ -124,7 +118,7 @@ async fn grant_writer(cp: &PgControlPlane, widget: &TypeName) -> SubjectId {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn action_inserts_typed_object_readable_with_atomic_lineage() {
+async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
@@ -135,7 +129,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
 
-    // Large flush threshold so the single inline row never enqueues a flush job.
+    // Large flush threshold so inline rows never enqueue a flush job.
     let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -143,16 +137,26 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
         action_engine: &engine,
         serving: &serving,
     };
-    let body = json!({ "id": "42", "name": "gadget" });
-    let (created, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
-        .await
-        .expect("action runs");
-    assert_eq!(
-        objects_to_json(&created)["objects"][0],
-        json!({ "id": "42", "name": "gadget" })
-    );
 
-    // Read back through the in-process serving engine (inline+file union).
+    // Land two rows via the action insert path.
+    run_action(
+        "createWidget",
+        json!({ "id": "1", "name": "alpha" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("insert row 1");
+    run_action(
+        "createWidget",
+        json!({ "id": "2", "name": "beta" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("insert row 2");
+
+    // Verify we have two rows before the overwrite.
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
@@ -160,7 +164,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
         serving: &serving,
         default_limit: 1000,
     };
-    let rows = read_object(
+    let rows_before = read_object(
         &ObjectQuery {
             type_name: "Widget".into(),
             eq_filters: vec![],
@@ -172,12 +176,69 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     .await
     .unwrap();
     assert_eq!(
-        objects_to_json(&rows)["objects"][0],
-        json!({ "id": "42", "name": "gadget" }),
-        "round-trips through the Iceberg serving engine"
+        objects_to_json(&rows_before)["objects"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "two rows before overwrite"
     );
 
-    // Lineage committed atomically with the row, findable by run_id.
+    // Overwrite: replace all rows with a single new row.
+    let table = TableRef {
+        schema: "main".into(),
+        name: "widget".into(),
+    };
+    let run_id = RunId(uuid::Uuid::new_v4());
+    let event = LineageEvent {
+        run_id,
+        event_type: control_plane_core::EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![DatasetRef::from(&TypeName("Widget".into()))],
+        payload: json!({}),
+    };
+
+    let _snap = engine
+        .overwrite_table(
+            &table,
+            &["id".to_string(), "name".to_string()],
+            &[vec![SqlValue::Int(99), SqlValue::Text("gamma".to_string())]],
+            &["Long".to_string(), "String".to_string()],
+            event,
+        )
+        .await
+        .expect("overwrite_table succeeds");
+
+    // Read back: must see exactly the 1 new row.
+    let serving2 = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let qdeps2 = QueryDeps {
+        ontology: cp.ontology(),
+        acl: cp.acl(),
+        serving: &serving2,
+        default_limit: 1000,
+    };
+    let rows_after = read_object(
+        &ObjectQuery {
+            type_name: "Widget".into(),
+            eq_filters: vec![],
+            ids: vec![],
+        },
+        &Subject(subj.clone()),
+        &qdeps2,
+    )
+    .await
+    .unwrap();
+    let objs = objects_to_json(&rows_after);
+    let arr = objs["objects"].as_array().unwrap();
+    assert_eq!(arr.len(), 1, "exactly 1 row after overwrite");
+    assert_eq!(
+        arr[0],
+        json!({ "id": "99", "name": "gamma" }),
+        "overwritten row has the new values"
+    );
+
+    // Lineage committed atomically with the overwrite, findable by run_id.
     let events = cp
         .lineage()
         .events_for(&run_id, PageReq::unbounded())
@@ -186,7 +247,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     assert_eq!(
         events.items.len(),
         1,
-        "one lineage event for the action's run"
+        "one lineage event for the overwrite run"
     );
     assert_eq!(
         events.items[0].outputs,
@@ -197,7 +258,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ungranted_subject_is_forbidden_and_writes_nothing() {
+async fn overwrite_table_empty_rows_truncates() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
@@ -205,7 +266,9 @@ async fn ungranted_subject_is_forbidden_and_writes_nothing() {
     let warehouse = tempfile::tempdir().expect("warehouse");
     let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
-    let _widget = define_widget(&cp).await; // type + action defined, NO grant.
+    let widget = define_widget(&cp).await;
+    let subj = grant_writer(&cp, &widget).await;
+
     let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -214,47 +277,23 @@ async fn ungranted_subject_is_forbidden_and_writes_nothing() {
         serving: &serving,
     };
 
-    let subj = SubjectId("nobody".into());
-    let err = run_action(
+    // Land one row.
+    run_action(
         "createWidget",
-        json!({ "id": "1" }).as_object().unwrap(),
+        json!({ "id": "7", "name": "seed" }).as_object().unwrap(),
         &subj,
         &deps,
     )
     .await
-    .unwrap_err();
-    assert!(
-        matches!(err, ActionError::Forbidden),
-        "ungranted -> Forbidden"
-    );
+    .expect("insert seed row");
 
-    // Nothing written: enforcement short-circuits before the engine, so no mirror
-    // table was ever created.
-    let live = IcebergCatalog::new(pool.clone())
-        .live_tables()
-        .await
-        .unwrap();
-    assert!(live.is_empty(), "forbidden action created no mirror table");
-
-    drop(warehouse);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_write_commits_neither_row_nor_lineage() {
-    let fx = PgFixture::start();
-    let (cp, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
-    let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
-
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    // Truncate by passing empty rows.
     let table = TableRef {
         schema: "main".into(),
         name: "widget".into(),
     };
-    let run_id = control_plane_core::RunId(uuid::Uuid::new_v4());
-    let event = control_plane_core::LineageEvent {
+    let run_id = RunId(uuid::Uuid::new_v4());
+    let event = LineageEvent {
         run_id,
         event_type: control_plane_core::EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
@@ -262,35 +301,36 @@ async fn failed_write_commits_neither_row_nor_lineage() {
         outputs: vec![DatasetRef::from(&TypeName("Widget".into()))],
         payload: json!({}),
     };
-
-    // A value whose variant does not match its declared type fails batch-building
-    // BEFORE land() — the engine's write is all-or-nothing.
-    let err = engine
-        .write_object(
-            &table,
-            &["id".to_string()],
-            &[query_api::serving::SqlValue::Text("not-a-long".into())],
-            &["Long".to_string()],
-            event,
-        )
+    let snap = engine
+        .overwrite_table(&table, &[], &[], &[], event)
         .await
-        .expect_err("type mismatch must fail");
-    match err {
-        query_api::serving::ServingError::Engine(_) => {}
-    }
+        .expect("overwrite_table(empty) truncates");
+    assert!(snap.0 > 0, "truncate advances the snapshot id");
 
-    // Neither a mirror table nor a lineage event was committed.
-    let live = IcebergCatalog::new(pool.clone())
-        .live_tables()
+    // Verify via the mirror catalog: no live data files at the new snapshot.
+    // (An empty table is not registered in the DataFusion serving engine, so
+    // we check the mirror state directly rather than going through read_object.)
+    let ice = IcebergCatalog::new(pool.clone());
+    let live_files = ice
+        .files_with_stats(&table, snap)
         .await
-        .unwrap();
-    assert!(live.is_empty(), "failed write created no mirror table");
+        .expect("files_with_stats");
+    assert!(
+        live_files.is_empty(),
+        "truncate leaves no live data files at the new snapshot"
+    );
+
+    // Lineage event for truncate is committed atomically.
     let events = cp
         .lineage()
         .events_for(&run_id, PageReq::unbounded())
         .await
         .unwrap();
-    assert!(events.items.is_empty(), "failed write emitted no lineage");
+    assert_eq!(events.items.len(), 1, "lineage event for truncate run");
+    assert_eq!(
+        events.items[0].outputs,
+        vec![DatasetRef::from(&TypeName("Widget".into()))]
+    );
 
     drop(warehouse);
 }

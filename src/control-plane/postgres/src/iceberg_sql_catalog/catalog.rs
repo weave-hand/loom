@@ -443,6 +443,7 @@ impl SqlCatalog {
         // after `project_files` would wrongly retire the just-projected files too.
         if overwrite {
             end_cap_live_data_files(conn, tid, at).await?;
+            crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
         }
         reconcile_and_project(conn, tid, at, columns).await?;
         project_files(conn, tid, at, files).await?;

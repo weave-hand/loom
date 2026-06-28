@@ -16,7 +16,9 @@ use control_plane_postgres::iceberg_landing;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use sqlx::PgPool;
 
-use crate::serving::{ActionEngine, Rows, ServingError, SqlValue, build_object_batch};
+use crate::serving::{
+    ActionEngine, Rows, ServingError, SqlValue, build_object_batch, build_object_batches,
+};
 
 /// Any error -> opaque serving error. Kept here (not deleted) because
 /// `encode_ipc_stream` still uses it — engine-serving has its own copy.
@@ -88,6 +90,40 @@ impl ActionEngine for IcebergActionWriter {
             self.inline_byte_limit,
             self.flush_byte_threshold,
             event,
+        )
+        .await
+        .map_err(|e| ServingError::Engine(e.to_string()))
+    }
+
+    async fn overwrite_table(
+        &self,
+        table: &control_plane_core::TableRef,
+        columns: &[String],
+        rows: &[Vec<SqlValue>],
+        logical_types: &[String],
+        event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        if rows.is_empty() {
+            // Delete-all: empty batches drive the truncate branch (mirror-only end-cap).
+            return iceberg_landing::overwrite_parquet_snapshot(
+                &self.pool,
+                &self.catalog,
+                table,
+                &[],
+                Vec::new(),
+                Some(&event),
+            )
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()));
+        }
+        let (_schema, batch, specs) = build_object_batches(columns, rows, logical_types)?;
+        iceberg_landing::overwrite_parquet_snapshot(
+            &self.pool,
+            &self.catalog,
+            table,
+            &specs,
+            vec![batch],
+            Some(&event),
         )
         .await
         .map_err(|e| ServingError::Engine(e.to_string()))

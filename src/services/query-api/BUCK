@@ -512,6 +512,17 @@ rust_test(
 )
 
 rust_test(
+    name = "build-object-batches",
+    crate = "build_object_batches",
+    srcs = ["tests/build_object_batches.rs"],
+    crate_root = "tests/build_object_batches.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+    ],
+)
+
+rust_test(
     name = "export-command",
     crate = "export_command",
     srcs = ["tests/export_command.rs"],
@@ -871,6 +882,18 @@ rust_test(
 )
 
 rust_test(
+    name = "mutate-conformance",
+    crate = "mutate_conformance",
+    srcs = ["tests/mutate_conformance.rs"],
+    crate_root = "tests/mutate_conformance.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
     name = "action-conformance-http",
     crate = "action_conformance_http",
     srcs = ["tests/action_conformance_http.rs"],
@@ -977,5 +1000,79 @@ loom_fixture_test(
         "//src/services/engine-serving:engine-serving",
         "//third-party:tokio",
         "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "overwrite-table-e2e",
+    crate = "overwrite_table_e2e",
+    srcs = ["tests/overwrite_table_e2e.rs"],
+    crate_root = "tests/overwrite_table_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "update-delete-e2e",
+    crate = "update_delete_e2e",
+    srcs = ["tests/update_delete_e2e.rs"],
+    crate_root = "tests/update_delete_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "update-delete-governance-e2e",
+    crate = "update_delete_governance_e2e",
+    srcs = ["tests/update_delete_governance_e2e.rs"],
+    crate_root = "tests/update_delete_governance_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "update-delete-tiers-e2e",
+    crate = "update_delete_tiers_e2e",
+    srcs = ["tests/update_delete_tiers_e2e.rs"],
+    crate_root = "tests/update_delete_tiers_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
     ],
 )

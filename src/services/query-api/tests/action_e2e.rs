@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, CompareOp, ControlPlane, DatasetRef, Effect, ObjectType,
-    PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, CompareOp, ControlPlane, DatasetRef, Effect,
+    ObjectType, PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -103,6 +103,7 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
                     required: false,
                 },
             ],
+            kind: ActionKind::Insert,
         })
         .await
         .unwrap();
@@ -190,9 +191,11 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
         role: _,
         warehouse: _,
     } = setup_widget_writer(&fx).await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &serving,
     };
     let body = json!({ "id": "42", "name": "gadget" });
     let (created, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
@@ -287,14 +290,17 @@ async fn ungranted_subject_is_forbidden() {
                 ty: "Long".into(),
                 required: true,
             }],
+            kind: ActionKind::Insert,
         })
         .await
         .unwrap();
 
     let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &serving,
     };
     // No grant for this subject -> Forbidden, and nothing written.
     let subj = SubjectId("nobody".into());
@@ -333,9 +339,11 @@ async fn write_policy_enforces_row_filter_and_deny_column() {
         // IcebergActionWriter writes Parquet into it and the read-back resolves those files.
         warehouse,
     } = setup_widget_writer(&fx).await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
         action_engine: &engine,
+        serving: &serving,
     };
 
     // --- Phase 1: a Write policy with a row filter `name = "gadget"`.

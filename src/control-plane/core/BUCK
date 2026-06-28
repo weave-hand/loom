@@ -153,6 +153,16 @@ rust_test(
 )
 
 rust_test(
+    name = "action_kind",
+    crate = "action_kind",
+    srcs = ["tests/action_kind.rs"],
+    crate_root = "tests/action_kind.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "vector-index",
     crate = "vector_index",
     srcs = ["tests/vector_index.rs"],

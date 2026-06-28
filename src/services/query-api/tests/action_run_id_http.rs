@@ -7,8 +7,9 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, ControlPlane, Effect, LineageEvent, ObjectType, Ontology,
-    ParamDef, PolicyTarget, PropertyDef, RoleId, RunId, SnapshotId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, Effect, LineageEvent, ObjectType,
+    Ontology, ParamDef, PolicyTarget, PropertyDef, RoleId, RunId, SnapshotId, SubjectId, TableRef,
+    TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::http::{AppState, router};
@@ -32,6 +33,17 @@ impl ActionEngine for CapturingEngine {
     ) -> Result<SnapshotId, ServingError> {
         *self.run_id.lock().unwrap() = Some(event.run_id);
         Ok(SnapshotId(1))
+    }
+
+    async fn overwrite_table(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _rows: &[Vec<SqlValue>],
+        _logical_types: &[String],
+        _event: LineageEvent,
+    ) -> Result<SnapshotId, ServingError> {
+        Err(ServingError::Engine("overwrite_table unsupported".into()))
     }
 }
 
@@ -86,6 +98,7 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
                 required: false,
             },
         ],
+        kind: ActionKind::Insert,
     })
     .await
     .unwrap();

@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, ControlPlane, Effect, ObjectType, Ontology, ParamDef,
-    PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, Effect, ObjectType, Ontology,
+    ParamDef, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -49,6 +49,17 @@ impl ActionEngine for OkEngine {
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
         Ok(control_plane_core::SnapshotId(1))
     }
+
+    async fn overwrite_table(
+        &self,
+        _table: &TableRef,
+        _columns: &[String],
+        _rows: &[Vec<SqlValue>],
+        _logical_types: &[String],
+        _event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        Err(ServingError::Engine("overwrite_table unsupported".into()))
+    }
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
@@ -85,6 +96,7 @@ async fn seeded_state() -> AppState {
         name: ActionName("createWidget".into()),
         target: TypeName("Widget".into()),
         parameters: vec![param("id", "Long", true), param("name", "String", false)],
+        kind: ActionKind::Insert,
     })
     .await
     .unwrap();
@@ -96,6 +108,7 @@ async fn seeded_state() -> AppState {
             param("name", "String", false),
             param("naem", "String", false),
         ],
+        kind: ActionKind::Insert,
     })
     .await
     .unwrap();
