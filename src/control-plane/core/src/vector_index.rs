@@ -65,7 +65,7 @@ impl IndexKind {
 /// The object identity value carried alongside each indexed vector so k-NN
 /// results map back to objects. Covers the realistic identity logical types
 /// (`Integer`/`Long` → `Int`, `String` → `Str`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum VectorKey {
     Int(i64),
     Str(String),
@@ -229,6 +229,303 @@ impl FlatIndex {
 
 fn bad(m: &str) -> ControlPlaneError {
     ControlPlaneError::Backend(format!("FlatIndex decode: {m}").into())
+}
+
+// =============================================================================
+// IvfFlatIndex — approximate IVF-Flat index with deterministic k-means build
+// =============================================================================
+
+const KMEANS_SEED: u64 = 0x6C6F_6F6D_7665_6331; // "loomvec1"
+const KMEANS_MAX_ITERS: usize = 20;
+
+/// Deterministic SplitMix64 — fixed seed makes k-means (hence the serialized
+/// blob) reproducible for a given input row order.
+struct SplitMix64 {
+    state: u64,
+}
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+    fn next_usize(&mut self, bound: usize) -> usize {
+        // bound > 0 guaranteed by callers.
+        (self.next_u64() % bound as u64) as usize
+    }
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "callers guarantee i*d + d <= data.len(); packed row access"
+)]
+fn row_slice(data: &[f32], d: usize, i: usize) -> &[f32] {
+    &data[i * d..i * d + d]
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "callers guarantee i*d + d <= data.len(); packed row access"
+)]
+fn row_slice_mut(data: &mut [f32], d: usize, i: usize) -> &mut [f32] {
+    &mut data[i * d..i * d + d]
+}
+
+fn default_nlist(n: usize) -> u32 {
+    ((n as f64).sqrt().round() as u32).max(1)
+}
+
+fn default_nprobe(nlist: u32) -> u32 {
+    ((f64::from(nlist)).sqrt().round() as u32).max(1)
+}
+
+/// Approximate IVF-Flat index: k-means centroids + per-row cluster assignment.
+/// Cold-tier index; the engine merges its results with the exact inline hot delta.
+#[derive(Clone, Debug)]
+pub struct IvfFlatIndex {
+    dim: u32,
+    metric: Metric,
+    nlist: u32,
+    nprobe: u32,
+    centroids: Vec<f32>,   // nlist * dim
+    assignments: Vec<u32>, // row_count; cluster id per row
+    keys: Vec<VectorKey>,  // row_count
+    data: Vec<f32>,        // row_count * dim
+}
+
+impl IvfFlatIndex {
+    /// Build from `(identity, vector)` rows. `nlist` defaults to ~sqrt(N), clamped
+    /// to `[1, N]`. Errors on any vector length != `dim`.
+    pub fn build(
+        dim: u32,
+        metric: Metric,
+        rows: Vec<(VectorKey, Vec<f32>)>,
+        nlist: Option<u32>,
+    ) -> Result<IvfFlatIndex> {
+        let d = dim as usize;
+        let n = rows.len();
+        let mut keys = Vec::with_capacity(n);
+        let mut data = Vec::with_capacity(n * d);
+        for (key, v) in rows {
+            if v.len() != d {
+                return Err(ControlPlaneError::Backend(
+                    format!("vector dim mismatch: expected {d}, got {}", v.len()).into(),
+                ));
+            }
+            keys.push(key);
+            data.extend_from_slice(&v);
+        }
+
+        if n == 0 {
+            return Ok(IvfFlatIndex {
+                dim,
+                metric,
+                nlist: 0,
+                nprobe: 0,
+                centroids: Vec::new(),
+                assignments: Vec::new(),
+                keys,
+                data,
+            });
+        }
+
+        let nlist = nlist.unwrap_or_else(|| default_nlist(n)).clamp(1, n as u32);
+        let mut rng = SplitMix64::new(KMEANS_SEED);
+        let (centroids, assignments) = kmeans(&data, d, n, nlist as usize, metric, &mut rng);
+        let nprobe = default_nprobe(nlist);
+
+        Ok(IvfFlatIndex {
+            dim,
+            metric,
+            nlist,
+            nprobe,
+            centroids,
+            assignments,
+            keys,
+            data,
+        })
+    }
+
+    /// Override the query-time probe count (clamped to `[1, nlist]`). No-op when empty.
+    #[must_use]
+    pub fn with_nprobe(mut self, nprobe: u32) -> IvfFlatIndex {
+        if self.nlist > 0 {
+            self.nprobe = nprobe.clamp(1, self.nlist);
+        }
+        self
+    }
+
+    fn centroid(&self, c: usize) -> &[f32] {
+        row_slice(&self.centroids, self.dim as usize, c)
+    }
+    fn row(&self, i: usize) -> &[f32] {
+        row_slice(&self.data, self.dim as usize, i)
+    }
+
+    #[expect(
+        clippy::unimplemented,
+        reason = "IvfFlatIndex serialization is a Task 3 stub; callers never invoke this path"
+    )]
+    fn serialize_bytes(&self) -> Vec<u8> {
+        // Replaced with the real format in Task 3.
+        unimplemented!("IvfFlatIndex serialization lands in Task 3")
+    }
+}
+
+/// Deterministic k-means: k-means++ seeded init (metric-consistent) + Lloyd
+/// iterations. Returns `(centroids [k*d], assignments [n])`. Requires
+/// `1 <= k <= n` and `n >= 1`.
+#[expect(
+    clippy::needless_range_loop,
+    reason = "stride loops over parallel packed arrays (data/centroids/sums/counts) \
+              are clearer indexed than zipped"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "loop bounds (i<n, c<k) guarantee every index is valid"
+)]
+fn kmeans(
+    data: &[f32],
+    d: usize,
+    n: usize,
+    k: usize,
+    metric: Metric,
+    rng: &mut SplitMix64,
+) -> (Vec<f32>, Vec<u32>) {
+    let mut centroids = vec![0.0f32; k * d];
+    // --- k-means++ init ---
+    let first = rng.next_usize(n);
+    row_slice_mut(&mut centroids, d, 0).copy_from_slice(row_slice(data, d, first));
+    let mut dist2 = vec![f32::INFINITY; n];
+    for c in 1..k {
+        let prev = row_slice(&centroids, d, c - 1);
+        for i in 0..n {
+            let dd = distance(metric, row_slice(data, d, i), prev);
+            let dd2 = dd * dd;
+            if dd2 < dist2[i] {
+                dist2[i] = dd2;
+            }
+        }
+        let sum: f64 = dist2.iter().map(|&x| f64::from(x)).sum();
+        let mut target = rng.next_f64() * sum;
+        let mut chosen = n - 1;
+        for i in 0..n {
+            target -= f64::from(dist2[i]);
+            if target <= 0.0 {
+                chosen = i;
+                break;
+            }
+        }
+        row_slice_mut(&mut centroids, d, c).copy_from_slice(row_slice(data, d, chosen));
+    }
+
+    // --- Lloyd iterations ---
+    let mut assignments = vec![0u32; n];
+    for iter in 0..KMEANS_MAX_ITERS {
+        let mut changed = false;
+        for i in 0..n {
+            let p = row_slice(data, d, i);
+            let mut best = 0u32;
+            let mut bestd = f32::INFINITY;
+            for c in 0..k {
+                let dd = distance(metric, p, row_slice(&centroids, d, c));
+                if dd < bestd {
+                    bestd = dd;
+                    best = c as u32;
+                }
+            }
+            if assignments[i] != best {
+                changed = true;
+                assignments[i] = best;
+            }
+        }
+        if !changed && iter > 0 {
+            break;
+        }
+        // Recompute centroids as the mean of assigned points; empty clusters keep
+        // their previous centroid.
+        let mut sums = vec![0.0f32; k * d];
+        let mut counts = vec![0u32; k];
+        for i in 0..n {
+            let c = assignments[i] as usize;
+            counts[c] += 1;
+            let p = row_slice(data, d, i);
+            let dst = row_slice_mut(&mut sums, d, c);
+            for (s, &x) in dst.iter_mut().zip(p.iter()) {
+                *s += x;
+            }
+        }
+        for c in 0..k {
+            if counts[c] > 0 {
+                let cnt = counts[c] as f32;
+                let src_sum = row_slice(&sums, d, c).to_vec();
+                let dst = row_slice_mut(&mut centroids, d, c);
+                for (cv, s) in dst.iter_mut().zip(src_sum.iter()) {
+                    *cv = s / cnt;
+                }
+            }
+        }
+    }
+    (centroids, assignments)
+}
+
+impl VectorIndex for IvfFlatIndex {
+    fn metric(&self) -> Metric {
+        self.metric
+    }
+    fn dim(&self) -> u32 {
+        self.dim
+    }
+    fn index_kind(&self) -> IndexKind {
+        IndexKind::IvfFlat
+    }
+    fn row_count(&self) -> u32 {
+        self.keys.len() as u32
+    }
+    fn serialize(&self) -> Vec<u8> {
+        // Implemented in Task 3.
+        self.serialize_bytes()
+    }
+    fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)> {
+        if self.keys.is_empty() || k == 0 {
+            return Vec::new();
+        }
+        let nlist = self.nlist as usize;
+        // 1. Score the query against every centroid; take the nprobe nearest.
+        let mut cdist: Vec<(usize, f32)> = (0..nlist)
+            .map(|c| (c, distance(self.metric, query, self.centroid(c))))
+            .collect();
+        cdist.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let probe: std::collections::HashSet<u32> = cdist
+            .into_iter()
+            .take(self.nprobe as usize)
+            .map(|(c, _)| c as u32)
+            .collect();
+        // 2. Brute-force rows in the probed clusters. Tie-break by original index
+        //    so that nprobe>=nlist reproduces FlatIndex's ordering exactly.
+        let mut scored: Vec<(usize, f32)> = (0..self.keys.len())
+            .filter(|&i| self.assignments.get(i).is_some_and(|c| probe.contains(c)))
+            .map(|i| (i, distance(self.metric, query, self.row(i))))
+            .collect();
+        scored.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        scored
+            .into_iter()
+            .take(k)
+            .filter_map(|(i, dd)| self.keys.get(i).map(|key| (key.clone(), dd)))
+            .collect()
+    }
 }
 
 struct Cursor<'a> {
