@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use control_plane_core::{ControlPlaneError, FlatIndex, IndexKind, Result, VectorIndex};
+use control_plane_core::{ControlPlaneError, FlatIndex, IndexKind, Result, VectorIndex, decode};
 use iceberg::io::FileIO;
 use iceberg::puffin::{Blob, CompressionCodec, PuffinReader, PuffinWriter};
 
@@ -110,4 +110,38 @@ pub async fn write_flat_index(
 pub async fn read_flat_index(file_io: &FileIO, path: &str) -> Result<FlatIndex> {
     let loaded = read_index_blob(file_io, path).await?;
     FlatIndex::deserialize(&loaded.payload)
+}
+
+/// Serialize any `VectorIndex` into a `loom-vector-index-v1` Puffin blob with the
+/// self-describing properties. The blob's payload `kind` byte distinguishes Flat
+/// vs IVF; the blob-type string is unchanged.
+pub async fn write_vector_index(
+    file_io: &FileIO,
+    path: &str,
+    index: &dyn VectorIndex,
+    covered_snapshot: i64,
+    field_id: i32,
+    column: &str,
+    identity_column: &str,
+) -> Result<()> {
+    let mut props = HashMap::new();
+    props.insert("dim".to_string(), index.dim().to_string());
+    props.insert("metric".to_string(), index.metric().as_str().to_string());
+    props.insert(
+        "index-kind".to_string(),
+        index.index_kind().as_str().to_string(),
+    );
+    props.insert("column".to_string(), column.to_string());
+    props.insert("identity-column".to_string(), identity_column.to_string());
+    props.insert("row-count".to_string(), index.row_count().to_string());
+    props.insert("covered-snapshot".to_string(), covered_snapshot.to_string());
+    let payload = index.serialize();
+    write_index_blob(file_io, path, &payload, covered_snapshot, field_id, props).await
+}
+
+/// Read and decode any loom vector index from a Puffin file, routing on the
+/// payload `kind` byte. Returns a boxed `VectorIndex` for the serving/build paths.
+pub async fn read_vector_index(file_io: &FileIO, path: &str) -> Result<Box<dyn VectorIndex>> {
+    let loaded = read_index_blob(file_io, path).await?;
+    decode(&loaded.payload)
 }

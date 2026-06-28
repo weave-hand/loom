@@ -239,6 +239,7 @@ async fn vector_search_flight_top_k() {
         &table,
         "embedding",
         Metric::Cosine,
+        control_plane_core::IndexSpec::Flat,
         build_run,
     )
     .await

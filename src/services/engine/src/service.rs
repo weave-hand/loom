@@ -180,6 +180,7 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             &table,
             &r.column,
             control_plane_core::Metric::Cosine,
+            control_plane_core::IndexSpec::Flat,
             RunId(uuid::Uuid::new_v4()),
         )
         .await

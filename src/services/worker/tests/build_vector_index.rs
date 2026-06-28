@@ -296,6 +296,7 @@ async fn worker_builds_vector_index_over_the_wire() {
         &table,
         "embedding",
         Metric::Cosine,
+        control_plane_core::IndexSpec::Flat,
         RunId(uuid::Uuid::new_v4()),
     )
     .await

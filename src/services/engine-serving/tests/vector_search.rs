@@ -197,9 +197,17 @@ async fn seed_and_build(
 
     // Build the vector index.
     let build_run = RunId(uuid::Uuid::new_v4());
-    build_vector_index(&catalog, &pool, &table, "embedding", metric, build_run)
-        .await
-        .expect("build_vector_index");
+    build_vector_index(
+        &catalog,
+        &pool,
+        &table,
+        "embedding",
+        metric,
+        control_plane_core::IndexSpec::Flat,
+        build_run,
+    )
+    .await
+    .expect("build_vector_index");
 
     (catalog, pool, cp, wh)
 }

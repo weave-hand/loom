@@ -819,3 +819,24 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "vector-index-ivf",
+    crate = "vector_index_ivf",
+    srcs = ["tests/vector_index_ivf.rs"],
+    crate_root = "tests/vector_index_ivf.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
