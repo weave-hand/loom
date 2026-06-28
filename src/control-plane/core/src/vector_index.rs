@@ -94,7 +94,10 @@ pub enum VectorKey {
 }
 
 /// Exact-or-approximate top-k nearest-neighbour index.
-pub trait VectorIndex {
+///
+/// `Send` is required so that `Box<dyn VectorIndex>` can cross `await` points
+/// in multi-threaded async contexts (e.g. the engine gRPC `do_get` handler).
+pub trait VectorIndex: Send {
     fn metric(&self) -> Metric;
     fn dim(&self) -> u32;
     /// The algorithm family — recorded in the mirror row and Puffin properties.

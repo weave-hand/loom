@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use arrow::array::{Float32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use control_plane_core::{Metric, TableRef, VectorIndex, VectorKey, distance};
+use control_plane_core::{Metric, TableRef, VectorKey, distance};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_mirror::live_table_id;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
-use control_plane_postgres::puffin::read_flat_index;
+use control_plane_postgres::puffin::read_vector_index;
 use control_plane_postgres::vector_index::{inline_delta_batch, lookup_vector_index};
 use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::PgPool;
@@ -82,12 +82,12 @@ pub async fn vector_search(
             ))
         })?;
 
-    // 4. Cold path: read the Puffin FlatIndex and search it.
+    // 4. Cold path: read the Puffin vector index (polymorphic: Flat or IVF) and search it.
     let ident =
         TableIdent::from_strs([table.schema.as_str(), table.name.as_str()]).map_err(to_serving)?;
     let tbl = catalog.load_table(&ident).await.map_err(to_serving)?;
     let file_io = tbl.file_io().clone();
-    let idx = read_flat_index(&file_io, &row.puffin_path)
+    let idx = read_vector_index(&file_io, &row.puffin_path)
         .await
         .map_err(to_serving)?;
     let cold: Vec<(VectorKey, f32)> = idx.search(query, k);
