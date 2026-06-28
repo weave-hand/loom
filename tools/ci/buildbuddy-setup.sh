@@ -42,7 +42,11 @@ if [ ! -x "$BUCK2_BIN" ]; then
 fi
 sudo ln -sf "$BUCK2_BIN" /usr/local/bin/buck2
 
-# 3. Prelude submodule (the runner does not check it out). Idempotent.
+# 3. watchman — buck2's file_watcher (.buckconfig). Must be present before any
+#    buck2 invocation starts a daemon, or the daemon refuses to start.
+"$(dirname "$0")/install-watchman.sh"
+
+# 4. Prelude submodule (the runner does not check it out). Idempotent.
 git submodule update --init --recursive
 
 # NOTE: buck-out is kept warm across runs via `git_clean_exclude: [buck-out]` in
