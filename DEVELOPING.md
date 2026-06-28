@@ -32,7 +32,36 @@ To bump buck2: pick a new dated release, then move the prelude submodule to a
 commit at/near that date (`cd prelude && git fetch && git checkout <commit>`)
 and update `BUCK2_RELEASE` in CI.
 
-### 3. Remote execution credentials
+### 3. Install watchman
+
+buck2 is configured to use **watchman** as its file watcher (`[buck2]
+file_watcher = watchman` in `.buckconfig`), so every `buck2` command needs the
+`watchman` binary on PATH — without it the buck2 daemon refuses to start (`No
+Watchman connection`). This is deliberate: the default notify watcher places one
+inotify watch per directory and watches `buck-out`, which exhausts
+`fs.inotify.max_user_watches` once a second daemon (rust-project's
+`.rust-analyzer` isolation dir) is involved; watchman + the `buck-out` ignore in
+`.watchmanconfig` bounds the watch set.
+
+watchman is not in the Ubuntu repos. Install it from the
+[facebook/watchman](https://github.com/facebook/watchman/releases) release
+(macOS: `brew install watchman`):
+
+```sh
+ver=v2026.06.21.00   # keep aligned with tools/ci/install-watchman.sh
+curl -fsSL "https://github.com/facebook/watchman/releases/download/$ver/watchman-$ver-linux.zip" -o /tmp/watchman.zip \
+  && unzip -q /tmp/watchman.zip -d /tmp \
+  && sudo cp -a /tmp/watchman-$ver-linux/bin/* /usr/local/bin/ \
+  && sudo cp -a /tmp/watchman-$ver-linux/lib/* /usr/local/lib/ \
+  && sudo mkdir -p /usr/local/var/run/watchman && sudo chmod 2777 /usr/local/var/run/watchman \
+  && sudo ldconfig \
+  && watchman version
+```
+
+CI and cloud sessions install it automatically (`tools/ci/install-watchman.sh`,
+`tools/cloud-setup.sh`).
+
+### 4. Remote execution credentials
 
 Builds run on BuildBuddy remote execution by default (`[project] remote_enabled`
 in `.buckconfig`). Export your API key:
@@ -44,7 +73,7 @@ export BUILDBUDDY_API_KEY=<your-key>   # put this in your shell profile
 Without it, override to a pure-local build per-invocation:
 `buck2 build --config project.remote_enabled= //src/...`.
 
-### 4. Install the git hooks
+### 5. Install the git hooks
 
 ```sh
 buck2 run root//tools:prek -- install        # install the pre-commit/pre-push hooks
