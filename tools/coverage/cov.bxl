@@ -162,13 +162,11 @@ def _cov_impl(ctx):
     # postgres+duckdb env is harmless on non-duckdb fixture tests.
     pg = _out0(ctx, "//src/control-plane/postgres:postgres-bin")
     xml = _out0(ctx, "//src/control-plane/postgres:libxml2")
-    migr = _out0(ctx, "//src/control-plane/postgres:migrations")
     duck = _out0(ctx, "//src/control-plane/postgres:duckdb-cli")
     duckext = _out0(ctx, "//src/control-plane/postgres:duckdb-extensions")
     fixture_env = {
         "POSTGRES_BIN_DIR": cmd_args(pg, format = "{}/bin"),
         "POSTGRES_LD_LIBRARY_PATH": cmd_args(cmd_args(pg, format = "{}/lib"), xml, delimiter = ":"),
-        "LOOM_MIGRATIONS_DIR": cmd_args(migr, format = "{}/migrations"),
         "DUCKDB_BIN": cmd_args(duck),
         "DUCKDB_EXTENSION_DIR": cmd_args(duckext),
         # The fixture creates its postgres unix socket under TMPDIR
