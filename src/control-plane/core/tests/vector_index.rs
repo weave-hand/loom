@@ -254,4 +254,9 @@ fn decode_routes_on_kind_byte() {
     // Boxed trait object searches; the default nprobe recorded in the blob is used.
     let q = vec![0.0f32, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0];
     assert_eq!(divf.search(&q, 5).len(), 5);
+
+    // Truncated header: fewer than 7 bytes -> bytes.get(6) is None -> error.
+    assert!(control_plane_core::decode(&[0u8; 6]).is_err());
+    // Unknown kind byte: magic ok, version 1, metric 0, kind byte = 2 -> error.
+    assert!(control_plane_core::decode(&[b'L', b'V', b'I', b'X', 1, 0, 2]).is_err());
 }

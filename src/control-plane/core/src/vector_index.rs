@@ -228,7 +228,7 @@ impl FlatIndex {
 }
 
 fn bad(m: &str) -> ControlPlaneError {
-    ControlPlaneError::Backend(format!("FlatIndex decode: {m}").into())
+    ControlPlaneError::Backend(format!("vector index decode: {m}").into())
 }
 
 // =============================================================================
