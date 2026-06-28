@@ -40,8 +40,7 @@ pub async fn flush_table(
     // concurrent flushes contend on `key`; the second blocks until the first's tx ends.
     let mut lock_tx = pool.begin().await.map_err(backend)?;
     let key = lock_key(&table.schema, &table.name);
-    sqlx::query("select pg_advisory_xact_lock($1)")
-        .bind(key)
+    sqlx::query!("select pg_advisory_xact_lock($1)", key)
         .execute(&mut *lock_tx)
         .await
         .map_err(backend)?;
