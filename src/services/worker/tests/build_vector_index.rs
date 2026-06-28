@@ -159,6 +159,8 @@ fn make_build_vector_index_job(schema: &str, name: &str, column: &str) -> Job {
             schema: schema.into(),
             name: name.into(),
             column: column.into(),
+            index_kind: None,
+            nlist: None,
         })
         .expect("serialize payload"),
         attempts: 0,
@@ -294,6 +296,7 @@ async fn worker_builds_vector_index_over_the_wire() {
         &table,
         "embedding",
         Metric::Cosine,
+        control_plane_core::IndexSpec::Flat,
         RunId(uuid::Uuid::new_v4()),
     )
     .await

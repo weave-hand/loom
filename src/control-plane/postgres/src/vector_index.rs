@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use control_plane_core::{
-    Catalog, ControlPlaneError, DatasetRef, EventType, FlatIndex, LineageEvent, Metric, Result,
-    RunId, SnapshotId, TableRef, VectorKey,
+    Catalog, ControlPlaneError, DatasetRef, EventType, FlatIndex, IndexSpec, IvfFlatIndex,
+    LineageEvent, Metric, Result, RunId, SnapshotId, TableRef, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool, Row};
@@ -338,7 +338,7 @@ pub async fn inline_delta_batch(
 /// hot reads are MVCC-consistent as of `S`.
 #[allow(
     clippy::too_many_arguments,
-    reason = "build_vector_index needs catalog, pool, table, column, metric and run_id — \
+    reason = "build_vector_index needs catalog, pool, table, column, metric, index_spec and run_id — \
               no sensible grouping; mirrors land/append_parquet_snapshot pattern"
 )]
 pub async fn build_vector_index(
@@ -347,12 +347,12 @@ pub async fn build_vector_index(
     table: &TableRef,
     column: &str,
     metric: Metric,
+    index_spec: IndexSpec,
     run_id: RunId,
 ) -> Result<BuiltIndex> {
     use crate::iceberg_catalog::IcebergCatalog;
     use crate::iceberg_mirror::live_table_id;
     use crate::lineage::pg_emit;
-    use crate::puffin::write_flat_index;
     use crate::read_files_as_batches;
 
     // 1. Snapshot S: the catalog snapshot we build as-of (MVCC anchor).
@@ -404,8 +404,17 @@ pub async fn build_vector_index(
             .unwrap_or(0)
     };
 
-    // 7. Build the FlatIndex.
-    let index = FlatIndex::build(dim, metric, all_rows)?;
+    // 7. Build the chosen index (Flat exact, or IVF approximate). The `VectorIndex`
+    //    trait is `Send`, so the box may be held across `.await` points without
+    //    extracting fields early.
+    let index: Box<dyn control_plane_core::VectorIndex> = match index_spec {
+        IndexSpec::Flat => Box::new(FlatIndex::build(dim, metric, all_rows)?),
+        IndexSpec::IvfFlat { nlist } => {
+            Box::new(IvfFlatIndex::build(dim, metric, all_rows, nlist)?)
+        }
+    };
+    // dim may have been inferred as 0 for empty tables; prefer index's own dim.
+    let dim = if index.dim() > 0 { index.dim() } else { dim };
 
     // 8. Resolve the Iceberg field id for the vector column (informational).
     let ident = TableIdent::from_strs([table.schema.as_str(), table.name.as_str()])
@@ -425,16 +434,17 @@ pub async fn build_vector_index(
         .unwrap_or(0);
 
     // 9. Write the Puffin sidecar (object-store write BEFORE the Postgres tx).
+    //    `write_vector_index` is the single source of the 7-key property map.
     let puffin_path = format!(
         "{}/metadata/loom-vector-index-{}.puffin",
         tbl.metadata().location(),
         uuid::Uuid::new_v4()
     );
     let file_io = tbl.file_io().clone();
-    write_flat_index(
+    crate::puffin::write_vector_index(
         &file_io,
         &puffin_path,
-        &index,
+        index.as_ref(),
         s,
         field_id,
         column,
@@ -481,7 +491,7 @@ pub async fn build_vector_index(
             column: column.to_string(),
             covered_snapshot: s,
             metric: metric.as_str().to_string(),
-            index_kind: control_plane_core::IndexKind::Flat.as_str().to_string(),
+            index_kind: index.index_kind().as_str().to_string(),
             dim: dim as i32,
             row_count,
             puffin_path: puffin_path.clone(),

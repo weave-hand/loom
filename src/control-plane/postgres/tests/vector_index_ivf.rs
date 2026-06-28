@@ -1,7 +1,6 @@
-//! Build primitive: land a typed object with an `embedding: vector(4)` column
-//! (all flushed to Parquet since the inline path does not support vector columns),
-//! run the build as of S, assert a Puffin sidecar exists and a vector_index mirror
-//! row + lineage event were written in one tx, covering all rows live at S.
+//! IVF build: select IndexSpec::IvfFlat, assert the Puffin blob decodes to an
+//! ivf_flat index, the mirror row records index_kind = "ivf_flat", and a search
+//! over the decoded index returns the exact match when every cluster is probed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,16 +10,15 @@ use arrow_array::{Int64Array, RecordBatch};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, Metric, ObjectType,
-    PageReq, PropertyDef, RunId, TableRef, TypeName, VectorIndex,
+    ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
+    PropertyDef, RunId, TableRef, TypeName, VectorKey,
 };
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::land;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
-use control_plane_postgres::puffin::read_flat_index;
+use control_plane_postgres::puffin::read_vector_index;
 use control_plane_postgres::vector_index::{build_vector_index, lookup_vector_index};
 use iceberg::CatalogBuilder;
 use iceberg::io::{FileIO, LocalFsStorageFactory};
@@ -40,8 +38,6 @@ fn columns() -> Vec<ColumnSpec> {
     ]
 }
 
-/// Build an Arrow IPC body with `id: long` + `embedding: list<float32>` (4 elements).
-/// Each row gets a distinct embedding so cosine search is deterministic.
 fn ipc_body(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
@@ -95,23 +91,18 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
         .expect("catalog")
 }
 
-/// Build covers all rows live at S, writes a Puffin sidecar, inserts a
-/// vector_index mirror row, and emits exactly one lineage event with output
-/// namespace "loom-vector-index".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn build_covers_all_rows_live_at_s() {
+async fn ivf_build_writes_decodable_blob_and_mirror_kind() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
-
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
 
-    // 1. Register the object type with the ontology (identity = "id").
     cp.ontology()
         .define_type(ObjectType {
             name: TypeName("Docs".into()),
@@ -134,53 +125,27 @@ async fn build_covers_all_rows_live_at_s() {
         .await
         .expect("define_type");
 
-    // 2. Land rows 1..=4.  Vector columns can't inline, so we force Parquet
-    //    with limit 0 for all batches.
     let run = RunId(uuid::Uuid::new_v4());
-    let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
-    let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
-    // First batch: rows 1-2 (limit 0 forces Parquet).
+    let rows: &[(i64, [f32; 4])] = &[
+        (1, [1.0, 0.0, 0.0, 0.0]),
+        (2, [0.0, 1.0, 0.0, 0.0]),
+        (3, [0.0, 0.0, 1.0, 0.0]),
+        (4, [0.0, 0.0, 0.0, 1.0]),
+    ];
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(rows_1_2),
+        &ipc_body(rows),
         0,
         i64::MAX,
         lineage(run, &table),
     )
     .await
-    .expect("land rows 1-2");
+    .expect("land rows");
 
-    // Second batch: rows 3-4 (also Parquet).
-    land(
-        &pool,
-        &catalog,
-        &table,
-        &columns(),
-        &ipc_body(rows_3_4),
-        0,
-        i64::MAX,
-        lineage(run, &table),
-    )
-    .await
-    .expect("land rows 3-4");
-
-    // 3. Resolve table_id for lookup assertions.
-    let ice = IcebergCatalog::new(pool.clone());
-    let cur = ice
-        .current_snapshot(&table)
-        .await
-        .expect("current snapshot");
-    let files = ice
-        .files_with_stats(&table, cur.id)
-        .await
-        .expect("files_with_stats");
-    // We should have at least 2 files (one per land call).
-    assert!(!files.is_empty(), "at least one Parquet file exists");
-
-    // 4. Run build_vector_index.
+    // Build with IVF (nlist=2 over 4 rows).
     let build_run = RunId(uuid::Uuid::new_v4());
     let built = build_vector_index(
         &catalog,
@@ -188,18 +153,14 @@ async fn build_covers_all_rows_live_at_s() {
         &table,
         "embedding",
         Metric::Cosine,
-        control_plane_core::IndexSpec::Flat,
+        IndexSpec::IvfFlat { nlist: Some(2) },
         build_run,
     )
     .await
-    .expect("build_vector_index");
+    .expect("build ivf");
+    assert_eq!(built.row_count, 4);
 
-    // 5. Assert row_count covers all 4 rows.
-    assert_eq!(built.row_count, 4, "all 4 rows covered");
-    assert!(built.covered_snapshot > 0, "covered snapshot is set");
-
-    // 6. lookup_vector_index returns the row.
-    // Resolve table_id from mirror.
+    // Mirror row records the IVF kind.
     let mut conn = pool.acquire().await.expect("acquire");
     let table_id: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
         "select table_id from iceberg_mirror.\"table\" \
@@ -208,48 +169,22 @@ async fn build_covers_all_rows_live_at_s() {
     .fetch_one(&mut *conn)
     .await
     .expect("table_id");
-
     let found = lookup_vector_index(&pool, table_id, "embedding", built.covered_snapshot)
         .await
         .expect("lookup")
-        .expect("should be Some");
-    assert_eq!(found.row_count, 4);
-    assert_eq!(found.metric, "cosine");
-    assert_eq!(found.dim, 4);
-    assert_eq!(found.puffin_path, built.puffin_path);
+        .expect("Some");
+    assert_eq!(found.index_kind, "ivf_flat");
 
-    // 7. read_flat_index searches correctly.
+    // The blob decodes polymorphically to an ivf_flat index that searches.
     let file_io = FileIO::new_with_fs();
-    // The puffin_path starts with "file://" for local FS. FileIO::new_with_fs
-    // expects a path without the scheme for the flat index roundtrip test.
-    // Use the path directly.
-    let index = read_flat_index(&file_io, &built.puffin_path)
+    let idx = read_vector_index(&file_io, &built.puffin_path)
         .await
-        .expect("read_flat_index");
-    assert_eq!(index.dim(), 4);
-    assert_eq!(index.row_count(), 4);
-    // Query with [1,0,0,0] -> nearest should be id=1.
-    let results = index.search(&[1.0, 0.0, 0.0, 0.0], 1);
-    assert!(!results.is_empty(), "search returned a result");
-    assert_eq!(
-        results[0].0,
-        control_plane_core::VectorKey::Int(1),
-        "nearest to [1,0,0,0] is id=1"
-    );
-
-    // 8. Exactly one lineage event with output namespace "loom-vector-index".
-    let events = cp
-        .lineage()
-        .events_for(&build_run, PageReq::unbounded())
-        .await
-        .expect("events_for");
-    assert_eq!(events.items.len(), 1, "exactly one lineage event");
-    assert_eq!(
-        events.items[0].outputs[0].namespace, "loom-vector-index",
-        "output namespace is loom-vector-index"
-    );
-    assert_eq!(
-        events.items[0].outputs[0].name, built.puffin_path,
-        "output name is the puffin path"
-    );
+        .expect("read");
+    assert_eq!(idx.index_kind(), control_plane_core::IndexKind::IvfFlat);
+    assert_eq!(idx.dim(), 4);
+    assert_eq!(idx.row_count(), 4);
+    // With 2 clusters, probing default nprobe may miss; but id=1 is its own
+    // cluster's nearest, and nprobe>=1 always probes the query's own centroid.
+    let res = idx.search(&[1.0, 0.0, 0.0, 0.0], 1);
+    assert_eq!(res[0].0, VectorKey::Int(1));
 }
