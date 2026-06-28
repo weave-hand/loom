@@ -303,8 +303,7 @@ impl PgFixture {
             .connect_with(self.opts(&db))
             .await
             .expect("connect pool to fresh database");
-        let migrations = std::env::var("LOOM_MIGRATIONS_DIR").expect("LOOM_MIGRATIONS_DIR");
-        crate::run_migrations(&pool, std::path::Path::new(&migrations))
+        crate::run_embedded_migrations(&pool)
             .await
             .expect("run migrations");
 

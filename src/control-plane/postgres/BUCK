@@ -96,17 +96,6 @@ command_alias(
     visibility = ["PUBLIC"],
 )
 
-# Migrations are embedded into the binary at compile time via sqlx::migrate!
-# (see control_plane_postgres::embedded_migrator). The `mapped_srcs` on the
-# :postgres library declares migrations/*.sql into the compile sandbox so the
-# macro reads them hermetically; this filegroup remains only as a PUBLIC
-# input for any out-of-tree consumer.
-filegroup(
-    name = "migrations",
-    srcs = glob(["migrations/**/*.sql"]),
-    visibility = ["PUBLIC"],
-)
-
 # Committed sqlx offline cache for compile-time query! validation. The filegroup
 # preserves the glob's ".sqlx/" prefix, so SQLX_OFFLINE_DIR appends it. Generated
 # by tools/sqlx-prepare.sh against a freshly-migrated ephemeral postgres.

@@ -37,8 +37,6 @@ pub use loom_config::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmbeddedSettings {
     pub cfg: managed_postgres::EmbeddedPgConfig,
-    /// Directory of `.sql` migrations applied after the cluster is ready.
-    pub migrations_dir: PathBuf,
 }
 
 /// Discrete Postgres connection fields. Feeds the sqlx control-plane pool and the
@@ -165,7 +163,6 @@ impl Config {
 
         let embedded = if vars.get("LOOM_PG_MODE").map(String::as_str) == Some("embedded") {
             let bin_dir = PathBuf::from(req("LOOM_PG_BIN_DIR")?);
-            let migrations_dir = PathBuf::from(req("LOOM_MIGRATIONS_DIR")?);
             Some(EmbeddedSettings {
                 cfg: managed_postgres::EmbeddedPgConfig {
                     bin_dir,
@@ -177,7 +174,6 @@ impl Config {
                     socket_dir: data_path.join("pgrun"),
                     database: req("LOOM_DB_NAME")?,
                 },
-                migrations_dir,
             })
         } else {
             None
@@ -275,7 +271,7 @@ pub async fn build_pool_managed(
                 .connect_with(pg.connect_options())
                 .await
                 .map_err(RuntimeError::Pool)?;
-            control_plane_postgres::run_migrations(&pool, &e.migrations_dir)
+            control_plane_postgres::run_embedded_migrations(&pool)
                 .await
                 .map_err(RuntimeError::Migrate)?;
             Ok((pool, Some(pg)))

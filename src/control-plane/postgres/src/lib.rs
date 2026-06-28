@@ -8,7 +8,6 @@
 //! committed `.sqlx/` offline cache (regenerate with `tools/sqlx-prepare.sh`);
 //! the remaining concerns still use sqlx's runtime query API.
 
-use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -75,18 +74,6 @@ impl PgControlPlane {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
-}
-
-/// Apply pending migrations from `migrations_dir` (tracked in `_sqlx_migrations`).
-pub async fn run_migrations(pool: &PgPool, migrations_dir: &Path) -> Result<()> {
-    let migrator = sqlx::migrate::Migrator::new(migrations_dir)
-        .await
-        .map_err(|e| ControlPlaneError::Backend(Box::new(e)))?;
-    migrator
-        .run(pool)
-        .await
-        .map_err(|e| ControlPlaneError::Backend(Box::new(e)))?;
-    Ok(())
 }
 
 /// The control-plane migrations, baked into the binary at compile time via
