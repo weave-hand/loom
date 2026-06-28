@@ -48,7 +48,7 @@ watchman is not in the Ubuntu repos. Install it from the
 (macOS: `brew install watchman`):
 
 ```sh
-ver=v2026.06.21.00   # keep aligned with tools/ci/install-watchman.sh
+ver=v2026.06.22.00   # keep aligned with tools/ci/install-watchman.sh
 curl -fsSL "https://github.com/facebook/watchman/releases/download/$ver/watchman-$ver-linux.zip" -o /tmp/watchman.zip \
   && unzip -q /tmp/watchman.zip -d /tmp \
   && sudo cp -a /tmp/watchman-$ver-linux/bin/* /usr/local/bin/ \

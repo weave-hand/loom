@@ -22,7 +22,7 @@ set -u
 START_PWD="$PWD"
 BUCK2_RELEASE="2026-05-18"   # keep aligned with tools/ci/buildbuddy-setup.sh + prelude pin
 GH_VERSION="2.62.0"          # fallback gh (apt's gh is unreliable on a base image)
-WATCHMAN_VERSION="v2026.06.21.00"  # facebook/watchman release; buck2's file_watcher (.buckconfig)
+WATCHMAN_VERSION="v2026.06.22.00"  # facebook/watchman release; buck2's file_watcher (.buckconfig)
 echo "loom cloud setup starting (pwd=$START_PWD, buck2=$BUCK2_RELEASE)"
 
 # 1. Packages. The base image carries broken third-party PPAs (deadsnakes/ondrej)

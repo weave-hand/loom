@@ -15,7 +15,7 @@
 # WATCHMAN_VERSION aligned between the two.
 set -euo pipefail
 
-WATCHMAN_VERSION="v2026.06.21.00"   # keep aligned with tools/cloud-setup.sh
+WATCHMAN_VERSION="v2026.06.22.00"   # keep aligned with tools/cloud-setup.sh
 
 if command -v watchman >/dev/null 2>&1; then
   echo "watchman present: $(watchman version 2>/dev/null | tr -d '\n ' | head -c 60)"
