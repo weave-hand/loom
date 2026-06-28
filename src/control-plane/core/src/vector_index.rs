@@ -32,10 +32,11 @@ impl Metric {
     }
 }
 
-/// The index algorithm family. Slice 1 ships only `Flat`.
+/// The index algorithm family.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexKind {
     Flat,
+    IvfFlat,
 }
 
 impl IndexKind {
@@ -43,6 +44,20 @@ impl IndexKind {
     pub fn as_str(self) -> &'static str {
         match self {
             IndexKind::Flat => "flat",
+            IndexKind::IvfFlat => "ivf_flat",
+        }
+    }
+
+    #[must_use]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "returns Option<Self> not Result<Self, E>; does not match FromStr signature"
+    )]
+    pub fn from_str(s: &str) -> Option<IndexKind> {
+        match s {
+            "flat" => Some(IndexKind::Flat),
+            "ivf_flat" => Some(IndexKind::IvfFlat),
+            _ => None,
         }
     }
 }
@@ -56,10 +71,16 @@ pub enum VectorKey {
     Str(String),
 }
 
-/// Exact-or-approximate top-k nearest-neighbour index. Slice-1 impl is exact.
+/// Exact-or-approximate top-k nearest-neighbour index.
 pub trait VectorIndex {
     fn metric(&self) -> Metric;
     fn dim(&self) -> u32;
+    /// The algorithm family — recorded in the mirror row and Puffin properties.
+    fn index_kind(&self) -> IndexKind;
+    /// Number of indexed vectors.
+    fn row_count(&self) -> u32;
+    /// The compact self-describing binary written into the Puffin blob.
+    fn serialize(&self) -> Vec<u8>;
     /// Top-k by `metric`, ascending distance. Ties broken by insertion order.
     fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)>;
 }
@@ -98,6 +119,10 @@ impl FlatIndex {
     }
 
     #[must_use]
+    #[expect(
+        clippy::same_name_method,
+        reason = "inherent kept for callers that do not go through the VectorIndex trait object"
+    )]
     pub fn row_count(&self) -> u32 {
         self.keys.len() as u32
     }
@@ -120,6 +145,10 @@ impl FlatIndex {
     // All vectors share one key_kind (the identity column's logical type).
 
     #[must_use]
+    #[expect(
+        clippy::same_name_method,
+        reason = "inherent kept for callers that do not go through the VectorIndex trait object"
+    )]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"LVIX");
@@ -274,6 +303,16 @@ impl VectorIndex for FlatIndex {
     }
     fn dim(&self) -> u32 {
         self.dim
+    }
+    fn index_kind(&self) -> IndexKind {
+        IndexKind::Flat
+    }
+    fn row_count(&self) -> u32 {
+        // Delegates to the inherent method (kept for non-trait callers).
+        FlatIndex::row_count(self)
+    }
+    fn serialize(&self) -> Vec<u8> {
+        FlatIndex::serialize(self)
     }
     fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)> {
         let mut scored: Vec<(usize, f32)> = (0..self.keys.len())

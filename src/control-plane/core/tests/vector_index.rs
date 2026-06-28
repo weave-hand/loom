@@ -76,3 +76,24 @@ fn distance_fn_matches_metrics() {
     // Orthogonal cosine distance is 1.
     assert!((distance(Metric::Cosine, &[1.0, 0.0], &[0.0, 1.0]) - 1.0).abs() < 1e-6);
 }
+
+#[test]
+fn index_kind_string_roundtrip() {
+    use control_plane_core::IndexKind;
+    assert_eq!(IndexKind::Flat.as_str(), "flat");
+    assert_eq!(IndexKind::IvfFlat.as_str(), "ivf_flat");
+    assert_eq!(IndexKind::from_str("flat"), Some(IndexKind::Flat));
+    assert_eq!(IndexKind::from_str("ivf_flat"), Some(IndexKind::IvfFlat));
+    assert_eq!(IndexKind::from_str("nope"), None);
+}
+
+#[test]
+fn flat_index_reports_kind_and_serializes_via_trait() {
+    // Exercise the new trait methods through a trait object.
+    let idx = FlatIndex::build(4, Metric::L2, rows()).unwrap();
+    let dynidx: &dyn VectorIndex = &idx;
+    assert_eq!(dynidx.index_kind(), control_plane_core::IndexKind::Flat);
+    assert_eq!(dynidx.row_count(), 3);
+    // Trait serialize must equal the inherent serialize (same bytes).
+    assert_eq!(dynidx.serialize(), idx.serialize());
+}
