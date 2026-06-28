@@ -61,6 +61,12 @@
 
 [buck2]
 digest_algorithms = SHA256
+  # Use watchman (not the default notify/inotify crawler) as the file watcher.
+  # The notify watcher places one inotify watch per directory; over buck-out's
+  # ~23k dirs a second daemon (e.g. rust-project's `.rust-analyzer` isolation
+  # dir) exhausts fs.inotify.max_user_watches and fails to start. watchman uses
+  # a single efficient watch over the tree, so multiple daemons coexist.
+  file_watcher = watchman
 
 [buck2_re_client]
   engine_address = remote.buildbuddy.io

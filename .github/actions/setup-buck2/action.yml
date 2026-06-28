@@ -31,6 +31,14 @@ runs:
         zstd -d /tmp/buck2.zst -o ~/buck2-bin/buck2
         chmod +x ~/buck2-bin/buck2
 
+    # watchman is buck2's file_watcher (.buckconfig); it must be installed before
+    # any buck2 invocation starts a daemon (incl. the `buck2 --version` below), or
+    # the daemon refuses to start. Not in the Ubuntu repos — installed from the
+    # facebook/watchman release zip. Idempotent / existence-guarded.
+    - name: Install watchman
+      shell: bash
+      run: ./tools/ci/install-watchman.sh
+
     # GITHUB_PATH applies to *subsequent* steps, so verify via the full path here.
     - name: Add buck2 to PATH
       shell: bash

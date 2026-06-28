@@ -22,6 +22,7 @@ set -u
 START_PWD="$PWD"
 BUCK2_RELEASE="2026-05-18"   # keep aligned with tools/ci/buildbuddy-setup.sh + prelude pin
 GH_VERSION="2.62.0"          # fallback gh (apt's gh is unreliable on a base image)
+WATCHMAN_VERSION="v2026.06.22.00"  # facebook/watchman release; buck2's file_watcher (.buckconfig)
 echo "loom cloud setup starting (pwd=$START_PWD, buck2=$BUCK2_RELEASE)"
 
 # 1. Packages. The base image carries broken third-party PPAs (deadsnakes/ondrej)
@@ -37,6 +38,9 @@ apt-get install -y --no-install-recommends zstd >/tmp/loom-apt-zstd.log 2>&1 || 
 # available per session in case the libxml2 action ever cache-misses.
 apt-get install -y --no-install-recommends libarchive-tools >/tmp/loom-apt-bsdtar.log 2>&1 || \
   { echo "WARN: apt install libarchive-tools (bsdtar) failed:"; tail -5 /tmp/loom-apt-bsdtar.log; }
+# unzip is needed to unpack the watchman release zip below.
+apt-get install -y --no-install-recommends unzip >/tmp/loom-apt-unzip.log 2>&1 || \
+  { echo "WARN: apt install unzip failed:"; tail -5 /tmp/loom-apt-unzip.log; }
 apt-get install -y --no-install-recommends gh >/tmp/loom-apt-gh.log 2>&1 || true
 
 # gh fallback: install the official release tarball to /usr/local/bin if apt didn't
@@ -47,6 +51,33 @@ if ! command -v gh >/dev/null 2>&1; then
   fi
 fi
 command -v gh >/dev/null 2>&1 && echo "gh ok: $(gh --version | head -1)" || echo "WARN: gh unavailable (PR landing will fail)"
+
+# watchman -> /usr/local (root-owned, survives the snapshot). buck2's file_watcher
+# is set to `watchman` in .buckconfig: the default notify watcher places one
+# inotify watch per directory and a second daemon (rust-project's `.rust-analyzer`
+# isolation dir, used for rust-analyzer code navigation) exhausts
+# fs.inotify.max_user_watches over buck-out's ~23k dirs. watchman is not in the
+# Ubuntu repos, so install it from the facebook/watchman release zip: it ships
+# bin/ + lib/ (libfolly/libglog/... that the watchman binary links against), which
+# go to /usr/local/{bin,lib}; the server also needs a world-writable state dir.
+if ! command -v watchman >/dev/null 2>&1; then
+  if curl -fsSL "https://github.com/facebook/watchman/releases/download/${WATCHMAN_VERSION}/watchman-${WATCHMAN_VERSION}-linux.zip" -o /tmp/watchman.zip \
+     && command -v unzip >/dev/null 2>&1; then
+    rm -rf /tmp/watchman-extract && mkdir -p /tmp/watchman-extract
+    unzip -q /tmp/watchman.zip -d /tmp/watchman-extract && \
+    wm_dir="$(find /tmp/watchman-extract -maxdepth 1 -type d -name 'watchman-*' | head -1)" && \
+    [ -n "$wm_dir" ] && \
+    mkdir -p /usr/local/bin /usr/local/lib /usr/local/var/run/watchman && \
+    cp -a "$wm_dir"/bin/* /usr/local/bin/ && \
+    cp -a "$wm_dir"/lib/* /usr/local/lib/ && \
+    chmod 755 /usr/local/bin/watchman && \
+    chmod 2777 /usr/local/var/run/watchman && \
+    ldconfig || echo "WARN: watchman install failed (file_watcher=watchman will fall back to notify)"
+  else
+    echo "WARN: could not download watchman ${WATCHMAN_VERSION} (file_watcher=watchman will fall back to notify)"
+  fi
+fi
+command -v watchman >/dev/null 2>&1 && echo "watchman ok: $(watchman version 2>/dev/null | tr -d '\n ' | head -c 60)" || echo "WARN: watchman unavailable"
 
 # 2. buck2 -> /usr/local/bin (root-owned, on the default PATH, survives the
 #    snapshot). Needs zstd to decompress.
