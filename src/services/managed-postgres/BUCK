@@ -1,0 +1,27 @@
+load("//src:loom_test.bzl", "rust_test")
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+cargo.rust_library(
+    name = "managed-postgres",
+    crate = "managed_postgres",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//third-party:sqlx",
+        "//third-party:thiserror",
+        "//third-party:tokio",
+        "//third-party:tracing",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "db-name",
+    crate = "db_name",
+    srcs = ["tests/db_name.rs"],
+    crate_root = "tests/db_name.rs",
+    edition = "2024",
+    deps = [":managed-postgres"],
+)
