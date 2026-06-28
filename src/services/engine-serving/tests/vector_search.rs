@@ -675,3 +675,203 @@ async fn ivf_hot_delta_row_is_never_pruned_l2() {
         "counted once"
     );
 }
+
+/// Like `seed_and_build` but builds an HNSW index (m=None, ef_construction=None → defaults).
+async fn seed_and_build_hnsw(
+    fx: &PgFixture,
+    db: &str,
+    metric: Metric,
+) -> (
+    SqlCatalog,
+    sqlx::PgPool,
+    control_plane_postgres::PgControlPlane,
+    tempfile::TempDir,
+) {
+    use control_plane_postgres::PgControlPlane;
+    use std::time::Duration;
+
+    let wh = tempfile::tempdir().expect("wh");
+    let pool = fx.pool_for(db).await;
+    let catalog = make_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
+    let cp = PgControlPlane::new(pool.clone(), Duration::from_secs(5));
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+
+    cp.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Docs".into()),
+            table: table.clone(),
+            properties: vec![
+                PropertyDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+                PropertyDef {
+                    name: "embedding".into(),
+                    ty: "Vector".into(),
+                    required: true,
+                },
+            ],
+            derived: vec![],
+            identity: Some("id".into()),
+        })
+        .await
+        .expect("define_type");
+
+    let run = RunId(uuid::Uuid::new_v4());
+    let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(rows_1_2),
+        0,
+        i64::MAX,
+        lineage_evt(run, &table),
+    )
+    .await
+    .expect("land rows 1-2");
+    let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(rows_3_4),
+        0,
+        i64::MAX,
+        lineage_evt(run, &table),
+    )
+    .await
+    .expect("land rows 3-4");
+
+    let build_run = RunId(uuid::Uuid::new_v4());
+    build_vector_index(
+        &catalog,
+        &pool,
+        &table,
+        "embedding",
+        metric,
+        control_plane_core::IndexSpec::Hnsw {
+            m: None,
+            ef_construction: None,
+        },
+        build_run,
+    )
+    .await
+    .expect("build hnsw");
+
+    (catalog, pool, cp, wh)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hnsw_cold_hot_merge_counts_fresh_row_once_cosine() {
+    // The freshness invariant: a row landed inline after the HNSW cold index's covered
+    // snapshot S is scored EXACTLY via the hot path and merged, never dropped by graph
+    // approximation.
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+    let (catalog, pool, _cp, _wh) = seed_and_build_hnsw(&fx, &db, Metric::Cosine).await;
+
+    // Row 5 inline (born after S): the unique nearest to the query, living only in the
+    // hot delta — it is NOT in the cold HNSW graph.
+    let run = RunId(uuid::Uuid::new_v4());
+    let inline: &[(i64, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(inline),
+        usize::MAX,
+        i64::MAX,
+        lineage_evt(run, &table),
+    )
+    .await
+    .expect("land inline row 5");
+
+    // Query close to [1,0,0,0]: row 5 (cosine dist ≈ 0.003) beats cold row 1 (dist ≈ 0.016).
+    let batch = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "embedding",
+        &[0.9_f32, 0.1, 0.0, 0.0],
+        2,
+    )
+    .await
+    .expect("hnsw cold+hot cosine");
+
+    let id_vec = ids(&batch);
+    assert_eq!(
+        id_vec[0], 5,
+        "hot inline row is nearest — never pruned by HNSW graph"
+    );
+    assert_eq!(
+        id_vec.iter().filter(|&&x| x == 5).count(),
+        1,
+        "fresh row counted exactly once (cold∪hot dedup holds)"
+    );
+    let dists = distances(&batch);
+    assert!(dists[0] <= dists[1], "distances ascending");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hnsw_cold_hot_merge_counts_fresh_row_once_l2() {
+    // L2 variant of the HNSW freshness invariant.
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+    let (catalog, pool, _cp, _wh) = seed_and_build_hnsw(&fx, &db, Metric::L2).await;
+
+    let run = RunId(uuid::Uuid::new_v4());
+    let inline: &[(i64, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(inline),
+        usize::MAX,
+        i64::MAX,
+        lineage_evt(run, &table),
+    )
+    .await
+    .expect("land inline row 5");
+
+    // L2 nearest to [0.9,0.1,0,0]: row 5 (||·||²=0.005) beats cold row 1 (0.02).
+    let batch = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "embedding",
+        &[0.9_f32, 0.1, 0.0, 0.0],
+        2,
+    )
+    .await
+    .expect("hnsw cold+hot l2");
+
+    let id_vec = ids(&batch);
+    assert_eq!(
+        id_vec[0], 5,
+        "hot inline row is nearest (L2) — never pruned by HNSW graph"
+    );
+    assert_eq!(
+        id_vec.iter().filter(|&&x| x == 5).count(),
+        1,
+        "fresh row counted exactly once (cold∪hot dedup holds)"
+    );
+    let dists = distances(&batch);
+    assert!(dists[0] <= dists[1], "distances ascending");
+}
