@@ -8,7 +8,10 @@ fn embedded_migrator_versions_are_contiguous_from_one() {
     let mut versions: Vec<i64> = migrator.iter().map(|m| m.version).collect();
     versions.sort_unstable();
 
-    assert!(!versions.is_empty(), "embedded migrations must not be empty");
+    assert!(
+        !versions.is_empty(),
+        "embedded migrations must not be empty"
+    );
     // Floor guard: the embed must include at least the migrations shipped at
     // this slice (19). A `>=` floor closes the prefix-truncation gap without
     // a brittle exact count that would redden on every new migration (there is
