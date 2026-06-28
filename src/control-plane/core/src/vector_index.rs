@@ -6,20 +6,34 @@
 use crate::error::{ControlPlaneError, Result};
 
 /// Which index to build, chosen at build time. `Flat` is the default (exact);
-/// `IvfFlat` is the approximate IVF index with an optional `nlist` override.
+/// `IvfFlat` is the approximate IVF index with an optional `nlist` override;
+/// `Hnsw` is the approximate HNSW graph index with optional `m`/`ef_construction`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IndexSpec {
     Flat,
-    IvfFlat { nlist: Option<u32> },
+    IvfFlat {
+        nlist: Option<u32>,
+    },
+    Hnsw {
+        m: Option<u32>,
+        ef_construction: Option<u32>,
+    },
 }
 
 impl IndexSpec {
-    /// Map a `(kind, nlist)` pair (e.g. from a job payload or RPC request) to a
-    /// spec. `None` or `"flat"` → `Flat`; `"ivf_flat"` → `IvfFlat`; else error.
-    pub fn from_label(kind: Option<&str>, nlist: Option<u32>) -> Result<IndexSpec> {
+    /// Map a `(kind, nlist, m, ef_construction)` tuple (e.g. from a job payload or
+    /// RPC request) to a spec. `None`/`"flat"` → `Flat`; `"ivf_flat"` → `IvfFlat`;
+    /// `"hnsw"` → `Hnsw`; else error.
+    pub fn from_label(
+        kind: Option<&str>,
+        nlist: Option<u32>,
+        m: Option<u32>,
+        ef_construction: Option<u32>,
+    ) -> Result<IndexSpec> {
         match kind {
             None | Some("flat") => Ok(IndexSpec::Flat),
             Some("ivf_flat") => Ok(IndexSpec::IvfFlat { nlist }),
+            Some("hnsw") => Ok(IndexSpec::Hnsw { m, ef_construction }),
             Some(other) => Err(ControlPlaneError::Backend(
                 format!("unknown index kind '{other}'").into(),
             )),
