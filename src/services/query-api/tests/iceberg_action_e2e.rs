@@ -277,6 +277,7 @@ async fn failed_write_commits_neither_row_nor_lineage() {
         .expect_err("type mismatch must fail");
     match err {
         query_api::serving::ServingError::Engine(_) => {}
+        other => panic!("unexpected error variant: {other}"),
     }
 
     // Neither a mirror table nor a lineage event was committed.

@@ -44,6 +44,10 @@ pub fn merge_topk(
 ///
 /// Errors with `EngineServingError::NoIndex` when no index has been built for
 /// `(table, column)` at the current snapshot.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "public API: catalog, pool, table, index, query, k, nprobe, ef_search are all required; a params struct is deferred"
+)]
 pub async fn vector_search(
     catalog: &SqlCatalog,
     pool: &PgPool,
@@ -51,6 +55,8 @@ pub async fn vector_search(
     index_name: &str,
     query: &[f32],
     k: usize,
+    nprobe: Option<u32>,
+    ef_search: Option<u32>,
 ) -> Result<RecordBatch, EngineServingError> {
     use control_plane_core::Catalog;
 
@@ -83,14 +89,28 @@ pub async fn vector_search(
         })?;
     let column: &str = &row.column;
 
+    // Validate the query dimension against the index's declared dim BEFORE decoding.
+    let dim = usize::try_from(row.dim).map_err(to_serving)?;
+    if query.len() != dim {
+        return Err(EngineServingError::DimMismatch(format!(
+            "query has {} dims but index `{}` on {}.{} expects {}",
+            query.len(),
+            index_name,
+            table.schema,
+            table.name,
+            dim
+        )));
+    }
+
     // 4. Cold path: read the Puffin vector index (polymorphic: Flat or IVF) and search it.
     let ident =
         TableIdent::from_strs([table.schema.as_str(), table.name.as_str()]).map_err(to_serving)?;
     let tbl = catalog.load_table(&ident).await.map_err(to_serving)?;
     let file_io = tbl.file_io().clone();
-    let idx = read_vector_index(&file_io, &row.puffin_path)
+    let mut idx = read_vector_index(&file_io, &row.puffin_path)
         .await
         .map_err(to_serving)?;
+    idx.apply_query_knobs(nprobe, ef_search);
     let cold: Vec<(VectorKey, f32)> = idx.search(query, k);
 
     // 5. Hot path: `inline_delta_batch` returns the inline vector rows born after

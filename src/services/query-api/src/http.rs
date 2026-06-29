@@ -19,6 +19,34 @@ use axum::routing::{get, post};
 use control_plane_core::{ControlPlane, GC_JOB_KIND, NewJob};
 use service_runtime::Subject;
 
+/// Upper bound on a single `/search` request's `k` — caps per-request work.
+pub const K_MAX: usize = 1000;
+
+/// The `POST /search/:type/:index_name` request body. `deny_unknown_fields` so a typo'd
+/// or extraneous field is a 400, not silently ignored. `query` is the kNN probe vector.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VectorSearchRequest {
+    pub query: Vec<f32>,
+    pub k: usize,
+    #[serde(default)]
+    pub nprobe: Option<u32>,
+    #[serde(default)]
+    pub ef_search: Option<u32>,
+}
+
+/// Returns `Err(message)` for an out-of-range `k` or empty `query`. The message is
+/// safe to return verbatim in a 400 body (no internal detail).
+pub fn validate_search_request(req: &VectorSearchRequest) -> Result<(), String> {
+    if req.query.is_empty() {
+        return Err("query must be a non-empty f32 array".to_string());
+    }
+    if req.k == 0 || req.k > K_MAX {
+        return Err(format!("k must be in 1..={K_MAX}"));
+    }
+    Ok(())
+}
+
 /// Log a backend/serving fault server-side, then return the opaque 500 the client
 /// sees. The detail (`error = %e`) is for operators only — the response body
 /// carries no internal detail (SQL fragments, table/column names).
@@ -45,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         .route("/objects/:type_name/graph/:link_name", get(get_graph))
         .route("/objects/:type_name/graph", get(get_graph_path))
         .route("/actions/:action_name", post(post_action))
+        .route("/search/:type_name/:index_name", post(post_search))
         .route("/maintenance/gc/:schema/:table", post(enqueue_gc))
         .with_state(state)
 }
@@ -647,5 +676,65 @@ async fn post_action(
             (StatusCode::UNPROCESSABLE_ENTITY, m).into_response()
         }
         Err(e) => internal_error("action serving fault", e),
+    }
+}
+
+/// Render a kNN hit's identity as JSON, following the cell's kind: `Int` -> number,
+/// `Text` -> string, anything else -> null.
+fn id_json(v: &crate::serving::SqlValue) -> serde_json::Value {
+    match v {
+        crate::serving::SqlValue::Int(i) => serde_json::json!(i),
+        crate::serving::SqlValue::Text(s) => serde_json::json!(s),
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Governed kNN search: `POST /search/:type/:index_name`. Parses + validates the body
+/// (manual deserialize -> 400 on any problem, BEFORE any engine call), then runs the
+/// governed `vector_search` flow and maps its errors to status codes.
+async fn post_search(
+    State(st): State<AppState>,
+    Path((type_name, index_name)): Path<(String, String)>,
+    subject: Subject,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let req: VectorSearchRequest = match serde_json::from_value(body) {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    if let Err(msg) = validate_search_request(&req) {
+        return (StatusCode::BAD_REQUEST, msg).into_response();
+    }
+    let deps = QueryDeps {
+        ontology: st.cp.ontology(),
+        acl: st.cp.acl(),
+        serving: st.serving.as_ref(),
+        default_limit: st.default_limit,
+    };
+    let q = crate::handler::VectorSearchQuery {
+        type_name,
+        index_name,
+        query: req.query,
+        k: req.k,
+        nprobe: req.nprobe,
+        ef_search: req.ef_search,
+    };
+    match crate::handler::vector_search(&q, &subject, &deps).await {
+        Ok(hits) => {
+            let results: Vec<serde_json::Value> = hits
+                .iter()
+                .map(|h| serde_json::json!({ "id": id_json(&h.id), "distance": h.distance }))
+                .collect();
+            Json(serde_json::json!({ "results": results })).into_response()
+        }
+        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        Err(QueryError::Serving(crate::serving::ServingError::NoIndex(m))) => {
+            (StatusCode::NOT_FOUND, m).into_response()
+        }
+        Err(QueryError::Serving(crate::serving::ServingError::DimMismatch(m))) => {
+            (StatusCode::BAD_REQUEST, m).into_response()
+        }
+        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
+        Err(e) => internal_error("vector search serving fault", e),
     }
 }

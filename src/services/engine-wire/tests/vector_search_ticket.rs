@@ -8,6 +8,8 @@ fn vector_search_ticket_json_roundtrips() {
         index_name: "by_sim".into(),
         query: vec![1.0, 0.0, 0.5, 0.25],
         k: 5,
+        nprobe: None,
+        ef_search: None,
     };
     let bytes = t.encode();
     let back = VectorSearchTicket::decode(&bytes).unwrap();
@@ -35,6 +37,8 @@ fn vector_ticket_is_not_a_file_ticket() {
         index_name: "by_sim".into(),
         query: vec![1.0],
         k: 1,
+        nprobe: None,
+        ef_search: None,
     };
     assert!(FlightTicket::decode(&vt.encode()).is_err());
 }

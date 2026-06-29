@@ -571,3 +571,48 @@ fn ivf_deserialize_rejects_oversized_nlist() {
     write_u32(&mut bytes, 11, 100_000_000); // nlist
     assert!(IvfFlatIndex::deserialize(&bytes).is_err());
 }
+
+// --- apply_query_knobs helpers -----------------------------------------------
+
+fn small_flat_index() -> FlatIndex {
+    FlatIndex::build(4, Metric::L2, rows()).unwrap()
+}
+
+fn small_ivf_index() -> IvfFlatIndex {
+    IvfFlatIndex::build(4, Metric::L2, rows(), None).unwrap()
+}
+
+fn small_hnsw_index() -> HnswIndex {
+    HnswIndex::build(4, Metric::L2, rows(), None, None).unwrap()
+}
+
+fn query_vec() -> Vec<f32> {
+    vec![1.0, 0.0, 0.0, 0.0]
+}
+
+#[test]
+fn apply_query_knobs_sets_ivf_nprobe_clamped() {
+    // Build a small IVF index with nlist >= 2 the same way the existing IVF tests do.
+    let mut idx = small_ivf_index();
+    // Above nlist clamps to nlist; the search still returns results.
+    idx.apply_query_knobs(Some(9999), None);
+    let hits = idx.search(&query_vec(), 2);
+    assert!(!hits.is_empty(), "search works after nprobe override");
+}
+
+#[test]
+fn apply_query_knobs_sets_hnsw_ef_search_min_one() {
+    let mut idx = small_hnsw_index();
+    idx.apply_query_knobs(None, Some(0)); // clamps up to 1
+    let hits = idx.search(&query_vec(), 1);
+    assert!(!hits.is_empty(), "search works after ef_search override");
+}
+
+#[test]
+fn apply_query_knobs_is_noop_on_flat() {
+    let mut idx = small_flat_index();
+    let before = idx.search(&query_vec(), 2);
+    idx.apply_query_knobs(Some(4), Some(64)); // both ignored by Flat
+    let after = idx.search(&query_vec(), 2);
+    assert_eq!(before, after, "Flat ignores both knobs");
+}
