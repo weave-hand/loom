@@ -11,7 +11,10 @@ fn extract_unpacks_then_reuses() {
     // First call: extracts.
     let first = extract_pg(tmp.path()).expect("first extract");
     assert!(first.bin_dir.join("initdb").exists(), "initdb extracted");
-    assert!(first.bin_dir.join("postgres").exists(), "postgres extracted");
+    assert!(
+        first.bin_dir.join("postgres").exists(),
+        "postgres extracted"
+    );
     assert!(first.lib_dir.is_dir(), "lib dir extracted");
     // Cache dir is keyed by version, with no wrapping postgresql-* component.
     assert!(

@@ -26,7 +26,9 @@ async fn boots_from_embedded_distribution() {
         database: "loom".to_string(),
     };
 
-    let pg = EmbeddedPg::start(cfg).await.expect("start from embedded dist");
+    let pg = EmbeddedPg::start(cfg)
+        .await
+        .expect("start from embedded dist");
     let pool = PgPoolOptions::new()
         .connect_with(pg.connect_options())
         .await
