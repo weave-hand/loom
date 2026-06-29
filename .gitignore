@@ -16,3 +16,6 @@ rust-project.json.tmp
 *.profraw
 *.profdata
 .claude/worktrees/
+
+# Superpowers SDD scratch (progress ledger, subagent reports)
+.superpowers/
