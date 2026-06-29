@@ -4,10 +4,12 @@
 //! transform/compaction. See
 //! docs/superpowers/specs/2026-06-24-engine-serving-execution-wire-design.md.
 
+pub mod action_writer;
 pub mod provider;
 pub mod serving;
 pub mod vector_search;
 
+pub use action_writer::IcebergActionWriter;
 pub use provider::PgTableProvider;
 pub use serving::{
     EngineServingError, IcebergMirrorTableProvider, execute_query, execute_query_stream,
