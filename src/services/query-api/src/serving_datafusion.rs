@@ -1,9 +1,7 @@
-//! Shared serving utilities for the query-api Iceberg path: serialisation helpers
-//! (`encode_ipc_stream`, `batches_to_rows`, `arrow_to_sqlvalue`) and the Iceberg
-//! action writer. The DataFusion execution layer has moved to `engine-serving`;
-//! this file retains only the pieces still owned by query-api.
-
-use std::sync::Arc;
+//! Arrow→Rows helpers for the query-api read path: `batches_to_rows` and
+//! `arrow_to_sqlvalue`. These are postgres-free utilities used by `engine_client.rs`
+//! (the Flight SQL read client) and the read-path tests. The Iceberg action writer
+//! that previously lived here has been relocated to `engine-serving`.
 
 use arrow::array::{
     Array, BooleanArray, Date32Array, Float32Array, Float64Array, Int8Array, Int16Array,
@@ -11,124 +9,8 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
-use async_trait::async_trait;
-use control_plane_postgres::iceberg_landing;
-use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
-use sqlx::PgPool;
 
-use crate::serving::{
-    ActionEngine, Rows, ServingError, SqlValue, build_object_batch, build_object_batches,
-};
-
-/// Any error -> opaque serving error. Kept here (not deleted) because
-/// `encode_ipc_stream` still uses it — engine-serving has its own copy.
-fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
-    ServingError::Engine(e.to_string())
-}
-
-/// Encode a (one-row) `RecordBatch` to an Arrow IPC *stream* body — the bytes
-/// `iceberg_landing::land` re-decodes in the postgres crate (which owns the Iceberg
-/// writer chain). Any writer error maps to an opaque serving error.
-pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
-    let mut buf = Vec::new();
-    {
-        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &batch.schema())
-            .map_err(to_serving)?;
-        w.write(batch).map_err(to_serving)?;
-        w.finish().map_err(to_serving)?;
-    }
-    Ok(buf)
-}
-
-/// The `ActionEngine` for the Iceberg serving backend: a governed typed-insert is
-/// built into a one-row batch, encoded to Arrow IPC, and forwarded to the atomic
-/// inline-write seam `iceberg_landing::land`. A single
-/// action row inlines (mirror-only typed rows): one Postgres transaction committing
-/// the row and its lineage together, drained to real Parquet later by the flush
-/// vertical. Holds the same dependencies as ingest's `IcebergMaterializer`.
-pub struct IcebergActionWriter {
-    catalog: Arc<SqlCatalog>,
-    pool: PgPool,
-    inline_byte_limit: usize,
-    flush_byte_threshold: i64,
-}
-
-impl IcebergActionWriter {
-    pub fn new(
-        catalog: Arc<SqlCatalog>,
-        pool: PgPool,
-        inline_byte_limit: usize,
-        flush_byte_threshold: i64,
-    ) -> Self {
-        Self {
-            catalog,
-            pool,
-            inline_byte_limit,
-            flush_byte_threshold,
-        }
-    }
-}
-
-#[async_trait]
-impl ActionEngine for IcebergActionWriter {
-    async fn write_object(
-        &self,
-        table: &control_plane_core::TableRef,
-        columns: &[String],
-        values: &[SqlValue],
-        logical_types: &[String],
-        event: control_plane_core::LineageEvent,
-    ) -> Result<control_plane_core::SnapshotId, ServingError> {
-        let (_schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
-        let ipc_body = encode_ipc_stream(&batch)?;
-        iceberg_landing::land(
-            &self.pool,
-            &self.catalog,
-            table,
-            &specs,
-            &ipc_body,
-            self.inline_byte_limit,
-            self.flush_byte_threshold,
-            event,
-        )
-        .await
-        .map_err(|e| ServingError::Engine(e.to_string()))
-    }
-
-    async fn overwrite_table(
-        &self,
-        table: &control_plane_core::TableRef,
-        columns: &[String],
-        rows: &[Vec<SqlValue>],
-        logical_types: &[String],
-        event: control_plane_core::LineageEvent,
-    ) -> Result<control_plane_core::SnapshotId, ServingError> {
-        if rows.is_empty() {
-            // Delete-all: empty batches drive the truncate branch (mirror-only end-cap).
-            return iceberg_landing::overwrite_parquet_snapshot(
-                &self.pool,
-                &self.catalog,
-                table,
-                &[],
-                Vec::new(),
-                Some(&event),
-            )
-            .await
-            .map_err(|e| ServingError::Engine(e.to_string()));
-        }
-        let (_schema, batch, specs) = build_object_batches(columns, rows, logical_types)?;
-        iceberg_landing::overwrite_parquet_snapshot(
-            &self.pool,
-            &self.catalog,
-            table,
-            &specs,
-            vec![batch],
-            Some(&event),
-        )
-        .await
-        .map_err(|e| ServingError::Engine(e.to_string()))
-    }
-}
+use crate::serving::{Rows, SqlValue};
 
 /// Flatten DataFusion result batches into the engine-neutral `Rows`. Columns come
 /// from the first batch's schema (DataFusion preserves projection order, satisfying
