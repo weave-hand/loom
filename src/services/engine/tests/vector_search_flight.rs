@@ -261,6 +261,8 @@ async fn vector_search_flight_top_k() {
             index_name: "by_flat".into(),
             query: vec![1.0, 0.0, 0.0, 0.0],
             k: 2,
+            nprobe: None,
+            ef_search: None,
         })
         .await
         .expect("vector_search");
@@ -346,8 +348,13 @@ async fn vector_search_no_index_is_not_found() {
             index_name: "by_flat".into(),
             query: vec![1.0, 0.0, 0.0, 0.0],
             k: 1,
+            nprobe: None,
+            ef_search: None,
         })
-        .await;
-
-    assert!(err.is_err(), "no-index must yield an error over the wire");
+        .await
+        .expect_err("missing index");
+    assert!(
+        matches!(err, engine_wire::flight::VectorSearchError::NoIndex(_)),
+        "missing index classifies as NoIndex, got {err:?}"
+    );
 }

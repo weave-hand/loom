@@ -49,6 +49,25 @@ pub struct VectorSearchTicket {
     pub index_name: String,
     pub query: Vec<f32>,
     pub k: u32,
+    /// IVF-Flat probe count for this query (ignored by other kinds). Defaults to `None`.
+    #[serde(default)]
+    pub nprobe: Option<u32>,
+    /// HNSW candidate width for this query (ignored by other kinds). Defaults to `None`.
+    #[serde(default)]
+    pub ef_search: Option<u32>,
+}
+
+/// Outcome of a kNN `do_get` that preserves the engine's gRPC status *code*,
+/// which `client::be` would otherwise flatten to a string. Lets query-api map a
+/// missing index to 404 and a query-dim mismatch to 400.
+#[derive(Debug, thiserror::Error)]
+pub enum VectorSearchError {
+    #[error("no vector index: {0}")]
+    NoIndex(String),
+    #[error("dimension mismatch: {0}")]
+    DimMismatch(String),
+    #[error("engine: {0}")]
+    Engine(String),
 }
 
 impl VectorSearchTicket {
@@ -103,9 +122,13 @@ impl FlightTableClient {
         Ok(batches)
     }
 
-    /// Send a [`VectorSearchTicket`] via `do_get` and collect all returned
-    /// [`RecordBatch`]es (k-NN result rows streamed from the engine).
-    pub async fn vector_search(&self, ticket: VectorSearchTicket) -> Result<Vec<RecordBatch>> {
+    /// Send a [`VectorSearchTicket`] via `do_get` and collect the kNN result rows.
+    /// The engine's gRPC status code is preserved: `NotFound` → [`VectorSearchError::NoIndex`],
+    /// `InvalidArgument` → [`VectorSearchError::DimMismatch`], anything else → `Engine`.
+    pub async fn vector_search(
+        &self,
+        ticket: VectorSearchTicket,
+    ) -> std::result::Result<Vec<RecordBatch>, VectorSearchError> {
         let resp = self
             .inner
             .clone()
@@ -113,12 +136,21 @@ impl FlightTableClient {
                 ticket: ticket.encode().into(),
             })
             .await
-            .map_err(crate::client::be)?;
+            .map_err(|s: tonic::Status| match s.code() {
+                tonic::Code::NotFound => VectorSearchError::NoIndex(s.message().to_string()),
+                tonic::Code::InvalidArgument => {
+                    VectorSearchError::DimMismatch(s.message().to_string())
+                }
+                _ => VectorSearchError::Engine(s.message().to_string()),
+            })?;
         let stream = FlightRecordBatchStream::new_from_flight_data(
             resp.into_inner()
                 .map_err(arrow_flight::error::FlightError::from),
         );
-        stream.try_collect().await.map_err(crate::client::be)
+        stream
+            .try_collect()
+            .await
+            .map_err(|e| VectorSearchError::Engine(e.to_string()))
     }
 }
 
