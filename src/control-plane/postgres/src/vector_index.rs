@@ -44,12 +44,12 @@ pub struct VectorIndexRow {
 
 /// Upsert a `vector_index` binding row in the caller's transaction.
 ///
-/// Keyed on `(table_id, column_name, covered_snapshot)` (the table's primary
-/// key): re-building the index for the same column at the same covered snapshot
-/// replaces the binding so it points at the freshly written Puffin sidecar. This
-/// keeps `build_vector_index` idempotent — a re-run or queue-retried build job at
-/// an unchanged snapshot refreshes the pointer instead of failing on a duplicate
-/// key (which would poison the job).
+/// Keyed on `(table_id, column_name, index_name, covered_snapshot)` (the table's
+/// primary key): re-building the same named index for the same column at the same
+/// covered snapshot replaces the binding so it points at the freshly written Puffin
+/// sidecar. This keeps `build_vector_index` idempotent — a re-run or queue-retried
+/// build job at an unchanged snapshot refreshes the pointer instead of failing on a
+/// duplicate key (which would poison the job). Distinct `index_name`s coexist.
 pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) -> Result<()> {
     sqlx::query!(
         "insert into iceberg_mirror.vector_index \
