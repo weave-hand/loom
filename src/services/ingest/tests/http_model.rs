@@ -286,7 +286,8 @@ async fn acl_deny_is_403_and_nothing_lands() {
     let (_seed, db) = fx.fresh_db().await;
     let (pg, pool, _wh, state) = app_state(&fx, &db).await;
     define_thing(&pg, "Thing", thing_table()).await;
-    // Authenticated subject, but NO Write grant.
+    // `session_token` creates the user (a real ACL subject), so mallory is a valid
+    // authenticated principal — but with NO Write grant, so `Acl::check` denies → 403.
     let token = session_token(&pg, "mallory").await;
 
     let app = protected(state, pg.clone());

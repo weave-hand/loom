@@ -149,9 +149,10 @@ async fn land_model(
 ) -> Response {
     let type_name = TypeName(type_name);
 
-    // 1. Coarse ACL gate BEFORE the type is resolved: a missing grant — including an
-    //    unknown/anonymous subject — is 403, returned before we reveal whether the
-    //    type exists. First Write use on the ingest plane.
+    // 1. Coarse ACL gate BEFORE the type is resolved: an authenticated subject
+    //    without a Write grant is 403, returned before we reveal whether the type
+    //    exists. (`require_auth` already 401s an unauthenticated caller before this
+    //    handler runs.) First Write use on the ingest plane.
     match st
         .cp
         .acl()
