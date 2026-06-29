@@ -486,6 +486,20 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "sqlcatalog-execute-commit",
+    crate = "sqlcatalog_execute_commit",
+    srcs = ["tests/sqlcatalog_execute_commit.rs"],
+    crate_root = "tests/sqlcatalog_execute_commit.rs",
+    deps = [
+        ":postgres",
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-tx-compact",
     crate = "iceberg_tx_compact",
     srcs = ["tests/iceberg_tx_compact.rs"],

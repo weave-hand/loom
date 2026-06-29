@@ -114,6 +114,18 @@ separately exercised — triggering a deterministic commit failure (e.g. a `DEFE
 constraint that fails at `COMMIT`, or a poisoned connection) is fixture-fragile and
 out of scope. This gap is recorded here intentionally rather than left implicit.
 
+**Implementation outcome (2026-06-29).** The commit-failure path *was* covered after
+all: a `DEFERRABLE INITIALLY DEFERRED` unique constraint proved to be a deterministic
+(not fixture-fragile) way to make a single-statement insert succeed at statement time
+and fail at `COMMIT`. The shipped suite
+(`src/control-plane/postgres/tests/sqlcatalog_execute_commit.rs`) therefore carries
+**both** tests: `statement_failure_rolls_back_and_errors` (the statement-failure lock
+specified above) and `commit_failure_propagates_as_error` (a genuine red→green
+regression test for the swallowed-commit bug — it fails on the pre-fix `drop(...)`
+body and passes after the `?`-propagation fix). The earlier "out of scope" judgment is
+left above as the original reasoning; this note records that it was superseded in
+implementation.
+
 The test follows loom's testing rules: a `rust_test` integration target (never an
 inline `#[cfg(test)]` module), routed local via `loom_fixture_test` because it boots
 the hermetic Postgres fixture.

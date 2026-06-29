@@ -370,7 +370,7 @@ impl SqlCatalog {
     }
 
     /// Execute statements in a transaction, provided or not
-    async fn execute(
+    pub async fn execute(
         &self,
         query: &str,
         args: Vec<Option<&str>>,
@@ -387,9 +387,12 @@ impl SqlCatalog {
             Some(t) => sqlx_query.execute(&mut **t).await.map_err(from_sqlx_error),
             None => {
                 let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
-                let result = sqlx_query.execute(&mut *tx).await.map_err(from_sqlx_error);
-                drop(tx.commit().await.map_err(from_sqlx_error));
-                result
+                let result = sqlx_query
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(from_sqlx_error)?;
+                tx.commit().await.map_err(from_sqlx_error)?;
+                Ok(result)
             }
         }
     }
