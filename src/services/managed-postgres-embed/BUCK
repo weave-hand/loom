@@ -1,4 +1,5 @@
 load("//src:loom_test.bzl", "rust_test")
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
 
 rust_library(
     name = "managed-postgres-embed",
@@ -30,4 +31,18 @@ rust_test(
     crate_root = "tests/extract.rs",
     edition = "2024",
     deps = [":managed-postgres-embed", "//third-party:tempfile"],
+)
+
+loom_fixture_test(
+    name = "boot-from-embedded",
+    crate = "boot_from_embedded",
+    srcs = ["tests/boot_from_embedded.rs"],
+    crate_root = "tests/boot_from_embedded.rs",
+    deps = [
+        ":managed-postgres-embed",
+        "//src/services/managed-postgres:managed-postgres",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
 )
