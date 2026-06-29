@@ -52,6 +52,12 @@ pub struct Rows {
 pub enum ServingError {
     #[error("serving engine: {0}")]
     Engine(String),
+    /// No built vector index for the requested name/type → 404.
+    #[error("no vector index: {0}")]
+    NoIndex(String),
+    /// Query vector length != index dim → 400.
+    #[error("dimension mismatch: {0}")]
+    DimMismatch(String),
 }
 
 /// Build a one-row Arrow `RecordBatch` + `Schema` + loom `ColumnSpec` list from an
@@ -238,6 +244,24 @@ fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayR
 pub trait ServingEngine: Send + Sync {
     /// Execute read-only `sql`, binding `params` positionally (`?` placeholders).
     async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError>;
+
+    /// Typed kNN search over a named vector index. Returns a 2-column `Rows`
+    /// (`id`, `_distance`) in ascending-distance order, ≤ `k` rows. The default
+    /// errors — only engines that actually serve search override it.
+    async fn vector_search(
+        &self,
+        table: &control_plane_core::TableRef,
+        index_name: &str,
+        query: &[f32],
+        k: usize,
+        nprobe: Option<u32>,
+        ef_search: Option<u32>,
+    ) -> Result<Rows, ServingError> {
+        let _ = (table, index_name, query, k, nprobe, ef_search);
+        Err(ServingError::Engine(
+            "vector search not supported by this engine".to_string(),
+        ))
+    }
 
     /// The SQL dialect this engine speaks. Defaults to `DataFusionDialect` — loom's
     /// sole serving dialect. (Production reads go through `EngineServingClient`, which

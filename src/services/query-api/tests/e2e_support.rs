@@ -91,15 +91,40 @@ impl ActionEngine for StubAction {
     }
 }
 
-/// In-process `ServingEngine` backed by `engine_serving::execute_query`. Used by
-/// tests that need a `dyn ServingEngine` over an `IcebergCatalog` without a gRPC hop.
+/// In-process `ServingEngine` backed by `engine_serving::execute_query` for SQL reads
+/// and optionally `engine_serving::vector_search` for kNN queries. Used by tests that
+/// need a `dyn ServingEngine` without a gRPC hop.
+///
+/// Construct with `new(catalog)` for SQL-only use, or `new_with_search(catalog, pool,
+/// sql_catalog)` when vector-search capability is also needed.
 pub struct InProcessServingEngine {
     catalog: IcebergCatalog,
+    /// Present only when the engine was constructed with vector-search capability.
+    search: Option<(
+        sqlx::PgPool,
+        control_plane_postgres::iceberg_sql_catalog::SqlCatalog,
+    )>,
 }
 
 impl InProcessServingEngine {
+    /// Construct a SQL-only engine (the default for existing tests).
     pub fn new(catalog: IcebergCatalog) -> Self {
-        Self { catalog }
+        Self {
+            catalog,
+            search: None,
+        }
+    }
+
+    /// Construct an engine with full vector-search capability in addition to SQL reads.
+    pub fn new_with_search(
+        catalog: IcebergCatalog,
+        pool: sqlx::PgPool,
+        sql_catalog: control_plane_postgres::iceberg_sql_catalog::SqlCatalog,
+    ) -> Self {
+        Self {
+            catalog,
+            search: Some((pool, sql_catalog)),
+        }
     }
 }
 
@@ -116,6 +141,38 @@ impl query_api::serving::ServingEngine for InProcessServingEngine {
             .map_err(|e| ServingError::Engine(e.to_string()))?;
         Ok(batches_to_rows(batches))
     }
+
+    async fn vector_search(
+        &self,
+        table: &control_plane_core::TableRef,
+        index_name: &str,
+        query: &[f32],
+        k: usize,
+        nprobe: Option<u32>,
+        ef_search: Option<u32>,
+    ) -> Result<query_api::serving::Rows, ServingError> {
+        let (pool, sql_catalog) = self.search.as_ref().ok_or_else(|| {
+            ServingError::Engine("vector search not configured for this engine".to_string())
+        })?;
+        let batch = engine_serving::vector_search(
+            sql_catalog,
+            pool,
+            table,
+            index_name,
+            query,
+            k,
+            nprobe,
+            ef_search,
+        )
+        .await
+        .map_err(|e| match e {
+            engine_serving::EngineServingError::NoIndex(m) => ServingError::NoIndex(m),
+            engine_serving::EngineServingError::DimMismatch(m) => ServingError::DimMismatch(m),
+            other => ServingError::Engine(other.to_string()),
+        })?;
+        Ok(batches_to_rows(vec![batch]))
+    }
+
     fn dialect(&self) -> &'static dyn query_api::sql::SqlDialect {
         &DataFusionDialect
     }
@@ -389,9 +446,11 @@ pub async fn setup_iceberg(
     .await
     .unwrap();
 
+    let sql_catalog = writer.sql_catalog().await;
     let catalog = IcebergCatalog::new(pool.clone());
-    let eng: Arc<dyn query_api::serving::ServingEngine> =
-        Arc::new(InProcessServingEngine::new(catalog));
+    let eng: Arc<dyn query_api::serving::ServingEngine> = Arc::new(
+        InProcessServingEngine::new_with_search(catalog, pool.clone(), sql_catalog),
+    );
     (cp, eng, writer)
 }
 

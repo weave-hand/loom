@@ -415,6 +415,12 @@ impl IcebergWriter {
             .expect("build vendored SqlCatalog")
     }
 
+    /// Build the iceberg `SqlCatalog` for this writer's warehouse. Needed by
+    /// e2e harnesses that wire the in-process serving engine for vector search.
+    pub async fn sql_catalog(&self) -> SqlCatalog {
+        self.catalog().await
+    }
+
     /// Create `(ns, name)` in the vendored catalog from `columns` if it does not yet
     /// exist. `columns`: `(name, loom-logical-type, nullable)`. Shared by
     /// `seed` / `seed_arrays`.
