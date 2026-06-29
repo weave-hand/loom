@@ -8,7 +8,7 @@ use control_plane_core::{
 };
 pub use service_runtime::Subject;
 
-use crate::serving::{ServingEngine, SqlValue};
+use crate::serving::{Rows, ServingEngine, SqlValue};
 use crate::sql::SqlDialect;
 use crate::sql::{compile_chain_with, compile_select_with};
 
@@ -388,6 +388,130 @@ pub async fn read_object(
         logical_types: g.logical_types,
         rows: served.rows,
     })
+}
+
+/// One ranked kNN hit: the identity value and its distance.
+pub struct VectorHit {
+    pub id: SqlValue,
+    pub distance: f64,
+}
+
+/// A governed kNN request: the type + named index, the probe vector, the fan-out `k`,
+/// and the optional index-tuning knobs threaded to the engine.
+pub struct VectorSearchQuery {
+    pub type_name: String,
+    pub index_name: String,
+    pub query: Vec<f32>,
+    pub k: usize,
+    pub nprobe: Option<u32>,
+    pub ef_search: Option<u32>,
+}
+
+/// Decode a 2-column engine result (`id`, `_distance`) into ordered hits, preserving the
+/// engine's ascending-distance order. A row whose distance cell is neither `Double` nor
+/// the defensive `Int` fallback is dropped (never a panic).
+fn rows_to_hits(rows: &Rows) -> Vec<VectorHit> {
+    rows.rows
+        .iter()
+        .filter_map(|r| {
+            let id = r.first()?.clone();
+            let distance = match r.get(1) {
+                Some(SqlValue::Double(f)) => *f,
+                // Defensive fallback: the expected arrow mapping is Float32 -> Double, so an
+                // `Int` distance is rare and small in magnitude.
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "distance fallback, magnitude small"
+                )]
+                Some(SqlValue::Int(i)) => *i as f64,
+                _ => return None,
+            };
+            Some(VectorHit { id, distance })
+        })
+        .collect()
+}
+
+/// Canonical string key for set membership across engine hits and post-filter rows.
+fn sqlvalue_to_id_string(v: &SqlValue) -> String {
+    match v {
+        SqlValue::Int(i) => i.to_string(),
+        SqlValue::Text(s) => s.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Governed kNN: coarse Read gate → engine kNN → row-filter post-filter.
+/// Unknown type and a missing Read grant both return `Forbidden` (no existence leak).
+pub async fn vector_search(
+    q: &VectorSearchQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<Vec<VectorHit>, QueryError> {
+    let type_name = TypeName(q.type_name.clone());
+    let target = PolicyTarget::Type(type_name.clone());
+
+    // Coarse gate, deny-by-default, BEFORE revealing whether the type exists.
+    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
+        return Err(QueryError::Forbidden);
+    }
+    // Resolve the type; a granted-but-nonexistent type is still no-leak Forbidden.
+    let otype = match deps.ontology.get_type(&type_name).await {
+        Ok(t) => t,
+        Err(ControlPlaneError::NotFound(_)) => return Err(QueryError::Forbidden),
+        Err(e) => return Err(QueryError::ControlPlane(e)),
+    };
+
+    // Engine kNN over the named index (ServingError::NoIndex/DimMismatch propagate as Serving).
+    let rows = deps
+        .serving
+        .vector_search(
+            &otype.table,
+            &q.index_name,
+            &q.query,
+            q.k,
+            q.nprobe,
+            q.ef_search,
+        )
+        .await?;
+    let mut hits = rows_to_hits(&rows);
+    if hits.is_empty() {
+        return Ok(hits);
+    }
+
+    // Row-filter post-filter. Empty filters (unrestricted) → return engine hits unchanged.
+    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+    if row_filters.is_empty() {
+        return Ok(hits);
+    }
+    let identity = otype
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::NoIdentity(otype.name.0.clone()))?;
+    let candidate_strs: Vec<String> = hits.iter().map(|h| sqlvalue_to_id_string(&h.id)).collect();
+    let Some(pred) = identity_in_predicate(&otype, &denied, &masked, &candidate_strs)? else {
+        return Ok(hits); // no candidates to scope (empty handled above; defensive)
+    };
+    let limit = u32::try_from(candidate_strs.len()).unwrap_or(u32::MAX);
+    let (sql, params) = compile_select_with(
+        deps.serving.dialect(),
+        &otype.table,
+        std::slice::from_ref(&identity),
+        &[],
+        &row_filters,
+        std::slice::from_ref(&pred),
+        &[],
+        limit,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let surviving: std::collections::HashSet<String> = served
+        .rows
+        .iter()
+        .filter_map(|r| r.first())
+        .map(sqlvalue_to_id_string)
+        .collect();
+    // Keep only surviving ids, preserving the engine's distance order; may return < k.
+    hits.retain(|h| surviving.contains(&sqlvalue_to_id_string(&h.id)));
+    Ok(hits)
 }
 
 /// Direction a link hop is followed. `Forward` follows the link as defined

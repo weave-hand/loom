@@ -583,6 +583,19 @@ rust_test(
 )
 
 rust_test(
+    name = "vector_search_filter",
+    crate = "vector_search_filter",
+    srcs = ["tests/vector_search_filter.rs"],
+    crate_root = "tests/vector_search_filter.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "quack-inline",
     crate = "quack_inline",
     srcs = ["tests/quack_inline.rs"],
