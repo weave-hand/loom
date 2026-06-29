@@ -10,9 +10,9 @@ use control_plane_core::{
     Acl, Catalog, ControlPlane, ControlPlaneError, EventType, FileRef, Lineage, LineageEvent,
     Ontology, Page, PageReq, Queue, RunId, Snapshot, SnapshotId, TableRef, TableSchema, Tx,
 };
+use datafusion_io::WriteConfig;
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
-use datafusion_io::WriteConfig;
 use transform::{OutputMode, TransformError, TransformInput, TransformRequest, run_transform};
 
 /// A catalog where the table is live at `current_snapshot` but vanishes by the time

@@ -397,8 +397,16 @@ async fn write_config_controls_transform_output_file_count() {
         compression_factor: 1.0,
     };
     let tuned_out = tref("main", "tuned_out");
-    let tuned_count =
-        run_into(&cp, &store, &root_url, &src, &tuned_out, &tuned, "run-tuned").await;
+    let tuned_count = run_into(
+        &cp,
+        &store,
+        &root_url,
+        &src,
+        &tuned_out,
+        &tuned,
+        "run-tuned",
+    )
+    .await;
 
     let default_out = tref("main", "default_out");
     let default_count = run_into(
