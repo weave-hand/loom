@@ -30,6 +30,40 @@ pub(crate) async fn pg_insert<'e, E: sqlx::PgExecutor<'e>>(ex: E, job: &NewJob) 
     Ok(JobId(id))
 }
 
+/// Insert `job` only if no `state = 'available'` job with the same `(kind, payload)`
+/// already exists. Returns the new `JobId` if inserted, `None` if deduplicated.
+/// The `pg_notify` fires inside the CTE so it is buffered until the caller's
+/// transaction commits — a rolled-back insert is silent.
+pub(crate) async fn pg_insert_if_absent<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    job: &NewJob,
+) -> Result<Option<JobId>> {
+    let id = Uuid::new_v4();
+    // The outer SELECT selects only `pg_notify(...)` (void), not typed columns, so sqlx
+    // treats this as a statement and `.execute()` + `.rows_affected()` work correctly.
+    // `rows_affected()` reflects the number of rows produced by the outer SELECT, which
+    // equals 1 iff the INSERT fired (the CTE `ins` has a row), 0 if deduplicated.
+    let result = sqlx::query!(
+        "with ins as ( \
+             insert into queue.jobs (id, kind, payload, state, run_at, priority) \
+             select $1, $2, $3, 'available', coalesce($4, now()), $5 \
+             where not exists ( \
+                 select 1 from queue.jobs \
+                 where kind = $2 and payload = $3 and state = 'available') \
+             returning kind) \
+         select pg_notify('loom_queue:' || kind, '') from ins",
+        id,
+        &job.kind,
+        &job.payload,
+        job.run_at,
+        job.priority,
+    )
+    .execute(ex)
+    .await
+    .map_err(backend)?;
+    Ok((result.rows_affected() > 0).then_some(JobId(id)))
+}
+
 #[async_trait]
 impl Queue for PgControlPlane {
     #[tracing::instrument(skip(self, job), level = "debug")]
