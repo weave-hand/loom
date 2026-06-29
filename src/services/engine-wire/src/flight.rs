@@ -46,7 +46,7 @@ impl FlightTicket {
 pub struct VectorSearchTicket {
     pub schema: String,
     pub name: String,
-    pub column: String,
+    pub index_name: String,
     pub query: Vec<f32>,
     pub k: u32,
 }

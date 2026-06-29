@@ -16,8 +16,8 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ColumnSpec, ControlPlane, DatasetId,
-    EventType, Job, JobId, LineageEvent, Metric, ObjectType, PropertyDef, RunId, TableRef,
-    TypeName,
+    EventType, IndexSpec, Job, JobId, LineageEvent, Metric, ObjectType, PropertyDef, RunId,
+    TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -151,27 +151,14 @@ async fn spawn_server(fx: &PgFixture, db: &str, wh_path: &str) -> (tempfile::Tem
     (sock_dir, sock_str)
 }
 
-fn make_build_vector_index_job(schema: &str, name: &str, column: &str) -> Job {
-    make_build_vector_index_job_kind(schema, name, column, None)
-}
-
-fn make_build_vector_index_job_kind(
-    schema: &str,
-    name: &str,
-    column: &str,
-    index_kind: Option<&str>,
-) -> Job {
+fn make_build_vector_index_job(schema: &str, name: &str, index_name: &str) -> Job {
     Job {
         id: JobId(uuid::Uuid::new_v4()),
         kind: BUILD_VECTOR_INDEX_JOB_KIND.to_string(),
         payload: serde_json::to_value(BuildVectorIndexJob {
             schema: schema.into(),
             name: name.into(),
-            column: column.into(),
-            index_kind: index_kind.map(Into::into),
-            nlist: None,
-            m: None,
-            ef_construction: None,
+            index_name: index_name.into(),
         })
         .expect("serialize payload"),
         attempts: 0,
@@ -218,7 +205,7 @@ async fn worker_builds_vector_index_over_the_wire() {
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "Vector".into(),
+                    ty: "vector(4)".into(),
                     required: true,
                 },
             ],
@@ -227,6 +214,31 @@ async fn worker_builds_vector_index_over_the_wire() {
         })
         .await
         .expect("define_type");
+
+    // Declare two named indexes on the same property: a flat and an hnsw.
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_flat".into(),
+            type_name: TypeName("Vectors".into()),
+            property: "embedding".into(),
+            metric: Metric::Cosine,
+            spec: IndexSpec::Flat,
+        })
+        .await
+        .expect("define by_flat");
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_hnsw".into(),
+            type_name: TypeName("Vectors".into()),
+            property: "embedding".into(),
+            metric: Metric::Cosine,
+            spec: IndexSpec::Hnsw {
+                m: None,
+                ef_construction: None,
+            },
+        })
+        .await
+        .expect("define by_hnsw");
 
     // Land rows (forced to Parquet: inline_byte_limit = 0).
     let rows: &[(i64, [f32; 4])] = &[
@@ -260,7 +272,7 @@ async fn worker_builds_vector_index_over_the_wire() {
     handle_build_vector_index(
         client.clone(),
         tuning,
-        make_build_vector_index_job("main", "vectors", "embedding"),
+        make_build_vector_index_job("main", "vectors", "by_flat"),
     )
     .await
     .expect("handle_build_vector_index");
@@ -283,7 +295,7 @@ async fn worker_builds_vector_index_over_the_wire() {
     .await
     .expect("fetch table_id");
 
-    let mirror_row = lookup_vector_index(&pool, table_id, "embedding", snap.id.0)
+    let mirror_row = lookup_vector_index(&pool, table_id, "by_flat", snap.id.0)
         .await
         .expect("lookup_vector_index")
         .expect("mirror row must exist after handler ran");
@@ -300,16 +312,16 @@ async fn worker_builds_vector_index_over_the_wire() {
     );
     assert_eq!(mirror_row.column, "embedding");
 
-    // Build again as HNSW over the wire; the mirror records index_kind = "hnsw".
+    // Build the `by_hnsw` index over the wire; the mirror records index_kind = "hnsw".
     handle_build_vector_index(
         client.clone(),
         tuning,
-        make_build_vector_index_job_kind("main", "vectors", "embedding", Some("hnsw")),
+        make_build_vector_index_job("main", "vectors", "by_hnsw"),
     )
     .await
     .expect("handle_build_vector_index hnsw");
 
-    let hnsw_row = lookup_vector_index(&pool, table_id, "embedding", snap.id.0)
+    let hnsw_row = lookup_vector_index(&pool, table_id, "by_hnsw", snap.id.0)
         .await
         .expect("lookup_vector_index hnsw")
         .expect("Some");
@@ -321,9 +333,7 @@ async fn worker_builds_vector_index_over_the_wire() {
         &make_catalog(fx.pg_dsn(&db), &wh_str).await,
         &pool,
         &table,
-        "embedding",
-        Metric::Cosine,
-        control_plane_core::IndexSpec::Flat,
+        "by_flat",
         RunId(uuid::Uuid::new_v4()),
     )
     .await
@@ -336,5 +346,84 @@ async fn worker_builds_vector_index_over_the_wire() {
     assert_eq!(
         direct.row_count, mirror_row.row_count,
         "same row count via both paths"
+    );
+}
+
+/// Negative path: a `build_vector_index` job naming an `index_name` with NO
+/// ontology declaration must fail the build (the primitive returns `NotFound`,
+/// surfaced over the wire and mapped to a `JobFailure`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn build_with_unknown_index_name_fails() {
+    use control_plane_postgres::PgControlPlane;
+
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let cp = PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let table = TableRef {
+        schema: "main".into(),
+        name: "vectors".into(),
+    };
+
+    // Register the type but declare NO vector index.
+    cp.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Vectors".into()),
+            table: table.clone(),
+            properties: vec![
+                PropertyDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+                PropertyDef {
+                    name: "embedding".into(),
+                    ty: "vector(4)".into(),
+                    required: true,
+                },
+            ],
+            derived: vec![],
+            identity: Some("id".into()),
+        })
+        .await
+        .expect("define_type");
+
+    // Land a row so the mirror table exists.
+    let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(rows),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), &table),
+    )
+    .await
+    .expect("land");
+
+    let (_sock_dir, sock) = spawn_server(&fx, &db, &wh_str).await;
+    let client = GrpcQueueClient::connect(&sock)
+        .await
+        .expect("connect control");
+
+    // Drive a build for an index_name that was never declared → must fail.
+    let tuning = loom_config::WorkerTuning::default();
+    let result = handle_build_vector_index(
+        client,
+        tuning,
+        make_build_vector_index_job("main", "vectors", "ghost"),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "build for an undeclared index_name must fail"
     );
 }

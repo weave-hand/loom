@@ -19,9 +19,10 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
     CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect,
-    EventType, Lineage, LineageEvent, LinkBacking, LinkDef, NewJob, NewUser, ObjectType, Ontology,
-    Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId,
-    RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
+    EventType, IndexSpec, Lineage, LineageEvent, LinkBacking, LinkDef, Metric, NewJob, NewUser,
+    ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue,
+    RetryPolicy, RoleId, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
+    VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -933,6 +934,118 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     assert!(
         o.get_type(&tn("Account")).await.unwrap().derived.is_empty(),
         "redefine replaces derived"
+    );
+
+    // --- vector index declarations -------------------------------------------
+    let doc = ObjectType {
+        name: tn("Document"),
+        table: tref("main", "document"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "embedding".into(),
+                ty: "vector(8)".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "title".into(),
+                ty: "Text".into(),
+                required: false,
+            },
+        ],
+        derived: vec![],
+        identity: Some("id".into()),
+    };
+    o.define_type(doc.clone()).await.expect("define Document");
+
+    let by_sim = VectorIndexDef {
+        name: "by_sim".into(),
+        type_name: tn("Document"),
+        property: "embedding".into(),
+        metric: Metric::Cosine,
+        spec: IndexSpec::Hnsw {
+            m: Some(16),
+            ef_construction: Some(200),
+        },
+    };
+    let by_cluster = VectorIndexDef {
+        name: "by_cluster".into(),
+        type_name: tn("Document"),
+        property: "embedding".into(),
+        metric: Metric::L2,
+        spec: IndexSpec::IvfFlat { nlist: Some(4) },
+    };
+    o.define_vector_index(by_sim.clone())
+        .await
+        .expect("define by_sim");
+    o.define_vector_index(by_cluster.clone())
+        .await
+        .expect("define by_cluster");
+
+    assert_eq!(
+        o.get_vector_index(&tn("Document"), "by_sim").await.unwrap(),
+        Some(by_sim.clone())
+    );
+    assert_eq!(
+        o.get_vector_index(&tn("Document"), "by_cluster")
+            .await
+            .unwrap(),
+        Some(by_cluster.clone())
+    );
+    assert_eq!(
+        o.get_vector_index(&tn("Document"), "nope").await.unwrap(),
+        None
+    );
+
+    let mut names: Vec<String> = o
+        .vector_indexes_for(&tn("Document"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["by_cluster".to_string(), "by_sim".to_string()]);
+
+    // upsert replaces (exercises as_cols → from_label round-trip on the postgres adapter)
+    let by_sim_v2 = VectorIndexDef {
+        metric: Metric::L2,
+        ..by_sim.clone()
+    };
+    o.define_vector_index(by_sim_v2.clone())
+        .await
+        .expect("redeclare by_sim");
+    assert_eq!(
+        o.get_vector_index(&tn("Document"), "by_sim").await.unwrap(),
+        Some(by_sim_v2)
+    );
+
+    // validation: non-vector property and missing property both error
+    let bad_prop = VectorIndexDef {
+        name: "bad".into(),
+        type_name: tn("Document"),
+        property: "title".into(),
+        metric: Metric::Cosine,
+        spec: IndexSpec::Flat,
+    };
+    assert!(
+        o.define_vector_index(bad_prop).await.is_err(),
+        "non-vector property rejected"
+    );
+    let missing = VectorIndexDef {
+        name: "bad2".into(),
+        type_name: tn("Document"),
+        property: "ghost".into(),
+        metric: Metric::Cosine,
+        spec: IndexSpec::Flat,
+    };
+    assert!(
+        o.define_vector_index(missing).await.is_err(),
+        "missing property rejected"
     );
 }
 

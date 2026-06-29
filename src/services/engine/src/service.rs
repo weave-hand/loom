@@ -2,7 +2,7 @@
 //! Delegates queue operations to a `PgControlPlane` and flush_table to
 //! `iceberg_flush::flush_table`.
 
-use control_plane_core::{Catalog, IndexSpec, Queue, RetryPolicy, RunId, TableRef};
+use control_plane_core::{Catalog, Queue, RetryPolicy, RunId, TableRef};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_gc::gc_table;
@@ -174,26 +174,11 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             schema: r.schema,
             name: r.name,
         };
-        let kind = if r.index_kind.is_empty() {
-            None
-        } else {
-            Some(r.index_kind.as_str())
-        };
-        let nlist = if r.nlist == 0 { None } else { Some(r.nlist) };
-        let m = if r.m == 0 { None } else { Some(r.m) };
-        let ef_construction = if r.ef_construction == 0 {
-            None
-        } else {
-            Some(r.ef_construction)
-        };
-        let index_spec = IndexSpec::from_label(kind, nlist, m, ef_construction).map_err(status)?;
         let built = control_plane_postgres::vector_index::build_vector_index(
             &self.catalog,
             &self.pool,
             &table,
-            &r.column,
-            control_plane_core::Metric::Cosine,
-            index_spec,
+            &r.index_name,
             RunId(uuid::Uuid::new_v4()),
         )
         .await

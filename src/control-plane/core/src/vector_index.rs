@@ -21,6 +21,17 @@ pub enum IndexSpec {
 }
 
 impl IndexSpec {
+    /// The persisted `(index_kind, nlist, m, ef_construction)` column tuple for a
+    /// declaration row. Inverse of [`IndexSpec::from_label`].
+    #[must_use]
+    pub fn as_cols(&self) -> (&'static str, Option<u32>, Option<u32>, Option<u32>) {
+        match self {
+            IndexSpec::Flat => ("flat", None, None, None),
+            IndexSpec::IvfFlat { nlist } => ("ivf_flat", *nlist, None, None),
+            IndexSpec::Hnsw { m, ef_construction } => ("hnsw", None, *m, *ef_construction),
+        }
+    }
+
     /// Map a `(kind, nlist, m, ef_construction)` tuple (e.g. from a job payload or
     /// RPC request) to a spec. `None`/`"flat"` → `Flat`; `"ivf_flat"` → `IvfFlat`;
     /// `"hnsw"` → `Hnsw`; else error.

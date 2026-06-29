@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
     ActionDef, ActionKind, ActionName, Aggregation, ControlPlaneError, DerivedPropertyDef,
-    LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef, Result,
-    TableRef, TypeName,
+    IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef,
+    Result, TableRef, TypeName, VectorIndexDef,
 };
 
 use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
@@ -380,6 +380,110 @@ impl Ontology for PgControlPlane {
             kind,
         })
     }
+
+    async fn define_vector_index(&self, def: VectorIndexDef) -> Result<()> {
+        let prop_ty: Option<String> = sqlx::query_scalar!(
+            "select ty from ontology.property where type_name = $1 and name = $2",
+            def.type_name.0,
+            def.property,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        match prop_ty {
+            Some(t) if t.starts_with("vector(") => {}
+            Some(_) => {
+                return Err(ControlPlaneError::Validation(format!(
+                    "property `{}` on type `{}` is not a vector type",
+                    def.property, def.type_name.0
+                )));
+            }
+            None => {
+                return Err(ControlPlaneError::Validation(format!(
+                    "type `{}` has no property `{}`",
+                    def.type_name.0, def.property
+                )));
+            }
+        }
+        let (kind, nlist, m, ef) = def.spec.as_cols();
+        sqlx::query!(
+            "insert into ontology.vector_index_definition \
+               (type_name, name, property_name, metric, index_kind, nlist, m, ef_construction) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8) \
+             on conflict (type_name, name) do update set \
+               property_name = excluded.property_name, metric = excluded.metric, \
+               index_kind = excluded.index_kind, nlist = excluded.nlist, \
+               m = excluded.m, ef_construction = excluded.ef_construction",
+            def.type_name.0,
+            def.name,
+            def.property,
+            def.metric.as_str(),
+            kind,
+            nlist.map(|v| v as i32),
+            m.map(|v| v as i32),
+            ef.map(|v| v as i32),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn get_vector_index(
+        &self,
+        type_name: &TypeName,
+        name: &str,
+    ) -> Result<Option<VectorIndexDef>> {
+        vector_index_def_row(&self.pool, &type_name.0, name).await
+    }
+
+    async fn vector_indexes_for(&self, type_name: &TypeName) -> Result<Vec<VectorIndexDef>> {
+        let rows = sqlx::query!(
+            "select name from ontology.vector_index_definition where type_name = $1",
+            type_name.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            if let Some(def) = vector_index_def_row(&self.pool, &type_name.0, &r.name).await? {
+                out.push(def);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Read one named vector-index declaration as a `VectorIndexDef`. Shared by the
+/// `Ontology::get_vector_index` impl and the build primitive (which has a raw pool).
+pub async fn vector_index_def_row(
+    pool: &sqlx::PgPool,
+    type_name: &str,
+    name: &str,
+) -> Result<Option<VectorIndexDef>> {
+    let row = sqlx::query!(
+        "select property_name, metric, index_kind, nlist, m, ef_construction \
+         from ontology.vector_index_definition where type_name = $1 and name = $2",
+        type_name,
+        name,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?;
+    let Some(r) = row else { return Ok(None) };
+    Ok(Some(VectorIndexDef {
+        name: name.to_string(),
+        type_name: TypeName(type_name.to_string()),
+        property: r.property_name,
+        metric: r.metric.parse()?,
+        spec: IndexSpec::from_label(
+            Some(r.index_kind.as_str()),
+            r.nlist.map(|v| v as u32),
+            r.m.map(|v| v as u32),
+            r.ef_construction.map(|v| v as u32),
+        )?,
+    }))
 }
 
 /// Split an aggregation into its persisted `(agg_kind, agg_column)` pair.

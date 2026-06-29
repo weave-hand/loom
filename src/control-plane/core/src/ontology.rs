@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use crate::TableRef;
 use crate::error::Result;
 use crate::page::{Page, PageReq};
+use crate::vector_index::{IndexSpec, Metric};
 
 /// An ontology type name (e.g. "Customer").
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -154,6 +155,20 @@ pub struct ParamDef {
     pub required: bool,
 }
 
+/// A named vector index declared on an object type's `vector(N)` property. The
+/// declaration is the authoritative source of an index's kind/metric/params;
+/// the build primitive resolves it and copies it into the mirror row. Dimension
+/// is NOT restated — it is derived from the property's `vector(N)` type. Multiple
+/// indexes may exist per property, distinguished by `name` (unique per type).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VectorIndexDef {
+    pub name: String,
+    pub type_name: TypeName,
+    pub property: String,
+    pub metric: Metric,
+    pub spec: IndexSpec,
+}
+
 /// A named ontology operation. Part-1 semantics: insert one new instance of `target`,
 /// taking a value for each parameter.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,4 +207,17 @@ pub trait Ontology {
     async fn define_action(&self, action: ActionDef) -> Result<()>;
     /// Fetch an action by name. `NotFound` if absent.
     async fn get_action(&self, name: &ActionName) -> Result<ActionDef>;
+    /// Declare (upsert) a named vector index, keyed by `(type, name)`. Replaces an
+    /// existing index of the same key — matching `define_type`'s replace semantics.
+    /// Validates that `def.property` exists on `def.type_name` and is a `vector(N)`
+    /// type; returns `Validation` otherwise.
+    async fn define_vector_index(&self, def: VectorIndexDef) -> Result<()>;
+    /// Fetch one named index declaration. `None` if absent.
+    async fn get_vector_index(
+        &self,
+        type_name: &TypeName,
+        name: &str,
+    ) -> Result<Option<VectorIndexDef>>;
+    /// All index declarations on `type_name` (order unspecified).
+    async fn vector_indexes_for(&self, type_name: &TypeName) -> Result<Vec<VectorIndexDef>>;
 }

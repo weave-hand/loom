@@ -36,7 +36,7 @@ pub use logical_type::{
 };
 pub use ontology::{
     ActionDef, ActionKind, ActionName, Aggregation, Cardinality, DerivedPropertyDef, LinkBacking,
-    LinkDef, ObjectType, Ontology, ParamDef, PropertyDef, TypeName,
+    LinkDef, ObjectType, Ontology, ParamDef, PropertyDef, TypeName, VectorIndexDef,
 };
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};

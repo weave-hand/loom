@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow_array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use control_plane_core::{
     Catalog, ControlPlaneError, DatasetRef, EventType, FlatIndex, HnswIndex, IndexSpec,
-    IvfFlatIndex, LineageEvent, Metric, Result, RunId, SnapshotId, TableRef, VectorKey,
+    IvfFlatIndex, LineageEvent, Result, RunId, SnapshotId, TableRef, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool, Row};
@@ -22,6 +22,7 @@ fn backend<E: std::fmt::Display>(e: E) -> ControlPlaneError {
 pub struct VectorIndexRow {
     pub table_id: i64,
     pub column: String,
+    pub index_name: String,
     pub covered_snapshot: i64,
     pub metric: String,
     pub index_kind: String,
@@ -43,18 +44,18 @@ pub struct VectorIndexRow {
 
 /// Upsert a `vector_index` binding row in the caller's transaction.
 ///
-/// Keyed on `(table_id, column_name, covered_snapshot)` (the table's primary
-/// key): re-building the index for the same column at the same covered snapshot
-/// replaces the binding so it points at the freshly written Puffin sidecar. This
-/// keeps `build_vector_index` idempotent — a re-run or queue-retried build job at
-/// an unchanged snapshot refreshes the pointer instead of failing on a duplicate
-/// key (which would poison the job).
+/// Keyed on `(table_id, column_name, index_name, covered_snapshot)` (the table's
+/// primary key): re-building the same named index for the same column at the same
+/// covered snapshot replaces the binding so it points at the freshly written Puffin
+/// sidecar. This keeps `build_vector_index` idempotent — a re-run or queue-retried
+/// build job at an unchanged snapshot refreshes the pointer instead of failing on a
+/// duplicate key (which would poison the job). Distinct `index_name`s coexist.
 pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) -> Result<()> {
     sqlx::query!(
         "insert into iceberg_mirror.vector_index \
-         (table_id, column_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8) \
-         on conflict (table_id, column_name, covered_snapshot) do update set \
+         (table_id, column_name, index_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         on conflict (table_id, column_name, index_name, covered_snapshot) do update set \
              metric = excluded.metric, \
              index_kind = excluded.index_kind, \
              dim = excluded.dim, \
@@ -63,6 +64,7 @@ pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) ->
              created_at = now()",
         row.table_id,
         row.column,
+        row.index_name,
         row.covered_snapshot,
         row.metric,
         row.index_kind,
@@ -76,22 +78,22 @@ pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) ->
     Ok(())
 }
 
-/// The newest bound index for `(table_id, column)` with `covered_snapshot <= at`,
+/// The newest bound index for `(table_id, index_name)` with `covered_snapshot <= at`,
 /// or `None` if none is bound.
 pub async fn lookup_vector_index(
     pool: &PgPool,
     table_id: i64,
-    column: &str,
+    index_name: &str,
     at: i64,
 ) -> Result<Option<VectorIndexRow>> {
     let row = sqlx::query!(
-        "select table_id, column_name, covered_snapshot, metric, index_kind, dim, \
+        "select table_id, column_name, index_name, covered_snapshot, metric, index_kind, dim, \
                 row_count, puffin_path \
          from iceberg_mirror.vector_index \
-         where table_id = $1 and column_name = $2 and covered_snapshot <= $3 \
+         where table_id = $1 and index_name = $2 and covered_snapshot <= $3 \
          order by covered_snapshot desc limit 1",
         table_id,
-        column,
+        index_name,
         at,
     )
     .fetch_optional(pool)
@@ -100,6 +102,7 @@ pub async fn lookup_vector_index(
     Ok(row.map(|r| VectorIndexRow {
         table_id: r.table_id,
         column: r.column_name,
+        index_name: r.index_name,
         covered_snapshot: r.covered_snapshot,
         metric: r.metric,
         index_kind: r.index_kind,
@@ -122,6 +125,19 @@ pub struct BuiltIndex {
     pub puffin_path: String,
     /// The number of vectors included in the index (cold + hot rows).
     pub row_count: i64,
+}
+
+/// Resolve the ontology type name backing `(table.schema, table.name)`.
+pub async fn type_name_for(pool: &PgPool, table: &TableRef) -> Result<String> {
+    sqlx::query_scalar!(
+        "select name from ontology.object_type where table_schema = $1 and table_name = $2",
+        table.schema,
+        table.name,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?
+    .ok_or_else(|| ControlPlaneError::NotFound(format!("type for {}.{}", table.schema, table.name)))
 }
 
 /// Resolve the ontology's declared `identity` column for `(table.schema, table.name)`.
@@ -336,18 +352,11 @@ pub async fn inline_delta_batch(
 ///
 /// The covered snapshot `S` is captured before any data read so both cold and
 /// hot reads are MVCC-consistent as of `S`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "build_vector_index needs catalog, pool, table, column, metric, index_spec and run_id — \
-              no sensible grouping; mirrors land/append_parquet_snapshot pattern"
-)]
 pub async fn build_vector_index(
     catalog: &crate::iceberg_sql_catalog::SqlCatalog,
     pool: &PgPool,
     table: &TableRef,
-    column: &str,
-    metric: Metric,
-    index_spec: IndexSpec,
+    index_name: &str,
     run_id: RunId,
 ) -> Result<BuiltIndex> {
     use crate::iceberg_catalog::IcebergCatalog;
@@ -359,6 +368,19 @@ pub async fn build_vector_index(
     let ice = IcebergCatalog::new(pool.clone());
     let s: i64 = ice.current_snapshot(table).await?.id.0;
     let at = SnapshotId(s);
+
+    // Resolve the named declaration (authoritative source of column/metric/spec).
+    let type_name = type_name_for(pool, table).await?;
+    let def = crate::ontology::vector_index_def_row(pool, &type_name, index_name)
+        .await?
+        .ok_or_else(|| {
+            ControlPlaneError::NotFound(format!(
+                "no vector index definition `{index_name}` on type `{type_name}`"
+            ))
+        })?;
+    let column: &str = &def.property;
+    let metric = def.metric;
+    let index_spec = def.spec;
 
     // 2. Resolve identity column from the ontology.
     let identity_col = identity_column_for(pool, table).await?;
@@ -492,6 +514,7 @@ pub async fn build_vector_index(
         &VectorIndexRow {
             table_id,
             column: column.to_string(),
+            index_name: index_name.to_string(),
             covered_snapshot: s,
             metric: metric.as_str().to_string(),
             index_kind: index.index_kind().as_str().to_string(),

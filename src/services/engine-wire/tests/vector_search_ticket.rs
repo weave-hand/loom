@@ -5,7 +5,7 @@ fn vector_search_ticket_json_roundtrips() {
     let t = VectorSearchTicket {
         schema: "wh".into(),
         name: "docs".into(),
-        column: "embedding".into(),
+        index_name: "by_sim".into(),
         query: vec![1.0, 0.0, 0.5, 0.25],
         k: 5,
     };
@@ -32,7 +32,7 @@ fn vector_ticket_is_not_a_file_ticket() {
     let vt = VectorSearchTicket {
         schema: "wh".into(),
         name: "docs".into(),
-        column: "embedding".into(),
+        index_name: "by_sim".into(),
         query: vec![1.0],
         k: 1,
     };

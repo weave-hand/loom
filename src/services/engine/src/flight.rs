@@ -70,7 +70,7 @@ impl FlightDataService {
             &self.catalog,
             &self.pool,
             &table,
-            &vs.column,
+            &vs.index_name,
             &vs.query,
             vs.k as usize,
         )

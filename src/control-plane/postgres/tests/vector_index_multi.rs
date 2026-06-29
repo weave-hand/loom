@@ -1,6 +1,6 @@
-//! IVF build: select IndexSpec::IvfFlat, assert the Puffin blob decodes to an
-//! ivf_flat index, the mirror row records index_kind = "ivf_flat", and a search
-//! over the decoded index returns the exact match when every cluster is probed.
+//! Headline acceptance: two named indexes (HNSW/Cosine and IVF-Flat/L2) on the
+//! same vector(8) property build independently into distinct Puffin blobs and
+//! each decodes + searches correctly by name.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,13 +32,13 @@ fn columns() -> Vec<ColumnSpec> {
         },
         ColumnSpec {
             name: "embedding".into(),
-            ty: "vector(4)".into(),
+            ty: "vector(8)".into(),
             nullable: false,
         },
     ]
 }
 
-fn ipc_body(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
+fn ipc_body(rows: &[(i64, [f32; 8])]) -> Vec<u8> {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
     let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
@@ -92,7 +92,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ivf_build_writes_decodable_blob_and_mirror_kind() {
+async fn two_named_indexes_on_one_property_build_and_search_independently() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
@@ -100,12 +100,13 @@ async fn ivf_build_writes_decodable_blob_and_mirror_kind() {
     let pool = fx.pool_for(&db).await;
     let table = TableRef {
         schema: "wh".into(),
-        name: "docs".into(),
+        name: "document".into(),
     };
 
+    // Define the Document type with id + embedding(8) properties.
     cp.ontology()
         .define_type(ObjectType {
-            name: TypeName("Docs".into()),
+            name: TypeName("Document".into()),
             table: table.clone(),
             properties: vec![
                 PropertyDef {
@@ -115,7 +116,7 @@ async fn ivf_build_writes_decodable_blob_and_mirror_kind() {
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "vector(4)".into(),
+                    ty: "vector(8)".into(),
                     required: true,
                 },
             ],
@@ -125,23 +126,45 @@ async fn ivf_build_writes_decodable_blob_and_mirror_kind() {
         .await
         .expect("define_type");
 
+    // Declare two named indexes on the same property with different kinds and metrics.
     cp.ontology()
         .define_vector_index(VectorIndexDef {
-            name: "by_ivf".into(),
-            type_name: TypeName("Docs".into()),
+            name: "by_sim".into(),
+            type_name: TypeName("Document".into()),
             property: "embedding".into(),
             metric: Metric::Cosine,
-            spec: IndexSpec::IvfFlat { nlist: Some(2) },
+            spec: IndexSpec::Hnsw {
+                m: Some(16),
+                ef_construction: Some(200),
+            },
         })
         .await
-        .expect("define_vector_index");
+        .expect("define by_sim");
 
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_cluster".into(),
+            type_name: TypeName("Document".into()),
+            property: "embedding".into(),
+            metric: Metric::L2,
+            spec: IndexSpec::IvfFlat { nlist: Some(4) },
+        })
+        .await
+        .expect("define by_cluster");
+
+    // Seed: 8 orthogonal unit vectors in R^8 (standard basis).
+    // Cosine query e_1 = [1,0,...,0] → id=1 is nearest (similarity=1, all others=0).
+    // L2 query e_8 = [0,...,0,1]     → id=8 is nearest (distance=0, all others=√2).
     let run = RunId(uuid::Uuid::new_v4());
-    let rows: &[(i64, [f32; 4])] = &[
-        (1, [1.0, 0.0, 0.0, 0.0]),
-        (2, [0.0, 1.0, 0.0, 0.0]),
-        (3, [0.0, 0.0, 1.0, 0.0]),
-        (4, [0.0, 0.0, 0.0, 1.0]),
+    let rows: &[(i64, [f32; 8])] = &[
+        (1, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (2, [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (3, [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (4, [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]),
+        (5, [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]),
+        (6, [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+        (7, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+        (8, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
     ];
     land(
         &pool,
@@ -156,38 +179,80 @@ async fn ivf_build_writes_decodable_blob_and_mirror_kind() {
     .await
     .expect("land rows");
 
-    // Build with IVF (nlist=2 over 4 rows).
-    let build_run = RunId(uuid::Uuid::new_v4());
-    let built = build_vector_index(&catalog, &pool, &table, "by_ivf", build_run)
-        .await
-        .expect("build ivf");
-    assert_eq!(built.row_count, 4);
+    // Build both named indexes independently.
+    build_vector_index(
+        &catalog,
+        &pool,
+        &table,
+        "by_sim",
+        RunId(uuid::Uuid::new_v4()),
+    )
+    .await
+    .expect("build by_sim");
+    build_vector_index(
+        &catalog,
+        &pool,
+        &table,
+        "by_cluster",
+        RunId(uuid::Uuid::new_v4()),
+    )
+    .await
+    .expect("build by_cluster");
 
-    // Mirror row records the IVF kind.
+    // Resolve the live mirror table_id.
     let mut conn = pool.acquire().await.expect("acquire");
     let table_id: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
         "select table_id from iceberg_mirror.\"table\" \
-         where table_namespace = 'wh' and table_name = 'docs' and end_snapshot is null",
+         where table_namespace = 'wh' and table_name = 'document' and end_snapshot is null",
     ))
     .fetch_one(&mut *conn)
     .await
     .expect("table_id");
-    let found = lookup_vector_index(&pool, table_id, "by_ivf", built.covered_snapshot)
-        .await
-        .expect("lookup")
-        .expect("Some");
-    assert_eq!(found.index_kind, "ivf_flat");
+    drop(conn);
 
-    // The blob decodes polymorphically to an ivf_flat index that searches.
-    let file_io = FileIO::new_with_fs();
-    let idx = read_vector_index(&file_io, &built.puffin_path)
+    // Each name resolves to a distinct mirror row with the correct kind and metric.
+    let sim = lookup_vector_index(&pool, table_id, "by_sim", i64::MAX)
         .await
-        .expect("read");
-    assert_eq!(idx.index_kind(), control_plane_core::IndexKind::IvfFlat);
-    assert_eq!(idx.dim(), 4);
-    assert_eq!(idx.row_count(), 4);
-    // With 2 clusters, probing default nprobe may miss; but id=1 is its own
-    // cluster's nearest, and nprobe>=1 always probes the query's own centroid.
-    let res = idx.search(&[1.0, 0.0, 0.0, 0.0], 1);
-    assert_eq!(res[0].0, VectorKey::Int(1));
+        .expect("lookup by_sim")
+        .expect("Some");
+    assert_eq!(sim.index_kind, "hnsw");
+    assert_eq!(sim.metric, "cosine");
+
+    let clus = lookup_vector_index(&pool, table_id, "by_cluster", i64::MAX)
+        .await
+        .expect("lookup by_cluster")
+        .expect("Some");
+    assert_eq!(clus.index_kind, "ivf_flat");
+    assert_eq!(clus.metric, "l2");
+
+    assert_ne!(
+        sim.puffin_path, clus.puffin_path,
+        "each named index has its own blob"
+    );
+
+    // Each blob decodes + searches independently.
+    let file_io = FileIO::new_with_fs();
+
+    // HNSW/Cosine: query = e_1 → nearest is id=1 (cosine similarity = 1.0).
+    let idx_sim = read_vector_index(&file_io, &sim.puffin_path)
+        .await
+        .expect("read by_sim");
+    assert_eq!(idx_sim.index_kind(), control_plane_core::IndexKind::Hnsw);
+    assert_eq!(idx_sim.dim(), 8);
+    assert_eq!(idx_sim.row_count(), 8);
+    let res_sim = idx_sim.search(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1);
+    assert_eq!(res_sim[0].0, VectorKey::Int(1));
+
+    // IVF-Flat/L2: query = e_8 → nearest is id=8 (L2 distance = 0).
+    let idx_clus = read_vector_index(&file_io, &clus.puffin_path)
+        .await
+        .expect("read by_cluster");
+    assert_eq!(
+        idx_clus.index_kind(),
+        control_plane_core::IndexKind::IvfFlat
+    );
+    assert_eq!(idx_clus.dim(), 8);
+    assert_eq!(idx_clus.row_count(), 8);
+    let res_clus = idx_clus.search(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], 1);
+    assert_eq!(res_clus[0].0, VectorKey::Int(8));
 }

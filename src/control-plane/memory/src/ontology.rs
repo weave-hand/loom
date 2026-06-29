@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use control_plane_core::{
     ActionDef, ActionName, ControlPlaneError, LinkDef, ObjectType, Ontology, Page, PageReq, Result,
-    TableRef, TypeName,
+    TableRef, TypeName, VectorIndexDef,
 };
 
 use crate::MemoryControlPlane;
@@ -13,6 +13,7 @@ pub(crate) struct OntologyState {
     pub(crate) types: HashMap<String, ObjectType>,
     pub(crate) links: Vec<LinkDef>,
     pub(crate) actions: HashMap<String, ActionDef>,
+    pub(crate) vector_indexes: HashMap<(String, String), VectorIndexDef>,
 }
 
 #[async_trait]
@@ -104,5 +105,55 @@ impl Ontology for MemoryControlPlane {
             .get(&name.0)
             .cloned()
             .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))
+    }
+
+    async fn define_vector_index(&self, def: VectorIndexDef) -> Result<()> {
+        let mut ont = self.ontology.lock();
+        let ty = ont
+            .types
+            .get(&def.type_name.0)
+            .ok_or_else(|| ControlPlaneError::NotFound(def.type_name.0.clone()))?;
+        match ty.properties.iter().find(|p| p.name == def.property) {
+            Some(p) if p.ty.starts_with("vector(") => {}
+            Some(_) => {
+                return Err(ControlPlaneError::Validation(format!(
+                    "property `{}` on type `{}` is not a vector type",
+                    def.property, def.type_name.0
+                )));
+            }
+            None => {
+                return Err(ControlPlaneError::Validation(format!(
+                    "type `{}` has no property `{}`",
+                    def.type_name.0, def.property
+                )));
+            }
+        }
+        ont.vector_indexes
+            .insert((def.type_name.0.clone(), def.name.clone()), def);
+        Ok(())
+    }
+
+    async fn get_vector_index(
+        &self,
+        type_name: &TypeName,
+        name: &str,
+    ) -> Result<Option<VectorIndexDef>> {
+        Ok(self
+            .ontology
+            .lock()
+            .vector_indexes
+            .get(&(type_name.0.clone(), name.to_string()))
+            .cloned())
+    }
+
+    async fn vector_indexes_for(&self, type_name: &TypeName) -> Result<Vec<VectorIndexDef>> {
+        Ok(self
+            .ontology
+            .lock()
+            .vector_indexes
+            .values()
+            .filter(|d| d.type_name == *type_name)
+            .cloned()
+            .collect())
     }
 }

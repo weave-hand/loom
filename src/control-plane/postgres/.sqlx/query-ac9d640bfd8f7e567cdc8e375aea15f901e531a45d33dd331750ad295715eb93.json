@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select property_name, metric, index_kind, nlist, m, ef_construction from ontology.vector_index_definition where type_name = $1 and name = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "property_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "property_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "metric",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "metric"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "index_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "index_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "nlist",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "nlist"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "m",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "m"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "ef_construction",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "ef_construction"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ac9d640bfd8f7e567cdc8e375aea15f901e531a45d33dd331750ad295715eb93"
+}
