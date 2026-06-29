@@ -168,7 +168,9 @@ rust_library(
     crate_root = "tests/e2e_support.rs",
     deps = [
         ":query-api",
+        "//src/services/engine:engine",
         "//src/services/engine-serving:engine-serving",
+        "//src/services/engine-wire:engine-wire",
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -178,10 +180,14 @@ rust_library(
         "//third-party:async-trait",
         "//third-party:axum",
         "//third-party:http-body-util",
+        "//third-party:iceberg",
         "//third-party:serde_json",
         "//third-party:sqlx",
+        "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
         "//third-party:tower",
         "//third-party:uuid",
     ],
@@ -1108,5 +1114,23 @@ loom_fixture_test(
         "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "action-client-wire",
+    crate = "action_client_wire",
+    srcs = ["tests/action_client_wire.rs"],
+    crate_root = "tests/action_client_wire.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
