@@ -387,7 +387,10 @@ impl SqlCatalog {
             Some(t) => sqlx_query.execute(&mut **t).await.map_err(from_sqlx_error),
             None => {
                 let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
-                let result = sqlx_query.execute(&mut *tx).await.map_err(from_sqlx_error)?;
+                let result = sqlx_query
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(from_sqlx_error)?;
                 tx.commit().await.map_err(from_sqlx_error)?;
                 Ok(result)
             }
