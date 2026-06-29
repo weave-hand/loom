@@ -139,6 +139,8 @@ items are committed-but-unshipped. Deferred ideas live in
   A typed-transform job names input/output ontology types; the worker runs SQL in type terms, validates exact conformance, and commits with type-named lineage (`TypeId`). See [[fut-programmatic-transforms]], [[fut-type-table-lineage-join]], [[fut-conformance-enum-consolidation]], [[fut-transform-followups]].
 - [x] **Overwrite output mode** `{#road-overwrite-output-mode area:transform status:done from:roadmap-where-we-are pr:- spec:2026-06-17-overwrite-output-mode-design}`
   `output_mode = overwrite` replaces a table's live contents via a new DuckLake-faithful `Tx::replace_files` (prior files expire at the new snapshot; older snapshots still time-travel).
+- [ ] **Apply `LOOM_WRITE_*` to transform output** `{#road-transform-write-tuning area:transform status:planned from:2026-06-29-transform-write-tuning-design pr:- spec:2026-06-29-transform-write-tuning-design}`
+  `run_transform` writes output with a hardcoded `WriteConfig::default()` (`run.rs:182`), so the `LOOM_WRITE_*` write-tuning knobs [[road-config-seam-unification]] wired into ingest + worker-compaction are silently ignored for transform-derived datasets. Fix: give `TransformConfig` a `write: WriteConfig` field (overlay/validate chained, mirroring `IngestConfig`) and thread `&WriteConfig` through `transform_handler`/`typed_transform_handler`/`run_transform` to the `write_dataset` call. `compact_table` already threads `cfg.write`; no default-value behavior change (unset `LOOM_WRITE_*` == today's default). Promotes [[fut-transform-write-tuning]].
 
 ## iceberg
 
