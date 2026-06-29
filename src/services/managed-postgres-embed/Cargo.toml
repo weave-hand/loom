@@ -7,6 +7,7 @@ edition = "2024"
 managed-postgres = { path = "../managed-postgres" }
 flate2 = "1"
 tar = "0.4"
+thiserror = "1"
 
 [dev-dependencies]
 control-plane-postgres = { path = "../../control-plane/postgres" }

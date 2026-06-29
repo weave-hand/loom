@@ -10,7 +10,7 @@ rust_library(
         "LOOM_PG_TARBALL": "$(location //src/control-plane/postgres:postgres-tarball)",
         "LOOM_PG_VERSION": "17.9.0",
     },
-    deps = [],
+    deps = ["//third-party:flate2", "//third-party:tar", "//third-party:thiserror"],
     visibility = ["PUBLIC"],
 )
 
@@ -21,4 +21,13 @@ rust_test(
     crate_root = "tests/embed_present.rs",
     edition = "2024",
     deps = [":managed-postgres-embed"],
+)
+
+rust_test(
+    name = "extract",
+    crate = "extract",
+    srcs = ["tests/extract.rs"],
+    crate_root = "tests/extract.rs",
+    edition = "2024",
+    deps = [":managed-postgres-embed", "//third-party:tempfile"],
 )
