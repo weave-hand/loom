@@ -95,6 +95,7 @@ pub async fn run_transform(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
     root_url: &str,
+    write: &WriteConfig,
     run_id: &str,
     req: TransformRequest<'_>,
 ) -> Result<SnapshotId, TransformError> {
@@ -179,14 +180,7 @@ pub async fn run_transform(
 
     // 5. Write the result as N Snappy Parquet files under the output table dir.
     let dir_prefix = format!("{}/{}/{}", req.output.schema, req.output.name, run_id);
-    let written = write_dataset(
-        store,
-        &dir_prefix,
-        schema,
-        &batches,
-        &WriteConfig::default(),
-    )
-    .await?;
+    let written = write_dataset(store, &dir_prefix, schema, &batches, write).await?;
     // Store ABSOLUTE mirror paths (`{root_url}/{schema}/{table}/{rel}`) so the serving
     // engine — which resolves `iceberg_mirror.data_file.path` as an absolute URL — can read
     // the transform's output. A relative path here makes a transform-derived dataset

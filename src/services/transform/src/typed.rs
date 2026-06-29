@@ -9,6 +9,7 @@ use control_plane_core::{
     ControlPlane, ControlPlaneError, DatasetRef, EventType, LineageEvent, RunId, SnapshotId,
     TypeName,
 };
+use datafusion_io::WriteConfig;
 use object_store::ObjectStore;
 use uuid::Uuid;
 
@@ -32,6 +33,7 @@ pub async fn run_typed_transform(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
     root_url: &str,
+    write: &WriteConfig,
     run_id: &str,
     inputs: &[TypeName],
     output: &TypeName,
@@ -85,6 +87,7 @@ pub async fn run_typed_transform(
         cp,
         store,
         root_url,
+        write,
         run_id,
         TransformRequest {
             inputs: &specs,

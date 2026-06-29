@@ -139,6 +139,7 @@ async fn transform_writes_output_to_iceberg() {
         &cp,
         store.clone(),
         &format!("file://{warehouse}"),
+        &WriteConfig::default(),
         "run-append",
         TransformRequest {
             inputs: &inputs,
@@ -164,6 +165,7 @@ async fn transform_writes_output_to_iceberg() {
         &cp,
         store.clone(),
         &format!("file://{warehouse}"),
+        &WriteConfig::default(),
         "run-overwrite",
         TransformRequest {
             inputs: &inputs,
@@ -258,6 +260,7 @@ async fn transform_output_is_readable_through_serving_engine() {
         &cp,
         store.clone(),
         &format!("file://{warehouse}"),
+        &WriteConfig::default(),
         "run-serve",
         TransformRequest {
             inputs: &inputs,

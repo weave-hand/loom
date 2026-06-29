@@ -32,6 +32,7 @@ use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
+use datafusion_io::WriteConfig;
 use transform::{transform_handler, typed_transform_handler};
 
 use transform_e2e_support::{col_csv, cols, make_catalog, scalar_i64, seed_table, tref};
@@ -79,9 +80,9 @@ fn spawn_worker(
                     async move {
                         match job.kind.as_str() {
                             "typed-transform" => {
-                                typed_transform_handler(cp.as_ref(), store, &root_url, job).await
+                                typed_transform_handler(cp.as_ref(), store, &root_url, &WriteConfig::default(), job).await
                             }
-                            _ => transform_handler(cp.as_ref(), store, &root_url, job).await,
+                            _ => transform_handler(cp.as_ref(), store, &root_url, &WriteConfig::default(), job).await,
                         }
                     }
                 },

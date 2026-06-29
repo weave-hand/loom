@@ -22,6 +22,7 @@ use object_store::local::LocalFileSystem;
 use tokio_util::sync::CancellationToken;
 use transform::transform_handler;
 
+use datafusion_io::WriteConfig;
 use transform_e2e_support::{cols, lineage, make_catalog, scalar_i64, seed_table, tref};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -119,7 +120,10 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
                 let cp = cp_h.clone();
                 let store = store_h.clone();
                 let root_url = root_h.clone();
-                async move { transform_handler(cp.as_ref(), store, &root_url, job).await }
+                async move {
+                    transform_handler(cp.as_ref(), store, &root_url, &WriteConfig::default(), job)
+                        .await
+                }
             })
             .await
     });
@@ -224,6 +228,7 @@ async fn empty_input_runs_transform_count_is_zero() {
         &cp,
         store.clone(),
         &format!("file://{warehouse}"),
+        &WriteConfig::default(),
         "run-empty-count",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {
@@ -275,6 +280,7 @@ async fn empty_input_select_star_commits_empty_output() {
         &cp,
         store.clone(),
         &format!("file://{warehouse}"),
+        &WriteConfig::default(),
         "run-empty-star",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {

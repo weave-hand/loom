@@ -12,6 +12,7 @@ use control_plane_core::{
 };
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
+use datafusion_io::WriteConfig;
 use transform::{OutputMode, TransformError, TransformInput, TransformRequest, run_transform};
 
 /// A catalog where the table is live at `current_snapshot` but vanishes by the time
@@ -108,6 +109,7 @@ async fn missing_input_at_files_is_unknown_input() {
         &cp,
         store,
         "file:///tmp/loom-test-wh",
+        &WriteConfig::default(),
         "run-x",
         TransformRequest {
             inputs: &[input],
