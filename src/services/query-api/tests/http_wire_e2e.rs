@@ -24,7 +24,6 @@ use e2e_support::{grant_read, ids_i64, prop, session_token, spawn_http, subject_
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use ingest::landing::IcebergMaterializer;
-use query_api::serving_datafusion::IcebergActionWriter;
 use service_runtime::{AuthState, protect};
 
 const INLINE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
@@ -98,21 +97,20 @@ async fn iceberg_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
         cp: cp.clone() as Arc<dyn ControlPlane>,
     });
 
+    let (action_client, eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), INLINE_BYTE_LIMIT, i64::MAX)
+            .await;
+
     let query = query_api::http::router(query_api::http::AppState {
         cp: cp.clone() as Arc<dyn ControlPlane>,
         serving: Arc::new(InProcessServingEngine::new(IcebergCatalog::new(
             pool.clone(),
         ))),
-        action_engine: Arc::new(IcebergActionWriter::new(
-            catalog.clone(),
-            pool,
-            INLINE_BYTE_LIMIT,
-            i64::MAX,
-        )),
+        action_engine: Arc::new(action_client),
         default_limit: 1000,
     });
 
-    (WireBackend { ingest, query, cp }, Box::new(warehouse))
+    (WireBackend { ingest, query, cp }, Box::new((warehouse, eg)))
 }
 
 /// Seed the not-under-test scaffolding (ontology type + ACL grant), spawn both

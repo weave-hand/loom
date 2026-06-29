@@ -3,9 +3,6 @@
 //! loom-native DataFusion serving engine, and is governed by write-enforcement.
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 // `Acl` is needed in scope to call `define_subject`/`define_role`/`assign_role`/
 // `grant` on the concrete `PgControlPlane`. `IcebergCatalog::live_tables` is an
 // inherent method, so the `Catalog` trait is intentionally NOT imported (importing
@@ -17,35 +14,12 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use e2e_support::InProcessServingEngine;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use query_api::action::{ActionDeps, ActionError, run_action};
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
 use query_api::serving::ActionEngine;
-use query_api::serving_datafusion::IcebergActionWriter;
 use serde_json::json;
-
-/// Build a vendored SqlCatalog over `dsn` + a `file://warehouse` (the action writer
-/// needs one even though a single inline row never touches it — `land` only uses the
-/// catalog on the Parquet branch).
-async fn build_catalog(dsn: &str, warehouse: &std::path::Path) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn.to_string());
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", warehouse.display()),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("build SqlCatalog")
-}
 
 /// Define `Widget(id Long required, name String)` + a `createWidget` insert action.
 async fn define_widget(cp: &PgControlPlane) -> TypeName {
@@ -128,15 +102,15 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
     let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
 
     // Large flush threshold so the single inline row never enqueues a flush job.
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
@@ -201,12 +175,12 @@ async fn ungranted_subject_is_forbidden_and_writes_nothing() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
     let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
     let _widget = define_widget(&cp).await; // type + action defined, NO grant.
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
@@ -244,11 +218,11 @@ async fn failed_write_commits_neither_row_nor_lineage() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
     let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
     let table = TableRef {
         schema: "main".into(),
         name: "widget".into(),

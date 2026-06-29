@@ -1,20 +1,13 @@
 //! query-api binary: build the read AppState from env config via service_runtime —
 //! a Postgres control plane plus the loom-native DataFusion engine over the Iceberg
-//! mirror (reads stream over the engine wire via `EngineServingClient`) — and serve
-//! the HTTP API.
+//! mirror (reads + governed writes stream over the engine wire) — and serve the HTTP API.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use control_plane_core::ControlPlane;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
 use query_api::engine_client::EngineServingClient;
 use query_api::http::{AppState, router};
 use query_api::serving::{ActionEngine, ServingEngine};
-use query_api::serving_datafusion::IcebergActionWriter;
 
 /// Default per-export row cap (`LOOM_EXPORT_MAX_ROWS`). Bounds a runaway governed export; an
 /// operator hydrating a large working set raises it.
@@ -42,19 +35,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             format!("LOOM_ENGINE_SOCKET must be set for the Iceberg serving backend: {e}").into()
         })?;
 
-    let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = {
-        let catalog = Arc::new(build_iceberg_catalog(&cfg).await?);
-        let action: Arc<dyn ActionEngine> = Arc::new(IcebergActionWriter::new(
-            catalog,
-            pool.clone(),
-            app_cfg.routing.inline_byte_limit,
-            app_cfg.routing.flush_byte_threshold,
-        ));
-        (
-            Arc::new(EngineServingClient::connect(engine_socket.clone()).await?),
-            action,
-        )
-    };
+    let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = (
+        Arc::new(EngineServingClient::connect(engine_socket.clone()).await?),
+        Arc::new(
+            query_api::engine_action_client::EngineActionClient::connect(engine_socket.clone())
+                .await?,
+        ),
+    );
 
     // Auth wiring.
     let auth_state = service_runtime::AuthState {
@@ -123,23 +110,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     service_runtime::serve(cfg.bind_addr, app).await?;
     Ok(())
-}
-
-/// Construct the vendored Iceberg SQL catalog over the same Postgres using the
-/// configured warehouse URI (scheme-selected: `file://` for local, `s3://` for S3).
-/// Mirrors ingest's helper.
-async fn build_iceberg_catalog(
-    cfg: &service_runtime::Config,
-) -> Result<SqlCatalog, Box<dyn std::error::Error>> {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        cfg.object_store.warehouse_uri.clone(),
-    );
-    let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
-        .load("loom", props)
-        .await?;
-    Ok(catalog)
 }

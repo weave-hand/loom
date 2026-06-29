@@ -96,3 +96,11 @@ entry = "buck2 test //src/..."
 language = "system"
 pass_filenames = false
 stages = ["pre-push"]
+
+[[repos.hooks]]
+id = "query-api-postgres-free"
+name = "query-api lib has no direct postgres dep"
+entry = "bash tools/check-query-api-postgres-free.sh"
+language = "system"
+pass_filenames = false
+stages = ["pre-push"]

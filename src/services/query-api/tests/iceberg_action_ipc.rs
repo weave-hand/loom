@@ -4,8 +4,8 @@
 
 use arrow::array::{Array, Int64Array, StringArray};
 use arrow::ipc::reader::StreamReader;
+use query_api::engine_action_client::encode_ipc_stream;
 use query_api::serving::{SqlValue, build_object_batch};
-use query_api::serving_datafusion::encode_ipc_stream;
 
 #[test]
 fn batch_encodes_to_ipc_and_round_trips() {

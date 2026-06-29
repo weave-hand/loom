@@ -3,9 +3,6 @@
 //! back through the governed read path. Also: an ungranted subject is forbidden.
 //! Real Postgres + Iceberg.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, CompareOp, ControlPlane, DatasetRef, Effect,
     ObjectType, PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue,
@@ -14,32 +11,12 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use e2e_support::InProcessServingEngine;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
+use e2e_support::{EngineGuard, InProcessServingEngine};
 use query_api::action::{ActionDeps, ActionError, run_action};
+use query_api::engine_action_client::EngineActionClient;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
-use query_api::serving_datafusion::IcebergActionWriter;
 use serde_json::json;
-
-/// Build a vendored SqlCatalog over `dsn` + a `file://warehouse`.
-async fn build_catalog(dsn: &str, warehouse: &std::path::Path) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn.to_string());
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", warehouse.display()),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("build SqlCatalog")
-}
 
 /// A booted fixture with a fully-granted writer over a two-column `main.widget`.
 struct WidgetWriter {
@@ -48,18 +25,17 @@ struct WidgetWriter {
     widget: TypeName,
     subj: SubjectId,
     role: RoleId,
-    engine: IcebergActionWriter,
+    engine: EngineActionClient,
+    _eg: EngineGuard,
     warehouse: tempfile::TempDir,
 }
 
 /// Boot a fixture, define the `Widget` type + a `createWidget` insert action,
-/// grant Write+Read to a `writer` subject, and attach an Iceberg action writer.
+/// grant Write+Read to a `writer` subject, and attach the engine action client.
 async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
     let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
     // Define the Widget type + a createWidget insert action.
     let widget = TypeName("Widget".into());
@@ -131,7 +107,9 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
     .await
     .unwrap();
 
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
     WidgetWriter {
         cp,
         pool,
@@ -139,6 +117,7 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
         subj,
         role,
         engine,
+        _eg,
         warehouse,
     }
 }
@@ -189,6 +168,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
         engine,
         widget: _,
         role: _,
+        _eg,
         warehouse: _,
     } = setup_widget_writer(&fx).await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
@@ -259,9 +239,7 @@ async fn ungranted_subject_is_forbidden() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
     let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
     let widget = TypeName("Widget".into());
     cp.ontology()
@@ -295,7 +273,9 @@ async fn ungranted_subject_is_forbidden() {
         .await
         .unwrap();
 
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
@@ -335,8 +315,9 @@ async fn write_policy_enforces_row_filter_and_deny_column() {
         subj,
         role,
         engine,
+        _eg,
         // Keep the `file://` warehouse TempDir alive for the whole test: the
-        // IcebergActionWriter writes Parquet into it and the read-back resolves those files.
+        // engine writes Parquet into it and the read-back resolves those files.
         warehouse,
     } = setup_widget_writer(&fx).await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));

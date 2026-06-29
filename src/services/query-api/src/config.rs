@@ -34,25 +34,22 @@ impl ServingTuning {
     }
 }
 
-/// The query-api binary's composed config: routing + serving tuning. `#[serde(default)]`
+/// The query-api binary's composed config: serving tuning. `#[serde(default)]`
 /// so a partial config file deserializes (omitted domains fall to their `Default`). Loaded
 /// via `loom_config::load` (defaults < file < env) through the `LayeredConfig` impl below.
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 pub struct QueryApiConfig {
-    pub routing: ingest::config::RoutingTuning,
     pub serving: ServingTuning,
 }
 
 impl loom_config::LayeredConfig for QueryApiConfig {
     fn overlay_env(&mut self, env: &HashMap<String, String>) -> Result<(), ConfigError> {
-        self.routing.overlay_env(env)?;
         self.serving.overlay_env(env)?;
         Ok(())
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        self.routing.validate()?;
         self.serving.validate()?;
         Ok(())
     }

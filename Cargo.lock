@@ -1967,12 +1967,16 @@ dependencies = [
  "prost-build",
  "prost-types",
  "protox",
+ "serde",
+ "serde_json",
+ "time",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
  "tower",
+ "uuid",
 ]
 
 [[package]]
@@ -3714,7 +3718,6 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "control-plane-core",
- "control-plane-postgres",
  "engine-wire",
  "http-body-util",
  "reqwest",

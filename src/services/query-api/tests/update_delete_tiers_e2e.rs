@@ -5,9 +5,6 @@
 //!
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use arrow_array::Int64Array;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Catalog, ControlPlane, Effect, ObjectType,
@@ -16,32 +13,11 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use e2e_support::InProcessServingEngine;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use query_api::action::{ActionDeps, run_action};
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
-use query_api::serving_datafusion::IcebergActionWriter;
 use serde_json::json;
-
-/// Build a vendored SqlCatalog over `dsn` + a `file://warehouse`.
-async fn build_catalog(dsn: &str, warehouse: &std::path::Path) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn.to_string());
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", warehouse.display()),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("build SqlCatalog")
-}
 
 /// Define `Widget(id Long identity, name String, qty Long)` + `createWidget`,
 /// `updateWidget` (id+qty), and `deleteWidget` (id) actions.
@@ -206,14 +182,14 @@ async fn update_time_travel() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
     let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
 
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
@@ -286,14 +262,14 @@ async fn delete_time_travel() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
     let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
 
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
@@ -374,15 +350,14 @@ async fn mutate_flushed_file_row() {
     let fx = PgFixture::start();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
     let warehouse = tempfile::tempdir().expect("warehouse");
-    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
 
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
 
     // inline_byte_limit=0: every row's byte size exceeds the limit, so INSERT goes to Parquet.
-    let engine = IcebergActionWriter::new(catalog, pool.clone(), 0, i64::MAX);
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 0, i64::MAX).await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,

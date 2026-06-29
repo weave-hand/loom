@@ -32,10 +32,10 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, Auth, Cardinality, ColumnSpec, ControlPlane, ControlPlaneError, DatasetId, Effect,
-    EventType, IndexSpec, LineageEvent, LinkBacking, LinkDef, Metric, NewUser, ObjectType,
-    Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, RunId, SubjectId, TableRef,
-    TypeName, VectorIndexDef,
+    Acl, Action, ActionDef, ActionKind, ActionName, Auth, Cardinality, ColumnSpec, ControlPlane,
+    ControlPlaneError, DatasetId, Effect, EventType, IndexSpec, LineageEvent, LinkBacking, LinkDef,
+    Metric, NewUser, ObjectType, Ontology, ParamDef, Policy, PolicyTarget, PropertyDef, RoleId,
+    RowFilter, RunId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -701,6 +701,225 @@ pub async fn seed_vector_type(
         InProcessServingEngine::new_with_search(catalog, pool.clone(), search_catalog),
     );
     (cp, eng, writer)
+}
+
+/// Define `Widget(id Long required identity, name String, qty Long)` + the
+/// `createWidget` (insert), `updateWidget` (id + qty), and `deleteWidget` (id) actions.
+/// Promoted from `update_delete_tiers_e2e.rs` so wire-client tests can reuse it.
+pub async fn define_widget(cp: &PgControlPlane) -> TypeName {
+    let widget = TypeName("Widget".into());
+    cp.ontology()
+        .define_type(ObjectType {
+            name: widget.clone(),
+            table: TableRef {
+                schema: "main".into(),
+                name: "widget".into(),
+            },
+            properties: vec![
+                PropertyDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+                PropertyDef {
+                    name: "name".into(),
+                    ty: "String".into(),
+                    required: false,
+                },
+                PropertyDef {
+                    name: "qty".into(),
+                    ty: "Long".into(),
+                    required: false,
+                },
+            ],
+            derived: vec![],
+            identity: Some("id".into()),
+        })
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("createWidget".into()),
+            target: widget.clone(),
+            parameters: vec![
+                ParamDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+                ParamDef {
+                    name: "name".into(),
+                    ty: "String".into(),
+                    required: false,
+                },
+                ParamDef {
+                    name: "qty".into(),
+                    ty: "Long".into(),
+                    required: false,
+                },
+            ],
+            kind: ActionKind::Insert,
+        })
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("updateWidget".into()),
+            target: widget.clone(),
+            parameters: vec![
+                ParamDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+                ParamDef {
+                    name: "qty".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+            ],
+            kind: ActionKind::Update,
+        })
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("deleteWidget".into()),
+            target: widget.clone(),
+            parameters: vec![ParamDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+            }],
+            kind: ActionKind::Delete,
+        })
+        .await
+        .unwrap();
+    widget
+}
+
+/// Grant `Write` + `Read` on `widget` to a fresh `writer` subject (role `writers`).
+/// Promoted from `update_delete_tiers_e2e.rs`.
+pub async fn grant_writer(cp: &PgControlPlane, widget: &TypeName) -> SubjectId {
+    let subj = SubjectId("writer".into());
+    let role = RoleId("writers".into());
+    cp.define_subject(&subj).await.unwrap();
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subj, &role).await.unwrap();
+    cp.grant(
+        &role,
+        Action::Write,
+        PolicyTarget::Type(widget.clone()),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Type(widget.clone()),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+    subj
+}
+
+/// Keeps the spawned engine server and its socket dir alive for the test's lifetime.
+pub struct EngineGuard {
+    _sock_dir: tempfile::TempDir,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for EngineGuard {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+/// Spawn an `EngineControlService` on a UDS backed by `db` + `warehouse`, and return a
+/// query-api `EngineActionClient` pointing at it (plus a keep-alive guard). The engine
+/// writes to the same Postgres + warehouse the test reads from.
+pub async fn spawn_engine_writer(
+    fx: &control_plane_postgres::fixture::PgFixture,
+    db: &str,
+    warehouse: &std::path::Path,
+    inline_byte_limit: usize,
+    flush_byte_threshold: i64,
+) -> (
+    query_api::engine_action_client::EngineActionClient,
+    EngineGuard,
+) {
+    use control_plane_postgres::iceberg_sql_catalog::{
+        SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
+    };
+    use engine::service::EngineControlService;
+    use engine_serving::IcebergActionWriter;
+    use engine_wire::pb::engine_control_server::EngineControlServer;
+    use iceberg::CatalogBuilder;
+    use iceberg::io::LocalFsStorageFactory;
+    use std::time::Duration;
+    use tonic::transport::Server;
+
+    let mk_props = || {
+        let mut p = std::collections::HashMap::new();
+        p.insert(SQL_CATALOG_PROP_URI.to_string(), fx.pg_dsn(db));
+        p.insert(
+            SQL_CATALOG_PROP_WAREHOUSE.to_string(),
+            format!("file://{}", warehouse.display()),
+        );
+        p
+    };
+    let build = || async {
+        SqlCatalogBuilder::default()
+            .with_storage_factory(std::sync::Arc::new(LocalFsStorageFactory))
+            .load("loom", mk_props())
+            .await
+            .expect("build SqlCatalog")
+    };
+
+    let pool = fx.pool_for(db).await;
+    let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
+    let catalog = build().await;
+    let writer = IcebergActionWriter::new(
+        std::sync::Arc::new(build().await),
+        pool.clone(),
+        inline_byte_limit,
+        flush_byte_threshold,
+    );
+    let svc = EngineControlService {
+        cp,
+        catalog,
+        pool,
+        retention: Duration::from_secs(7 * 24 * 3600),
+        writer,
+    };
+
+    let sock_dir = tempfile::tempdir().expect("sock dir");
+    let sock = sock_dir.path().join("engine.sock");
+    let sock_str = sock.to_string_lossy().to_string();
+    let listener = tokio::net::UnixListener::bind(&sock).expect("bind uds");
+    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+    let handle = tokio::spawn(async move {
+        drop(
+            Server::builder()
+                .add_service(EngineControlServer::new(svc))
+                .serve_with_incoming(incoming)
+                .await,
+        );
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let client = query_api::engine_action_client::EngineActionClient::connect(sock_str)
+        .await
+        .expect("connect EngineActionClient");
+    (
+        client,
+        EngineGuard {
+            _sock_dir: sock_dir,
+            handle,
+        },
+    )
 }
 
 /// Drive the HTTP router (behind the auth gate) with a `POST` carrying a JSON body and

@@ -107,3 +107,18 @@ rust_test(
     edition = "2024",
     deps = [":engine-wire", "//third-party:prost"],
 )
+
+rust_test(
+    name = "lineage-wire",
+    crate = "lineage_wire",
+    srcs = ["tests/lineage_wire.rs"],
+    crate_root = "tests/lineage_wire.rs",
+    edition = "2024",
+    deps = [
+        ":engine-wire",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:uuid",
+    ],
+)

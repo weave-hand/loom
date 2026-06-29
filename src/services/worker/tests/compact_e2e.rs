@@ -21,6 +21,7 @@ use control_plane_postgres::iceberg_sql_catalog::{
 };
 use engine::flight::FlightDataService;
 use engine::service::EngineControlService;
+use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
 use engine_wire::pb::engine_control_server::EngineControlServer;
@@ -94,12 +95,20 @@ async fn spawn_server(fx: &PgFixture, db: &str, wh_path: &str) -> (tempfile::Tem
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let control_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
     let flight_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
+    let writer_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
+    let writer = IcebergActionWriter::new(
+        Arc::new(writer_catalog),
+        pool.clone(),
+        16 * 1024 * 1024,
+        i64::MAX,
+    );
 
     let svc = EngineControlService {
         cp,
         catalog: control_catalog,
         pool: pool.clone(),
         retention: Duration::from_secs(7 * 24 * 3600),
+        writer,
     };
     let flight_svc = FlightDataService {
         catalog: flight_catalog,

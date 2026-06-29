@@ -34,6 +34,8 @@ pub struct EngineControlService {
     pub pool: PgPool,
     /// Retention window for `gc_table` (from `LOOM_GC_RETENTION_SECS`).
     pub retention: std::time::Duration,
+    /// Governed-write executor (relocated from query-api).
+    pub writer: engine_serving::IcebergActionWriter,
 }
 
 #[tonic::async_trait]
@@ -214,6 +216,58 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         .map_err(status)?;
         Ok(Response::new(pb::CompactTableResponse {
             snapshot_id: snap.map(|s| s.0),
+        }))
+    }
+
+    async fn write_object(
+        &self,
+        req: Request<pb::WriteObjectRequest>,
+    ) -> std::result::Result<Response<pb::WriteObjectResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let columns: Vec<control_plane_core::ColumnSpec> = serde_json::from_str(&r.columns_json)
+            .map_err(|e| Status::invalid_argument(format!("bad columns_json: {e}")))?;
+        let wire: engine_wire::convert::LineageWire = serde_json::from_str(&r.lineage_json)
+            .map_err(|e| Status::invalid_argument(format!("bad lineage_json: {e}")))?;
+        let event: control_plane_core::LineageEvent = wire
+            .try_into()
+            .map_err(|e: String| Status::invalid_argument(format!("bad lineage: {e}")))?;
+        let snap = self
+            .writer
+            .write_object(&table, &columns, &r.ipc, event)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(pb::WriteObjectResponse {
+            snapshot_id: snap.0,
+        }))
+    }
+
+    async fn overwrite_table(
+        &self,
+        req: Request<pb::OverwriteTableRequest>,
+    ) -> std::result::Result<Response<pb::OverwriteTableResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let columns: Vec<control_plane_core::ColumnSpec> = serde_json::from_str(&r.columns_json)
+            .map_err(|e| Status::invalid_argument(format!("bad columns_json: {e}")))?;
+        let wire: engine_wire::convert::LineageWire = serde_json::from_str(&r.lineage_json)
+            .map_err(|e| Status::invalid_argument(format!("bad lineage_json: {e}")))?;
+        let event: control_plane_core::LineageEvent = wire
+            .try_into()
+            .map_err(|e: String| Status::invalid_argument(format!("bad lineage: {e}")))?;
+        let snap = self
+            .writer
+            .overwrite_table(&table, &columns, &r.ipc, event)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(pb::OverwriteTableResponse {
+            snapshot_id: snap.0,
         }))
     }
 }
