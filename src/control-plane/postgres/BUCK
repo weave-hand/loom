@@ -27,6 +27,22 @@ http_archive(
     visibility = ["PUBLIC"],
 )
 
+# Raw PG distribution tarball (same pins as :postgres-bin, which is the
+# extracted form). The single-binary embed (managed-postgres-embed) bakes this
+# .tar.gz into the binary via include_bytes! and self-extracts at runtime.
+http_file(
+    name = "postgres-tarball",
+    urls = select({
+        "ovr_config//os:linux": [_PG_URL.format(ver = PG_VERSION, triple = "x86_64-unknown-linux-gnu")],
+        "ovr_config//os:macos": [_PG_URL.format(ver = PG_VERSION, triple = "aarch64-apple-darwin")],
+    }),
+    sha256 = select({
+        "ovr_config//os:linux": "463422cb007fd15bb37819b1d3562392dd81bba385205fbd0eef4891cb1d18b5",
+        "ovr_config//os:macos": "69ae8a046b34b201b6a9a22e2e6f45094dede17ddd1d3e91045bbd6ef3f36815",
+    }),
+    visibility = ["PUBLIC"],
+)
+
 # The theseus-rs postgres binary dynamically links libxml2.so.2, which it does
 # NOT bundle. We supply it hermetically rather than rely on a system copy: rolling
 # distros (Arch) have bumped libxml2's soname (.so.16), so .so.2 is simply absent
