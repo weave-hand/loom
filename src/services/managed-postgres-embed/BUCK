@@ -1,5 +1,5 @@
 load("//src:loom_test.bzl", "rust_test")
-load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+load("//src/control-plane/postgres:defs.bzl", "PG_VERSION", "loom_fixture_test")
 
 rust_library(
     name = "managed-postgres-embed",
@@ -9,7 +9,7 @@ rust_library(
     edition = "2024",
     env = {
         "LOOM_PG_TARBALL": "$(location //src/control-plane/postgres:postgres-tarball)",
-        "LOOM_PG_VERSION": "17.9.0",
+        "LOOM_PG_VERSION": PG_VERSION,
     },
     deps = ["//third-party:flate2", "//third-party:tar", "//third-party:thiserror"],
     visibility = ["PUBLIC"],

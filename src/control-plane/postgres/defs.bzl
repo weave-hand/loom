@@ -1,5 +1,10 @@
 load("//src:loom_test.bzl", "LOOM_TEST_LINT_ALLOWS")
 
+# Single source of truth for the pinned PostgreSQL version, shared by the
+# postgres http_archive/http_file pins and the managed-postgres-embed cache
+# key, so a version bump can never desync the embedded bytes from the key.
+PG_VERSION = "17.9.0"
+
 # Shared macro for hermetic-fixture rust_test targets.
 #
 # Fixture tests boot real initdb/postgres processes, which refuse to run as
