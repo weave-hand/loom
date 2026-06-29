@@ -19,3 +19,6 @@ rust-project.json.tmp
 
 # Superpowers SDD scratch (progress ledger, subagent reports)
 .superpowers/
+
+# buck2 user-local config override (e.g. file_watcher workaround)
+.buckconfig.local
