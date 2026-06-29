@@ -46,8 +46,8 @@
 - `src/services/query-api/src/config.rs` — drop `routing` (T7).
 - `src/services/query-api/Cargo.toml` + `BUCK` — drop `control-plane-postgres` + `ingest` from lib (T7).
 
-**Deleted:**
-- `src/services/query-api/src/serving_datafusion.rs` — the old writer (its `encode_ipc_stream`/`to_serving` move to `engine_action_client.rs`) (T7).
+**Trimmed (NOT deleted):**
+- `src/services/query-api/src/serving_datafusion.rs` — remove ONLY the `IcebergActionWriter` struct/impl and the now-duplicated `encode_ipc_stream`/`to_serving` (moved to `engine_action_client.rs` in T5). KEEP `batches_to_rows` + `arrow_to_sqlvalue` — they are postgres-free Arrow→Rows helpers used by the **read** client (`engine_client.rs`) and ~11 read tests. Removing the writer drops the file's sole `control_plane_postgres`/`sqlx` imports, which is what makes the lib postgres-free (T7).
 
 ---
 
@@ -1426,21 +1426,26 @@ git commit -m "refactor(query-api): drive governed writes through the engine wir
 Delete the relocated-away code and the now-unneeded library deps, drop `routing` from query-api's config, and add a guard that the boundary cannot silently regress.
 
 **Files:**
-- Delete: `src/services/query-api/src/serving_datafusion.rs`
-- Modify: `src/services/query-api/src/lib.rs` (drop the `serving_datafusion` module)
+- Modify: `src/services/query-api/src/serving_datafusion.rs` (remove ONLY the writer + duplicated `encode_ipc_stream`/`to_serving`; KEEP `batches_to_rows`/`arrow_to_sqlvalue`)
+- Keep: `src/services/query-api/src/lib.rs`'s `pub mod serving_datafusion;` (the trimmed module is still used by the read path)
 - Modify: `src/services/query-api/src/config.rs` (drop `routing`)
 - Modify: `src/services/query-api/Cargo.toml` (drop `control-plane-postgres`; drop `ingest` if only used by `routing`)
 - Modify: `src/services/query-api/BUCK` (drop `//src/control-plane/postgres` + `//src/services/ingest` from the `:query-api` **lib** target, and from `:query-api-bin` if `main.rs` no longer names them)
 - Create: `tools/check-query-api-postgres-free.sh`
 
-- [ ] **Step 1: Delete the old writer**
+- [ ] **Step 1: Trim the writer out of `serving_datafusion.rs` (do NOT delete the file)**
 
-Delete `src/services/query-api/src/serving_datafusion.rs`. Remove `pub mod serving_datafusion;` from `src/services/query-api/src/lib.rs`. Confirm `encode_ipc_stream`/`to_serving` now live only in `engine_action_client.rs` (T5). Grep for any remaining references:
+`serving_datafusion.rs` hosts the writer AND `batches_to_rows`/`arrow_to_sqlvalue` (postgres-free Arrow→Rows helpers used by `engine_client.rs` (the READ client) and ~11 read tests via `query_api::serving_datafusion::batches_to_rows`). Delete ONLY:
+- the `IcebergActionWriter` struct + its `impl ActionEngine` block;
+- `encode_ipc_stream` and `to_serving` (now duplicated — they live in `engine_action_client.rs` since T5, and `iceberg_action_ipc.rs` was repointed there in T6);
+- the imports that become unused after that: `control_plane_postgres::iceberg_landing`, `control_plane_postgres::iceberg_sql_catalog::SqlCatalog`, `sqlx::PgPool`, `async_trait`, and from `crate::serving` drop `ActionEngine, build_object_batch, build_object_batches` (keep `Rows, SqlValue`). Drop `std::sync::Arc` if now unused.
+
+KEEP `batches_to_rows` + `arrow_to_sqlvalue` and their arrow/time imports verbatim. Update the file's `//!` doc comment to drop the "action writer" mention. Then verify:
 
 ```bash
-grep -rn "serving_datafusion\|IcebergActionWriter" src/services/query-api/src
+grep -rn "control_plane_postgres\|IcebergActionWriter" src/services/query-api/src
 ```
-Expected: no hits in `src/` (test files were migrated in T6; the only `IcebergActionWriter` left is `engine_serving::IcebergActionWriter`).
+Expected: ZERO hits (the only `control_plane_postgres` importer was the writer; `engine_serving::IcebergActionWriter` lives in another crate). `grep -rn "batches_to_rows" src/services/query-api/src` should still resolve (engine_client.rs + the trimmed serving_datafusion.rs).
 
 - [ ] **Step 2: Drop `routing` from query-api config**
 
