@@ -146,6 +146,13 @@ pub trait VectorIndex: Send + Sync {
     fn serialize(&self) -> Vec<u8>;
     /// Top-k by `metric`, ascending distance. Ties broken by insertion order.
     fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)>;
+    /// Apply per-query tuning knobs to a decoded index before searching.
+    /// `nprobe` tunes IVF-Flat probe count; `ef_search` tunes HNSW candidate width.
+    /// The default is a no-op (e.g. `FlatIndex`); each implementation applies only
+    /// the knob relevant to its kind and ignores the other.
+    fn apply_query_knobs(&mut self, nprobe: Option<u32>, ef_search: Option<u32>) {
+        let _ = (nprobe, ef_search);
+    }
 }
 
 /// Exact brute-force index: packed `f32` rows + a parallel identity column.
@@ -425,12 +432,17 @@ impl IvfFlatIndex {
         })
     }
 
-    /// Override the query-time probe count (clamped to `[1, nlist]`). No-op when empty.
-    #[must_use]
-    pub fn with_nprobe(mut self, nprobe: u32) -> IvfFlatIndex {
+    /// Override the query-time probe count in place (clamped to `[1, nlist]`). No-op when empty.
+    pub fn set_nprobe(&mut self, nprobe: u32) {
         if self.nlist > 0 {
             self.nprobe = nprobe.clamp(1, self.nlist);
         }
+    }
+
+    /// Override the query-time probe count (clamped to `[1, nlist]`). No-op when empty.
+    #[must_use]
+    pub fn with_nprobe(mut self, nprobe: u32) -> IvfFlatIndex {
+        self.set_nprobe(nprobe);
         self
     }
 
@@ -672,6 +684,11 @@ impl VectorIndex for IvfFlatIndex {
     fn serialize(&self) -> Vec<u8> {
         // Implemented in Task 3.
         self.serialize_bytes()
+    }
+    fn apply_query_knobs(&mut self, nprobe: Option<u32>, _ef_search: Option<u32>) {
+        if let Some(n) = nprobe {
+            self.set_nprobe(n);
+        }
     }
     fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)> {
         if self.keys.is_empty() || k == 0 {
@@ -1070,12 +1087,17 @@ impl HnswIndex {
         })
     }
 
-    /// Override the query-time candidate width (clamped to ≥ 1). No-op when empty.
-    #[must_use]
-    pub fn with_ef_search(mut self, ef_search: u32) -> HnswIndex {
+    /// Override the query-time candidate width in place (clamped to `>= 1`). No-op when empty.
+    pub fn set_ef_search(&mut self, ef_search: u32) {
         if !self.keys.is_empty() {
             self.ef_search = ef_search.max(1);
         }
+    }
+
+    /// Override the query-time candidate width (clamped to `>= 1`). No-op when empty.
+    #[must_use]
+    pub fn with_ef_search(mut self, ef_search: u32) -> HnswIndex {
+        self.set_ef_search(ef_search);
         self
     }
 
@@ -1257,6 +1279,11 @@ impl VectorIndex for HnswIndex {
     }
     fn serialize(&self) -> Vec<u8> {
         self.serialize_bytes()
+    }
+    fn apply_query_knobs(&mut self, _nprobe: Option<u32>, ef_search: Option<u32>) {
+        if let Some(e) = ef_search {
+            self.set_ef_search(e);
+        }
     }
     fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)> {
         if self.keys.is_empty() || k == 0 {
