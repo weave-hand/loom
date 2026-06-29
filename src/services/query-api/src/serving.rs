@@ -29,7 +29,7 @@ pub enum SqlValue {
     Null,
 }
 
-/// ISO-8601 date `YYYY-MM-DD`. Shared by the JSON renderer and the Quack literal path.
+/// ISO-8601 date `YYYY-MM-DD`. Shared by the JSON renderer and the SQL literal path.
 pub(crate) fn iso_date(d: &time::Date) -> String {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
     d.format(&fmt).unwrap_or_else(|_| d.to_string())
@@ -302,14 +302,14 @@ pub trait ActionEngine: Send + Sync {
     ) -> Result<control_plane_core::SnapshotId, ServingError>;
 }
 
-/// Escape a string for embedding in a DuckDB single-quoted literal: double every
-/// `'`. This is the complete escape for DuckDB standard string literals (no
-/// backslash escapes by default).
+/// Escape a string for embedding in a single-quoted SQL literal: double every
+/// `'`. This is the complete escape for standard SQL string literals (no
+/// backslash escapes by default), which the engine's DataFusion dialect honors.
 fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-/// Render a typed scalar as a DuckDB SQL literal.
+/// Render a typed scalar as a SQL literal.
 fn render_literal(v: &SqlValue) -> String {
     match v {
         SqlValue::Int(n) => n.to_string(),
@@ -323,8 +323,8 @@ fn render_literal(v: &SqlValue) -> String {
 }
 
 /// Substitute each `?` placeholder in `sql` with the next rendered param, copying
-/// every other character verbatim. The Quack path uses this because `quack_query`
-/// takes SQL as a string with no bind slot. Relies on the `compile_select`
+/// every other character verbatim. The engine's Flight SQL path uses this because
+/// it takes SQL as a string with no bind slot. Relies on the `compile_select`
 /// contract that `?` appears ONLY as a bind placeholder (never a literal `?`
 /// inside a string), so a single left-to-right pass over the ORIGINAL `sql` is
 /// correct — it never re-scans substituted text (a rendered value may contain `?`).

@@ -19,9 +19,9 @@ fn escapes_single_quotes_in_text() {
     assert_eq!(
         inline_params(
             "WHERE s = ?",
-            &[SqlValue::Text("x'; DROP TABLE lake.t; --".into())]
+            &[SqlValue::Text("x'; DROP TABLE main.t; --".into())]
         ),
-        "WHERE s = 'x''; DROP TABLE lake.t; --'"
+        "WHERE s = 'x''; DROP TABLE main.t; --'"
     );
 }
 
