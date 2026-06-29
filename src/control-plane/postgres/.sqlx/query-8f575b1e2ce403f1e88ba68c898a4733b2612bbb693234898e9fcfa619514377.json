@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into iceberg_mirror.vector_index (table_id, column_name, index_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (table_id, column_name, index_name, covered_snapshot) do update set metric = excluded.metric, index_kind = excluded.index_kind, dim = excluded.dim, row_count = excluded.row_count, puffin_path = excluded.puffin_path, created_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Int4",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8f575b1e2ce403f1e88ba68c898a4733b2612bbb693234898e9fcfa619514377"
+}

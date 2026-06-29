@@ -862,3 +862,15 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "vector-index-named",
+    crate = "vector_index_named",
+    srcs = ["tests/vector_index_named.rs"],
+    crate_root = "tests/vector_index_named.rs",
+    deps = [
+        ":postgres",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)

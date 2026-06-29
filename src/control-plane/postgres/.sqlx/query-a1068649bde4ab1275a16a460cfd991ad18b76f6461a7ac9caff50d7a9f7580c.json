@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select table_id, column_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path from iceberg_mirror.vector_index where table_id = $1 and column_name = $2 and covered_snapshot <= $3 order by covered_snapshot desc limit 1",
+  "query": "select table_id, column_name, index_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path from iceberg_mirror.vector_index where table_id = $1 and index_name = $2 and covered_snapshot <= $3 order by covered_snapshot desc limit 1",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "index_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.vector_index",
+            "name": "index_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "covered_snapshot",
         "type_info": "Int8",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "metric",
         "type_info": "Text",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "index_kind",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "dim",
         "type_info": "Int4",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "row_count",
         "type_info": "Int8",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "puffin_path",
         "type_info": "Text",
         "origin": {
@@ -107,8 +118,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "e8bd5e9f13b25c629303bb1ccc519a2db6fbfe76f231be3b6a958a007bbc2fd5"
+  "hash": "a1068649bde4ab1275a16a460cfd991ad18b76f6461a7ac9caff50d7a9f7580c"
 }

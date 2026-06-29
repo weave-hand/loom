@@ -22,6 +22,7 @@ fn backend<E: std::fmt::Display>(e: E) -> ControlPlaneError {
 pub struct VectorIndexRow {
     pub table_id: i64,
     pub column: String,
+    pub index_name: String,
     pub covered_snapshot: i64,
     pub metric: String,
     pub index_kind: String,
@@ -52,9 +53,9 @@ pub struct VectorIndexRow {
 pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) -> Result<()> {
     sqlx::query!(
         "insert into iceberg_mirror.vector_index \
-         (table_id, column_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8) \
-         on conflict (table_id, column_name, covered_snapshot) do update set \
+         (table_id, column_name, index_name, covered_snapshot, metric, index_kind, dim, row_count, puffin_path) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         on conflict (table_id, column_name, index_name, covered_snapshot) do update set \
              metric = excluded.metric, \
              index_kind = excluded.index_kind, \
              dim = excluded.dim, \
@@ -63,6 +64,7 @@ pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) ->
              created_at = now()",
         row.table_id,
         row.column,
+        row.index_name,
         row.covered_snapshot,
         row.metric,
         row.index_kind,
@@ -76,22 +78,22 @@ pub async fn insert_vector_index(tx: &mut PgConnection, row: &VectorIndexRow) ->
     Ok(())
 }
 
-/// The newest bound index for `(table_id, column)` with `covered_snapshot <= at`,
+/// The newest bound index for `(table_id, index_name)` with `covered_snapshot <= at`,
 /// or `None` if none is bound.
 pub async fn lookup_vector_index(
     pool: &PgPool,
     table_id: i64,
-    column: &str,
+    index_name: &str,
     at: i64,
 ) -> Result<Option<VectorIndexRow>> {
     let row = sqlx::query!(
-        "select table_id, column_name, covered_snapshot, metric, index_kind, dim, \
+        "select table_id, column_name, index_name, covered_snapshot, metric, index_kind, dim, \
                 row_count, puffin_path \
          from iceberg_mirror.vector_index \
-         where table_id = $1 and column_name = $2 and covered_snapshot <= $3 \
+         where table_id = $1 and index_name = $2 and covered_snapshot <= $3 \
          order by covered_snapshot desc limit 1",
         table_id,
-        column,
+        index_name,
         at,
     )
     .fetch_optional(pool)
@@ -100,6 +102,7 @@ pub async fn lookup_vector_index(
     Ok(row.map(|r| VectorIndexRow {
         table_id: r.table_id,
         column: r.column_name,
+        index_name: r.index_name,
         covered_snapshot: r.covered_snapshot,
         metric: r.metric,
         index_kind: r.index_kind,
@@ -492,6 +495,8 @@ pub async fn build_vector_index(
         &VectorIndexRow {
             table_id,
             column: column.to_string(),
+            // TODO(task C): replace "default" with the resolved index_name.
+            index_name: "default".to_string(),
             covered_snapshot: s,
             metric: metric.as_str().to_string(),
             index_kind: index.index_kind().as_str().to_string(),

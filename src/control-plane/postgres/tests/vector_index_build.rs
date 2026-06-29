@@ -209,7 +209,7 @@ async fn build_covers_all_rows_live_at_s() {
     .await
     .expect("table_id");
 
-    let found = lookup_vector_index(&pool, table_id, "embedding", built.covered_snapshot)
+    let found = lookup_vector_index(&pool, table_id, "default", built.covered_snapshot)
         .await
         .expect("lookup")
         .expect("should be Some");

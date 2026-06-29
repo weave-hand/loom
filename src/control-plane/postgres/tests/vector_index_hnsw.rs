@@ -172,7 +172,7 @@ async fn hnsw_build_writes_decodable_blob_and_mirror_kind() {
     .fetch_one(&mut *conn)
     .await
     .expect("table_id");
-    let found = lookup_vector_index(&pool, table_id, "embedding", built.covered_snapshot)
+    let found = lookup_vector_index(&pool, table_id, "default", built.covered_snapshot)
         .await
         .expect("lookup")
         .expect("Some");

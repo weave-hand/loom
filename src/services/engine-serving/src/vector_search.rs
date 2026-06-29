@@ -72,7 +72,8 @@ pub async fn vector_search(
     drop(conn);
 
     // 3. Look up the bound index (NoIndex error if none).
-    let row = lookup_vector_index(pool, table_id, column, q)
+    // TODO(task C): replace "default" with the resolved index_name.
+    let row = lookup_vector_index(pool, table_id, "default", q)
         .await
         .map_err(to_serving)?
         .ok_or_else(|| {

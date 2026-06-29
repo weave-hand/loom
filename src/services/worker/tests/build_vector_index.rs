@@ -283,7 +283,7 @@ async fn worker_builds_vector_index_over_the_wire() {
     .await
     .expect("fetch table_id");
 
-    let mirror_row = lookup_vector_index(&pool, table_id, "embedding", snap.id.0)
+    let mirror_row = lookup_vector_index(&pool, table_id, "default", snap.id.0)
         .await
         .expect("lookup_vector_index")
         .expect("mirror row must exist after handler ran");
@@ -309,7 +309,7 @@ async fn worker_builds_vector_index_over_the_wire() {
     .await
     .expect("handle_build_vector_index hnsw");
 
-    let hnsw_row = lookup_vector_index(&pool, table_id, "embedding", snap.id.0)
+    let hnsw_row = lookup_vector_index(&pool, table_id, "default", snap.id.0)
         .await
         .expect("lookup_vector_index hnsw")
         .expect("Some");
