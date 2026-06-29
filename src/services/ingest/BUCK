@@ -182,6 +182,30 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "http-model",
+    crate = "http_model",
+    srcs = ["tests/http_model.rs"],
+    crate_root = "tests/http_model.rs",
+    deps = [
+        ":ingest",
+        "//src/services/runtime:runtime",
+        "//src/services/engine-serving:engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
 rust_test(
     name = "routing-tuning",
     crate = "routing_tuning",
