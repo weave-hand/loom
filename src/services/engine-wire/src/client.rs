@@ -101,6 +101,57 @@ impl GrpcQueueClient {
         Ok((resp.covered_snapshot, resp.puffin_path, resp.row_count))
     }
 
+    /// Governed typed-insert over the wire. Returns the new snapshot id.
+    pub async fn write_object(
+        &self,
+        schema: String,
+        name: String,
+        ipc: Vec<u8>,
+        columns_json: String,
+        lineage_json: String,
+    ) -> Result<i64> {
+        let resp = self
+            .inner
+            .clone()
+            .write_object(pb::WriteObjectRequest {
+                schema,
+                name,
+                ipc,
+                columns_json,
+                lineage_json,
+            })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok(resp.snapshot_id)
+    }
+
+    /// Copy-on-write overwrite (UPDATE/DELETE) over the wire. Returns the new
+    /// snapshot id. Empty `ipc` truncates the table.
+    pub async fn overwrite_table(
+        &self,
+        schema: String,
+        name: String,
+        ipc: Vec<u8>,
+        columns_json: String,
+        lineage_json: String,
+    ) -> Result<i64> {
+        let resp = self
+            .inner
+            .clone()
+            .overwrite_table(pb::OverwriteTableRequest {
+                schema,
+                name,
+                ipc,
+                columns_json,
+                lineage_json,
+            })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok(resp.snapshot_id)
+    }
+
     /// Commit a compaction swap: expire `expire` (absolute paths) + register `write`
     /// (already written). Returns the new snapshot id (or `None` if the table was
     /// never written). Each `DataFile` is sent as a JSON string in `write_json`.

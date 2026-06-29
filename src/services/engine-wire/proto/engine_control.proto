@@ -12,6 +12,8 @@ service EngineControl {
   rpc ListFiles    (ListFilesRequest)    returns (ListFilesResponse);
   rpc CompactTable (CompactTableRequest) returns (CompactTableResponse);
   rpc BuildVectorIndex (BuildVectorIndexRequest) returns (BuildVectorIndexResponse);
+  rpc WriteObject    (WriteObjectRequest)    returns (WriteObjectResponse);
+  rpc OverwriteTable (OverwriteTableRequest) returns (OverwriteTableResponse);
 }
 
 message Job {
@@ -49,3 +51,21 @@ message CompactTableResponse { optional int64 snapshot_id = 1; }
 
 message BuildVectorIndexRequest  { string schema = 1; string name = 2; string index_name = 3; }
 message BuildVectorIndexResponse { int64 covered_snapshot = 1; string puffin_path = 2; int64 row_count = 3; }
+
+message WriteObjectRequest {
+  string schema = 1;
+  string name = 2;
+  bytes  ipc = 3;            // one-row Arrow IPC stream (built + encoded client-side)
+  string columns_json = 4;   // serde_json of Vec<ColumnSpec>
+  string lineage_json = 5;   // serde_json of LineageWire
+}
+message WriteObjectResponse { int64 snapshot_id = 1; }
+
+message OverwriteTableRequest {
+  string schema = 1;
+  string name = 2;
+  bytes  ipc = 3;            // N-row Arrow IPC stream; empty = truncate (delete-all)
+  string columns_json = 4;
+  string lineage_json = 5;
+}
+message OverwriteTableResponse { int64 snapshot_id = 1; }

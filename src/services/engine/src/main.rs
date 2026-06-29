@@ -29,7 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.object_store.warehouse_uri.clone(),
     );
 
-    // Build two SqlCatalog instances from the same props — SqlCatalog is not Clone.
+    // Build three SqlCatalog instances from the same props — SqlCatalog is not Clone.
+    let props_for_writer = props.clone();
     let catalog = SqlCatalogBuilder::default()
         .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props.clone())
@@ -38,6 +39,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props)
         .await?;
+
+    // Governed-write executor config (defaults mirror ingest's RoutingTuning).
+    let inline_byte_limit: usize = std::env::var("LOOM_INLINE_BYTE_LIMIT")
+        .ok()
+        .map(|s| s.parse())
+        .transpose()
+        .map_err(|e: std::num::ParseIntError| -> Box<dyn std::error::Error> {
+            format!("LOOM_INLINE_BYTE_LIMIT: {e}").into()
+        })?
+        .unwrap_or(16 * 1024 * 1024);
+    let flush_byte_threshold: i64 = std::env::var("LOOM_FLUSH_BYTE_THRESHOLD")
+        .ok()
+        .map(|s| s.parse())
+        .transpose()
+        .map_err(|e: std::num::ParseIntError| -> Box<dyn std::error::Error> {
+            format!("LOOM_FLUSH_BYTE_THRESHOLD: {e}").into()
+        })?
+        .unwrap_or(64 * 1024 * 1024);
+
+    // A third SqlCatalog for the writer (SqlCatalog is not Clone; the engine already
+    // builds two for control + flight).
+    let writer_catalog = SqlCatalogBuilder::default()
+        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
+        .load("loom", props_for_writer)
+        .await?;
+    let writer = engine_serving::IcebergActionWriter::new(
+        std::sync::Arc::new(writer_catalog),
+        pool.clone(),
+        inline_byte_limit,
+        flush_byte_threshold,
+    );
 
     let socket_path = std::env::var("LOOM_ENGINE_SOCKET")?;
 
@@ -52,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         catalog,
         pool: pool.clone(),
         retention: cfg.gc_retention,
+        writer,
     };
     let flight = FlightDataService {
         catalog: flight_catalog,
