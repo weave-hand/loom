@@ -24,17 +24,24 @@
 
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
+use arrow_array::builder::{Float32Builder, ListBuilder};
+use arrow_ipc::writer::StreamWriter;
+use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, Auth, Cardinality, ControlPlane, ControlPlaneError, Effect, LinkBacking, LinkDef,
-    NewUser, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef,
-    TypeName,
+    Acl, Action, Auth, Cardinality, ColumnSpec, ControlPlane, ControlPlaneError, DatasetId, Effect,
+    EventType, IndexSpec, LineageEvent, LinkBacking, LinkDef, Metric, NewUser, ObjectType,
+    Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, RunId, SubjectId, TableRef,
+    TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::vector_index::build_vector_index;
 use engine_serving::execute_query;
 use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
@@ -507,4 +514,236 @@ pub async fn spawn_http(router: axum::Router) -> (String, ServeGuard) {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     panic!("spawn_http: server never became ready at {addr}");
+}
+
+/// Grant a role `Read` on `type_name` and attach a row-filter post-filter policy.
+/// Mirrors `grant_read` (the coarse Allow) and then refines it with a `RowFilter`,
+/// matching the pattern the graph/object-set row-filter e2e tests use.
+pub async fn grant_read_filtered(
+    cp: &PgControlPlane,
+    role: &RoleId,
+    type_name: &str,
+    filter: RowFilter,
+) {
+    grant_read(cp, role, type_name).await;
+    cp.set_policy(
+        role,
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(TypeName(type_name.into())),
+            row_filter: Some(filter),
+            deny_columns: vec![],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+}
+
+/// The `Docs` vector-type columns: `id: long` + `embedding: vector(4)`.
+fn vector_columns() -> Vec<ColumnSpec> {
+    vec![
+        ColumnSpec {
+            name: "id".into(),
+            ty: "long".into(),
+            nullable: false,
+        },
+        ColumnSpec {
+            name: "embedding".into(),
+            ty: "vector(4)".into(),
+            nullable: false,
+        },
+    ]
+}
+
+/// Build an Arrow IPC body with `id: long` + `embedding: list<float32>` (4 elements).
+/// Copied from `engine-serving/tests/vector_search.rs::ipc_body` (the canonical recipe).
+fn vector_ipc_body(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
+    let element = Arc::new(Field::new("item", DataType::Float32, false));
+    let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
+    let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+    for (_, emb) in rows {
+        lb.values().append_slice(emb);
+        lb.append(true);
+    }
+    let id_array = arrow_array::Int64Array::from(ids);
+    let emb_array = lb.finish();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("embedding", DataType::List(element), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(id_array), Arc::new(emb_array)],
+    )
+    .expect("batch");
+    let mut buf = Vec::new();
+    {
+        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
+        w.write(&batch).expect("write");
+        w.finish().expect("finish");
+    }
+    buf
+}
+
+fn vector_lineage_evt(run: RunId, table: &TableRef) -> LineageEvent {
+    LineageEvent {
+        run_id: run,
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![DatasetId::from(table).dataset_ref()],
+        payload: serde_json::json!({ "source": "e2e" }),
+    }
+}
+
+/// Seed a `Docs(id Long identity, embedding vector(4))` type, land 4 orthogonal cold
+/// rows (forced to Parquet via `inline_byte_limit = 0`), declare a Flat/Cosine index
+/// named `by_sim`, and build it — returning a router-ready serving engine whose
+/// `vector_search` resolves `by_sim`.
+///
+/// Reuses `IcebergWriter::sql_catalog()` (same pg DSN + warehouse the rows land into)
+/// for both the build path and the engine's search path. The returned `IcebergWriter`
+/// **must** be kept alive: its `TempDir` holds the Parquet warehouse; dropping it
+/// removes the files from under the serving engine.
+pub async fn seed_vector_type(
+    fx: &PgFixture,
+    db: &str,
+) -> (
+    PgControlPlane,
+    Arc<dyn query_api::serving::ServingEngine>,
+    IcebergWriter,
+) {
+    let pool = fx.pool_for(db).await;
+    let dsn = fx.pg_dsn(db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let cp = PgControlPlane::new(pool.clone(), std::time::Duration::from_secs(5));
+
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+
+    // Register the object type with the ontology (identity = "id").
+    cp.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Docs".into()),
+            table: table.clone(),
+            properties: vec![
+                PropertyDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                },
+                PropertyDef {
+                    name: "embedding".into(),
+                    ty: "vector(4)".into(),
+                    required: true,
+                },
+            ],
+            derived: vec![],
+            identity: Some("id".into()),
+        })
+        .await
+        .expect("define_type Docs");
+
+    // Land 4 orthogonal cold rows in two batches (Parquet: inline_byte_limit = 0).
+    let build_catalog = writer.sql_catalog().await;
+    let run = RunId(uuid::Uuid::new_v4());
+    let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
+    land(
+        &pool,
+        &build_catalog,
+        &table,
+        &vector_columns(),
+        &vector_ipc_body(rows_1_2),
+        0,
+        i64::MAX,
+        vector_lineage_evt(run, &table),
+    )
+    .await
+    .expect("land rows 1-2");
+    let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
+    land(
+        &pool,
+        &build_catalog,
+        &table,
+        &vector_columns(),
+        &vector_ipc_body(rows_3_4),
+        0,
+        i64::MAX,
+        vector_lineage_evt(run, &table),
+    )
+    .await
+    .expect("land rows 3-4");
+
+    // Declare the named Flat/Cosine index and build it.
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_sim".into(),
+            type_name: TypeName("Docs".into()),
+            property: "embedding".into(),
+            metric: Metric::Cosine,
+            spec: IndexSpec::Flat,
+        })
+        .await
+        .expect("define_vector_index by_sim");
+    let build_run = RunId(uuid::Uuid::new_v4());
+    build_vector_index(&build_catalog, &pool, &table, "by_sim", build_run)
+        .await
+        .expect("build_vector_index by_sim");
+
+    // Wire the in-process serving engine: IcebergCatalog for SQL reads (row-filter
+    // post-filter), a fresh SqlCatalog over the SAME warehouse for vector search.
+    let search_catalog = writer.sql_catalog().await;
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng: Arc<dyn query_api::serving::ServingEngine> = Arc::new(
+        InProcessServingEngine::new_with_search(catalog, pool.clone(), search_catalog),
+    );
+    (cp, eng, writer)
+}
+
+/// Drive the HTTP router (behind the auth gate) with a `POST` carrying a JSON body and
+/// return (status, parsed JSON body). Mirrors `get` for the `/search` (and other write)
+/// routes.
+pub async fn post_search(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
+    uri: &str,
+    body: &serde_json::Value,
+    subject: &str,
+) -> (StatusCode, serde_json::Value) {
+    let token = session_token(&cp, subject).await;
+    let app = protect(
+        router(AppState {
+            cp: cp.clone() as Arc<dyn ControlPlane>,
+            serving: eng,
+            action_engine: Arc::new(StubAction),
+            default_limit: 1000,
+        }),
+        AuthState {
+            auth: cp.clone(),
+            session_ttl: std::time::Duration::from_secs(3600),
+        },
+    );
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, json)
 }

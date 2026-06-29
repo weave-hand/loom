@@ -172,18 +172,36 @@ rust_library(
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
         "//third-party:async-trait",
         "//third-party:axum",
         "//third-party:http-body-util",
-        "//third-party:iceberg",
         "//third-party:serde_json",
         "//third-party:sqlx",
-        "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tower",
+        "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "vector_search_e2e",
+    crate = "vector_search_e2e",
+    srcs = ["tests/vector_search_e2e.rs"],
+    crate_root = "tests/vector_search_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
 )
 
 rust_test(
