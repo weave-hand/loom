@@ -5,7 +5,7 @@
 /// A column for `Tx::create_table`. `ty` is a loom LOGICAL type name (canonical:
 /// "integer"/"long"/"double"/"boolean"/"string"/"date"/"timestamp", or a known
 /// alias). The active adapter maps it to its physical type string.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ColumnSpec {
     pub name: String,
     pub ty: String,
