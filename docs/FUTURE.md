@@ -301,7 +301,7 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 ## devx
 
 - [ ] **Autogenerate API specs from ontology** `{#fut-autogen-api-specs area:devx status:deferred from:to-be-planned pr:- spec:-}`
-  Automatically generate API specifications from the ontology definition.
+  Slice 2 of self-documenting-API: generate per-object-type/link **operations** and property **schemas** from the live ontology at runtime, merged into the OpenAPI document through [[road-openapi-self-documenting]]'s `build_openapi()` seam (it returns a value precisely so this slice can `.paths.extend`/`.components.schemas.extend` with ontology-derived content). Turns the static route templates (`/objects/{type}`) into concrete per-type operations a client/codegen tool can consume. Builds on the static framework + the optional ontology description strings ([[fut-ontology-semantic-descriptions]]) for richer docs.
 - [ ] **Python bindings** `{#fut-python-bindings area:devx status:deferred from:to-be-planned pr:- spec:-}`
   Provide Python bindings for loom.
 - [ ] **loom-codehealth-reflect routine** `{#fut-codehealth-reflect area:devx status:deferred from:2026-06-19-code-health-remediation-design pr:#91 spec:-}`
