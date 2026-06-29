@@ -48,7 +48,7 @@ pub async fn vector_search(
     catalog: &SqlCatalog,
     pool: &PgPool,
     table: &TableRef,
-    column: &str,
+    index_name: &str,
     query: &[f32],
     k: usize,
 ) -> Result<RecordBatch, EngineServingError> {
@@ -72,16 +72,16 @@ pub async fn vector_search(
     drop(conn);
 
     // 3. Look up the bound index (NoIndex error if none).
-    // TODO(task C): replace "default" with the resolved index_name.
-    let row = lookup_vector_index(pool, table_id, "default", q)
+    let row = lookup_vector_index(pool, table_id, index_name, q)
         .await
         .map_err(to_serving)?
         .ok_or_else(|| {
             EngineServingError::NoIndex(format!(
-                "no vector index for column '{}' on {}.{} at snapshot {}",
-                column, table.schema, table.name, q
+                "no vector index `{}` on {}.{} at snapshot {}",
+                index_name, table.schema, table.name, q
             ))
         })?;
+    let column: &str = &row.column;
 
     // 4. Cold path: read the Puffin vector index (polymorphic: Flat or IVF) and search it.
     let ident =

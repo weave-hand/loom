@@ -79,19 +79,13 @@ impl GrpcQueueClient {
             .collect())
     }
 
-    /// Build (or rebuild) the vector index for `(schema, name, column)`.
-    /// `index_kind` selects the variant: `"ivf_flat"` uses `nlist`; `"hnsw"` uses
-    /// `m`/`ef_construction`; `None`/`"flat"` is exact. Returns
-    /// `(covered_snapshot, puffin_path, row_count)`.
+    /// Build (or rebuild) the named vector index declared for `(schema, name)`.
+    /// Kind/metric/params are resolved engine-side from the ontology declaration.
     pub async fn build_vector_index(
         &self,
         schema: String,
         name: String,
-        column: String,
-        index_kind: Option<String>,
-        nlist: Option<u32>,
-        m: Option<u32>,
-        ef_construction: Option<u32>,
+        index_name: String,
     ) -> Result<(i64, String, i64)> {
         let resp = self
             .inner
@@ -99,11 +93,7 @@ impl GrpcQueueClient {
             .build_vector_index(pb::BuildVectorIndexRequest {
                 schema,
                 name,
-                column,
-                index_kind: index_kind.unwrap_or_default(),
-                nlist: nlist.unwrap_or(0),
-                m: m.unwrap_or(0),
-                ef_construction: ef_construction.unwrap_or(0),
+                index_name,
             })
             .await
             .map_err(be)?

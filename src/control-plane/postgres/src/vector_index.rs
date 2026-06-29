@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow_array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use control_plane_core::{
     Catalog, ControlPlaneError, DatasetRef, EventType, FlatIndex, HnswIndex, IndexSpec,
-    IvfFlatIndex, LineageEvent, Metric, Result, RunId, SnapshotId, TableRef, VectorKey,
+    IvfFlatIndex, LineageEvent, Result, RunId, SnapshotId, TableRef, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool, Row};
@@ -125,6 +125,19 @@ pub struct BuiltIndex {
     pub puffin_path: String,
     /// The number of vectors included in the index (cold + hot rows).
     pub row_count: i64,
+}
+
+/// Resolve the ontology type name backing `(table.schema, table.name)`.
+pub async fn type_name_for(pool: &PgPool, table: &TableRef) -> Result<String> {
+    sqlx::query_scalar!(
+        "select name from ontology.object_type where table_schema = $1 and table_name = $2",
+        table.schema,
+        table.name,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?
+    .ok_or_else(|| ControlPlaneError::NotFound(format!("type for {}.{}", table.schema, table.name)))
 }
 
 /// Resolve the ontology's declared `identity` column for `(table.schema, table.name)`.
@@ -339,18 +352,11 @@ pub async fn inline_delta_batch(
 ///
 /// The covered snapshot `S` is captured before any data read so both cold and
 /// hot reads are MVCC-consistent as of `S`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "build_vector_index needs catalog, pool, table, column, metric, index_spec and run_id — \
-              no sensible grouping; mirrors land/append_parquet_snapshot pattern"
-)]
 pub async fn build_vector_index(
     catalog: &crate::iceberg_sql_catalog::SqlCatalog,
     pool: &PgPool,
     table: &TableRef,
-    column: &str,
-    metric: Metric,
-    index_spec: IndexSpec,
+    index_name: &str,
     run_id: RunId,
 ) -> Result<BuiltIndex> {
     use crate::iceberg_catalog::IcebergCatalog;
@@ -362,6 +368,19 @@ pub async fn build_vector_index(
     let ice = IcebergCatalog::new(pool.clone());
     let s: i64 = ice.current_snapshot(table).await?.id.0;
     let at = SnapshotId(s);
+
+    // Resolve the named declaration (authoritative source of column/metric/spec).
+    let type_name = type_name_for(pool, table).await?;
+    let def = crate::ontology::vector_index_def_row(pool, &type_name, index_name)
+        .await?
+        .ok_or_else(|| {
+            ControlPlaneError::NotFound(format!(
+                "no vector index definition `{index_name}` on type `{type_name}`"
+            ))
+        })?;
+    let column: &str = &def.property;
+    let metric = def.metric;
+    let index_spec = def.spec;
 
     // 2. Resolve identity column from the ontology.
     let identity_col = identity_column_for(pool, table).await?;
@@ -495,8 +514,7 @@ pub async fn build_vector_index(
         &VectorIndexRow {
             table_id,
             column: column.to_string(),
-            // TODO(task C): replace "default" with the resolved index_name.
-            index_name: "default".to_string(),
+            index_name: index_name.to_string(),
             covered_snapshot: s,
             metric: metric.as_str().to_string(),
             index_kind: index.index_kind().as_str().to_string(),

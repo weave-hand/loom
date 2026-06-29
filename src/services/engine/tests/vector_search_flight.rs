@@ -17,8 +17,8 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, Metric, ObjectType, PropertyDef,
-    RunId, TableRef, TypeName,
+    ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
+    PropertyDef, RunId, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -189,7 +189,7 @@ async fn vector_search_flight_top_k() {
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "Vector".into(),
+                    ty: "vector(4)".into(),
                     required: true,
                 },
             ],
@@ -198,6 +198,18 @@ async fn vector_search_flight_top_k() {
         })
         .await
         .expect("define_type");
+
+    // Declare a named cosine flat index on the embedding property.
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_flat".into(),
+            type_name: TypeName("Docs".into()),
+            property: "embedding".into(),
+            metric: Metric::Cosine,
+            spec: IndexSpec::Flat,
+        })
+        .await
+        .expect("define_vector_index");
 
     let run = RunId(uuid::Uuid::new_v4());
 
@@ -233,17 +245,9 @@ async fn vector_search_flight_top_k() {
 
     // Build the cosine vector index.
     let build_run = RunId(uuid::Uuid::new_v4());
-    build_vector_index(
-        &catalog,
-        &pool,
-        &table,
-        "embedding",
-        Metric::Cosine,
-        control_plane_core::IndexSpec::Flat,
-        build_run,
-    )
-    .await
-    .expect("build_vector_index");
+    build_vector_index(&catalog, &pool, &table, "by_flat", build_run)
+        .await
+        .expect("build_vector_index");
 
     // Spawn the Flight server.
     let (_sock_dir, sock) = spawn_flight(&fx, &db, &wh.path().display().to_string()).await;
@@ -254,7 +258,7 @@ async fn vector_search_flight_top_k() {
         .vector_search(VectorSearchTicket {
             schema: "wh".into(),
             name: "docs".into(),
-            column: "embedding".into(),
+            index_name: "by_flat".into(),
             query: vec![1.0, 0.0, 0.0, 0.0],
             k: 2,
         })
@@ -339,7 +343,7 @@ async fn vector_search_no_index_is_not_found() {
         .vector_search(VectorSearchTicket {
             schema: "wh".into(),
             name: "nodocs".into(),
-            column: "embedding".into(),
+            index_name: "by_flat".into(),
             query: vec![1.0, 0.0, 0.0, 0.0],
             k: 1,
         })

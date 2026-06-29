@@ -11,7 +11,7 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
-    PropertyDef, RunId, TableRef, TypeName, VectorKey,
+    PropertyDef, RunId, TableRef, TypeName, VectorIndexDef, VectorKey,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::land;
@@ -115,7 +115,7 @@ async fn hnsw_build_writes_decodable_blob_and_mirror_kind() {
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "Vector".into(),
+                    ty: "vector(4)".into(),
                     required: true,
                 },
             ],
@@ -124,6 +124,20 @@ async fn hnsw_build_writes_decodable_blob_and_mirror_kind() {
         })
         .await
         .expect("define_type");
+
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_hnsw".into(),
+            type_name: TypeName("Docs".into()),
+            property: "embedding".into(),
+            metric: Metric::Cosine,
+            spec: IndexSpec::Hnsw {
+                m: None,
+                ef_construction: None,
+            },
+        })
+        .await
+        .expect("define_vector_index");
 
     let run = RunId(uuid::Uuid::new_v4());
     let rows: &[(i64, [f32; 4])] = &[
@@ -147,20 +161,9 @@ async fn hnsw_build_writes_decodable_blob_and_mirror_kind() {
 
     // Build with HNSW (defaults: m=16, ef_construction=200).
     let build_run = RunId(uuid::Uuid::new_v4());
-    let built = build_vector_index(
-        &catalog,
-        &pool,
-        &table,
-        "embedding",
-        Metric::Cosine,
-        IndexSpec::Hnsw {
-            m: None,
-            ef_construction: None,
-        },
-        build_run,
-    )
-    .await
-    .expect("build hnsw");
+    let built = build_vector_index(&catalog, &pool, &table, "by_hnsw", build_run)
+        .await
+        .expect("build hnsw");
     assert_eq!(built.row_count, 4);
 
     // Mirror row records the HNSW kind.
@@ -172,7 +175,7 @@ async fn hnsw_build_writes_decodable_blob_and_mirror_kind() {
     .fetch_one(&mut *conn)
     .await
     .expect("table_id");
-    let found = lookup_vector_index(&pool, table_id, "default", built.covered_snapshot)
+    let found = lookup_vector_index(&pool, table_id, "by_hnsw", built.covered_snapshot)
         .await
         .expect("lookup")
         .expect("Some");

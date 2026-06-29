@@ -35,7 +35,7 @@ async fn insert_then_lookup_latest_le_q() {
     let row = VectorIndexRow {
         table_id,
         column: "embedding".into(),
-        index_name: "default".into(),
+        index_name: "by_flat".into(),
         covered_snapshot: 5,
         metric: "cosine".into(),
         index_kind: "flat".into(),
@@ -47,13 +47,13 @@ async fn insert_then_lookup_latest_le_q() {
 
     // Q below the covered snapshot → no binding.
     assert!(
-        lookup_vector_index(&pool, table_id, "default", 4)
+        lookup_vector_index(&pool, table_id, "by_flat", 4)
             .await
             .unwrap()
             .is_none()
     );
     // Q at/after → the row.
-    let got = lookup_vector_index(&pool, table_id, "default", 9)
+    let got = lookup_vector_index(&pool, table_id, "by_flat", 9)
         .await
         .unwrap()
         .unwrap();
@@ -66,7 +66,7 @@ async fn insert_then_lookup_latest_le_q() {
     row2.covered_snapshot = 8;
     row2.row_count = 7;
     insert_vector_index(&mut conn, &row2).await.unwrap();
-    let got = lookup_vector_index(&pool, table_id, "default", 9)
+    let got = lookup_vector_index(&pool, table_id, "by_flat", 9)
         .await
         .unwrap()
         .unwrap();

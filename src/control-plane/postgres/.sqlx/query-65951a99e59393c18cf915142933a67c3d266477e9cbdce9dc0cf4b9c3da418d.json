@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name from ontology.object_type where table_schema = $1 and table_name = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.object_type",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "65951a99e59393c18cf915142933a67c3d266477e9cbdce9dc0cf4b9c3da418d"
+}

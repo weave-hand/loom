@@ -11,8 +11,8 @@ use arrow_array::{Float32Array, Int64Array, RecordBatch};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, Metric, ObjectType, PropertyDef,
-    RunId, TableRef, TypeName,
+    ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
+    PropertyDef, RunId, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::land;
@@ -153,7 +153,7 @@ async fn seed_and_build(
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "Vector".into(),
+                    ty: "vector(4)".into(),
                     required: true,
                 },
             ],
@@ -195,19 +195,21 @@ async fn seed_and_build(
     .await
     .expect("land rows 3-4");
 
-    // Build the vector index.
+    // Declare the named flat index (metric supplied by the declaration), then build it.
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_flat".into(),
+            type_name: TypeName("Docs".into()),
+            property: "embedding".into(),
+            metric,
+            spec: IndexSpec::Flat,
+        })
+        .await
+        .expect("define_vector_index");
     let build_run = RunId(uuid::Uuid::new_v4());
-    build_vector_index(
-        &catalog,
-        &pool,
-        &table,
-        "embedding",
-        metric,
-        control_plane_core::IndexSpec::Flat,
-        build_run,
-    )
-    .await
-    .expect("build_vector_index");
+    build_vector_index(&catalog, &pool, &table, "by_flat", build_run)
+        .await
+        .expect("build_vector_index");
 
     (catalog, pool, cp, wh)
 }
@@ -229,7 +231,7 @@ async fn knn_cold_exact_cosine() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_flat",
         &[1.0_f32, 0.0, 0.0, 0.0],
         2,
     )
@@ -262,7 +264,7 @@ async fn knn_cold_exact_l2() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_flat",
         &[0.0_f32, 1.0, 0.0, 0.0],
         2,
     )
@@ -311,7 +313,7 @@ async fn no_bound_index_is_deterministic_error() {
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "Vector".into(),
+                    ty: "vector(4)".into(),
                     required: true,
                 },
             ],
@@ -342,7 +344,7 @@ async fn no_bound_index_is_deterministic_error() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_flat",
         &[1.0_f32, 0.0, 0.0, 0.0],
         1,
     )
@@ -389,7 +391,7 @@ async fn knn_cold_hot_merge_cosine() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_flat",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
     )
@@ -443,7 +445,7 @@ async fn knn_cold_hot_merge_l2() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_flat",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
     )
@@ -498,7 +500,7 @@ async fn seed_and_build_ivf(
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "Vector".into(),
+                    ty: "vector(4)".into(),
                     required: true,
                 },
             ],
@@ -536,18 +538,20 @@ async fn seed_and_build_ivf(
     .await
     .expect("land rows 3-4");
 
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_ivf".into(),
+            type_name: TypeName("Docs".into()),
+            property: "embedding".into(),
+            metric,
+            spec: IndexSpec::IvfFlat { nlist: Some(2) },
+        })
+        .await
+        .expect("define_vector_index");
     let build_run = RunId(uuid::Uuid::new_v4());
-    build_vector_index(
-        &catalog,
-        &pool,
-        &table,
-        "embedding",
-        metric,
-        control_plane_core::IndexSpec::IvfFlat { nlist: Some(2) },
-        build_run,
-    )
-    .await
-    .expect("build ivf");
+    build_vector_index(&catalog, &pool, &table, "by_ivf", build_run)
+        .await
+        .expect("build ivf");
 
     (catalog, pool, cp, wh)
 }
@@ -568,7 +572,7 @@ async fn ivf_cold_search_returns_exact_match() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_ivf",
         &[1.0_f32, 0.0, 0.0, 0.0],
         1,
     )
@@ -609,7 +613,7 @@ async fn ivf_hot_delta_row_is_never_pruned_cosine() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_ivf",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
     )
@@ -658,7 +662,7 @@ async fn ivf_hot_delta_row_is_never_pruned_l2() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_ivf",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
     )
@@ -711,7 +715,7 @@ async fn seed_and_build_hnsw(
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "Vector".into(),
+                    ty: "vector(4)".into(),
                     required: true,
                 },
             ],
@@ -749,21 +753,23 @@ async fn seed_and_build_hnsw(
     .await
     .expect("land rows 3-4");
 
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_hnsw".into(),
+            type_name: TypeName("Docs".into()),
+            property: "embedding".into(),
+            metric,
+            spec: IndexSpec::Hnsw {
+                m: None,
+                ef_construction: None,
+            },
+        })
+        .await
+        .expect("define_vector_index");
     let build_run = RunId(uuid::Uuid::new_v4());
-    build_vector_index(
-        &catalog,
-        &pool,
-        &table,
-        "embedding",
-        metric,
-        control_plane_core::IndexSpec::Hnsw {
-            m: None,
-            ef_construction: None,
-        },
-        build_run,
-    )
-    .await
-    .expect("build hnsw");
+    build_vector_index(&catalog, &pool, &table, "by_hnsw", build_run)
+        .await
+        .expect("build hnsw");
 
     (catalog, pool, cp, wh)
 }
@@ -803,7 +809,7 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_cosine() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_hnsw",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
     )
@@ -855,7 +861,7 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_l2() {
         &catalog,
         &pool,
         &table,
-        "embedding",
+        "by_hnsw",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
     )

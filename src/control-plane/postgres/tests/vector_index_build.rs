@@ -11,8 +11,8 @@ use arrow_array::{Int64Array, RecordBatch};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, Metric, ObjectType,
-    PageReq, PropertyDef, RunId, TableRef, TypeName, VectorIndex,
+    Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric,
+    ObjectType, PageReq, PropertyDef, RunId, TableRef, TypeName, VectorIndex, VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -124,7 +124,7 @@ async fn build_covers_all_rows_live_at_s() {
                 },
                 PropertyDef {
                     name: "embedding".into(),
-                    ty: "Vector".into(),
+                    ty: "vector(4)".into(),
                     required: true,
                 },
             ],
@@ -133,6 +133,18 @@ async fn build_covers_all_rows_live_at_s() {
         })
         .await
         .expect("define_type");
+
+    // 1b. Declare a named flat index on the embedding property.
+    cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: "by_flat".into(),
+            type_name: TypeName("Docs".into()),
+            property: "embedding".into(),
+            metric: Metric::Cosine,
+            spec: IndexSpec::Flat,
+        })
+        .await
+        .expect("define_vector_index");
 
     // 2. Land rows 1..=4.  Vector columns can't inline, so we force Parquet
     //    with limit 0 for all batches.
@@ -182,17 +194,9 @@ async fn build_covers_all_rows_live_at_s() {
 
     // 4. Run build_vector_index.
     let build_run = RunId(uuid::Uuid::new_v4());
-    let built = build_vector_index(
-        &catalog,
-        &pool,
-        &table,
-        "embedding",
-        Metric::Cosine,
-        control_plane_core::IndexSpec::Flat,
-        build_run,
-    )
-    .await
-    .expect("build_vector_index");
+    let built = build_vector_index(&catalog, &pool, &table, "by_flat", build_run)
+        .await
+        .expect("build_vector_index");
 
     // 5. Assert row_count covers all 4 rows.
     assert_eq!(built.row_count, 4, "all 4 rows covered");
@@ -209,7 +213,7 @@ async fn build_covers_all_rows_live_at_s() {
     .await
     .expect("table_id");
 
-    let found = lookup_vector_index(&pool, table_id, "default", built.covered_snapshot)
+    let found = lookup_vector_index(&pool, table_id, "by_flat", built.covered_snapshot)
         .await
         .expect("lookup")
         .expect("should be Some");
