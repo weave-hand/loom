@@ -21,3 +21,8 @@ protox = "0.9"
 prost-build = "0.14"
 tonic-prost-build = "0.14"
 arrow-flight = { version = "58", features = ["flight-sql"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pinned: time 0.3.48+ conflicts with sqlx-core 0.9 under Rust 2024 orphan rules.
+time = "=0.3.47"
+uuid = { version = "1" }

@@ -1967,12 +1967,16 @@ dependencies = [
  "prost-build",
  "prost-types",
  "protox",
+ "serde",
+ "serde_json",
+ "time",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
  "tower",
+ "uuid",
 ]
 
 [[package]]
