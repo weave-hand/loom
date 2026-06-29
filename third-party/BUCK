@@ -6601,6 +6601,55 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "filetime-0.2.29.crate",
+    sha256 = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759",
+    strip_prefix = "filetime-0.2.29",
+    urls = ["https://static.crates.io/crates/filetime/0.2.29/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "filetime-0.2",
+    srcs = [":filetime-0.2.29.crate"],
+    crate = "filetime",
+    crate_root = "filetime-0.2.29.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "filetime",
+        "CARGO_CRATE_NAME": "filetime",
+        "CARGO_MANIFEST_DIR": "filetime-0.2.29.crate",
+        "CARGO_PKG_AUTHORS": "Alex Crichton <alex@alexcrichton.com>",
+        "CARGO_PKG_DESCRIPTION": "Platform-agnostic accessors of timestamps in File metadata\n",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/alexcrichton/filetime",
+        "CARGO_PKG_NAME": "filetime",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/alexcrichton/filetime",
+        "CARGO_PKG_RUST_VERSION": "1.75.0",
+        "CARGO_PKG_VERSION": "0.2.29",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "29",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    platform = {
+        "linux-arm64": dict(
+            deps = [":libc-0.2"],
+        ),
+        "linux-x86_64": dict(
+            deps = [":libc-0.2"],
+        ),
+        "macos-arm64": dict(
+            deps = [":libc-0.2"],
+        ),
+        "macos-x86_64": dict(
+            deps = [":libc-0.2"],
+        ),
+    },
+    visibility = [],
+    deps = [":cfg-if-1"],
+)
+
+http_archive(
     name = "find-msvc-tools-0.1.9.crate",
     sha256 = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582",
     strip_prefix = "find-msvc-tools-0.1.9",
@@ -6701,6 +6750,12 @@ cargo.rust_library(
     },
     visibility = [],
     deps = [":bitflags-2"],
+)
+
+alias(
+    name = "flate2",
+    actual = ":flate2-1",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -16802,6 +16857,77 @@ cargo.rust_library(
 )
 
 alias(
+    name = "tar",
+    actual = ":tar-0.4",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "tar-0.4.46.crate",
+    sha256 = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840",
+    strip_prefix = "tar-0.4.46",
+    urls = ["https://static.crates.io/crates/tar/0.4.46/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "tar-0.4",
+    srcs = [":tar-0.4.46.crate"],
+    crate = "tar",
+    crate_root = "tar-0.4.46.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "tar",
+        "CARGO_CRATE_NAME": "tar",
+        "CARGO_MANIFEST_DIR": "tar-0.4.46.crate",
+        "CARGO_PKG_AUTHORS": "Alex Crichton <alex@alexcrichton.com>",
+        "CARGO_PKG_DESCRIPTION": "A Rust implementation of a TAR file reader and writer. This library does not\ncurrently handle compression, but it is abstract over all I/O readers and\nwriters. Additionally, great lengths are taken to ensure that the entire\ncontents are never required to be entirely resident in memory all at once.\n",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/composefs/tar-rs",
+        "CARGO_PKG_NAME": "tar",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/composefs/tar-rs",
+        "CARGO_PKG_RUST_VERSION": "1.63",
+        "CARGO_PKG_VERSION": "0.4.46",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "4",
+        "CARGO_PKG_VERSION_PATCH": "46",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "xattr",
+    ],
+    platform = {
+        "linux-arm64": dict(
+            deps = [
+                ":libc-0.2",
+                ":xattr-1",
+            ],
+        ),
+        "linux-x86_64": dict(
+            deps = [
+                ":libc-0.2",
+                ":xattr-1",
+            ],
+        ),
+        "macos-arm64": dict(
+            deps = [
+                ":libc-0.2",
+                ":xattr-1",
+            ],
+        ),
+        "macos-x86_64": dict(
+            deps = [
+                ":libc-0.2",
+                ":xattr-1",
+            ],
+        ),
+    },
+    visibility = [],
+    deps = [":filetime-0.2"],
+)
+
+alias(
     name = "tempfile",
     actual = ":tempfile-3",
     visibility = ["PUBLIC"],
@@ -19811,6 +19937,45 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
+)
+
+http_archive(
+    name = "xattr-1.6.1.crate",
+    sha256 = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156",
+    strip_prefix = "xattr-1.6.1",
+    urls = ["https://static.crates.io/crates/xattr/1.6.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "xattr-1",
+    srcs = [":xattr-1.6.1.crate"],
+    crate = "xattr",
+    crate_root = "xattr-1.6.1.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "xattr",
+        "CARGO_CRATE_NAME": "xattr",
+        "CARGO_MANIFEST_DIR": "xattr-1.6.1.crate",
+        "CARGO_PKG_AUTHORS": "Steven Allen <steven@stebalien.com>",
+        "CARGO_PKG_DESCRIPTION": "unix extended filesystem attributes",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "xattr",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/Stebalien/xattr",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "1.6.1",
+        "CARGO_PKG_VERSION_MAJOR": "1",
+        "CARGO_PKG_VERSION_MINOR": "6",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "unsupported",
+    ],
+    visibility = [],
+    deps = [":rustix-1"],
 )
 
 http_archive(
