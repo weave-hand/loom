@@ -15,8 +15,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use control_plane_core::{
-    COMPACT_JOB_KIND, CompactJob, ControlPlane, DatasetId, EventType, LineageEvent, NewJob, RunId,
-    TableRef,
+    Action, COMPACT_JOB_KIND, CompactJob, ControlPlane, ControlPlaneError, DatasetId,
+    DatasetRef, Decision, EventType, LineageEvent, NewJob, PolicyTarget, RunId, TableRef,
+    TypeName,
 };
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -26,6 +27,8 @@ use crate::IngestError;
 use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 use crate::landing::{LandRequest, LandingMaterializer};
 use crate::materialize::resolve_columns;
+use crate::model::model_shape_from_type;
+use service_runtime::Subject;
 
 /// Shared, owned dependencies: the configured landing backend (Iceberg),
 /// chosen at boot. Gate + schema resolution + lineage are backend-agnostic
@@ -39,6 +42,7 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/datasets/:schema/:table", post(land))
+        .route("/models/:type", post(land_model))
         .route("/tables/:schema/:table/compact", post(compact))
         .with_state(state)
 }
@@ -133,6 +137,104 @@ fn violations_json(violations: &[Violation]) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({ "violations": items })
+}
+
+/// Governed model ingest: conform an Arrow batch to a pre-existing ontology type
+/// and land it as typed objects into the type's table. Authorize before landing
+/// (deny-by-default, no existence leak); a denied write never reaches the store.
+async fn land_model(
+    State(st): State<AppState>,
+    Path(type_name): Path<String>,
+    subject: Subject,
+    body: Bytes,
+) -> Response {
+    let type_name = TypeName(type_name);
+
+    // 1. Coarse ACL gate BEFORE the type is resolved: a missing grant — including an
+    //    unknown/anonymous subject — is 403, returned before we reveal whether the
+    //    type exists. First Write use on the ingest plane.
+    match st
+        .cp
+        .acl()
+        .check(&subject.0, Action::Write, &PolicyTarget::Type(type_name.clone()))
+        .await
+    {
+        Ok(Decision::Allow) => {}
+        Ok(Decision::Deny) => return StatusCode::FORBIDDEN.into_response(),
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    }
+
+    // 2. Resolve the model. A granted-but-nonexistent type is still 403 (no leak),
+    //    distinct from a 404.
+    let otype = match st.cp.ontology().get_type(&type_name).await {
+        Ok(t) => t,
+        Err(ControlPlaneError::NotFound(_)) => return StatusCode::FORBIDDEN.into_response(),
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    };
+
+    // 3. Derive the conformance shape from the type (the gate seam).
+    let shape = model_shape_from_type(&otype);
+
+    // 4. Decode the Arrow IPC body.
+    let (schema, batches) = match decode_ipc(&body) {
+        Ok(sb) => sb,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid arrow ipc stream").into_response(),
+    };
+
+    // 5. Gate + resolve the physical schema (422 + violations on mismatch).
+    let columns = match resolve_columns(&schema, Some(&shape)) {
+        Ok(c) => c,
+        Err(IngestError::DoesNotConform(violations)) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(violations_json(&violations)),
+            )
+                .into_response();
+        }
+        Err(IngestError::Infer(_)) => {
+            return (StatusCode::BAD_REQUEST, "unsupported column type").into_response();
+        }
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    };
+
+    // 6. Land into the type's table with type-named lineage (rows trace to the model).
+    let table = otype.table.clone();
+    let type_label = type_name.0.clone();
+    let file_prefix = Uuid::new_v4().to_string();
+    let lineage = LineageEvent {
+        run_id: RunId(Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![DatasetRef::from(&type_name)],
+        payload: serde_json::json!({ "source": "http-model", "type": type_label }),
+    };
+    let req = LandRequest {
+        table: &table,
+        schema: schema.clone(),
+        columns: &columns,
+        batches: &batches,
+        ipc_body: body.as_ref(),
+        file_prefix: &file_prefix,
+        lineage,
+    };
+
+    match st.materializer.land(req).await {
+        Ok(snap) => Json(serde_json::json!({
+            "snapshot_id": snap.0,
+            "type": type_label,
+        }))
+        .into_response(),
+        Err(IngestError::DoesNotConform(violations)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(violations_json(&violations)),
+        )
+            .into_response(),
+        Err(IngestError::Infer(_)) => {
+            (StatusCode::BAD_REQUEST, "unsupported column type").into_response()
+        }
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    }
 }
 
 async fn land(

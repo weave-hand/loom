@@ -12,6 +12,7 @@ rust_library(
         "//src/control-plane/postgres:postgres",
         "//src/loom-config:loom-config",
         "//src/services/datafusion-io:datafusion-io",
+        "//src/services/runtime:runtime",
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",
