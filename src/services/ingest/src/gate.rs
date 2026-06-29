@@ -1,8 +1,9 @@
 //! The optional model-conformance gate ("this data is this model"). Takes a plain
-//! `ModelShape` value — NOT the ontology — so this crate stays ontology-free; a
-//! later slice derives a `ModelShape` from an `ObjectType`. This slice ships the
-//! seam plus a minimal check (required columns present, types match). Richer
-//! constraints (ranges, regex, coercion) extend `ViolationReason`.
+//! `ModelShape` value — NOT the ontology — so this gate stays ontology-free; the
+//! `model` module (`model_shape_from_type`) derives a `ModelShape` from an
+//! `ObjectType` for the `POST /models/{type}` path. This ships the seam plus a
+//! minimal check (required columns present, types match). Richer constraints
+//! (ranges, regex, coercion) extend `ViolationReason`.
 //!
 //! Note: this validates schema STRUCTURE (column presence + type), not runtime
 //! values — a column declared non-nullable can still carry nulls in the batch;
