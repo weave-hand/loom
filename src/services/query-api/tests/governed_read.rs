@@ -2,7 +2,7 @@
 //! policy (row filter + denied column) shapes the result; a request equality filter
 //! narrows it. Seeds real Parquet through the Iceberg writer chain (`IcebergWriter`)
 //! and serves it with the loom-native DataFusion engine (`InProcessServingEngine`
-//! over an `IcebergCatalog`) — no DuckDB in the path.
+//! over an `IcebergCatalog`).
 
 use control_plane_core::{
     Acl, Action, CompareOp, Effect, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef,

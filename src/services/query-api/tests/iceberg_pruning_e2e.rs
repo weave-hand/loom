@@ -1,7 +1,7 @@
 //! End-to-end: a governed read over a file-backed Iceberg table prunes the files a
 //! predicate provably cannot match (via `IcebergMirrorTableProvider`), the served rows
 //! are exactly the matching ones, and pruning never changes the governed result set.
-//! loom_fixture_test (Postgres + LocalFsStorage; no DuckDB).
+//! loom_fixture_test (Postgres + LocalFsStorage).
 
 use control_plane_core::{Catalog, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};

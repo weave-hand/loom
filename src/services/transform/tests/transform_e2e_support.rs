@@ -1,9 +1,9 @@
 //! Shared seed/serve plumbing for the transform e2e tests, all on the Iceberg
-//! control plane + the loom-native serving engine — NO DuckDB anywhere.
+//! control plane + the loom-native serving engine.
 //!
 //! The four transform e2e suites (`transform_e2e`, `overwrite_e2e`, `compact_e2e`,
-//! `typed_transform_e2e`) used to seed inputs and read output back through the
-//! now-removed DuckLake/DuckDB serving path. This module replaces both halves:
+//! `typed_transform_e2e`) seed inputs and read output back through this module,
+//! which provides both halves:
 //!
 //! - **Seed** (`seed_table`): writes real Parquet via `datafusion_io::write_dataset`
 //!   into the SAME object store the transform reads from, then registers it through
@@ -197,9 +197,9 @@ pub fn scalar_i64(batches: &[RecordBatch]) -> i64 {
 }
 
 /// Collect `(id, string-col)` rows from a `SELECT id, col ... ORDER BY id` serving
-/// result and join the string column with `,` — the DataFusion-side replacement for
-/// DuckDB's `string_agg(col, ',' ORDER BY id)`. Nulls render as empty (none expected
-/// in the ported fixtures).
+/// result and join the string column with `,` — equivalent to the engine's
+/// `string_agg(col, ',' ORDER BY id)` applied across batches. Nulls render as empty
+/// (none expected in the ported fixtures).
 pub fn col_csv(batches: &[RecordBatch]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for b in batches {

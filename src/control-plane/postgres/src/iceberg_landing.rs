@@ -551,7 +551,7 @@ async fn land_parquet(
 }
 
 /// Replace `table`'s live data with `batches` in one Postgres transaction — the
-/// Iceberg twin of DuckLake's `Tx::replace_files`. End-caps every currently-live
+/// overwrite/replace commit primitive (`Tx::replace_files`). End-caps every currently-live
 /// `iceberg_mirror.data_file` row at the new snapshot, projects the new files (with
 /// per-column stats), appends them on the Iceberg side (`fast_append`), and emits
 /// `lineage` atomically; prior files stay reachable by time travel. The insert side

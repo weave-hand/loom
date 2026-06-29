@@ -5,7 +5,7 @@
 //!   2. DELETE removes the located row.
 //!   3. A mutate on an absent identity returns `ActionError::NotFound`.
 //!
-//! loom_fixture_test (Postgres + LocalFsStorage warehouse). No DuckDB.
+//! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
 use std::collections::HashMap;
 use std::sync::Arc;

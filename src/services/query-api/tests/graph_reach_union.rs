@@ -2,7 +2,7 @@
 //! returns canned object rows matching the Person projection [id, name]; the test asserts the
 //! governance short-circuits (NotCyclicPath for a non-self link, UnknownLink, empty link set,
 //! NoIdentity), the happy path returning the stub's reachable objects, and that duplicate link
-//! names collapse to one arm. Real recursive reachability over DuckDB is the graph union e2e.
+//! names collapse to one arm. Real recursive reachability is the graph union e2e.
 
 use std::time::Duration;
 

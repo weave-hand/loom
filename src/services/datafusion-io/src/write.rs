@@ -144,7 +144,7 @@ pub async fn write_dataset(
     // its default of 4, so the output file count tracked the upstream batch count — a join
     // that emitted 2 batches silently produced 2 files even though `estimate_partitions`
     // asked for 1. That historically mis-read a multi-file table under a pushed-down `LIMIT`
-    // (the DuckDB-era scan reconstructed `id` values incorrectly, e.g. 10 -> 266), corrupting
+    // (the legacy serving engine scan reconstructed `id` values incorrectly, e.g. 10 -> 266), corrupting
     // reads — so a stray split was never cosmetic. Pinning the sink's file count to exactly
     // `partitions` (and leaving the high soft row cap) makes small results a single file
     // while still letting size-targeted large results split. See tests/single_file_write.rs.

@@ -1,4 +1,4 @@
-//! Regression guard for the multi-file split that corrupts DuckLake `LIMIT` reads.
+//! Regression guard for the multi-file split that corrupts legacy serving engine `LIMIT` reads.
 //!
 //! `write_dataset` size-targets its output: a tiny result must land as exactly ONE
 //! Parquet file (`estimate_partitions` returns 1). Before the fix the file count was
@@ -6,14 +6,14 @@
 //! input stream across `minimum_parallel_output_files` writers (default 4), opening one
 //! file per incoming batch. A join emits a non-deterministic number of output batches
 //! under multi-threaded execution, so a 3-row result intermittently landed as two files.
-//! DuckLake/DuckDB then mis-read the multi-file table under a pushed-down `LIMIT`,
+//! The legacy serving engine then mis-read the multi-file table under a pushed-down `LIMIT`,
 //! corrupting `id` values (e.g. 10 -> 266). The corruption is 1:1 with the multi-file
 //! split, so asserting single-file output for small data is the root-cause guard.
 //!
 //! It mirrors the real `run_transform` path (scan inputs back from the object store,
 //! then join + write) so the join emits multiple output batches — an in-memory
 //! single-batch source would not exercise the demuxer's multi-file fan-out. Uses an
-//! in-memory object store, so it stays fast and Postgres/DuckDB-free.
+//! in-memory object store, so it stays fast and Postgres-free.
 
 use std::sync::Arc;
 
@@ -129,7 +129,7 @@ async fn small_join_result_lands_as_a_single_file() {
 
     // The corruption is 1:1 with the file count: tiny data must produce exactly one
     // file (estimate_partitions == 1), never the multi-file split that breaks the
-    // DuckLake LIMIT read.
+    // legacy serving engine LIMIT read.
     let total_rows: i64 = written.iter().map(|w| w.record_count).sum();
     assert_eq!(
         written.len(),

@@ -224,8 +224,8 @@ pub struct CommitExtras<'a> {
     pub end_cap: Option<InlineEndCap<'a>>,
     /// Overwrite/replace mode: end-cap every currently-live data file for the table
     /// at the commit's snapshot (before projecting the new files), so the new set is
-    /// the sole live set while prior files stay reachable by time travel. The Iceberg
-    /// twin of DuckLake's `Tx::replace_files`. `false` (the `Default`) is append.
+    /// the sole live set while prior files stay reachable by time travel. This is the
+    /// overwrite/replace commit primitive (`Tx::replace_files`). `false` (the `Default`) is append.
     pub overwrite: bool,
 }
 

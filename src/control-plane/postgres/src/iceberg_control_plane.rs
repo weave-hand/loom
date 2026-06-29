@@ -1,14 +1,14 @@
-//! An Iceberg-backed `ControlPlane`/`Tx`, the second `Tx` impl alongside DuckLake's
-//! `PgTx`. It makes `ControlPlane::begin()` genuinely polymorphic: the same transform
-//! write code (`create_table → append_files | replace_files → emit → commit`) commits
-//! its already-written Parquet to Iceberg instead of DuckLake, selected at boot.
+//! An Iceberg-backed `ControlPlane`/`Tx`. It makes `ControlPlane::begin()` genuinely
+//! polymorphic: the same transform write code (`create_table → append_files |
+//! replace_files → emit → commit`) commits its already-written Parquet to Iceberg,
+//! selected at boot.
 //!
 //! Reads resolve through the mirror-backed [`IcebergCatalog`]; the other concerns
 //! (ontology/acl/lineage/queue) are backend-neutral and delegate to the inner
 //! `PgControlPlane`. `IcebergTx::commit` registers the staged files mirror-only (see
 //! [`crate::iceberg_landing::register_files`]) at a freshly allocated snapshot, in one
 //! Postgres transaction with the staged lineage/enqueue — the same atomicity `PgTx`
-//! gives for DuckLake.
+//! gives.
 
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ use crate::queue::pg_insert;
 use crate::{PgControlPlane, backend};
 
 /// A `ControlPlane` whose `begin()` writes to Iceberg. `catalog()` is the mirror-backed
-/// read surface; the other concerns delegate to the inner DuckLake-schema `PgControlPlane`
+/// read surface; the other concerns delegate to the inner `PgControlPlane`
 /// (lineage/acl/ontology/queue share the same Postgres tables regardless of table format).
 pub struct IcebergControlPlane {
     pg: PgControlPlane,

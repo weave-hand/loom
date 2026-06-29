@@ -1,5 +1,4 @@
-//! inline_append: a mirror-only typed inline write. loom_fixture_test (Postgres;
-//! no DuckDB).
+//! inline_append: a mirror-only typed inline write. loom_fixture_test (Postgres).
 
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use sqlx::Row;

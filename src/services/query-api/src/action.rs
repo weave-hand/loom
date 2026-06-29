@@ -353,7 +353,7 @@ async fn run_insert(
     // 5. Expand to the target type's FULL property set (declared order): the parsed
     //    value when the action set the column, else NULL. The loom-owned Parquet
     //    write must carry every column so the file schema matches the table (part-1
-    //    relied on DuckDB defaulting unspecified columns to NULL).
+    //    unspecified columns default to NULL).
     use std::collections::HashMap;
     let parsed: HashMap<&str, &SqlValue> = pairs.iter().map(|(c, v)| (c.as_str(), v)).collect();
     let mut full_columns: Vec<String> = Vec::with_capacity(target.properties.len());

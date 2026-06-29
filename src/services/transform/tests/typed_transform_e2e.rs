@@ -1,7 +1,7 @@
 //! Typed transform e2e: enqueue a "typed-transform" job; the worker resolves input
 //! TYPES to tables, runs type-name SQL, validates the result conforms to the output
 //! TYPE, commits, and emits first-class type-named lineage. The output reads back
-//! through query-api as the typed object. Real Postgres + Iceberg serving — NO DuckDB.
+//! through query-api as the typed object. Real Postgres + Iceberg serving.
 //!
 //! The positive case uses non-required output properties: an inner join can widen
 //! column nullability in DataFusion, which would make a required-over-nullable check
@@ -284,7 +284,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
     );
 
     // 5c. The Object Model round-trips: read OrderEnriched through query-api over the
-    //     in-process Iceberg serving engine (no DuckDB).
+    //     in-process Iceberg serving engine.
     let subj = SubjectId("analyst".into());
     let role = RoleId("analysts".into());
     pg.define_subject(&subj).await.unwrap();

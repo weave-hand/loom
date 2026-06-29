@@ -3,7 +3,7 @@
 //! to the file tier) and file-tier mutations (COW on a row that was written as a
 //! Parquet file rather than an inline row).
 //!
-//! loom_fixture_test (Postgres + LocalFsStorage warehouse). No DuckDB.
+//! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
 use std::collections::HashMap;
 use std::sync::Arc;

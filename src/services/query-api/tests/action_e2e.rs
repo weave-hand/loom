@@ -1,7 +1,7 @@
 //! Actions e2e: define a type + a named insert action, grant Write, invoke the action
 //! (which commits the row and its lineage event atomically), and read the new object
 //! back through the governed read path. Also: an ungranted subject is forbidden.
-//! Real Postgres + Iceberg (no DuckDB).
+//! Real Postgres + Iceberg.
 
 use std::collections::HashMap;
 use std::sync::Arc;

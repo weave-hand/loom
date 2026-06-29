@@ -1,7 +1,7 @@
 //! loom-native, DataFusion-backed execution for Iceberg tables.
 //! Reads the `iceberg_mirror` projection (via `IcebergCatalog`), registers each
 //! live table's Parquet files (absolute paths: `file://` or `s3://`) as a DataFusion
-//! table, and runs the governed/compiled SQL through DataFusion — no DuckDB in the path.
+//! table, and runs the governed/compiled SQL through DataFusion.
 //! See docs/superpowers/specs/2026-06-17-iceberg-datafusion-serving-engine-design.md.
 
 use std::sync::Arc;

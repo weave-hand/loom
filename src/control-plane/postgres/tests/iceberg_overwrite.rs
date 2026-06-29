@@ -1,7 +1,7 @@
-//! Fixture tests for `overwrite_parquet_snapshot` — the Iceberg twin of DuckLake's
-//! `Tx::replace_files`. The replacement files become the table's sole live set while
-//! prior files stay reachable by time travel (mirror end-cap at the new snapshot).
-//! Mirrors the DuckLake contract test `snapshot_replace.rs`.
+//! Fixture tests for `overwrite_parquet_snapshot` — the overwrite/replace commit
+//! primitive (`Tx::replace_files`). The replacement files become the table's sole
+//! live set while prior files stay reachable by time travel (mirror end-cap at the
+//! new snapshot).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -93,8 +93,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 }
 
 /// Append `a` (10 rows) at `s1`, overwrite with `b` (4 rows) at `s2`: at the current
-/// snapshot only `b` is live; the prior snapshot still time-travels to `a`. The
-/// Iceberg twin of `snapshot_replace.rs`.
+/// snapshot only `b` is live; the prior snapshot still time-travels to `a`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overwrite_expires_old_and_preserves_time_travel() {
     let fx = PgFixture::start();

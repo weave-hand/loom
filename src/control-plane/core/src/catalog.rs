@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::page::{Page, PageReq};
 
 /// A catalog-global snapshot/version id (monotonic). Portable across table formats
-/// (DuckLake, Iceberg, Delta all key versions by i64).
+/// (Iceberg, Delta all key versions by i64).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SnapshotId(pub i64);
 

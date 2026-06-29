@@ -35,7 +35,7 @@ async fn writer_for(fx: &PgFixture, db: &str) -> IcebergWriter {
 }
 
 // Seed main.customer with logical columns chosen so the bind validator sees the
-// SAME outcomes the DuckLake seed produced:
+// SAME outcomes as the Iceberg-seeded table produces:
 //   id     long  NN   (a valid required Long / identity)
 //   email  string NULL (String matches; required-over-nullable -> NullabilityViolation)
 //   amount long  NULL  (only exercised as `Money` -> UnknownLogicalType; physical irrelevant)

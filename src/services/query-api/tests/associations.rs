@@ -1,7 +1,7 @@
 //! read_associations on an in-memory control plane + a stub serving engine. The stub
-//! returns canned id pairs (no real DuckDB); the test asserts the returned `pairs` and
+//! returns canned id pairs; the test asserts the returned `pairs` and
 //! the per-end identity logical types, plus the `NoIdentity` governance path. Real-data
-//! pairs over DuckDB are covered by the association e2e (Task 4).
+//! pairs are covered by the association e2e (Task 4).
 
 use std::time::Duration;
 

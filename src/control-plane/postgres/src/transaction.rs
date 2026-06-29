@@ -2,11 +2,9 @@
 //! concerns: transactional queue `enqueue` and lineage `emit`, committed/rolled
 //! back as a single real Postgres transaction.
 //!
-//! The DuckLake table format that this transaction used to also drive (staged
-//! `create_table`/`append_files`/`replace_files`/`compact_files` flushed by
-//! `snapshot::commit_snapshot` on commit) has been removed; Iceberg is the table
-//! format. Those table-write methods now return an explicit error — the Iceberg
-//! write path lives in `IcebergControlPlane`/`IcebergMaterializer`, not here.
+//! The table-write methods (`create_table`, `append_files`, `replace_files`,
+//! `compact_files`) return an explicit error — the Iceberg write path lives in
+//! `IcebergControlPlane`/`IcebergMaterializer`, not here.
 
 use async_trait::async_trait;
 use control_plane_core::{
@@ -23,8 +21,8 @@ pub(crate) struct PgTx {
     pub(crate) tx: sqlx::Transaction<'static, Postgres>,
 }
 
-/// The error returned by the table-format write methods, which DuckLake used to
-/// back. Iceberg owns the table-format write path now.
+/// The error returned by the table-format write methods; Iceberg owns the
+/// table-format write path.
 fn no_table_format() -> ControlPlaneError {
     ControlPlaneError::Validation(
         "PgControlPlane transactions carry no table-format writer; use IcebergControlPlane".into(),

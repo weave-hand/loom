@@ -1,6 +1,6 @@
 //! The /actions/:name route maps a misconfigured action to 500 with the descriptive conformance
 //! body (NOT the opaque catch-all 500), and a conformant action to 201 CREATED. In-memory: the
-//! conformance check fails before any DuckLake access, so a stub serving engine + a no-op action
+//! conformance check fails before any storage access, so a stub serving engine + a no-op action
 //! engine suffice (no fixture).
 
 use std::sync::Arc;

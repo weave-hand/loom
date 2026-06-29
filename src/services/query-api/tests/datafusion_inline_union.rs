@@ -1,5 +1,5 @@
 //! fetch_rows unions a table's Parquet files with its inline rows. loom_fixture_test
-//! (Postgres + LocalFsStorage; no DuckDB).
+//! (Postgres + LocalFsStorage).
 
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;

@@ -2,7 +2,7 @@
 //! into a single file (serving read-back sees the same rows), the pre-compaction snapshot
 //! still time-travels to the three originals, and a second compaction is a no-op (one
 //! file left -> fewer than two small files -> None). On the Iceberg control plane; row
-//! content reads through `engine_serving`, file counts through the catalog. NO DuckDB.
+//! content reads through `engine_serving`, file counts through the catalog.
 
 mod transform_e2e_support;
 

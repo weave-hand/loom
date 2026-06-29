@@ -1,6 +1,6 @@
 //! engine_serving::execute_query over a seeded Iceberg table returns correct
 //! Rows for the handler's compiled-SQL shape. loom_fixture_test (Postgres +
-//! LocalFsStorage; no DuckDB).
+//! LocalFsStorage).
 
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;

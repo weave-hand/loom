@@ -1,7 +1,7 @@
 //! Iceberg ActionEngine e2e: a governed typed-insert on the Iceberg serving backend
 //! lands the row + its lineage atomically (one PG tx), reads back through the
 //! loom-native DataFusion serving engine, and is governed by write-enforcement.
-//! loom_fixture_test (Postgres + LocalFsStorage warehouse; no DuckDB).
+//! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
 use std::collections::HashMap;
 use std::sync::Arc;
