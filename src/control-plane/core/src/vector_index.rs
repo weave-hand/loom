@@ -252,12 +252,20 @@ impl FlatIndex {
         let dim = c.u32()?;
         let row_count = c.u32()?;
         let d = dim as usize;
-        let mut data = Vec::with_capacity(row_count as usize * d);
-        for _ in 0..(row_count as usize * d) {
+        // Bound the data section against the buffer before allocating, so a
+        // corrupt header cannot drive a huge speculative `Vec::with_capacity`.
+        let data_len = (row_count as usize)
+            .checked_mul(d)
+            .ok_or_else(|| bad("row_count * dim overflow"))?;
+        if data_len > c.remaining() {
+            return Err(bad("data section exceeds buffer"));
+        }
+        let mut data = Vec::with_capacity(data_len);
+        for _ in 0..data_len {
             data.push(c.f32()?);
         }
         let key_kind = c.u8()?;
-        let mut keys = Vec::with_capacity(row_count as usize);
+        let mut keys = Vec::with_capacity((row_count as usize).min(c.remaining()));
         for _ in 0..row_count {
             match key_kind {
                 0 => keys.push(VectorKey::Int(c.i64()?)),
@@ -487,20 +495,34 @@ impl IvfFlatIndex {
         let nprobe = c.u32()?;
         let row_count = c.u32()?;
         let d = dim as usize;
-        let mut centroids = Vec::with_capacity(nlist as usize * d);
-        for _ in 0..(nlist as usize * d) {
+        // Bound each header product against the buffer before allocating, so a
+        // corrupt header cannot drive a huge speculative `Vec::with_capacity`.
+        let cent_len = (nlist as usize)
+            .checked_mul(d)
+            .ok_or_else(|| bad("nlist * dim overflow"))?;
+        if cent_len > c.remaining() {
+            return Err(bad("centroid section exceeds buffer"));
+        }
+        let mut centroids = Vec::with_capacity(cent_len);
+        for _ in 0..cent_len {
             centroids.push(c.f32()?);
         }
-        let mut assignments = Vec::with_capacity(row_count as usize);
+        let mut assignments = Vec::with_capacity((row_count as usize).min(c.remaining()));
         for _ in 0..row_count {
             assignments.push(c.u32()?);
         }
-        let mut data = Vec::with_capacity(row_count as usize * d);
-        for _ in 0..(row_count as usize * d) {
+        let data_len = (row_count as usize)
+            .checked_mul(d)
+            .ok_or_else(|| bad("row_count * dim overflow"))?;
+        if data_len > c.remaining() {
+            return Err(bad("data section exceeds buffer"));
+        }
+        let mut data = Vec::with_capacity(data_len);
+        for _ in 0..data_len {
             data.push(c.f32()?);
         }
         let key_kind = c.u8()?;
-        let mut keys = Vec::with_capacity(row_count as usize);
+        let mut keys = Vec::with_capacity((row_count as usize).min(c.remaining()));
         for _ in 0..row_count {
             match key_kind {
                 0 => keys.push(VectorKey::Int(c.i64()?)),

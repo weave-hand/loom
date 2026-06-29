@@ -533,3 +533,41 @@ fn hnsw_deserialize_rejects_neighbor_referencing_absent_layer() {
     // reject it; otherwise `layers[c][lc]` panics at search time.
     assert!(HnswIndex::deserialize(&two_node_blob(1)).is_err());
 }
+
+// --- Flat/IVF decoder allocation bounds (iss-flat-ivf-deserialize-bounds) -----
+//
+// These decoders store no graph adjacency, so the only hardening gap is the
+// speculative `Vec::with_capacity(row_count*dim)` / `nlist*dim` on the untrusted
+// header. A header claiming far more data than the buffer holds must error
+// without driving a giant allocation. (Regression guards for the byte bound:
+// the malformed read also fails downstream as `truncated`, so the observable
+// return is `Err` either way; the bound matters under memory pressure.)
+// Flat header: [7..11] dim, [11..15] row_count.
+// IVF header:  [7..11] dim, [11..15] nlist, [15..19] nprobe, [19..23] row_count.
+
+#[test]
+fn flat_deserialize_rejects_oversized_row_count() {
+    let mut bytes = FlatIndex::build(4, Metric::L2, rows()).unwrap().serialize();
+    write_u32(&mut bytes, 11, 100_000_000); // row_count
+    assert!(FlatIndex::deserialize(&bytes).is_err());
+}
+
+#[test]
+fn ivf_deserialize_rejects_oversized_row_count() {
+    let (rows, _) = clustered_rows();
+    let mut bytes = IvfFlatIndex::build(8, Metric::L2, rows, None)
+        .unwrap()
+        .serialize();
+    write_u32(&mut bytes, 19, 100_000_000); // row_count
+    assert!(IvfFlatIndex::deserialize(&bytes).is_err());
+}
+
+#[test]
+fn ivf_deserialize_rejects_oversized_nlist() {
+    let (rows, _) = clustered_rows();
+    let mut bytes = IvfFlatIndex::build(8, Metric::L2, rows, None)
+        .unwrap()
+        .serialize();
+    write_u32(&mut bytes, 11, 100_000_000); // nlist
+    assert!(IvfFlatIndex::deserialize(&bytes).is_err());
+}
