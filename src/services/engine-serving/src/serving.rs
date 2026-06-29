@@ -42,6 +42,10 @@ pub enum EngineServingError {
     /// panic. See FUTURE `fut-inline-vector-hot-delta`.
     #[error("no vector index: {0}")]
     NoIndex(String),
+    /// The query vector's length does not match the index's declared dimension.
+    /// Callers should surface this as a 400/bad-request.
+    #[error("dimension mismatch: {0}")]
+    DimMismatch(String),
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.

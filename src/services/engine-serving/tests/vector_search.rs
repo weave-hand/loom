@@ -234,6 +234,8 @@ async fn knn_cold_exact_cosine() {
         "by_flat",
         &[1.0_f32, 0.0, 0.0, 0.0],
         2,
+        None,
+        None,
     )
     .await
     .expect("vector_search cosine");
@@ -267,6 +269,8 @@ async fn knn_cold_exact_l2() {
         "by_flat",
         &[0.0_f32, 1.0, 0.0, 0.0],
         2,
+        None,
+        None,
     )
     .await
     .expect("vector_search l2");
@@ -347,6 +351,8 @@ async fn no_bound_index_is_deterministic_error() {
         "by_flat",
         &[1.0_f32, 0.0, 0.0, 0.0],
         1,
+        None,
+        None,
     )
     .await
     .expect_err("should be NoIndex error");
@@ -394,6 +400,8 @@ async fn knn_cold_hot_merge_cosine() {
         "by_flat",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
+        None,
+        None,
     )
     .await
     .expect("vector_search cold+hot cosine");
@@ -448,6 +456,8 @@ async fn knn_cold_hot_merge_l2() {
         "by_flat",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
+        None,
+        None,
     )
     .await
     .expect("vector_search cold+hot l2");
@@ -575,6 +585,8 @@ async fn ivf_cold_search_returns_exact_match() {
         "by_ivf",
         &[1.0_f32, 0.0, 0.0, 0.0],
         1,
+        None,
+        None,
     )
     .await
     .expect("ivf cold search");
@@ -616,6 +628,8 @@ async fn ivf_hot_delta_row_is_never_pruned_cosine() {
         "by_ivf",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
+        None,
+        None,
     )
     .await
     .expect("ivf cold+hot search");
@@ -665,6 +679,8 @@ async fn ivf_hot_delta_row_is_never_pruned_l2() {
         "by_ivf",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
+        None,
+        None,
     )
     .await
     .expect("ivf cold+hot l2");
@@ -812,6 +828,8 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_cosine() {
         "by_hnsw",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
+        None,
+        None,
     )
     .await
     .expect("hnsw cold+hot cosine");
@@ -864,6 +882,8 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_l2() {
         "by_hnsw",
         &[0.9_f32, 0.1, 0.0, 0.0],
         2,
+        None,
+        None,
     )
     .await
     .expect("hnsw cold+hot l2");
@@ -880,4 +900,97 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_l2() {
     );
     let dists = distances(&batch);
     assert!(dists[0] <= dists[1], "distances ascending");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ivf_nprobe_full_reproduces_exact_match() {
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(&fx, &db, Metric::Cosine).await;
+
+    // nprobe = nlist (2) probes every cluster → the exact nearest is always found.
+    let batch = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "by_ivf",
+        &[1.0_f32, 0.0, 0.0, 0.0],
+        1,
+        Some(2),
+        None,
+    )
+    .await
+    .expect("ivf nprobe=nlist");
+    assert_eq!(ids(&batch)[0], 1, "nprobe=nlist reproduces the exact match");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flat_ignores_both_knobs() {
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
+
+    // Flat: nprobe/ef_search must not change results.
+    let plain = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "by_flat",
+        &[1.0_f32, 0.0, 0.0, 0.0],
+        2,
+        None,
+        None,
+    )
+    .await
+    .expect("flat plain");
+    let knobbed = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "by_flat",
+        &[1.0_f32, 0.0, 0.0, 0.0],
+        2,
+        Some(4),
+        Some(64),
+    )
+    .await
+    .expect("flat knobbed");
+    assert_eq!(ids(&plain), ids(&knobbed), "Flat ignores knobs");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_dim_mismatch_is_error() {
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "docs".into(),
+    };
+    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
+
+    // Index dim is 4; a length-3 query must be a deterministic DimMismatch, never a panic.
+    let err = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "by_flat",
+        &[1.0_f32, 0.0, 0.0],
+        2,
+        None,
+        None,
+    )
+    .await
+    .expect_err("dim mismatch");
+    assert!(
+        matches!(err, EngineServingError::DimMismatch(_)),
+        "expected DimMismatch, got {err:?}"
+    );
 }

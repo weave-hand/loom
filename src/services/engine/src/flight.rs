@@ -73,10 +73,13 @@ impl FlightDataService {
             &vs.index_name,
             &vs.query,
             vs.k as usize,
+            vs.nprobe,
+            vs.ef_search,
         )
         .await
         .map_err(|e| match e {
             engine_serving::EngineServingError::NoIndex(msg) => Status::not_found(msg),
+            engine_serving::EngineServingError::DimMismatch(msg) => Status::invalid_argument(msg),
             other => Status::internal(other.to_string()),
         })?;
         let input = futures::stream::iter(std::iter::once(Ok(batch)));
