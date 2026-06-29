@@ -304,17 +304,23 @@ async fn acl_deny_is_403_and_nothing_lands() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn unknown_type_with_grant_is_403_no_leak() {
+async fn unknown_type_is_403_no_leak() {
     let fx = PgFixture::start();
     let (_seed, db) = fx.fresh_db().await;
     let (pg, _pool, _wh, state) = app_state(&fx, &db).await;
-    // Grant Write on a type that is never defined.
-    grant_write(&pg, "alice", "Ghost").await;
+    // alice is a legitimately Write-granted user — but on an *existing* type. (ACL
+    // grants validate the target type exists, so you cannot grant on a non-existent
+    // type; the no-leak guarantee therefore comes from the coarse gate returning
+    // Deny for any type alice lacks a grant on, never from a 404.)
+    define_thing(&pg, "Thing", thing_table()).await;
+    grant_write(&pg, "alice", "Thing").await;
     let token = session_token(&pg, "alice").await;
 
     let app = protected(state, pg.clone());
+    // alice posts to a type that does not exist. She holds Write elsewhere, yet the
+    // response is 403 — indistinguishable from "type exists but forbidden", never a
+    // 404 that would reveal the type's (non-)existence.
     let (status, _json) = post_model(app, "Ghost", &token, ipc_bytes(&sample_batch())).await;
 
-    // get_type NotFound after the Write grant resolves to 403, not a 404 — no leak.
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
