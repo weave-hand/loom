@@ -1,0 +1,48 @@
+load("//src:loom_test.bzl", "rust_test")
+load("//src/control-plane/postgres:defs.bzl", "PG_VERSION", "loom_fixture_test")
+
+rust_library(
+    name = "managed-postgres-embed",
+    crate = "managed_postgres_embed",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    env = {
+        "LOOM_PG_TARBALL": "$(location //src/control-plane/postgres:postgres-tarball)",
+        "LOOM_PG_VERSION": PG_VERSION,
+    },
+    deps = ["//third-party:flate2", "//third-party:tar", "//third-party:thiserror"],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "embed-present",
+    crate = "embed_present",
+    srcs = ["tests/embed_present.rs"],
+    crate_root = "tests/embed_present.rs",
+    edition = "2024",
+    deps = [":managed-postgres-embed"],
+)
+
+rust_test(
+    name = "extract",
+    crate = "extract",
+    srcs = ["tests/extract.rs"],
+    crate_root = "tests/extract.rs",
+    edition = "2024",
+    deps = [":managed-postgres-embed", "//third-party:tempfile"],
+)
+
+loom_fixture_test(
+    name = "boot-from-embedded",
+    crate = "boot_from_embedded",
+    srcs = ["tests/boot_from_embedded.rs"],
+    crate_root = "tests/boot_from_embedded.rs",
+    deps = [
+        ":managed-postgres-embed",
+        "//src/services/managed-postgres:managed-postgres",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)

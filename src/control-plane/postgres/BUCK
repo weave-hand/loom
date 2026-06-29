@@ -1,12 +1,12 @@
 load("//src:loom_test.bzl", "rust_test")
-load(":defs.bzl", "loom_fixture_test")
+load(":defs.bzl", "PG_VERSION", "loom_fixture_test")
 
 # Prebuilt, self-contained PostgreSQL server from theseus-rs/postgresql-binaries.
 # Used by the hermetic test fixture (PgFixture), which boots an ephemeral cluster
 # per test — no Docker, no external DB. The binary is a buck2 build input, so the
-# pg-backed contract tests stay hermetic. To bump: change PG_VERSION and refresh
-# each sha256 from the matching `<asset>.tar.gz.sha256` sidecar on the release.
-PG_VERSION = "17.9.0"
+# pg-backed contract tests stay hermetic. To bump: change PG_VERSION in defs.bzl
+# and refresh each sha256 from the matching `<asset>.tar.gz.sha256` sidecar on
+# the release.
 
 _PG_URL = "https://github.com/theseus-rs/postgresql-binaries/releases/download/{ver}/postgresql-{ver}-{triple}.tar.gz"
 
@@ -23,6 +23,22 @@ http_archive(
     strip_prefix = select({
         "ovr_config//os:linux": "postgresql-{}-x86_64-unknown-linux-gnu".format(PG_VERSION),
         "ovr_config//os:macos": "postgresql-{}-aarch64-apple-darwin".format(PG_VERSION),
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# Raw PG distribution tarball (same pins as :postgres-bin, which is the
+# extracted form). The single-binary embed (managed-postgres-embed) bakes this
+# .tar.gz into the binary via include_bytes! and self-extracts at runtime.
+http_file(
+    name = "postgres-tarball",
+    urls = select({
+        "ovr_config//os:linux": [_PG_URL.format(ver = PG_VERSION, triple = "x86_64-unknown-linux-gnu")],
+        "ovr_config//os:macos": [_PG_URL.format(ver = PG_VERSION, triple = "aarch64-apple-darwin")],
+    }),
+    sha256 = select({
+        "ovr_config//os:linux": "463422cb007fd15bb37819b1d3562392dd81bba385205fbd0eef4891cb1d18b5",
+        "ovr_config//os:macos": "69ae8a046b34b201b6a9a22e2e6f45094dede17ddd1d3e91045bbd6ef3f36815",
     }),
     visibility = ["PUBLIC"],
 )

@@ -1,0 +1,16 @@
+[package]
+name = "managed-postgres-embed"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+managed-postgres = { path = "../managed-postgres" }
+flate2 = "1"
+tar = "0.4"
+thiserror = "1"
+
+[dev-dependencies]
+control-plane-postgres = { path = "../../control-plane/postgres" }
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
