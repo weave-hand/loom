@@ -466,19 +466,31 @@ at the default before.
 - Consumes: `transform::run_transform` (Task 1 signature, `write: &WriteConfig` after `root_url`); the `transform_e2e_support` helpers `seed_table`, `cols`, `tref`, `lineage`; `control_plane_core::PageReq`.
 - Produces: nothing downstream — a leaf test.
 
-**Test design rationale (why it is deterministic):** `write_dataset`'s output
-file count is `min(estimate_partitions(in_memory_bytes, cfg), number_of_collected_batches)`
-— the sink opens up to `minimum_parallel_output_files = estimate_partitions`
-files and round-robins whole batches across them (see
-`datafusion-io/src/write.rs` and the proven `write_dataset_splits_into_multiple_files`
-test). So to force a multi-file split we need BOTH (a) `estimate_partitions > 1`,
-achieved with a tuned `WriteConfig { target_file_size_bytes: 1, max_files: 8, .. }`,
-AND (b) `df.collect()` yielding ≥2 batches, achieved by seeding the input as
-**four separate data files** (each `seed_table` call appends one file; a
-`SELECT *` scan registers them as multiple partitions → multiple collected
-batches). Under `WriteConfig::default()` the same tiny input has
-`estimate_partitions == 1`, so the output is exactly one file regardless of batch
-count. Thus: default ⇒ 1 file, tuned ⇒ ≥2 files.
+**Test design rationale (why it is deterministic — CPU-count independent):**
+`write_dataset` builds its OWN `SessionContext` and wraps the collected `batches`
+in a single-partition `MemTable` (`vec![batches.to_vec()]`, `write.rs:157`), then
+sets `minimum_parallel_output_files = estimate_partitions(in_memory_bytes, cfg)`
+and lets the parquet sink round-robin **whole batches** across that many writers
+(`write.rs:136-169`). So the output file count is
+`min(estimate_partitions, number_of_batches_run_transform_collected)`. Two levers:
+
+- (a) `estimate_partitions > 1` — achieved with a tuned
+  `WriteConfig { target_file_size_bytes: 1, max_files: 8, compression_factor: 1.0 }`
+  (tiny target ⇒ clamps to `max_files = 8`); under `WriteConfig::default()` the
+  same input has `estimate_partitions == 1` ⇒ exactly one output file.
+- (b) `run_transform`'s `df.collect()` yielding **≥2 batches** — guaranteed *by
+  construction, not by host CPU count*, by seeding the input with **more than
+  `batch_size` (8192) rows**. DataFusion's scan emits at most `batch_size` rows
+  per `RecordBatch` and nothing in a `SELECT *` plan merges batches beyond
+  `batch_size`, so `collect()` always returns ≥ `ceil(rows / 8192)` batches
+  regardless of `target_partitions`/core count. Seeding 20 000 rows ⇒ ≥3 batches
+  on any executor.
+
+This is **stronger than** the sibling `write_dataset_splits_into_multiple_files`
+test (which hand-builds batches) and deliberately avoids the CPU-coupled
+"4 files ⇒ 4 scan partitions ⇒ 4 batches" assumption (a single-core runner would
+collapse a multi-file scan to one batch). Result, on any runner:
+default ⇒ exactly 1 file, tuned ⇒ ≥2 files.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -505,25 +517,27 @@ async fn write_config_controls_transform_output_file_count() {
         Arc::new(LocalFileSystem::new_with_prefix(wh.path()).expect("store"));
     let cp = IcebergControlPlane::new(pg.clone(), catalog);
 
-    // Seed the input as FOUR separate data files so the SELECT * scan collects
-    // multiple batches (a single file would collect as one batch and never split,
-    // regardless of the WriteConfig). create_table is idempotent across appends.
+    // Seed the input with > batch_size (8192) rows so `run_transform`'s
+    // `df.collect()` yields >= 2 record batches BY CONSTRUCTION (DataFusion caps a
+    // batch at `batch_size` rows; nothing in a `SELECT *` plan merges beyond it),
+    // independent of host CPU count / `target_partitions`. The parquet sink in
+    // `write_dataset` round-robins those batches across up to
+    // `minimum_parallel_output_files` writers, so a tuned tiny-target config splits
+    // the output while the default coalesces it to one file.
     let src = tref("main", "tuning_src");
     let src_cols = cols(&[("id", "long", false)]);
     let src_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    for i in 0..4_i64 {
-        seed_table(
-            &cp,
-            &store,
-            &src,
-            &src_cols,
-            src_schema.clone(),
-            RecordBatch::try_new(src_schema.clone(), vec![Arc::new(Int64Array::from(vec![i]))])
-                .unwrap(),
-            &format!("seed-{i}"),
-        )
-        .await;
-    }
+    let ids: Vec<i64> = (0..20_000_i64).collect();
+    seed_table(
+        &cp,
+        &store,
+        &src,
+        &src_cols,
+        src_schema.clone(),
+        RecordBatch::try_new(src_schema.clone(), vec![Arc::new(Int64Array::from(ids))]).unwrap(),
+        "seed-0",
+    )
+    .await;
 
     // Helper: run `SELECT * FROM tuning_src` into `out` with `write`, return the
     // committed output data-file count.
@@ -590,11 +604,15 @@ async fn write_config_controls_transform_output_file_count() {
 
     assert_eq!(
         default_count, 1,
-        "the default WriteConfig coalesces the tiny input to a single file"
+        "the default WriteConfig coalesces the input to a single file"
+    );
+    assert!(
+        tuned_count >= 2,
+        "the tuned WriteConfig splits the output across multiple files (got {tuned_count})"
     );
     assert!(
         tuned_count > default_count,
-        "the tuned WriteConfig splits the output (got tuned={tuned_count}, default={default_count})"
+        "tuning changed the layout (tuned={tuned_count}, default={default_count})"
     );
 }
 ```
