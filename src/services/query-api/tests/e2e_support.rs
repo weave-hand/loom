@@ -540,6 +540,31 @@ pub async fn grant_read_filtered(
     .unwrap();
 }
 
+/// Coarse `Read` Allow plus a column policy with the given denied/masked columns and
+/// no row filter — the shape that governs the identity column. Mirrors
+/// `grant_read_filtered` but exercises column governance instead of a row filter.
+pub async fn grant_read_columns(
+    cp: &PgControlPlane,
+    role: &RoleId,
+    type_name: &str,
+    deny_columns: Vec<String>,
+    mask_columns: Vec<String>,
+) {
+    grant_read(cp, role, type_name).await;
+    cp.set_policy(
+        role,
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(TypeName(type_name.into())),
+            row_filter: None,
+            deny_columns,
+            mask_columns,
+        },
+    )
+    .await
+    .unwrap();
+}
+
 /// The `Docs` vector-type columns: `id: long` + `embedding: vector(4)`.
 fn vector_columns() -> Vec<ColumnSpec> {
     vec![

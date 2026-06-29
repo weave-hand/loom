@@ -8,10 +8,13 @@
 
 use std::sync::Arc;
 
-use control_plane_core::{CompareOp, RowFilter, ScalarValue};
+use control_plane_core::{
+    Acl, Action, CompareOp, Policy, PolicyTarget, RowFilter, ScalarValue, TypeName,
+};
 use control_plane_postgres::fixture::PgFixture;
 use e2e_support::{
-    grant_read, grant_read_filtered, post_search, seed_vector_type, subject_with_role,
+    grant_read, grant_read_columns, grant_read_filtered, post_search, seed_vector_type,
+    subject_with_role,
 };
 
 use axum::http::StatusCode;
@@ -250,4 +253,123 @@ async fn search_accepts_tuning_knobs() {
         serde_json::json!(1),
         "ef_search knob still ranks"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn search_forbidden_when_identity_denied_no_row_filter() {
+    let fx = PgFixture::start();
+    let (_init, db) = fx.fresh_db().await;
+    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (_subj, role) = subject_with_role(&cp, "dave").await;
+    // Coarse Read + deny the identity column `id`, no row filter.
+    grant_read_columns(&cp, &role, "Docs", vec!["id".into()], vec![]).await;
+    let cp = Arc::new(cp);
+
+    let (status, _body) = post_search(
+        cp.clone(),
+        serving.clone(),
+        "/search/Docs/by_sim",
+        &serde_json::json!({ "query": [1.0, 0.0, 0.0, 0.0], "k": 2 }),
+        "dave",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "denied identity column must fail closed, not leak ids"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn search_forbidden_when_identity_masked_no_row_filter() {
+    let fx = PgFixture::start();
+    let (_init, db) = fx.fresh_db().await;
+    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (_subj, role) = subject_with_role(&cp, "erin").await;
+    // Coarse Read + mask the identity column `id`, no row filter.
+    grant_read_columns(&cp, &role, "Docs", vec![], vec!["id".into()]).await;
+    let cp = Arc::new(cp);
+
+    let (status, _body) = post_search(
+        cp.clone(),
+        serving.clone(),
+        "/search/Docs/by_sim",
+        &serde_json::json!({ "query": [1.0, 0.0, 0.0, 0.0], "k": 2 }),
+        "erin",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "masked identity column must fail closed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn search_forbidden_when_identity_governed_with_row_filter() {
+    let fx = PgFixture::start();
+    let (_init, db) = fx.fresh_db().await;
+    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (_subj, role) = subject_with_role(&cp, "frank").await;
+    // Coarse Read first, then a policy that BOTH denies `id` AND carries a row filter.
+    // Previously this path returned an incidental BadFilter/500; now a deliberate 403.
+    grant_read(&cp, &role, "Docs").await;
+    cp.set_policy(
+        &role,
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(TypeName("Docs".into())),
+            row_filter: Some(RowFilter::Compare {
+                property: "id".into(),
+                op: CompareOp::Gt,
+                value: ScalarValue::Int(0),
+            }),
+            deny_columns: vec!["id".into()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    let cp = Arc::new(cp);
+
+    let (status, _body) = post_search(
+        cp.clone(),
+        serving.clone(),
+        "/search/Docs/by_sim",
+        &serde_json::json!({ "query": [1.0, 0.0, 0.0, 0.0], "k": 2 }),
+        "frank",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "governed identity + row filter must also be a deliberate 403 (symmetry)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn search_ok_when_identity_ungoverned_regression() {
+    let fx = PgFixture::start();
+    let (_init, db) = fx.fresh_db().await;
+    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (_subj, role) = subject_with_role(&cp, "grace").await;
+    // Plain Read, identity column not governed → unchanged behavior, value-exact hits.
+    grant_read(&cp, &role, "Docs").await;
+    let cp = Arc::new(cp);
+
+    let (status, body) = post_search(
+        cp.clone(),
+        serving.clone(),
+        "/search/Docs/by_sim",
+        &serde_json::json!({ "query": [1.0, 0.0, 0.0, 0.0], "k": 2 }),
+        "grace",
+    )
+    .await;
+    let res = results(status, &body);
+    assert_eq!(
+        res.len(),
+        2,
+        "ungoverned identity returns kNN hits unchanged"
+    );
+    assert_eq!(res[0]["id"], serde_json::json!(1), "exact match id=1 first");
 }
