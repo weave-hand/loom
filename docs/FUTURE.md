@@ -165,6 +165,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## ingest
 
+- [ ] **Ingest model inference (infer + create an ontology type on ingest)** `{#fut-ingest-model-inference area:ingest status:deferred from:2026-06-29-ingest-into-model-design pr:- spec:-}`
+  Slice 2 of [[road-ingest-into-model]]: when `POST /models/{type}` names a type that does **not** exist, infer an `ObjectType` from the incoming Arrow batch schema (column→`PropertyDef` mapping via the logical-type vocabulary, identity selection, nullability) and `define_type` it before landing — the auto-detect branch of the unified endpoint (type-present → conform [slice 1]; type-absent → infer + create). Open questions deferred here: how identity is chosen (declared param vs heuristic vs none), authoring authorization for type creation on the ingest plane, and idempotent re-infer when a later batch's inferred shape differs. Builds on slice 1's gate→`ObjectType` seam in reverse (`ObjectType`-from-schema rather than `ModelShape`-from-`ObjectType`).
 - [ ] **Ingest follow-ups (endpoint, splitting, schema evolution, GC)** `{#fut-ingest-followups area:ingest status:deferred from:2026-06-14-ingest-datafusion-compute-path-design pr:- spec:-}`
   Deferred ingest work: the networked DataFusion endpoint, footer-only stats reads, in-batch splitting (RoundRobinBatch is per-batch today), schema evolution, delete/compaction, and orphaned-Parquet GC.
 
