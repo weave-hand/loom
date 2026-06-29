@@ -15,9 +15,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use control_plane_core::{
-    Action, COMPACT_JOB_KIND, CompactJob, ControlPlane, ControlPlaneError, DatasetId,
-    DatasetRef, Decision, EventType, LineageEvent, NewJob, PolicyTarget, RunId, TableRef,
-    TypeName,
+    Action, COMPACT_JOB_KIND, CompactJob, ControlPlane, ControlPlaneError, DatasetId, DatasetRef,
+    Decision, EventType, LineageEvent, NewJob, PolicyTarget, RunId, TableRef, TypeName,
 };
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -156,7 +155,11 @@ async fn land_model(
     match st
         .cp
         .acl()
-        .check(&subject.0, Action::Write, &PolicyTarget::Type(type_name.clone()))
+        .check(
+            &subject.0,
+            Action::Write,
+            &PolicyTarget::Type(type_name.clone()),
+        )
         .await
     {
         Ok(Decision::Allow) => {}
