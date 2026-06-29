@@ -2,6 +2,8 @@
 //! runtime, so an embedded loom boot needs no PG binaries pre-staged. Gated in
 //! its own crate so the 11.7 MB never reaches lean service binaries.
 
+use std::path::{Path, PathBuf};
+
 /// The PG distribution `.tar.gz`, baked in at compile time. `LOOM_PG_TARBALL` is
 /// the buck `$(location :postgres-tarball)` (a plain absolute path).
 #[expect(
@@ -20,8 +22,6 @@ pub const PG_VERSION: &str = env!("LOOM_PG_VERSION");
 pub fn pg_tarball_len() -> usize {
     PG_TARBALL.len()
 }
-
-use std::path::{Path, PathBuf};
 
 /// Where the extracted, ready-to-exec PG distribution lives.
 #[derive(Debug, Clone)]
@@ -63,6 +63,8 @@ pub fn extract_pg(cache_root: &Path) -> Result<ExtractedPg, EmbedError> {
             if stripped.as_os_str().is_empty() {
                 continue;
             }
+            // Trusted input: the tarball is sha256-pinned and compile-time-embedded, so
+            // the per-entry unpack (which does not sanitize `..`) is safe here.
             entry.unpack(tmp.join(stripped))?;
         }
 

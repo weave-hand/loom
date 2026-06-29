@@ -16,6 +16,9 @@ async fn boots_from_embedded_distribution() {
 
     // Dist libs from the extraction + the fixture's libxml2 shim.
     let shim = std::env::var("POSTGRES_LD_LIBRARY_PATH").unwrap_or_default();
+    // Note: this isolates the BIN dir fully (we use the extracted bin_dir); the
+    // dist LIB isolation is partial — a lib missing from the extraction could
+    // still resolve from the fixture's postgres-bin/lib. Acceptable for this test.
     let ld = format!("{}:{}", extracted.lib_dir.display(), shim);
 
     let cfg = EmbeddedPgConfig {
