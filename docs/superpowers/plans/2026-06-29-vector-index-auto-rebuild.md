@@ -63,43 +63,98 @@ Deliver: a flush that end-caps inline rows enqueues exactly one `build_vector_in
 
 - [ ] **Step 1: Write the failing test (auto-enqueue)**
 
-Create `src/control-plane/postgres/tests/flush_vector_rebuild.rs`. Mirror the setup idioms in `tests/inline_flush_trigger.rs` (hermetic PG via `PgFixture`, landing inline rows, calling `flush_table`) and `tests/vector_index_build.rs` (declaring a vector index via `cp.ontology().define_vector_index(...)`, building a `RecordBatch` with a `vector(N)` column). Read both of those files first and reuse their helper patterns (do not invent new seed plumbing).
+Create `src/control-plane/postgres/tests/flush_vector_rebuild.rs`. **Copy these helpers verbatim from `tests/vector_index_build.rs`** (they are local, intentionally duplicated per loom's test-helper convention): `columns()`, `ipc_body(rows: &[(i64,[f32;4])])`, `lineage(run, table)`, and `make_catalog(dsn, warehouse)`. Add a local `setup` helper that boots the fixture and declares the type + flat index (the bootstrap/define idiom below is verified against `tests/vector_search.rs:120-208`).
 
-The first test seeds a table with **live inline vector rows** and a **declared vector index**, flushes, and asserts exactly one `build_vector_index` job is enqueued with the right payload:
+**Use the REAL fixture API** — `PgFixture::start()` is **sync**; `fresh_db()` returns `(PgControlPlane, db)`; the warehouse is a `tempfile::tempdir()` whose guard must outlive the catalog:
 
 ```rust
-#[tokio::test]
-async fn flush_enqueues_one_build_job_per_declared_index() {
-    let fx = PgFixture::start().await;
-    let pool = fx.fresh_db().await;
-    let (catalog, _tmp) = make_catalog(&fx, &pool).await; // helper mirrored from vector_index_build.rs
-    let cp = PgControlPlane::new(pool.clone());
+use std::time::Duration;
+use control_plane_core::{
+    ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
+    VectorIndexDef,
+};
+use control_plane_postgres::PgControlPlane;
+use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_flush::flush_table;
+use control_plane_postgres::iceberg_landing::land;
+
+/// Boot the fixture, define the `Docs` type (identity = "id"), and — when
+/// `with_index` — declare a flat vector index `by_flat`. Returns everything the
+/// tests need; keep `_wh` alive for the whole test.
+async fn setup(
+    fx: &PgFixture,
+    db: &str,
+    with_index: bool,
+) -> (SqlCatalog, sqlx::PgPool, TableRef, tempfile::TempDir) {
+    let wh = tempfile::tempdir().expect("wh");
+    let pool = fx.pool_for(db).await;
+    let catalog = make_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
+    let cp = PgControlPlane::new(pool.clone(), Duration::from_secs(5));
     let table = TableRef { schema: "wh".into(), name: "docs".into() };
 
-    // Define the ontology type + a flat vector index, and land inline vector rows
-    // (inline_byte_limit large enough that the rows stay inline, i.e. NOT auto-flushed).
-    seed_type_and_vector_rows(&cp, &catalog, &pool, &table).await; // helper: defines type, lands inline rows
-    define_flat_index(&cp, &table, "by_flat").await;               // helper: cp.ontology().define_vector_index(...)
+    cp.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Docs".into()),
+            table: table.clone(),
+            properties: vec![
+                PropertyDef { name: "id".into(), ty: "Long".into(), required: true },
+                PropertyDef { name: "embedding".into(), ty: "vector(4)".into(), required: true },
+            ],
+            derived: vec![],
+            identity: Some("id".into()),
+        })
+        .await
+        .expect("define_type");
 
-    // Sanity: no build job yet.
+    if with_index {
+        cp.ontology()
+            .define_vector_index(VectorIndexDef {
+                name: "by_flat".into(),
+                type_name: TypeName("Docs".into()),
+                property: "embedding".into(),
+                metric: Metric::Cosine,
+                spec: IndexSpec::Flat,
+            })
+            .await
+            .expect("define_vector_index");
+    }
+    (catalog, pool, table, wh)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flush_enqueues_one_build_job_per_declared_index() {
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let (catalog, pool, table, _wh) = setup(&fx, &db, true).await;
+
+    // Land vector rows INLINE (inline_byte_limit = usize::MAX) so the flush has live
+    // inline rows to drain. (The "vectors can't inline" comment in vector_index_build.rs
+    // is stale — vector_search.rs:388 lands inline with usize::MAX.)
+    let run = RunId(uuid::Uuid::new_v4());
+    let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
+    land(&pool, &catalog, &table, &columns(), &ipc_body(rows), usize::MAX, i64::MAX, lineage(run, &table))
+        .await.expect("land inline");
+
     let before: i64 = sqlx::query_scalar("select count(*) from queue.jobs where kind = $1")
         .bind(control_plane_core::BUILD_VECTOR_INDEX_JOB_KIND)
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool).await.expect("count before");
     assert_eq!(before, 0);
 
-    flush_table(&catalog, &pool, &table, RunId::new()).await.unwrap();
+    flush_table(&catalog, &pool, &table, RunId(uuid::Uuid::new_v4())).await.expect("flush");
 
-    let rows: Vec<(String,)> = sqlx::query_as(
+    let payloads: Vec<String> = sqlx::query_scalar(
         "select payload::text from queue.jobs where kind = $1")
         .bind(control_plane_core::BUILD_VECTOR_INDEX_JOB_KIND)
-        .fetch_all(&pool).await.unwrap();
-    assert_eq!(rows.len(), 1, "exactly one rebuild enqueued");
-    let payload: serde_json::Value = serde_json::from_str(&rows[0].0).unwrap();
-    assert_eq!(payload["schema"], "wh");
-    assert_eq!(payload["name"], "docs");
-    assert_eq!(payload["index_name"], "by_flat");
+        .fetch_all(&pool).await.expect("jobs");
+    assert_eq!(payloads.len(), 1, "exactly one rebuild enqueued");
+    let p: serde_json::Value = serde_json::from_str(&payloads[0]).expect("payload json");
+    assert_eq!(p["schema"], "wh");
+    assert_eq!(p["name"], "docs");
+    assert_eq!(p["index_name"], "by_flat");
 }
 ```
+
+(Import `SqlCatalog` + `SqlCatalogBuilder` + the `SQL_CATALOG_PROP_*` consts exactly as `tests/vector_index_build.rs` does, since `make_catalog` is copied from there.)
 
 Wire the BUCK target (in `src/control-plane/postgres/BUCK`, mirror the `vector-index-build` target):
 
@@ -148,7 +203,13 @@ pub(crate) async fn pg_insert_if_absent<'e, E: sqlx::PgExecutor<'e>>(
     job: &NewJob,
 ) -> Result<Option<JobId>> {
     let id = Uuid::new_v4();
-    let row = sqlx::query!(
+    // `.execute()` (not `.fetch_*`) deliberately mirrors `pg_insert`: the final
+    // SELECT carries a `pg_notify(...)` `void` column, and execute never decodes the
+    // returned rows — it only reports the row count. The top-level SELECT yields one
+    // row per inserted `ins` row (1 on insert, 0 when the NOT EXISTS dedups), so
+    // `rows_affected() > 0` ⇔ a job was enqueued, and `pg_notify` fires exactly once
+    // per actual insert (never on a dedup).
+    let result = sqlx::query!(
         "with ins as ( \
              insert into queue.jobs (id, kind, payload, state, run_at, priority) \
              select $1, $2, $3, 'available', coalesce($4, now()), $5 \
@@ -163,14 +224,14 @@ pub(crate) async fn pg_insert_if_absent<'e, E: sqlx::PgExecutor<'e>>(
         job.run_at,
         job.priority,
     )
-    .fetch_optional(ex)
+    .execute(ex)
     .await
     .map_err(backend)?;
-    Ok(row.map(|_| JobId(id)))
+    Ok((result.rows_affected() > 0).then_some(JobId(id)))
 }
 ```
 
-(If `Uuid`/`backend`/`NewJob`/`JobId` are not already in scope in `queue.rs`, they are — `pg_insert` uses all four; match its imports.)
+(If `Uuid`/`backend`/`NewJob`/`JobId` are not already in scope in `queue.rs`, they are — `pg_insert` uses all four; match its imports. `pg_insert` already proves a `query!` macro compiles with a `pg_notify` `void` column, so the macro will accept this SELECT.)
 
 - [ ] **Step 4: Add `jobs` to `CommitExtras` and insert inside the commit tx**
 
@@ -270,7 +331,7 @@ In `src/control-plane/postgres/src/iceberg_landing.rs`:
 
 - [ ] **Step 7: Update the landing caller(s) of `append_parquet_snapshot`**
 
-Find every caller: `grep -rn "append_parquet_snapshot(" src/control-plane/postgres/src/`. The non-flush caller is the landing `land(...)` Parquet path (in `iceberg_landing.rs`). Pass `&[]` there (landing does not auto-rebuild). Also re-grep callers of `append_batches_with_extras` (`grep -rn "append_batches_with_extras(" src/`) and pass `&[]` to any not already updated (e.g. transform/register paths).
+Find every caller: `grep -rn "append_parquet_snapshot(" src/control-plane/postgres/src/`. There are **three**: `iceberg_flush.rs` (the flush, passes `&rebuild_jobs`), and **two** non-flush landing callers that each pass `&[]` (they do not auto-rebuild) — `land_parquet` (`iceberg_landing.rs:~540`) **and** `overwrite_parquet_snapshot` (`iceberg_landing.rs:~579`). Do not miss the overwrite path. Also re-grep callers of `append_batches_with_extras` (`grep -rn "append_batches_with_extras(" src/`) and pass `&[]` to any not already updated (the writer's `append_batches_with_lineage` and the landing call at `iceberg_landing.rs:226` are the known ones; both handled in Steps 5-6).
 
 - [ ] **Step 8: Add the declared-index-names resolver**
 
@@ -311,7 +372,10 @@ In `src/control-plane/postgres/src/iceberg_flush.rs`, after the `end_cap` is bui
     // Puffin index was built at an older snapshot, so without a rebuild the
     // just-flushed vectors vanish from k-NN until the next build. Enqueued inside
     // the snapshot-commit tx (via CommitExtras.jobs) so a flush that commits can
-    // never forget its rebuild; deduped pending-only by pg_insert_if_absent.
+    // never forget its rebuild; deduped pending-only by pg_insert_if_absent. The
+    // per-table pg_advisory_xact_lock held by flush_table for this whole call
+    // serializes same-table flushes (the only same-payload inserters), so the
+    // INSERT ... WHERE NOT EXISTS cannot race a second concurrent flush of this table.
     let index_names = crate::vector_index::declared_vector_index_names(pool, table).await?;
     let rebuild_jobs: Vec<control_plane_core::NewJob> = index_names
         .iter()
@@ -355,7 +419,7 @@ Then pass `&rebuild_jobs` as the new last argument to `append_parquet_snapshot`:
 
 Run: `tools/sqlx-prepare.sh` then commit the `.sqlx/` change.
 Run: `buck2 build //src/control-plane/postgres:postgres > /tmp/b.log 2>&1; grep -E "BUILD SUCCEEDED|error\[|error:" /tmp/b.log`
-Expected: build succeeds; two new `query-*.json` files appear under `.sqlx/` (the insert-if-absent and the index-names query).
+Expected: build succeeds; **one** new `query-*.json` file appears under `.sqlx/` — only the `pg_insert_if_absent` CTE is new. `declared_vector_index_names`'s SQL (`select name from ontology.vector_index_definition where type_name = $1`) is byte-identical to the existing query in `ontology.rs` (`vector_indexes_for`), and sqlx keys cache files on the SQL hash, so it reuses that file. Do not be alarmed by only one new file.
 
 - [ ] **Step 11: Run the auto-enqueue test — expect PASS**
 
@@ -364,37 +428,85 @@ Expected: PASS.
 
 - [ ] **Step 12: Add the remaining mechanics tests (no-index, no-op, dedup, pending-only)**
 
-Append to `tests/flush_vector_rebuild.rs`:
+Append to `tests/flush_vector_rebuild.rs`. A small local helper keeps the bodies tight:
 
 ```rust
-#[tokio::test]
+async fn land_inline(catalog: &SqlCatalog, pool: &sqlx::PgPool, table: &TableRef, rows: &[(i64, [f32; 4])]) {
+    let run = RunId(uuid::Uuid::new_v4());
+    land(pool, catalog, table, &columns(), &ipc_body(rows), usize::MAX, i64::MAX, lineage(run, table))
+        .await.expect("land inline");
+}
+async fn build_job_count(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("select count(*) from queue.jobs where kind = $1")
+        .bind(control_plane_core::BUILD_VECTOR_INDEX_JOB_KIND)
+        .fetch_one(pool).await.expect("count")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_without_declared_index_enqueues_nothing() {
-    // seed inline rows + ontology type but NO define_flat_index; flush; assert 0 build jobs.
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let (catalog, pool, table, _wh) = setup(&fx, &db, false).await; // type, but NO index
+    land_inline(&catalog, &pool, &table, &[(1, [1.0, 0.0, 0.0, 0.0])]).await;
+
+    flush_table(&catalog, &pool, &table, RunId(uuid::Uuid::new_v4())).await.expect("flush");
+
+    assert_eq!(build_job_count(&pool).await, 0, "no declared index -> no rebuild enqueued");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn noop_flush_enqueues_nothing() {
-    // declare index but land NO inline rows (or flush twice: the second flush is a no-op);
-    // assert the no-op flush adds 0 build jobs.
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let (catalog, pool, table, _wh) = setup(&fx, &db, true).await;
+    // Land rows straight to PARQUET (inline_byte_limit = 0): a snapshot exists but there
+    // are NO live inline rows, so the flush hits the `inline_live_batch` == None no-op branch.
+    let run = RunId(uuid::Uuid::new_v4());
+    land(&pool, &catalog, &table, &columns(), &ipc_body(&[(1, [1.0, 0.0, 0.0, 0.0])]),
+        0, i64::MAX, lineage(run, &table)).await.expect("land parquet");
+
+    flush_table(&catalog, &pool, &table, RunId(uuid::Uuid::new_v4())).await.expect("flush");
+
+    assert_eq!(build_job_count(&pool).await, 0, "no-op flush enqueues no rebuild");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_flushes_with_pending_build_enqueue_one() {
-    // declare index; land inline rows; flush -> 1 pending build job.
-    // land more inline rows; flush again (the first build job is still `available`);
-    // assert still exactly 1 build job (deduped pending-only).
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let (catalog, pool, table, _wh) = setup(&fx, &db, true).await;
+
+    land_inline(&catalog, &pool, &table, &[(1, [1.0, 0.0, 0.0, 0.0])]).await;
+    flush_table(&catalog, &pool, &table, RunId(uuid::Uuid::new_v4())).await.expect("flush 1");
+    assert_eq!(build_job_count(&pool).await, 1);
+
+    // Second flush while the first build is still `available` (pending) -> deduped.
+    land_inline(&catalog, &pool, &table, &[(2, [0.0, 1.0, 0.0, 0.0])]).await;
+    flush_table(&catalog, &pool, &table, RunId(uuid::Uuid::new_v4())).await.expect("flush 2");
+    assert_eq!(build_job_count(&pool).await, 1, "pending build dedups the second rebuild");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_while_build_running_enqueues_a_fresh_pending() {
-    // declare index; land inline rows; flush -> 1 pending job J.
-    // Simulate J running: `update queue.jobs set state = 'running' where kind = $1`.
-    // land more inline rows; flush again; assert TWO build jobs now exist
-    // (the running J does not suppress — pending-only dedup).
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
+    let (catalog, pool, table, _wh) = setup(&fx, &db, true).await;
+
+    land_inline(&catalog, &pool, &table, &[(1, [1.0, 0.0, 0.0, 0.0])]).await;
+    flush_table(&catalog, &pool, &table, RunId(uuid::Uuid::new_v4())).await.expect("flush 1");
+    assert_eq!(build_job_count(&pool).await, 1);
+
+    // Simulate the build dequeued and running (its covered snapshot now fixed < the next flush).
+    sqlx::query("update queue.jobs set state = 'running' where kind = $1 and state = 'available'")
+        .bind(control_plane_core::BUILD_VECTOR_INDEX_JOB_KIND)
+        .execute(&pool).await.expect("mark running");
+
+    // A flush now MUST enqueue a fresh pending build (the running one can't cover these rows).
+    land_inline(&catalog, &pool, &table, &[(2, [0.0, 1.0, 0.0, 0.0])]).await;
+    flush_table(&catalog, &pool, &table, RunId(uuid::Uuid::new_v4())).await.expect("flush 2");
+    assert_eq!(build_job_count(&pool).await, 2, "running build does NOT suppress (pending-only dedup)");
 }
 ```
-
-Fill each with the concrete seed/flush/assert body, reusing the Step-1 helpers. For the running-state simulation use a raw `sqlx::query("update queue.jobs set state = 'running' where kind = $1 and state = 'available'").bind(BUILD_VECTOR_INDEX_JOB_KIND)`.
 
 - [ ] **Step 13: Run the full new test file — expect PASS**
 
@@ -436,55 +548,64 @@ Deliver: the spec's headline red test — a just-flushed vector goes missing fro
 
 - [ ] **Step 1: Write the failing freshness test**
 
-Create `src/services/engine-serving/tests/vector_index_auto_rebuild.rs`. Reuse the catalog/seed helpers from `tests/vector_search.rs` (read it first; copy the `make_catalog`/seed idioms — landing with `inline_byte_limit = 0` forces Parquet, but here we need rows to land **inline** first, so use a large inline limit / the inline landing path, then flush).
+Create `src/services/engine-serving/tests/vector_index_auto_rebuild.rs`. **Copy these helpers verbatim from `tests/vector_search.rs`:** `columns()`, `ipc_body(...)`, `lineage_evt(...)`, `make_catalog(...)`, `ids(...)`, and the whole `seed_and_build(fx, db, metric)` (`vector_search.rs:120-215` — it defines the type, lands cold rows 1-4 to Parquet, declares `by_flat`, and builds the index at covered snapshot `S`). This test then mirrors `knn_cold_hot_merge_cosine` (`vector_search.rs:366-423`) for the land-inline + query setup — using its **proven non-colliding vectors** (row 5 `[0.95,0.05,0,0]`, query `[0.9,0.1,0,0]`, `k=2`, where row 5 is strictly nearest) — and adds the flush → gap → rebuild → restored arc.
 
 ```rust
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flushed_vector_is_missing_then_restored_by_auto_rebuild() {
-    let fx = PgFixture::start().await;
-    let pool = fx.fresh_db().await;
-    let (catalog, _tmp) = make_catalog(&fx, &pool).await;
-    let cp = PgControlPlane::new(pool.clone());
+    use control_plane_core::{Metric, RunId, TableRef};
+    use control_plane_postgres::iceberg_flush::flush_table;
+    use control_plane_postgres::vector_index::build_vector_index;
+
+    let fx = PgFixture::start();
+    let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef { schema: "wh".into(), name: "docs".into() };
 
-    // 1. Define type, land an initial cold batch, declare + build the flat index.
-    seed_initial_and_build(&cp, &catalog, &pool, &table, "by_flat").await;
+    // 1. Cold rows 1-4 + flat index built at covered_snapshot S.
+    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
 
-    // 2. Land MORE vector rows INLINE (born after the index's covered_snapshot),
-    //    incl. a distinctive query-target vector q = [1,0,0,0].
-    land_inline_vectors(&catalog, &pool, &table, &[(99_i64, [1.0_f32,0.0,0.0,0.0])]).await;
+    // 2. Land row 5 INLINE (born after S) — the strictly-nearest vector to the query,
+    //    living only in the hot delta. (Mirrors knn_cold_hot_merge_cosine.)
+    let run = RunId(uuid::Uuid::new_v4());
+    let inline: &[(i64, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
+    land(&pool, &catalog, &table, &columns(), &ipc_body(inline), usize::MAX, i64::MAX, lineage_evt(run, &table))
+        .await.expect("land inline row 5");
 
-    // The hot-delta merge means k-NN currently DOES find row 99 (inline). Sanity:
-    let hot = engine_serving::vector_search(&catalog, &pool, &table, "by_flat",
-        &[1.0_f32,0.0,0.0,0.0], 1, None, None).await.unwrap();
-    assert!(ids(&hot).contains(&99), "inline row visible before flush");
+    let q = &[0.9_f32, 0.1, 0.0, 0.0];
 
-    // 3. Flush: drains row 99 to cold Parquet, end-caps it, auto-enqueues a rebuild.
-    flush_table(&catalog, &pool, &table, RunId::new()).await.unwrap();
+    // Sanity (hot-delta merge): row 5 is the nearest and visible BEFORE the flush.
+    let hot = engine_serving::vector_search(&catalog, &pool, &table, "by_flat", q, 2, None, None)
+        .await.expect("knn pre-flush");
+    assert_eq!(ids(&hot)[0], 5, "inline row is nearest before flush");
 
-    // 4. GAP (red on main): row 99 left the hot delta (end-capped) and is not in the
-    //    cold index (built at the older covered_snapshot) -> missing from k-NN.
-    let gap = engine_serving::vector_search(&catalog, &pool, &table, "by_flat",
-        &[1.0_f32,0.0,0.0,0.0], 1, None, None).await.unwrap();
-    assert!(!ids(&gap).contains(&99), "just-flushed row is in the visibility gap");
+    // 3. Flush: drains row 5 to cold Parquet, end-caps it, AND auto-enqueues a rebuild.
+    flush_table(&catalog, &pool, &table, RunId(uuid::Uuid::new_v4())).await.expect("flush");
 
-    // 5. Drain the auto-enqueued rebuild (simulate the worker): read the enqueued
-    //    job's index_name and run the build directly. FAILS ON MAIN: no job enqueued.
+    // 4. GAP (the bug this slice fixes): row 5 left the hot delta (end-capped) and is not
+    //    in the cold index (built at the older S) -> missing from k-NN.
+    let gap = engine_serving::vector_search(&catalog, &pool, &table, "by_flat", q, 2, None, None)
+        .await.expect("knn post-flush");
+    assert!(!ids(&gap).contains(&5), "just-flushed row is in the visibility gap");
+
+    // 5. Drain the auto-enqueued rebuild (simulate the worker): read the enqueued job's
+    //    index_name and run the build. The fetch_one FAILS without this slice (no job).
     let index_name: String = sqlx::query_scalar(
         "select payload->>'index_name' from queue.jobs where kind = $1")
         .bind(control_plane_core::BUILD_VECTOR_INDEX_JOB_KIND)
         .fetch_one(&pool).await.expect("a rebuild job was auto-enqueued by the flush");
-    build_vector_index(&catalog, &pool, &table, &index_name, RunId::new()).await.unwrap();
+    assert_eq!(index_name, "by_flat");
+    build_vector_index(&catalog, &pool, &table, &index_name, RunId(uuid::Uuid::new_v4()))
+        .await.expect("rebuild");
 
     // 6. Fresh again: the rebuilt cold index (covered_snapshot advanced past the flush)
-    //    now contains row 99.
-    let fresh = engine_serving::vector_search(&catalog, &pool, &table, "by_flat",
-        &[1.0_f32,0.0,0.0,0.0], 1, None, None).await.unwrap();
-    assert!(ids(&fresh).contains(&99), "auto-rebuild restored the flushed row");
+    //    once more makes row 5 the nearest.
+    let fresh = engine_serving::vector_search(&catalog, &pool, &table, "by_flat", q, 2, None, None)
+        .await.expect("knn post-rebuild");
+    assert_eq!(ids(&fresh)[0], 5, "auto-rebuild restored the flushed row");
 }
 ```
 
-Provide the local helpers (`seed_initial_and_build`, `land_inline_vectors`, `ids`) by adapting `tests/vector_search.rs` — `ids` extracts the identity column from the returned `RecordBatch` (copy its existing id-extraction helper).
+`ids` returns the identity column in row order (`vector_search.rs:97`); `ids(&batch)[0]` is the nearest. Keep `_wh` alive for the whole test (the `seed_and_build` tuple's 4th element).
 
 Wire the BUCK target (mirror `vector-search` at `src/services/engine-serving/BUCK:65-87`, name `vector-index-auto-rebuild`, crate_root the new file; deps identical to `vector-search`).
 
