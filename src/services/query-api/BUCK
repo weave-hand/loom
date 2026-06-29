@@ -19,7 +19,6 @@ rust_library(
         "//third-party:futures",
         "//third-party:serde",
         "//third-party:serde_json",
-        "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
