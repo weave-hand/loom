@@ -9,8 +9,8 @@
 //! `Some(true)`, mirroring "an UNKNOWN `WHERE` row is excluded from a read". Coercion
 //! matches the read side exactly: numeric `Int`↔`Double`, and ISO-string operands
 //! against `Date`/`Timestamp` cells.
-//! (Caveat: a `Double` NaN yields UNKNOWN here via `partial_cmp`, where DuckDB
-//! would treat NaN as orderable — write filters are not expected to carry NaN.)
+//! (Caveat: a `Double` NaN yields UNKNOWN here via `partial_cmp`, where the engine
+//! treats NaN as orderable — write filters are not expected to carry NaN.)
 
 use std::collections::BTreeMap;
 

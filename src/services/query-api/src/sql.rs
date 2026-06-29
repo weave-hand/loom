@@ -870,8 +870,8 @@ pub fn compile_graph_reach(
 /// set of `table` rows reachable from the seed set by repeatedly following ANY ONE of `backings`
 /// (each a self-link on `table`) up to `depth` times.
 ///
-/// The recursive CTE has a single recursive self-reference to avoid DuckDB's "Circular reference
-/// to CTE" error that occurs when multiple arms each reference the CTE name. Instead, all edge
+/// The recursive CTE has a single recursive self-reference to avoid a "Circular reference to CTE"
+/// planner error that occurs when multiple arms each reference the CTE name. Instead, all edge
 /// arms are collapsed into a non-recursive `(from_id, to_id)` subquery joined in one step:
 ///
 /// ```sql
@@ -945,7 +945,7 @@ pub fn compile_graph_reach_union(
 
     // Recursive step: single join of `reach r` to the edge subquery, then to `nxt` for filter.
     // Row-filters are applied at `nxt` (the landing node). This single `reach` reference avoids
-    // DuckDB's "Circular reference to CTE" error that arises from multiple arms each referencing
+    // a "Circular reference to CTE" planner error that arises from multiple arms each referencing
     // the CTE name.
     let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
     for f in row_filters {

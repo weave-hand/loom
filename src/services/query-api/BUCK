@@ -614,10 +614,10 @@ rust_test(
 )
 
 rust_test(
-    name = "quack-inline",
-    crate = "quack_inline",
-    srcs = ["tests/quack_inline.rs"],
-    crate_root = "tests/quack_inline.rs",
+    name = "inline-params",
+    crate = "inline_params",
+    srcs = ["tests/inline_params.rs"],
+    crate_root = "tests/inline_params.rs",
     edition = "2024",
     deps = [":query-api"],
 )

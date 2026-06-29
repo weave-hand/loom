@@ -260,8 +260,8 @@ pub struct SeededSnapshot {
 }
 
 /// Test-only seam for arranging catalog state. Each backend implements it
-/// differently (the fake builds its state directly; the pg adapter drives real
-/// DuckLake). Never referenced by production code.
+/// differently (the fake builds its state directly; the pg adapter drives its
+/// Iceberg catalog). Never referenced by production code.
 #[async_trait]
 pub trait CatalogSeed {
     /// Create the table if absent and apply each row-batch as its own snapshot.
@@ -359,7 +359,7 @@ where
     // schema at current: the two columns, in order, with loom logical types and
     // correct nullability. The contract seeds loom LOGICAL types (`long`/`string`);
     // `Catalog::schema()` returns logical types for every backend (the pg adapter
-    // round-trips them through DuckLake's physical catalog), so we pin the exact values.
+    // round-trips them through its physical catalog), so we pin the exact values.
     let sch = catalog.schema(&t, cur.id).await.unwrap();
     assert_eq!(
         sch.columns
@@ -1886,8 +1886,8 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
         "define_action on unknown target type rejected"
     );
 
-    // Deferred boundary: `Table` targets reference the DuckLake catalog and are
-    // NOT existence-checked, so a Table grant must still be accepted.
+    // Deferred boundary: `Table` targets are NOT existence-checked, so a Table grant
+    // must still be accepted.
     cp.grant(
         &rid("R"),
         Action::Read,
@@ -1918,8 +1918,8 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         run_id: run,
         event_type: EventType::Complete,
         event_time: ts,
-        inputs: vec![ds("ducklake", "main.a"), ds("ducklake", "main.b")],
-        outputs: vec![ds("ducklake", "main.c")],
+        inputs: vec![ds("warehouse", "main.a"), ds("warehouse", "main.b")],
+        outputs: vec![ds("warehouse", "main.c")],
         payload: serde_json::json!({"eventType": "COMPLETE", "run": {"runId": run.0.to_string()}}),
     };
     cp.emit(event.clone()).await.expect("emit");
@@ -1944,47 +1944,47 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     // --- one-hop graph via per-event co-membership ---
     assert_eq!(
         set(cp
-            .upstream(&ds("ducklake", "main.c"), PageReq::unbounded())
+            .upstream(&ds("warehouse", "main.c"), PageReq::unbounded())
             .await
             .unwrap()),
-        [ds("ducklake", "main.a"), ds("ducklake", "main.b")]
+        [ds("warehouse", "main.a"), ds("warehouse", "main.b")]
             .into_iter()
             .collect::<HashSet<_>>()
     );
     assert_eq!(
         set(cp
-            .downstream(&ds("ducklake", "main.a"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.a"), PageReq::unbounded())
             .await
             .unwrap()),
-        [ds("ducklake", "main.c")]
+        [ds("warehouse", "main.c")]
             .into_iter()
             .collect::<HashSet<_>>()
     );
     assert_eq!(
         set(cp
-            .downstream(&ds("ducklake", "main.b"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.b"), PageReq::unbounded())
             .await
             .unwrap()),
-        [ds("ducklake", "main.c")]
+        [ds("warehouse", "main.c")]
             .into_iter()
             .collect::<HashSet<_>>()
     );
     assert!(
-        cp.downstream(&ds("ducklake", "main.c"), PageReq::unbounded())
+        cp.downstream(&ds("warehouse", "main.c"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing consumes c -> no downstream"
     );
     assert!(
-        cp.upstream(&ds("ducklake", "main.a"), PageReq::unbounded())
+        cp.upstream(&ds("warehouse", "main.a"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing produces a -> no upstream"
     );
     assert!(
-        cp.upstream(&ds("ducklake", "main.missing"), PageReq::unbounded())
+        cp.upstream(&ds("warehouse", "main.missing"), PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
@@ -2005,7 +2005,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         run_id: run2,
         event_type: EventType::Complete,
         event_time: ts,
-        inputs: vec![ds("ducklake", "main.c")],
+        inputs: vec![ds("warehouse", "main.c")],
         outputs: vec![ds("ontology", "Customer")],
         payload: serde_json::json!({"eventType": "COMPLETE"}),
     };
@@ -2022,7 +2022,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     // graph spans namespaces (physical -> ontology)
     assert_eq!(
         set(cp
-            .downstream(&ds("ducklake", "main.c"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.c"), PageReq::unbounded())
             .await
             .unwrap()),
         [ds("ontology", "Customer")]
@@ -2042,7 +2042,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
             event_type: EventType::Complete,
             event_time: ts,
             inputs: vec![],
-            outputs: vec![ds("ducklake", "main.rolled")],
+            outputs: vec![ds("warehouse", "main.rolled")],
             payload: serde_json::json!({}),
         })
         .await
@@ -2078,7 +2078,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
             event_type: EventType::Complete,
             event_time: ts,
             inputs: vec![],
-            outputs: vec![ds("ducklake", "main.committed")],
+            outputs: vec![ds("warehouse", "main.committed")],
             payload: serde_json::json!({}),
         })
         .await
@@ -2120,7 +2120,7 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
         event_time: ts,
         inputs: vec![],
         outputs: vec![DatasetRef {
-            namespace: "ducklake".into(),
+            namespace: "warehouse".into(),
             name: "main.out".into(),
         }],
         payload: serde_json::json!({}),
@@ -2226,7 +2226,7 @@ pub async fn tx_atomic_rollback_contract<CP: ControlPlane + Queue + Lineage>(cp:
         event_time: ts,
         inputs: vec![],
         outputs: vec![DatasetRef {
-            namespace: "ducklake".into(),
+            namespace: "warehouse".into(),
             name: "main.tx_atomic".into(),
         }],
         payload: serde_json::json!({}),
@@ -2388,9 +2388,8 @@ pub async fn control_plane_facade_contract<CP: ControlPlane>(cp: &CP) {
     );
 
     // catalog: the accessor is object-safe and returns a live trait object. Behavioral
-    // catalog reads hit ducklake_* tables that need an attached catalog (covered by
-    // catalog_contract); binding the ref here keeps this contract DuckLake-free so the
-    // postgres facade test runs postgres-only.
+    // catalog reads are covered by catalog_contract; binding the ref here keeps this
+    // contract catalog-independent so the postgres facade test runs postgres-only.
     let _catalog: &(dyn Catalog + Send + Sync) = cp.catalog();
 }
 
@@ -2445,7 +2444,7 @@ where
         event_time: ts,
         inputs: vec![],
         outputs: vec![DatasetRef {
-            namespace: "ducklake".into(),
+            namespace: "warehouse".into(),
             name: "main.events".into(),
         }],
         payload: serde_json::json!({"eventType": "COMPLETE"}),
@@ -2521,7 +2520,7 @@ where
 /// Contract for `Tx::replace_files` (overwrite). Append a file, then replace it: the
 /// current snapshot lists ONLY the replacement (stats reflect the new file, not the
 /// sum), and the prior snapshot still time-travels to the original file. `cp` must be
-/// freshly empty (postgres: a DuckLake catalog must be bootstrapped first).
+/// freshly empty.
 pub async fn snapshot_replace_contract<C>(cp: &C)
 where
     C: control_plane_core::ControlPlane + control_plane_core::Catalog,
@@ -2598,7 +2597,7 @@ where
 /// compact two of them into one: the current snapshot lists the untouched file plus the
 /// coalesced one (the two compacted files expired), the total record_count is preserved,
 /// and the prior snapshot still time-travels to all three originals. `cp` must be freshly
-/// empty (postgres: a DuckLake catalog must be bootstrapped first).
+/// empty.
 pub async fn snapshot_compact_contract<C>(cp: &C)
 where
     C: control_plane_core::ControlPlane + control_plane_core::Catalog,

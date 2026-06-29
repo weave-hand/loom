@@ -1,7 +1,7 @@
 //! The /actions/:name route renders a fine-grained Write-policy denial as a
 //! structured 403 body (column vs row_filter), keeps Allow at 201, and leaves the
 //! coarse-gate denial as a bodyless 403. In-memory: the denial fires before any
-//! DuckLake access, so a stub serving engine + no-op write engine suffice (no fixture).
+//! storage access, so a stub serving engine + no-op write engine suffice (no fixture).
 
 use std::sync::Arc;
 use std::time::Duration;

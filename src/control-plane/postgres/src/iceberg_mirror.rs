@@ -229,7 +229,7 @@ pub async fn end_cap_files_by_path(
 /// End-cap (set `end_snapshot = at`) every currently-live `iceberg_mirror.data_file`
 /// row for `table_id`, leaving its `table`/`column` rows untouched. This is the
 /// data-file leg of a drop ([`mark_dropped`]) and the whole "expire old files" step
-/// of an overwrite/replace (the Iceberg twin of DuckLake's `Tx::replace_files`).
+/// of an overwrite/replace (the overwrite/replace commit primitive `Tx::replace_files`).
 /// Old rows keep their `begin_snapshot < at`, so prior snapshots still time-travel.
 pub async fn end_cap_live_data_files(
     conn: &mut PgConnection,

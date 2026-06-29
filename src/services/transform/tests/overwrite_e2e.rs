@@ -2,7 +2,7 @@
 //! table's contents (serving read-back sees only the new result), a second overwrite
 //! replaces again, and a read at the pre-overwrite snapshot still time-travels to the old
 //! rows. Drives the real queue -> worker -> transform_handler path on the Iceberg control
-//! plane; reads output back through `engine_serving`. NO DuckDB.
+//! plane; reads output back through `engine_serving`.
 
 mod transform_e2e_support;
 

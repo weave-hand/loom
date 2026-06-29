@@ -52,8 +52,7 @@ pub struct PgControlPlane {
     pool: PgPool,
     lock_timeout: Duration,
     /// Read adapter over the `iceberg_mirror.*` projection, returned by
-    /// [`ControlPlane::catalog`]. The DuckLake table format that previously backed
-    /// `catalog()` has been removed; Iceberg is the table format.
+    /// [`ControlPlane::catalog`].
     iceberg_catalog: IcebergCatalog,
 }
 
@@ -114,9 +113,8 @@ impl ControlPlane for PgControlPlane {
     }
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         // A plain Postgres transaction backing the transactional queue/lineage
-        // concerns (`enqueue`/`emit`). The DuckLake table-format write path that the
-        // old `PgTx` also drove on commit has been removed; the table-write methods
-        // on this `Tx` now error (Iceberg owns the table format).
+        // concerns (`enqueue`/`emit`). The table-write methods on this `Tx` error;
+        // Iceberg owns the table format.
         let tx = self.pool.begin().await.map_err(backend)?;
         Ok(Box::new(PgTx { tx }))
     }

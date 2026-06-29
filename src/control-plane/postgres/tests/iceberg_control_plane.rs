@@ -1,7 +1,7 @@
 //! Contract tests for `IcebergControlPlane`/`IcebergTx` — the Iceberg-backed `Tx`.
 //! `register_files` is mirror-only and never reads the Parquet bytes (it projects the
 //! `DataFile`'s carried stats), and `IcebergCatalog` reads resolve through the mirror,
-//! so these use synthetic `DataFile`s exactly like the DuckLake `snapshot_replace.rs`.
+//! so these use synthetic `DataFile`s with precomputed stats.
 
 use std::collections::HashMap;
 use std::sync::Arc;

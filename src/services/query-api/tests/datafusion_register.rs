@@ -1,6 +1,6 @@
 //! register_iceberg_table registers a seeded Iceberg table's absolute-path Parquet
 //! files so a raw DataFusion SELECT reads them back. loom_fixture_test (Postgres +
-//! LocalFsStorage; no DuckDB).
+//! LocalFsStorage).
 
 use control_plane_core::TableRef;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};

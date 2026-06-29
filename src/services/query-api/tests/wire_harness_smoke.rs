@@ -1,6 +1,6 @@
 //! Pure-socket smoke for the `spawn_http` wire harness: spawn a trivial axum
 //! router on a real ephemeral port via `service_runtime::serve`, hit it with a
-//! real `reqwest` client, and assert the round-trip. No Postgres/DuckDB — this
+//! real `reqwest` client, and assert the round-trip. No Postgres — this
 //! is a bare `rust_test`, not a fixture test.
 
 use axum::Router;

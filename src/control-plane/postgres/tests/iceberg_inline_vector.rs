@@ -1,6 +1,6 @@
 //! Inline (hot-tier) round-trip for a vector(N) column: write via inline_append,
 //! read back via inline_live_batch, assert bit-exact f32 reconstruction.
-//! loom_fixture_test (Postgres; no DuckDB).
+//! loom_fixture_test (Postgres).
 
 use std::sync::Arc;
 

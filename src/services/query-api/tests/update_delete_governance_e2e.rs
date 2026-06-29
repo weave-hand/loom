@@ -2,7 +2,7 @@
 //! (deny-column and row-filter) on the COW mutate path, and the vector-guard that rejects
 //! UPDATE/DELETE on types with a vector property.
 //!
-//! loom_fixture_test (Postgres + LocalFsStorage warehouse). No DuckDB.
+//! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -1,5 +1,5 @@
 //! HTTP wiring smoke test: a GET maps into read_object and ObjectRows serialize to a typed-object JSON envelope.
-//! No socket is bound (tower oneshot); a seeded in-memory control plane + a canned serving stub exercise the route, not DuckDB.
+//! No socket is bound (tower oneshot); a seeded in-memory control plane + a canned serving stub exercise the route.
 
 use std::sync::Arc;
 use std::time::Duration;

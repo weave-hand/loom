@@ -12,8 +12,8 @@ use crate::iceberg_type::logical_from_iceberg;
 
 /// A live data file plus its per-column stats, for the pruning-aware serving
 /// provider. Concrete to Iceberg — the shared `Catalog`/`FileRef` must not grow a
-/// stats field (DuckLake uses them too). `column_stats` is empty for files written
-/// before per-column stats landed (always kept by the pruner).
+/// stats field. `column_stats` is empty for files written before per-column stats
+/// landed (always kept by the pruner).
 #[derive(Clone, Debug)]
 pub struct FileWithStats {
     pub path: String,
@@ -26,7 +26,7 @@ pub struct FileWithStats {
 ///
 /// The read path is pure Postgres — it never touches `iceberg` or object storage. Snapshot ids
 /// and MVCC `begin/end_snapshot` are loom's, assigned by the mirror projection; the structure
-/// mirrors the DuckLake adapter (`catalog.rs`) against the `iceberg_mirror.*` tables.
+/// reads against the `iceberg_mirror.*` tables.
 #[derive(Clone)]
 pub struct IcebergCatalog {
     pub pool: PgPool,

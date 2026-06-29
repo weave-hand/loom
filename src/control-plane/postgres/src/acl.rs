@@ -186,7 +186,7 @@ impl Acl for PgControlPlane {
         }
         // A Type target must reference an existing ontology type (best-effort,
         // non-transactional, like the role check above and set_policy). Table
-        // targets reference the DuckLake catalog and stay unvalidated (deferred).
+        // targets stay unvalidated (deferred).
         if let PolicyTarget::Type(name) = &target {
             let type_exists = sqlx::query_scalar!(
                 "select exists (select 1 from ontology.object_type where name = $1)",

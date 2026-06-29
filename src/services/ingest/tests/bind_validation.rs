@@ -1,7 +1,7 @@
 //! Define-time ontology validation, exercised fully in-memory (memory `Catalog` +
 //! memory `Ontology`). Covers `bind`'s derived-property pass and the sibling
 //! `bind_link` backing-column validator. The exhaustive violation matrix lives
-//! here; `bind.rs` carries the postgres-parity smoke against the real DuckLake
+//! here; `bind.rs` carries the postgres-parity smoke against the real Iceberg
 //! catalog.
 
 use std::time::Duration;

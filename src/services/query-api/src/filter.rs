@@ -26,7 +26,7 @@ pub struct CallerPredicate {
 /// Coerce a single operand `raw` (a query-param string) to `logical_ty`'s `SqlValue`.
 /// Operator-agnostic — the per-operand building block reused by `coerce_predicate`. The
 /// `Number` repr (Integer/Double) resolves to `Int` when `raw` is a clean integer, else
-/// `Double` — equality-correct under DuckDB numeric coercion.
+/// `Double` — equality-correct under the engine's numeric coercion.
 pub fn coerce_filter(name: &str, logical_ty: &str, raw: &str) -> Result<SqlValue, FilterError> {
     let bad = |m: &str| FilterError::BadValue(name.to_string(), m.to_string());
     // Like `bad`, but folds the discarded source error into the message for diagnostics.

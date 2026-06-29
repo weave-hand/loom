@@ -1,7 +1,6 @@
 //! Inputs for the native register-only snapshot-commit primitive (the caller writes
 //! the data files; loom writes the catalog rows). Format-neutral: the active
 //! table-format adapter (Iceberg) encodes these into its physical catalog.
-//! See `docs/superpowers/specs/2026-06-16-ducklake-format-seams-design.md`.
 
 /// A column for `Tx::create_table`. `ty` is a loom LOGICAL type name (canonical:
 /// "integer"/"long"/"double"/"boolean"/"string"/"date"/"timestamp", or a known

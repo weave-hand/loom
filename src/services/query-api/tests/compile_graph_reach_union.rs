@@ -1,7 +1,7 @@
 //! compile_graph_reach_union emits a depth-bounded WITH RECURSIVE reachability query. The
 //! recursive term has a single CTE self-reference: all edge arms are collapsed into a non-recursive
-//! (from_id, to_id) subquery joined with UNION ALL, avoiding DuckDB's "Circular reference to CTE"
-//! error that arises from multiple arms each referencing the CTE name directly. Row-filters are
+//! (from_id, to_id) subquery joined with UNION ALL, avoiding a "Circular reference to CTE"
+//! planner error that arises from multiple arms each referencing the CTE name directly. Row-filters are
 //! applied at the seed `s`, the single shared landing node `nxt`, and the projection `p`.
 
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};

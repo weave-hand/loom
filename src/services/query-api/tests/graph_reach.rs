@@ -1,9 +1,9 @@
 //! read_graph_reach on an in-memory control plane + a stub serving engine. The stub
-//! returns canned object rows (no real DuckDB) whose columns match the Person projection;
+//! returns canned object rows whose columns match the Person projection;
 //! the test asserts the governance short-circuits (`NotCyclicPath`, `NoIdentity`), the
 //! happy path that returns the stub's reachable objects (single self-link and a 2-link
-//! cyclic path), and that a non-cyclic path is rejected. Real recursive reachability over
-//! DuckDB is covered by the graph e2e (Task 3).
+//! cyclic path), and that a non-cyclic path is rejected. Real recursive reachability
+//! is covered by the graph e2e (Task 3).
 
 use std::time::Duration;
 

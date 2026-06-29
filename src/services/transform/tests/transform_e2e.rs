@@ -1,7 +1,7 @@
 //! Queue -> worker -> transform -> snapshot + lineage -> read-back, against real
 //! Postgres + Iceberg. Seeds inputs as real Iceberg Parquet (mirror-registered),
 //! runs a SQL join through the Iceberg control plane, and reads the output back
-//! through the loom-native serving engine (`engine_serving::execute_query`). NO DuckDB.
+//! through the loom-native serving engine (`engine_serving::execute_query`).
 
 mod transform_e2e_support;
 
