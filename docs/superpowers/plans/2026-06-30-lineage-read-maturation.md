@@ -346,7 +346,7 @@ git commit -m "feat(lineage): add depth param, depth cap, cursor codec, keyset p
 
 - [ ] **Step 1: Add the two new contract functions to testkit (failing — adapters not updated yet)**
 
-In `src/control-plane/testkit/src/lib.rs`, first ensure the lineage section's imports include `Cursor`, `ControlPlaneError`, `LINEAGE_MAX_DEPTH` (the file already imports `DatasetRef, EventType, Lineage, LineageEvent, Page, PageReq, RunId`, `OffsetDateTime`, `HashSet`). Add the missing three to the relevant `use control_plane_core::{...}` line.
+In `src/control-plane/testkit/src/lib.rs`, first ensure the `use control_plane_core::{...}` import adds **only** `Cursor` and `LINEAGE_MAX_DEPTH` — `ControlPlaneError`, `DatasetRef`, `EventType`, `Lineage`, `LineageEvent`, `Page`, `PageReq`, `RunId` (and `OffsetDateTime`, `HashSet`) are **already imported** (re-adding `ControlPlaneError` is a duplicate-import error). Add the two missing names to the relevant `use control_plane_core::{...}` line.
 
 Then add these two functions (next to the existing `lineage_contract`):
 
@@ -737,7 +737,7 @@ async fn postgres_passes_lineage_pagination_contract() {
 
 - [ ] **Step 2: Rewrite the postgres adapter's reads**
 
-In `src/control-plane/postgres/src/lineage.rs`: keep `pg_emit` and `event_datasets` unchanged. Update the imports:
+In `src/control-plane/postgres/src/lineage.rs`: keep `pg_emit` and `event_datasets` unchanged. **Leave the `use crate::{...}` line untouched** — it is currently `use crate::{PgControlPlane, backend, event_type_from_str, event_type_to_str};` and `event_type_to_str` must stay (the unchanged `pg_emit` uses it). Update **only** the `control_plane_core` import:
 
 ```rust
 use control_plane_core::{
