@@ -24,6 +24,7 @@ rust_library(
         "//third-party:tokio",
         "//third-party:tonic",
         "//third-party:tracing",
+        "//third-party:utoipa",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
@@ -984,6 +985,19 @@ rust_test(
         "//third-party:axum",
         "//third-party:tokio",
         "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "openapi",
+    crate = "openapi",
+    srcs = ["tests/openapi.rs"],
+    crate_root = "tests/openapi.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:serde_json",
+        "//third-party:utoipa",
     ],
 )
 

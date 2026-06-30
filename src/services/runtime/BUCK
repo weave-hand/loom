@@ -25,6 +25,8 @@ rust_library(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tracing-subscriber",
+        "//third-party:utoipa",
+        "//third-party:utoipa-scalar",
     ],
     visibility = ["PUBLIC"],
 )
@@ -131,4 +133,21 @@ rust_test(
     crate_root = "tests/embedded_config.rs",
     edition = "2024",
     deps = [":runtime"],
+)
+
+rust_test(
+    name = "openapi",
+    crate = "openapi",
+    srcs = ["tests/openapi.rs"],
+    crate_root = "tests/openapi.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tower",
+        "//third-party:utoipa",
+    ],
 )

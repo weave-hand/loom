@@ -12,6 +12,7 @@ futures = "0.3"
 parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
 object_store = "0.13"
 thiserror = "1"
+utoipa = "5"
 
 [dev-dependencies]
 control-plane-memory = { path = "../../control-plane/memory" }

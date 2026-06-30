@@ -27,6 +27,7 @@ use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 use crate::landing::{LandRequest, LandingMaterializer};
 use crate::materialize::resolve_columns;
 use crate::model::model_shape_from_type;
+use crate::openapi::{JobAck, LandAck, ModelLandAck, ViolationsBody};
 use service_runtime::Subject;
 
 /// Shared, owned dependencies: the configured landing backend (Iceberg),
@@ -48,7 +49,20 @@ pub fn router(state: AppState) -> Router {
 
 /// Operator action: enqueue a compaction job for `{schema}.{table}`. Returns the
 /// JobId; a zero-pool worker performs the compaction asynchronously.
-async fn compact(
+#[utoipa::path(
+    post, path = "/tables/{schema}/{table}/compact",
+    params(
+        ("schema" = String, Path, description = "Iceberg schema"),
+        ("table" = String, Path, description = "Table name"),
+    ),
+    responses(
+        (status = 202, description = "Compaction job enqueued", body = JobAck),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tables",
+)]
+pub(crate) async fn compact(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
 ) -> Response {
@@ -141,7 +155,27 @@ fn violations_json(violations: &[Violation]) -> serde_json::Value {
 /// Governed model ingest: conform an Arrow batch to a pre-existing ontology type
 /// and land it as typed objects into the type's table. Authorize before landing
 /// (deny-by-default, no existence leak); a denied write never reaches the store.
-async fn land_model(
+#[utoipa::path(
+    post, path = "/models/{type}",
+    params(
+        ("type" = String, Path, description = "Ontology type name"),
+    ),
+    request_body(
+        content = Vec<u8>,
+        description = "Arrow IPC stream (schema + record batches)",
+        content_type = "application/vnd.apache.arrow.stream",
+    ),
+    responses(
+        (status = 200, description = "Landed as typed objects; snapshot committed", body = ModelLandAck),
+        (status = 400, description = "Invalid Arrow IPC / unsupported column type"),
+        (status = 403, description = "Not authorized to write the type (also returned for an unknown type — no existence leak)"),
+        (status = 422, description = "Data does not conform to the type", body = ViolationsBody),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "models",
+)]
+pub(crate) async fn land_model(
     State(st): State<AppState>,
     Path(type_name): Path<String>,
     subject: Subject,
@@ -241,7 +275,27 @@ async fn land_model(
     }
 }
 
-async fn land(
+#[utoipa::path(
+    post, path = "/datasets/{schema}/{table}",
+    params(
+        ("schema" = String, Path, description = "Iceberg schema"),
+        ("table" = String, Path, description = "Dataset/table name"),
+    ),
+    request_body(
+        content = Vec<u8>,
+        description = "Arrow IPC stream (schema + record batches)",
+        content_type = "application/vnd.apache.arrow.stream",
+    ),
+    responses(
+        (status = 200, description = "Landed; snapshot committed", body = LandAck),
+        (status = 400, description = "Invalid Arrow IPC / unsupported column type / bad header"),
+        (status = 422, description = "Data does not conform to model gate", body = ViolationsBody),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "datasets",
+)]
+pub(crate) async fn land(
     State(st): State<AppState>,
     Path((schema_name, table_name)): Path<(String, String)>,
     headers: HeaderMap,
