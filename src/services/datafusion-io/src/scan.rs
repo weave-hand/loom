@@ -78,7 +78,10 @@ pub async fn scan_table(
             if registered.insert(url.as_str().to_owned()) {
                 ctx.register_object_store(url.as_ref(), store.clone());
             }
-            let key = format!("{LOOM_STORE_URL}/{}/{}/{}", table.schema, table.name, f.path);
+            let key = format!(
+                "{LOOM_STORE_URL}/{}/{}/{}",
+                table.schema, table.name, f.path
+            );
             paths.push(ListingTableUrl::parse(key)?);
         }
     }
