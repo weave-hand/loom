@@ -86,9 +86,15 @@ def _wasm_cxx_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
                 generate_linker_maps = False,
                 lto_mode = LtoMode("none"),
                 type = LinkerType("wasm"),
-                link_binaries_locally = True,
-                link_libraries_locally = True,
-                archive_objects_locally = True,
+                # RE-eligible: unlike the host system_cxx_toolchain (which hardcodes
+                # local linking), our wasm linker is rustc's statically self-contained
+                # rust-lld, so the link runs in the BuildBuddy RE container. Keeping it
+                # off-local avoids materializing the rustc/LLVM dists locally on CI (cf.
+                # CLAUDE.md's "prefer remote" cost model; the assemble_sysroot action is
+                # RE-eligible for the same reason).
+                link_binaries_locally = False,
+                link_libraries_locally = False,
+                archive_objects_locally = False,
                 use_archiver_flags = True,
                 static_dep_runtime_ld_flags = [],
                 static_pic_dep_runtime_ld_flags = [],
@@ -163,8 +169,13 @@ wasm_cxx_toolchain = rule(
     impl = _wasm_cxx_toolchain_impl,
     is_toolchain_rule = True,
     attrs = {
-        "llvm_dist": attrs.dep(),
-        "rustc_dist": attrs.dep(),
+        # exec_dep (not dep): clang/rust-lld are tools that must materialize and
+        # run on the EXEC platform (the host / RE container), not the wasm target
+        # platform. With link_binaries_locally = False the link runs on RE, so the
+        # rust-lld binary has to be present there — a plain dep would configure it
+        # for wasm32 and the link would break on RE.
+        "llvm_dist": attrs.exec_dep(),
+        "rustc_dist": attrs.exec_dep(),
         "internal_tools": attrs.default_only(attrs.exec_dep(
             providers = [CxxInternalTools],
             default = "prelude//cxx/tools:internal_tools",
