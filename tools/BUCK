@@ -1,3 +1,5 @@
+load(":wasm_bindgen.bzl", "WASM_BINDGEN_VERSION")
+
 # zstd (https://github.com/aspect-build/zstd-prebuilt) — statically-linked `zstd`
 # CLI, vendored so the `.zst` decompress genrules below (reindeer, rust-project)
 # run on RE instead of being pinned local. The aspect-build release ships RAW
@@ -593,5 +595,33 @@ command_alias(
         "prelude//cpu/constraints:x86_64": ":lucidshark-duplo-x86_64-linux",
         "prelude//cpu/constraints:arm64": ":lucidshark-duplo-aarch64-linux",
     }),
+    visibility = ["PUBLIC"],
+)
+
+# wasm-bindgen-cli (https://github.com/rustwasm/wasm-bindgen) — generates the JS
+# glue + a trimmed wasm for //src/ui's Yew bundle. Its version MUST equal the
+# `wasm-bindgen` *crate* version (src/ui/Cargo.toml pins `=WASM_BINDGEN_VERSION`),
+# or the generated glue panics at module load. x86_64 host only (matches rustfmt).
+# Ships as a `.tar.gz` whose single dir holds `wasm-bindgen`, so the genrule untars
+# with --strip-components=1 (same shape as the prek block above). WASM_BINDGEN_VERSION
+# is loaded from tools/wasm_bindgen.bzl (shared with src/ui's bundle assertion).
+_WASM_BINDGEN_URL = "https://github.com/rustwasm/wasm-bindgen/releases/download/{v}/wasm-bindgen-{v}-x86_64-unknown-linux-musl.tar.gz"
+
+http_file(
+    name = "wasm-bindgen-cli.tar.gz",
+    urls = [_WASM_BINDGEN_URL.format(v = WASM_BINDGEN_VERSION)],
+    sha256 = "63d6a38deb65bd7023c02bdf382ab66b0d2c0241c8582fd3413b5a808b8aeb5b",
+)
+
+genrule(
+    name = "wasm-bindgen-x86_64-linux",
+    out = "wasm-bindgen",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :wasm-bindgen-cli.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/wasm-bindgen $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "wasm-bindgen",
+    exe = ":wasm-bindgen-x86_64-linux",
     visibility = ["PUBLIC"],
 )
