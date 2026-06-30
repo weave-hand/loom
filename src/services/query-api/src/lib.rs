@@ -20,6 +20,7 @@ pub mod render;
 pub mod serving;
 pub mod serving_datafusion;
 pub mod sql;
+pub mod wire_control_plane;
 pub mod write_filter;
 
 pub use openapi::build_openapi;

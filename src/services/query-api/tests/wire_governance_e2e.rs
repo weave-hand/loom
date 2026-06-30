@@ -2,12 +2,15 @@
 //! identically to a direct PgControlPlane read, and a missing type surfaces NotFound
 //! over the wire just as it does direct.
 
+use std::sync::Arc;
+
 use control_plane_core::{
     Action, Cardinality, ControlPlane, ControlPlaneError, LinkBacking, LinkDef, ObjectType,
-    PageReq, PolicyTarget, PropertyDef, SubjectId, TableRef, TypeName,
+    PageReq, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use e2e_support::{connect_gov_client, spawn_engine};
+use query_api::wire_control_plane::WireControlPlane;
 
 /// Boot a fresh db + warehouse and define a `customer` type, an `order` type, and an
 /// `orders` link customer->order, so get_type/resolve/links all resolve.
@@ -119,4 +122,55 @@ async fn rpc_roundtrips_match_direct_reads() {
         .expect_err("wire missing");
     assert!(matches!(direct_err, ControlPlaneError::NotFound(_)));
     assert!(matches!(wire_err, ControlPlaneError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn wire_acl_is_read_only() {
+    let fx = PgFixture::start();
+    let (cp, db, warehouse) = seed(&fx).await;
+    let (sock, _guard) = spawn_engine(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+    let client = connect_gov_client(&sock).await;
+    let cp = Arc::new(cp);
+    let wire = WireControlPlane::new(client, cp.clone() as Arc<dyn ControlPlane>);
+
+    // Read methods work over the wire (acl()/ontology() resolve).
+    assert!(
+        wire.ontology()
+            .get_type(&TypeName("customer".into()))
+            .await
+            .is_ok()
+    );
+
+    // Write/define methods fail loudly rather than silently no-op.
+    let err = wire
+        .acl()
+        .define_role(&RoleId("x".into()))
+        .await
+        .expect_err("define_role");
+    assert!(matches!(err, ControlPlaneError::Backend(_)));
+    let customer = cp
+        .ontology()
+        .get_type(&TypeName("customer".into()))
+        .await
+        .unwrap();
+    let err = wire
+        .ontology()
+        .define_type(customer)
+        .await
+        .expect_err("define_type");
+    assert!(matches!(err, ControlPlaneError::Backend(_)));
+
+    // queue() delegates to the direct plane (still usable for GC enqueue).
+    let _ = wire.queue(); // does not panic
+}
+
+#[tokio::test]
+#[should_panic(expected = "read-only")]
+async fn wire_catalog_is_guarded() {
+    let fx = PgFixture::start();
+    let (cp, db, warehouse) = seed(&fx).await;
+    let (sock, _guard) = spawn_engine(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+    let client = connect_gov_client(&sock).await;
+    let wire = WireControlPlane::new(client, Arc::new(cp) as Arc<dyn ControlPlane>);
+    let _ = wire.catalog(); // must panic: query-api never reads catalog over this plane
 }
