@@ -60,6 +60,26 @@ impl<T> Page<T> {
     pub fn from_full(items: Vec<T>) -> Self {
         Self { items, next: None }
     }
+    /// Build a page from up to `limit + 1` already-ordered items. If more than
+    /// `limit` are present, there is a next page: truncate to `limit` and derive
+    /// its cursor from the last kept item via `cursor`. Otherwise this is the final
+    /// page (`next: None`). Passing `limit == None` (unbounded) always yields a
+    /// final page. This is the shared keyset-pagination assembly every adapter uses.
+    pub fn from_keyset(
+        mut items: Vec<T>,
+        limit: Option<u32>,
+        cursor: impl Fn(&T) -> Cursor,
+    ) -> Self {
+        let lim = limit.map(|l| usize::try_from(l).unwrap_or(usize::MAX));
+        match lim {
+            Some(l) if items.len() > l => {
+                items.truncate(l);
+                let next = items.last().map(cursor);
+                Self { items, next }
+            }
+            _ => Self { items, next: None },
+        }
+    }
     pub fn len(&self) -> usize {
         self.items.len()
     }

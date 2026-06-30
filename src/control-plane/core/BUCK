@@ -40,6 +40,16 @@ rust_test(
 )
 
 rust_test(
+    name = "lineage-cursor",
+    crate = "lineage_cursor",
+    srcs = ["tests/lineage_cursor.rs"],
+    crate_root = "tests/lineage_cursor.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "serde-roundtrip",
     crate = "serde_roundtrip",
     srcs = ["tests/serde_roundtrip.rs"],
