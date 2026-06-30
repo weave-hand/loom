@@ -112,7 +112,7 @@ fn object_store_url_for_file_uses_local_filesystem() {
 }
 ```
 
-> Note: `ObjectStoreUrl::as_str()` returns the normalized URL **with a trailing slash** (DataFusion normalizes `s3://my-bucket` to `s3://my-bucket/`). If `as_str()` is not available on this DataFusion version, compare via `format!("{url}")` / `url.as_ref()` instead — verify in Step 2 and adjust the assertion to whatever the type exposes. The behavioral assertion (s3 authority vs local) is what matters.
+> Note: `ObjectStoreUrl::as_str()` returns the normalized URL **with a trailing slash** (DataFusion normalizes `s3://my-bucket` to `s3://my-bucket/`). DataFusion 54 exposes `as_str()`; if a future bump removes it, compare via `format!("{url}")` (Display) instead — verify in Step 2 and adjust the assertion to whatever the type exposes. The behavioral assertion (s3 authority vs local) is what matters.
 
 - [ ] **Step 2: Run the test to verify it fails to compile** (resolver not yet public):
 
@@ -278,7 +278,7 @@ The behavior change. Branch per `FileRef` on `"://"`; register each distinct `Ob
 
 Implementation notes for the engineer:
 - `object_store::local::LocalFileSystem` — `object_store` is already a dep of `datafusion-io`; `use object_store::ObjectStore;` is already imported, so reference `LocalFileSystem` by full path `object_store::local::LocalFileSystem::new()` (matches how `engine-serving` constructs a fresh `LocalFileSystem`). A fresh local store is correct because absolute `file://` URLs carry the full path; the local store resolves from filesystem root.
-- `ObjectStoreUrl::as_str()` is used as the dedupe key — if unavailable, use `url.as_ref().to_string()` or `format!("{url}")`. Verify in Step 3.
+- `ObjectStoreUrl::as_str()` (DataFusion 54 exposes `pub fn as_str(&self) -> &str` and `Display`) is used as the dedupe key. If for some reason `as_str()` is unavailable, fall back to `format!("{url}")` (via `Display`) — **not** `url.as_ref().to_string()`: `ObjectStoreUrl::as_ref()` returns `&Url`, not `&str` (that's the `&Url` serving.rs passes to `register_object_store`). `(&Url).to_string()` would still work as a key, but `format!("{url}")` is the clearer fallback. Verify in Step 3.
 - The closure borrows `registered` mutably and is `FnMut`; it takes `ctx`/`url`/`store` as params to avoid capturing them, sidestepping borrow conflicts with the `paths` loop. If the borrow checker objects to the closure form, inline the dedupe with an explicit `if registered.insert(...)` at each branch instead — same behavior, no closure.
 - Do **not** change the `ParquetFormat`/`ListingOptions`/`infer_schema`/`register_table` tail — it stays exactly as today.
 - `ListingTableUrl::parse` takes `impl AsRef<str>`; passing `&f.path` (a `&String`) and `key` (a `String`) both work.
@@ -318,19 +318,21 @@ git commit -m "fix(datafusion-io): resolve absolute file://, s3:// paths in scan
 
 ### Task 4: Transform-chain e2e — the path that fails today
 
-The regression test from the spec's Testing section: transform A lands an output with **absolute** `file://` paths; transform B reads A's output and commits the expected rows. Before Task 3 this fails at B's scan; after, it passes.
+The regression test from the spec's Testing section: transform A lands an output with **absolute** `file://` paths; transform B reads A's output and commits the expected rows. Before Task 3 this fails at B's scan; after, it passes. The test calls `run_transform` **directly** (like `transform_e2e.rs`'s `empty_input_*` tests) — no worker/queue, no `CancellationToken`.
 
 **Files:**
 - Create: `src/services/transform/tests/transform_chain_e2e.rs`
 - Modify: `src/services/transform/BUCK` (add a `transform-chain-e2e` `loom_fixture_test`).
-- Reuse: `src/services/transform/tests/transform_e2e_support.rs` (`tref`, `make_catalog`, `seed_table`, `seed_table_absolute`, `cols`, `lineage`, `scalar_i64`, `col_csv`).
+- Reuse: `src/services/transform/tests/transform_e2e_support.rs` (`tref`, `make_catalog`, `seed_table`, `cols`, `scalar_i64`).
 
-**Interfaces:**
-- Consumes: `transform::run_transform(cp, store, root_url, req)` and `TransformRequest`/`TransformInput`/`OutputMode` (from `transform`), `IcebergControlPlane`, `IcebergCatalog`, `engine_serving::execute_query`, and the support helpers above.
+**Interfaces (VERIFIED against `run.rs:94` and `transform_e2e.rs:223,274`):**
+- `transform::run_transform(cp: &dyn ControlPlane, store: Arc<dyn ObjectStore>, root_url: &str, run_id: &str, req: TransformRequest<'_>) -> Result<SnapshotId, TransformError>` — **5 args**; `run_id: &str` sits between `root_url` and `req`.
+- `TransformRequest { inputs: &[TransformInput], output: &TableRef, sql: &str, conform: Option<…>, output_mode: OutputMode, lineage: LineageEvent }`.
+- `TransformInput { table: &TableRef, register_as: &str }`.
+- `engine_serving::execute_query(&IcebergCatalog, sql: &str, None) -> Vec<RecordBatch>`.
+- Support helpers: `seed_table(&cp, &store, &table, &cols, schema, batch, file_prefix)`, `cols(&[(name, logical_ty, nullable)])`, `tref(schema, name)`, `scalar_i64(&batches) -> i64`, `make_catalog(dsn, &warehouse) -> SqlCatalog`, `lineage(&out) -> LineageEvent`.
 
-> **Before writing this test, read `src/services/transform/tests/transform_e2e.rs` and `tests/iceberg_backend_e2e.rs` in full** to copy the exact fixture-boot boilerplate (Postgres DSN, warehouse tempdir, `root_url`, `store` construction, `IcebergControlPlane`/`IcebergCatalog` wiring, `run_transform` request shape, and how output is read back via `execute_query`). The skeleton below shows the *scenario*; the boilerplate must match those files exactly — do not invent API shapes. The `TransformRequest`/`TransformInput` field names, the `run_transform` argument order, and the `execute_query` signature must be copied from the existing passing tests, not guessed.
-
-- [ ] **Step 1: Write the failing test.** Create `src/services/transform/tests/transform_chain_e2e.rs`. Structure (fill the fixture boilerplate from `transform_e2e.rs`):
+- [ ] **Step 1: Write the failing test.** Create `src/services/transform/tests/transform_chain_e2e.rs` with this concrete body (modeled on `transform_e2e.rs:204-248`, the direct-`run_transform` path):
 
 ```rust
 //! Transform-chain e2e: a transform that reads ANOTHER transform's output, whose
@@ -340,39 +342,114 @@ The regression test from the spec's Testing section: transform A lands an output
 //! to an already-absolute path and register no store under `file://`.
 
 mod transform_e2e_support;
-// ... use the same imports/fixture as transform_e2e.rs ...
 
-#[tokio::test]
+use std::sync::Arc;
+
+use arrow::array::{Int64Array, RecordBatch, StringArray};
+use arrow::datatypes::{DataType, Field, Schema};
+use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
+use object_store::ObjectStore;
+use object_store::local::LocalFileSystem;
+
+use transform_e2e_support::{cols, lineage, make_catalog, scalar_i64, seed_table, tref};
+
+#[tokio::test(flavor = "multi_thread")]
 async fn transform_reads_transform_output_with_absolute_paths() {
-    // 1. Boot the hermetic Postgres fixture + a file:// warehouse tempdir.
-    //    (copy from transform_e2e.rs: dsn, warehouse, root_url = "file://{warehouse}",
-    //     store = LocalFileSystem-backed Arc<dyn ObjectStore>, cp = IcebergControlPlane,
-    //     catalog = IcebergCatalog for readback.)
+    let fx = PgFixture::start();
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let warehouse = wh.path().display().to_string();
+    let root_url = format!("file://{warehouse}");
+    let catalog = make_catalog(fx.pg_dsn(&db), &warehouse).await;
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(wh.path()).expect("store"));
+    let cp = IcebergControlPlane::new(pg, catalog);
 
-    // 2. Seed a base input table `src.base` (RELATIVE paths) via seed_table — so a
-    //    real transform A can read it.
+    // 1. Seed a base input table with RELATIVE paths (the shape a landed table has).
+    let base = tref("src", "base");
+    let base_cols = cols(&[("id", "long", false), ("name", "string", true)]);
+    let base_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    seed_table(
+        &cp,
+        &store,
+        &base,
+        &base_cols,
+        base_schema.clone(),
+        RecordBatch::try_new(
+            base_schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec![Some("a"), Some("b")])),
+            ],
+        )
+        .unwrap(),
+        "seed-base",
+    )
+    .await;
 
-    // 3. Run transform A: input src.base -> output stage.mid. run_transform commits
-    //    stage.mid's files with ABSOLUTE file:// paths via absolute_data_files.
-    //    (Alternatively, to remove A's compute from the test, seed stage.mid directly
-    //     with seed_table_absolute(cp, &store, root_url, &mid, cols, schema, batch, "A")
-    //     — byte-identical mirror state to a real A. Prefer the real run_transform A to
-    //     match the spec's "Run transform A" wording; keep seed_table_absolute as the
-    //     fallback if run_transform's input wiring proves fiddly.)
+    // 2. Transform A: src.base -> stage.mid. run_transform commits stage.mid's files
+    //    with ABSOLUTE file:// paths (via absolute_data_files in run.rs).
+    let mid = tref("stage", "mid");
+    transform::run_transform(
+        &cp,
+        store.clone(),
+        &root_url,
+        "run-a",
+        transform::TransformRequest {
+            inputs: &[transform::TransformInput {
+                table: &base,
+                register_as: "base",
+            }],
+            output: &mid,
+            sql: "SELECT id, name FROM base",
+            conform: None,
+            output_mode: transform::OutputMode::Append,
+            lineage: lineage(&mid),
+        },
+    )
+    .await
+    .expect("transform A lands stage.mid with absolute file:// paths");
 
-    // 4. Run transform B: input stage.mid (ABSOLUTE paths!) -> output dst.out, e.g.
-    //    SQL `SELECT * FROM "mid"` or an aggregate. This is the call that failed before
-    //    the fix — B's scan_table must resolve stage.mid's absolute file:// files.
+    // 3. Transform B: reads stage.mid (ABSOLUTE paths!) -> dst.out. This is the call
+    //    that errored before scan_table became scheme-aware.
+    let out = tref("dst", "out");
+    transform::run_transform(
+        &cp,
+        store.clone(),
+        &root_url,
+        "run-b",
+        transform::TransformRequest {
+            inputs: &[transform::TransformInput {
+                table: &mid,
+                register_as: "mid",
+            }],
+            output: &out,
+            sql: "SELECT count(*) AS n FROM mid",
+            conform: None,
+            output_mode: transform::OutputMode::Append,
+            lineage: lineage(&out),
+        },
+    )
+    .await
+    .expect("transform B resolves transform A's absolute-path files");
 
-    // 5. Assert dst.out has the expected rows by reading it back through
-    //    engine_serving::execute_query over `catalog` (use scalar_i64 / col_csv).
-    //    e.g. assert the row count or a string_agg matches the seeded data.
+    // 4. Read dst.out back through the serving engine; B counted A's 2 rows.
+    let serving = IcebergCatalog::new(fx.pool_for(&db).await);
+    let n = engine_serving::execute_query(&serving, "SELECT \"n\" FROM \"dst\".\"out\"", None)
+        .await
+        .expect("serving read");
+    assert_eq!(scalar_i64(&n), 2, "transform B read transform A's 2 rows");
 }
 ```
 
-The concrete SQL/columns: seed `src.base` with `(id i64, name string)` two rows; A = `SELECT id, name FROM "base"` into `stage.mid`; B = `SELECT count(*) AS n FROM "mid"` into `dst.out`, then assert `scalar_i64(&out_batches) == 2`. Pick column/type names that match `cols(&[("id","int64",false),("name","string",true)])` conventions used in `transform_e2e.rs`.
+> Notes: logical types use the same vocabulary as `transform_e2e.rs` (`"long"`, `"string"`). `register_as` is unquoted in the SQL (`FROM base`), matching the existing tests. `pool_for`/`pg_dsn`/`fresh_db` come from `PgFixture` (used identically in `transform_e2e.rs`). If `tempfile`/`arrow` array imports differ, copy the exact `use` lines from `transform_e2e.rs:8-25`.
 
-- [ ] **Step 2: Add the BUCK target.** In `src/services/transform/BUCK`, add (mirror the existing `transform-e2e` `loom_fixture_test`, same deps):
+- [ ] **Step 2: Add the BUCK target.** In `src/services/transform/BUCK`, add this `loom_fixture_test` (dep set copied from the sibling `compact-e2e` target, which — like this test — calls `run_transform`/compaction directly with **no** worker or `tokio-util`):
 
 ```python
 loom_fixture_test(
@@ -384,7 +461,6 @@ loom_fixture_test(
         ":transform",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
-        "//src/control-plane/worker:worker",
         "//src/services/datafusion-io:datafusion-io",
         "//src/services/engine-serving:engine-serving",
         "//third-party:arrow",
@@ -394,13 +470,12 @@ loom_fixture_test(
         "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",
-        "//third-party:tokio-util",
         "//third-party:uuid",
     ],
 )
 ```
 
-(Match the dep set to whatever `transform_e2e.rs` actually uses — drop `worker`/`tokio-util` if the test doesn't reference them; clippy/build will flag unused deps only as warnings, but keep it tight.)
+Do **not** add `//src/control-plane/worker:worker` or `//third-party:tokio-util` — this test does not use `Worker`/`CancellationToken`, and the strict-clippy gate (`tools/clippy-all.sh`) treats unused deps as a failure, not a warning.
 
 - [ ] **Step 3 (RED): Verify the test fails on the UNFIXED scan_table.** To prove the test catches the bug, temporarily `git stash` Task 3's scan.rs change (or check out the pre-Task-3 `scan.rs`), then run:
 
@@ -475,4 +550,4 @@ Expected: clean (no per-target `[clippy.txt]` content).
 
 **2. Placeholder scan:** No "TBD"/"handle edge cases"/"similar to". Task 4's fixture boilerplate is explicitly delegated to "copy from `transform_e2e.rs`" with the scenario fully specified — this is a deliberate instruction to read a concrete sibling file, not a placeholder, because inventing the exact `TransformRequest` field names here would risk type drift; the spec itself names the support file to reuse.
 
-**3. Type consistency:** `object_store_url_for(path: &str) -> datafusion::error::Result<ObjectStoreUrl>` is identical across Tasks 1, 2, 3. `scan_table` signature unchanged everywhere. `LOOM_STORE_URL` referenced as imported. `seed_table_absolute`/`seed_table`/`run_transform` names match `transform_e2e_support.rs` and `run.rs` as read.
+**3. Type consistency:** `object_store_url_for(path: &str) -> datafusion::error::Result<ObjectStoreUrl>` is identical across Tasks 1, 2, 3. `scan_table` signature unchanged everywhere. `LOOM_STORE_URL` referenced as imported. `run_transform` is the **5-arg** `(cp, store, root_url, run_id, req)` form — verified against `run.rs:94` and the call sites in `transform_e2e.rs:223,274` — and Task 4's skeleton passes `run_id` (`"run-a"`/`"run-b"`). `seed_table`/`cols`/`tref`/`scalar_i64`/`make_catalog`/`lineage` names match `transform_e2e_support.rs` as read.
