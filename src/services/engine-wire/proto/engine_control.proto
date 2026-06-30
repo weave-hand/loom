@@ -14,6 +14,16 @@ service EngineControl {
   rpc BuildVectorIndex (BuildVectorIndexRequest) returns (BuildVectorIndexResponse);
   rpc WriteObject    (WriteObjectRequest)    returns (WriteObjectResponse);
   rpc OverwriteTable (OverwriteTableRequest) returns (OverwriteTableResponse);
+  // Governance reads (query-api reads ACL + ontology over the wire).
+  rpc Check            (CheckRequest)            returns (CheckResponse);
+  rpc PoliciesFor      (PoliciesForRequest)      returns (PoliciesForResponse);
+  rpc GetType          (GetTypeRequest)          returns (GetTypeResponse);
+  rpc Resolve          (ResolveRequest)          returns (ResolveResponse);
+  rpc Links            (LinksRequest)            returns (LinksResponse);
+  rpc LinksTo          (LinksToRequest)          returns (LinksToResponse);
+  rpc GetAction        (GetActionRequest)        returns (GetActionResponse);
+  rpc VectorIndexesFor (VectorIndexesForRequest) returns (VectorIndexesForResponse);
+  rpc GetVectorIndex   (GetVectorIndexRequest)   returns (GetVectorIndexResponse);
 }
 
 message Job {
@@ -69,3 +79,37 @@ message OverwriteTableRequest {
   string lineage_json = 5;
 }
 message OverwriteTableResponse { int64 snapshot_id = 1; }
+
+// ---- Governance-read messages. *_json fields are serde_json of the named core type. ----
+
+message CheckRequest  { string subject_json = 1; string action_json = 2; string target_json = 3; }
+message CheckResponse { string decision_json = 1; }   // Decision
+
+message PoliciesForRequest {
+  string subject_json = 1;
+  string action_json = 2;
+  string target_json = 3;
+  string page_json = 4;     // PageReq
+}
+message PoliciesForResponse { string page_json = 1; }  // Page<Policy>
+
+message GetTypeRequest  { string type_name = 1; }
+message GetTypeResponse { string object_type_json = 1; }   // ObjectType
+
+message ResolveRequest  { string type_name = 1; }
+message ResolveResponse { string table_ref_json = 1; }     // TableRef
+
+message LinksRequest  { string type_name = 1; string page_json = 2; }
+message LinksResponse { string page_json = 1; }            // Page<LinkDef>
+
+message LinksToRequest  { string type_name = 1; string page_json = 2; }
+message LinksToResponse { string page_json = 1; }          // Page<LinkDef>
+
+message GetActionRequest  { string action_name = 1; }
+message GetActionResponse { string action_def_json = 1; }  // ActionDef
+
+message VectorIndexesForRequest  { string type_name = 1; }
+message VectorIndexesForResponse { string indexes_json = 1; }  // Vec<VectorIndexDef>
+
+message GetVectorIndexRequest  { string type_name = 1; string name = 2; }
+message GetVectorIndexResponse { string index_json = 1; }      // Option<VectorIndexDef>
