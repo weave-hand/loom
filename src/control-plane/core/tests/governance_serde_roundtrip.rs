@@ -4,9 +4,9 @@
 
 use control_plane_core::{
     Action, ActionDef, ActionKind, ActionName, Aggregation, Cardinality, CompareOp, Decision,
-    DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, Metric, ObjectType, Page, PageReq, Policy,
-    PolicyTarget, PropertyDef, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
-    VectorIndexDef,
+    DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, Metric, ObjectType, Page, PageReq,
+    ParamDef, Policy, PolicyTarget, PropertyDef, RowFilter, ScalarValue, SubjectId, TableRef,
+    TypeName, VectorIndexDef,
 };
 
 fn roundtrip<T>(v: &T)
@@ -88,6 +88,24 @@ fn ontology_payloads_roundtrip() {
         parameters: vec![],
         kind: ActionKind::Insert,
     });
+    // ParamDef — the action-parameter wire payload; must survive serde independently.
+    roundtrip(&ActionDef {
+        name: ActionName("createOrder".into()),
+        target: TypeName("order".into()),
+        parameters: vec![
+            ParamDef {
+                name: "amount".into(),
+                ty: "Long".into(),
+                required: true,
+            },
+            ParamDef {
+                name: "note".into(),
+                ty: "String".into(),
+                required: false,
+            },
+        ],
+        kind: ActionKind::Insert,
+    });
     roundtrip(&VectorIndexDef {
         name: "emb_idx".into(),
         type_name: TypeName("customer".into()),
@@ -95,5 +113,32 @@ fn ontology_payloads_roundtrip() {
         metric: Metric::Cosine,
         spec: IndexSpec::Flat,
     });
+    // Non-default IndexSpec variants.
+    roundtrip(&IndexSpec::IvfFlat { nlist: Some(128) });
+    roundtrip(&IndexSpec::IvfFlat { nlist: None });
+    roundtrip(&IndexSpec::Hnsw {
+        m: Some(16),
+        ef_construction: Some(200),
+    });
+    roundtrip(&IndexSpec::Hnsw {
+        m: None,
+        ef_construction: None,
+    });
+    // JoinTable LinkBacking variant.
+    roundtrip(&LinkBacking::JoinTable {
+        table: TableRef {
+            schema: "main".into(),
+            name: "customer_group".into(),
+        },
+        from_key: "id".into(),
+        from_column: "customer_id".into(),
+        to_column: "group_id".into(),
+        to_key: "id".into(),
+    });
+    // Non-Count Aggregation variants.
+    roundtrip(&Aggregation::Sum("amount".into()));
+    roundtrip(&Aggregation::Avg("score".into()));
+    roundtrip(&Aggregation::Min("created_at".into()));
+    roundtrip(&Aggregation::Max("updated_at".into()));
     roundtrip(&PageReq::default());
 }

@@ -164,5 +164,92 @@ async fn governed_read_parity_over_wire() {
     let ids: Vec<&SqlValue> = over_wire.rows.iter().map(|r| &r[0]).collect();
     assert!(ids.contains(&&SqlValue::Int(1)) && ids.contains(&&SqlValue::Int(3)));
 
+    // --- mask_columns parity over the wire ---
+    // A masker subject sees `secret` present but redacted to "***" on both paths.
+    let masker = SubjectId("masker".into());
+    let mrole = RoleId("mask_role".into());
+    cp.define_subject(&masker).await.unwrap();
+    cp.define_role(&mrole).await.unwrap();
+    cp.assign_role(&masker, &mrole).await.unwrap();
+    cp.grant(
+        &mrole,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Order".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+    cp.set_policy(
+        &mrole,
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(TypeName("Order".into())),
+            row_filter: None,
+            deny_columns: vec![],
+            mask_columns: vec!["secret".into()],
+        },
+    )
+    .await
+    .unwrap();
+
+    let mq = ObjectQuery {
+        type_name: "Order".into(),
+        eq_filters: vec![],
+        ids: vec![],
+    };
+    let ms = Subject(masker.clone());
+    let direct_masked = read_object(
+        &mq,
+        &ms,
+        &QueryDeps {
+            ontology: cp.ontology(),
+            acl: cp.acl(),
+            serving: &eng,
+            default_limit: 1000,
+        },
+    )
+    .await
+    .expect("direct masked read");
+    let wire_masked = read_object(
+        &mq,
+        &ms,
+        &QueryDeps {
+            ontology: wire.ontology(),
+            acl: wire.acl(),
+            serving: &eng,
+            default_limit: 1000,
+        },
+    )
+    .await
+    .expect("wire masked read");
+
+    // Parity: both legs must produce identical columns, types, and rows.
+    assert_eq!(
+        direct_masked.columns, wire_masked.columns,
+        "mask_columns parity: columns"
+    );
+    assert_eq!(
+        direct_masked.logical_types, wire_masked.logical_types,
+        "mask_columns parity: logical_types"
+    );
+    assert_eq!(
+        direct_masked.rows, wire_masked.rows,
+        "mask_columns parity: rows"
+    );
+
+    // And the masking was actually applied over the wire: secret column present but redacted.
+    let secret_idx = wire_masked
+        .columns
+        .iter()
+        .position(|c| c == "secret")
+        .expect("secret column present (masked, not dropped)");
+    assert!(
+        wire_masked
+            .rows
+            .iter()
+            .all(|r| r[secret_idx] == SqlValue::Text("***".into())),
+        "every secret value is the redaction marker over the wire"
+    );
+
     drop(writer);
 }

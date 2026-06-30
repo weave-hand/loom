@@ -5,15 +5,22 @@
 use std::sync::Arc;
 
 use control_plane_core::{
-    Action, Cardinality, ControlPlane, ControlPlaneError, LinkBacking, LinkDef, ObjectType,
-    PageReq, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Action, ActionDef, ActionKind, ActionName, Cardinality, ControlPlane, ControlPlaneError,
+    LinkBacking, LinkDef, ObjectType, PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use e2e_support::{connect_gov_client, spawn_engine};
 use query_api::wire_control_plane::WireControlPlane;
 
-/// Boot a fresh db + warehouse and define a `customer` type, an `order` type, and an
-/// `orders` link customer->order, so get_type/resolve/links all resolve.
+/// Boot a fresh db + warehouse and define:
+/// - `customer`, `order`, `group` types
+/// - `orders` FK link customer->order
+/// - `memberships` JoinTable link customer<->group (many-to-many)
+/// - `createCustomer` action with a non-empty `parameters` list
+///
+/// This exercises `get_type`/`resolve`/`links`/`links_to`/`get_action` and covers the
+/// `LinkBacking::JoinTable` + `ParamDef` wire payloads.
 async fn seed(
     fx: &PgFixture,
 ) -> (
@@ -25,7 +32,12 @@ async fn seed(
     let warehouse = tempfile::tempdir().expect("warehouse");
     let customer = TypeName("customer".into());
     let order = TypeName("order".into());
-    for (name, table) in [(&customer, "customer"), (&order, "order")] {
+    let group = TypeName("group".into());
+    for (name, table) in [
+        (&customer, "customer"),
+        (&order, "order"),
+        (&group, "group"),
+    ] {
         cp.ontology()
             .define_type(ObjectType {
                 name: name.clone(),
@@ -44,6 +56,7 @@ async fn seed(
             .await
             .expect("define_type");
     }
+    // FK link: customer -> order (one-to-many).
     cp.ontology()
         .define_link(LinkDef {
             name: "orders".into(),
@@ -56,7 +69,48 @@ async fn seed(
             },
         })
         .await
-        .expect("define_link");
+        .expect("define_link fk");
+    // JoinTable link: customer <-> group (many-to-many via membership table).
+    cp.ontology()
+        .define_link(LinkDef {
+            name: "memberships".into(),
+            from: customer.clone(),
+            to: group.clone(),
+            cardinality: Cardinality::Many,
+            backing: LinkBacking::JoinTable {
+                table: TableRef {
+                    schema: "main".into(),
+                    name: "customer_group".into(),
+                },
+                from_key: "id".into(),
+                from_column: "customer_id".into(),
+                to_column: "group_id".into(),
+                to_key: "id".into(),
+            },
+        })
+        .await
+        .expect("define_link join_table");
+    // Action with parameters (covers ParamDef wire payload + get_action RPC).
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("createCustomer".into()),
+            target: customer.clone(),
+            parameters: vec![
+                ParamDef {
+                    name: "name".into(),
+                    ty: "String".into(),
+                    required: true,
+                },
+                ParamDef {
+                    name: "email".into(),
+                    ty: "String".into(),
+                    required: false,
+                },
+            ],
+            kind: ActionKind::Insert,
+        })
+        .await
+        .expect("define_action");
     (cp, db, warehouse)
 }
 
@@ -122,6 +176,66 @@ async fn rpc_roundtrips_match_direct_reads() {
         .expect_err("wire missing");
     assert!(matches!(direct_err, ControlPlaneError::NotFound(_)));
     assert!(matches!(wire_err, ControlPlaneError::NotFound(_)));
+
+    // get_action parity — exercises ActionDef + ParamDef over the wire.
+    let action_name = ActionName("createCustomer".into());
+    let direct_action = cp
+        .ontology()
+        .get_action(&action_name)
+        .await
+        .expect("direct get_action");
+    let wire_action = client
+        .gov_get_action(&action_name)
+        .await
+        .expect("wire get_action");
+    assert_eq!(direct_action, wire_action, "get_action parity");
+    // The parameters vec must be non-empty so ParamDef serde is actually exercised.
+    assert!(
+        !wire_action.parameters.is_empty(),
+        "action must have parameters to exercise ParamDef serde"
+    );
+
+    // links_to parity — exercises the inbound-link RPC (inbound to `order` via orders FK).
+    let order = TypeName("order".into());
+    let direct_links_to = cp
+        .ontology()
+        .links_to(&order, PageReq::unbounded())
+        .await
+        .expect("direct links_to");
+    let wire_links_to = client
+        .gov_links_to(&order, &PageReq::unbounded())
+        .await
+        .expect("wire links_to");
+    assert_eq!(
+        direct_links_to.items, wire_links_to.items,
+        "links_to parity for order"
+    );
+
+    // links parity for the JoinTable link — exercises LinkBacking::JoinTable serde.
+    let group = TypeName("group".into());
+    let direct_group_links = cp
+        .ontology()
+        .links_to(&group, PageReq::unbounded())
+        .await
+        .expect("direct links_to group");
+    let wire_group_links = client
+        .gov_links_to(&group, &PageReq::unbounded())
+        .await
+        .expect("wire links_to group");
+    assert_eq!(
+        direct_group_links.items, wire_group_links.items,
+        "links_to parity for group (JoinTable backing)"
+    );
+    // Verify the JoinTable backing actually made it through the wire.
+    let membership = wire_group_links
+        .items
+        .iter()
+        .find(|l| l.name == "memberships")
+        .expect("memberships link present in wire response");
+    assert!(
+        matches!(membership.backing, LinkBacking::JoinTable { .. }),
+        "JoinTable backing preserved through wire serde"
+    );
 }
 
 #[tokio::test]
