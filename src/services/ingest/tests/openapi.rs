@@ -19,8 +19,9 @@ fn documented(doc: &utoipa::openapi::OpenApi) -> BTreeSet<(String, String)> {
     // exposes per-method `Option<Operation>` fields (get/post/...), NOT an operations
     // map. Each path's JSON object has HTTP-method keys plus non-operation keys
     // (summary/description/servers/parameters); keep only the method keys.
-    const METHODS: [&str; 8] =
-        ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
+    const METHODS: [&str; 8] = [
+        "get", "put", "post", "delete", "options", "head", "patch", "trace",
+    ];
     let json = serde_json::to_value(doc).unwrap();
     let mut out = BTreeSet::new();
     if let Some(paths) = json["paths"].as_object() {

@@ -21,7 +21,9 @@ pub const BEARER_SCHEME_NAME: &str = "bearer_auth";
 /// each service's `build_openapi()` — the ontology hook for the slice-2 `.extend`.
 #[must_use = "the returned Router must be used to serve requests"]
 pub fn with_openapi(router: Router, mut doc: OpenApi) -> Router {
-    let components = doc.components.get_or_insert_with(utoipa::openapi::Components::new);
+    let components = doc
+        .components
+        .get_or_insert_with(utoipa::openapi::Components::new);
     components.add_security_scheme(
         BEARER_SCHEME_NAME,
         SecurityScheme::Http(

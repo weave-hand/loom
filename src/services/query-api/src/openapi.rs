@@ -45,7 +45,10 @@ pub struct WriteDeniedBody {
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "loom query-api", description = "Governed typed-object read + action API"),
+    info(
+        title = "loom query-api",
+        description = "Governed typed-object read + action API"
+    ),
     paths(
         crate::http::get_object,
         crate::http::get_linked,
@@ -63,7 +66,7 @@ pub struct WriteDeniedBody {
         JobAck,
         WriteDeniedBody,
         crate::http::VectorSearchRequest,
-    )),
+    ))
 )]
 pub struct ApiDoc;
 

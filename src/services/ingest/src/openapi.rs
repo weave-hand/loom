@@ -46,9 +46,12 @@ pub struct Violation {
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "loom ingest", description = "Arrow-IPC landing + compaction API"),
+    info(
+        title = "loom ingest",
+        description = "Arrow-IPC landing + compaction API"
+    ),
     paths(crate::http::land, crate::http::land_model, crate::http::compact),
-    components(schemas(LandAck, ModelLandAck, JobAck, ViolationsBody, Violation)),
+    components(schemas(LandAck, ModelLandAck, JobAck, ViolationsBody, Violation))
 )]
 pub struct ApiDoc;
 

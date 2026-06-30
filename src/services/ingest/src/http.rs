@@ -24,10 +24,10 @@ use uuid::Uuid;
 
 use crate::IngestError;
 use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason};
-use crate::openapi::{JobAck, LandAck, ModelLandAck, ViolationsBody};
 use crate::landing::{LandRequest, LandingMaterializer};
 use crate::materialize::resolve_columns;
 use crate::model::model_shape_from_type;
+use crate::openapi::{JobAck, LandAck, ModelLandAck, ViolationsBody};
 use service_runtime::Subject;
 
 /// Shared, owned dependencies: the configured landing backend (Iceberg),
