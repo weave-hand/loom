@@ -38,3 +38,16 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "embedded-hardening",
+    crate = "embedded_hardening",
+    srcs = ["tests/embedded_hardening.rs"],
+    crate_root = "tests/embedded_hardening.rs",
+    edition = "2024",
+    deps = [
+        ":managed-postgres",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
