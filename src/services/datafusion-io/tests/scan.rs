@@ -60,6 +60,23 @@ async fn scan_registers_written_files_for_sql() {
     assert_eq!(n, 2, "both rows are scannable via SQL");
 }
 
+#[test]
+fn object_store_url_for_s3_uses_bucket_authority() {
+    let url = datafusion_io::object_store_url_for("s3://my-bucket/schema/table/part-0.parquet")
+        .expect("s3 url parses");
+    assert_eq!(url.as_str(), "s3://my-bucket/");
+}
+
+#[test]
+fn object_store_url_for_file_uses_local_filesystem() {
+    let url = datafusion_io::object_store_url_for("file:///warehouse/schema/table/part-0.parquet")
+        .expect("file url resolves");
+    assert_eq!(
+        url.as_str(),
+        datafusion::execution::object_store::ObjectStoreUrl::local_filesystem().as_str()
+    );
+}
+
 #[tokio::test]
 async fn register_empty_table_runs_sql_over_zero_rows() {
     let schema: SchemaRef = Arc::new(Schema::new(vec![
