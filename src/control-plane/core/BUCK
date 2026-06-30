@@ -48,7 +48,7 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [
         ":core",
-        "//third-party:proptest",
+        "//third-party:serde",
         "//third-party:serde_json",
     ],
 )

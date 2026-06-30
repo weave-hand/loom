@@ -16,12 +16,12 @@ use crate::page::{Page, PageReq};
 use crate::vector_index::{IndexSpec, Metric};
 
 /// An ontology type name (e.g. "Customer").
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TypeName(pub String);
 
 /// A logical property of an object type. `ty` is the ontology's logical type
 /// (loom's vocabulary), NOT the physical column type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PropertyDef {
     pub name: String,
     pub ty: String,
@@ -29,7 +29,7 @@ pub struct PropertyDef {
 }
 
 /// An ontology object type: a named, propertied view bound to a physical table.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectType {
     pub name: TypeName,
     /// Ordered.
@@ -43,14 +43,14 @@ pub struct ObjectType {
 }
 
 /// Link multiplicity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Cardinality {
     One,
     Many,
 }
 
 /// How a link is physically realized as a join. Carried by `LinkDef`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LinkBacking {
     /// Direct equijoin `from_table.from_column = to_table.to_column`.
     /// Covers one-to-many and many-to-one.
@@ -101,7 +101,7 @@ impl LinkBacking {
 }
 
 /// A directed link between two types (e.g. `Order.customer -> Customer`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LinkDef {
     pub name: String,
     pub from: TypeName,
@@ -112,7 +112,7 @@ pub struct LinkDef {
 
 /// How a derived property aggregates over its link's target rows. The `String` is the
 /// target-type column to aggregate (COUNT takes none).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Aggregation {
     Count,
     Sum(String),
@@ -124,7 +124,7 @@ pub enum Aggregation {
 /// A computed property: aggregate `agg` over the rows reachable from this type via the
 /// link named `link`. `ty` is the declared logical type of the result (e.g. "Long" for a
 /// count, "Double" for an average).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DerivedPropertyDef {
     pub name: String,
     pub ty: String,
@@ -133,13 +133,15 @@ pub struct DerivedPropertyDef {
 }
 
 /// A named ontology action (e.g. "createCustomer").
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ActionName(pub String);
 
 /// Which kind of mutation an action performs against its target type. `Insert`
 /// (part-1) creates a new object; `Update`/`Delete` (A5) mutate or remove one
 /// existing object located by the target type's declared `identity`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum ActionKind {
     #[default]
     Insert,
@@ -148,7 +150,7 @@ pub enum ActionKind {
 }
 
 /// A typed input to an action. `ty` is the ontology's logical vocabulary (like `PropertyDef.ty`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ParamDef {
     pub name: String,
     pub ty: String,
@@ -160,7 +162,7 @@ pub struct ParamDef {
 /// the build primitive resolves it and copies it into the mirror row. Dimension
 /// is NOT restated — it is derived from the property's `vector(N)` type. Multiple
 /// indexes may exist per property, distinguished by `name` (unique per type).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VectorIndexDef {
     pub name: String,
     pub type_name: TypeName,
@@ -171,7 +173,7 @@ pub struct VectorIndexDef {
 
 /// A named ontology operation. Part-1 semantics: insert one new instance of `target`,
 /// taking a value for each parameter.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDef {
     pub name: ActionName,
     pub target: TypeName,

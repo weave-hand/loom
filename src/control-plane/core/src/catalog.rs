@@ -16,7 +16,7 @@ use crate::page::{Page, PageReq};
 pub struct SnapshotId(pub i64);
 
 /// A `schema.table` reference within the table-format catalog.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TableRef {
     pub schema: String,
     pub name: String,

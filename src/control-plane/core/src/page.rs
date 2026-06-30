@@ -17,7 +17,7 @@ pub struct Cursor(pub String);
 ///
 /// `after`/`limit` are accepted but **not yet enforced** by any adapter (see the
 /// module docs); a request for `limit(10)` currently still returns everything.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PageReq {
     /// Resume after this cursor (exclusive). `None` = from the start.
     pub after: Option<Cursor>,
@@ -47,7 +47,7 @@ impl PageReq {
 }
 
 /// One page of results. `next == None` means there are no more.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Page<T> {
     pub items: Vec<T>,
     /// Cursor to fetch the next page, or `None` if this is the last page.

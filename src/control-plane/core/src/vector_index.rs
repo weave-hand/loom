@@ -8,7 +8,7 @@ use crate::error::{ControlPlaneError, Result};
 /// Which index to build, chosen at build time. `Flat` is the default (exact);
 /// `IvfFlat` is the approximate IVF index with an optional `nlist` override;
 /// `Hnsw` is the approximate HNSW graph index with optional `m`/`ef_construction`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum IndexSpec {
     Flat,
     IvfFlat {
@@ -53,7 +53,7 @@ impl IndexSpec {
 }
 
 /// Distance metric, declared at build time and recorded with the index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Metric {
     #[default]
     Cosine,

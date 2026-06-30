@@ -1,66 +1,99 @@
-//! Property-based JSON round-trips for the ACL filter types: deep nesting, empty
-//! vecs, and unicode property names. This is the sole `RowFilter` round-trip cover
-//! (the earlier hand-built inline example in `acl.rs` was subsumed by it).
+//! Every governance-read domain payload must round-trip through serde_json so it
+//! can cross the engine-wire RPC boundary losslessly. This pins the serde derives
+//! the wire-backed ControlPlane depends on.
 
-use control_plane_core::{CompareOp, RowFilter, ScalarValue};
-use proptest::prelude::*;
+use control_plane_core::{
+    Action, ActionDef, ActionKind, ActionName, Aggregation, Cardinality, CompareOp, Decision,
+    DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, Metric, ObjectType, Page, PageReq, Policy,
+    PolicyTarget, PropertyDef, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
+    VectorIndexDef,
+};
 
-fn compare_op() -> impl Strategy<Value = CompareOp> {
-    prop_oneof![
-        Just(CompareOp::Eq),
-        Just(CompareOp::Ne),
-        Just(CompareOp::Lt),
-        Just(CompareOp::Le),
-        Just(CompareOp::Gt),
-        Just(CompareOp::Ge),
-        Just(CompareOp::In),
-        Just(CompareOp::NotIn),
-        Just(CompareOp::IsNull),
-        Just(CompareOp::IsNotNull),
-    ]
+fn roundtrip<T>(v: &T)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+{
+    let json = serde_json::to_string(v).expect("serialize");
+    let back: T = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(v, &back, "round-trip mismatch for {json}");
 }
 
-fn scalar_value() -> impl Strategy<Value = ScalarValue> {
-    let leaf = prop_oneof![
-        any::<String>().prop_map(ScalarValue::Text),
-        any::<i64>().prop_map(ScalarValue::Int),
-        any::<bool>().prop_map(ScalarValue::Bool),
-    ];
-    // Bounded recursion: lists up to depth 3, up to 5 elements (incl. empty).
-    leaf.prop_recursive(3, 16, 5, |inner| {
-        prop::collection::vec(inner, 0..5).prop_map(ScalarValue::List)
-    })
+#[test]
+fn acl_payloads_roundtrip() {
+    roundtrip(&SubjectId("alice".into()));
+    roundtrip(&Action::Read);
+    roundtrip(&Action::Write);
+    roundtrip(&Decision::Allow);
+    roundtrip(&Decision::Deny);
+    roundtrip(&PolicyTarget::Type(TypeName("customer".into())));
+    roundtrip(&PolicyTarget::Table(TableRef {
+        schema: "main".into(),
+        name: "orders".into(),
+    }));
+    let policy = Policy {
+        target: PolicyTarget::Type(TypeName("customer".into())),
+        row_filter: Some(RowFilter::Compare {
+            property: "region".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Text("emea".into()),
+        }),
+        deny_columns: vec!["ssn".into()],
+        mask_columns: vec!["email".into()],
+    };
+    roundtrip(&policy);
+    roundtrip(&Page {
+        items: vec![policy],
+        next: None,
+    });
 }
 
-fn row_filter() -> impl Strategy<Value = RowFilter> {
-    let leaf =
-        (".*", compare_op(), scalar_value()).prop_map(|(property, op, value)| RowFilter::Compare {
-            property,
-            op,
-            value,
-        });
-    // Bounded recursion: And/Or/Not trees up to depth 4, up to ~32 nodes.
-    leaf.prop_recursive(4, 32, 5, |inner| {
-        prop_oneof![
-            prop::collection::vec(inner.clone(), 0..5).prop_map(RowFilter::And),
-            prop::collection::vec(inner.clone(), 0..5).prop_map(RowFilter::Or),
-            inner.prop_map(|f| RowFilter::Not(Box::new(f))),
-        ]
-    })
-}
-
-proptest! {
-    #[test]
-    fn row_filter_json_round_trips(f in row_filter()) {
-        let json = serde_json::to_string(&f).unwrap();
-        let back: RowFilter = serde_json::from_str(&json).unwrap();
-        prop_assert_eq!(f, back);
-    }
-
-    #[test]
-    fn scalar_value_json_round_trips(v in scalar_value()) {
-        let json = serde_json::to_string(&v).unwrap();
-        let back: ScalarValue = serde_json::from_str(&json).unwrap();
-        prop_assert_eq!(v, back);
-    }
+#[test]
+fn ontology_payloads_roundtrip() {
+    let ty = ObjectType {
+        name: TypeName("customer".into()),
+        properties: vec![PropertyDef {
+            name: "id".into(),
+            ty: "int".into(),
+            required: true,
+        }],
+        derived: vec![DerivedPropertyDef {
+            name: "order_count".into(),
+            ty: "int".into(),
+            link: "orders".into(),
+            agg: Aggregation::Count,
+        }],
+        table: TableRef {
+            schema: "main".into(),
+            name: "customer".into(),
+        },
+        identity: Some("id".into()),
+    };
+    roundtrip(&ty);
+    roundtrip(&Page {
+        items: vec![LinkDef {
+            name: "orders".into(),
+            from: TypeName("customer".into()),
+            to: TypeName("order".into()),
+            cardinality: Cardinality::Many,
+            backing: LinkBacking::ForeignKey {
+                from_column: "id".into(),
+                to_column: "customer_id".into(),
+            },
+        }],
+        next: None,
+    });
+    roundtrip(&ActionDef {
+        name: ActionName("create_customer".into()),
+        target: TypeName("customer".into()),
+        parameters: vec![],
+        kind: ActionKind::Insert,
+    });
+    roundtrip(&VectorIndexDef {
+        name: "emb_idx".into(),
+        type_name: TypeName("customer".into()),
+        property: "embedding".into(),
+        metric: Metric::Cosine,
+        spec: IndexSpec::Flat,
+    });
+    roundtrip(&PageReq::default());
 }

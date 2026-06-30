@@ -18,7 +18,7 @@ use crate::page::{Page, PageReq};
 use crate::{TableRef, TypeName};
 
 /// A user or service account.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SubjectId(pub String);
 
 /// The unit governance is expressed in. Grants and policies attach here.
@@ -26,7 +26,7 @@ pub struct SubjectId(pub String);
 pub struct RoleId(pub String);
 
 /// What a subject may do to a target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     Read,
     Write,
@@ -34,14 +34,14 @@ pub enum Action {
 
 /// What a grant or policy is bound to. Matched exactly as stored — P4 never
 /// resolves a `Type` to its backing `Table`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PolicyTarget {
     Type(TypeName),
     Table(TableRef),
 }
 
 /// The outcome of an authorization check.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Decision {
     Allow,
     Deny,
@@ -102,7 +102,7 @@ pub enum RowFilter {
 }
 
 /// A fine-grained row/column restriction for one `(role, target)`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Policy {
     pub target: PolicyTarget,
     /// `None` = no row restriction.
