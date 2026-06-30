@@ -10,7 +10,7 @@ use arrow::datatypes::Schema;
 use arrow::ipc::reader::StreamReader;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
@@ -26,7 +26,7 @@ use crate::IngestError;
 use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 use crate::landing::{LandRequest, LandingMaterializer};
 use crate::materialize::resolve_columns;
-use crate::model::model_shape_from_type;
+use crate::model::{InferTypeError, infer_object_type, model_shape_from_type};
 use crate::openapi::{JobAck, LandAck, ModelLandAck, ViolationsBody};
 use service_runtime::Subject;
 
@@ -114,6 +114,13 @@ struct LandColumn {
     required: bool,
 }
 
+/// Query params for `POST /models/{type}`. `identity` names the column to record as the
+/// inferred type's primary key (type-absent branch only; ignored when the type exists).
+#[derive(Deserialize)]
+pub(crate) struct ModelQuery {
+    identity: Option<String>,
+}
+
 impl From<LandModel> for ModelShape {
     fn from(m: LandModel) -> Self {
         ModelShape {
@@ -152,13 +159,16 @@ fn violations_json(violations: &[Violation]) -> serde_json::Value {
     serde_json::json!({ "violations": items })
 }
 
-/// Governed model ingest: conform an Arrow batch to a pre-existing ontology type
-/// and land it as typed objects into the type's table. Authorize before landing
-/// (deny-by-default, no existence leak); a denied write never reaches the store.
+/// Governed model ingest. With a pre-existing type, conform the Arrow batch to it and
+/// land it (slice 1). With an absent type, an authorized subject's batch *infers* an
+/// `ObjectType` from the batch schema (optionally keyed by `?identity=<col>`),
+/// `define_type`s it, and lands. Authorize before either branch (deny-by-default, no
+/// existence leak); a denied write never reaches the store.
 #[utoipa::path(
     post, path = "/models/{type}",
     params(
         ("type" = String, Path, description = "Ontology type name"),
+        ("identity" = Option<String>, Query, description = "Column to record as the inferred type's identity (type-absent branch only)"),
     ),
     request_body(
         content = Vec<u8>,
@@ -167,9 +177,9 @@ fn violations_json(violations: &[Violation]) -> serde_json::Value {
     ),
     responses(
         (status = 200, description = "Landed as typed objects; snapshot committed", body = ModelLandAck),
-        (status = 400, description = "Invalid Arrow IPC / unsupported column type"),
-        (status = 403, description = "Not authorized to write the type (also returned for an unknown type — no existence leak)"),
-        (status = 422, description = "Data does not conform to the type", body = ViolationsBody),
+        (status = 400, description = "Invalid Arrow IPC / unsupported column type / identity names an absent column"),
+        (status = 403, description = "Not authorized to write the type (returned whether or not the type exists — no existence leak)"),
+        (status = 422, description = "Data does not conform / an Arrow column has no loom logical type", body = ViolationsBody),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = [])),
@@ -178,15 +188,15 @@ fn violations_json(violations: &[Violation]) -> serde_json::Value {
 pub(crate) async fn land_model(
     State(st): State<AppState>,
     Path(type_name): Path<String>,
+    Query(q): Query<ModelQuery>,
     subject: Subject,
     body: Bytes,
 ) -> Response {
     let type_name = TypeName(type_name);
 
-    // 1. Coarse ACL gate BEFORE the type is resolved: an authenticated subject
-    //    without a Write grant is 403, returned before we reveal whether the type
-    //    exists. (`require_auth` already 401s an unauthenticated caller before this
-    //    handler runs.) First Write use on the ingest plane.
+    // 1. Coarse ACL gate BEFORE anything is revealed: an authenticated subject without a
+    //    Write grant on this type is 403 — returned whether or not the type exists (no
+    //    existence leak). `require_auth` already 401s an unauthenticated caller.
     match st
         .cp
         .acl()
@@ -202,22 +212,52 @@ pub(crate) async fn land_model(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     }
 
-    // 2. Resolve the model. A granted-but-nonexistent type is still 403 (no leak),
-    //    distinct from a 404.
-    let otype = match st.cp.ontology().get_type(&type_name).await {
-        Ok(t) => t,
-        Err(ControlPlaneError::NotFound(_)) => return StatusCode::FORBIDDEN.into_response(),
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
-    };
-
-    // 3. Derive the conformance shape from the type (the gate seam).
-    let shape = model_shape_from_type(&otype);
-
-    // 4. Decode the Arrow IPC body.
+    // 2. Decode the Arrow IPC body. Needed by both branches (inference reads the schema).
     let (schema, batches) = match decode_ipc(&body) {
         Ok(sb) => sb,
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid arrow ipc stream").into_response(),
     };
+
+    // 3. Resolve the type, or — when absent and authorized — infer it from the batch
+    //    schema, create it, and re-resolve. The re-resolve is the create-or-conform race
+    //    guard: `define_type` is an upsert, so concurrent first-batches resolve to one
+    //    stored type; each then conforms its batch against it (the loser 422s if it
+    //    differs). A granted-but-present type takes the unchanged slice-1 path.
+    let otype = match st.cp.ontology().get_type(&type_name).await {
+        Ok(t) => t,
+        Err(ControlPlaneError::NotFound(_)) => {
+            let inferred = match infer_object_type(&type_name, &schema, q.identity.as_deref()) {
+                Ok(t) => t,
+                Err(InferTypeError::UnsupportedColumns(violations)) => {
+                    return (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(violations_json(&violations)),
+                    )
+                        .into_response();
+                }
+                Err(InferTypeError::IdentityNotFound(col)) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("identity column `{col}` is not present in the batch"),
+                    )
+                        .into_response();
+                }
+            };
+            if st.cp.ontology().define_type(inferred).await.is_err() {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+            match st.cp.ontology().get_type(&type_name).await {
+                Ok(t) => t,
+                Err(_) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                }
+            }
+        }
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+    };
+
+    // 4. Derive the conformance shape from the (resolved or just-created) type.
+    let shape = model_shape_from_type(&otype);
 
     // 5. Gate + resolve the physical schema (422 + violations on mismatch).
     let columns = match resolve_columns(&schema, Some(&shape)) {

@@ -64,6 +64,11 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 - [x] **`SqlCatalog::execute` swallows its commit error** `{#iss-sqlcatalog-execute-commit-swallow area:iceberg status:fixed from:clippy-strict-lints pr:#239 spec:2026-06-29-sqlcatalog-execute-commit-error-design}`
   In the no-transaction branch of `SqlCatalog::execute` (`iceberg_sql_catalog/catalog.rs`), the auto-commit is `drop(tx.commit().await.map_err(from_sqlx_error))` — the commit `Result` is discarded, so a failed commit returns the (successful) `execute` result as if it had persisted. Pre-existing (was `let _ = tx.commit()…` on `main`; the strict-clippy pass only mechanically rewrote it to `drop(…)`, and the `.map_err` inside the `drop` is now dead work). Proposed fix: propagate via `let result = …execute(&mut *tx).await.map_err(from_sqlx_error)?; tx.commit().await.map_err(from_sqlx_error)?; Ok(result)` — committing only on a successful statement and surfacing commit failure. Deliberately deferred out of the lint PR to avoid bundling a transactional-semantics behavior change.
 
+## ingest
+
+- [ ] **Ingest model handler's opaque-500 arms log nothing server-side** `{#iss-ingest-model-500-unlogged area:ingest status:open from:2026-06-30-ingest-model-inference-design pr:- spec:-}`
+  `land_model` (`ingest/src/http.rs`) returns an opaque `"internal error"` 500 at several arms (the ACL-check `Err`, the absent-branch `define_type` failure, the re-resolve failure, and the `materializer.land` catch-all) without a `tracing::error!`, so an operator has nothing to diagnose from when one fires. The infer-and-create `define_type` arm is the highest-value one to instrument — a brand-new write to `ontology.object_type` under contention is the path most likely to hit a transient fault. Mirror the query-api fix [[iss-serving-faults-not-logged]] (a shared `internal_error(context, e)` helper that logs the fault detail server-side and returns the opaque body unchanged) across the handler's opaque-500 arms. Surfaced by the slice-2 final review; consistent with the handler's existing posture, so non-blocking for [[road-ingest-model-inference]].
+
 ## cross-cutting
 
 - [x] **Memory Tx::commit not atomic across concerns** `{#iss-memory-tx-not-atomic area:cross-cutting status:fixed from:critical-review pr:#112 spec:2026-06-06-tx-isolation-contract-design}`

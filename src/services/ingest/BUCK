@@ -105,6 +105,20 @@ rust_test(
     deps = [":ingest", "//third-party:arrow"],
 )
 
+# Arrow schema -> inferred ObjectType — pure logic, RE-eligible (no fixture).
+rust_test(
+    name = "infer",
+    crate = "infer",
+    srcs = ["tests/infer.rs"],
+    crate_root = "tests/infer.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+        "//third-party:arrow",
+    ],
+)
+
 # ObjectType -> ModelShape derivation — pure logic, RE-eligible (no fixture).
 rust_test(
     name = "model",
