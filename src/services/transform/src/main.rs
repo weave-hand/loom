@@ -21,6 +21,7 @@ use transform::{transform_handler, typed_transform_handler};
 #[serde(default)]
 struct TransformConfig {
     worker: loom_config::WorkerTuning,
+    write: datafusion_io::WriteConfig,
 }
 
 impl loom_config::LayeredConfig for TransformConfig {
@@ -28,11 +29,15 @@ impl loom_config::LayeredConfig for TransformConfig {
         &mut self,
         env: &std::collections::HashMap<String, String>,
     ) -> Result<(), loom_config::ConfigError> {
-        self.worker.overlay_env(env)
+        self.worker.overlay_env(env)?;
+        self.write.overlay_env(env)?;
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), loom_config::ConfigError> {
-        self.worker.validate()
+        self.worker.validate()?;
+        self.write.validate()?;
+        Ok(())
     }
 }
 
@@ -53,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let write = service_runtime::build_write_store(&cfg.object_store)?;
     let store: Arc<dyn ObjectStore> = write.store.clone();
     let root_url = write.root_url.clone();
+    let write_cfg = tcfg.write;
 
     let catalog = build_iceberg_catalog(&cfg).await?;
     let cp_for_handler: Arc<dyn ControlPlane> =
@@ -69,12 +75,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cp = cp_for_handler.clone();
                 let store = store.clone();
                 let root_url = root_url.clone();
+                let write_cfg = write_cfg.clone();
                 async move {
                     match job.kind.as_str() {
                         "typed-transform" => {
-                            typed_transform_handler(cp.as_ref(), store, &root_url, job).await
+                            typed_transform_handler(cp.as_ref(), store, &root_url, &write_cfg, job)
+                                .await
                         }
-                        "transform" => transform_handler(cp.as_ref(), store, &root_url, job).await,
+                        "transform" => {
+                            transform_handler(cp.as_ref(), store, &root_url, &write_cfg, job).await
+                        }
                         other => Err(JobFailure {
                             error: format!("unknown job kind: {other}"),
                             policy: RetryPolicy::Abandon,

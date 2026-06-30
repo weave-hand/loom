@@ -22,6 +22,7 @@ use object_store::local::LocalFileSystem;
 use tokio_util::sync::CancellationToken;
 use transform::transform_handler;
 
+use datafusion_io::WriteConfig;
 use transform_e2e_support::{cols, lineage, make_catalog, scalar_i64, seed_table, tref};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -119,7 +120,10 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
                 let cp = cp_h.clone();
                 let store = store_h.clone();
                 let root_url = root_h.clone();
-                async move { transform_handler(cp.as_ref(), store, &root_url, job).await }
+                async move {
+                    transform_handler(cp.as_ref(), store, &root_url, &WriteConfig::default(), job)
+                        .await
+                }
             })
             .await
     });
@@ -224,6 +228,7 @@ async fn empty_input_runs_transform_count_is_zero() {
         &cp,
         store.clone(),
         &format!("file://{warehouse}"),
+        &WriteConfig::default(),
         "run-empty-count",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {
@@ -275,6 +280,7 @@ async fn empty_input_select_star_commits_empty_output() {
         &cp,
         store.clone(),
         &format!("file://{warehouse}"),
+        &WriteConfig::default(),
         "run-empty-star",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {
@@ -302,4 +308,128 @@ async fn empty_input_select_star_commits_empty_output() {
         .unwrap();
     let rows: i64 = files.items.iter().map(|f| f.record_count).sum();
     assert_eq!(rows, 0, "the passthrough output is empty");
+}
+
+/// The transform's write tuning reaches `write_dataset`: a non-default
+/// `WriteConfig` (tiny target size, many files) splits the output across
+/// multiple data files, while the SAME transform under `WriteConfig::default()`
+/// commits a single file. This is the observable that was hardcoded to the
+/// default before `road-transform-write-tuning`.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_config_controls_transform_output_file_count() {
+    let fx = PgFixture::start();
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let warehouse = wh.path().display().to_string();
+    let root_url = format!("file://{warehouse}");
+    let catalog = make_catalog(fx.pg_dsn(&db), &warehouse).await;
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(wh.path()).expect("store"));
+    let cp = IcebergControlPlane::new(pg.clone(), catalog);
+
+    // Seed the input with > batch_size (8192) rows so `run_transform`'s
+    // `df.collect()` yields >= 2 record batches BY CONSTRUCTION (DataFusion caps a
+    // batch at `batch_size` rows; nothing in a `SELECT *` plan merges beyond it),
+    // independent of host CPU count / `target_partitions`. The parquet sink in
+    // `write_dataset` round-robins those batches across up to
+    // `minimum_parallel_output_files` writers, so a tuned tiny-target config splits
+    // the output while the default coalesces it to one file.
+    let src = tref("main", "tuning_src");
+    let src_cols = cols(&[("id", "long", false)]);
+    let src_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let ids: Vec<i64> = (0..20_000_i64).collect();
+    seed_table(
+        &cp,
+        &store,
+        &src,
+        &src_cols,
+        src_schema.clone(),
+        RecordBatch::try_new(src_schema.clone(), vec![Arc::new(Int64Array::from(ids))]).unwrap(),
+        "seed-0",
+    )
+    .await;
+
+    // Helper: run `SELECT * FROM tuning_src` into `out` with `write`, return the
+    // committed output data-file count.
+    async fn run_into(
+        cp: &IcebergControlPlane,
+        store: &Arc<dyn ObjectStore>,
+        root_url: &str,
+        src: &TableRef,
+        out: &TableRef,
+        write: &WriteConfig,
+        run_id: &str,
+    ) -> usize {
+        let mut ev = lineage(out);
+        ev.inputs = vec![DatasetRef::from(src)];
+        transform::run_transform(
+            cp,
+            store.clone(),
+            root_url,
+            write,
+            run_id,
+            transform::TransformRequest {
+                inputs: &[transform::TransformInput {
+                    table: src,
+                    register_as: "tuning_src",
+                }],
+                output: out,
+                sql: "SELECT * FROM tuning_src",
+                conform: None,
+                output_mode: transform::OutputMode::Append,
+                lineage: ev,
+            },
+        )
+        .await
+        .expect("transform commits");
+        let snap = cp.catalog().current_snapshot(out).await.unwrap().id;
+        cp.catalog()
+            .files(out, snap, PageReq::unbounded())
+            .await
+            .unwrap()
+            .items
+            .len()
+    }
+
+    let tuned = WriteConfig {
+        target_file_size_bytes: 1,
+        max_files: 8,
+        compression_factor: 1.0,
+    };
+    let tuned_out = tref("main", "tuned_out");
+    let tuned_count = run_into(
+        &cp,
+        &store,
+        &root_url,
+        &src,
+        &tuned_out,
+        &tuned,
+        "run-tuned",
+    )
+    .await;
+
+    let default_out = tref("main", "default_out");
+    let default_count = run_into(
+        &cp,
+        &store,
+        &root_url,
+        &src,
+        &default_out,
+        &WriteConfig::default(),
+        "run-default",
+    )
+    .await;
+
+    assert_eq!(
+        default_count, 1,
+        "the default WriteConfig coalesces the input to a single file"
+    );
+    assert!(
+        tuned_count >= 2,
+        "the tuned WriteConfig splits the output across multiple files (got {tuned_count})"
+    );
+    assert!(
+        tuned_count > default_count,
+        "tuning changed the layout (tuned={tuned_count}, default={default_count})"
+    );
 }

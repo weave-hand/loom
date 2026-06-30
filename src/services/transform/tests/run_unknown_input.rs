@@ -10,6 +10,7 @@ use control_plane_core::{
     Acl, Catalog, ControlPlane, ControlPlaneError, EventType, FileRef, Lineage, LineageEvent,
     Ontology, Page, PageReq, Queue, RunId, Snapshot, SnapshotId, TableRef, TableSchema, Tx,
 };
+use datafusion_io::WriteConfig;
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
 use transform::{OutputMode, TransformError, TransformInput, TransformRequest, run_transform};
@@ -108,6 +109,7 @@ async fn missing_input_at_files_is_unknown_input() {
         &cp,
         store,
         "file:///tmp/loom-test-wh",
+        &WriteConfig::default(),
         "run-x",
         TransformRequest {
             inputs: &[input],

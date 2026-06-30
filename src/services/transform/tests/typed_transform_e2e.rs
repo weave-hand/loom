@@ -26,6 +26,7 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_worker::Worker;
+use datafusion_io::WriteConfig;
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
@@ -79,9 +80,25 @@ fn spawn_worker(
                     async move {
                         match job.kind.as_str() {
                             "typed-transform" => {
-                                typed_transform_handler(cp.as_ref(), store, &root_url, job).await
+                                typed_transform_handler(
+                                    cp.as_ref(),
+                                    store,
+                                    &root_url,
+                                    &WriteConfig::default(),
+                                    job,
+                                )
+                                .await
                             }
-                            _ => transform_handler(cp.as_ref(), store, &root_url, job).await,
+                            _ => {
+                                transform_handler(
+                                    cp.as_ref(),
+                                    store,
+                                    &root_url,
+                                    &WriteConfig::default(),
+                                    job,
+                                )
+                                .await
+                            }
                         }
                     }
                 },

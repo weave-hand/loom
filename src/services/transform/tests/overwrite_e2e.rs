@@ -22,6 +22,7 @@ use object_store::local::LocalFileSystem;
 use tokio_util::sync::CancellationToken;
 use transform::transform_handler;
 
+use datafusion_io::WriteConfig;
 use transform_e2e_support::{col_csv, cols, make_catalog, scalar_i64, seed_table, tref};
 
 /// Run the worker once over the `transform` queue until the job drains. The queue
@@ -50,7 +51,10 @@ async fn drain_transforms(
                 let cp = cp_h.clone();
                 let store = store_h.clone();
                 let root_url = root_h.clone();
-                async move { transform_handler(cp.as_ref(), store, &root_url, job).await }
+                async move {
+                    transform_handler(cp.as_ref(), store, &root_url, &WriteConfig::default(), job)
+                        .await
+                }
             })
             .await
     });

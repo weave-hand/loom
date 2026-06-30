@@ -8,6 +8,7 @@ use control_plane_core::{
     ControlPlane, DatasetRef, EventType, Job, JobFailure, LineageEvent, RetryPolicy, RunId,
     TableRef, TypeName,
 };
+use datafusion_io::WriteConfig;
 use object_store::ObjectStore;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -45,6 +46,7 @@ pub async fn transform_handler(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
     root_url: &str,
+    write: &WriteConfig,
     job: Job,
 ) -> Result<(), JobFailure> {
     let payload: TransformPayload = match serde_json::from_value(job.payload.clone()) {
@@ -82,6 +84,7 @@ pub async fn transform_handler(
         cp,
         store,
         root_url,
+        write,
         &run_id,
         TransformRequest {
             inputs: &inputs,
@@ -116,6 +119,7 @@ pub async fn typed_transform_handler(
     cp: &dyn ControlPlane,
     store: Arc<dyn ObjectStore>,
     root_url: &str,
+    write: &WriteConfig,
     job: Job,
 ) -> Result<(), JobFailure> {
     let payload: TypedTransformPayload = match serde_json::from_value(job.payload.clone()) {
@@ -135,6 +139,7 @@ pub async fn typed_transform_handler(
         cp,
         store,
         root_url,
+        write,
         &run_id,
         &inputs,
         &output,

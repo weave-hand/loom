@@ -34,6 +34,7 @@ rust_binary(
         "//src/control-plane/postgres:postgres",
         "//src/control-plane/worker:worker",
         "//src/loom-config:loom-config",
+        "//src/services/datafusion-io:datafusion-io",
         "//src/services/runtime:runtime",
         "//third-party:iceberg",
         "//third-party:object_store",
@@ -113,6 +114,7 @@ rust_test(
     deps = [
         ":transform",
         "//src/control-plane/core:core",
+        "//src/services/datafusion-io:datafusion-io",
         "//third-party:async-trait",
         "//third-party:object_store",
         "//third-party:serde_json",
