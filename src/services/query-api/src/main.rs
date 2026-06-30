@@ -23,17 +23,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env = service_runtime::env_map();
     let app_cfg: query_api::config::QueryApiConfig = service_runtime::load(&env)?;
 
-    // Concrete PgControlPlane: serves both ControlPlane (read path) and Auth.
+    // Concrete PgControlPlane: retained for Auth, bootstrap_admin, and the GC enqueue
+    // (via WireControlPlane::queue()). Governance reads (ACL + ontology) go over the wire.
     let pg = Arc::new(service_runtime::control_plane(
         pool.clone(),
         cfg.lock_timeout,
     ));
-    let cp: Arc<dyn ControlPlane> = pg.clone();
 
     let engine_socket =
         std::env::var("LOOM_ENGINE_SOCKET").map_err(|e| -> Box<dyn std::error::Error> {
             format!("LOOM_ENGINE_SOCKET must be set for the Iceberg serving backend: {e}").into()
         })?;
+
+    // Governance reads relocate to the engine wire; queue() still delegates to `pg`.
+    let gov_client = engine_wire::client::GrpcQueueClient::connect(engine_socket.clone()).await?;
+    let cp: Arc<dyn ControlPlane> = Arc::new(query_api::wire_control_plane::WireControlPlane::new(
+        gov_client,
+        pg.clone() as Arc<dyn ControlPlane>,
+    ));
 
     let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = (
         Arc::new(EngineServingClient::connect(engine_socket.clone()).await?),

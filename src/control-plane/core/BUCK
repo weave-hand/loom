@@ -54,6 +54,20 @@ rust_test(
 )
 
 rust_test(
+    name = "governance-serde-roundtrip",
+    crate = "governance_serde_roundtrip",
+    srcs = ["tests/governance_serde_roundtrip.rs"],
+    crate_root = "tests/governance_serde_roundtrip.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "row-filter-validation",
     crate = "row_filter_validation",
     srcs = ["tests/row_filter_validation.rs"],

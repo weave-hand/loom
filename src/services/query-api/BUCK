@@ -1144,3 +1144,35 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "wire-governance-e2e",
+    crate = "wire_governance_e2e",
+    srcs = ["tests/wire_governance_e2e.rs"],
+    crate_root = "tests/wire_governance_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "wire-governed-read-e2e",
+    crate = "wire_governed_read_e2e",
+    srcs = ["tests/wire_governed_read_e2e.rs"],
+    crate_root = "tests/wire_governed_read_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
