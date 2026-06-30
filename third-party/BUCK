@@ -20491,6 +20491,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "cors",
         "default",
         "fs",
         "futures-core",

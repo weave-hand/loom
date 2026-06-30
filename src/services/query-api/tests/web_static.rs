@@ -2,7 +2,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::get;
-use query_api::web_static::with_static;
+use query_api::web_static::{parse_allowed_origins, with_cors, with_static};
 use tower::ServiceExt;
 
 fn write_index(dir: &std::path::Path) {
@@ -72,4 +72,62 @@ async fn no_dir_means_404_at_root() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn parse_origins_splits_and_trims() {
+    assert_eq!(parse_allowed_origins(""), Vec::<String>::new());
+    assert_eq!(
+        parse_allowed_origins("https://a.example, https://b.example"),
+        vec![
+            "https://a.example".to_string(),
+            "https://b.example".to_string()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn preflight_from_allowed_origin_gets_cors_headers() {
+    let origins = vec!["https://ui.example".to_string()];
+    let app = with_cors(
+        axum::Router::new().route("/auth/login", axum::routing::post(|| async { "" })),
+        &origins,
+    );
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("OPTIONS")
+                .uri("/auth/login")
+                .header("origin", "https://ui.example")
+                .header("access-control-request-method", "POST")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.headers().get("access-control-allow-origin").unwrap(),
+        "https://ui.example"
+    );
+}
+
+#[tokio::test]
+async fn empty_origins_adds_no_cors_layer() {
+    let app = with_cors(
+        axum::Router::new().route("/auth/login", axum::routing::post(|| async { "" })),
+        &[],
+    );
+    let res = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("OPTIONS")
+                .uri("/auth/login")
+                .header("origin", "https://ui.example")
+                .header("access-control-request-method", "POST")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(res.headers().get("access-control-allow-origin").is_none());
 }
