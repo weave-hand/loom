@@ -8590,23 +8590,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "hybrid-array-0.4.12.crate",
-    sha256 = "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da",
-    strip_prefix = "hybrid-array-0.4.12",
-    urls = ["https://static.crates.io/crates/hybrid-array/0.4.12/download"],
+    name = "hybrid-array-0.4.13.crate",
+    sha256 = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c",
+    strip_prefix = "hybrid-array-0.4.13",
+    urls = ["https://static.crates.io/crates/hybrid-array/0.4.13/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "hybrid-array-0.4",
-    srcs = [":hybrid-array-0.4.12.crate"],
+    srcs = [":hybrid-array-0.4.13.crate"],
     crate = "hybrid_array",
-    crate_root = "hybrid-array-0.4.12.crate/src/lib.rs",
+    crate_root = "hybrid-array-0.4.13.crate/src/lib.rs",
     edition = "2024",
     env = {
         "CARGO_BIN_NAME": "hybrid_array",
         "CARGO_CRATE_NAME": "hybrid_array",
-        "CARGO_MANIFEST_DIR": "hybrid-array-0.4.12.crate",
+        "CARGO_MANIFEST_DIR": "hybrid-array-0.4.13.crate",
         "CARGO_PKG_AUTHORS": "RustCrypto Developers",
         "CARGO_PKG_DESCRIPTION": "Hybrid typenum-based and const generic array types designed to provide the\nflexibility of typenum-based expressions while also allowing interoperability\nand a transition path to const generics\n",
         "CARGO_PKG_HOMEPAGE": "",
@@ -8614,10 +8614,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/RustCrypto/hybrid-array",
         "CARGO_PKG_RUST_VERSION": "1.85",
-        "CARGO_PKG_VERSION": "0.4.12",
+        "CARGO_PKG_VERSION": "0.4.13",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "4",
-        "CARGO_PKG_VERSION_PATCH": "12",
+        "CARGO_PKG_VERSION_PATCH": "13",
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
@@ -9498,12 +9498,14 @@ cargo.rust_library(
     },
     features = [
         "default",
+        "serde",
         "std",
     ],
     visibility = [],
     deps = [
         ":equivalent-1",
         ":hashbrown-0.17",
+        ":serde_core-1",
     ],
 )
 
@@ -19482,6 +19484,143 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
+)
+
+alias(
+    name = "utoipa",
+    actual = ":utoipa-5",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "utoipa-5.5.0.crate",
+    sha256 = "8bde15df68e80b16c7d16b9616e80770ad158988daa56a27dccd1e55558b0160",
+    strip_prefix = "utoipa-5.5.0",
+    urls = ["https://static.crates.io/crates/utoipa/5.5.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "utoipa-5",
+    srcs = [":utoipa-5.5.0.crate"],
+    crate = "utoipa",
+    crate_root = "utoipa-5.5.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "utoipa",
+        "CARGO_CRATE_NAME": "utoipa",
+        "CARGO_MANIFEST_DIR": "utoipa-5.5.0.crate",
+        "CARGO_PKG_AUTHORS": "Juha Kukkonen <juha7kukkonen@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Compile time generated OpenAPI documentation for Rust",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "utoipa",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/juhaku/utoipa",
+        "CARGO_PKG_RUST_VERSION": "1.75",
+        "CARGO_PKG_VERSION": "5.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "5",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "macros",
+    ],
+    visibility = [],
+    deps = [
+        ":indexmap-2",
+        ":serde-1",
+        ":serde_json-1",
+        ":utoipa-gen-5",
+    ],
+)
+
+http_archive(
+    name = "utoipa-gen-5.5.0.crate",
+    sha256 = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8",
+    strip_prefix = "utoipa-gen-5.5.0",
+    urls = ["https://static.crates.io/crates/utoipa-gen/5.5.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "utoipa-gen-5",
+    srcs = [":utoipa-gen-5.5.0.crate"],
+    crate = "utoipa_gen",
+    crate_root = "utoipa-gen-5.5.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "utoipa_gen",
+        "CARGO_CRATE_NAME": "utoipa_gen",
+        "CARGO_MANIFEST_DIR": "utoipa-gen-5.5.0.crate",
+        "CARGO_PKG_AUTHORS": "Juha Kukkonen <juha7kukkonen@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Code generation implementation for utoipa",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "utoipa-gen",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/juhaku/utoipa",
+        "CARGO_PKG_RUST_VERSION": "1.75",
+        "CARGO_PKG_VERSION": "5.5.0",
+        "CARGO_PKG_VERSION_MAJOR": "5",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":proc-macro2-1",
+        ":quote-1",
+        ":syn-2",
+    ],
+)
+
+alias(
+    name = "utoipa-scalar",
+    actual = ":utoipa-scalar-0.2",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "utoipa-scalar-0.2.0.crate",
+    sha256 = "c1291aa7a2223c2f8399d1c6627ca0ba57ca0d7ecac762a2094a9dfd6376445a",
+    strip_prefix = "utoipa-scalar-0.2.0",
+    urls = ["https://static.crates.io/crates/utoipa-scalar/0.2.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "utoipa-scalar-0.2",
+    srcs = [":utoipa-scalar-0.2.0.crate"],
+    crate = "utoipa_scalar",
+    crate_root = "utoipa-scalar-0.2.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "utoipa_scalar",
+        "CARGO_CRATE_NAME": "utoipa_scalar",
+        "CARGO_MANIFEST_DIR": "utoipa-scalar-0.2.0.crate",
+        "CARGO_PKG_AUTHORS": "Juha Kukkonen <juha7kukkonen@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Scalar for utoipa",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "utoipa-scalar",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/juhaku/utoipa",
+        "CARGO_PKG_RUST_VERSION": "1.75",
+        "CARGO_PKG_VERSION": "0.2.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["axum"],
+    visibility = [],
+    deps = [
+        ":axum-0.7",
+        ":serde-1",
+        ":serde_json-1",
+        ":utoipa-5",
+    ],
 )
 
 alias(
