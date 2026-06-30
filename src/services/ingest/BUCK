@@ -23,6 +23,7 @@ rust_library(
         "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:time",
+        "//third-party:utoipa",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
@@ -215,6 +216,19 @@ rust_test(
     deps = [
         ":ingest",
         "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "openapi",
+    crate = "openapi",
+    srcs = ["tests/openapi.rs"],
+    crate_root = "tests/openapi.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//third-party:serde_json",
+        "//third-party:utoipa",
     ],
 )
 

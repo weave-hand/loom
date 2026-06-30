@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = service_runtime::protect(router(AppState { materializer, cp }), auth_state.clone())
         .merge(service_runtime::login_routes(auth_state.clone()))
         .merge(service_runtime::session_routes(auth_state));
+    let app = service_runtime::with_openapi(app, ingest::build_openapi());
     service_runtime::serve(cfg.bind_addr, app).await?;
     Ok(())
 }
