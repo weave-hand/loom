@@ -4,6 +4,10 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[lib]
+name = "loom_ui_core"
+path = "src/lib.rs"
+
 [[bin]]
 name = "app"
 path = "src/main.rs"
