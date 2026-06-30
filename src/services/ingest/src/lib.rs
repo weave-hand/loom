@@ -8,12 +8,14 @@ pub mod gate;
 pub mod http;
 pub mod landing;
 pub mod materialize;
+pub mod model;
 
 pub use config::RoutingTuning;
 
 pub use bind::{BindError, BindViolation, BindViolationReason, bind, bind_link};
 pub use gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 pub use materialize::{MaterializeRequest, materialize};
+pub use model::model_shape_from_type;
 
 /// Everything that can go wrong landing data. No partial catalog state is ever
 /// committed:

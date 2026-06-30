@@ -12,6 +12,8 @@ rust-project.json.tmp
 /homelab/
 **/.cargo/**
 !**/.cargo/config.toml
+# buck2 per-machine config override (local file watcher, etc.); never checked in
+.buckconfig.local
 # LLVM coverage profiling data emitted by instrumented binaries at runtime
 *.profraw
 *.profdata

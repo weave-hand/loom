@@ -12,6 +12,7 @@ rust_library(
         "//src/control-plane/postgres:postgres",
         "//src/loom-config:loom-config",
         "//src/services/datafusion-io:datafusion-io",
+        "//src/services/runtime:runtime",
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:axum",
@@ -103,6 +104,19 @@ rust_test(
     deps = [":ingest", "//third-party:arrow"],
 )
 
+# ObjectType -> ModelShape derivation — pure logic, RE-eligible (no fixture).
+rust_test(
+    name = "model",
+    crate = "model",
+    srcs = ["tests/model.rs"],
+    crate_root = "tests/model.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+    ],
+)
+
 loom_fixture_test(
     name = "iceberg-land",
     crate = "iceberg_land",
@@ -163,6 +177,30 @@ loom_fixture_test(
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+loom_fixture_test(
+    name = "http-model",
+    crate = "http_model",
+    srcs = ["tests/http_model.rs"],
+    crate_root = "tests/http_model.rs",
+    deps = [
+        ":ingest",
+        "//src/services/runtime:runtime",
+        "//src/services/engine-serving:engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
         "//third-party:tokio",
         "//third-party:tower",
     ],
