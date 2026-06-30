@@ -2,10 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>loom UI experiment</title>
+    <title>loom</title>
   </head>
   <body>
-    <!-- yew::Renderer mounts to <body> by default, so no mount node is needed. -->
+    <!-- config.js sets window.LOOM_CONFIG before the wasm module loads. -->
+    <script src="./config.js"></script>
     <script type="module">
       import init from "./app.js";
       init();

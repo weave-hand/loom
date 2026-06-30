@@ -8730,6 +8730,63 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "gloo-net",
+    actual = ":gloo-net-0.6",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "gloo-net-0.6.0.crate",
+    sha256 = "c06f627b1a58ca3d42b45d6104bf1e1a03799df472df00988b6ba21accc10580",
+    strip_prefix = "gloo-net-0.6.0",
+    urls = ["https://static.crates.io/crates/gloo-net/0.6.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "gloo-net-0.6",
+    srcs = [":gloo-net-0.6.0.crate"],
+    crate = "gloo_net",
+    crate_root = "gloo-net-0.6.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "gloo_net",
+        "CARGO_CRATE_NAME": "gloo_net",
+        "CARGO_MANIFEST_DIR": "gloo-net-0.6.0.crate",
+        "CARGO_PKG_AUTHORS": "Rust and WebAssembly Working Group:Elina <imelina@elina.website>",
+        "CARGO_PKG_DESCRIPTION": "HTTP requests library for WASM Apps",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "gloo-net",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/rustwasm/gloo",
+        "CARGO_PKG_RUST_VERSION": "1.64",
+        "CARGO_PKG_VERSION": "0.6.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "6",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "http",
+        "json",
+        "serde",
+        "serde_json",
+    ],
+    visibility = [],
+    deps = [
+        ":gloo-utils-0.2",
+        ":http-1",
+        ":js-sys-0.3",
+        ":serde-1",
+        ":serde_json-1",
+        ":thiserror-1",
+        ":wasm-bindgen-0.2",
+        ":wasm-bindgen-futures-0.4",
+        ":web-sys-0.3",
+    ],
+)
+
 http_archive(
     name = "gloo-render-0.1.1.crate",
     sha256 = "2fd9306aef67cfd4449823aadcd14e3958e0800aa2183955a309112a84ec7764",
@@ -11353,6 +11410,12 @@ cargo.rust_library(
     },
     visibility = [],
     deps = [":libc-0.2"],
+)
+
+alias(
+    name = "js-sys",
+    actual = ":js-sys-0.3",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -22273,6 +22336,12 @@ buildscript_run(
     version = "0.2.126",
 )
 
+alias(
+    name = "wasm-bindgen-futures",
+    actual = ":wasm-bindgen-futures-0.4",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "wasm-bindgen-futures-0.4.76.crate",
     sha256 = "c62df1340f32221cb9c54d6a27b030e3dba64361d4a95bed55f9aacb44da291d",
@@ -22518,6 +22587,12 @@ cargo.rust_library(
         ":wasm-bindgen-futures-0.4",
         ":web-sys-0.3",
     ],
+)
+
+alias(
+    name = "web-sys",
+    actual = ":web-sys-0.3",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(

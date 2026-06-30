@@ -2546,6 +2546,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "gloo-net"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c06f627b1a58ca3d42b45d6104bf1e1a03799df472df00988b6ba21accc10580"
+dependencies = [
+ "gloo-utils 0.2.0",
+ "http 1.4.2",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "gloo-render"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3482,7 +3499,13 @@ dependencies = [
 name = "loom-ui"
 version = "0.0.0"
 dependencies = [
+ "gloo-net 0.6.0",
+ "js-sys",
+ "serde",
+ "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "yew",
 ]
 
