@@ -5,12 +5,14 @@
 //! Asserts: (1) all 1500 rows stream back with the embedding carried natively as
 //! `List<Float32>` (value-exact, NO `LIMIT 1000`, no `SqlValue` flattening to Utf8);
 //! (2) an authenticated token without a Read grant on the type is `PermissionDenied`;
-//! (3) a request with no bearer token is `Unauthenticated`.
+//! (3) a request with no bearer token is `Unauthenticated`;
+//! (4) a column-masked scalar (`id`) is advertised AND streamed as `Utf8` with every value the
+//! literal `'***'`, while the unmasked `embedding` survives value-exact as `List<Float32>`.
 
 use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{Float32Array, Int64Array, ListArray, RecordBatch};
+use arrow_array::{Array, Float32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use arrow_flight::FlightDescriptor;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
@@ -269,6 +271,93 @@ async fn setup_with_cap(
     (addr, token, cp, wh, sock_dir)
 }
 
+/// Like [`setup`] but masks the scalar `id` column via a column policy, for the masked-export
+/// case. Identical landing / engine / export wiring; only the ACL grant differs (coarse Read
+/// Allow + a `mask_columns: ["id"]` policy). The `vector(4)` `embedding` stays unmasked.
+async fn setup_with_mask(
+    fx: &PgFixture,
+) -> (
+    std::net::SocketAddr,
+    String,
+    Arc<PgControlPlane>,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let wh = tempfile::tempdir().expect("warehouse");
+    let warehouse = wh.path().display().to_string();
+
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "chunks".into(),
+    };
+    let catalog = make_catalog(dsn.clone(), &warehouse).await;
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        &ipc_body(1500),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "chunks"),
+    )
+    .await
+    .expect("land vector");
+
+    cp.define_type(ObjectType {
+        name: TypeName("Chunk".into()),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "long".into(),
+                required: true,
+            },
+            PropertyDef {
+                name: "embedding".into(),
+                ty: "vector(4)".into(),
+                required: true,
+            },
+        ],
+        derived: vec![],
+        table: table.clone(),
+        identity: Some("id".into()),
+    })
+    .await
+    .expect("define Chunk type");
+
+    // ACL: Read Allow on Chunk refined by a column policy that MASKS the scalar `id`.
+    let (_subj, role) = e2e_support::subject_with_role(&cp, "reader").await;
+    e2e_support::grant_read_columns(&cp, &role, "Chunk", vec![], vec!["id".into()]).await;
+    let token = e2e_support::session_token(&cp, "reader").await;
+
+    let (sock_dir, sock_str) = spawn_flight(fx, &db, &warehouse).await;
+    let cp = Arc::new(cp);
+    let auth: Arc<dyn Auth + Send + Sync> = cp.clone();
+    let cp_dyn: Arc<dyn ControlPlane> = cp.clone();
+    let flight_engine = FlightSqlClient::connect(sock_str)
+        .await
+        .expect("engine connect");
+    let export = FlightExportService::new(auth, cp_dyn, flight_engine, 100_000);
+
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind tcp");
+    let addr = tcp.local_addr().expect("addr");
+    let incoming = TcpListenerStream::new(tcp);
+    tokio::spawn(async move {
+        let _serve = Server::builder()
+            .add_service(FlightServiceServer::new(export))
+            .serve_with_incoming(incoming)
+            .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    (addr, token, cp, wh, sock_dir)
+}
+
 /// Authed get_flight_info + do_get: all 1500 rows arrive, the embedding is carried natively
 /// as `List<Float32>` (not flattened to Utf8 through `SqlValue`), and some row is value-exact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -457,5 +546,122 @@ async fn export_cap_exceeded_errors_stream() {
     assert!(
         collected.is_err(),
         "an export exceeding LOOM_EXPORT_MAX_ROWS must fail the stream, not truncate silently"
+    );
+}
+
+/// A column-masked scalar (`id`) exports end-to-end through the live engine with the advertised
+/// `get_flight_info` schema and the streamed `do_get` data schema in lockstep: both report the
+/// masked column as `Utf8`, every masked value is the literal `"***"`, and the UNmasked
+/// `embedding` survives value-exact as `List<Float32>` (no over-masking).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_masked_scalar_schema_and_values() {
+    let fx = PgFixture::start();
+    let (addr, token, _cp, _wh, _sock) = setup_with_mask(&fx).await;
+
+    let url = format!("http://{addr}");
+    let channel = tonic::transport::Endpoint::try_from(url)
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+    let mut client = FlightServiceClient::new(channel);
+    let desc = FlightDescriptor::new_cmd(chunk_cmd().encode());
+    let info = client
+        .get_flight_info(authed(desc, &token))
+        .await
+        .expect("get_flight_info")
+        .into_inner();
+
+    // (1) Advertised schema: the masked `id` field is Utf8 (the '***' constant's type), not Int64.
+    let advertised = info
+        .clone()
+        .try_decode_schema()
+        .expect("decode advertised schema");
+    let adv_id = advertised
+        .field_with_name("id")
+        .expect("advertised id field");
+    assert_eq!(
+        adv_id.data_type(),
+        &DataType::Utf8,
+        "the masked `id` must be advertised as Utf8 (the '***' constant), not its declared Int64"
+    );
+
+    let ticket = info
+        .endpoint
+        .into_iter()
+        .next()
+        .and_then(|e| e.ticket)
+        .expect("ticket");
+    let stream = client
+        .do_get(authed(ticket, &token))
+        .await
+        .expect("do_get")
+        .into_inner();
+    let data = stream.map_err(FlightError::from);
+    let batches: Vec<RecordBatch> = FlightRecordBatchStream::new_from_flight_data(data)
+        .try_collect()
+        .await
+        .expect("collect batches");
+    assert!(!batches.is_empty(), "export produced at least one batch");
+
+    // (2) Data-schema lockstep: the streamed `id` column is ALSO Utf8 (advertised == data).
+    let data_id = batches[0]
+        .schema()
+        .field_with_name("id")
+        .expect("data id field")
+        .data_type()
+        .clone();
+    assert_eq!(
+        data_id,
+        DataType::Utf8,
+        "the streamed `id` must be Utf8 — the divergence guard (advertised schema == data schema)"
+    );
+
+    // (3) Masked values: every `id` across all batches is the literal "***".
+    for batch in &batches {
+        let ids = batch
+            .column_by_name("id")
+            .expect("id column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("id is a Utf8/StringArray");
+        for i in 0..ids.len() {
+            assert_eq!(
+                ids.value(i),
+                "***",
+                "every masked id value must be the '***' literal"
+            );
+        }
+    }
+
+    // Spot check (no over-masking): the UNmasked `embedding` survives as List<Float32>, and the
+    // deterministic seed vector [0.1, 0.2, 0.3, 0.4] is still present (order-independent — the
+    // export SQL has no ORDER BY) — only `id` was replaced.
+    let emb = batches[0]
+        .column_by_name("embedding")
+        .expect("embedding column");
+    assert!(
+        matches!(emb.data_type(), DataType::List(_)),
+        "the unmasked embedding must stay List<Float32>, not be masked to Utf8"
+    );
+    let mut embeddings: Vec<Vec<f32>> = Vec::new();
+    for batch in &batches {
+        let list = batch
+            .column_by_name("embedding")
+            .expect("embedding column")
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .expect("list array");
+        for row in list.iter().flatten() {
+            let f = row
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .expect("float32 element");
+            embeddings.push(f.values().to_vec());
+        }
+    }
+    assert!(
+        embeddings.contains(&vec![0.1f32, 0.2, 0.3, 0.4]),
+        "the unmasked embedding must carry the seed vector [0.1, 0.2, 0.3, 0.4] value-exact"
     );
 }
