@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with recursive closure(namespace, name, depth) as ( select $1::text, $2::text, 0 union select b.namespace, b.name, closure.depth + 1 from closure join lineage.event_dataset a on a.namespace = closure.namespace and a.name = closure.name and a.direction = $3 join lineage.event_dataset b on b.event_id = a.event_id and b.direction = $4 where closure.depth < $5) select distinct namespace as \"namespace!\", name as \"name!\" from closure where not (namespace = $1 and name = $2) and ($6::text is null or (namespace, name) > ($6, $7)) order by namespace, name limit $8",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "abc4880300c1cf96451a175031a559ad28bed4be11a2ebbd35c6959af7e3d049"
+}
