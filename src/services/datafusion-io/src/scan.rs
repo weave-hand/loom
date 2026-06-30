@@ -24,6 +24,19 @@ pub enum ScanError {
     DataFusion(#[from] datafusion::error::DataFusionError),
 }
 
+/// The object-store URL a data file's ABSOLUTE path resolves against.
+/// `s3://bucket/...` => `s3://bucket`; everything else (absolute `file://` or local
+/// filesystem paths) => the local filesystem store. Shared with the serving engine
+/// (`engine-serving`), which registers data files by these same absolute mirror paths.
+pub fn object_store_url_for(path: &str) -> datafusion::error::Result<ObjectStoreUrl> {
+    if let Some(rest) = path.strip_prefix("s3://") {
+        let bucket = rest.split('/').next().unwrap_or("");
+        ObjectStoreUrl::parse(format!("s3://{bucket}"))
+    } else {
+        Ok(ObjectStoreUrl::local_filesystem())
+    }
+}
+
 /// Register `files` (a table's data files at some snapshot) as a DataFusion
 /// table named `name`. Each `FileRef.path` is table-dir-relative; the full object key
 /// is reconstructed as `<schema>/<table>/<path>` under the loom object store — matching
@@ -35,19 +48,43 @@ pub async fn scan_table(
     table: &TableRef,
     files: &[FileRef],
 ) -> Result<(), ScanError> {
-    let url = ObjectStoreUrl::parse(LOOM_STORE_URL)?;
-    ctx.register_object_store(url.as_ref(), store.clone());
-
-    let paths: Vec<ListingTableUrl> = files
-        .iter()
-        .map(|f| {
+    // Each data file is either RELATIVE (landed tables: `<run_id>/part.parquet`,
+    // resolved under the loom virtual store) or ABSOLUTE (transform/compaction output
+    // promoted by `absolute_data_files`: `file://…`/`s3://bucket/…`). `FileRef` drops
+    // the authoritative `path_is_relative` flag on read-back, so infer from the path
+    // string: a `"://"` marks an absolute URI. Register each distinct object store once.
+    // (`scan_table` is never called with an empty `files` slice — both callers guard it
+    // — so registering inside the loop loses no store the old unconditional register did.)
+    let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut paths: Vec<ListingTableUrl> = Vec::with_capacity(files.len());
+    for f in files {
+        if f.path.contains("://") {
+            // Absolute mirror path: use verbatim; register its derived object store
+            // (local filesystem for `file://`/local, the passed warehouse store for s3).
+            let url = object_store_url_for(&f.path)?;
+            if registered.insert(url.as_str().to_owned()) {
+                let object_store: Arc<dyn ObjectStore> = if f.path.starts_with("s3://") {
+                    store.clone()
+                } else {
+                    Arc::new(object_store::local::LocalFileSystem::new())
+                };
+                ctx.register_object_store(url.as_ref(), object_store);
+            }
+            paths.push(ListingTableUrl::parse(f.path.as_str())?);
+        } else {
+            // Relative landed path: reconstruct `{LOOM_STORE_URL}/{schema}/{table}/{rel}`
+            // and register the passed store under the loom virtual URL.
+            let url = ObjectStoreUrl::parse(LOOM_STORE_URL)?;
+            if registered.insert(url.as_str().to_owned()) {
+                ctx.register_object_store(url.as_ref(), store.clone());
+            }
             let key = format!(
                 "{LOOM_STORE_URL}/{}/{}/{}",
                 table.schema, table.name, f.path
             );
-            ListingTableUrl::parse(key)
-        })
-        .collect::<Result<_, _>>()?;
+            paths.push(ListingTableUrl::parse(key)?);
+        }
+    }
 
     // Keep string/binary columns as canonical Arrow types (Utf8/Binary) rather than
     // the `*View` variants ParquetFormat defaults to. The landing path's

@@ -200,6 +200,10 @@ pub fn scalar_i64(batches: &[RecordBatch]) -> i64 {
 /// result and join the string column with `,` — equivalent to the engine's
 /// `string_agg(col, ',' ORDER BY id)` applied across batches. Nulls render as empty
 /// (none expected in the ported fixtures).
+#[allow(
+    dead_code,
+    reason = "shared test helper; used by some transform e2e includers but not all (e.g. transform_chain_e2e asserts via scalar_i64)"
+)]
 pub fn col_csv(batches: &[RecordBatch]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for b in batches {

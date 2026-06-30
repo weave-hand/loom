@@ -223,3 +223,25 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "transform-chain-e2e",
+    crate = "transform_chain_e2e",
+    srcs = ["tests/transform_chain_e2e.rs", "tests/transform_e2e_support.rs"],
+    crate_root = "tests/transform_chain_e2e.rs",
+    deps = [
+        ":transform",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/datafusion-io:datafusion-io",
+        "//src/services/engine-serving:engine-serving",
+        "//third-party:arrow",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)

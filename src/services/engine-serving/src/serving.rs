@@ -28,6 +28,7 @@ use datafusion::physical_expr::create_physical_expr;
 use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistics};
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use datafusion::scalar::ScalarValue;
+use datafusion_io::object_store_url_for;
 use object_store::local::LocalFileSystem;
 
 use crate::provider::PgTableProvider;
@@ -51,17 +52,6 @@ pub enum EngineServingError {
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.
 pub(crate) fn to_serving<E: std::fmt::Display>(e: E) -> EngineServingError {
     EngineServingError::Engine(e.to_string())
-}
-
-/// The object-store URL a data file's absolute path resolves against. `s3://bucket/...`
-/// => `s3://bucket`; everything else (absolute `file://`/local paths) => local filesystem.
-fn object_store_url_for(path: &str) -> datafusion::error::Result<ObjectStoreUrl> {
-    if let Some(rest) = path.strip_prefix("s3://") {
-        let bucket = rest.split('/').next().unwrap_or("");
-        ObjectStoreUrl::parse(format!("s3://{bucket}"))
-    } else {
-        Ok(ObjectStoreUrl::local_filesystem())
-    }
 }
 
 /// Register `table`'s live data files (at its current snapshot) via the pruning-aware
