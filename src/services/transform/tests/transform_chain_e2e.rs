@@ -13,6 +13,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
+use datafusion_io::WriteConfig;
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 
@@ -62,6 +63,7 @@ async fn transform_reads_transform_output_with_absolute_paths() {
         &cp,
         store.clone(),
         &root_url,
+        &WriteConfig::default(),
         "run-a",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {
@@ -85,6 +87,7 @@ async fn transform_reads_transform_output_with_absolute_paths() {
         &cp,
         store.clone(),
         &root_url,
+        &WriteConfig::default(),
         "run-b",
         transform::TransformRequest {
             inputs: &[transform::TransformInput {
