@@ -3,6 +3,8 @@
 # trying (and failing) to build it for the host. See
 # docs/superpowers/specs/2026-06-30-yew-wasm-ui-experiment-design.md.
 
+load("//tools:wasm_bindgen.bzl", "WASM_BINDGEN_VERSION")
+
 rust_binary(
     name = "app",
     crate = "app",
@@ -10,6 +12,69 @@ rust_binary(
     crate_root = "src/main.rs",
     edition = "2024",
     default_target_platform = "//platforms:wasm",
-    deps = [],
+    deps = [
+        "//third-party:wasm-bindgen",
+        "//third-party:yew",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Run wasm-bindgen over app.wasm to emit ES-module glue (app.js + app_bg.wasm),
+# then drop index.html alongside — a browser-loadable bundle in $OUT (dist) once
+# served over HTTP. Asserts the CLI version equals the single-source-of-truth
+# WASM_BINDGEN_VERSION (belt-and-suspenders over the `=` crate pin) so a skewed
+# CLI can't silently produce glue that panics at load.
+genrule(
+    name = "bundle",
+    out = "dist",
+    # Same wasm target platform as :app, so $(location :app) resolves to the
+    # wasm-configured binary (default_target_platform does not propagate through a
+    # genrule dep, so without this :app would configure under the genrule's default
+    # platform and the cross-config $(location) path would not resolve). The
+    # wasm-bindgen tool is an $(exe) dep, so it still configures for the exec host.
+    default_target_platform = "//platforms:wasm",
+    srcs = ["index.html"],
+    # Backticks (not $()) for the shell command substitution: buck parses $(...)
+    # as its own macro syntax, so a shell $(...) in cmd fails attribute coercion.
+    # index.html arrives via srcs ($SRCDIR), not $(location) (which needs a target).
+    cmd = """
+set -euo pipefail
+got=`$(exe //tools:wasm-bindgen) --version`
+want="wasm-bindgen {ver}"
+if [ "$got" != "$want" ]; then
+  echo "wasm-bindgen CLI/version mismatch: got '$got', want '$want'" >&2
+  exit 1
+fi
+mkdir -p $OUT
+$(exe //tools:wasm-bindgen) --target web --no-typescript --out-dir $OUT --out-name app $(location :app)
+cp $SRCDIR/index.html $OUT/index.html
+""".format(ver = WASM_BINDGEN_VERSION),
+    visibility = ["PUBLIC"],
+)
+
+# Convenience: `buck2 run //src/ui:serve` serves the built bundle over HTTP,
+# because the --target web glue fetch()es the wasm and file:// is blocked by
+# browsers. Uses python3 from PATH (loom's hermetic python via tools/env.sh, or a
+# system python3) rather than the prelude's cpython_archive (which is not visible
+# outside the toolchains cell). Pinned to the wasm platform so $(location :bundle)
+# resolves to the wasm-configured bundle.
+genrule(
+    name = "serve",
+    out = "serve.sh",
+    default_target_platform = "//platforms:wasm",
+    # Quoted heredoc (<<'SCRIPT') keeps $0/$@/backticks literal in the generated
+    # script; buck still substitutes its own $(location :bundle) macro (a path
+    # relative to this script's dir). The wrapper cd's to its own dir first so that
+    # relative path resolves under `buck2 run` (whose cwd is the repo root).
+    cmd = """
+cat > $OUT <<'SCRIPT'
+#!/usr/bin/env bash
+# Serve the wasm bundle over HTTP (file:// cannot fetch the wasm module).
+cd "`dirname "$0"`"
+exec python3 -m http.server --directory "$(location :bundle)" "$@"
+SCRIPT
+chmod +x $OUT
+""",
+    executable = True,
     visibility = ["PUBLIC"],
 )

@@ -610,7 +610,7 @@ _WASM_BINDGEN_URL = "https://github.com/rustwasm/wasm-bindgen/releases/download/
 http_file(
     name = "wasm-bindgen-cli.tar.gz",
     urls = [_WASM_BINDGEN_URL.format(v = WASM_BINDGEN_VERSION)],
-    sha256 = "63d6a38deb65bd7023c02bdf382ab66b0d2c0241c8582fd3413b5a808b8aeb5b",
+    sha256 = "064948d58e2d6c0a745216477a639ba696216d6309aaa902939d1b865b1d869d",
 )
 
 genrule(

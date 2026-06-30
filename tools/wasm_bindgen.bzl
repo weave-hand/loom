@@ -10,4 +10,4 @@ To bump: change WASM_BINDGEN_VERSION here, update the `=` pin in
 src/ui/Cargo.toml to match, and refresh the CLI sha256 in tools/BUCK.
 """
 
-WASM_BINDGEN_VERSION = "0.2.100"
+WASM_BINDGEN_VERSION = "0.2.126"
