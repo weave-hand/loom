@@ -83,7 +83,7 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## test
 
-- [ ] **Masked-column Flight export not exercised end-to-end through the engine** `{#iss-flight-export-mask-e2e area:test status:open from:2026-06-26-governed-flight-export-design pr:- spec:-}`
+- [ ] **Masked-column Flight export not exercised end-to-end through the engine** `{#iss-flight-export-mask-e2e area:test status:open from:2026-06-26-governed-flight-export-design pr:- spec:2026-06-30-flight-export-mask-e2e-design}`
   [[road-governed-flight-export]] advertises a **masked** export column as Arrow `Utf8` (the column is SELECTed as the `'***'` constant, so the engine streams a Utf8 literal), keeping `get_flight_info`'s schema in lockstep with the `do_get` data schema. This is covered by a `export_arrow_schema` unit test and is correct by construction (the mask is `'***' AS col` in the compiled SQL), but the masked path is **not** driven end-to-end through the live engine in `governed-flight-export-e2e` (which exercises deny / value-exact / no-limit / cap / auth). Add a fixture case that seeds a column-mask ACL policy and asserts the `do_get` stream carries that column as a `Utf8` `'***'` array — the one place an advertised-vs-data schema divergence would surface. Low risk (governance is shared with the HTTP read path, which has masking e2e coverage); flagged by the final review.
 
 - [x] **`/search` returns identity values even when a policy masks/denies the identity column** `{#iss-vector-search-identity-mask area:query status:fixed from:2026-06-29-vector-search-endpoint-design pr:#243 spec:2026-06-29-vector-search-identity-mask-design}`
