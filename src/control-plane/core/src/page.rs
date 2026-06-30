@@ -1,10 +1,13 @@
-//! The pagination convention shared by every unbounded control-plane read.
+//! The pagination convention shared by every control-plane read.
 //!
-//! Read methods take a [`PageReq`] and return a [`Page<T>`]. Today every adapter
-//! returns the full result set in a single page ([`Page::from_full`], `next: None`):
-//! the request's `after`/`limit` are part of the stable signature but **not yet
-//! enforced**. Real keyset limiting is a future adapter-only change that needs no
-//! trait-signature churn — that is the whole point of fixing the convention now.
+//! Read methods take a [`PageReq`] and return a [`Page<T>`]. The lineage reads
+//! ([`crate::Lineage`]) are keyset-paginated (cursor + limit) via
+//! [`Page::from_keyset`] — the first concern to honor the convention. The
+//! remaining concerns (catalog, ontology, acl) still return the full result set
+//! in a single page ([`Page::from_full`], `next: None`): their `after`/`limit`
+//! are part of the stable signature but **not yet enforced**. Honoring them is a
+//! future adapter-only change that needs no trait-signature churn — that is the
+//! whole point of fixing the convention now.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +18,9 @@ pub struct Cursor(pub String);
 
 /// A page request. `Default`/[`PageReq::unbounded`] = no limit, from the start.
 ///
-/// `after`/`limit` are accepted but **not yet enforced** by any adapter (see the
-/// module docs); a request for `limit(10)` currently still returns everything.
+/// `after`/`limit` are honored by the keyset-paginated reads (lineage); the
+/// not-yet-paginated concerns (catalog, ontology, acl) still ignore them and
+/// return everything (see the module docs).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PageReq {
     /// Resume after this cursor (exclusive). `None` = from the start.
