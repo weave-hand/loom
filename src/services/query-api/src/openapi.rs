@@ -36,11 +36,16 @@ pub struct JobAck {
     pub job_id: String,
 }
 
-/// Documentation shape for a fine-grained Write-denial 403 body.
+/// Documentation shape for a fine-grained Write-denial 403 body, mirroring
+/// `action::WriteDenialReason::to_body`.
 #[derive(ToSchema)]
 pub struct WriteDeniedBody {
-    /// What was denied (`column` or `row_filter`).
-    pub denied: String,
+    /// Stable tag, always `"write_denied"`.
+    pub error: String,
+    /// What was denied: `"column"` or `"row_filter"`.
+    pub reason: String,
+    /// The denied column — present only for column denials.
+    pub column: Option<String>,
 }
 
 #[derive(OpenApi)]

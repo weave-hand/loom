@@ -36,12 +36,17 @@ pub struct ViolationsBody {
     pub violations: Vec<Violation>,
 }
 
-/// One gate violation (a column and the reason it failed).
+/// One gate violation (a column and the reason it failed), mirroring
+/// `http::violations_json`.
 #[derive(ToSchema)]
 pub struct Violation {
     pub column: String,
     /// `missing_required` | `type_mismatch` | `unsupported`.
     pub reason: String,
+    /// The model-declared type — present only for `type_mismatch`.
+    pub expected: Option<String>,
+    /// The inferred Arrow type — present only for `type_mismatch`.
+    pub found: Option<String>,
 }
 
 #[derive(OpenApi)]
