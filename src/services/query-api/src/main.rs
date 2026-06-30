@@ -70,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .merge(service_runtime::login_routes(auth_state.clone()))
     .merge(service_runtime::session_routes(auth_state));
+    let app = service_runtime::with_openapi(app, query_api::build_openapi());
 
     // Optional external Arrow Flight export listener (opt-in via LOOM_FLIGHT_BIND_ADDR).
     if let Ok(bind) = std::env::var("LOOM_FLIGHT_BIND_ADDR") {

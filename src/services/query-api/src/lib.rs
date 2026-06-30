@@ -13,6 +13,7 @@ pub mod filter;
 pub mod flight_export;
 pub mod handler;
 pub mod http;
+pub mod openapi;
 pub mod params;
 pub mod path_parse;
 pub mod render;
@@ -20,3 +21,5 @@ pub mod serving;
 pub mod serving_datafusion;
 pub mod sql;
 pub mod write_filter;
+
+pub use openapi::build_openapi;

@@ -9,6 +9,7 @@ use crate::handler::{
     QueryDeps, QueryError, read_associations, read_graph_reach, read_graph_reach_union,
     read_graph_reach_with_tail, read_linked_chain, read_object,
 };
+use crate::openapi::{JobAck, ObjectsResponse, VectorSearchResponse, WriteDeniedBody};
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
 use axum::Router;
@@ -24,7 +25,7 @@ pub const K_MAX: usize = 1000;
 
 /// The `POST /search/:type/:index_name` request body. `deny_unknown_fields` so a typo'd
 /// or extraneous field is a 400, not silently ignored. `query` is the kNN probe vector.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VectorSearchRequest {
     pub query: Vec<f32>,
@@ -81,6 +82,19 @@ pub fn router(state: AppState) -> Router {
 /// Operator-triggered physical GC: enqueue a `gc_table` job for `(schema, table)`.
 /// A zero-pool worker drains it via the engine's `GcTable` RPC. Returns 202 with
 /// the job id; the actual reclamation runs asynchronously.
+#[utoipa::path(
+    post, path = "/maintenance/gc/{schema}/{table}",
+    params(
+        ("schema" = String, Path, description = "Iceberg schema"),
+        ("table" = String, Path, description = "Table name"),
+    ),
+    responses(
+        (status = 202, description = "GC job enqueued", body = JobAck),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "maintenance",
+)]
 async fn enqueue_gc(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
@@ -101,6 +115,18 @@ async fn enqueue_gc(
     }
 }
 
+#[utoipa::path(
+    get, path = "/objects/{type_name}",
+    params(("type_name" = String, Path, description = "Ontology object type")),
+    responses(
+        (status = 200, description = "Matching objects", body = ObjectsResponse),
+        (status = 400, description = "Bad filter or _ids"),
+        (status = 403, description = "Forbidden by ACL policy"),
+        (status = 404, description = "Unknown type"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "objects",
+)]
 async fn get_object(
     State(st): State<AppState>,
     Path(type_name): Path<String>,
@@ -156,6 +182,21 @@ async fn get_object(
     }
 }
 
+#[utoipa::path(
+    get, path = "/objects/{from_type}/links/{link_name}",
+    params(
+        ("from_type" = String, Path, description = "Source object type"),
+        ("link_name" = String, Path, description = "Link to traverse"),
+    ),
+    responses(
+        (status = 200, description = "Linked objects or associations", body = ObjectsResponse),
+        (status = 400, description = "Bad direction/shape/filter"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Unknown type or link"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "links",
+)]
 async fn get_linked(
     State(st): State<AppState>,
     Path((from_type, link_name)): Path<(String, String)>,
@@ -224,6 +265,18 @@ async fn get_linked(
     }
 }
 
+#[utoipa::path(
+    get, path = "/objects/{from_type}/links",
+    params(("from_type" = String, Path, description = "Source object type")),
+    responses(
+        (status = 200, description = "Chain-traversed objects or associations", body = ObjectsResponse),
+        (status = 400, description = "Bad path/shape/filter"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Unknown type or link"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "links",
+)]
 async fn get_linked_chain(
     State(st): State<AppState>,
     Path(from_type): Path<String>,
@@ -320,6 +373,21 @@ fn chain_error(e: QueryError) -> axum::response::Response {
 const MAX_GRAPH_DEPTH: u32 = 10;
 const DEFAULT_GRAPH_DEPTH: u32 = 5;
 
+#[utoipa::path(
+    get, path = "/objects/{type_name}/graph/{link_name}",
+    params(
+        ("type_name" = String, Path, description = "Seed object type"),
+        ("link_name" = String, Path, description = "Self-link to recurse"),
+    ),
+    responses(
+        (status = 200, description = "Reachable objects", body = ObjectsResponse),
+        (status = 400, description = "Bad depth/filter/path"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Unknown type or link"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "graph",
+)]
 async fn get_graph(
     State(st): State<AppState>,
     Path((type_name, link_name)): Path<(String, String)>,
@@ -376,6 +444,18 @@ async fn get_graph(
 /// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` (comma-split; empty/absent ->
 /// 400) plus the same `depth`/`_ids`/filter handling as `get_graph`, then shares the
 /// `read_graph_reach` call + error mapping via `graph_respond`.
+#[utoipa::path(
+    get, path = "/objects/{type_name}/graph",
+    params(("type_name" = String, Path, description = "Seed object type")),
+    responses(
+        (status = 200, description = "Reachable objects via path/links", body = ObjectsResponse),
+        (status = 400, description = "Bad path/links/depth/filter"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Unknown type or link"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "graph",
+)]
 async fn get_graph_path(
     State(st): State<AppState>,
     Path(type_name): Path<String>,
@@ -620,6 +700,20 @@ async fn graph_tail_respond(
     }
 }
 
+#[utoipa::path(
+    post, path = "/actions/{action_name}",
+    params(("action_name" = String, Path, description = "Ontology action id")),
+    request_body = serde_json::Value,
+    responses(
+        (status = 201, description = "Action applied; created/affected object"),
+        (status = 400, description = "Bad params"),
+        (status = 403, description = "Write denied by ACL policy", body = WriteDeniedBody),
+        (status = 404, description = "Unknown action"),
+        (status = 422, description = "Unsupported action shape"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "actions",
+)]
 async fn post_action(
     State(st): State<AppState>,
     Path(action_name): Path<String>,
@@ -692,6 +786,22 @@ fn id_json(v: &crate::serving::SqlValue) -> serde_json::Value {
 /// Governed kNN search: `POST /search/:type/:index_name`. Parses + validates the body
 /// (manual deserialize -> 400 on any problem, BEFORE any engine call), then runs the
 /// governed `vector_search` flow and maps its errors to status codes.
+#[utoipa::path(
+    post, path = "/search/{type_name}/{index_name}",
+    params(
+        ("type_name" = String, Path, description = "Object type"),
+        ("index_name" = String, Path, description = "Vector index name"),
+    ),
+    request_body = VectorSearchRequest,
+    responses(
+        (status = 200, description = "kNN hits", body = VectorSearchResponse),
+        (status = 400, description = "Bad request body or dimension mismatch"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "No such index"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "search",
+)]
 async fn post_search(
     State(st): State<AppState>,
     Path((type_name, index_name)): Path<(String, String)>,
