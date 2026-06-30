@@ -138,11 +138,13 @@ async fn seed_and_build(
                     name: "id".into(),
                     ty: "Long".into(),
                     required: true,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 },
                 PropertyDef {
                     name: "embedding".into(),
                     ty: "vector(4)".into(),
                     required: true,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 },
             ],
             derived: vec![],

@@ -102,7 +102,7 @@ rust_test(
     srcs = ["tests/gate.rs"],
     crate_root = "tests/gate.rs",
     edition = "2024",
-    deps = [":ingest", "//third-party:arrow"],
+    deps = [":ingest", "//src/control-plane/core:core", "//third-party:arrow"],
 )
 
 # Arrow schema -> inferred ObjectType — pure logic, RE-eligible (no fixture).

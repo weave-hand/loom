@@ -48,6 +48,7 @@ async fn define_min_type<O: Ontology>(o: &O, name: &str, props: &[&str]) {
                 name: (*n).into(),
                 ty: "String".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             })
             .collect(),
         derived: vec![],
@@ -564,11 +565,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "email".into(),
                 ty: "EmailAddress".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -585,11 +588,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "total".into(),
                 ty: "Currency".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "note".into(),
                 ty: "Text".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -658,6 +663,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: "total".into(),
             ty: "Currency".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![],
         identity: None,
@@ -667,6 +673,107 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.get_type(&tn("Order")).await.unwrap().properties.len(),
         1,
         "redefine replaces properties"
+    );
+
+    // --- Model constraints: round-trip + define-time rejection. ---
+    let constrained = ObjectType {
+        name: tn("Account"),
+        table: tref("main", "account"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints {
+                    range: Some(control_plane_core::RangeConstraint {
+                        min: Some(1.0),
+                        max: None,
+                    }),
+                    ..control_plane_core::PropertyConstraints::default()
+                },
+            },
+            PropertyDef {
+                name: "code".into(),
+                ty: "String".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints {
+                    length: Some(control_plane_core::LengthConstraint {
+                        min: Some(2),
+                        max: Some(8),
+                    }),
+                    pattern: Some("^[A-Z]+$".into()),
+                    one_of: None,
+                    range: None,
+                },
+            },
+            PropertyDef {
+                name: "note".into(),
+                ty: "String".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+        identity: Some("id".into()),
+    };
+    o.define_type(constrained.clone())
+        .await
+        .expect("define constrained type");
+    assert_eq!(
+        o.get_type(&tn("Account")).await.unwrap(),
+        constrained,
+        "constraints round-trip unchanged"
+    );
+
+    // A `range` on a string property is rejected at define time.
+    let bad_range = ObjectType {
+        name: tn("BadRange"),
+        table: tref("main", "bad_range"),
+        properties: vec![PropertyDef {
+            name: "name".into(),
+            ty: "String".into(),
+            required: false,
+            constraints: control_plane_core::PropertyConstraints {
+                range: Some(control_plane_core::RangeConstraint {
+                    min: Some(0.0),
+                    max: None,
+                }),
+                ..control_plane_core::PropertyConstraints::default()
+            },
+        }],
+        derived: vec![],
+        identity: None,
+    };
+    assert!(
+        matches!(
+            o.define_type(bad_range).await,
+            Err(control_plane_core::ControlPlaneError::Validation(_))
+        ),
+        "range on a string property is a define-time Validation error"
+    );
+
+    // An invalid regex `pattern` is rejected at define time.
+    let bad_regex = ObjectType {
+        name: tn("BadRegex"),
+        table: tref("main", "bad_regex"),
+        properties: vec![PropertyDef {
+            name: "code".into(),
+            ty: "String".into(),
+            required: false,
+            constraints: control_plane_core::PropertyConstraints {
+                pattern: Some("(".into()),
+                ..control_plane_core::PropertyConstraints::default()
+            },
+        }],
+        derived: vec![],
+        identity: None,
+    };
+    assert!(
+        matches!(
+            o.define_type(bad_regex).await,
+            Err(control_plane_core::ControlPlaneError::Validation(_))
+        ),
+        "invalid regex is a define-time Validation error"
     );
 
     // link between existing types, then read it back.
@@ -800,11 +907,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "name".into(),
                 ty: "String".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -886,6 +995,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![
             DerivedPropertyDef {
@@ -924,6 +1034,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![],
         table: tref("main", "account"),
@@ -945,16 +1056,19 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "embedding".into(),
                 ty: "vector(8)".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "title".into(),
                 ty: "Text".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],

@@ -16,11 +16,13 @@ fn customer(identity: Option<String>) -> ObjectType {
                 name: "id".into(),
                 ty: "long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "name".into(),
                 ty: "string".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
