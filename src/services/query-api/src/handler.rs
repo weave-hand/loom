@@ -146,6 +146,19 @@ fn project_allowed(
         .collect()
 }
 
+/// True when the type's declared identity column is denied or masked by policy,
+/// so its values must not be revealed. Identity-less types are never governed here.
+pub fn identity_is_governed(
+    otype: &ObjectType,
+    denied: &std::collections::HashSet<String>,
+    masked: &std::collections::HashSet<String>,
+) -> bool {
+    match &otype.identity {
+        Some(id) => denied.contains(id) || masked.contains(id),
+        None => false,
+    }
+}
+
 /// Lower an object-set input (`ids`) to an `In` predicate on `otype`'s declared identity
 /// column, governed like any caller filter. `None` when `ids` is empty. Errors: no
 /// declared identity (`NoIdentity`); the identity column is denied or masked, so it is not
@@ -163,8 +176,12 @@ pub fn identity_in_predicate(
         .identity
         .clone()
         .ok_or_else(|| QueryError::NoIdentity(otype.name.0.clone()))?;
-    let allowed = project_allowed(&otype.properties, denied);
-    if !allowed.contains(&identity) || masked.contains(&identity) {
+    // The identity column must be a permitted filter column: not denied, not masked.
+    // Re-expressed via the shared `identity_is_governed` helper so the /search guard
+    // and this filter-lowering check cannot drift. (`project_allowed` computes the same
+    // deny membership via `!denied.contains`; `identity_is_governed` checks
+    // `denied.contains(id) || masked.contains(id)` directly — equivalent.)
+    if identity_is_governed(otype, denied, masked) {
         return Err(QueryError::BadFilter(identity));
     }
     let ty = otype
@@ -480,6 +497,14 @@ pub async fn vector_search(
 
     // Row-filter post-filter. Empty filters (unrestricted) → return engine hits unchanged.
     let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+    // Fail closed: the search response *is* a list of identity values, so a policy that
+    // denies or masks the identity column must not be silently disregarded. Guard runs
+    // BEFORE the empty-filter early return so both policy shapes (no row filter, and with
+    // a row filter) refuse identically with a deliberate 403 instead of leaking ids
+    // (empty-filter path) or an incidental BadFilter/500 (row-filter path).
+    if identity_is_governed(&otype, &denied, &masked) {
+        return Err(QueryError::Forbidden);
+    }
     if row_filters.is_empty() {
         return Ok(hits);
     }

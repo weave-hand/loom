@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use control_plane_core::{CompareOp, ObjectType, PropertyDef, TableRef, TypeName};
 use query_api::filter::FilterError;
-use query_api::handler::{QueryError, identity_in_predicate};
+use query_api::handler::{QueryError, identity_in_predicate, identity_is_governed};
 use query_api::serving::SqlValue;
 
 fn customer(identity: Option<String>) -> ObjectType {
@@ -89,6 +89,32 @@ fn masked_identity_is_bad_filter() {
     )
     .unwrap_err();
     assert!(matches!(err, QueryError::BadFilter(c) if c == "id"));
+}
+
+#[test]
+fn identity_is_governed_flags_denied_and_masked() {
+    let denied: HashSet<String> = ["id".to_string()].into_iter().collect();
+    let masked: HashSet<String> = ["id".to_string()].into_iter().collect();
+    // Denied identity → governed.
+    assert!(identity_is_governed(
+        &customer(Some("id".into())),
+        &denied,
+        &empty()
+    ));
+    // Masked identity → governed.
+    assert!(identity_is_governed(
+        &customer(Some("id".into())),
+        &empty(),
+        &masked
+    ));
+    // Ungoverned identity → not governed.
+    assert!(!identity_is_governed(
+        &customer(Some("id".into())),
+        &empty(),
+        &empty()
+    ));
+    // Identity-less type → never governed, even if "id" is denied/masked.
+    assert!(!identity_is_governed(&customer(None), &denied, &masked));
 }
 
 #[test]
