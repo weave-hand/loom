@@ -10,6 +10,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
+        "//src/services/datafusion-io:datafusion-io",
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:datafusion",
