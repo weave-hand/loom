@@ -86,6 +86,7 @@ loom_fixture_test(
     crate = "embedded_hardening",
     srcs = ["tests/embedded_hardening.rs"],
     crate_root = "tests/embedded_hardening.rs",
+    edition = "2024",
     deps = [
         ":managed-postgres",
         "//third-party:tempfile",
@@ -428,17 +429,107 @@ impl Drop for EmbeddedPg {
 }
 ```
 
-- [ ] **Step 7: Run the lock-contention test to verify it passes**
+- [ ] **Step 7: Update the now-stale `kill_on_drop` doc comments** — Task 3 changes the drop behaviour from "SIGKILL via kill_on_drop" to "graceful pg_ctl stop, SIGKILL fallback", so two comments must be corrected.
 
-Run: `buck2 test //src/services/managed-postgres:embedded-hardening -- --exact 'embedded_hardening::second_owner_on_same_data_dir_is_rejected' > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|PASS" /tmp/t.log`
-Expected: PASS.
+In the `EmbeddedPg` struct doc comment (currently):
 
-- [ ] **Step 8: Run the whole new fixture target + the existing lifecycle test** (proves no regression and the Drop path is exercised by the fast-fail test):
+```rust
+/// A running, owned embedded Postgres. Prefer `shutdown()` for a clean
+/// `pg_ctl stop -m fast`; on `Drop` the child is killed (`kill_on_drop`) so a
+/// panic cannot leak a postmaster.
+```
+
+replace with:
+
+```rust
+/// A running, owned embedded Postgres. Prefer `shutdown()` for a clean
+/// `pg_ctl stop -m fast`; an abnormal `Drop` (panic / early-return during
+/// `start`) stops the postmaster gracefully (`pg_ctl stop -m immediate`, which
+/// reaps backends), falling back to SIGKILL (`kill_on_drop`) if that fails, so
+/// a panic cannot leak a postmaster.
+```
+
+In `spawn_postgres`, replace the `kill_on_drop` rationale comment (currently):
+
+```rust
+        // Unix socket only (no TCP). Durability stays ON (real data, not a test).
+        // kill_on_drop: if the handle is dropped without shutdown() (e.g. a panic),
+        // tokio SIGKILLs the child so no postmaster is leaked; the durable data dir
+        // recovers on next start.
+```
+
+with:
+
+```rust
+        // Unix socket only (no TCP). Durability stays ON (real data, not a test).
+        // kill_on_drop is the *fallback* leak-guard: `EmbeddedPg::Drop` first asks
+        // pg_ctl for a graceful immediate stop (reaping backends); only if that
+        // fails does tokio SIGKILL the postmaster on the child's drop. The durable
+        // data dir recovers on next start either way.
+```
+
+(Leave `.kill_on_drop(true)` on the builder unchanged — it remains the fallback.)
+
+- [ ] **Step 8: Write the graceful-teardown test** — append to `tests/embedded_hardening.rs`. This is the test that actually proves finding (4): a *live* postmaster, dropped without `shutdown()`, is stopped (not left running) and the owner lock is released.
+
+```rust
+#[tokio::test]
+async fn drop_without_shutdown_stops_postmaster_and_releases_lock() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let data = tmp.path().join("pgdata");
+    let sock = tmp.path().join("pgrun");
+
+    let pid: u32 = {
+        let pg = EmbeddedPg::start(cfg(&data, &sock)).await.expect("start");
+        // postmaster.pid records the live postmaster pid on its first line.
+        let pidfile = std::fs::read_to_string(data.join("postmaster.pid")).expect("pidfile");
+        let pid = pidfile
+            .lines()
+            .next()
+            .and_then(|l| l.trim().parse::<u32>().ok())
+            .expect("postmaster pid");
+        assert!(
+            Path::new(&format!("/proc/{pid}")).exists(),
+            "postmaster is running before drop"
+        );
+        // Drop WITHOUT shutdown() → exercises EmbeddedPg::Drop's graceful stop.
+        drop(pg);
+        pid
+    };
+
+    // pg_ctl stop -w waits, so the postmaster should already be gone; poll
+    // briefly to absorb any teardown lag without flaking.
+    let mut gone = false;
+    for _ in 0..100 {
+        if !Path::new(&format!("/proc/{pid}")).exists() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(gone, "postmaster {pid} was stopped by Drop, not left orphaned");
+
+    // The owner lock (sibling of data_dir) is released on drop.
+    let mut lock = data.as_os_str().to_os_string();
+    lock.push(".loomlock");
+    assert!(
+        !Path::new(&lock).exists(),
+        "owner lockfile was released on drop"
+    );
+}
+```
+
+- [ ] **Step 9: Run the lock-contention and graceful-teardown tests to verify they pass**
+
+Run: `buck2 test //src/services/managed-postgres:embedded-hardening -- --exact 'embedded_hardening::second_owner_on_same_data_dir_is_rejected' --exact 'embedded_hardening::drop_without_shutdown_stops_postmaster_and_releases_lock' > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|PASS" /tmp/t.log`
+Expected: both PASS.
+
+- [ ] **Step 10: Run the whole new fixture target + the existing lifecycle test** (proves no regression and the Drop path is exercised by both the fast-fail and graceful-teardown tests):
 
 Run: `buck2 test //src/services/managed-postgres:embedded-hardening //src/services/managed-postgres:embedded-lifecycle //src/services/managed-postgres:db-name > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|PASS" /tmp/t.log`
 Expected: all PASS, 0 FAIL.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add src/services/managed-postgres/src/lib.rs src/services/managed-postgres/tests/embedded_hardening.rs
@@ -496,14 +587,14 @@ git commit -m "docs(future): close embedded-postgres slice-1 hardening"
 - Finding (1) owner-only perms → Task 1 (`ensure_dir_secure`, `0700` on data + socket dirs; asserted by `data_and_socket_dirs_are_owner_only`). ✓
 - Finding (2) fast-fail readiness → Task 2 (`ServerExited` + `wait_ready` `try_wait`; asserted by `dead_postmaster_fails_fast_not_after_timeout`). ✓
 - Finding (3) fresh-init lock → Task 3 (`OwnerLock` + `acquire_owner_lock`, acquired before initdb; asserted by `second_owner_on_same_data_dir_is_rejected`). ✓
-- Finding (4) orphaned backends on panic-drop → Task 3 (`impl Drop for EmbeddedPg` graceful `pg_ctl stop -m immediate`, SIGKILL fallback). ✓
-- Slice-1 spec invariants preserved: idempotent init, restart-adoption, persistence, clean shutdown → existing `embedded_lifecycle` test stays green (Task 3 Step 8, Task 4 Step 1). ✓
+- Finding (4) orphaned backends on panic-drop → Task 3 (`impl Drop for EmbeddedPg` graceful `pg_ctl stop -m immediate`, SIGKILL fallback; the stale `kill_on_drop` doc comments are corrected in Step 7). Asserted by `drop_without_shutdown_stops_postmaster_and_releases_lock`, which boots a **live** postmaster, drops the handle without `shutdown()`, and asserts the postmaster pid is gone and the lockfile released. (Note: the test proves the postmaster is *stopped* via `Drop` rather than left running; the graceful-vs-SIGKILL distinction that reaps backends is inherent to using `-m immediate` rather than a bare kill.) ✓
+- Slice-1 spec invariants preserved: idempotent init, restart-adoption, persistence, clean shutdown → existing `embedded_lifecycle` test stays green (Task 3 Step 10, Task 4 Step 1). ✓
 
 **Placeholder scan:** every code step shows complete code; no TBD/TODO/"handle errors". ✓
 
 **Type consistency:** `ensure_dir_secure(&Path)->io::Result<()>`, `owner_lock_path(&Path)->PathBuf`, `acquire_owner_lock(&Path)->Result<OwnerLock,EmbeddedPgError>`, `OwnerLock{path}`, `EmbeddedPgError::ServerExited(ExitStatus)`, `wait_ready(&mut self)` — names/signatures are referenced consistently across tasks. The `_owner_lock` field is set in `start`'s struct literal and declared on the struct. ✓
 
 **Risks called out:**
-- `Drop` runs a brief blocking `pg_ctl` on the abnormal path only (normal path uses `shutdown()`); acceptable since we're already tearing down. The `dead_postmaster…` test exercises this path.
+- `Drop` runs a brief blocking `pg_ctl` on the abnormal path only (normal path uses `shutdown()`); acceptable since we're already tearing down. Two tests exercise `Drop`: `dead_postmaster…` (server already exited → `pg_ctl stop` reports not-running, falls to the harmless SIGKILL fallback, no hang) and `drop_without_shutdown…` (live postmaster → graceful stop, pid gone). On a dead postmaster `pg_ctl stop` returns non-zero promptly (it does not hang).
 - `/proc`-based pid liveness has the same pid-reuse caveat already accepted by `check_not_already_running` — consistent, not a new exposure.
 - `_owner_lock` is never read → `#[allow(dead_code, reason=…)]`; using `allow` (not `expect`) avoids an unfulfilled-expectation error if the lint placement shifts.
