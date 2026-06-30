@@ -146,6 +146,10 @@ impl FlightService for FlightDataService {
         // FileIO can resolve). Cross-check against the live file set before reading
         // any bytes. An unknown table is itself a bad ticket (no-leak: we never
         // reveal existence beyond "rejected").
+        //
+        // The snapshot may advance between this check and the read below; a path
+        // live now but GC'd by read-time degrades to a benign read error, never a
+        // cross-table leak — acceptable for the live-snapshot-only contract.
         let snap = match self.serving_catalog.current_snapshot(&table).await {
             Ok(s) => s,
             // An unknown table is itself a bad ticket; reject without revealing more.
