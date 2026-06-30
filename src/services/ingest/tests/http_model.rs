@@ -329,7 +329,12 @@ async fn unknown_type_is_403_no_leak() {
 /// validates type existence, which the infer-and-create flow must precede). Inserts the
 /// `acl.role_grant` row directly, mirroring the adapter's `(kind,a,b)`/action/effect
 /// encoding. Standing in for the deferred ontology-authoring capability.
-async fn grant_write_absent_type(pg: &PgControlPlane, pool: &PgPool, subject: &str, type_name: &str) {
+async fn grant_write_absent_type(
+    pg: &PgControlPlane,
+    pool: &PgPool,
+    subject: &str,
+    type_name: &str,
+) {
     let subj = SubjectId(subject.into());
     let role = RoleId(format!("{subject}-role"));
     pg.define_subject(&subj).await.unwrap();
@@ -392,12 +397,21 @@ async fn infer_and_create_lands_and_records_the_type() {
 
     let app = protected(state, pg.clone());
     let (status, json) = post_model_q(app, "gadget", "", &token, ipc_bytes(&sample_batch())).await;
-    assert_eq!(status, StatusCode::OK, "authorized POST to an absent type infers + creates");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "authorized POST to an absent type infers + creates"
+    );
     assert_eq!(json["type"], "gadget");
-    json["snapshot_id"].as_i64().expect("snapshot_id is an integer");
+    json["snapshot_id"]
+        .as_i64()
+        .expect("snapshot_id is an integer");
 
     // The inferred ObjectType matches the batch schema (names, logical types, nullability).
-    let ot = pg.get_type(&TypeName("gadget".into())).await.expect("type created");
+    let ot = pg
+        .get_type(&TypeName("gadget".into()))
+        .await
+        .expect("type created");
     let props: Vec<(&str, &str, bool)> = ot
         .properties
         .iter()
@@ -405,7 +419,13 @@ async fn infer_and_create_lands_and_records_the_type() {
         .collect();
     assert_eq!(props, vec![("id", "long", true), ("name", "string", false)]);
     assert_eq!(ot.identity, None);
-    assert_eq!(ot.table, TableRef { schema: "main".into(), name: "gadget".into() });
+    assert_eq!(
+        ot.table,
+        TableRef {
+            schema: "main".into(),
+            name: "gadget".into()
+        }
+    );
 
     // The rows landed and are servable through the engine path.
     let catalog = IcebergCatalog::new(pool.clone());
@@ -429,13 +449,26 @@ async fn identity_query_param_is_honored() {
     let token = session_token(&pg, "alice").await;
 
     let app = protected(state, pg.clone());
-    let (status, _json) =
-        post_model_q(app, "keyed", "identity=id", &token, ipc_bytes(&sample_batch())).await;
+    let (status, _json) = post_model_q(
+        app,
+        "keyed",
+        "identity=id",
+        &token,
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
-    let ot = pg.get_type(&TypeName("keyed".into())).await.expect("type created");
+    let ot = pg
+        .get_type(&TypeName("keyed".into()))
+        .await
+        .expect("type created");
     assert_eq!(ot.identity, Some("id".into()), "declared identity recorded");
-    let id = ot.properties.iter().find(|p| p.name == "id").expect("id prop");
+    let id = ot
+        .properties
+        .iter()
+        .find(|p| p.name == "id")
+        .expect("id prop");
     assert!(id.required, "identity property is forced required");
 
     // The identity value addresses a row (the column carries addressable values).
@@ -460,8 +493,14 @@ async fn identity_naming_absent_column_is_rejected_and_nothing_created() {
     let token = session_token(&pg, "alice").await;
 
     let app = protected(state, pg.clone());
-    let (status, _json) =
-        post_model_q(app, "badid", "identity=nope", &token, ipc_bytes(&sample_batch())).await;
+    let (status, _json) = post_model_q(
+        app,
+        "badid",
+        "identity=nope",
+        &token,
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
@@ -492,18 +531,30 @@ async fn re_post_conforms_then_rejects_a_differing_batch() {
     // Second POST that CONFORMS to the now-existing type -> 200 (hits the slice-1 path).
     let app = protected(state.clone(), pg.clone());
     let (s2, _) = post_model_q(app, "again", "", &token, ipc_bytes(&sample_batch())).await;
-    assert_eq!(s2, StatusCode::OK, "a conforming re-post lands via slice-1 conform");
+    assert_eq!(
+        s2,
+        StatusCode::OK,
+        "a conforming re-post lands via slice-1 conform"
+    );
 
     // Second POST that DIFFERS (missing the required "id") -> 422, nothing new lands.
     let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)]));
-    let differing = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["z"]))]).unwrap();
+    let differing =
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["z"]))]).unwrap();
     let app = protected(state, pg.clone());
     let (s3, json) = post_model_q(app, "again", "", &token, ipc_bytes(&differing)).await;
-    assert_eq!(s3, StatusCode::UNPROCESSABLE_ENTITY, "a differing batch is a conformance failure");
+    assert_eq!(
+        s3,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a differing batch is a conformance failure"
+    );
     assert_eq!(json["violations"][0]["column"], "id");
 
     // The type is unchanged (still the inferred shape).
-    let ot = pg.get_type(&TypeName("again".into())).await.expect("type still there");
+    let ot = pg
+        .get_type(&TypeName("again".into()))
+        .await
+        .expect("type still there");
     assert_eq!(ot.properties.len(), 2);
 
     let _ = pool; // keep the fixture db alive for the duration of the test
@@ -527,7 +578,10 @@ async fn unmappable_column_is_422_and_nothing_created() {
     ]));
     let batch = RecordBatch::try_new(
         schema,
-        vec![Arc::new(Int64Array::from(vec![1i64])), Arc::new(Date32Array::from(vec![0]))],
+        vec![
+            Arc::new(Int64Array::from(vec![1i64])),
+            Arc::new(Date32Array::from(vec![0])),
+        ],
     )
     .unwrap();
 

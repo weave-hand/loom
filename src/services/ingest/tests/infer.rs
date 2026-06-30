@@ -21,7 +21,10 @@ fn maps_each_field_to_a_property_in_order() {
     assert_eq!(ty.name, TypeName("gadget".into()));
     assert_eq!(
         ty.table,
-        TableRef { schema: "main".into(), name: "gadget".into() }
+        TableRef {
+            schema: "main".into(),
+            name: "gadget".into()
+        }
     );
     assert_eq!(ty.identity, None);
     assert!(ty.derived.is_empty());
@@ -34,7 +37,11 @@ fn maps_each_field_to_a_property_in_order() {
     // required = !nullable: id is non-null -> required; name/score nullable -> not.
     assert_eq!(
         props,
-        vec![("id", "long", true), ("name", "string", false), ("score", "double", false)]
+        vec![
+            ("id", "long", true),
+            ("name", "string", false),
+            ("score", "double", false)
+        ]
     );
 }
 
@@ -47,8 +54,15 @@ fn declared_identity_is_recorded_and_forced_required() {
     let ty = infer_object_type(&TypeName("widget".into()), &s, Some("sku")).expect("infer");
 
     assert_eq!(ty.identity, Some("sku".into()));
-    let sku = ty.properties.iter().find(|p| p.name == "sku").expect("sku prop");
-    assert!(sku.required, "the declared identity is forced required even if the field is nullable");
+    let sku = ty
+        .properties
+        .iter()
+        .find(|p| p.name == "sku")
+        .expect("sku prop");
+    assert!(
+        sku.required,
+        "the declared identity is forced required even if the field is nullable"
+    );
 }
 
 #[test]

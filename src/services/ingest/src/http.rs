@@ -26,7 +26,7 @@ use crate::IngestError;
 use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason};
 use crate::landing::{LandRequest, LandingMaterializer};
 use crate::materialize::resolve_columns;
-use crate::model::{infer_object_type, model_shape_from_type, InferTypeError};
+use crate::model::{InferTypeError, infer_object_type, model_shape_from_type};
 use crate::openapi::{JobAck, LandAck, ModelLandAck, ViolationsBody};
 use service_runtime::Subject;
 
@@ -117,7 +117,7 @@ struct LandColumn {
 /// Query params for `POST /models/{type}`. `identity` names the column to record as the
 /// inferred type's primary key (type-absent branch only; ignored when the type exists).
 #[derive(Deserialize)]
-struct ModelQuery {
+pub(crate) struct ModelQuery {
     identity: Option<String>,
 }
 
@@ -226,24 +226,23 @@ pub(crate) async fn land_model(
     let otype = match st.cp.ontology().get_type(&type_name).await {
         Ok(t) => t,
         Err(ControlPlaneError::NotFound(_)) => {
-            let inferred =
-                match infer_object_type(&type_name, &schema, q.identity.as_deref()) {
-                    Ok(t) => t,
-                    Err(InferTypeError::UnsupportedColumns(violations)) => {
-                        return (
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            Json(violations_json(&violations)),
-                        )
-                            .into_response();
-                    }
-                    Err(InferTypeError::IdentityNotFound(col)) => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            format!("identity column `{col}` is not present in the batch"),
-                        )
-                            .into_response();
-                    }
-                };
+            let inferred = match infer_object_type(&type_name, &schema, q.identity.as_deref()) {
+                Ok(t) => t,
+                Err(InferTypeError::UnsupportedColumns(violations)) => {
+                    return (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(violations_json(&violations)),
+                    )
+                        .into_response();
+                }
+                Err(InferTypeError::IdentityNotFound(col)) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("identity column `{col}` is not present in the batch"),
+                    )
+                        .into_response();
+                }
+            };
             if st.cp.ontology().define_type(inferred).await.is_err() {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
