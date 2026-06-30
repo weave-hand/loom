@@ -270,4 +270,87 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             snapshot_id: snap.0,
         }))
     }
+
+    // ---- Governance-read stubs (implemented in Task 4) ----
+
+    async fn check(
+        &self,
+        _req: Request<pb::CheckRequest>,
+    ) -> std::result::Result<Response<pb::CheckResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: check not yet implemented",
+        ))
+    }
+
+    async fn policies_for(
+        &self,
+        _req: Request<pb::PoliciesForRequest>,
+    ) -> std::result::Result<Response<pb::PoliciesForResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: policies_for not yet implemented",
+        ))
+    }
+
+    async fn get_type(
+        &self,
+        _req: Request<pb::GetTypeRequest>,
+    ) -> std::result::Result<Response<pb::GetTypeResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: get_type not yet implemented",
+        ))
+    }
+
+    async fn resolve(
+        &self,
+        _req: Request<pb::ResolveRequest>,
+    ) -> std::result::Result<Response<pb::ResolveResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: resolve not yet implemented",
+        ))
+    }
+
+    async fn links(
+        &self,
+        _req: Request<pb::LinksRequest>,
+    ) -> std::result::Result<Response<pb::LinksResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: links not yet implemented",
+        ))
+    }
+
+    async fn links_to(
+        &self,
+        _req: Request<pb::LinksToRequest>,
+    ) -> std::result::Result<Response<pb::LinksToResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: links_to not yet implemented",
+        ))
+    }
+
+    async fn get_action(
+        &self,
+        _req: Request<pb::GetActionRequest>,
+    ) -> std::result::Result<Response<pb::GetActionResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: get_action not yet implemented",
+        ))
+    }
+
+    async fn vector_indexes_for(
+        &self,
+        _req: Request<pb::VectorIndexesForRequest>,
+    ) -> std::result::Result<Response<pb::VectorIndexesForResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: vector_indexes_for not yet implemented",
+        ))
+    }
+
+    async fn get_vector_index(
+        &self,
+        _req: Request<pb::GetVectorIndexRequest>,
+    ) -> std::result::Result<Response<pb::GetVectorIndexResponse>, Status> {
+        Err(Status::unimplemented(
+            "governance reads: get_vector_index not yet implemented",
+        ))
+    }
 }

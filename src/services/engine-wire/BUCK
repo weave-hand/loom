@@ -122,3 +122,16 @@ rust_test(
         "//third-party:uuid",
     ],
 )
+
+rust_test(
+    name = "cp-status",
+    crate = "cp_status",
+    srcs = ["tests/cp_status.rs"],
+    crate_root = "tests/cp_status.rs",
+    edition = "2024",
+    deps = [
+        ":engine-wire",
+        "//src/control-plane/core:core",
+        "//third-party:tonic",
+    ],
+)
