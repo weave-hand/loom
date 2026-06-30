@@ -462,9 +462,10 @@ async fn identity_naming_absent_column_is_rejected_and_nothing_created() {
     let app = protected(state, pg.clone());
     let (status, _json) =
         post_model_q(app, "badid", "identity=nope", &token, ipc_bytes(&sample_batch())).await;
-    assert!(
-        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
-        "a ?identity naming an absent column is rejected (got {status})"
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a ?identity naming an absent column is a deterministic 400"
     );
     assert!(
         matches!(
