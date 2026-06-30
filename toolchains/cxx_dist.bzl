@@ -114,12 +114,16 @@ def _wasm_cxx_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
                 link_ordering = None,
             ),
             bolt_enabled = False,
+            # Point binutils at the LLVM dist (exec_dep) rather than bare host
+            # names: a pure-Rust wasm link never invokes these, but if buck's link
+            # path ever calls strip/nm/objcopy (or LTO), the host tools would (a) be
+            # non-hermetic on RE and (b) not understand wasm. The llvm-* tools do.
             binary_utilities_info = BinaryUtilitiesInfo(
-                nm = RunInfo(args = ["nm"]),
-                objcopy = RunInfo(args = ["objcopy"]),
-                objdump = RunInfo(args = ["objdump"]),
-                ranlib = RunInfo(args = ["ranlib"]),
-                strip = RunInfo(args = ["strip"]),
+                nm = RunInfo(args = [cmd_args(llvm, format = "{}/bin/llvm-nm")]),
+                objcopy = RunInfo(args = [cmd_args(llvm, format = "{}/bin/llvm-objcopy")]),
+                objdump = RunInfo(args = [cmd_args(llvm, format = "{}/bin/llvm-objdump")]),
+                ranlib = RunInfo(args = [cmd_args(llvm, format = "{}/bin/llvm-ranlib")]),
+                strip = RunInfo(args = [cmd_args(llvm, format = "{}/bin/llvm-strip")]),
                 dwp = None,
                 bolt_msdk = None,
             ),
@@ -158,7 +162,7 @@ def _wasm_cxx_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             header_mode = HeaderMode("symlink_tree_only"),
             cpp_dep_tracking_mode = DepTrackingMode("show_headers"),
             pic_behavior = PicBehavior("supported"),
-            llvm_link = RunInfo(args = ["llvm-link"]),
+            llvm_link = RunInfo(args = [cmd_args(llvm, format = "{}/bin/llvm-link")]),
             use_dep_files = True,
             runtime_dependency_handling = RuntimeDependencyHandling("no_symlink"),
         ),

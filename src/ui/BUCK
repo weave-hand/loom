@@ -21,9 +21,11 @@ rust_binary(
 
 # Run wasm-bindgen over app.wasm to emit ES-module glue (app.js + app_bg.wasm),
 # then drop index.html alongside — a browser-loadable bundle in $OUT (dist) once
-# served over HTTP. Asserts the CLI version equals the single-source-of-truth
-# WASM_BINDGEN_VERSION (belt-and-suspenders over the `=` crate pin) so a skewed
-# CLI can't silently produce glue that panics at load.
+# served over HTTP. The assertion checks the CLI binary == WASM_BINDGEN_VERSION
+# (catches a wrong url/sha for the http_file); it does NOT by itself prove
+# crate == CLI — that lockstep comes from the `=WASM_BINDGEN_VERSION` crate pin in
+# Cargo.toml plus wasm-bindgen-cli's own embedded schema check, which hard-errors
+# here on a crate/CLI mismatch rather than letting glue panic at load.
 genrule(
     name = "bundle",
     out = "dist",
