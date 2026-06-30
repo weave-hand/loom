@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
 
 rust_library(
@@ -117,6 +118,16 @@ loom_fixture_test(
         "//third-party:tokio-stream",
         "//third-party:tonic",
         "//third-party:uuid",
+    ],
+)
+
+rust_test(
+    name = "flight-membership-helper",
+    crate = "flight_membership_helper",
+    srcs = ["tests/flight_membership_helper.rs"],
+    crate_root = "tests/flight_membership_helper.rs",
+    deps = [
+        ":engine",
     ],
 )
 
