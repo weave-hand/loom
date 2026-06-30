@@ -3,6 +3,8 @@
 //! Postgres server. Promotes the test fixture's ephemeral-cluster logic to a
 //! persistent runtime. `initdb`/`postgres` refuse to run as root by design.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -41,6 +43,8 @@ pub enum EmbeddedPgError {
     Initdb(std::process::ExitStatus),
     #[error("postgres did not become ready within {0:?}")]
     NotReady(std::time::Duration),
+    #[error("postgres exited during startup: {0}")]
+    ServerExited(std::process::ExitStatus),
     #[error("connect: {0}")]
     Connect(sqlx::Error),
     #[error("create database: {0}")]
@@ -64,8 +68,10 @@ pub fn validate_db_name(name: &str) -> Result<(), EmbeddedPgError> {
 }
 
 /// A running, owned embedded Postgres. Prefer `shutdown()` for a clean
-/// `pg_ctl stop -m fast`; on `Drop` the child is killed (`kill_on_drop`) so a
-/// panic cannot leak a postmaster.
+/// `pg_ctl stop -m fast`; an abnormal `Drop` (panic / early-return during
+/// `start`) stops the postmaster gracefully (`pg_ctl stop -m immediate`, which
+/// reaps backends), falling back to SIGKILL (`kill_on_drop`) if that fails, so
+/// a panic cannot leak a postmaster.
 pub struct EmbeddedPg {
     server: Option<Child>,
     bin_dir: PathBuf,
@@ -73,6 +79,9 @@ pub struct EmbeddedPg {
     data_dir: PathBuf,
     socket_dir: PathBuf,
     database: String,
+    /// Held for the cluster's life; its `Drop` releases the on-disk owner lock.
+    #[allow(dead_code, reason = "RAII guard — only its Drop matters")]
+    _owner_lock: OwnerLock,
 }
 
 /// Build a tokio `Command` for a pg binary with the shared-library search path.
@@ -118,6 +127,84 @@ fn check_not_already_running(data_dir: &Path) -> Result<(), EmbeddedPgError> {
     }
 }
 
+/// Create `dir` (and any missing parents) and clamp the **leaf** to `0700`
+/// (owner rwx only). With `-A trust` a world-traversable socket dir would let
+/// any local user connect as the `postgres` superuser; `initdb` already wants
+/// `0700` on the data dir, so this matches it and additionally locks the socket
+/// dir. Only the leaf is re-permissioned — intermediate parents created on the
+/// way keep their default mode. Idempotent: re-clamping an existing dir is a
+/// no-op.
+fn ensure_dir_secure(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Cross-process owner-lockfile path for a data dir. It lives *beside* the data
+/// dir, not inside it: `initdb` refuses a non-empty data dir, so a lockfile
+/// within would break a fresh init. For `/x/pgdata` the lock is
+/// `/x/pgdata.loomlock`.
+fn owner_lock_path(data_dir: &Path) -> PathBuf {
+    let mut p = data_dir.as_os_str().to_os_string();
+    p.push(".loomlock");
+    PathBuf::from(p)
+}
+
+/// RAII single-owner lock for a data dir. The lockfile's existence (recording
+/// our pid) *is* the lock; the guard removes it on drop so the dir is
+/// reclaimable after a clean shutdown, an early-return error, or a panic.
+struct OwnerLock {
+    path: PathBuf,
+}
+
+impl Drop for OwnerLock {
+    fn drop(&mut self) {
+        // Best-effort: a leftover lockfile is reclaimed by the next start's
+        // pid-liveness check, so a removal error is not worth surfacing.
+        std::fs::remove_file(&self.path).ok();
+    }
+}
+
+/// Acquire the single-owner lock for `data_dir`. Closes the `initdb`-race gap
+/// the `postmaster.pid` check misses: two loom processes starting on the same
+/// empty dir both pass the pid check (no pidfile yet) and would race `initdb`.
+/// The lock is an `O_EXCL` create recording our pid; a contender whose recorded
+/// pid is still alive (`/proc/<pid>`) loses with `AlreadyLocked`, while a lock
+/// left by a crashed owner (pid dead) is reclaimed.
+fn acquire_owner_lock(data_dir: &Path) -> Result<OwnerLock, EmbeddedPgError> {
+    let path = owner_lock_path(data_dir);
+    // At most a couple of iterations: a stale lock is removed once, then the
+    // create either wins or finds a live holder. The bound guards against any
+    // pathological flapping.
+    for _ in 0..5 {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                // Record our pid so a later contender can test our liveness.
+                write!(f, "{}", std::process::id())?;
+                f.flush()?;
+                return Ok(OwnerLock { path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let holder_alive = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    .is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists());
+                if holder_alive {
+                    return Err(EmbeddedPgError::AlreadyLocked(data_dir.to_path_buf()));
+                }
+                // Stale lock from a crashed owner — remove it and retry the create.
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(EmbeddedPgError::AlreadyLocked(data_dir.to_path_buf()))
+}
+
 impl EmbeddedPg {
     async fn run_initdb(cfg: &EmbeddedPgConfig) -> Result<(), EmbeddedPgError> {
         let out = pg_command(cfg.bin_dir.join("initdb"), &cfg.ld_library_path)
@@ -147,9 +234,10 @@ impl EmbeddedPg {
 
     fn spawn_postgres(cfg: &EmbeddedPgConfig) -> Result<Child, EmbeddedPgError> {
         // Unix socket only (no TCP). Durability stays ON (real data, not a test).
-        // kill_on_drop: if the handle is dropped without shutdown() (e.g. a panic),
-        // tokio SIGKILLs the child so no postmaster is leaked; the durable data dir
-        // recovers on next start.
+        // kill_on_drop is the *fallback* leak-guard: `EmbeddedPg::Drop` first asks
+        // pg_ctl for a graceful immediate stop (reaping backends); only if that
+        // fails does tokio SIGKILL the postmaster on the child's drop. The durable
+        // data dir recovers on next start either way.
         let child = pg_command(cfg.bin_dir.join("postgres"), &cfg.ld_library_path)
             .arg("-D")
             .arg(&cfg.data_dir)
@@ -169,9 +257,16 @@ impl EmbeddedPg {
             .database("postgres")
     }
 
-    async fn wait_ready(&self) -> Result<(), EmbeddedPgError> {
+    async fn wait_ready(&mut self) -> Result<(), EmbeddedPgError> {
         let timeout = Duration::from_secs(15);
         for _ in 0..300 {
+            // If the postmaster has already exited, fail fast with the real exit
+            // status instead of polling a dead socket for the full timeout.
+            if let Some(child) = self.server.as_mut() {
+                if let Some(status) = child.try_wait()? {
+                    return Err(EmbeddedPgError::ServerExited(status));
+                }
+            }
             if let Ok(mut conn) = self.maintenance_opts().connect().await {
                 drop(conn.close().await);
                 return Ok(());
@@ -215,8 +310,12 @@ impl EmbeddedPg {
             return Err(EmbeddedPgError::RunningAsRoot);
         }
         validate_db_name(&cfg.database)?;
-        std::fs::create_dir_all(&cfg.data_dir)?;
-        std::fs::create_dir_all(&cfg.socket_dir)?;
+        ensure_dir_secure(&cfg.data_dir)?;
+        ensure_dir_secure(&cfg.socket_dir)?;
+        // Single-owner lock (covers the fresh-init race the pidfile check misses).
+        // Acquired before initdb/spawn; the guard frees the lockfile on any
+        // early-return below or when the handle is dropped.
+        let owner_lock = acquire_owner_lock(&cfg.data_dir)?;
         // Single-owner guard against an already-running cluster on this data dir.
         check_not_already_running(&cfg.data_dir)?;
 
@@ -225,13 +324,14 @@ impl EmbeddedPg {
             Self::run_initdb(&cfg).await?;
         }
         let server = Self::spawn_postgres(&cfg)?;
-        let pg = EmbeddedPg {
+        let mut pg = EmbeddedPg {
             server: Some(server),
             bin_dir: cfg.bin_dir,
             ld_library_path: cfg.ld_library_path,
             data_dir: cfg.data_dir,
             socket_dir: cfg.socket_dir,
             database: cfg.database,
+            _owner_lock: owner_lock,
         };
         pg.wait_ready().await?;
         pg.ensure_database().await?;
@@ -267,6 +367,43 @@ impl EmbeddedPg {
             Ok(())
         } else {
             Err(EmbeddedPgError::Stop(status))
+        }
+    }
+}
+
+impl std::fmt::Debug for EmbeddedPg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmbeddedPg")
+            .field("bin_dir", &self.bin_dir)
+            .field("data_dir", &self.data_dir)
+            .field("socket_dir", &self.socket_dir)
+            .field("database", &self.database)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for EmbeddedPg {
+    fn drop(&mut self) {
+        // `shutdown()` already stopped the server and took `server` (None here),
+        // so this best-effort path only runs on an abnormal drop — a panic or an
+        // early-return error during `start()`. Stop the postmaster *gracefully*
+        // (immediate mode makes it terminate its backends; a bare SIGKILL via
+        // kill_on_drop would orphan them), then fall back to SIGKILL if pg_ctl
+        // can't. The `_owner_lock` field's own Drop frees the lockfile afterwards.
+        if let Some(mut child) = self.server.take() {
+            let mut cmd = std::process::Command::new(self.bin_dir.join("pg_ctl"));
+            if !self.ld_library_path.is_empty() {
+                cmd.env("LD_LIBRARY_PATH", &self.ld_library_path);
+            }
+            cmd.arg("stop")
+                .arg("-D")
+                .arg(&self.data_dir)
+                .args(["-m", "immediate", "-w"]);
+            let stopped = cmd.status().map(|s| s.success()).unwrap_or(false);
+            if !stopped {
+                // pg_ctl couldn't stop it (e.g. already exited) — best-effort kill.
+                child.start_kill().ok();
+            }
         }
     }
 }
