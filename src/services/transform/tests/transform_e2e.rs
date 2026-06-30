@@ -170,7 +170,7 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
     let out_ds = DatasetRef::from(&tref("main", "orders_enriched"));
     let ups = pg
         .lineage()
-        .upstream(&out_ds, PageReq::unbounded())
+        .upstream(&out_ds, 1, PageReq::unbounded())
         .await
         .unwrap();
     let up_names: std::collections::HashSet<String> =
