@@ -25,3 +25,16 @@ platform(
     ],
     visibility = ["PUBLIC"],
 )
+
+# wasm cross-compile platform for //src/ui. Carries the host os/cpu (so exec-side
+# deps like proc-macros still resolve to the host toolchain) PLUS the wasm32
+# constraint that flips the rust toolchain's target triple + std dist.
+platform(
+    name = "wasm",
+    constraint_values = [
+        "prelude//cpu/constraints:x86_64",
+        "prelude//os/constraints:linux",
+        "root//platforms/constraints:wasm32",
+    ],
+    visibility = ["PUBLIC"],
+)

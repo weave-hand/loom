@@ -1,0 +1,11 @@
+# Marks a build targeting the wasm32-unknown-unknown Rust triple. The rust
+# toolchain (toolchains/BUCK) select()s its triple + std dist on this value;
+# //platforms:wasm carries it. Native platforms omit it, so the DEFAULT
+# (host) toolchain branch is unchanged for the rest of the tree.
+constraint_setting(name = "rust_target")
+
+constraint_value(
+    name = "wasm32",
+    constraint_setting = ":rust_target",
+    visibility = ["PUBLIC"],
+)

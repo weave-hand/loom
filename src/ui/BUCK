@@ -1,0 +1,15 @@
+# Yew WASM UI experiment. Pins default_target_platform to //platforms:wasm so the
+# native `buck2 build //src/...` CI sweep cross-compiles this to wasm instead of
+# trying (and failing) to build it for the host. See
+# docs/superpowers/specs/2026-06-30-yew-wasm-ui-experiment-design.md.
+
+rust_binary(
+    name = "app",
+    crate = "app",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    default_target_platform = "//platforms:wasm",
+    deps = [],
+    visibility = ["PUBLIC"],
+)

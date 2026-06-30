@@ -3,7 +3,7 @@ load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_to
 load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "remote_python_toolchain")
-load(":cxx_dist.bzl", "hermetic_cxx_tools")
+load(":cxx_dist.bzl", "hermetic_cxx_tools", "wasm_cxx_toolchain")
 load(":rust_dist.bzl", "hermetic_rust_toolchain")
 
 # -- Rust nightly 2026-03-28 (1.96.0-nightly) --------------------------------
@@ -35,6 +35,16 @@ http_archive(
     urls = ["https://static.rust-lang.org/dist/{}/rust-std-nightly-{}.tar.xz".format(RUST_NIGHTLY, RUST_RPI)],
     sha256 = "6f4333d4d0a91bde4b34eab56642e9d981d1991b0e3f74a0123945f8aac92542",
     strip_prefix = "rust-std-nightly-{}/rust-std-{}".format(RUST_RPI, RUST_RPI),
+)
+
+# wasm std for the //src/ui Yew experiment. Same nightly; rustc dist is reused
+# (it is target-agnostic), only the std component is per-target.
+http_archive(
+    name = "rust-std-wasm32",
+    urls = ["https://static.rust-lang.org/dist/{}/rust-std-nightly-wasm32-unknown-unknown.tar.xz".format(RUST_NIGHTLY)],
+    sha256 = "bdece5c57f7dc049a690bcb0e0a603811a07619980ad4df52cf2ff182649e23e",
+    strip_prefix = "rust-std-nightly-wasm32-unknown-unknown/rust-std-wasm32-unknown-unknown",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -104,9 +114,30 @@ hermetic_cxx_tools(
 
 # -- Toolchains ----------------------------------------------------------------
 
+# `:cxx` is a toolchain_alias that select()s the cxx toolchain on the wasm32
+# constraint: native (clang/gnu) for the rest of the tree, a wasm linker-type
+# toolchain for //src/ui's wasm32 cross-compile. The rust prelude routes the
+# final rustc link through whichever cxx toolchain resolves here, so this is what
+# makes wasm linking use `lld -flavor wasm` instead of host clang++.
 system_cxx_toolchain(
-    name = "cxx",
+    name = "cxx-native",
     _cxx_tools_info = ":cxx-tools",
+    visibility = ["PUBLIC"],
+)
+
+wasm_cxx_toolchain(
+    name = "cxx-wasm",
+    llvm_dist = ":llvm-x86_64-linux",
+    rustc_dist = ":rustc-x86_64-linux",
+    visibility = ["PUBLIC"],
+)
+
+toolchain_alias(
+    name = "cxx",
+    actual = select({
+        "root//platforms/constraints:wasm32": ":cxx-wasm",
+        "DEFAULT": ":cxx-native",
+    }),
     visibility = ["PUBLIC"],
 )
 
@@ -230,9 +261,15 @@ CLIPPY_ALLOWS = [
 hermetic_rust_toolchain(
     name = "rust",
     rustc_dist = ":rustc-x86_64-linux",
-    std_dist = ":rust-std-x86_64-linux",
+    std_dist = select({
+        "root//platforms/constraints:wasm32": ":rust-std-wasm32",
+        "DEFAULT": ":rust-std-x86_64-linux",
+    }),
     clippy_dist = ":clippy-x86_64-linux",
-    rustc_target_triple = RUST_HOST,
+    rustc_target_triple = select({
+        "root//platforms/constraints:wasm32": "wasm32-unknown-unknown",
+        "DEFAULT": RUST_HOST,
+    }),
     host_triple = RUST_HOST,
     default_edition = "2024",
     rustc_flags = ["-Copt-level=2"] + select({
