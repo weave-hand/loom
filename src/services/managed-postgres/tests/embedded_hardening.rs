@@ -126,7 +126,10 @@ async fn drop_without_shutdown_stops_postmaster_and_releases_lock() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(gone, "postmaster {pid} was stopped by Drop, not left orphaned");
+    assert!(
+        gone,
+        "postmaster {pid} was stopped by Drop, not left orphaned"
+    );
 
     // The owner lock (sibling of data_dir) is released on drop.
     let mut lock = data.as_os_str().to_os_string();
