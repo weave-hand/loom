@@ -862,19 +862,15 @@ impl Drop for EngineGuard {
     }
 }
 
-/// Spawn an `EngineControlService` on a UDS backed by `db` + `warehouse`, and return a
-/// query-api `EngineActionClient` pointing at it (plus a keep-alive guard). The engine
-/// writes to the same Postgres + warehouse the test reads from.
-pub async fn spawn_engine_writer(
+/// Spawn an `EngineControlService` on a UDS and return its socket path + keep-alive guard.
+/// The engine connects to the same Postgres + warehouse the test uses.
+pub async fn spawn_engine(
     fx: &control_plane_postgres::fixture::PgFixture,
     db: &str,
     warehouse: &std::path::Path,
     inline_byte_limit: usize,
     flush_byte_threshold: i64,
-) -> (
-    query_api::engine_action_client::EngineActionClient,
-    EngineGuard,
-) {
+) -> (String, EngineGuard) {
     use control_plane_postgres::iceberg_sql_catalog::{
         SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
     };
@@ -935,16 +931,41 @@ pub async fn spawn_engine_writer(
     });
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    let client = query_api::engine_action_client::EngineActionClient::connect(sock_str)
-        .await
-        .expect("connect EngineActionClient");
     (
-        client,
+        sock_str,
         EngineGuard {
             _sock_dir: sock_dir,
             handle,
         },
     )
+}
+
+/// Connect a raw governance/queue client to a spawned engine socket.
+pub async fn connect_gov_client(sock: &str) -> engine_wire::client::GrpcQueueClient {
+    engine_wire::client::GrpcQueueClient::connect(sock.to_string())
+        .await
+        .expect("connect GrpcQueueClient")
+}
+
+/// Spawn an `EngineControlService` on a UDS backed by `db` + `warehouse`, and return a
+/// query-api `EngineActionClient` pointing at it (plus a keep-alive guard). The engine
+/// writes to the same Postgres + warehouse the test reads from.
+pub async fn spawn_engine_writer(
+    fx: &control_plane_postgres::fixture::PgFixture,
+    db: &str,
+    warehouse: &std::path::Path,
+    inline_byte_limit: usize,
+    flush_byte_threshold: i64,
+) -> (
+    query_api::engine_action_client::EngineActionClient,
+    EngineGuard,
+) {
+    let (sock, guard) =
+        spawn_engine(fx, db, warehouse, inline_byte_limit, flush_byte_threshold).await;
+    let client = query_api::engine_action_client::EngineActionClient::connect(sock)
+        .await
+        .expect("connect EngineActionClient");
+    (client, guard)
 }
 
 /// Drive the HTTP router (behind the auth gate) with a `POST` carrying a JSON body and

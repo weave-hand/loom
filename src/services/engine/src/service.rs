@@ -2,7 +2,7 @@
 //! Delegates queue operations to a `PgControlPlane` and flush_table to
 //! `iceberg_flush::flush_table`.
 
-use control_plane_core::{Catalog, Queue, RetryPolicy, RunId, TableRef};
+use control_plane_core::{Catalog, ControlPlane, Queue, RetryPolicy, RunId, TableRef};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_gc::gc_table;
@@ -25,6 +25,18 @@ fn parse_id(s: &str) -> std::result::Result<control_plane_core::JobId, Status> {
     Ok(control_plane_core::JobId(s.parse().map_err(|e| {
         Status::invalid_argument(format!("bad job id: {e}"))
     })?))
+}
+
+fn de_arg<T: serde::de::DeserializeOwned>(
+    json: &str,
+    what: &str,
+) -> std::result::Result<T, Status> {
+    serde_json::from_str(json)
+        .map_err(|e| Status::invalid_argument(format!("bad {what}_json: {e}")))
+}
+
+fn se_out<T: serde::Serialize>(v: &T) -> std::result::Result<String, Status> {
+    serde_json::to_string(v).map_err(|e| Status::internal(format!("encode failed: {e}")))
 }
 
 /// The engine's gRPC service implementation.
@@ -271,86 +283,146 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         }))
     }
 
-    // ---- Governance-read stubs (implemented in Task 4) ----
+    // ---- Governance-read handlers ----
 
     async fn check(
         &self,
-        _req: Request<pb::CheckRequest>,
+        req: Request<pb::CheckRequest>,
     ) -> std::result::Result<Response<pb::CheckResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: check not yet implemented",
-        ))
+        let r = req.into_inner();
+        let subject: control_plane_core::SubjectId = de_arg(&r.subject_json, "subject")?;
+        let action: control_plane_core::Action = de_arg(&r.action_json, "action")?;
+        let target: control_plane_core::PolicyTarget = de_arg(&r.target_json, "target")?;
+        let decision = self
+            .cp
+            .acl()
+            .check(&subject, action, &target)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::CheckResponse {
+            decision_json: se_out(&decision)?,
+        }))
     }
 
     async fn policies_for(
         &self,
-        _req: Request<pb::PoliciesForRequest>,
+        req: Request<pb::PoliciesForRequest>,
     ) -> std::result::Result<Response<pb::PoliciesForResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: policies_for not yet implemented",
-        ))
+        let r = req.into_inner();
+        let subject: control_plane_core::SubjectId = de_arg(&r.subject_json, "subject")?;
+        let action: control_plane_core::Action = de_arg(&r.action_json, "action")?;
+        let target: control_plane_core::PolicyTarget = de_arg(&r.target_json, "target")?;
+        let page: control_plane_core::PageReq = de_arg(&r.page_json, "page")?;
+        let policies = self
+            .cp
+            .acl()
+            .policies_for(&subject, action, &target, page)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::PoliciesForResponse {
+            page_json: se_out(&policies)?,
+        }))
     }
 
     async fn get_type(
         &self,
-        _req: Request<pb::GetTypeRequest>,
+        req: Request<pb::GetTypeRequest>,
     ) -> std::result::Result<Response<pb::GetTypeResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: get_type not yet implemented",
-        ))
+        let name = control_plane_core::TypeName(req.into_inner().type_name);
+        let ty = self.cp.ontology().get_type(&name).await.map_err(status)?;
+        Ok(Response::new(pb::GetTypeResponse {
+            object_type_json: se_out(&ty)?,
+        }))
     }
 
     async fn resolve(
         &self,
-        _req: Request<pb::ResolveRequest>,
+        req: Request<pb::ResolveRequest>,
     ) -> std::result::Result<Response<pb::ResolveResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: resolve not yet implemented",
-        ))
+        let name = control_plane_core::TypeName(req.into_inner().type_name);
+        let table = self.cp.ontology().resolve(&name).await.map_err(status)?;
+        Ok(Response::new(pb::ResolveResponse {
+            table_ref_json: se_out(&table)?,
+        }))
     }
 
     async fn links(
         &self,
-        _req: Request<pb::LinksRequest>,
+        req: Request<pb::LinksRequest>,
     ) -> std::result::Result<Response<pb::LinksResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: links not yet implemented",
-        ))
+        let r = req.into_inner();
+        let name = control_plane_core::TypeName(r.type_name);
+        let page: control_plane_core::PageReq = de_arg(&r.page_json, "page")?;
+        let links = self
+            .cp
+            .ontology()
+            .links(&name, page)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::LinksResponse {
+            page_json: se_out(&links)?,
+        }))
     }
 
     async fn links_to(
         &self,
-        _req: Request<pb::LinksToRequest>,
+        req: Request<pb::LinksToRequest>,
     ) -> std::result::Result<Response<pb::LinksToResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: links_to not yet implemented",
-        ))
+        let r = req.into_inner();
+        let name = control_plane_core::TypeName(r.type_name);
+        let page: control_plane_core::PageReq = de_arg(&r.page_json, "page")?;
+        let links = self
+            .cp
+            .ontology()
+            .links_to(&name, page)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::LinksToResponse {
+            page_json: se_out(&links)?,
+        }))
     }
 
     async fn get_action(
         &self,
-        _req: Request<pb::GetActionRequest>,
+        req: Request<pb::GetActionRequest>,
     ) -> std::result::Result<Response<pb::GetActionResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: get_action not yet implemented",
-        ))
+        let name = control_plane_core::ActionName(req.into_inner().action_name);
+        let action = self.cp.ontology().get_action(&name).await.map_err(status)?;
+        Ok(Response::new(pb::GetActionResponse {
+            action_def_json: se_out(&action)?,
+        }))
     }
 
     async fn vector_indexes_for(
         &self,
-        _req: Request<pb::VectorIndexesForRequest>,
+        req: Request<pb::VectorIndexesForRequest>,
     ) -> std::result::Result<Response<pb::VectorIndexesForResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: vector_indexes_for not yet implemented",
-        ))
+        let name = control_plane_core::TypeName(req.into_inner().type_name);
+        let indexes = self
+            .cp
+            .ontology()
+            .vector_indexes_for(&name)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::VectorIndexesForResponse {
+            indexes_json: se_out(&indexes)?,
+        }))
     }
 
     async fn get_vector_index(
         &self,
-        _req: Request<pb::GetVectorIndexRequest>,
+        req: Request<pb::GetVectorIndexRequest>,
     ) -> std::result::Result<Response<pb::GetVectorIndexResponse>, Status> {
-        Err(Status::unimplemented(
-            "governance reads: get_vector_index not yet implemented",
-        ))
+        let r = req.into_inner();
+        let name = control_plane_core::TypeName(r.type_name);
+        let index = self
+            .cp
+            .ontology()
+            .get_vector_index(&name, &r.name)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::GetVectorIndexResponse {
+            index_json: se_out(&index)?,
+        }))
     }
 }

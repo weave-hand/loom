@@ -17,6 +17,7 @@ rust_library(
         "//third-party:futures",
         "//third-party:object_store",
         "//third-party:prost",
+        "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tonic",
