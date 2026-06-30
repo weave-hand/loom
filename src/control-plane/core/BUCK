@@ -48,6 +48,20 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [
         ":core",
+        "//third-party:proptest",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "governance-serde-roundtrip",
+    crate = "governance_serde_roundtrip",
+    srcs = ["tests/governance_serde_roundtrip.rs"],
+    crate_root = "tests/governance_serde_roundtrip.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
         "//third-party:serde",
         "//third-party:serde_json",
     ],
