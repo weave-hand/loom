@@ -1,8 +1,8 @@
 //! Hermetic `POST /models/{type}` e2e: define an ontology type, POST a conforming
 //! Arrow batch as a Write-granted subject through the *protected* router, and prove
 //! the rows land into the type's table and read back through the engine serving
-//! path. Plus the 422 (non-conforming), 403 (ACL deny), and 403 (unknown type — no
-//! existence leak) paths.
+//! path. Plus the 422 (non-conforming), 403 (ACL deny), 403 (unknown type — no
+//! existence leak), and the infer-and-create paths.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -323,4 +323,223 @@ async fn unknown_type_is_403_no_leak() {
     let (status, _json) = post_model(app, "Ghost", &token, ipc_bytes(&sample_batch())).await;
 
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Seed a Write grant on a type that does NOT exist yet (the public `grant` API
+/// validates type existence, which the infer-and-create flow must precede). Inserts the
+/// `acl.role_grant` row directly, mirroring the adapter's `(kind,a,b)`/action/effect
+/// encoding. Standing in for the deferred ontology-authoring capability.
+async fn grant_write_absent_type(pg: &PgControlPlane, pool: &PgPool, subject: &str, type_name: &str) {
+    let subj = SubjectId(subject.into());
+    let role = RoleId(format!("{subject}-role"));
+    pg.define_subject(&subj).await.unwrap();
+    pg.define_role(&role).await.unwrap();
+    pg.assign_role(&subj, &role).await.unwrap();
+    sqlx::query(
+        "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b, effect) \
+         values ($1, 'write', 'type', $2, '', 'allow') \
+         on conflict (role_id, action, target_kind, target_a, target_b) do nothing",
+    )
+    .bind(&role.0)
+    .bind(type_name)
+    .execute(pool)
+    .await
+    .expect("seed grant on absent type");
+}
+
+/// Like `post_model` but appends a raw query string (e.g. "identity=id").
+async fn post_model_q(
+    app: Router,
+    type_name: &str,
+    query: &str,
+    token: &str,
+    body: Vec<u8>,
+) -> (StatusCode, serde_json::Value) {
+    let uri = if query.is_empty() {
+        format!("/models/{type_name}")
+    } else {
+        format!("/models/{type_name}?{query}")
+    };
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, json)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn infer_and_create_lands_and_records_the_type() {
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    // Absent type "gadget"; alice is Write-granted on it via the direct seed.
+    grant_write_absent_type(&pg, &pool, "alice", "gadget").await;
+    let token = session_token(&pg, "alice").await;
+
+    let app = protected(state, pg.clone());
+    let (status, json) = post_model_q(app, "gadget", "", &token, ipc_bytes(&sample_batch())).await;
+    assert_eq!(status, StatusCode::OK, "authorized POST to an absent type infers + creates");
+    assert_eq!(json["type"], "gadget");
+    json["snapshot_id"].as_i64().expect("snapshot_id is an integer");
+
+    // The inferred ObjectType matches the batch schema (names, logical types, nullability).
+    let ot = pg.get_type(&TypeName("gadget".into())).await.expect("type created");
+    let props: Vec<(&str, &str, bool)> = ot
+        .properties
+        .iter()
+        .map(|p| (p.name.as_str(), p.ty.as_str(), p.required))
+        .collect();
+    assert_eq!(props, vec![("id", "long", true), ("name", "string", false)]);
+    assert_eq!(ot.identity, None);
+    assert_eq!(ot.table, TableRef { schema: "main".into(), name: "gadget".into() });
+
+    // The rows landed and are servable through the engine path.
+    let catalog = IcebergCatalog::new(pool.clone());
+    let batches = engine_serving::execute_query(
+        &catalog,
+        "SELECT \"id\", \"name\" FROM \"main\".\"gadget\" ORDER BY \"id\"",
+        None,
+    )
+    .await
+    .expect("serving read");
+    let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    assert_eq!(total, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_query_param_is_honored() {
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    grant_write_absent_type(&pg, &pool, "alice", "keyed").await;
+    let token = session_token(&pg, "alice").await;
+
+    let app = protected(state, pg.clone());
+    let (status, _json) =
+        post_model_q(app, "keyed", "identity=id", &token, ipc_bytes(&sample_batch())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let ot = pg.get_type(&TypeName("keyed".into())).await.expect("type created");
+    assert_eq!(ot.identity, Some("id".into()), "declared identity recorded");
+    let id = ot.properties.iter().find(|p| p.name == "id").expect("id prop");
+    assert!(id.required, "identity property is forced required");
+
+    // The identity value addresses a row (the column carries addressable values).
+    let catalog = IcebergCatalog::new(pool.clone());
+    let batches = engine_serving::execute_query(
+        &catalog,
+        "SELECT \"name\" FROM \"main\".\"keyed\" WHERE \"id\" = 1",
+        None,
+    )
+    .await
+    .expect("serving read by identity");
+    let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    assert_eq!(total, 1, "identity value round-trips");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_naming_absent_column_is_rejected_and_nothing_created() {
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    grant_write_absent_type(&pg, &pool, "alice", "badid").await;
+    let token = session_token(&pg, "alice").await;
+
+    let app = protected(state, pg.clone());
+    let (status, _json) =
+        post_model_q(app, "badid", "identity=nope", &token, ipc_bytes(&sample_batch())).await;
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
+        "a ?identity naming an absent column is rejected (got {status})"
+    );
+    assert!(
+        matches!(
+            pg.get_type(&TypeName("badid".into())).await,
+            Err(ControlPlaneError::NotFound(_))
+        ),
+        "nothing is created on a bad identity"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn re_post_conforms_then_rejects_a_differing_batch() {
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    grant_write_absent_type(&pg, &pool, "alice", "again").await;
+    let token = session_token(&pg, "alice").await;
+
+    // First POST infers + creates.
+    let app = protected(state.clone(), pg.clone());
+    let (s1, _) = post_model_q(app, "again", "", &token, ipc_bytes(&sample_batch())).await;
+    assert_eq!(s1, StatusCode::OK);
+
+    // Second POST that CONFORMS to the now-existing type -> 200 (hits the slice-1 path).
+    let app = protected(state.clone(), pg.clone());
+    let (s2, _) = post_model_q(app, "again", "", &token, ipc_bytes(&sample_batch())).await;
+    assert_eq!(s2, StatusCode::OK, "a conforming re-post lands via slice-1 conform");
+
+    // Second POST that DIFFERS (missing the required "id") -> 422, nothing new lands.
+    let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)]));
+    let differing = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["z"]))]).unwrap();
+    let app = protected(state, pg.clone());
+    let (s3, json) = post_model_q(app, "again", "", &token, ipc_bytes(&differing)).await;
+    assert_eq!(s3, StatusCode::UNPROCESSABLE_ENTITY, "a differing batch is a conformance failure");
+    assert_eq!(json["violations"][0]["column"], "id");
+
+    // The type is unchanged (still the inferred shape).
+    let ot = pg.get_type(&TypeName("again".into())).await.expect("type still there");
+    assert_eq!(ot.properties.len(), 2);
+
+    let _ = pool; // keep the fixture db alive for the duration of the test
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unmappable_column_is_422_and_nothing_created() {
+    use arrow::array::Date32Array;
+    use arrow::datatypes::DataType;
+
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    grant_write_absent_type(&pg, &pool, "alice", "evt").await;
+    let token = session_token(&pg, "alice").await;
+
+    // "when" is Date32 — no loom logical mapping.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("when", DataType::Date32, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(Int64Array::from(vec![1i64])), Arc::new(Date32Array::from(vec![0]))],
+    )
+    .unwrap();
+
+    let app = protected(state, pg.clone());
+    let (status, json) = post_model_q(app, "evt", "", &token, ipc_bytes(&batch)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json["violations"][0]["column"], "when");
+    assert_eq!(json["violations"][0]["reason"], "unsupported");
+    assert!(
+        matches!(
+            pg.get_type(&TypeName("evt".into())).await,
+            Err(ControlPlaneError::NotFound(_))
+        ),
+        "an unmappable batch creates nothing"
+    );
 }
