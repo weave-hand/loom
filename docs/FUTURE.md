@@ -10,14 +10,14 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 
 ## lineage
 
-- [ ] **Transitive provenance closure + cycle guard** `{#fut-lineage-closure area:lineage status:deferred from:2026-06-05-control-plane-lineage-design pr:- spec:-}`
-  `upstream`/`downstream` return one hop. Full ancestry/descendancy (`upstream_closure`, or a `depth` param) needs a cycle guard (re-runs can cycle) and a depth/visited bound. Kept out of P5 so one-hop queries stay flat. See [[fut-lineage-stitching]].
+- [x] **Transitive provenance closure + cycle guard** `{#fut-lineage-closure area:lineage status:promoted from:2026-06-05-control-plane-lineage-design pr:- spec:2026-06-30-lineage-read-maturation-design}`
+  Promoted to [[road-lineage-read-maturation]] (bundled with [[fut-lineage-pagination]] — both touch the same reads). `upstream`/`downstream` gain a `depth` param (default 1 = today's one-hop) via a depth-bounded `WITH RECURSIVE` CTE; the `UNION` set-semantics is the cycle guard (re-run cycles terminate) and `LINEAGE_MAX_DEPTH` is the hard bound. See [[fut-lineage-stitching]].
 - [ ] **Run-grouped lifecycle stitching** `{#fut-lineage-stitching area:lineage status:deferred from:2026-06-05-control-plane-lineage-design pr:- spec:-}`
   The graph is per-event co-membership. OpenLineage allows a run to split inputs on START and outputs on COMPLETE across events sharing a `run_id`; stitching those is deferred (loom's emitters emit one terminal event).
 - [ ] **OpenLineage payload validation** `{#fut-openlineage-validation area:lineage status:deferred from:2026-06-05-control-plane-lineage-design pr:- spec:-}`
   `payload` is stored opaquely as `jsonb`; a validating/parsing layer that derives the typed envelope from the payload is future work.
-- [ ] **Pagination/filtering on lineage reads** `{#fut-lineage-pagination area:lineage status:deferred from:phase-5 pr:- spec:-}`
-  `events_for` and the graph reads are unbounded.
+- [x] **Pagination/filtering on lineage reads** `{#fut-lineage-pagination area:lineage status:promoted from:phase-5 pr:- spec:2026-06-30-lineage-read-maturation-design}`
+  Promoted to [[road-lineage-read-maturation]]. `events_for`/`upstream`/`downstream` accept a `PageReq` but **ignore** it (`_page`, `Page::from_full`) — genuinely unbounded. The slice honors the cursor+limit convention on all three (stable-ordered, composing with the closure), bundled with [[fut-lineage-closure]] since both touch the same reads.
 - [ ] **Type↔table lineage layer-join** `{#fut-type-table-lineage-join area:lineage status:deferred from:2026-06-15-typed-transforms-part1-design pr:#59 spec:-}`
   Typed transforms emit type-named lineage nodes; ingest/physical transforms emit table-named nodes. The two layers don't auto-join yet (backing refs kept in the payload). A binding edge at `define_type`/bind would connect them.
 - [ ] **TableRef/TypeName → DatasetRef naming bridge** `{#fut-dataset-naming-bridge area:lineage status:deferred from:critical-review pr:- spec:-}`
