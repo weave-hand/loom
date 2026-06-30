@@ -12,7 +12,8 @@
 
 - **axum stays at 0.7.** The tree is on a single axum 0.7.9. `utoipa = "5"` + `utoipa-scalar = "0.2"` (with the `axum` feature) resolve against axum 0.7 only. **Do NOT use `utoipa-scalar = "0.3"`** — its `axum` feature pulls in a second axum 0.8.9, doubling the axum target family in `third-party/BUCK`. Verified by lockfile probe.
 - **Hermetic build:** Scalar is chosen over swagger-ui because `utoipa-scalar 0.2` has `build = false` (no build script) and loads its viewer JS from `https://cdn.jsdelivr.net/npm/@scalar/api-reference` at view time. No build-time asset download. Do not add `utoipa-swagger-ui`.
-- **Do NOT enable utoipa's `time` feature.** The tree pins `time = "=0.3.47"` (sqlx-core 0.9 orphan-rule conflict). utoipa's `time` feature is off by default; keep it off. Use only `features = ["axum_extras"]` on `utoipa`.
+- **Do NOT enable utoipa's `time` feature.** The tree pins `time = "=0.3.47"` (sqlx-core 0.9 orphan-rule conflict). utoipa's `time` feature is off by default; keep it off.
+- **Do NOT enable utoipa's `axum_extras` feature.** Use plain `utoipa = "5"` (default features). In the full workspace `axum_extras` pulls utoipa's own axum edge → a SECOND axum 0.8.9, violating the single-axum-0.7 constraint. Routes use explicit `params(("x" = String, Path, ...))`, not an `IntoParams` derive, so it is not needed (verified: the annotations compile without it and the lock keeps a single axum 0.7.9).
 - **Dependency-add guard (CLAUDE.md):** after the dep add + buckify, run the **full** `buck2 test //src/...` (not just per-crate) and diff `Cargo.lock` against the merge-base for native/`links` crates — `reindeer update`/`cargo generate-lockfile` can silently downgrade unrelated crates.
 - **Tests are `rust_test` integration targets only** — never inline `#[cfg(test)]`. The `no-inline-tests` prek hook fails on any first-party `src/**.rs` containing `#[test]`/`#[tokio::test]`. Wire each test as its own `rust_test` target via the `loom_rust_test` wrapper (`load("//src:loom_test.bzl", "rust_test")`, already loaded in each BUCK).
 - **OperationId convention:** utoipa defaults `operationId` to the handler function name. The path-coverage + drift-guard tests assert against those exact names.
@@ -65,14 +66,14 @@
 `src/services/runtime/Cargo.toml` exists (package `service-runtime`). Add to its `[dependencies]`:
 
 ```toml
-utoipa = { version = "5", features = ["axum_extras"] }
+utoipa = "5"
 utoipa-scalar = { version = "0.2", features = ["axum"] }
 ```
 
 To `src/services/ingest/Cargo.toml` and `src/services/query-api/Cargo.toml` `[dependencies]` (these only need the derive + the `OpenApi` type, not the UI):
 
 ```toml
-utoipa = { version = "5", features = ["axum_extras"] }
+utoipa = "5"
 ```
 
 - [ ] **Step 2: Regenerate the lockfile (hermetic cargo)**
