@@ -23,6 +23,7 @@ rust_library(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tonic",
+        "//third-party:tower-http",
         "//third-party:tracing",
         "//third-party:utoipa",
         "//third-party:uuid",
@@ -69,6 +70,20 @@ rust_test(
         "//third-party:serde_json",
         "//third-party:tokio",
         "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "web-static",
+    crate = "web_static",
+    srcs = ["tests/web_static.rs"],
+    crate_root = "tests/web_static.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:axum",
+        "//third-party:tower",
+        "//third-party:tokio",
     ],
 )
 

@@ -9856,6 +9856,40 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "http-range-header-0.4.2.crate",
+    sha256 = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c",
+    strip_prefix = "http-range-header-0.4.2",
+    urls = ["https://static.crates.io/crates/http-range-header/0.4.2/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "http-range-header-0.4",
+    srcs = [":http-range-header-0.4.2.crate"],
+    crate = "http_range_header",
+    crate_root = "http-range-header-0.4.2.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "http_range_header",
+        "CARGO_CRATE_NAME": "http_range_header",
+        "CARGO_MANIFEST_DIR": "http-range-header-0.4.2.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "No-dep range header parser",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/MarcusGrass/parse-range-headers",
+        "CARGO_PKG_NAME": "http-range-header",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/MarcusGrass/parse-range-headers",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.4.2",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "4",
+        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+http_archive(
     name = "httparse-1.10.1.crate",
     sha256 = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87",
     strip_prefix = "httparse-1.10.1",
@@ -12530,6 +12564,92 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
+)
+
+http_archive(
+    name = "mime_guess-2.0.5.crate",
+    sha256 = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e",
+    strip_prefix = "mime_guess-2.0.5",
+    urls = ["https://static.crates.io/crates/mime_guess/2.0.5/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "mime_guess-2",
+    srcs = [":mime_guess-2.0.5.crate"],
+    crate = "mime_guess",
+    crate_root = "mime_guess-2.0.5.crate/src/lib.rs",
+    edition = "2015",
+    env = {
+        "CARGO_BIN_NAME": "mime_guess",
+        "CARGO_CRATE_NAME": "mime_guess",
+        "CARGO_MANIFEST_DIR": "mime_guess-2.0.5.crate",
+        "CARGO_PKG_AUTHORS": "Austin Bonander <austin.bonander@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "A simple crate for detection of a file's MIME type by its extension.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "mime_guess",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/abonander/mime_guess",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "2.0.5",
+        "CARGO_PKG_VERSION_MAJOR": "2",
+        "CARGO_PKG_VERSION_MINOR": "0",
+        "CARGO_PKG_VERSION_PATCH": "5",
+        "CARGO_PKG_VERSION_PRE": "",
+        "OUT_DIR": "$(location :mime_guess-2-build-script-run[out_dir])",
+    },
+    rustc_flags = ["@$(location :mime_guess-2-build-script-run[rustc_flags])"],
+    visibility = [],
+    deps = [
+        ":mime-0.3",
+        ":unicase-2",
+    ],
+)
+
+cargo.rust_binary(
+    name = "mime_guess-2-build-script-build",
+    srcs = [":mime_guess-2.0.5.crate"],
+    crate = "build_script_build",
+    crate_root = "mime_guess-2.0.5.crate/build.rs",
+    edition = "2015",
+    env = {
+        "CARGO_BIN_NAME": "build-script-build",
+        "CARGO_CRATE_NAME": "build_script_build",
+        "CARGO_MANIFEST_DIR": "mime_guess-2.0.5.crate",
+        "CARGO_PKG_AUTHORS": "Austin Bonander <austin.bonander@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "A simple crate for detection of a file's MIME type by its extension.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "mime_guess",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/abonander/mime_guess",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "2.0.5",
+        "CARGO_PKG_VERSION_MAJOR": "2",
+        "CARGO_PKG_VERSION_MINOR": "0",
+        "CARGO_PKG_VERSION_PATCH": "5",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":unicase-2"],
+)
+
+buildscript_run(
+    name = "mime_guess-2-build-script-run",
+    package_name = "mime_guess",
+    buildscript_rule = ":mime_guess-2-build-script-build",
+    env = {
+        "CARGO_PKG_AUTHORS": "Austin Bonander <austin.bonander@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "A simple crate for detection of a file's MIME type by its extension.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/abonander/mime_guess",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION_MAJOR": "2",
+        "CARGO_PKG_VERSION_MINOR": "0",
+        "CARGO_PKG_VERSION_PATCH": "5",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    version = "2.0.5",
 )
 
 http_archive(
@@ -20333,6 +20453,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "tower-http",
+    actual = ":tower-http-0.6",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "tower-http-0.6.11.crate",
     sha256 = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840",
@@ -20365,22 +20491,58 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
-        "follow-redirect",
+        "default",
+        "fs",
+        "futures-core",
         "futures-util",
-        "tower",
+        "httpdate",
+        "mime",
+        "mime_guess",
+        "percent-encoding",
+        "set-status",
+        "tokio-util",
     ],
+    platform = {
+        "linux-arm64": dict(
+            features = [
+                "follow-redirect",
+                "tower",
+            ],
+            deps = [
+                ":tower-0.5",
+                ":url-2",
+            ],
+        ),
+        "linux-x86_64": dict(
+            features = [
+                "follow-redirect",
+                "tower",
+            ],
+            deps = [
+                ":tower-0.5",
+                ":url-2",
+            ],
+        ),
+    },
     visibility = [],
     deps = [
         ":bitflags-2",
         ":bytes-1",
+        ":futures-core-0.3",
         ":futures-util-0.3",
         ":http-1",
         ":http-body-1",
+        ":http-body-util-0.1",
+        ":http-range-header-0.4",
+        ":httpdate-1",
+        ":mime-0.3",
+        ":mime_guess-2",
+        ":percent-encoding-2",
         ":pin-project-lite-0.2",
-        ":tower-0.5",
+        ":tokio-1",
+        ":tokio-util-0.7",
         ":tower-layer-0.3",
         ":tower-service-0.3",
-        ":url-2",
     ],
 )
 
