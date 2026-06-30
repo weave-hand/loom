@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
 
 rust_library(
@@ -120,6 +121,16 @@ loom_fixture_test(
     ],
 )
 
+rust_test(
+    name = "flight-membership-helper",
+    crate = "flight_membership_helper",
+    srcs = ["tests/flight_membership_helper.rs"],
+    crate_root = "tests/flight_membership_helper.rs",
+    deps = [
+        ":engine",
+    ],
+)
+
 loom_fixture_test(
     name = "flight-sql",
     crate = "flight_sql",
@@ -138,6 +149,27 @@ loom_fixture_test(
         "//third-party:tokio-stream",
         "//third-party:tonic",
         "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "flight-ticket-membership",
+    crate = "flight_ticket_membership",
+    srcs = ["tests/flight_ticket_membership.rs"],
+    crate_root = "tests/flight_ticket_membership.rs",
+    deps = [
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
     ],
 )
 

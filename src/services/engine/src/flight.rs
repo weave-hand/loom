@@ -2,6 +2,7 @@
 //! batches. The engine owns Postgres + object store, so it is the data source;
 //! the worker is a pure compute client over the wire.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
-use control_plane_core::TableRef;
+use control_plane_core::{Catalog, TableRef};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
@@ -138,6 +139,43 @@ impl FlightService for FlightDataService {
             schema: req.schema,
             name: req.name,
         };
+
+        // Defense-in-depth: every ticket-named path must belong to the table's
+        // live snapshot. The mirror stores absolute `file://` paths, so an
+        // unchecked ticket could otherwise name another table's file (or any path
+        // FileIO can resolve). Cross-check against the live file set before reading
+        // any bytes. An unknown table is itself a bad ticket (no-leak: we never
+        // reveal existence beyond "rejected").
+        //
+        // The snapshot may advance between this check and the read below; a path
+        // live now but GC'd by read-time degrades to a benign read error, never a
+        // cross-table leak — acceptable for the live-snapshot-only contract.
+        let snap = match self.serving_catalog.current_snapshot(&table).await {
+            Ok(s) => s,
+            // An unknown table is itself a bad ticket; reject without revealing more.
+            Err(control_plane_core::ControlPlaneError::NotFound(_)) => {
+                return Err(Status::invalid_argument(
+                    "flight ticket names an unknown table",
+                ));
+            }
+            // A real backend failure is internal, not the client's fault.
+            Err(e) => return Err(Status::internal(e.to_string())),
+        };
+        let live: HashSet<String> = self
+            .serving_catalog
+            .files_with_stats(&table, snap.id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        if !all_in_live_set(&live, &req.files) {
+            // Do not echo the offending path — that would confirm what paths exist.
+            return Err(Status::invalid_argument(
+                "flight ticket names a file outside the table's live snapshot",
+            ));
+        }
+
         // The schema is discarded here on purpose: FlightDataEncoderBuilder
         // derives it from the batches below, so we don't pass it explicitly.
         let (_schema, batches) = read_files_as_batches(&self.catalog, &table, &req.files)
@@ -228,6 +266,19 @@ impl FlightService for FlightDataService {
     ) -> Result<Response<Self::ListActionsStream>, Status> {
         Err(Status::unimplemented("list_actions"))
     }
+}
+
+/// Pure membership check for the Flight file-ticket guard: `true` iff every
+/// `requested` path is present in `live` (the table's live-snapshot file set).
+/// No I/O — the catalog round-trip that builds `live` stays in `do_get`. An empty
+/// `requested` is vacuously `true`.
+///
+/// Both `live` and `requested` are mirror path strings in the **same encoding**
+/// (absolute, as stored by the iceberg mirror), so an exact-string `HashSet`
+/// compare is correct — no path normalization is needed.
+#[must_use = "the membership result must be mapped to a Status"]
+pub fn all_in_live_set(live: &HashSet<String>, requested: &[String]) -> bool {
+    requested.iter().all(|p| live.contains(p))
 }
 
 /// Decode a `FlightTicket` from the request, mapping a bad ticket to
