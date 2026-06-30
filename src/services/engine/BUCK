@@ -153,6 +153,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "flight-ticket-membership",
+    crate = "flight_ticket_membership",
+    srcs = ["tests/flight_ticket_membership.rs"],
+    crate_root = "tests/flight_ticket_membership.rs",
+    deps = [
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+    ],
+)
+
+loom_fixture_test(
     name = "vector-search-flight",
     crate = "vector_search_flight",
     srcs = ["tests/vector_search_flight.rs"],
