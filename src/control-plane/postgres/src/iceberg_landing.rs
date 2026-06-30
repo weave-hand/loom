@@ -155,6 +155,7 @@ pub(crate) async fn append_parquet_snapshot(
     lineage: Option<&LineageEvent>,
     end_cap: Option<InlineEndCap<'_>>,
     overwrite: bool,
+    jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
     ensure_iceberg_table(catalog, table, columns).await?;
 
@@ -197,8 +198,10 @@ pub(crate) async fn append_parquet_snapshot(
                         ));
                     }
                 }
-                return land_additive(pool, catalog, table, columns, batches, lineage, end_cap)
-                    .await;
+                return land_additive(
+                    pool, catalog, table, columns, batches, lineage, end_cap, jobs,
+                )
+                .await;
             }
             Err(e) => return Err(ControlPlaneError::Validation(e.to_string())),
         }
@@ -223,9 +226,11 @@ pub(crate) async fn append_parquet_snapshot(
         .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
         .collect::<Result<Vec<_>>>()?;
 
-    append_batches_with_extras(catalog, &ice_table, batches, lineage, end_cap, overwrite)
-        .await
-        .map_err(be)?;
+    append_batches_with_extras(
+        catalog, &ice_table, batches, lineage, end_cap, overwrite, jobs,
+    )
+    .await
+    .map_err(be)?;
 
     Ok(IcebergCatalog::new(pool.clone())
         .current_snapshot(table)
@@ -313,6 +318,7 @@ async fn land_additive(
     batches: Vec<RecordBatch>,
     lineage: Option<&LineageEvent>,
     end_cap: Option<InlineEndCap<'_>>,
+    jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
     use crate::lineage::pg_emit;
 
@@ -385,6 +391,9 @@ async fn land_additive(
     }
     if let Some(ev) = lineage {
         pg_emit(&mut *tx, ev).await?;
+    }
+    for job in jobs {
+        crate::queue::pg_insert_if_absent(&mut *tx, job).await?;
     }
     tx.commit().await.map_err(be)?;
     Ok(at)
@@ -546,6 +555,7 @@ async fn land_parquet(
         Some(&lineage),
         None,
         false,
+        &[],
     )
     .await
 }
@@ -576,7 +586,18 @@ pub async fn overwrite_parquet_snapshot(
     if batches.iter().all(|b| b.num_rows() == 0) {
         return overwrite_truncate(pool, table, lineage).await;
     }
-    append_parquet_snapshot(pool, catalog, table, columns, batches, lineage, None, true).await
+    append_parquet_snapshot(
+        pool,
+        catalog,
+        table,
+        columns,
+        batches,
+        lineage,
+        None,
+        true,
+        &[],
+    )
+    .await
 }
 
 /// The zero-file branch of [`overwrite_parquet_snapshot`]: in one Postgres tx allocate

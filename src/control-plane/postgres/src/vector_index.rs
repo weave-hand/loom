@@ -127,6 +127,27 @@ pub struct BuiltIndex {
     pub row_count: i64,
 }
 
+/// Return the names of all vector indexes declared for the ontology type that backs
+/// `table`, or an empty `Vec` if the table has no associated type. Used by the flush
+/// path to enqueue rebuild jobs for stale indexes after a snapshot commit.
+pub(crate) async fn declared_vector_index_names(
+    pool: &PgPool,
+    table: &TableRef,
+) -> Result<Vec<String>> {
+    let type_name = match type_name_for(pool, table).await {
+        Ok(t) => t,
+        Err(ControlPlaneError::NotFound(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    sqlx::query_scalar!(
+        "select name from ontology.vector_index_definition where type_name = $1",
+        type_name,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(backend)
+}
+
 /// Resolve the ontology type name backing `(table.schema, table.name)`.
 pub async fn type_name_for(pool: &PgPool, table: &TableRef) -> Result<String> {
     sqlx::query_scalar!(

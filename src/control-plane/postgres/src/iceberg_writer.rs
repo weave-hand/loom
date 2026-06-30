@@ -146,6 +146,7 @@ struct CommitExtrasCatalog<'a> {
     lineage: Option<&'a LineageEvent>,
     end_cap: Option<InlineEndCap<'a>>,
     overwrite: bool,
+    jobs: &'a [control_plane_core::NewJob],
 }
 
 impl std::fmt::Debug for CommitExtrasCatalog<'_> {
@@ -154,6 +155,7 @@ impl std::fmt::Debug for CommitExtrasCatalog<'_> {
             .field("lineage", &self.lineage.is_some())
             .field("end_cap", &self.end_cap.is_some())
             .field("overwrite", &self.overwrite)
+            .field("jobs", &self.jobs.len())
             .finish()
     }
 }
@@ -173,6 +175,7 @@ impl Catalog for CommitExtrasCatalog<'_> {
                         row_ids: c.row_ids,
                     }),
                     overwrite: self.overwrite,
+                    jobs: self.jobs,
                 },
             )
             .await
@@ -249,6 +252,7 @@ pub async fn append_batches_with_extras(
     lineage: Option<&LineageEvent>,
     end_cap: Option<InlineEndCap<'_>>,
     overwrite: bool,
+    jobs: &[control_plane_core::NewJob],
 ) -> Result<Vec<WrittenFile>> {
     let data_files = write_parquet(table, batches).await?;
     let summaries: Vec<WrittenFile> = data_files
@@ -265,6 +269,7 @@ pub async fn append_batches_with_extras(
         lineage,
         end_cap,
         overwrite,
+        jobs,
     };
     commit_append_with_retry(&wrapper, table.identifier(), table.clone(), data_files).await?;
     Ok(summaries)
@@ -282,7 +287,7 @@ pub async fn append_batches_with_lineage(
     batches: Vec<RecordBatch>,
     lineage: &LineageEvent,
 ) -> Result<Vec<WrittenFile>> {
-    append_batches_with_extras(catalog, table, batches, Some(lineage), None, false).await
+    append_batches_with_extras(catalog, table, batches, Some(lineage), None, false, &[]).await
 }
 
 async fn write_parquet(table: &Table, batches: Vec<RecordBatch>) -> Result<Vec<DataFile>> {

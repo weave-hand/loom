@@ -86,6 +86,29 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "vector-index-auto-rebuild",
+    crate = "vector_index_auto_rebuild",
+    srcs = ["tests/vector_index_auto_rebuild.rs"],
+    crate_root = "tests/vector_index_auto_rebuild.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "action-writer",
     crate = "action_writer",
     srcs = ["tests/action_writer.rs"],

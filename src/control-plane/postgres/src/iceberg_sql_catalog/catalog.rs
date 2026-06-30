@@ -227,6 +227,10 @@ pub struct CommitExtras<'a> {
     /// the sole live set while prior files stay reachable by time travel. This is the
     /// overwrite/replace commit primitive (`Tx::replace_files`). `false` (the `Default`) is append.
     pub overwrite: bool,
+    /// Enqueue these jobs atomically with the snapshot commit (deduped — each job is
+    /// inserted only if no `state='available'` job with the same `(kind, payload)`
+    /// already exists). Empty slice (`&[]`, the `Default`) means no jobs.
+    pub jobs: &'a [control_plane_core::NewJob],
 }
 
 /// Mark inline rows `loom_row_id = ANY(row_ids)` of `iceberg_mirror.inline_<table_id>`
@@ -564,6 +568,12 @@ impl SqlCatalog {
 
         if let Some(ev) = extras.lineage {
             pg_emit(&mut *tx, ev)
+                .await
+                .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
+        }
+
+        for job in extras.jobs {
+            crate::queue::pg_insert_if_absent(&mut *tx, job)
                 .await
                 .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
         }

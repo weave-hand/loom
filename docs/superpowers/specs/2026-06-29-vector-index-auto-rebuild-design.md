@@ -59,23 +59,44 @@ the rows are end-capped and before commit:
    (`ontology.vector_index_definition` rows for the table — the same set a build
    resolves).
 2. For each, enqueue one `build_vector_index` job (`BUILD_VECTOR_INDEX_JOB_KIND`,
-   payload `BuildVectorIndexJob { schema, name, index_name }`) via the existing
-   `queue::pg_insert` on the flush's connection — so the rebuild is scheduled **atomically
-   with the snapshot that staled the index** (a flush that commits can never forget to
-   schedule its rebuild, and one that rolls back enqueues nothing).
+   payload `BuildVectorIndexJob { schema, name, index_name }`) **inside the snapshot-commit
+   transaction** — so the rebuild is scheduled **atomically with the snapshot that staled
+   the index** (a flush that commits can never forget to schedule its rebuild, and one that
+   rolls back enqueues nothing).
 
-This mirrors the established inline-flush trigger (`iceberg_inline.rs:300-312`), which
-enqueues a `flush_table` job in the same transaction as the inline write that crossed the
-threshold.
+The flush's snapshot commit is not on a connection the caller holds — it is owned deep in
+the vendored catalog's `do_update_table` (`iceberg_sql_catalog/catalog.rs`), reached through
+`append_parquet_snapshot` → `append_batches_with_extras` → `commit_append_with_retry`. The
+existing `CommitExtras` seam already threads two pieces of loom-side work (`lineage`,
+`end_cap`) into that one commit tx; the rebuild enqueue rides the **same seam** as a third
+optional field (a `&[NewJob]`). This generalizes the established inline-flush trigger
+(`iceberg_inline.rs:300-312`), which enqueues a `flush_table` job in the same transaction as
+the inline write that crossed the threshold — here the "same transaction" is the catalog
+commit, reached via `CommitExtras` rather than a directly-held connection.
 
 ### Dedup — no rebuild pile-up
 
-A burst of flushes (or an already-pending build) must not queue redundant rebuilds.
-Before inserting, skip the enqueue if a `build_vector_index` job for the same
-`(schema, name, index_name)` is **already pending or running** (a predicate query over
-the jobs table by `kind` + payload fields). This is the queue-level equivalent of the
-inline trigger's `enqueued` guard; a coalesced rebuild always rebuilds against the
-*latest* snapshot when it finally runs, so collapsing duplicates loses no freshness.
+A burst of flushes must not queue redundant rebuilds. The enqueue is a single atomic
+**insert-if-absent**: insert the `build_vector_index` job only when no job for the same
+`(schema, name, index_name)` is **already pending (unstarted — `state = 'available'`)**.
+Because the check and the insert are one statement evaluated *inside* the commit tx, there
+is no check-then-insert race with a concurrent worker. This is the queue-level equivalent of
+the inline trigger's `enqueued` guard; a coalesced rebuild always rebuilds against the
+*latest* snapshot when it finally runs, so collapsing duplicate **pending** jobs loses no
+freshness.
+
+**Dedup is pending-only, NOT pending-or-running.** A `build_vector_index` job captures its
+covered snapshot `S` at the *start* of execution (`vector_index.rs`: "The covered snapshot
+`S` is captured before any data read"). So a *running* build has already fixed `S` at some
+`S₀` and cannot cover rows from a flush that commits at `F > S₀`. Deduping against a running
+build would therefore re-open the very freshness gap this slice closes — the just-flushed
+rows would stay invisible until some *future* flush happened to re-trigger. Skipping only on
+an **unstarted** (`available`) job is both safe (the pending job will capture a snapshot
+`≥ F` when it finally runs, because the flush has committed by then) and still fully bounds
+pile-up: at most one running + one pending build per index. The atomic insert-if-absent also
+closes the residual TOCTOU window — a pending job that transitions to *running* between a
+naive pre-commit check and the commit no longer suppresses the enqueue, because the absence
+test (`state = 'available'`) is evaluated atomically at commit, not earlier.
 
 ### No threshold knob (and why)
 
@@ -108,9 +129,16 @@ make every flush pay full index-build cost).
 In scope:
 
 - The rebuild-enqueue (with dedup) inside `iceberg_flush::flush_table`, atomic with the
-  end-cap, for each declared vector index on the flushed table.
-- A jobs-table predicate to detect an already-pending/running `build_vector_index` for a
-  given `(schema, name, index_name)`.
+  end-cap, for each declared vector index on the flushed table — threaded into the catalog
+  commit tx via a new `CommitExtras.jobs: &[NewJob]` field (alongside `lineage`/`end_cap`).
+- An atomic insert-if-absent enqueue primitive (`queue::pg_insert_if_absent`) that skips
+  when an unstarted (`state = 'available'`) `build_vector_index` for the same
+  `(schema, name, index_name)` already exists. The dedup predicate is generic
+  (`kind` + `payload` + `state = 'available'`) so the catalog commit stays free of
+  vector-index knowledge.
+- A helper resolving the declared vector-index names for a `TableRef`
+  (`select name from ontology.vector_index_definition where type_name = $1`), returning
+  empty when the table has no bound ontology type.
 - The tests below; the `.sqlx` cache refresh for any new compile-time query
   (`tools/sqlx-prepare.sh`).
 
@@ -139,7 +167,10 @@ for the build RPC), per loom's testing rules (`rust_test` target, never inline
 2. **Auto-enqueue:** assert exactly one `build_vector_index` job is enqueued for the
    index when the flush commits (and that a flush of a table with no declared index
    enqueues none).
-3. **Dedup:** two flushes with a build still pending enqueue **one** build job, not two.
+3. **Dedup (pending-only):** two flushes with a build still **pending** (`available`)
+   enqueue **one** build job, not two. Conversely, a flush while a build for the same index
+   is **running** (its row marked non-`available`) enqueues a **fresh** pending build (the
+   running one cannot cover the just-flushed rows).
 4. **Atomicity:** a flush that finds no live inline rows (no-op) enqueues no rebuild.
 
 ## Risk
