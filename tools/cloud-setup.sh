@@ -60,12 +60,16 @@ command -v gh >/dev/null 2>&1 && echo "gh ok: $(gh --version | head -1)" || echo
 # Ubuntu repos, so install it from the facebook/watchman release zip: it ships
 # bin/ + lib/ (libfolly/libglog/... that the watchman binary links against), which
 # go to /usr/local/{bin,lib}; the server also needs a world-writable state dir.
+# NB: the `find` below needs `-mindepth 1` -- without it the search root
+# `/tmp/watchman-extract` itself matches `-name 'watchman-*'` and `head -1`
+# selects it over the real `watchman-<ver>-linux/` child, so the cp silently
+# fails and the install falls back to notify.
 if ! command -v watchman >/dev/null 2>&1; then
   if curl -fsSL "https://github.com/facebook/watchman/releases/download/${WATCHMAN_VERSION}/watchman-${WATCHMAN_VERSION}-linux.zip" -o /tmp/watchman.zip \
      && command -v unzip >/dev/null 2>&1; then
     rm -rf /tmp/watchman-extract && mkdir -p /tmp/watchman-extract
     unzip -q /tmp/watchman.zip -d /tmp/watchman-extract && \
-    wm_dir="$(find /tmp/watchman-extract -maxdepth 1 -type d -name 'watchman-*' | head -1)" && \
+    wm_dir="$(find /tmp/watchman-extract -mindepth 1 -maxdepth 1 -type d -name 'watchman-*' | head -1)" && \
     [ -n "$wm_dir" ] && \
     mkdir -p /usr/local/bin /usr/local/lib /usr/local/var/run/watchman && \
     cp -a "$wm_dir"/bin/* /usr/local/bin/ && \
