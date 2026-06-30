@@ -108,7 +108,8 @@ impl Lineage for PgControlPlane {
         page: PageReq,
     ) -> Result<Page<DatasetRef>> {
         // upstream = walk output→input edges (ancestry).
-        self.graph_closure(dataset, "output", "input", depth, page).await
+        self.graph_closure(dataset, "output", "input", depth, page)
+            .await
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -119,7 +120,8 @@ impl Lineage for PgControlPlane {
         page: PageReq,
     ) -> Result<Page<DatasetRef>> {
         // downstream = walk input→output edges (descendancy).
-        self.graph_closure(dataset, "input", "output", depth, page).await
+        self.graph_closure(dataset, "input", "output", depth, page)
+            .await
     }
 }
 
@@ -200,7 +202,10 @@ impl PgControlPlane {
         .map_err(backend)?;
         let items: Vec<DatasetRef> = rows
             .into_iter()
-            .map(|r| DatasetRef { namespace: r.namespace, name: r.name })
+            .map(|r| DatasetRef {
+                namespace: r.namespace,
+                name: r.name,
+            })
             .collect();
         Ok(Page::from_keyset(items, page.limit, encode_dataset_cursor))
     }
