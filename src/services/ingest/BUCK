@@ -23,6 +23,7 @@ rust_library(
         "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:time",
+        "//third-party:tokio",
         "//third-party:utoipa",
         "//third-party:uuid",
     ],
