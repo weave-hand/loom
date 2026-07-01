@@ -123,18 +123,18 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Part-1 computes derived properties at read time as correlated subqueries; materializing them for hot paths is a follow-on.
 - [ ] **Derived props as filter/sort targets** `{#fut-derived-filter-sort area:query status:deferred from:2026-06-16-query-comparison-set-operators-design pr:- spec:-}`
   Caller predicates validate against physical columns only; making derived (aggregate) properties filterable/sortable is deferred.
-- [ ] **Richer filter error body** `{#fut-richer-filter-error area:query status:deferred from:2026-06-16-query-typed-input-filters-design pr:- spec:-}`
-  An uncoercible value reuses `BadFilter(col)` (body = column name); reporting the expected type plus the offending value widens the error contract, deferred.
-- [ ] **422 for body-bearing endpoints** `{#fut-422-body-endpoints area:query status:deferred from:2026-06-16-query-typed-input-filters-design pr:- spec:-}`
-  Typed filters are URI params on a body-less GET (correctly 400). Whether `POST /actions`'s `BadParams` should become a 422 is a separate question.
-- [ ] **or-combined caller predicates** `{#fut-or-predicates area:query status:deferred from:2026-06-16-query-comparison-set-operators-design pr:- spec:-}`
-  All caller predicates are ANDed; a disjunction grammar (OR across predicates) is deferred.
-- [ ] **between:lo,hi sugar** `{#fut-between-sugar area:query status:deferred from:2026-06-16-query-comparison-set-operators-design pr:- spec:-}`
-  Ranges are two predicates (`ge`+`le`) via repeated keys; a dedicated `between` operator is sugar only.
-- [ ] **Text-pattern matching operators** `{#fut-text-pattern-ops area:query status:deferred from:2026-06-16-query-comparison-set-operators-design pr:- spec:-}`
-  No `like`/`ilike`/`contains` `CompareOp` exists; a separate slice would add text-pattern matching with safe rendering.
-- [ ] **Rename eq_filters field** `{#fut-rename-eq-filters area:query status:deferred from:2026-06-16-query-comparison-set-operators-design pr:- spec:-}`
-  The request field is still `eq_filters` though it carries the full operator grammar; a rename to `filters`/`predicates` is a cosmetic follow-up touching http.rs + e2es.
+- [x] **Richer filter error body** `{#fut-richer-filter-error area:query status:promoted from:2026-06-16-query-typed-input-filters-design pr:- spec:2026-07-01-filter-error-contract-design}`
+  Promoted to [[road-filter-error-contract]]. An uncoercible value reuses `BadFilterValue` (opaque parse string); the slice enriches it to a structured `{column, expected, value}` 400 body (expected type + offending value), leaving `BadFilter` visibility denials untouched.
+- [x] **422 for body-bearing endpoints** `{#fut-422-body-endpoints area:query status:promoted from:2026-06-16-query-typed-input-filters-design pr:- spec:2026-07-01-filter-error-contract-design}`
+  Promoted to [[road-filter-error-contract]]. `POST /actions`'s `BadParams` moves 400→**422** for semantic param-validation failures (malformed JSON stays 400), aligning with the [[road-model-constraints]] 422 on the same write path. GET typed-filter stays 400 (body-less, correct).
+- [x] **or-combined caller predicates** `{#fut-or-predicates area:query status:promoted from:2026-06-16-query-comparison-set-operators-design pr:- spec:2026-07-01-filter-or-predicates-design}`
+  Promoted to [[road-filter-or-predicates]]. Caller predicates are all ANDed (`sql.rs:432`); the slice adds a **bounded, non-nested** disjunction via an `_or` group param → `(m1 OR m2)` as one parenthesized conjunct in the existing AND spine. Governance/row-filter/`_ids` conjuncts stay ANDed (never OR-weakened).
+- [x] **between:lo,hi sugar** `{#fut-between-sugar area:query status:promoted from:2026-06-16-query-comparison-set-operators-design pr:- spec:2026-07-01-filter-operators-design}`
+  Promoted to [[road-filter-operators]]. A dedicated `between:lo,hi` `CompareOp` (two-operand, same coercion as `ge`/`le`, rendered `(col BETWEEN ? AND ?)`) — sugar over today's repeated-key range.
+- [x] **Text-pattern matching operators** `{#fut-text-pattern-ops area:query status:promoted from:2026-06-16-query-comparison-set-operators-design pr:- spec:2026-07-01-filter-operators-design}`
+  Promoted to [[road-filter-operators]]. Adds `contains`/`startswith`/`endswith` (string-only, case-insensitive `ILIKE`) with LIKE-metacharacter-escaped, wrapped, **bound** operands — so a literal `%` matches the character. Raw caller-wildcard `like` stays out (injection/DoS surface).
+- [x] **Rename eq_filters field** `{#fut-rename-eq-filters area:query status:promoted from:2026-06-16-query-comparison-set-operators-design pr:- spec:2026-07-01-filter-operators-design}`
+  Promoted to [[road-filter-operators]]. Rename the internal `eq_filters` field → `filters` (`handler.rs:48`, `http.rs`, e2es); aligns with the Flight-export struct that already uses `filters`. Internal only — no GET wire change.
 - [x] **Inverse links inside graph path** `{#fut-inverse-in-path area:query status:promoted from:2026-06-18-graph-path-cycle-design pr:- spec:-}`
   Each path link in `/graph` is followed forward; mixing backward hops into a cyclic path (e.g. `~memberOf,hasMember`) is a follow-on. Promoted → [[road-inverse-in-path]].
 - [ ] **Graph-aware filter addressing** `{#fut-graph-filter-addressing area:query status:deferred from:target-intermediate-filters pr:- spec:-}`
