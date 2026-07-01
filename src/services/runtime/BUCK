@@ -177,6 +177,19 @@ rust_test(
 )
 
 rust_test(
+    name = "serve-shutdown",
+    crate = "serve_shutdown",
+    srcs = ["tests/serve_shutdown.rs"],
+    crate_root = "tests/serve_shutdown.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//third-party:axum",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "openapi",
     crate = "openapi",
     srcs = ["tests/openapi.rs"],

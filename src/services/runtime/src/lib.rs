@@ -372,7 +372,19 @@ pub async fn serve(bind_addr: SocketAddr, router: Router) -> Result<(), RuntimeE
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(RuntimeError::Bind)?;
+    serve_with_shutdown(listener, router, std::future::pending()).await
+}
+
+/// Serve `router` on an already-bound `listener`, returning once `shutdown` resolves.
+/// Binding before the caller spawns this lets the caller guarantee the socket is
+/// accepting before it signals readiness.
+pub async fn serve_with_shutdown(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), RuntimeError> {
     axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(RuntimeError::Serve)
 }
