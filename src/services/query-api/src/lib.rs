@@ -18,6 +18,7 @@ pub mod openapi_gen;
 pub mod params;
 pub mod path_parse;
 pub mod render;
+pub mod serve;
 pub mod serving;
 pub mod serving_datafusion;
 pub mod sql;
@@ -26,3 +27,4 @@ pub mod wire_control_plane;
 pub mod write_filter;
 
 pub use openapi::{build_openapi, live_openapi};
+pub use serve::serve;

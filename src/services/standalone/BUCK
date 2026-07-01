@@ -1,0 +1,51 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
+rust_library(
+    name = "standalone",
+    crate = "standalone",
+    srcs = ["src/lib.rs"],
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/services/engine:engine",
+        "//src/services/ingest:ingest",
+        "//src/services/query-api:query-api",
+        "//src/services/runtime:runtime",
+        "//src/services/managed-postgres:managed-postgres",
+        "//third-party:tokio",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "loom",
+    crate = "loom",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        ":standalone",
+        "//src/services/runtime:runtime",
+        "//src/services/managed-postgres-embed:managed-postgres-embed",
+        "//third-party:tokio",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "composite-e2e",
+    crate = "composite_e2e",
+    srcs = ["tests/composite_e2e.rs"],
+    crate_root = "tests/composite_e2e.rs",
+    deps = [
+        ":standalone",
+        "//src/services/query-api:e2e-support",
+        "//src/services/runtime:runtime",
+        "//third-party:arrow",
+        "//third-party:reqwest",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)

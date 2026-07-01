@@ -155,6 +155,92 @@ The **chart** is the moving deployable: `bleeding-edge` (latest main), `X.Y.Z`
 > every PR would force local materialization. It is exercised only by this
 > release workflow (Rust binaries still compile on BuildBuddy RE).
 
+## Single-binary `loom`
+
+For local development, CI environments, and edge deployments where Kubernetes is
+unavailable, loom ships as a self-contained single binary that boots all three
+services (engine, ingest, query-api) in one process with an embedded Postgres.
+
+### What it is
+
+`loom` (buck2 target `//src/services/standalone:loom`) runs the engine gRPC
+service (tonic over a Unix-domain socket), the ingest HTTP service, and the
+query-api HTTP service as concurrent tasks in one tokio runtime. In embedded
+mode it boots the bundled Postgres distribution exactly once, waits for the
+engine to be ready, then opens the two HTTP listeners. A single SIGINT or
+SIGTERM fans out to all three services and stops the embedded Postgres cleanly
+before the process exits.
+
+The binary is built the same way as the lean service images:
+
+```sh
+buck2 build //src/services/standalone:loom
+```
+
+### Environment variables
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `LOOM_DATA_PATH` | yes | — | Root for Parquet/Iceberg data **and** the embedded-Postgres cache (`<path>/cache/pg-<version>/`). |
+| `LOOM_ENGINE_SOCKET` | yes | — | Path to the Unix-domain socket the engine listens on and the other two services connect to. |
+| `LOOM_BIND_ADDR` | yes | — | Required by config parsing but **unused by `loom`** (the composite binds the two dedicated addrs below); set any value. Tracked for removal — see the ergonomics note. |
+| `LOOM_PG_MODE` | no | `external` | Set to `embedded` to start the bundled Postgres automatically. |
+| `LOOM_QUERY_API_BIND_ADDR` | no | `0.0.0.0:8080` | TCP address for the query-api HTTP listener. |
+| `LOOM_INGEST_BIND_ADDR` | no | `0.0.0.0:8081` | TCP address for the ingest HTTP listener. |
+| `LOOM_FLIGHT_BIND_ADDR` | no | — | If set, also exposes the engine's Arrow Flight SQL endpoint on this address. |
+| `LOOM_BOOTSTRAP_ADMIN_USERNAME` | no | — | Create an admin user on first boot (requires `LOOM_BOOTSTRAP_ADMIN_PASSWORD`). |
+| `LOOM_BOOTSTRAP_ADMIN_PASSWORD` | no | — | Password for the bootstrapped admin user. |
+| `LOOM_PG_BIN_DIR` | no | — | Path to an external `pg_ctl`/`postgres` install. **Optional in embedded mode** — the binary self-extracts its baked-in Postgres distribution to `<LOOM_DATA_PATH>/cache/pg-<version>/` and wires it automatically. |
+| `LOOM_MIGRATE` | no | — | Set to `apply` to run schema migrations and exit immediately (useful with an external/managed Postgres before starting the full process). |
+| `LOOM_DB_HOST`, `LOOM_DB_PORT`, `LOOM_DB_USER`, `LOOM_DB_PASSWORD`, `LOOM_DB_NAME` | yes | — | Control-plane database connection vars. In **embedded** mode `LOOM_DB_NAME` names the database created inside the bundled cluster; the connection uses the embedded socket at `<LOOM_DATA_PATH>/pgrun` as the `postgres` superuser, so `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD` are **required by config parsing but ignored** (supply any placeholder). In **external** mode all five are the real connection settings. Reducing this verbosity for embedded mode is tracked — see the ergonomics note. |
+| `LOOM_WAREHOUSE_URI` | no | — | Object-store warehouse URI (e.g. `s3://bucket/prefix` or a local `file://` path under `LOOM_DATA_PATH`). |
+
+### Minimal quick-start
+
+```sh
+mkdir -p /tmp/loom-data
+
+LOOM_PG_MODE=embedded \
+LOOM_DATA_PATH=/tmp/loom-data \
+LOOM_ENGINE_SOCKET=/tmp/loom-data/engine.sock \
+LOOM_BIND_ADDR=0.0.0.0:0 \
+LOOM_DB_HOST=/tmp/loom-data/pgrun \
+LOOM_DB_PORT=5432 \
+LOOM_DB_USER=postgres \
+LOOM_DB_PASSWORD=postgres \
+LOOM_DB_NAME=loom \
+./loom
+```
+
+The binary self-extracts Postgres on first run, applies schema migrations, and
+starts accepting traffic on ports 8080 (query-api) and 8081 (ingest). The
+extracted Postgres distribution is cached under
+`/tmp/loom-data/cache/pg-<version>/` and reused on subsequent starts.
+
+In embedded mode the `LOOM_BIND_ADDR` and `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD`
+values above are required by config parsing but not used to connect (the
+composite binds the two dedicated HTTP addrs and talks to the bundled Postgres
+over its Unix socket). Trimming this required-but-ignored set for the embedded
+single-binary path is deferred follow-up work
+(`fut-embedded-pg-db-vars-optional`).
+
+### Using an external Postgres
+
+Set `LOOM_PG_MODE=external` (or omit it) and supply the `LOOM_DB_*` connection
+variables. To apply schema migrations before starting the services:
+
+```sh
+LOOM_MIGRATE=apply \
+LOOM_DB_HOST=db.example.com \
+LOOM_DB_NAME=loom \
+... \
+./loom
+```
+
+When `LOOM_MIGRATE=apply` the process exits after migrations complete — it does
+not start the HTTP listeners or the engine, making it suitable as a migration
+init container.
+
 ## Build rules (the `homelab` external cell)
 
 The apko/oci/helm rules the `deploy//` cell loads (`@homelab//buck2/...`) are

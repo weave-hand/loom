@@ -10,9 +10,11 @@ pub mod landing;
 pub mod materialize;
 pub mod model;
 pub mod openapi;
+pub mod serve;
 
 pub use config::RoutingTuning;
 pub use openapi::build_openapi;
+pub use serve::serve;
 
 pub use bind::{BindError, BindViolation, BindViolationReason, bind, bind_link};
 pub use gate::{ColumnShape, ModelShape, Violation, ViolationReason};
