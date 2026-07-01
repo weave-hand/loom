@@ -10,7 +10,9 @@ use crate::handler::{
     read_graph_reach_union, read_graph_reach_with_tail, read_graph_tree, read_linked_chain,
     read_object, read_object_page,
 };
-use crate::openapi::{JobAck, ObjectsResponse, VectorSearchResponse, WriteDeniedBody};
+use crate::openapi::{
+    JobAck, ObjectsResponse, OntologyTypesResponse, VectorSearchResponse, WriteDeniedBody,
+};
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
 use axum::Router;
@@ -19,7 +21,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use control_plane_core::{
-    ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, NewJob, RunId,
+    ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, NewJob, PageReq, RunId,
 };
 use service_runtime::Subject;
 
@@ -88,7 +90,28 @@ pub fn router(state: AppState) -> Router {
             get(get_lineage_downstream),
         )
         .route("/lineage/runs/:run_id/events", get(get_lineage_run_events))
+        .route("/ontology/types", get(list_ontology_types))
         .with_state(state)
+}
+
+/// Ontology metadata: the defined object-type names, for the object-explorer UI's type
+/// sidebar. Auth-required (via `Subject`) but deliberately NOT per-type ACL-gated —
+/// this is ontology metadata (like `/openapi.json`), not object data; ACL governs the
+/// latter via `/objects/{type}`.
+#[utoipa::path(
+    get, path = "/ontology/types",
+    responses((status = 200, description = "Object-type names", body = OntologyTypesResponse)),
+    security(("bearer_auth" = [])),
+    tag = "ontology",
+)]
+async fn list_ontology_types(State(st): State<AppState>, _subject: Subject) -> impl IntoResponse {
+    match st.cp.ontology().list_types(PageReq::unbounded()).await {
+        Ok(page) => {
+            let types: Vec<String> = page.items.into_iter().map(|t| t.name.0).collect();
+            Json(serde_json::json!({ "types": types })).into_response()
+        }
+        Err(e) => internal_error("ontology list_types fault", e),
+    }
 }
 
 /// Operator-triggered physical GC: enqueue a `gc_table` job for `(schema, table)`.

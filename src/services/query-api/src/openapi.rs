@@ -74,6 +74,13 @@ pub struct ConstraintViolationItem {
     pub rule: String,
 }
 
+/// Documentation shape for the `{ "types": [..] }` ontology type-catalog response.
+#[derive(ToSchema)]
+pub struct OntologyTypesResponse {
+    /// The defined object-type names.
+    pub types: Vec<String>,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -92,6 +99,7 @@ pub struct ConstraintViolationItem {
         crate::http::get_lineage_upstream,
         crate::http::get_lineage_downstream,
         crate::http::get_lineage_run_events,
+        crate::http::list_ontology_types,
     ),
     components(schemas(
         ObjectsResponse,
@@ -102,6 +110,7 @@ pub struct ConstraintViolationItem {
         WriteDeniedBody,
         ConstraintViolationsBody,
         ConstraintViolationItem,
+        OntologyTypesResponse,
         crate::http::VectorSearchRequest,
         crate::lineage_read::DatasetNode,
         crate::lineage_read::DatasetClosureResponse,

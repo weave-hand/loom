@@ -115,6 +115,21 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "ontology-types-e2e",
+    crate = "ontology_types_e2e",
+    srcs = ["tests/ontology_types_e2e.rs"],
+    crate_root = "tests/ontology_types_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "bind-read-e2e",
     crate = "bind_read_e2e",
     srcs = ["tests/bind_read_e2e.rs"],
