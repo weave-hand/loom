@@ -829,9 +829,9 @@ use datafusion::common::{DFSchema, TableReference};
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::execution::context::{ExecutionProps, SessionContext};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
-use datafusion::physical_expr::{create_physical_expr, expressions::{Column, Literal}, PhysicalExpr};
+use datafusion::physical_expr::{create_physical_expr, expressions::{lit as phys_lit, Column}, PhysicalExpr};
 use datafusion::physical_plan::{
-    filter::FilterExec, limit::GlobalLimitExec, projection::ProjectionExec,
+    filter::FilterExec, limit::GlobalLimitExec, projection::{ProjectionExec, ProjectionExpr},
     ExecutionPlan, SendableRecordBatchStream,
 };
 use datafusion::scalar::ScalarValue as DfScalar;
@@ -911,18 +911,21 @@ impl TableProvider for GovernedTableProvider {
             Some(p) => p.clone(),
             None => (0..governed.fields().len()).collect(),
         };
-        let mut proj: Vec<(Arc<dyn PhysicalExpr>, String)> = Vec::with_capacity(indices.len());
+        // ProjectionExec::try_new in datafusion 54 takes IntoIterator<Item: Into<ProjectionExpr>>,
+        // NOT raw (Arc<dyn PhysicalExpr>, String) tuples — build Vec<ProjectionExpr>.
+        let mut proj: Vec<ProjectionExpr> = Vec::with_capacity(indices.len());
         for gi in indices {
             let field = governed.field(gi);
             let name = field.name().to_string();
-            if self.policy.masked.contains(&name) {
-                let lit = Literal::new(DfScalar::Utf8(Some(MASK_MARKER.to_string())));
-                proj.push((Arc::new(lit), name));
+            let expr: Arc<dyn PhysicalExpr> = if self.policy.masked.contains(&name) {
+                // `expressions::lit` returns Arc<dyn PhysicalExpr> (wraps Literal::new(scalar)).
+                phys_lit(DfScalar::Utf8(Some(MASK_MARKER.to_string())))
             } else {
                 let inner_idx = inner_schema.index_of(&name)
                     .map_err(|e| DataFusionError::Plan(e.to_string()))?;
-                proj.push((Arc::new(Column::new(&name, inner_idx)), name));
-            }
+                Arc::new(Column::new(&name, inner_idx))
+            };
+            proj.push(ProjectionExpr::new(expr, name));
         }
         plan = Arc::new(ProjectionExec::try_new(proj, plan)?);
 
@@ -937,11 +940,15 @@ impl TableProvider for GovernedTableProvider {
 
 Then add `execute_governed_sql_stream` (see the Design block above), importing `SessionContext`, `TableReference`, `MemorySchemaProvider`.
 
-Notes for the implementer (**this is the top implementation risk** — no first-party code constructs `FilterExec`/`ProjectionExec`/`GlobalLimitExec`/`expressions::Literal`/`expressions::Column` today, only `create_physical_expr` at `serving.rs:27,338`; resolve every signature below against the **datafusion 54** compiler under TDD):
-- Reuse the exact module paths already imported in `serving.rs` for the shared symbols (`create_physical_expr`, `ExecutionProps`, `SessionContext`, `Session`, `TableProvider`, `TableType`, `TableProviderFilterPushDown`, `Column`, `DFSchema`, `TableReference`, `MemorySchemaProvider`, `SchemaRef`, `ExecutionPlan`, `SendableRecordBatchStream`). The delegate/inner-scan pattern `self.inner.scan(state, None, &[], None)` is confirmed idiomatic — `provider.rs:286` does exactly this.
-- `Literal`/`FilterExec`/`ProjectionExec`/`GlobalLimitExec` are new to this crate — confirm via `grep -rn "ProjectionExec\|FilterExec\|GlobalLimitExec\|expressions::" third-party/BUCK` and the datafusion 54 docs; if a path differs, fix to the crate's actual export.
-- **`Literal::new` arity is uncertain.** Prefer the helper `datafusion::physical_expr::expressions::lit(DfScalar::Utf8(Some(MASK_MARKER.to_string())))` (returns `Arc<dyn PhysicalExpr>`); fall back to `Arc::new(Literal::new(scalar))` (or the field-name arity if 54 requires it) only if the helper is absent. The test surfaces the correct API.
-- `ProjectionExec::try_new(Vec<(Arc<dyn PhysicalExpr>, String)>, input)` is the expected signature — confirm against datafusion 54.
+Notes for the implementer — **DataFusion 54.0.0 signatures VERIFIED against the source in buck-out** (this is still the highest-risk task; the sketch above already uses these, but keep TDD tight):
+- `FilterExec::try_new(predicate: Arc<dyn PhysicalExpr>, input: Arc<dyn ExecutionPlan>) -> Result<Self>` — path `datafusion::physical_plan::filter::FilterExec`. ✓ as sketched.
+- `ProjectionExec::try_new<I, E>(expr: I, input)` where `I: IntoIterator<Item = E>, E: Into<ProjectionExpr>`. **A raw `(Arc<dyn PhysicalExpr>, String)` tuple does NOT convert** — build `Vec<ProjectionExpr>` via `ProjectionExpr::new(expr, alias)` (the sketch does this). If `ProjectionExpr::new` is not public in 54, construct the struct literal `ProjectionExpr { expr, alias }` (fields `expr: Arc<dyn PhysicalExpr>`, `alias: String`). Path `datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr}`.
+- `GlobalLimitExec::new(input, skip: usize, fetch: Option<usize>) -> Self` — path `datafusion::physical_plan::limit::GlobalLimitExec`; `new`, not `try_new`. ✓ as sketched (`GlobalLimitExec::new(plan, 0, Some(n))`).
+- Mask literal: `datafusion::physical_expr::expressions::lit(DfScalar::Utf8(Some(MASK_MARKER.to_string()))) -> Arc<dyn PhysicalExpr>` (imported above as `phys_lit`). `Literal::new` takes ONE arg (`ScalarValue`) if you construct it directly, but the `lit` helper is cleaner and is what the sketch uses.
+- `Column::new(name: &str, index: usize)` — path `datafusion::physical_expr::expressions::Column`. ✓ as sketched.
+- `create_physical_expr(e: &Expr, input_dfschema: &DFSchema, execution_props: &ExecutionProps) -> Result<Arc<dyn PhysicalExpr>>` — path `datafusion::physical_expr::create_physical_expr` (already used at `serving.rs:27,338`). ✓
+- `TableProvider::scan(&self, state: &dyn Session, projection: Option<&Vec<usize>>, filters: &[Expr], limit: Option<usize>)` — matches `serving.rs:376`. The delegate/inner-scan pattern `self.inner.scan(state, None, &[], None)` is confirmed idiomatic (`provider.rs:286`).
+- Reuse the exact module paths already imported in `serving.rs` for the shared symbols (`ExecutionProps`, `SessionContext`, `Session`, `TableProvider`, `TableType`, `TableProviderFilterPushDown`, `DFSchema`, `TableReference`, `MemorySchemaProvider`, `SchemaRef`, `ExecutionPlan`, `SendableRecordBatchStream`).
 
 - [ ] **Step 3: Run the e2e tests to green (iterate on DataFusion APIs under TDD)**
 
