@@ -56,6 +56,27 @@ impl FlightDataService {
         Ok(Response::new(Box::pin(out)))
     }
 
+    /// Run a governed SQL statement (client SQL + caller-resolved governed catalog) through
+    /// the governed serving path and Flight-encode the result stream. Mirrors `do_get_sql`.
+    async fn do_get_governed_sql(
+        &self,
+        q: engine_wire::flight::GovernedStatementQuery,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let stream = engine_serving::execute_governed_sql_stream(
+            &self.serving_catalog,
+            &q.sql,
+            &q.catalog,
+            self.serving_store.as_ref(),
+        )
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        let mapped = stream.map_err(|e| FlightError::from_external_error(Box::new(e)));
+        let out = FlightDataEncoderBuilder::new()
+            .build(mapped)
+            .map_err(|e| Status::internal(e.to_string()));
+        Ok(Response::new(Box::pin(out)))
+    }
+
     /// Run a k-NN vector search and Flight-encode the single resulting
     /// `RecordBatch`. `EngineServingError::NoIndex` maps to `not_found` so the
     /// caller can distinguish a missing index from an internal error.
@@ -125,6 +146,12 @@ impl FlightService for FlightDataService {
             let sql = String::from_utf8(tsq.statement_handle.to_vec())
                 .map_err(|e| Status::invalid_argument(format!("non-utf8 sql: {e}")))?;
             return self.do_get_sql(sql).await;
+        }
+
+        // loom-native governed SQL ticket (JSON): arbitrary client SQL + a resolved governed
+        // catalog. Disjoint fields (deny_unknown_fields) from the other JSON tickets.
+        if let Ok(gq) = engine_wire::flight::GovernedStatementQuery::decode(&ticket.ticket) {
+            return self.do_get_governed_sql(gq).await;
         }
 
         // loom-native k-NN ticket (JSON). Disjoint fields from FlightTicket

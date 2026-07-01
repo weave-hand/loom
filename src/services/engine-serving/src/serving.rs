@@ -54,17 +54,17 @@ pub(crate) fn to_serving<E: std::fmt::Display>(e: E) -> EngineServingError {
     EngineServingError::Engine(e.to_string())
 }
 
-/// Register `table`'s live data files (at its current snapshot) via the pruning-aware
-/// `IcebergMirrorTableProvider` under the schema-qualified name `"schema"."table"`, so
-/// the compiled read SQL resolves it. Files are registered by their absolute paths
-/// (`file://` or `s3://`) as stored in the mirror (`iceberg_mirror.data_file.path`);
-/// the provider's `scan` skips files a query's predicates provably cannot match.
-pub async fn register_iceberg_table(
+/// Build the combined serving `TableProvider` for `table` at its live snapshot:
+/// the pruning-aware file provider UNION-ALL the inline PG provider (either alone,
+/// or `None` when the table has no live data). Registers the needed object store(s)
+/// on `ctx` (idempotent). Factored out of `register_iceberg_table` so the governed
+/// path (`execute_governed_sql_stream`) can wrap the same relation.
+pub async fn build_serving_provider(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,
     table: &TableRef,
     serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
-) -> Result<(), EngineServingError> {
+) -> Result<Option<Arc<dyn TableProvider>>, EngineServingError> {
     use control_plane_core::Catalog;
 
     // Local store for absolute file:// warehouse paths (back-compat default).
@@ -127,8 +127,26 @@ pub async fn register_iceberg_table(
             }
             (Some(f), None) => Arc::new(f),
             (None, Some(i)) => Arc::new(i),
-            (None, None) => return Ok(()), // a live table with no data; nothing to register
+            (None, None) => return Ok(None), // a live table with no data; nothing to register
         };
+
+    Ok(Some(provider))
+}
+
+/// Register `table`'s live data files (at its current snapshot) via the pruning-aware
+/// `IcebergMirrorTableProvider` under the schema-qualified name `"schema"."table"`, so
+/// the compiled read SQL resolves it. Files are registered by their absolute paths
+/// (`file://` or `s3://`) as stored in the mirror (`iceberg_mirror.data_file.path`);
+/// the provider's `scan` skips files a query's predicates provably cannot match.
+pub async fn register_iceberg_table(
+    ctx: &SessionContext,
+    catalog: &IcebergCatalog,
+    table: &TableRef,
+    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
+) -> Result<(), EngineServingError> {
+    let Some(provider) = build_serving_provider(ctx, catalog, table, serving_store).await? else {
+        return Ok(());
+    };
 
     // Ensure the schema exists in the default catalog, then register the table
     // schema-qualified so `"schema"."table"` references resolve.

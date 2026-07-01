@@ -9,7 +9,7 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{FlightDescriptor, Ticket};
-use control_plane_core::Result;
+use control_plane_core::{GovernedCatalog, Result};
 use futures::{Stream, TryStreamExt};
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,34 @@ impl VectorSearchTicket {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("VectorSearchTicket is always serializable")
+    }
+
+    /// Decode from `Ticket.ticket` bytes.
+    pub fn decode(bytes: &[u8]) -> std::result::Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+/// A loom-native Flight `do_get` ticket carrying arbitrary client SQL plus the caller's
+/// fully-resolved governed catalog. JSON-encoded; `deny_unknown_fields` keeps it disjoint
+/// from `FlightTicket`/`VectorSearchTicket`. Dispatched by the engine to
+/// `engine_serving::execute_governed_sql_stream`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GovernedStatementQuery {
+    pub sql: String,
+    pub catalog: GovernedCatalog,
+}
+
+impl GovernedStatementQuery {
+    /// JSON-encode for the `Ticket.ticket` bytes.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "serde_json of an owned serializable type is infallible; matches VectorSearchTicket::encode"
+    )]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("GovernedStatementQuery is always serializable")
     }
 
     /// Decode from `Ticket.ticket` bytes.

@@ -52,6 +52,19 @@ loom_fixture_test(
 )
 
 rust_test(
+    name = "row-filter-to-expr",
+    crate = "row_filter_to_expr",
+    srcs = ["tests/row_filter_to_expr.rs"],
+    crate_root = "tests/row_filter_to_expr.rs",
+    edition = "2024",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//third-party:datafusion",
+    ],
+)
+
+rust_test(
     name = "vector-merge",
     crate = "vector_merge",
     srcs = ["tests/vector_merge.rs"],
@@ -135,6 +148,22 @@ loom_fixture_test(
     crate_root = "tests/execute_query_stream.rs",
     deps = [
         ":engine-serving",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:futures",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "governed-sql",
+    crate = "governed_sql",
+    srcs = ["tests/governed_sql.rs"],
+    crate_root = "tests/governed_sql.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:arrow",
         "//third-party:futures",
