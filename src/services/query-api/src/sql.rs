@@ -286,6 +286,24 @@ fn caller_predicate_sql(
         }
         IsNull => format!("({col} IS NULL)"),
         IsNotNull => format!("({col} IS NOT NULL)"),
+        Between => {
+            debug_assert_eq!(p.values.len(), 2, "between predicate must have two operands");
+            let base = params.len();
+            for v in &p.values {
+                params.push(v.clone());
+            }
+            let lo = dialect.placeholder(base + 1);
+            let hi = dialect.placeholder(base + 2);
+            format!("({col} BETWEEN {lo} AND {hi})")
+        }
+        Contains | StartsWith | EndsWith => {
+            debug_assert_eq!(p.values.len(), 1, "text-pattern predicate must have one operand");
+            let base = params.len();
+            if let Some(v) = p.values.first() {
+                params.push(v.clone());
+            }
+            format!("({col} ILIKE {} ESCAPE '\\')", dialect.placeholder(base + 1))
+        }
         _ => {
             debug_assert_eq!(p.values.len(), 1, "scalar predicate must have one operand");
             #[expect(
