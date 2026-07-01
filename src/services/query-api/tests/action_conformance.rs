@@ -156,3 +156,153 @@ fn all_violations_are_collected() {
         "got: {m}"
     );
 }
+
+// --- Param->property mapping: binds + constant assignments (slice 1) ---
+
+use control_plane_core::ConstAssignment;
+
+/// Gadget: id (Long, required), name (String, optional), status (String, optional).
+fn gadget() -> ObjectType {
+    ObjectType {
+        name: TypeName("Gadget".into()),
+        properties: vec![
+            prop("id", "Long", true),
+            prop("name", "String", false),
+            prop("status", "String", false),
+        ],
+        derived: vec![],
+        table: TableRef {
+            schema: "main".into(),
+            name: "gadget".into(),
+        },
+        identity: None,
+    }
+}
+
+fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
+    ParamDef {
+        name: name.into(),
+        ty: ty.into(),
+        required,
+        binds: binds.map(str::to_string),
+    }
+}
+
+fn insert_action(params: Vec<ParamDef>, assignments: Vec<ConstAssignment>) -> ActionDef {
+    ActionDef {
+        name: ActionName("a".into()),
+        target: TypeName("Gadget".into()),
+        parameters: params,
+        kind: ActionKind::Insert,
+        assignments,
+    }
+}
+
+fn is_misconfigured(r: Result<(), ActionError>) -> bool {
+    matches!(r, Err(ActionError::Misconfigured(_)))
+}
+
+#[test]
+fn rename_and_constant_conform() {
+    // `displayName` binds `name`; `id` covered by a required param; `status` filled by a constant.
+    let a = insert_action(
+        vec![
+            pb("id", "Long", true, None),
+            pb("displayName", "String", false, Some("name")),
+        ],
+        vec![ConstAssignment {
+            property: "status".into(),
+            value: serde_json::json!("active"),
+        }],
+    );
+    check_conformance(&a, &gadget()).expect("conforms");
+}
+
+#[test]
+fn required_property_covered_by_constant_conforms() {
+    // A REQUIRED property (`id`) covered ONLY by a constant is valid coverage.
+    let a = insert_action(
+        vec![],
+        vec![ConstAssignment {
+            property: "id".into(),
+            value: serde_json::json!("7"),
+        }],
+    );
+    check_conformance(&a, &gadget()).expect("constant covers required");
+}
+
+#[test]
+fn binds_unknown_property_rejected() {
+    let a = insert_action(
+        vec![
+            pb("id", "Long", true, None),
+            pb("x", "String", false, Some("nope")),
+        ],
+        vec![],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+#[test]
+fn constant_unknown_property_rejected() {
+    let a = insert_action(
+        vec![pb("id", "Long", true, None)],
+        vec![ConstAssignment {
+            property: "nope".into(),
+            value: serde_json::json!("x"),
+        }],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+#[test]
+fn constant_type_mismatch_rejected() {
+    // `status` is String; a bool constant is incompatible.
+    let a = insert_action(
+        vec![pb("id", "Long", true, None)],
+        vec![ConstAssignment {
+            property: "status".into(),
+            value: serde_json::json!(true),
+        }],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+#[test]
+fn double_bind_param_and_constant_rejected() {
+    // `name` bound by both a param and a constant.
+    let a = insert_action(
+        vec![
+            pb("id", "Long", true, None),
+            pb("name", "String", false, None),
+        ],
+        vec![ConstAssignment {
+            property: "name".into(),
+            value: serde_json::json!("x"),
+        }],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+#[test]
+fn double_bind_two_params_rejected() {
+    let a = insert_action(
+        vec![
+            pb("id", "Long", true, None),
+            pb("a", "String", false, Some("name")),
+            pb("b", "String", false, Some("name")),
+        ],
+        vec![],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+#[test]
+fn uncovered_required_property_rejected() {
+    // `id` (required) covered by neither a param nor a constant.
+    let a = insert_action(
+        vec![pb("displayName", "String", false, Some("name"))],
+        vec![],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}

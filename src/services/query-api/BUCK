@@ -914,6 +914,7 @@ rust_test(
     deps = [
         ":query-api",
         "//src/control-plane/core:core",
+        "//third-party:serde_json",
     ],
 )
 
@@ -942,6 +943,7 @@ rust_test(
     deps = [
         ":query-api",
         "//src/control-plane/core:core",
+        "//third-party:serde_json",
     ],
 )
 

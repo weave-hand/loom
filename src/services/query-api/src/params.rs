@@ -45,6 +45,20 @@ pub fn parse_params(
     Ok(out)
 }
 
+/// Define-time guard for a constant assignment: the JSON `value` must be a scalar (not
+/// null/array/object) coercible to the property's logical type — the same acceptance the
+/// write path applies via `parse_value`. Keeps the constant and the runtime coercion in
+/// lockstep (a constant that conforms here cannot fail the write-path coercion later).
+pub fn validate_const(property: &str, logical_ty: &str, value: &Value) -> Result<(), ParamError> {
+    if value.is_null() || value.is_array() || value.is_object() {
+        return Err(ParamError::BadValue(
+            property.to_string(),
+            "constant must be a scalar (string, number, or bool)".into(),
+        ));
+    }
+    parse_value(property, logical_ty, value).map(|_| ())
+}
+
 fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, ParamError> {
     let bad = |m: &str| ParamError::BadValue(name.to_string(), m.to_string());
     // Like `bad`, but folds the discarded source error into the message for diagnostics.
