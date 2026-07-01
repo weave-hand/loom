@@ -17,7 +17,8 @@ const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
 
 pub async fn serve(
     _cfg: &service_runtime::Config,
-    pg: Arc<control_plane_postgres::PgControlPlane>,
+    direct: Arc<dyn ControlPlane>,
+    acl: Arc<dyn control_plane_core::Acl + Send + Sync>,
     auth: service_runtime::AuthState,
     engine_socket: String,
     listener: tokio::net::TcpListener,
@@ -30,7 +31,7 @@ pub async fn serve(
     let gov_client = engine_wire::client::GrpcQueueClient::connect(engine_socket.clone()).await?;
     let cp: Arc<dyn ControlPlane> = Arc::new(crate::wire_control_plane::WireControlPlane::new(
         gov_client,
-        pg.clone() as Arc<dyn ControlPlane>,
+        direct.clone(),
     ));
 
     let (serving, action_engine): (Arc<dyn ServingEngine>, Arc<dyn ActionEngine>) = (
@@ -42,15 +43,15 @@ pub async fn serve(
 
     // Clones for the optional Flight export server, captured before `cp` is moved into AppState.
     let cp_flight = cp.clone();
-    let auth_flight: Arc<dyn control_plane_core::Auth + Send + Sync> = pg.clone();
+    let auth_flight: Arc<dyn control_plane_core::Auth + Send + Sync> = auth.auth.clone();
 
     // Admin gate identity: the configured bootstrap admin (default "admin"). An
     // unset value simply means no subject matches the gate → all /admin/* is 403.
     let admin_username =
         std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string());
     let admin_state = service_runtime::AdminState {
-        auth: pg.clone(),
-        acl: pg.clone(),
+        auth: auth.auth.clone(),
+        acl,
         admin_username,
     };
     let admin_subject = std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME")
@@ -79,7 +80,7 @@ pub async fn serve(
     // Dynamic OpenAPI: `/openapi.json` regenerates per request from the LIVE ontology, read
     // through the direct Postgres control plane (`pg`) — the wire governance client does not
     // implement `list_types`. `/docs` (Scalar) loads the live spec by URL.
-    let openapi_cp: Arc<dyn ControlPlane + Send + Sync> = pg.clone();
+    let openapi_cp: Arc<dyn ControlPlane> = direct;
     let app = service_runtime::with_openapi_provider(app, move || {
         let cp = openapi_cp.clone();
         async move { crate::live_openapi(cp).await }

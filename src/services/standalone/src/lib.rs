@@ -150,6 +150,7 @@ async fn serve_composite(
             "query-api",
             query_api::serve(
                 &qapi_cfg,
+                qapi_pg.clone(),
                 qapi_pg,
                 qapi_auth,
                 qapi_socket,
