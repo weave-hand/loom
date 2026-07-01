@@ -1,7 +1,8 @@
 //! Cursor pagination (`?limit=`/`?cursor=`) on `GET /objects/{type}` e2e over the real HTTP
 //! router backed by an Iceberg/DataFusion serving engine. Proves the keyset walk covers every
 //! row exactly once across pages (disjoint + contiguous, final page `next == null`), and the
-//! four fail-closed 400s: no declared identity, `_ids` + pagination together, and a malformed
+//! five fail-closed 400s: no declared identity, a masked/denied identity column, a
+//! non-round-trippable identity logical type, `_ids` + pagination together, and a malformed
 //! cursor.
 
 use std::sync::Arc;
@@ -12,7 +13,8 @@ use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use e2e_support::{
-    InProcessServingEngine, get, grant_read, ids_i64, prop, subject_with_role, tref,
+    InProcessServingEngine, get, grant_read, grant_read_columns, ids_i64, prop, subject_with_role,
+    tref,
 };
 
 /// Seed orders(id, amount) with ids 1..=5. Define `Order` (identity `id`) and `Plain`, a
@@ -56,6 +58,19 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: ord.clone(),
         identity: None,
+    })
+    .await
+    .unwrap();
+    // DoubleId: identity declared as a `Double` logical type — not one the cursor
+    // round-trips (`sqlvalue_to_id_string` only handles Int/Text losslessly). The guard
+    // in `read_object_page` must reject this before compiling/executing, so the
+    // underlying `amount` column's physical type (long) never matters for this fixture.
+    cp.define_type(ObjectType {
+        name: TypeName("DoubleId".into()),
+        properties: vec![prop("id", "Long", true), prop("amount", "Double", false)],
+        derived: vec![],
+        table: ord.clone(),
+        identity: Some("amount".into()),
     })
     .await
     .unwrap();
@@ -124,6 +139,55 @@ async fn pagination_on_no_identity_type_is_400() {
         status,
         StatusCode::BAD_REQUEST,
         "pagination on a type with no declared identity -> 400"
+    );
+}
+
+/// A masked identity column must fail closed: `read_object_page`'s `identity_is_governed`
+/// guard treats denied and masked identically (never emit a cursor over an
+/// ungoverned-visibility identity), so masking `id` on `Order` -> 400, same as denying it.
+#[tokio::test(flavor = "multi_thread")]
+async fn masked_identity_pagination_is_400() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let cp = Arc::new(cp);
+    let eng = Arc::new(eng);
+
+    let (_a, role) = subject_with_role(&cp, "alice").await;
+    grant_read_columns(&cp, &role, "Order", vec![], vec!["id".into()]).await;
+
+    let (status, _body) = get(cp.clone(), eng.clone(), "/objects/Order?limit=2", "alice").await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "masked identity column -> pagination fails closed with 400"
+    );
+}
+
+/// A `Double` identity is not one the cursor round-trips losslessly (only Integer/Long/
+/// String are — `sqlvalue_to_id_string` falls back to lossy `{:?}` Debug formatting for
+/// everything else). The guard must reject it up front rather than emit a cursor that
+/// page 2 can't decode.
+#[tokio::test(flavor = "multi_thread")]
+async fn non_round_trippable_identity_type_is_400() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup(&fx).await;
+    let cp = Arc::new(cp);
+    let eng = Arc::new(eng);
+
+    let (_a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "DoubleId").await;
+
+    let (status, _body) = get(
+        cp.clone(),
+        eng.clone(),
+        "/objects/DoubleId?limit=2",
+        "alice",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "non-round-trippable (Double) identity type -> pagination fails closed with 400"
     );
 }
 

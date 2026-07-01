@@ -500,8 +500,10 @@ fn encode_id_cursor(v: &SqlValue) -> control_plane_core::Cursor {
 /// rows, and returns the (possibly truncated) page plus the cursor to fetch the next page
 /// (`None` on the last page). Fails closed with `BadPagination` when: the type has no
 /// declared identity; the identity column is denied or masked (never emit a cursor over an
-/// ungoverned-visibility identity); `_ids` is also present (mutually exclusive with
-/// pagination); or `after` does not coerce to the identity's logical type.
+/// ungoverned-visibility identity); the identity's logical type is not one the cursor
+/// round-trips losslessly (only Integer/Long/String are — see `sqlvalue_to_id_string`);
+/// `_ids` is also present (mutually exclusive with pagination); or `after` does not coerce
+/// to the identity's logical type.
 pub async fn read_object_page(
     q: &ObjectQuery,
     subject: &Subject,
@@ -560,6 +562,30 @@ pub async fn read_object_page(
         .find(|p| p.name == identity)
         .map(|p| p.ty.as_str())
         .unwrap_or("");
+
+    // Fail closed: only reject identity logical types the cursor round-trips losslessly.
+    // `sqlvalue_to_id_string` only encodes `SqlValue::Int` (digits) and `SqlValue::Text`
+    // (verbatim) without loss; every other `SqlValue` kind falls back to `{:?}` Debug
+    // formatting, which `coerce_filter` cannot decode back on the next page's `cursor=`.
+    // `BaseType::Integer`/`Long` always coerce to `SqlValue::Int` (see `coerce_filter`'s
+    // `JsonRepr::Number`/`NumericString` arms — Integer identities are always
+    // integer-valued, and Long always parses as i64), and `BaseType::String` always
+    // coerces to `SqlValue::Text`. Reject everything else (Double, Boolean, Date,
+    // Timestamp, Vector, or an unrecognized type name) up front rather than emitting a
+    // cursor that stalls pagination on page 2.
+    let cursor_round_trips = matches!(
+        control_plane_core::resolve_logical(id_ty),
+        Some(
+            control_plane_core::BaseType::Integer
+                | control_plane_core::BaseType::Long
+                | control_plane_core::BaseType::String
+        )
+    );
+    if !cursor_round_trips {
+        return Err(QueryError::BadPagination(
+            "pagination unsupported for this identity type".to_string(),
+        ));
+    }
 
     // Visibility first (denied/masked column -> 400), then coerce, exactly as
     // `compile_object_read`'s filter loop.
