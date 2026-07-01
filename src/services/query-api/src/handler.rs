@@ -411,6 +411,7 @@ pub async fn compile_object_read(
         &predicates,
         &or_groups,
         &derived_selects,
+        None,
         limit,
     )?;
     // Output columns = physical `allowed` (in order) ++ surviving derived (in order).
@@ -596,6 +597,7 @@ pub async fn vector_search(
         std::slice::from_ref(&pred),
         &[],
         &[],
+        None,
         limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;

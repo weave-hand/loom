@@ -64,6 +64,7 @@ fn default_compile_select_equals_explicit_datafusion() {
         &[],
         &[],
         &[],
+        None,
         100,
     )
     .unwrap();
@@ -89,6 +90,7 @@ fn dialect_controls_quoting_and_placeholders() {
         &[],
         &[],
         &[],
+        None,
         100,
     )
     .unwrap();
@@ -110,6 +112,49 @@ fn datafusion_dialect_emits_bare_limit() {
     assert_eq!(
         sql, r#"SELECT "id" FROM "main"."orders" LIMIT 1000"#,
         "bare LIMIT, no ORDER BY barrier: {sql}"
+    );
+}
+
+#[test]
+fn compile_select_emits_order_by_when_requested() {
+    let (sql, _params) = compile_select_with(
+        &DataFusionDialect,
+        &t(),
+        &["id".into(), "name".into()],
+        &[],
+        &[],
+        &[],
+        &[],
+        Some("id"),
+        10,
+    )
+    .unwrap();
+    assert!(sql.contains("ORDER BY"), "expected ORDER BY, got: {sql}");
+    // ORDER BY must precede LIMIT.
+    assert!(
+        sql.find("ORDER BY").unwrap() < sql.find("LIMIT").unwrap(),
+        "got: {sql}"
+    );
+    assert!(sql.contains("\"id\""), "orders by identity: {sql}");
+}
+
+#[test]
+fn compile_select_no_order_by_by_default() {
+    let (sql, _params) = compile_select_with(
+        &DataFusionDialect,
+        &t(),
+        &["id".into()],
+        &[],
+        &[],
+        &[],
+        &[],
+        None,
+        10,
+    )
+    .unwrap();
+    assert!(
+        !sql.contains("ORDER BY"),
+        "default read stays unordered: {sql}"
     );
 }
 
@@ -155,6 +200,7 @@ fn positional_indices_span_select_derived_then_where() {
         &predicates,
         &[],
         &derived,
+        None,
         100,
     )
     .unwrap();
