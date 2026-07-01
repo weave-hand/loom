@@ -33,7 +33,7 @@ fn long_coerces_to_int() {
     );
     assert!(matches!(
         coerce_filter("id", "Long", "1.5"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
 }
 
@@ -49,11 +49,11 @@ fn boolean_coerces_strictly() {
     );
     assert!(matches!(
         coerce_filter("a", "Boolean", "maybe"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
     assert!(matches!(
         coerce_filter("a", "Boolean", "1"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
 }
 
@@ -77,11 +77,11 @@ fn date_and_timestamp_coerce_from_iso() {
     assert!(matches!(ts, SqlValue::Timestamp(_)));
     assert!(matches!(
         coerce_filter("d", "Date", "nope"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
     assert!(matches!(
         coerce_filter("t", "Timestamp", "2026-06-16"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
 }
 
@@ -89,15 +89,15 @@ fn date_and_timestamp_coerce_from_iso() {
 fn uncoercible_number_and_unknown_type_error() {
     assert!(matches!(
         coerce_filter("x", "Double", "abc"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
     assert!(matches!(
         coerce_filter("x", "Integer", "abc"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
     assert!(matches!(
         coerce_filter("x", "Nonsense", "1"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
 }
 
@@ -244,4 +244,36 @@ fn predicate_edge_cases_are_pinned() {
     let n = coerce_predicate("c", "Timestamp", "isnull:").unwrap();
     assert_eq!(n.op, CompareOp::IsNull);
     assert!(n.values.is_empty());
+}
+
+#[test]
+fn coerce_error_carries_column_expected_value() {
+    let err = coerce_filter("amount", "double", "abc").unwrap_err();
+    match err {
+        FilterError::Coerce {
+            column,
+            expected,
+            value,
+            ..
+        } => {
+            assert_eq!(column, "amount");
+            assert_eq!(expected, "double");
+            assert_eq!(value, "abc");
+        }
+        other => panic!("expected Coerce, got {other:?}"),
+    }
+}
+
+#[test]
+fn coerce_predicate_grammar_fault_stays_bad_value() {
+    // Bad arity (scalar op, no operand) is a grammar fault, not a coercion fault.
+    match coerce_predicate("amount", "double", "gt").unwrap_err() {
+        FilterError::BadValue(col, _) => assert_eq!(col, "amount"),
+        other => panic!("expected BadValue, got {other:?}"),
+    }
+    // A value that fails to coerce inside a predicate surfaces the Coerce variant.
+    assert!(matches!(
+        coerce_predicate("amount", "double", "gt:abc").unwrap_err(),
+        FilterError::Coerce { .. }
+    ));
 }

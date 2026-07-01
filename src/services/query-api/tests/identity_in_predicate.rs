@@ -131,7 +131,7 @@ fn uncoercible_value_is_bad_filter_value() {
     // A value that does not coerce is BadFilterValue (a parse fault carrying the source
     // FilterError), distinct from BadFilter (a column-permission denial).
     assert!(
-        matches!(&err, QueryError::BadFilterValue(FilterError::BadValue(c, _)) if c == "id"),
+        matches!(&err, QueryError::BadFilterValue(FilterError::Coerce { column: c, .. }) if c == "id"),
         "got {err:?}",
     );
 }
