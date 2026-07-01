@@ -16,7 +16,14 @@ use ingest::landing::{IcebergMaterializer, LandingMaterializer};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     service_runtime::init_tracing();
     let cfg = service_runtime::Config::from_env()?;
-    let pool = service_runtime::build_pool(&cfg.db).await?;
+    // Migrate-and-exit mode: apply the control-plane schema and exit (chart hook Job).
+    if service_runtime::migrate_requested() {
+        service_runtime::run_migrations(&cfg.db).await?;
+        return Ok(());
+    }
+    // `.1` is the embedded-PG handle (None in external mode); the ingest deploy is
+    // always external, so it is discarded. build_pool_managed honors LOOM_DB_MIGRATE_ON_BOOT.
+    let (pool, _pg) = service_runtime::build_pool_managed(&cfg).await?;
 
     // One concrete control plane, built before the materializer (which moves `pool`
     // into the Iceberg catalog, so we clone here while `pool` is still owned). It
