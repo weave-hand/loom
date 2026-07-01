@@ -29,6 +29,17 @@ pub struct PasswordCredential {
     pub password_phc: String,
 }
 
+/// A user as surfaced by an admin listing: identity + activation state, never the
+/// password verifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserSummary {
+    pub subject_id: SubjectId,
+    pub username: String,
+    /// True iff the user is deactivated (cannot log in; sessions revoked).
+    pub disabled: bool,
+    pub created_at: OffsetDateTime,
+}
+
 /// A service account to be created: an ACL subject and a unique operator-facing
 /// name. It has NO password credential (cannot password-login). Machine identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,8 +79,9 @@ pub trait Auth {
     async fn create_user(&self, user: &NewUser) -> Result<()>;
 
     /// Look up a username's subject + stored password verifier for login.
-    /// Unknown username → `Ok(None)` (the caller must not distinguish
-    /// "no such user" from "bad password" in its response).
+    /// Unknown username OR a **disabled** user → `Ok(None)` (the caller must not
+    /// distinguish "no such user" from "bad password" from "disabled" in its
+    /// response).
     async fn find_password_credential(&self, username: &str) -> Result<Option<PasswordCredential>>;
 
     /// Persist a session: the SHA-256 of the issued token plus its expiry.
@@ -82,7 +94,8 @@ pub trait Auth {
     ) -> Result<()>;
 
     /// Resolve a presented token hash to its subject, iff unexpired
-    /// (`expires_at > now`). Unknown/expired → `Ok(None)`.
+    /// (`expires_at > now`) AND the subject is not a disabled user. Unknown /
+    /// expired / disabled → `Ok(None)`.
     async fn resolve_session(
         &self,
         token_sha256: &[u8; 32],
@@ -95,6 +108,16 @@ pub trait Auth {
     /// True iff at least one user exists. Drives bootstrap ("seed admin if the
     /// user table is empty").
     async fn has_any_user(&self) -> Result<bool>;
+
+    /// List every user (identity + activation state + created-at), never the
+    /// password verifier. `page` is accepted for signature stability; adapters
+    /// return a single full page today.
+    async fn list_users(&self, page: PageReq) -> Result<Page<UserSummary>>;
+
+    /// Set or clear a user's disabled flag. On disable (`true`), the user's
+    /// sessions are revoked immediately. `NotFound` if the username is unknown.
+    /// Idempotent for a fixed target state.
+    async fn set_user_disabled(&self, username: &str, disabled: bool) -> Result<()>;
 
     /// Create a service account bound to `account.subject_id`. Ensures the ACL
     /// subject exists (so the account is immediately a valid ACL principal, exactly

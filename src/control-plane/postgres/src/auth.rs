@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
     Auth, ControlPlaneError, NewServiceAccount, NewUser, Page, PageReq, PasswordCredential, Result,
-    ServiceAccount, ServiceToken, SubjectId,
+    ServiceAccount, ServiceToken, SubjectId, UserSummary,
 };
 use time::OffsetDateTime;
 
@@ -67,7 +67,7 @@ impl Auth for PgControlPlane {
             "select u.subject_id, pc.password_phc \
              from auth.user u \
              join auth.password_credential pc on pc.subject_id = u.subject_id \
-             where u.username = $1",
+             where u.username = $1 and u.disabled_at is null",
             username,
         )
         .fetch_optional(self.pool())
@@ -108,8 +108,12 @@ impl Auth for PgControlPlane {
         now: OffsetDateTime,
     ) -> Result<Option<SubjectId>> {
         let row = sqlx::query_scalar!(
-            "select subject_id from auth.session \
-             where token_sha256 = $1 and expires_at > $2",
+            "select s.subject_id from auth.session s \
+             where s.token_sha256 = $1 and s.expires_at > $2 \
+               and not exists ( \
+                 select 1 from auth.user u \
+                 where u.subject_id = s.subject_id and u.disabled_at is not null \
+               )",
             &token_sha256[..],
             now,
         )
@@ -139,6 +143,62 @@ impl Auth for PgControlPlane {
             .map_err(backend)?
             .unwrap_or(false);
         Ok(exists)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_users(&self, _page: PageReq) -> Result<Page<UserSummary>> {
+        // Select `disabled_at` directly and derive the bool in Rust — avoids a
+        // computed-column nullability override (`as "x!"`) for a plain read.
+        let rows = sqlx::query!(
+            "select subject_id, username, disabled_at, created_at \
+             from auth.user order by username",
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(backend)?;
+        let out = rows
+            .into_iter()
+            .map(|r| UserSummary {
+                subject_id: SubjectId(r.subject_id),
+                username: r.username,
+                disabled: r.disabled_at.is_some(),
+                created_at: r.created_at,
+            })
+            .collect();
+        Ok(Page::from_full(out))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn set_user_disabled(&self, username: &str, disabled: bool) -> Result<()> {
+        // Set/clear the flag and, on disable, revoke the user's sessions in one
+        // transaction. `create_user` is non-idempotent, but this is: re-disabling
+        // just refreshes disabled_at; re-enabling clears it.
+        let mut tx = self.pool().begin().await.map_err(backend)?;
+        let row = sqlx::query!(
+            "update auth.user \
+             set disabled_at = case when $2 then now() else null end \
+             where username = $1 \
+             returning subject_id",
+            username,
+            disabled,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let Some(row) = row else {
+            return Err(ControlPlaneError::NotFound(format!("user {username}")));
+        };
+        if disabled {
+            sqlx::query!(
+                "delete from auth.session where subject_id = $1",
+                &row.subject_id,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(())
     }
 
     #[tracing::instrument(skip(self, account), level = "debug")]

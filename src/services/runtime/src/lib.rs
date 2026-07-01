@@ -9,6 +9,9 @@ pub use auth::{
     status_for,
 };
 
+mod admin;
+pub use admin::{AdminState, admin_routes, require_admin};
+
 mod crypto;
 pub use crypto::{AuthError, generate_session_token, hash_password, token_sha256, verify_password};
 

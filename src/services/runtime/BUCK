@@ -146,6 +146,25 @@ rust_test(
 )
 
 rust_test(
+    name = "admin-routes",
+    crate = "admin_routes",
+    srcs = ["tests/admin_routes.rs"],
+    crate_root = "tests/admin_routes.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
     name = "embedded-config",
     crate = "embedded_config",
     srcs = ["tests/embedded_config.rs"],

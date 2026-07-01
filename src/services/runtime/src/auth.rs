@@ -43,7 +43,7 @@ pub fn status_for(e: &ControlPlaneError) -> StatusCode {
     }
 }
 
-fn unauthorized() -> Response {
+pub(crate) fn unauthorized() -> Response {
     let e = ControlPlaneError::Unauthorized;
     (status_for(&e), e.to_string()).into_response()
 }

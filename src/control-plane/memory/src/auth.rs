@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use control_plane_core::{
     Auth, ControlPlaneError, NewServiceAccount, NewUser, Page, PageReq, PasswordCredential, Result,
-    ServiceAccount, ServiceToken, SubjectId,
+    ServiceAccount, ServiceToken, SubjectId, UserSummary,
 };
 use time::OffsetDateTime;
 
@@ -12,6 +12,8 @@ use crate::MemoryControlPlane;
 struct MemUser {
     subject_id: String,
     password_phc: String,
+    disabled: bool,
+    created_at: OffsetDateTime,
 }
 
 struct MemSession {
@@ -61,6 +63,8 @@ impl Auth for MemoryControlPlane {
             MemUser {
                 subject_id: user.subject_id.0.clone(),
                 password_phc: user.password_phc.clone(),
+                disabled: false,
+                created_at: OffsetDateTime::now_utc(),
             },
         );
         drop(auth);
@@ -72,10 +76,14 @@ impl Auth for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn find_password_credential(&self, username: &str) -> Result<Option<PasswordCredential>> {
         let auth = self.auth.lock();
-        Ok(auth.users.get(username).map(|u| PasswordCredential {
-            subject_id: SubjectId(u.subject_id.clone()),
-            password_phc: u.password_phc.clone(),
-        }))
+        Ok(auth
+            .users
+            .get(username)
+            .filter(|u| !u.disabled)
+            .map(|u| PasswordCredential {
+                subject_id: SubjectId(u.subject_id.clone()),
+                password_phc: u.password_phc.clone(),
+            }))
     }
 
     #[tracing::instrument(skip(self, token_sha256), level = "debug")]
@@ -102,10 +110,19 @@ impl Auth for MemoryControlPlane {
         now: OffsetDateTime,
     ) -> Result<Option<SubjectId>> {
         let auth = self.auth.lock();
-        Ok(auth
-            .sessions
-            .get(token_sha256)
-            .and_then(|s| (s.expires_at > now).then(|| SubjectId(s.subject_id.clone()))))
+        let Some(s) = auth.sessions.get(token_sha256) else {
+            return Ok(None);
+        };
+        if s.expires_at <= now {
+            return Ok(None);
+        }
+        // Reject a disabled user's token (defense in depth: a session may have
+        // been minted before disable, or in a race with it).
+        let disabled = auth
+            .users
+            .values()
+            .any(|u| u.subject_id == s.subject_id && u.disabled);
+        Ok((!disabled).then(|| SubjectId(s.subject_id.clone())))
     }
 
     #[tracing::instrument(skip(self, token_sha256), level = "debug")]
@@ -117,6 +134,37 @@ impl Auth for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn has_any_user(&self) -> Result<bool> {
         Ok(!self.auth.lock().users.is_empty())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_users(&self, _page: PageReq) -> Result<Page<UserSummary>> {
+        let auth = self.auth.lock();
+        let mut out: Vec<UserSummary> = auth
+            .users
+            .iter()
+            .map(|(username, u)| UserSummary {
+                subject_id: SubjectId(u.subject_id.clone()),
+                username: username.clone(),
+                disabled: u.disabled,
+                created_at: u.created_at,
+            })
+            .collect();
+        out.sort_by(|a, b| a.username.cmp(&b.username));
+        Ok(Page::from_full(out))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn set_user_disabled(&self, username: &str, disabled: bool) -> Result<()> {
+        let mut auth = self.auth.lock();
+        let Some(u) = auth.users.get_mut(username) else {
+            return Err(ControlPlaneError::NotFound(format!("user {username}")));
+        };
+        u.disabled = disabled;
+        if disabled {
+            let subject = u.subject_id.clone();
+            auth.sessions.retain(|_, s| s.subject_id != subject);
+        }
+        Ok(())
     }
 
     #[tracing::instrument(skip(self, account), level = "debug")]

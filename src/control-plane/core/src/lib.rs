@@ -25,7 +25,7 @@ pub use acl::{
     SubjectId, validate_row_filter,
 };
 pub use auth::{
-    Auth, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount, ServiceToken,
+    Auth, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount, ServiceToken, UserSummary,
 };
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
 pub use compact_job::{COMPACT_JOB_KIND, CompactJob};

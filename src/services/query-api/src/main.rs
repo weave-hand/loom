@@ -66,6 +66,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cp_flight = cp.clone();
     let auth_flight: std::sync::Arc<dyn control_plane_core::Auth + Send + Sync> = pg.clone();
 
+    // Admin gate identity: the configured bootstrap admin (default "admin"). An
+    // unset value simply means no subject matches the gate → all /admin/* is 403.
+    let admin_username =
+        std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string());
+    let admin_state = service_runtime::AdminState {
+        auth: pg.clone(),
+        acl: pg.clone(),
+        admin_username,
+    };
     let admin_subject = std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME")
         .ok()
         .map(control_plane_core::SubjectId);
@@ -82,6 +91,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .merge(service_runtime::login_routes(auth_state.clone()))
     .merge(service_runtime::session_routes(auth_state.clone()))
+    .merge(service_runtime::admin_routes(
+        admin_state,
+        auth_state.clone(),
+    ))
     .merge(service_runtime::service_account_routes(
         auth_state,
         admin_subject,
