@@ -15,8 +15,8 @@ users log in with a second factor (TOTP or a passkey), an enterprise can federat
 its IdP, brute-force attempts are throttled at the edge, passwords obey a policy
 and rotate, and sessions slide instead of expiring mid-work. loom **does not
 hand-roll** the cryptographic ceremonies behind any of that — it **adopts
-established, security-reviewed Rust implementations** (WebAuthn, TOTP, SAML/XML
-signatures, GCRA rate limiting) and plugs each into the identity spine already in
+established, pure-Rust implementations** (WebAuthn via `passkey-rs`, TOTP, OIDC
+token validation, GCRA rate limiting) and plugs each into the identity spine already in
 place: the `auth` concern, opaque server-side sessions, the `require_auth`
 middleware, and the `SubjectId`-keyed ACL. This spec is the umbrella: the
 build-vs-adopt call, the per-capability candidate evaluation, the integration
@@ -46,8 +46,8 @@ The decision is **adopt**, and it is already reflected in the codebase: password
 hashing was never hand-rolled — `crypto.rs` adopts `argon2` + `sha2`. What
 "comprehensive auth" adds are protocols where a hand-rolled implementation is a
 liability, not a differentiator: WebAuthn attestation/assertion, RFC 6238 TOTP,
-SAML assertion parsing + XML-DSIG signature validation, and GCRA rate limiting.
-loom has no reason to own that code.
+OIDC ID-token validation, and GCRA rate limiting. loom has no reason to own that
+code.
 
 The load-bearing distinction is **adopt a library (crate) vs. adopt a service
 (IdP)**:
@@ -71,16 +71,17 @@ crates supply the hard math.
 | Capability | Options considered | Recommendation | Blast radius / notes |
 | --- | --- | --- | --- |
 | TOTP / OTP ([[fut-auth-totp-mfa]]) | `totp-rs`, `otpauth`, `libreauth` | **`totp-rs`** | Small, pure-Rust (`sha2`/`base32`). Emits the `otpauth://` provisioning URI; keep QR-image features **off** (avoids `image`/`qrcode`) — the client renders the URI. Minimal reindeer footprint. |
-| Passkeys / WebAuthn ([[fut-auth-passkeys]]) | `webauthn-rs` (Kanidm), `passkey-rs` (1Password) | **`webauthn-rs`** (server RP library) | The de-facto Rust RP library, battle-tested in Kanidm; handles registration (attestation) + authentication (assertion) + credential state serialization. **Risk: verify its crypto backend at buckify time** — if it pulls `openssl-sys` (a native `links` crate) it triggers the reindeer downgrade footgun and needs a fixup; `passkey-rs` is the pure-Rust fallback if the native dep is unacceptable (Open Question). |
-| SAML federation ([[fut-auth-saml]]) | `samael` (SAML2 SP), **or pivot to OIDC** via `openidconnect` | **`samael`** as the SAML answer, **but flag OIDC as a lower-cost alternative** | `samael` depends on `libxml2`/`xmlsec` **native** libs for XML-DSIG — the single biggest blast radius here, and it interacts with the "deploy env provides system libs" model (the libxml2 fetch is already RE/test-only). `openidconnect` is **pure Rust** and may satisfy the real federation need at a fraction of the cost. **Biggest human decision — see Open Questions.** |
+| Passkeys / WebAuthn ([[fut-auth-passkeys]]) | `webauthn-rs` (Kanidm), `passkey-rs` (1Password) | **`passkey-rs`** (pure Rust) — **decided** | Chosen for **zero native-dep risk**: `passkey-rs` is pure Rust, so it buckifies clean with no `openssl-sys`/`links`-crate exposure to the reindeer downgrade footgun. Trade-off: less battle-tested as a *server* RP library than `webauthn-rs`, so Slice C carries more integration + security-review work (RP-ID/origin binding, attestation policy, sign-count) — acceptable against the hermetic-build guarantee. |
+| Federation ([[fut-auth-saml]]) | `openidconnect` (OIDC, pure Rust), `samael` (SAML2, native) | **`openidconnect`** (OIDC) — **decided** | Federation is delivered via **OIDC**, which is pure Rust and self-hostable — no native `xmlsec`/libxml2 dependency at all. OIDC covers the mainstream enterprise IdPs (Google, Okta, Azure AD, Auth0, Keycloak). SAML-specifically (`samael` + its native XML-DSIG stack) is **dropped from scope** unless a future consumer needs a SAML-only legacy IdP — at which point it is its own deferred slice. |
 | Login rate-limit ([[fut-auth-login-rate-limit]]) | `tower_governor` (tower layer over `governor`), raw `governor` | **`tower_governor`** | Small, pure-Rust GCRA limiter as an axum/tower layer in `service_runtime`, keyed by real client IP. In-memory per-process for now; distributed/Redis-backed is deferred (Open Question — multi-replica Helm). |
 | Password policy ([[fut-auth-password-policy]]) | `zxcvbn` (strength estimator), home-grown rules | **`zxcvbn`** for strength + **home-grown** forced-rotation | `zxcvbn` is pure Rust (bundles a frequency dictionary — modest binary-size cost). Forced rotation is just a `password_changed_at` column + a login-time max-age check; no crate. Breach-list (HIBP) needs network → deferred. |
 | Session refresh ([[fut-auth-session-refresh]]) | home-grown on `auth.session` | **Home-grown** (no new crate) | Sliding expiry / refresh is a mechanics change to the existing opaque-session table + `resolve_session`; nothing to adopt. The cheapest capability. |
 
-Net: **four small/pure crates** (`totp-rs`, `tower_governor`, `zxcvbn`,
-`webauthn-rs` pending its backend check), **one native-heavy crate under review**
-(`samael`, possibly replaced by pure-Rust `openidconnect`), and **one home-grown**
-extension (session refresh).
+Net: **five pure-Rust crates** — `totp-rs`, `tower_governor`, `zxcvbn`,
+`passkey-rs`, `openidconnect` — and **one home-grown** extension (session refresh).
+**Every adopted crate is pure Rust; the batch takes no native `links`-crate
+dependency**, so there is no `openssl-sys`/`xmlsec`/libxml2 exposure and no reindeer
+downgrade-footgun surface. This is a deliberate outcome of the two library calls.
 
 ## Integration architecture
 
@@ -108,13 +109,14 @@ unchanged seam:
   (assertion after password, reusing the MFA challenge machinery) or as a
   **passwordless primary** (assertion is the sole factor). Both end at
   `create_session`. Registration (attestation) is an authenticated ceremony that
-  stores a serialized `webauthn-rs` credential for the subject.
-- **SAML / federation — an alternate session origin.** The SP validates the
-  IdP assertion (signature, conditions, audience), maps the assertion's
-  NameID/attribute to a loom `SubjectId` via a federated-identity binding, and — if
-  mapped — mints a session via `create_session`. Federation bypasses password + MFA
-  (the IdP asserts the factors). JIT user provisioning on first login is an Open
-  Question.
+  stores a serialized `passkey-rs` credential for the subject.
+- **OIDC federation — an alternate session origin.** The relying party runs the
+  OIDC authorization-code flow (`openidconnect`), validates the returned ID token
+  (issuer, audience, signature via the IdP's JWKS, nonce, expiry), maps the token's
+  `sub` (issuer + subject) to a loom `SubjectId` via a federated-identity binding,
+  and — if mapped — mints a session via `create_session`. Federation bypasses
+  password + MFA (the IdP asserts the factors). JIT user provisioning on first login
+  is an Open Question.
 - **Rate-limit — an edge layer, no `auth` involvement.** A `tower_governor` layer
   in `service_runtime` in front of `/auth/login` (and the MFA-verify route),
   keyed by client IP, returning 429 over the cap. It sees no `SubjectId` and stores
@@ -148,10 +150,10 @@ to refine):
 - `auth.webauthn_credential(credential_id PK, subject_id → auth.user,
   passkey_state jsonb, sign_count, label, created_at)` — one row per registered
   authenticator (a subject may hold several); `passkey_state` is the serialized
-  `webauthn-rs` credential.
-- `auth.federated_identity(idp, external_subject, subject_id → auth.user,
-  created_at, PRIMARY KEY (idp, external_subject))` — the IdP NameID → loom subject
-  binding.
+  `passkey-rs` credential.
+- `auth.federated_identity(issuer, external_subject, subject_id → auth.user,
+  created_at, PRIMARY KEY (issuer, external_subject))` — the OIDC `(iss, sub)` → loom
+  subject binding.
 - `auth.mfa_challenge(challenge_sha256 PK, subject_id, purpose, expires_at,
   created_at)` — the short-lived pending-MFA / must-change-password token; hashed,
   never the raw value, mirroring `auth.session`.
@@ -162,8 +164,8 @@ to refine):
 The `Auth` trait gains per-kind store/list/resolve methods, each implemented on
 **both** adapters (memory fake + postgres, `.sqlx` refreshed via
 `tools/sqlx-prepare.sh`) and contract-tested in `testkit` — the exact pattern
-every concern already follows. Crypto (TOTP verify, WebAuthn ceremony, SAML
-validation) stays in the service layer; the trait remains a pure store, consistent
+every concern already follows. Crypto (TOTP verify, WebAuthn ceremony, OIDC
+token validation) stays in the service layer; the trait remains a pure store, consistent
 with `auth` today.
 
 ## Slicing plan
@@ -188,33 +190,35 @@ introduced. Sequenced cheapest-first / lowest-blast-radius-first.
 - **Slice C — passkeys / WebAuthn.** Reuses Slice B's challenge machinery; adds the
   registration (attestation) and authentication (assertion) ceremonies and the
   `auth.webauthn_credential` store, in both second-factor and passwordless-primary
-  modes. Adopts `webauthn-rs`. Delivers [[fut-auth-passkeys]]. Sequenced after TOTP
-  because it is heavier (RP-ID/origin config, attestation policy) and gates on the
-  crate's native-backend check.
-- **Slice D — SAML (or OIDC) federation.** Federated-identity mapping table + the
-  assertion/token validation + session mint, plus the JIT-provisioning decision.
-  Adopts `samael` (or `openidconnect` if the pivot is taken). Delivers
-  [[fut-auth-saml]]. Sequenced last: biggest blast radius (native `xmlsec`/libxml2)
-  and gated on the SAML-vs-OIDC human decision.
+  modes. Adopts **`passkey-rs`** (pure Rust). Delivers [[fut-auth-passkeys]].
+  Sequenced after TOTP because it is heavier (RP-ID/origin config, attestation
+  policy, sign-count handling) and, with the less-battle-tested server RP path,
+  carries the deepest integration + security-review load of the batch.
+- **Slice D — OIDC federation.** Federated-identity mapping table
+  (`auth.federated_identity` on `(issuer, subject)`) + OIDC authorization-code flow
+  and ID-token validation + session mint, plus the JIT-provisioning decision.
+  Adopts **`openidconnect`** (pure Rust). Delivers [[fut-auth-saml]] (the federation
+  capability, via OIDC). Sequenced last as the most infrastructure-shaped slice
+  (redirect flow, IdP registration/config, JWKS handling) — but with **no native
+  dependency**, since SAML-specifically is out of scope.
 
 ## Constraints & risks
 
 - **Hermetic build / reindeer blast radius.** Every crate must buckify from
-  crates.io. The four small crates (`totp-rs`, `tower_governor`, `zxcvbn`,
-  `webauthn-rs`-if-pure) are low-risk pure-Rust adds. The two danger points:
-  (1) **`webauthn-rs`'s crypto backend** — if it pulls `openssl-sys`, that is a
-  native `links` crate, subject to the documented "`reindeer update` can downgrade
-  native crates" footgun (CLAUDE.md), needs a fixup, and must be verified with the
-  **full** `buck2 test //src/...` after buckify. (2) **`samael`'s libxml2/xmlsec**
-  native dependency — the largest, and it interacts with the "deploy env provides
-  system libs" model (loom embeds only its own artifacts; libxml2 stays the deploy
-  env's job, per the deploy-libs memory). Prefer the OIDC pivot if the federation
-  need allows.
+  crates.io. With the two library calls made (`passkey-rs`, `openidconnect`), **all
+  five adopted crates are pure Rust** — no native `links` crate enters the tree, so
+  the batch is free of the `openssl-sys`/`xmlsec`/libxml2 exposure and the documented
+  "`reindeer update` can downgrade native crates" footgun (CLAUDE.md). Still, run the
+  **full** `buck2 test //src/...` after each `./tools/buckify.sh`, since a
+  `reindeer update` re-resolves the whole graph and can move *other* crates. The
+  binary-size cost of `zxcvbn`'s bundled dictionary is the main non-trivial add and
+  is modest.
 - **Security review per slice.** Adopting reviewed crates is the point, but
   *integration* is where the bugs live: MFA-challenge replay/expiry, WebAuthn
-  RP-ID/origin binding and sign-count regression, SAML signature-wrapping / XXE /
-  audience-restriction validation, rate-limit real-IP spoofing (`X-Forwarded-For`
-  trust behind the TLS front). Each slice's spec carries an explicit review gate;
+  RP-ID/origin binding and sign-count regression, OIDC ID-token validation
+  (issuer/audience/nonce/JWKS-signature, authorization-code replay), rate-limit
+  real-IP spoofing (`X-Forwarded-For` trust behind the TLS front). Each slice's spec
+  carries an explicit review gate;
   none ships as "reviewed because the crate is."
 - **Discipline the repo already enforces.** Each slice: no inline `#[test]`
   (sibling `tests/*.rs` `rust_test`, `loom_fixture_test` for postgres),
@@ -222,8 +226,9 @@ introduced. Sequenced cheapest-first / lowest-blast-radius-first.
   adapters, strict clippy. New credential structs must not derive a `Debug` that
   leaks secrets — the same class as [[fut-auth-credential-debug-redact]].
 - **Cleartext transport** remains the standing pre-deploy gap
-  ([[fut-graceful-shutdown-tls]]); MFA/passkeys/SAML over plain HTTP assume a
-  TLS-terminating front, recorded so no slice ships as production-ready.
+  ([[fut-graceful-shutdown-tls]]); MFA/passkeys/OIDC over plain HTTP assume a
+  TLS-terminating front, recorded so no slice ships as production-ready. (OIDC in
+  particular requires HTTPS redirect URIs at any real IdP.)
 
 ## Non-goals (explicit; stay deferred)
 
@@ -240,30 +245,35 @@ introduced. Sequenced cheapest-first / lowest-blast-radius-first.
 - **TLS** ([[fut-graceful-shutdown-tls]]) and **`Debug` redaction**
   ([[fut-auth-credential-debug-redact]]) — tracked separately.
 
+## Resolved library decisions (2026-07-01)
+
+Two calls were made with the operator when this spec landed, both toward **pure
+Rust / zero native deps**:
+
+- **Federation → OIDC via `openidconnect`** (not SAML/`samael`). SAML-specifically is
+  dropped from scope unless a future SAML-only-IdP consumer surfaces.
+- **Passkeys → `passkey-rs`** (not `webauthn-rs`), accepting the deeper server-RP
+  integration work in exchange for no `openssl-sys` exposure.
+
+These close what were the two biggest open questions; the remainder below are
+integration/policy decisions for the individual slice specs.
+
 ## Open questions (the human-decision points)
 
-1. **SAML vs OIDC for federation.** `samael` (SAML2, native `xmlsec`/libxml2, big
-   blast radius) vs `openidconnect` (pure Rust, self-hostable, far smaller). The
-   FUTURE item names SAML, but OIDC may satisfy the actual enterprise-federation
-   need at a fraction of the cost. **The single biggest call**; it decides Slice D's
-   shape and whether loom takes a native XML dependency at all.
-2. **`webauthn-rs` crypto backend.** Accept its native dep (likely `openssl-sys`)
-   with a fixup, or take the pure-Rust `passkey-rs` fallback? Decides Slice C's
-   blast radius.
-3. **MFA enforcement policy.** Per-user opt-in, admin-mandated per user, or
+1. **MFA enforcement policy.** Per-user opt-in, admin-mandated per user, or
    org-wide required? And at-login only vs step-up for sensitive actions.
-4. **JIT provisioning on first federated login** — auto-create the loom
+2. **JIT provisioning on first federated login** — auto-create the loom
    user/subject (and with which starting roles?), or require the admin surface to
    pre-provision the subject before federation can bind to it?
-5. **Passkeys: second-factor first, or passwordless-primary from the start?**
+3. **Passkeys: second-factor first, or passwordless-primary from the start?**
    Both share the ceremony but differ in the login flow and recovery story.
-6. **Rate-limit source identity.** How is the real client IP derived behind the
+4. **Rate-limit source identity.** How is the real client IP derived behind the
    TLS-terminating front — which `X-Forwarded-For` hop is trusted, and how is that
    configured so the limiter cannot be trivially bypassed or weaponized?
-7. **Credential-kind storage shape.** Confirm per-kind tables (recommended,
+5. **Credential-kind storage shape.** Confirm per-kind tables (recommended,
    consistent with service tokens) over a polymorphic `auth.credential(kind,
    material)` table.
-8. **TOTP secret encryption at rest** — key source and rotation for
+6. **TOTP secret encryption at rest** — key source and rotation for
    `auth.totp_credential.secret_enc` (unlike password verifiers, a TOTP secret is
    symmetric and must be recoverable to verify).
 
@@ -275,7 +285,8 @@ introduced. Sequenced cheapest-first / lowest-blast-radius-first.
   [[fut-auth-saml]], [[fut-auth-login-rate-limit]], [[fut-auth-password-policy]],
   [[fut-auth-session-refresh]]) stay in FUTURE as the detailed surface each slice
   delivers against; each is promoted to a `road-*` item when its slice spec is cut.
+  Note [[fut-auth-saml]] is satisfied as the **federation** capability via OIDC
+  (Slice D); SAML-specifically stays deferred (no `road-*` yet) unless a SAML-only
+  IdP consumer surfaces.
 - Deferred and untouched: [[fut-auth-email-reset]], [[fut-auth-token-scoping]],
   [[fut-auth-admin-capability]], [[fut-auth-credential-debug-redact]].
-</content>
-</invoke>
