@@ -5,7 +5,8 @@
 mod auth;
 pub use auth::{
     AuthState, BootstrapError, Subject, bootstrap_admin, login_routes, protect, require_auth,
-    session_routes, session_ttl_from_env, status_for,
+    service_account_routes, service_token_max_ttl_from_env, session_routes, session_ttl_from_env,
+    status_for,
 };
 
 mod admin;
@@ -15,7 +16,9 @@ mod crypto;
 pub use crypto::{AuthError, generate_session_token, hash_password, token_sha256, verify_password};
 
 mod openapi;
-pub use openapi::{BEARER_SCHEME_NAME, with_openapi};
+pub use openapi::{
+    BEARER_SCHEME_NAME, register_bearer_scheme, with_openapi, with_openapi_provider,
+};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

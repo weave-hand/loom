@@ -186,6 +186,43 @@ pub async fn live_table_id(conn: &mut PgConnection, ns: &str, name: &str) -> Res
     .map_err(backend)
 }
 
+/// One dropped incarnation of a `(namespace, name)`: its `table_id` and the snapshot
+/// at which it was dropped (`table.end_snapshot`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DroppedIncarnation {
+    pub table_id: i64,
+    pub drop_snapshot: i64,
+}
+
+/// Every DROPPED incarnation of `(ns, name)` — the end-capped `iceberg_mirror.table`
+/// rows for the name. The currently-live row (if any) is excluded by construction:
+/// a live row has `end_snapshot IS NULL`, and this selects `end_snapshot IS NOT NULL`.
+/// A `(ns, name)` maps to several rows across a drop/recreate history; GC reclaims the
+/// dead incarnations by iterating these ids under the same horizon `H`.
+pub async fn dropped_table_ids(
+    conn: &mut PgConnection,
+    ns: &str,
+    name: &str,
+) -> Result<Vec<DroppedIncarnation>> {
+    let rows = sqlx::query!(
+        "select table_id as \"table_id!\", end_snapshot as \"drop_snapshot!\" \
+         from iceberg_mirror.table \
+         where table_namespace = $1 and table_name = $2 and end_snapshot is not null",
+        ns,
+        name,
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DroppedIncarnation {
+            table_id: r.table_id,
+            drop_snapshot: r.drop_snapshot,
+        })
+        .collect())
+}
+
 /// End-cap (set `end_snapshot = at`) the specific live `iceberg_mirror.data_file`
 /// rows named by `paths` for `table_id` — the subset-expire leg of compaction
 /// (`Tx::compact_files`' Iceberg twin). Prior snapshots still time-travel (the rows

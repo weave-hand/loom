@@ -5,6 +5,7 @@ mod acl;
 mod auth;
 mod catalog;
 mod compact_job;
+mod constraints;
 mod error;
 mod flush;
 mod gc;
@@ -23,14 +24,23 @@ pub use acl::{
     Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
     SubjectId, validate_row_filter,
 };
-pub use auth::{Auth, NewUser, PasswordCredential, UserSummary};
+pub use auth::{
+    Auth, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount, ServiceToken, UserSummary,
+};
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
 pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
+pub use constraints::{
+    ConstraintRule, ConstraintViolation, LengthConstraint, PropertyConstraints, PropertyValidator,
+    RangeConstraint, validate_constraints,
+};
 pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};
 pub use gc::{GC_JOB_KIND, GcJob};
 pub use identity::{DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TypeId};
-pub use lineage::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
+pub use lineage::{
+    DatasetRef, EventType, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, RunId, check_depth,
+    decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,
+};
 pub use logical_type::{
     BaseType, JsonRepr, UnknownLogicalType, json_repr_of, resolve_logical, satisfies,
 };

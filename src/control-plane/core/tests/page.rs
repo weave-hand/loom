@@ -48,3 +48,25 @@ fn cursor_json_round_trips() {
     let json = serde_json::to_string(&c).unwrap();
     assert_eq!(serde_json::from_str::<Cursor>(&json).unwrap(), c);
 }
+
+#[test]
+fn from_keyset_under_limit_is_final_page() {
+    let p = Page::from_keyset(vec![1, 2, 3], Some(5), |n| Cursor(n.to_string()));
+    assert_eq!(p.items, vec![1, 2, 3]);
+    assert_eq!(p.next, None);
+}
+
+#[test]
+fn from_keyset_over_limit_truncates_and_sets_cursor() {
+    // 4 items fetched (limit + 1) signals a next page; truncate to 3, cursor = last kept.
+    let p = Page::from_keyset(vec![10, 20, 30, 40], Some(3), |n| Cursor(n.to_string()));
+    assert_eq!(p.items, vec![10, 20, 30]);
+    assert_eq!(p.next, Some(Cursor("30".into())));
+}
+
+#[test]
+fn from_keyset_unbounded_is_final_page() {
+    let p = Page::from_keyset(vec![1, 2, 3], None, |n| Cursor(n.to_string()));
+    assert_eq!(p.items, vec![1, 2, 3]);
+    assert_eq!(p.next, None);
+}

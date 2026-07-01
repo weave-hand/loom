@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update auth.service_token set revoked_at = now() where token_sha256 = $1 and revoked_at is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d6055460366b2d89a8d50c62697b3fe6306ae7e417fd292f2737aff8db7e90ea"
+}

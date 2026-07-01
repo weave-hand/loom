@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select event_id, event_type, event_time, payload from lineage.event where run_id = $1 order by event_id",
+  "query": "select event_id, event_type, event_time, payload from lineage.event where run_id = $1 and ($2::bigint is null or event_id > $2) order by event_id limit $3",
   "describe": {
     "columns": [
       {
@@ -50,7 +50,9 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
@@ -60,5 +62,5 @@
       false
     ]
   },
-  "hash": "397545a7d155a5d0468d8bf318d3aea671cb69201a63735887a4b922c6607334"
+  "hash": "d9b38a3635a45ee38653a57cd98f57d554b5c22f4ba301e5bb491e1d5d7f57a0"
 }

@@ -113,6 +113,25 @@ rust_test(
 )
 
 rust_test(
+    name = "service-accounts",
+    crate = "service_accounts",
+    srcs = ["tests/service_accounts.rs"],
+    crate_root = "tests/service_accounts.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
     name = "bootstrap",
     crate = "bootstrap",
     srcs = ["tests/bootstrap.rs"],

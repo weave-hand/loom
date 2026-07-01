@@ -164,11 +164,13 @@ async fn define_thing(pg: &PgControlPlane, type_name: &str, table: TableRef) {
                 name: "id".into(),
                 ty: "long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "name".into(),
                 ty: "string".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -277,6 +279,75 @@ async fn nonconforming_is_422_and_nothing_lands() {
             .await
             .is_err(),
         "a rejected land writes no catalog rows"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn constraint_violation_is_422_and_nothing_lands() {
+    let fx = PgFixture::start();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    // A `CThing(id long identity, code string [^[A-Z]+$])`.
+    let ctable = TableRef {
+        schema: "main".into(),
+        name: "cthing".into(),
+    };
+    pg.define_type(ObjectType {
+        name: TypeName("CThing".into()),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "code".into(),
+                ty: "string".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints {
+                    pattern: Some("^[A-Z]+$".into()),
+                    ..control_plane_core::PropertyConstraints::default()
+                },
+            },
+        ],
+        derived: vec![],
+        table: ctable.clone(),
+        identity: Some("id".into()),
+    })
+    .await
+    .unwrap();
+    grant_write(&pg, "alice", "CThing").await;
+    let token = session_token(&pg, "alice").await;
+
+    // A schema-conforming batch whose `code` value "ab" violates the `^[A-Z]+$` pattern.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("code", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1i64])),
+            Arc::new(StringArray::from(vec!["ab"])),
+        ],
+    )
+    .unwrap();
+
+    let app = protected(state, pg.clone());
+    let (status, json) = post_model(app, "CThing", &token, ipc_bytes(&batch)).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(json["violations"][0]["column"], "code");
+    assert_eq!(json["violations"][0]["reason"], "constraint");
+    assert_eq!(json["violations"][0]["rule"], "pattern");
+
+    assert!(
+        IcebergCatalog::new(pool.clone())
+            .current_snapshot(&ctable)
+            .await
+            .is_err(),
+        "a constraint-rejected land writes no catalog rows"
     );
 }
 

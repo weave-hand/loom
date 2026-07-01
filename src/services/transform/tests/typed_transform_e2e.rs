@@ -43,6 +43,7 @@ fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
         name: name.into(),
         ty: ty.into(),
         required,
+        constraints: control_plane_core::PropertyConstraints::default(),
     }
 }
 
@@ -286,7 +287,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
     let out_ds: DatasetRef = (&TypeName("OrderEnriched".into())).into();
     let ups = pg
         .lineage()
-        .upstream(&out_ds, PageReq::unbounded())
+        .upstream(&out_ds, 1, PageReq::unbounded())
         .await
         .unwrap();
     let up: std::collections::HashSet<String> = ups.items.iter().map(|d| d.name.clone()).collect();

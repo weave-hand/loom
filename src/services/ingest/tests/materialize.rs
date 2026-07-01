@@ -113,11 +113,13 @@ async fn modeled_landing_passes_gate_and_returns_a_snapshot() {
                 name: "id".into(),
                 ty: "long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             ColumnShape {
                 name: "email".into(),
                 ty: "string".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
     };
@@ -168,11 +170,13 @@ async fn gate_rejection_happens_before_any_write() {
                 name: "id".into(),
                 ty: "long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             ColumnShape {
                 name: "ssn".into(),
                 ty: "string".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
     };

@@ -19,10 +19,10 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
     CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect,
-    EventType, IndexSpec, Lineage, LineageEvent, LinkBacking, LinkDef, Metric, NewJob, NewUser,
-    ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue,
-    RetryPolicy, RoleId, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
-    VectorIndexDef,
+    EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef, Metric,
+    NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy,
+    PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
+    SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -48,6 +48,7 @@ async fn define_min_type<O: Ontology>(o: &O, name: &str, props: &[&str]) {
                 name: (*n).into(),
                 ty: "String".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             })
             .collect(),
         derived: vec![],
@@ -564,11 +565,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "email".into(),
                 ty: "EmailAddress".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -585,11 +588,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "total".into(),
                 ty: "Currency".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "note".into(),
                 ty: "Text".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -658,6 +663,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: "total".into(),
             ty: "Currency".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![],
         identity: None,
@@ -667,6 +673,107 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.get_type(&tn("Order")).await.unwrap().properties.len(),
         1,
         "redefine replaces properties"
+    );
+
+    // --- Model constraints: round-trip + define-time rejection. ---
+    let constrained = ObjectType {
+        name: tn("Account"),
+        table: tref("main", "account"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints {
+                    range: Some(control_plane_core::RangeConstraint {
+                        min: Some(1.0),
+                        max: None,
+                    }),
+                    ..control_plane_core::PropertyConstraints::default()
+                },
+            },
+            PropertyDef {
+                name: "code".into(),
+                ty: "String".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints {
+                    length: Some(control_plane_core::LengthConstraint {
+                        min: Some(2),
+                        max: Some(8),
+                    }),
+                    pattern: Some("^[A-Z]+$".into()),
+                    one_of: None,
+                    range: None,
+                },
+            },
+            PropertyDef {
+                name: "note".into(),
+                ty: "String".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+        identity: Some("id".into()),
+    };
+    o.define_type(constrained.clone())
+        .await
+        .expect("define constrained type");
+    assert_eq!(
+        o.get_type(&tn("Account")).await.unwrap(),
+        constrained,
+        "constraints round-trip unchanged"
+    );
+
+    // A `range` on a string property is rejected at define time.
+    let bad_range = ObjectType {
+        name: tn("BadRange"),
+        table: tref("main", "bad_range"),
+        properties: vec![PropertyDef {
+            name: "name".into(),
+            ty: "String".into(),
+            required: false,
+            constraints: control_plane_core::PropertyConstraints {
+                range: Some(control_plane_core::RangeConstraint {
+                    min: Some(0.0),
+                    max: None,
+                }),
+                ..control_plane_core::PropertyConstraints::default()
+            },
+        }],
+        derived: vec![],
+        identity: None,
+    };
+    assert!(
+        matches!(
+            o.define_type(bad_range).await,
+            Err(control_plane_core::ControlPlaneError::Validation(_))
+        ),
+        "range on a string property is a define-time Validation error"
+    );
+
+    // An invalid regex `pattern` is rejected at define time.
+    let bad_regex = ObjectType {
+        name: tn("BadRegex"),
+        table: tref("main", "bad_regex"),
+        properties: vec![PropertyDef {
+            name: "code".into(),
+            ty: "String".into(),
+            required: false,
+            constraints: control_plane_core::PropertyConstraints {
+                pattern: Some("(".into()),
+                ..control_plane_core::PropertyConstraints::default()
+            },
+        }],
+        derived: vec![],
+        identity: None,
+    };
+    assert!(
+        matches!(
+            o.define_type(bad_regex).await,
+            Err(control_plane_core::ControlPlaneError::Validation(_))
+        ),
+        "invalid regex is a define-time Validation error"
     );
 
     // link between existing types, then read it back.
@@ -800,11 +907,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "name".into(),
                 ty: "String".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -886,6 +995,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![
             DerivedPropertyDef {
@@ -924,6 +1034,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![],
         table: tref("main", "account"),
@@ -945,16 +1056,19 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "embedding".into(),
                 ty: "vector(8)".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "title".into(),
                 ty: "Text".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -1864,6 +1978,164 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     ));
 }
 
+/// Contract for the service-account + service-token `Auth` ops. `a` must be freshly
+/// empty. Bound on `Acl` too so we can prove `create_service_account` made the
+/// subject a real ACL principal (role assignment succeeds).
+pub async fn service_account_contract<A: Auth + Acl>(a: &A) {
+    let sid = |s: &str| SubjectId(s.to_string());
+    let h = |b: u8| -> [u8; 32] { [b; 32] };
+    let now = OffsetDateTime::now_utc();
+    let future = now + time::Duration::hours(1);
+
+    // --- create_service_account ---
+    a.create_service_account(&NewServiceAccount {
+        subject_id: sid("svc-etl"),
+        name: "nightly-etl".into(),
+    })
+    .await
+    .unwrap();
+
+    // create_service_account ensured the ACL subject: assigning a role succeeds
+    // (it returns NotFound for an unknown subject), proving ACL parity with a user.
+    a.define_role(&RoleId("r".into())).await.unwrap();
+    a.assign_role(&sid("svc-etl"), &RoleId("r".into()))
+        .await
+        .unwrap();
+
+    // duplicate name → Conflict
+    let dup = a
+        .create_service_account(&NewServiceAccount {
+            subject_id: sid("svc-other"),
+            name: "nightly-etl".into(),
+        })
+        .await;
+    assert!(matches!(dup, Err(ControlPlaneError::Conflict(_))));
+
+    // subject_id must not overlap the human-user namespace: creating a service
+    // account whose subject_id already belongs to a user → Conflict, so a minted
+    // token can never authenticate as an existing user's subject.
+    a.create_user(&NewUser {
+        subject_id: sid("human-1"),
+        username: "human-1".into(),
+        password_phc: "phc".into(),
+    })
+    .await
+    .unwrap();
+    let clash = a
+        .create_service_account(&NewServiceAccount {
+            subject_id: sid("human-1"),
+            name: "human-1-svc".into(),
+        })
+        .await;
+    assert!(
+        matches!(clash, Err(ControlPlaneError::Conflict(_))),
+        "a service account cannot adopt an existing user's subject_id"
+    );
+
+    // list_service_accounts returns the account metadata (name), never a token.
+    let accounts = a.list_service_accounts(PageReq::unbounded()).await.unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts.items[0].name, "nightly-etl");
+    assert_eq!(accounts.items[0].subject_id, sid("svc-etl"));
+
+    // --- create_service_token / resolve ---
+    a.create_service_token(&sid("svc-etl"), &h(1), "primary", future)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.resolve_service_token(&h(1), now).await.unwrap(),
+        Some(sid("svc-etl")),
+        "a live token resolves to its account"
+    );
+
+    // minting for an unknown account → NotFound
+    assert!(matches!(
+        a.create_service_token(&sid("ghost"), &h(2), "x", future)
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // unknown token hash → None
+    assert!(a.resolve_service_token(&h(9), now).await.unwrap().is_none());
+
+    // expired (expires_at <= now) → None
+    assert!(
+        a.resolve_service_token(&h(1), now + time::Duration::hours(2))
+            .await
+            .unwrap()
+            .is_none(),
+        "an expired token does not resolve"
+    );
+
+    // rotation: a second live token overlaps the first.
+    a.create_service_token(&sid("svc-etl"), &h(3), "rotated", future)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.resolve_service_token(&h(3), now).await.unwrap(),
+        Some(sid("svc-etl"))
+    );
+
+    // list_service_tokens returns BOTH, metadata only (label/expiry), never the raw
+    // token — the type has no plaintext field. Scoped to the account's subject.
+    let tokens = a
+        .list_service_tokens(&sid("svc-etl"), PageReq::unbounded())
+        .await
+        .unwrap();
+    assert_eq!(tokens.len(), 2, "both minted tokens are listed");
+    let labels: HashSet<String> = tokens.items.iter().map(|t| t.label.clone()).collect();
+    assert_eq!(
+        labels,
+        ["primary", "rotated"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    );
+    assert!(
+        tokens.items.iter().all(|t| t.revoked_at.is_none()),
+        "neither token is revoked yet"
+    );
+
+    // --- revoke (idempotent; reflected in resolve) ---
+    a.revoke_service_token(&h(1)).await.unwrap();
+    assert!(
+        a.resolve_service_token(&h(1), now).await.unwrap().is_none(),
+        "a revoked token does not resolve"
+    );
+    assert_eq!(
+        a.resolve_service_token(&h(3), now).await.unwrap(),
+        Some(sid("svc-etl")),
+        "revoking one token leaves the other live"
+    );
+    a.revoke_service_token(&h(1)).await.unwrap(); // idempotent no-op
+
+    // the revoked token still lists, now with revoked_at set.
+    let after = a
+        .list_service_tokens(&sid("svc-etl"), PageReq::unbounded())
+        .await
+        .unwrap();
+    let revoked = after
+        .items
+        .iter()
+        .find(|t| t.token_sha256 == h(1))
+        .expect("revoked token still listed");
+    assert!(revoked.revoked_at.is_some(), "revoked_at recorded");
+
+    // tokens are scoped: an account with no tokens lists empty.
+    a.create_service_account(&NewServiceAccount {
+        subject_id: sid("svc-empty"),
+        name: "empty".into(),
+    })
+    .await
+    .unwrap();
+    assert!(
+        a.list_service_tokens(&sid("svc-empty"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// Both-adapter contract for type-existence validation on the three loom-owned
 /// write paths that store a reference to an ontology type: `Acl::grant`,
 /// `Acl::set_policy`, and `Ontology::define_action`. Each must reject a
@@ -2006,7 +2278,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     // --- one-hop graph via per-event co-membership ---
     assert_eq!(
         set(cp
-            .upstream(&ds("warehouse", "main.c"), PageReq::unbounded())
+            .upstream(&ds("warehouse", "main.c"), 1, PageReq::unbounded())
             .await
             .unwrap()),
         [ds("warehouse", "main.a"), ds("warehouse", "main.b")]
@@ -2015,7 +2287,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     );
     assert_eq!(
         set(cp
-            .downstream(&ds("warehouse", "main.a"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.a"), 1, PageReq::unbounded())
             .await
             .unwrap()),
         [ds("warehouse", "main.c")]
@@ -2024,7 +2296,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     );
     assert_eq!(
         set(cp
-            .downstream(&ds("warehouse", "main.b"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.b"), 1, PageReq::unbounded())
             .await
             .unwrap()),
         [ds("warehouse", "main.c")]
@@ -2032,21 +2304,21 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
             .collect::<HashSet<_>>()
     );
     assert!(
-        cp.downstream(&ds("warehouse", "main.c"), PageReq::unbounded())
+        cp.downstream(&ds("warehouse", "main.c"), 1, PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing consumes c -> no downstream"
     );
     assert!(
-        cp.upstream(&ds("warehouse", "main.a"), PageReq::unbounded())
+        cp.upstream(&ds("warehouse", "main.a"), 1, PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing produces a -> no upstream"
     );
     assert!(
-        cp.upstream(&ds("warehouse", "main.missing"), PageReq::unbounded())
+        cp.upstream(&ds("warehouse", "main.missing"), 1, PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
@@ -2084,7 +2356,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     // graph spans namespaces (physical -> ontology)
     assert_eq!(
         set(cp
-            .downstream(&ds("warehouse", "main.c"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.c"), 1, PageReq::unbounded())
             .await
             .unwrap()),
         [ds("ontology", "Customer")]
@@ -2167,6 +2439,183 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         cp.dequeue(&kinds, "w").await.unwrap().is_some(),
         "committed enqueue is visible"
     );
+}
+
+/// Contract: transitive closure with a depth cap and cycle termination. Run against
+/// every `Lineage` adapter.
+pub async fn lineage_closure_contract<CP: Lineage>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let set = |p: Page<DatasetRef>| p.into_iter().collect::<HashSet<_>>();
+    let edge = |inp: DatasetRef, out: DatasetRef| LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: ts,
+        inputs: vec![inp],
+        outputs: vec![out],
+        payload: serde_json::json!({}),
+    };
+
+    // chain  A -> B -> C -> D  (each event: input -> output)
+    let (a, b, c, d) = (
+        ds("w", "clo.a"),
+        ds("w", "clo.b"),
+        ds("w", "clo.c"),
+        ds("w", "clo.d"),
+    );
+    cp.emit(edge(a.clone(), b.clone())).await.unwrap();
+    cp.emit(edge(b.clone(), c.clone())).await.unwrap();
+    cp.emit(edge(c.clone(), d.clone())).await.unwrap();
+
+    // upstream (ancestry) of D
+    assert_eq!(
+        set(cp.upstream(&d, 1, PageReq::unbounded()).await.unwrap()),
+        [c.clone()].into_iter().collect(),
+        "depth=1 is one hop"
+    );
+    assert_eq!(
+        set(cp.upstream(&d, 2, PageReq::unbounded()).await.unwrap()),
+        [b.clone(), c.clone()].into_iter().collect(),
+        "depth=2 = two hops"
+    );
+    assert_eq!(
+        set(cp.upstream(&d, 3, PageReq::unbounded()).await.unwrap()),
+        [a.clone(), b.clone(), c.clone()].into_iter().collect(),
+        "depth=3 = full ancestry"
+    );
+    // downstream (descendancy) of A
+    assert_eq!(
+        set(cp.downstream(&a, 3, PageReq::unbounded()).await.unwrap()),
+        [b.clone(), c.clone(), d.clone()].into_iter().collect(),
+        "downstream closure of A"
+    );
+
+    // depth cap + zero depth are rejected (never an unbounded walk)
+    assert!(
+        matches!(
+            cp.upstream(&d, LINEAGE_MAX_DEPTH + 1, PageReq::unbounded())
+                .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "over-cap depth rejected"
+    );
+    assert!(
+        matches!(
+            cp.upstream(&d, 0, PageReq::unbounded()).await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "zero depth rejected"
+    );
+
+    // cycle  P -> Q -> R -> P  terminates and returns the finite reachable set
+    let (p, q, r) = (ds("w", "cyc.p"), ds("w", "cyc.q"), ds("w", "cyc.r"));
+    cp.emit(edge(p.clone(), q.clone())).await.unwrap();
+    cp.emit(edge(q.clone(), r.clone())).await.unwrap();
+    cp.emit(edge(r.clone(), p.clone())).await.unwrap();
+    assert_eq!(
+        set(cp
+            .upstream(&p, LINEAGE_MAX_DEPTH, PageReq::unbounded())
+            .await
+            .unwrap()),
+        [q.clone(), r.clone()].into_iter().collect(),
+        "cyclic upstream terminates; seed P excluded"
+    );
+}
+
+/// Contract: cursor pagination on dataset closure and `events_for`. Run against
+/// every `Lineage` adapter.
+pub async fn lineage_pagination_contract<CP: Lineage>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+
+    // fan-out: 7 inputs each feeding one output Z (one event apiece)
+    let z = ds("w", "pag.z");
+    let inputs: Vec<DatasetRef> = (0..7).map(|i| ds("w", &format!("pag.in{i:02}"))).collect();
+    for inp in &inputs {
+        cp.emit(LineageEvent {
+            run_id: RunId(uuid::Uuid::new_v4()),
+            event_type: EventType::Complete,
+            event_time: ts,
+            inputs: vec![inp.clone()],
+            outputs: vec![z.clone()],
+            payload: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    }
+
+    // page upstream(Z) in pages of 3; every dataset exactly once, in sorted order
+    let mut seen: Vec<DatasetRef> = Vec::new();
+    let mut after: Option<control_plane_core::Cursor> = None;
+    loop {
+        let req = PageReq {
+            after: after.clone(),
+            limit: Some(3),
+        };
+        let page = cp.upstream(&z, 1, req).await.unwrap();
+        assert!(page.items.len() <= 3, "page never exceeds limit");
+        seen.extend(page.items.iter().cloned());
+        match page.next {
+            Some(cur) => after = Some(cur),
+            None => break,
+        }
+    }
+    let mut expected = inputs.clone();
+    expected.sort();
+    assert_eq!(
+        seen, expected,
+        "paged upstream returns every dataset once, in stable order"
+    );
+
+    // events_for pagination: a run with 5 events, pages of 2
+    let run = RunId(uuid::Uuid::new_v4());
+    for i in 0..5 {
+        cp.emit(LineageEvent {
+            run_id: run,
+            event_type: EventType::Running,
+            event_time: ts,
+            inputs: vec![],
+            outputs: vec![ds("w", &format!("ev.o{i}"))],
+            payload: serde_json::json!({ "i": i }),
+        })
+        .await
+        .unwrap();
+    }
+    let mut count = 0usize;
+    let mut after: Option<control_plane_core::Cursor> = None;
+    let ended_with_null;
+    loop {
+        let page = cp
+            .events_for(
+                &run,
+                PageReq {
+                    after: after.clone(),
+                    limit: Some(2),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(page.items.len() <= 2, "events page never exceeds limit");
+        count += page.items.len();
+        match page.next {
+            Some(cur) => after = Some(cur),
+            None => {
+                ended_with_null = true;
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        count, 5,
+        "all events returned across pages, none duplicated/dropped"
+    );
+    assert!(ended_with_null, "final page signals no next");
 }
 
 /// Contract for `Tx` isolation: while a transaction is open and uncommitted, the
