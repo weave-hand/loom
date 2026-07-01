@@ -155,3 +155,19 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "governed-sql",
+    crate = "governed_sql",
+    srcs = ["tests/governed_sql.rs"],
+    crate_root = "tests/governed_sql.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:futures",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)

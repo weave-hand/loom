@@ -11,7 +11,9 @@ pub mod serving;
 pub mod vector_search;
 
 pub use action_writer::IcebergActionWriter;
-pub use governed::{TablePolicy, policy_for, row_filter_to_expr};
+pub use governed::{
+    GovernedTableProvider, TablePolicy, execute_governed_sql_stream, policy_for, row_filter_to_expr,
+};
 pub use provider::PgTableProvider;
 pub use serving::{
     EngineServingError, IcebergMirrorTableProvider, build_serving_provider, execute_query,
