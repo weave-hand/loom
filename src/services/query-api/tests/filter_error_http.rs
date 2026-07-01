@@ -179,9 +179,15 @@ async fn denied_column_uncoercible_value_stays_bad_filter() {
     let (status, body) = get(cp, "analyst", "/objects/Order?amount=gt:abc").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
     assert_eq!(body, "amount");
-    assert!(!body.contains("bad_filter_value"), "must not leak a coercion body");
+    assert!(
+        !body.contains("bad_filter_value"),
+        "must not leak a coercion body"
+    );
     assert!(!body.contains("abc"), "must not echo the caller value");
-    assert!(!body.contains("double"), "must not leak the column's declared type");
+    assert!(
+        !body.contains("double"),
+        "must not leak the column's declared type"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -194,6 +200,12 @@ async fn grammar_fault_is_structured_400_column_only() {
     let json: serde_json::Value = serde_json::from_str(&body).expect("structured JSON body");
     assert_eq!(json["error"], "bad_filter_value");
     assert_eq!(json["column"], "amount");
-    assert!(json.get("expected").is_none(), "grammar fault has no expected type");
-    assert!(json.get("value").is_none(), "grammar fault has no offending value");
+    assert!(
+        json.get("expected").is_none(),
+        "grammar fault has no expected type"
+    );
+    assert!(
+        json.get("value").is_none(),
+        "grammar fault has no offending value"
+    );
 }

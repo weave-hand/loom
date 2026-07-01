@@ -300,8 +300,13 @@ async fn mistyped_param_is_422() {
     // `id` must be a Long (JSON string); passing a JSON number is a semantic type mismatch.
     let cp = seed().await;
     let writes = Arc::new(AtomicUsize::new(0));
-    let (status, body) =
-        post_json(cp, writes.clone(), "analyst", json!({"id": 5, "code": "AB"})).await;
+    let (status, body) = post_json(
+        cp,
+        writes.clone(),
+        "analyst",
+        json!({"id": 5, "code": "AB"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
     assert_eq!(writes.load(Ordering::SeqCst), 0);
 }
