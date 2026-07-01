@@ -169,3 +169,31 @@ async fn denied_column_filter_is_400_without_value_echo() {
         "a visibility denial is not a coercion error"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn denied_column_uncoercible_value_stays_bad_filter() {
+    // The visibility check runs BEFORE coercion, so a denied column with an *uncoercible*
+    // value is still a bare-column BadFilter 400 — it must NOT leak the column's type via a
+    // structured `bad_filter_value` body, and must not echo the caller's value.
+    let cp = seed(true).await;
+    let (status, body) = get(cp, "analyst", "/objects/Order?amount=gt:abc").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(body, "amount");
+    assert!(!body.contains("bad_filter_value"), "must not leak a coercion body");
+    assert!(!body.contains("abc"), "must not echo the caller value");
+    assert!(!body.contains("double"), "must not leak the column's declared type");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grammar_fault_is_structured_400_column_only() {
+    // A predicate-grammar fault (empty set operand) is `FilterError::BadValue` — a structured
+    // 400 carrying {error, column} but no expected/value (there is no single offending value).
+    let cp = seed(false).await;
+    let (status, body) = get(cp, "analyst", "/objects/Order?amount=in:1,,3").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    let json: serde_json::Value = serde_json::from_str(&body).expect("structured JSON body");
+    assert_eq!(json["error"], "bad_filter_value");
+    assert_eq!(json["column"], "amount");
+    assert!(json.get("expected").is_none(), "grammar fault has no expected type");
+    assert!(json.get("value").is_none(), "grammar fault has no offending value");
+}

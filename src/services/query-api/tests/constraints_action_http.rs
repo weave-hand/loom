@@ -154,28 +154,11 @@ async fn post_json(
     subject: &str,
     body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {
-    let state = AppState {
-        cp: Arc::new(cp) as Arc<dyn ControlPlane>,
-        serving: Arc::new(StubServing),
-        action_engine: Arc::new(RecordingEngine { writes }),
-        default_limit: 1000,
-    };
-    let app = router(state);
-    let mut req = Request::builder()
-        .method("POST")
-        .uri("/actions/createWidget")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    req.extensions_mut()
-        .insert(Subject(SubjectId(subject.into())));
-    let res = app.oneshot(req).await.unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
+    let (status, text) = post_json_raw(cp, writes, subject, body).await;
+    let json = if text.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)
     };
     (status, json)
 }
