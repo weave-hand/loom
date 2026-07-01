@@ -4,7 +4,7 @@
 
 **Goal:** Add two additive caller-predicate operator families — a `between:lo,hi` range and case-insensitive text-pattern matching (`contains`/`startswith`/`endswith`) — to loom's `GET /objects/{type}` filter grammar, and rename the internal `ObjectQuery.eq_filters` field to `filters`.
 
-**Architecture:** Caller predicates parse in `query-api/src/filter.rs::coerce_predicate` (URI query param → typed `CallerPredicate`) and render in `query-api/src/sql.rs::caller_predicate_sql` (predicate → SQL fragment with bound params). Both reuse the shared `control_plane_core::CompareOp`. We extend `CompareOp` with four caller-only variants (`Between`, `Contains`, `StartsWith`, `EndsWith`), parse+coerce them in `filter.rs`, render them in `sql.rs`, and — because two ACL-path matches on `CompareOp` are exhaustive (no `_`) — explicitly **reject** the new variants on the ACL row-filter path (they are caller-predicate-only). Every operand stays a bound parameter; text-pattern operands are LIKE-metacharacter-escaped and `%`-wrapped at coerce time so the SQL renderer just binds them.
+**Architecture:** Caller predicates parse in `query-api/src/filter.rs::coerce_predicate` (URI query param → typed `CallerPredicate`) and render in `query-api/src/sql.rs::caller_predicate_sql` (predicate → SQL fragment with bound params). Both reuse the shared `control_plane_core::CompareOp`. We extend `CompareOp` with four caller-only variants (`Between`, `Contains`, `StartsWith`, `EndsWith`), parse+coerce them in `filter.rs`, render them in `sql.rs`, and — because **three** ACL/write-path matches on `CompareOp` are exhaustive (no unguarded `_`) — explicitly handle the new variants there (they are caller-predicate-only, so those sites fail closed: `validate_row_filter`/`row_filter_to_expr` return `Err`, and `write_filter::compare_cell` returns `None` = UNKNOWN → deny). Every operand stays a bound parameter; text-pattern operands are LIKE-metacharacter-escaped and `%`-wrapped at coerce time so the SQL renderer just binds them.
 
 **Tech Stack:** Rust, buck2 (`rust_test` / `loom_fixture_test` targets), `thiserror`, `time`. Serving path is DataFusion via internal Flight SQL; SQL is compiled with `DataFusionDialect`.
 
@@ -25,8 +25,9 @@
 
 - `src/control-plane/core/src/acl.rs` — add 4 `CompareOp` variants; reject them in `validate_row_filter` (ACL row filters cannot use caller-only ops).
 - `src/control-plane/core/tests/row_filter_validation.rs` — test that an ACL `RowFilter` using a new op is rejected.
-- `src/services/engine-serving/src/governed.rs` — `row_filter_to_expr`: add arms returning an error for the 4 new ops (exhaustive match, ACL path).
+- `src/services/engine-serving/src/governed.rs` — the exhaustive `match op` inside `build_expr` (delegated from `row_filter_to_expr`): add arms returning an error for the 4 new ops (ACL path).
 - `src/services/engine-serving/tests/row_filter_to_expr.rs` — test the rejection.
+- `src/services/query-api/src/write_filter.rs` — `compare_cell`'s exhaustive `match op` (write-path ACL eval): add an arm returning `None` (UNKNOWN → deny) for the 4 new ops. (`order_cell` already has an unguarded `_ => return None`, so it needs no change.)
 - `src/services/query-api/src/filter.rs` — parse+coerce `between` (two operands) and text-pattern ops (string-only guard + LIKE escape/wrap); add `escape_like` helper.
 - `src/services/query-api/tests/filter_coerce.rs` — parse/coerce/escape/guard tests.
 - `src/services/query-api/src/sql.rs` — `caller_predicate_sql`: add `Between` and text-pattern arms **before** the scalar `_` arm.
@@ -37,13 +38,14 @@
 
 ---
 
-## Task 1: Extend `CompareOp` and reject new variants on the ACL row-filter path
+## Task 1: Extend `CompareOp` and handle new variants on the ACL/write paths
 
-Adding variants to the shared `control_plane_core::CompareOp` makes two ACL-path matches non-exhaustive (compile errors), and those matches deliberately have **no `_` arm** so a new variant forces a decision. The decision here: the four new operators are **caller-predicate-only**; ACL policy row filters cannot use them, so both ACL-path sites reject them. This keeps `op_sql`'s `unreachable!` arm safe (a validated ACL filter can never carry a new op).
+Adding variants to the shared `control_plane_core::CompareOp` makes **three** matches non-exhaustive (compile errors); those matches deliberately have **no unguarded `_` arm** so a new variant forces a decision. The decision here: the four new operators are **caller-predicate-only**; ACL policy row filters cannot use them, so all three sites fail closed — `validate_row_filter` and `build_expr` (engine-serving) return `Err`, and `write_filter::compare_cell` returns `None` (UNKNOWN → row denied). This keeps `op_sql`'s `unreachable!` arm safe (a validated ACL filter can never carry a new op).
 
 **Files:**
 - Modify: `src/control-plane/core/src/acl.rs` (enum at `:60`; `validate_row_filter` at `:140-160`)
-- Modify: `src/services/engine-serving/src/governed.rs` (`row_filter_to_expr` match at `:71-92`)
+- Modify: `src/services/engine-serving/src/governed.rs` (the exhaustive `match op` inside `build_expr` at `:71-92`, reached via `row_filter_to_expr`)
+- Modify: `src/services/query-api/src/write_filter.rs` (`compare_cell` `match op` at `:26-36`)
 - Test: `src/control-plane/core/tests/row_filter_validation.rs`
 - Test: `src/services/engine-serving/tests/row_filter_to_expr.rs`
 
@@ -180,17 +182,32 @@ Confirm `EngineServingError::Engine(String)` is the right constructor by reading
 Run: `buck2 test //src/services/engine-serving:row-filter-to-expr > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
 Expected: PASS.
 
-- [ ] **Step 10: Build the two crates to confirm no other exhaustive match broke**
+- [ ] **Step 10: Handle the new ops in the write-path `compare_cell` (fail closed to `None`)**
+
+`compare_cell` (`write_filter.rs:24`) returns `Option<bool>` (three-valued: `None` = UNKNOWN, which its callers treat as "not `Some(true)`" → the row is denied). Its `match op` (`:26-36`) is exhaustive apart from a *guarded* `_` (`_ if matches!(cell, SqlValue::Null)`), which does not cover the new variants — so adding them breaks the build (E0004). A stored `Policy` `RowFilter` can never legitimately carry a caller-only op (`validate_row_filter` rejects it, Step 4), so the correct handling is UNKNOWN. Add an arm after `Lt | Le | Gt | Ge`:
+
+```rust
+        Lt | Le | Gt | Ge => order_cell(cell, op, operand),
+        // Caller-predicate-only ops never appear in a stored Policy RowFilter
+        // (validate_row_filter rejects them). Fail closed: None => UNKNOWN => not
+        // Some(true) => row denied.
+        Between | Contains | StartsWith | EndsWith => None,
+```
+
+(`use CompareOp::*;` at the top of `compare_cell` brings the variants into scope. `order_cell` at `:94` already has an unguarded `_ => return None`, so it needs no change.)
+
+- [ ] **Step 11: Build all three crates to confirm no other exhaustive match broke**
 
 Run: `buck2 build -M none //src/control-plane/core:core //src/services/engine-serving:engine-serving //src/services/query-api:query-api > /tmp/b1.log 2>&1; grep -E "error\[|BUILD SUCCEEDED|Build ID" /tmp/b1.log; echo done`
-Expected: builds succeed. If a new non-exhaustive-match error appears in a file this plan didn't list, add an arm rejecting the new ops there and note it.
+Expected: builds succeed. If a new non-exhaustive-match error (E0004) appears in a file this plan didn't list, add an arm handling the new ops there (fail closed — `Err` on a `Result` path, `None` on an `Option` path) and note it in the commit.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add src/control-plane/core/src/acl.rs src/control-plane/core/tests/row_filter_validation.rs \
-        src/services/engine-serving/src/governed.rs src/services/engine-serving/tests/row_filter_to_expr.rs
-git commit -m "feat(query): add Between/Contains/StartsWith/EndsWith CompareOp variants, reject on ACL path"
+        src/services/engine-serving/src/governed.rs src/services/engine-serving/tests/row_filter_to_expr.rs \
+        src/services/query-api/src/write_filter.rs
+git commit -m "feat(query): add Between/Contains/StartsWith/EndsWith CompareOp variants, fail closed on ACL/write paths"
 ```
 
 ---
@@ -378,7 +395,11 @@ Add an arm to the outer `match op` (before the scalar `Some(o)` arm):
 ```rust
         Some(o @ (Contains | StartsWith | EndsWith)) => {
             let r = rest.ok_or_else(|| bad("text-pattern operator requires an operand"))?;
-            let repr = json_repr_of(logical_ty).map_err(|_| bad("unknown logical type"))?;
+            // Carry the source error — `clippy::map_err_ignore` is enforced; a bare
+            // `|_|` that drops `e` fails the lint gate (mirror `coerce_filter`'s style).
+            let repr = json_repr_of(logical_ty).map_err(|e| {
+                FilterError::BadValue(column.to_string(), format!("unknown logical type: {}", e.0))
+            })?;
             if !matches!(repr, JsonRepr::PlainString) {
                 return Err(bad("text-pattern operators apply to string properties only"));
             }
@@ -570,10 +591,22 @@ Apply with (review the diff after):
 grep -rl 'eq_filters' src/ --include='*.rs' | xargs sed -i 's/\beq_filters\b/filters/g'
 ```
 
-- [ ] **Step 3: Verify no `.rs` reference remains**
+Then fix the two follow-on lint traps the blanket sed creates:
 
-Run: `grep -rn 'eq_filters' src/ --include='*.rs'; echo "exit=$?"`
-Expected: no matches (`exit=1` from grep). If any remain, they were not the field — inspect and fix by hand.
+1. **`redundant_field_names` (enforced style lint).** At `src/services/query-api/tests/typed_filter_e2e.rs:215` the sed rewrites `eq_filters: filters,` (where `filters` is a local from `let run = |filters: Vec<(String, String)>|` at `:208`) into `filters: filters,`. Change it to the field shorthand:
+
+```rust
+        filters,
+```
+
+2. Confirm `http.rs`'s struct-init shorthand at `:165` became `filters,` (it was `eq_filters,` with a matching local, so the sed already produced the shorthand — verify, don't double-edit).
+
+- [ ] **Step 3: Verify no field reference to `eq_filters` remains**
+
+The word-boundary sed intentionally leaves the substring `eq_filters` inside longer identifiers — two **test-function names** in `sql_compile.rs` (`eq_filters_only_form_the_where_clause`, `chain_eq_filters_bind_per_position_in_chain_order`) and a doc comment in `export_command.rs:29` — because `_` is a word char (`\beq_filters\b` won't match `eq_filters_…`). Those are harmless. Verify no *field* reference survives:
+
+Run: `grep -rnE '\beq_filters\b|\.eq_filters|eq_filters *:' src/ --include='*.rs'; echo "exit=$?"`
+Expected: no matches (`exit=1`). If any remain, inspect and fix by hand. (Optionally update the `export_command.rs:29` comment `eq_filters` → `filters` for tidiness — not required for the build.)
 
 - [ ] **Step 4: Build query-api + its e2e crates and the transform crate that referenced the field**
 
@@ -705,7 +738,7 @@ git commit -m "docs(roadmap): close road-filter-operators"
 - String-only guard → Task 3 (`text_pattern_on_non_string_is_rejected`). ✓
 - `eq_filters`→`filters` rename across handler/http/e2es → Task 5. ✓
 - Injection boundary untouched (bound params) → asserted in Task 4 (`params` vectors) and Global Constraints. ✓
-- New `CompareOp` variants + the forced ACL-path decisions (the two exhaustive matches) → Task 1. ✓
+- New `CompareOp` variants + the forced fail-closed decisions at the **three** exhaustive matches (`validate_row_filter`, engine-serving `build_expr`, write-path `compare_cell`) → Task 1. ✓
 
 **Placeholder scan:** No TBD/TODO. The only intentionally-parameterized spots are the e2e seed/driver names in Task 6 (the plan directs reading the file first because the exact helper names live there) and the exact `row_filter_to_expr` entry name in Task 1 Step 6 (directs reading the file). Both are "match the existing test's names," not un-specified logic.
 
