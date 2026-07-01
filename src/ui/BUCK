@@ -116,3 +116,72 @@ chmod +x $OUT
     executable = True,
     visibility = ["PUBLIC"],
 )
+
+rust_library(
+    name = "ui-components",
+    crate = "loom_ui_components",
+    srcs = glob(["src/components/**/*.rs"]),
+    crate_root = "src/components/mod.rs",
+    edition = "2024",
+    default_target_platform = "//platforms:wasm",
+    deps = [
+        "//third-party:stylist",
+        "//third-party:yew",
+        ":ui-core",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "gallery",
+    crate = "gallery",
+    srcs = ["src/gallery.rs"],
+    crate_root = "src/gallery.rs",
+    edition = "2024",
+    default_target_platform = "//platforms:wasm",
+    deps = [
+        "//third-party:wasm-bindgen",
+        "//third-party:web-sys",
+        "//third-party:yew",
+        ":ui-components",
+        ":ui-core",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Dev-only gallery bundle — mirrors :bundle but has no config.js (no backend).
+genrule(
+    name = "gallery-bundle",
+    out = "dist",
+    default_target_platform = "//platforms:wasm",
+    srcs = ["gallery.html"],
+    cmd = """
+set -euo pipefail
+got=`$(exe //tools:wasm-bindgen) --version`
+want="wasm-bindgen {ver}"
+if [ "$got" != "$want" ]; then
+  echo "wasm-bindgen CLI/version mismatch: got '$got', want '$want'" >&2
+  exit 1
+fi
+mkdir -p $OUT
+$(exe //tools:wasm-bindgen) --target web --no-typescript --out-dir $OUT --out-name gallery $(location :gallery)
+cp $SRCDIR/gallery.html $OUT/index.html
+""".format(ver = WASM_BINDGEN_VERSION),
+    visibility = ["PUBLIC"],
+)
+
+genrule(
+    name = "gallery-serve",
+    out = "serve.sh",
+    default_target_platform = "//platforms:wasm",
+    cmd = """
+cat > $OUT <<'SCRIPT'
+#!/usr/bin/env bash
+cd "`dirname "$0"`"
+exec python3 -m http.server --directory "$(location :gallery-bundle)" "$@"
+SCRIPT
+chmod +x $OUT
+""",
+    executable = True,
+    visibility = ["PUBLIC"],
+)

@@ -11153,6 +11153,58 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "instant-0.1.13.crate",
+    sha256 = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222",
+    strip_prefix = "instant-0.1.13",
+    urls = ["https://static.crates.io/crates/instant/0.1.13/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "instant-0.1",
+    srcs = [":instant-0.1.13.crate"],
+    crate = "instant",
+    crate_root = "instant-0.1.13.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "instant",
+        "CARGO_CRATE_NAME": "instant",
+        "CARGO_MANIFEST_DIR": "instant-0.1.13.crate",
+        "CARGO_PKG_AUTHORS": "sebcrozet <developer@crozet.re>",
+        "CARGO_PKG_DESCRIPTION": "Unmaintained, consider using web-time instead - A partial replacement for std::time::Instant that works on WASM to.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "instant",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/sebcrozet/instant",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.13",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "13",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "js-sys",
+        "wasm-bindgen",
+        "wasm-bindgen_rs",
+        "web-sys",
+    ],
+    platform = {
+        "wasm32": dict(
+            named_deps = {
+                "wasm_bindgen_rs": ":wasm-bindgen-0.2",
+            },
+            deps = [
+                ":js-sys-0.3",
+                ":web-sys-0.3",
+            ],
+        ),
+    },
+    visibility = [],
+    deps = [":cfg-if-1"],
+)
+
+http_archive(
     name = "integer-encoding-3.0.4.crate",
     sha256 = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02",
     strip_prefix = "integer-encoding-3.0.4",
@@ -11261,6 +11313,46 @@ cargo.rust_library(
         "std",
     ],
     visibility = [],
+)
+
+http_archive(
+    name = "itertools-0.11.0.crate",
+    sha256 = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57",
+    strip_prefix = "itertools-0.11.0",
+    urls = ["https://static.crates.io/crates/itertools/0.11.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "itertools-0.11",
+    srcs = [":itertools-0.11.0.crate"],
+    crate = "itertools",
+    crate_root = "itertools-0.11.0.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "itertools",
+        "CARGO_CRATE_NAME": "itertools",
+        "CARGO_MANIFEST_DIR": "itertools-0.11.0.crate",
+        "CARGO_PKG_AUTHORS": "bluss",
+        "CARGO_PKG_DESCRIPTION": "Extra iterator adaptors, iterator methods, free functions, and macros.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "itertools",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/rust-itertools/itertools",
+        "CARGO_PKG_RUST_VERSION": "1.36.0",
+        "CARGO_PKG_VERSION": "0.11.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "11",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "use_alloc",
+        "use_std",
+    ],
+    visibility = [],
+    deps = [":either-1"],
 )
 
 http_archive(
@@ -11938,6 +12030,45 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
+)
+
+http_archive(
+    name = "litrs-0.4.2.crate",
+    sha256 = "f5e54036fe321fd421e10d732f155734c4e4afd610dd556d9a82833ab3ee0bed",
+    strip_prefix = "litrs-0.4.2",
+    urls = ["https://static.crates.io/crates/litrs/0.4.2/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "litrs-0.4",
+    srcs = [":litrs-0.4.2.crate"],
+    crate = "litrs",
+    crate_root = "litrs-0.4.2.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "litrs",
+        "CARGO_CRATE_NAME": "litrs",
+        "CARGO_MANIFEST_DIR": "litrs-0.4.2.crate",
+        "CARGO_PKG_AUTHORS": "Lukas Kalbertodt <lukas.kalbertodt@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Parse and inspect Rust literals (i.e. tokens in the Rust programming language\nrepresenting fixed values). Particularly useful for proc macros, but can also\nbe used outside of a proc-macro context.\n",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "litrs",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/LukasKalbertodt/litrs/",
+        "CARGO_PKG_RUST_VERSION": "1.54",
+        "CARGO_PKG_VERSION": "0.4.2",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "4",
+        "CARGO_PKG_VERSION_PATCH": "2",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "proc-macro2",
+    ],
+    visibility = [],
+    deps = [":proc-macro2-1"],
 )
 
 http_archive(
@@ -12716,6 +12847,41 @@ buildscript_run(
 )
 
 http_archive(
+    name = "minimal-lexical-0.2.1.crate",
+    sha256 = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a",
+    strip_prefix = "minimal-lexical-0.2.1",
+    urls = ["https://static.crates.io/crates/minimal-lexical/0.2.1/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "minimal-lexical-0.2",
+    srcs = [":minimal-lexical-0.2.1.crate"],
+    crate = "minimal_lexical",
+    crate_root = "minimal-lexical-0.2.1.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "minimal_lexical",
+        "CARGO_CRATE_NAME": "minimal_lexical",
+        "CARGO_MANIFEST_DIR": "minimal-lexical-0.2.1.crate",
+        "CARGO_PKG_AUTHORS": "Alex Huszagh <ahuszagh@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Fast float parsing conversion routines.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "minimal-lexical",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/Alexhuszagh/minimal-lexical",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.2.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["std"],
+    visibility = [],
+)
+
+http_archive(
     name = "miniz_oxide-0.8.9.crate",
     sha256 = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316",
     strip_prefix = "miniz_oxide-0.8.9",
@@ -12923,6 +13089,49 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
+)
+
+http_archive(
+    name = "nom-7.1.3.crate",
+    sha256 = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a",
+    strip_prefix = "nom-7.1.3",
+    urls = ["https://static.crates.io/crates/nom/7.1.3/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "nom-7",
+    srcs = [":nom-7.1.3.crate"],
+    crate = "nom",
+    crate_root = "nom-7.1.3.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_BIN_NAME": "nom",
+        "CARGO_CRATE_NAME": "nom",
+        "CARGO_MANIFEST_DIR": "nom-7.1.3.crate",
+        "CARGO_PKG_AUTHORS": "contact@geoffroycouprie.com",
+        "CARGO_PKG_DESCRIPTION": "A byte-oriented, zero-copy, parser combinators library",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "nom",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/Geal/nom",
+        "CARGO_PKG_RUST_VERSION": "1.48",
+        "CARGO_PKG_VERSION": "7.1.3",
+        "CARGO_PKG_VERSION_MAJOR": "7",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "3",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
+    visibility = [],
+    deps = [
+        ":memchr-2",
+        ":minimal-lexical-0.2",
+    ],
 )
 
 http_archive(
@@ -18770,6 +18979,165 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "stylist",
+    actual = ":stylist-0.13",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "stylist-0.13.0.crate",
+    sha256 = "684929eeaa18b44296533430c1453f6ea0ebff8cc7182185657fc7887ad5b9d4",
+    strip_prefix = "stylist-0.13.0",
+    urls = ["https://static.crates.io/crates/stylist/0.13.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "stylist-0.13",
+    srcs = [":stylist-0.13.0.crate"],
+    crate = "stylist",
+    crate_root = "stylist-0.13.0.crate/src/lib.rs",
+    dlopen_enable = True,
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "stylist",
+        "CARGO_CRATE_NAME": "stylist",
+        "CARGO_MANIFEST_DIR": "stylist-0.13.0.crate",
+        "CARGO_PKG_AUTHORS": "Kaede Hoshiakwa <futursolo@icloud.com>:Martin Molzer <ga65guy@mytum.de>",
+        "CARGO_PKG_DESCRIPTION": "Stylist is a CSS-in-Rust styling solution for WebAssembly Applications.",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/futursolo/stylist-rs",
+        "CARGO_PKG_NAME": "stylist",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/futursolo/stylist-rs",
+        "CARGO_PKG_RUST_VERSION": "1.66.0",
+        "CARGO_PKG_VERSION": "0.13.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "13",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "debug_parser",
+        "debug_style_locations",
+        "default",
+        "macros",
+        "parser",
+        "random",
+        "stylist-macros",
+        "yew",
+    ],
+    linkable_alias = "stylist",
+    visibility = [],
+    deps = [
+        ":fastrand-2",
+        ":instant-0.1",
+        ":once_cell-1",
+        ":serde-1",
+        ":stylist-core-0.13",
+        ":stylist-macros-0.13",
+        ":wasm-bindgen-0.2",
+        ":web-sys-0.3",
+        ":yew-0.21",
+    ],
+)
+
+http_archive(
+    name = "stylist-core-0.13.0.crate",
+    sha256 = "7c59bd4f35e91ac75facd4b904916abddcbfca73ce70674e5babc47617dc50f7",
+    strip_prefix = "stylist-core-0.13.0",
+    urls = ["https://static.crates.io/crates/stylist-core/0.13.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "stylist-core-0.13",
+    srcs = [":stylist-core-0.13.0.crate"],
+    crate = "stylist_core",
+    crate_root = "stylist-core-0.13.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "stylist_core",
+        "CARGO_CRATE_NAME": "stylist_core",
+        "CARGO_MANIFEST_DIR": "stylist-core-0.13.0.crate",
+        "CARGO_PKG_AUTHORS": "Kaede Hoshiakwa <futursolo@icloud.com>:Martin Molzer <ga65guy@mytum.de>",
+        "CARGO_PKG_DESCRIPTION": "Stylist is a CSS-in-Rust styling solution for WebAssembly Applications.",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/futursolo/stylist-rs",
+        "CARGO_PKG_NAME": "stylist-core",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/futursolo/stylist-rs",
+        "CARGO_PKG_RUST_VERSION": "1.66.0",
+        "CARGO_PKG_VERSION": "0.13.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "13",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["parser"],
+    platform = {
+        "linux-arm64": dict(
+            features = ["__proc_macro_workaround"],
+        ),
+        "linux-x86_64": dict(
+            features = ["__proc_macro_workaround"],
+        ),
+    },
+    visibility = [],
+    deps = [
+        ":nom-7",
+        ":once_cell-1",
+        ":serde-1",
+        ":thiserror-1",
+        ":wasm-bindgen-0.2",
+    ],
+)
+
+http_archive(
+    name = "stylist-macros-0.13.0.crate",
+    sha256 = "e46a93326fb80057248f81d95d9c648eab0338f353ceae4263a5e345de836fa9",
+    strip_prefix = "stylist-macros-0.13.0",
+    urls = ["https://static.crates.io/crates/stylist-macros/0.13.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "stylist-macros-0.13",
+    srcs = [":stylist-macros-0.13.0.crate"],
+    crate = "stylist_macros",
+    crate_root = "stylist-macros-0.13.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "stylist_macros",
+        "CARGO_CRATE_NAME": "stylist_macros",
+        "CARGO_MANIFEST_DIR": "stylist-macros-0.13.0.crate",
+        "CARGO_PKG_AUTHORS": "Kaede Hoshiakwa <futursolo@icloud.com>:Martin Molzer <ga65guy@mytum.de>",
+        "CARGO_PKG_DESCRIPTION": "Stylist is a CSS-in-Rust styling solution for WebAssembly Applications.",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/futursolo/stylist-rs",
+        "CARGO_PKG_NAME": "stylist-macros",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/futursolo/stylist-rs",
+        "CARGO_PKG_RUST_VERSION": "1.66.0",
+        "CARGO_PKG_VERSION": "0.13.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "13",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":itertools-0.11",
+        ":litrs-0.4",
+        ":log-0.4",
+        ":nom-7",
+        ":proc-macro-error-1",
+        ":proc-macro2-1",
+        ":quote-1",
+        ":stylist-core-0.13",
+        ":syn-2",
+    ],
+)
+
 http_archive(
     name = "subtle-2.6.1.crate",
     sha256 = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292",
@@ -22660,6 +23028,7 @@ cargo.rust_library(
         "HtmlHeadElement",
         "HtmlInputElement",
         "HtmlScriptElement",
+        "HtmlStyleElement",
         "HtmlTextAreaElement",
         "InputEvent",
         "InputEventInit",
@@ -22706,6 +23075,8 @@ cargo.rust_library(
         "wasm32": dict(
             features = [
                 "AbortController",
+                "Performance",
+                "PerformanceTiming",
                 "QueuingStrategy",
                 "ReadableByteStreamController",
                 "ReadableStreamByobReader",
@@ -23537,23 +23908,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "zlib-rs-0.6.4.crate",
-    sha256 = "977347db8caa080403f6b6b7c1cda9479a8e869316f7e13a59b19076a40f94e3",
-    strip_prefix = "zlib-rs-0.6.4",
-    urls = ["https://static.crates.io/crates/zlib-rs/0.6.4/download"],
+    name = "zlib-rs-0.6.5.crate",
+    sha256 = "5431d5661c32445236631278f27946e444ddafe4684cac70b185272d4f9c52d5",
+    strip_prefix = "zlib-rs-0.6.5",
+    urls = ["https://static.crates.io/crates/zlib-rs/0.6.5/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "zlib-rs-0.6",
-    srcs = [":zlib-rs-0.6.4.crate"],
+    srcs = [":zlib-rs-0.6.5.crate"],
     crate = "zlib_rs",
-    crate_root = "zlib-rs-0.6.4.crate/src/lib.rs",
+    crate_root = "zlib-rs-0.6.5.crate/src/lib.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "zlib_rs",
         "CARGO_CRATE_NAME": "zlib_rs",
-        "CARGO_MANIFEST_DIR": "zlib-rs-0.6.4.crate",
+        "CARGO_MANIFEST_DIR": "zlib-rs-0.6.5.crate",
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "A memory-safe zlib implementation written in rust",
         "CARGO_PKG_HOMEPAGE": "https://github.com/trifectatechfoundation/zlib-rs",
@@ -23561,10 +23932,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/trifectatechfoundation/zlib-rs",
         "CARGO_PKG_RUST_VERSION": "1.75",
-        "CARGO_PKG_VERSION": "0.6.4",
+        "CARGO_PKG_VERSION": "0.6.5",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "6",
-        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PATCH": "5",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
