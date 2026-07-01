@@ -204,7 +204,7 @@ pub use ontology::{
 };
 ```
 
-> Note: adding `binds`/`assignments` fields is a **compile break** for every struct literal of `ParamDef`/`ActionDef` across the tree (they are constructed field-by-field in the memory/postgres adapters, testkit, and query-api). This task fixes them to compile; behavior comes in later tasks. Use `grep -rn "ParamDef {" src/ ; grep -rn "ActionDef {" src/` to find them all and add `binds: None` / `assignments: vec![]` (or `..Default::default()` is **not** available — these types derive no `Default`; add the fields explicitly). Do a tree-wide `buck2 build //src/... 2>&1 | tail` to confirm no literal is missed.
+> Note: adding `binds`/`assignments` fields is a **compile break** for every struct literal *and every test-helper builder* of `ParamDef`/`ActionDef` across the tree. This task fixes them all to compile; behavior comes in later tasks. Use `grep -rn "ParamDef {" src/ ; grep -rn "ActionDef {" src/` and also update the helper functions that construct these types — known ones: `src/services/query-api/tests/action_conformance.rs` (`fn param`, `fn action`), `tests/mutate_conformance.rs` (direct literals), `tests/params.rs` (`fn p`), `tests/action_conformance_handler.rs`, `tests/action_conformance_http.rs`, `tests/write_denial_http.rs` (`fn param`), `src/control-plane/core/tests/action_kind.rs` and `tests/governance_serde_roundtrip.rs` (direct literals), plus every fixture e2e (`action_e2e.rs`, `update_delete_e2e.rs`, `e2e_support.rs`, …) and the adapters/testkit. Add `binds: None` to each `ParamDef` and `assignments: vec![]` to each `ActionDef` (there is **no** `Default` derive; add the fields explicitly). Do a tree-wide `buck2 build //src/... 2>&1 | tail` and `buck2 test //src/... --build-only 2>&1 | tail` (or just run the touched test targets' build) to confirm no literal is missed — the build is the exhaustive check.
 
 - [ ] **Step 4: Run the test to verify it passes and the tree builds**
 
@@ -496,7 +496,7 @@ fn gadget() -> control_plane_core::ObjectType {
             PropertyDef { name: "status".into(), ty: "String".into(), required: false },
         ],
         derived: vec![],
-        table: TableRef { schema: "main".into(), table: "gadget".into() },
+        table: TableRef { schema: "main".into(), name: "gadget".into() },
         identity: None,
     }
 }
@@ -580,30 +580,52 @@ fn uncovered_required_property_rejected() {
 
 > Confirm the crate name (`query_api`) and that `check_conformance`, `ActionError` are `pub` and reachable from the test (they are used by existing `action_conformance.rs`; mirror its exact import path). If the existing file already defines `gadget`/`p`/`insert_action`-style helpers, reuse them instead of redefining.
 
-In `src/services/query-api/tests/mutate_conformance.rs`, add:
+In `src/services/query-api/tests/mutate_conformance.rs`, extend the imports to add `ConstAssignment` (to `use control_plane_core::{…}`) and `ActionError` (to `use query_api::action::{…}`), then add these tests. They reuse the file's existing `widget(identity)` helper (properties `sku:String` required — the identity — and `qty:Long` optional):
 
 ```rust
 #[test]
 fn update_identity_via_binds_conforms() {
-    // Gadget with identity "id"; a required param `key` binds `id`; a rename on `name`.
-    // (Build the ObjectType with identity: Some("id".into()).)
-    // ... construct action kind = Update, params [ key:Long required binds id, displayName:String binds name ] ...
-    // check_conformance(&a, &gadget_with_identity()).expect("update conforms via binds");
+    // Identity `sku` is bound by a required param renamed to `key`; `quantity` renames `qty`.
+    let action = ActionDef {
+        name: ActionName("upd".into()),
+        target: TypeName("Widget".into()),
+        parameters: vec![
+            ParamDef { name: "key".into(), ty: "String".into(), required: true, binds: Some("sku".into()) },
+            ParamDef { name: "quantity".into(), ty: "Long".into(), required: false, binds: Some("qty".into()) },
+        ],
+        kind: ActionKind::Update,
+        assignments: vec![],
+    };
+    check_conformance(&action, &widget(Some("sku"))).expect("update conforms via binds");
 }
 
 #[test]
 fn delete_with_assignment_rejected() {
-    // Delete takes only the identity param; a constant assignment on a Delete action is a misconfig.
-    // ... construct kind = Delete, params [ key:Long required binds id ], assignments [ status="x" ] ...
-    // assert Misconfigured
+    // Delete takes only the identity param; a constant assignment is a misconfiguration.
+    let action = ActionDef {
+        name: ActionName("del".into()),
+        target: TypeName("Widget".into()),
+        parameters: vec![ParamDef {
+            name: "key".into(),
+            ty: "String".into(),
+            required: true,
+            binds: Some("sku".into()),
+        }],
+        kind: ActionKind::Delete,
+        assignments: vec![ConstAssignment { property: "qty".into(), value: serde_json::json!(1) }],
+    };
+    assert!(matches!(
+        check_conformance(&action, &widget(Some("sku"))),
+        Err(ActionError::Misconfigured(_))
+    ));
 }
 ```
 
-Fill these two in concretely mirroring the existing `mutate_conformance.rs` construction of an identity-bearing type and Update/Delete actions.
+(The `serde_json` dep is already available to the query-api tests; if the target lacks it, add `"//third-party:serde_json"` to the `mutate-conformance` target's `deps`.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `buck2 test //src/services/query-api:action_conformance //src/services/query-api:mutate_conformance > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
+Run: `buck2 test //src/services/query-api:action-conformance //src/services/query-api:mutate-conformance > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
 Expected: FAIL — the new cases don't yet hold (old conformance ignores `binds`/assignments; e.g. `binds_unknown_property_rejected` currently *passes* the old `name`-match because `displayName` matches no property → already rejected, but `rename_and_constant_conform` FAILS because `displayName` matches no property under the old rule).
 
 - [ ] **Step 3: Add `validate_const` in params.rs**
@@ -771,7 +793,7 @@ Update `check_mutate_conformance`: run `check_param_property_types` + `check_ass
 
 - [ ] **Step 5: Run the conformance tests to verify they pass**
 
-Run: `buck2 test //src/services/query-api:action_conformance //src/services/query-api:mutate_conformance //src/services/query-api:action_conformance_handler //src/services/query-api:action_conformance_http > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
+Run: `buck2 test //src/services/query-api:action-conformance //src/services/query-api:mutate-conformance //src/services/query-api:action-conformance-handler //src/services/query-api:action-conformance-http > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
 Expected: all PASS (existing conformance tests still hold — `binds_property()` on a `None` binds is the param name, so old actions behave identically).
 
 - [ ] **Step 6: Clippy + commit**
@@ -817,7 +839,8 @@ fn gadget() -> ObjectType {
             PropertyDef { name: "status".into(), ty: "String".into(), required: false },
         ],
         derived: vec![],
-        table: TableRef { schema: "main".into(), table: "gadget".into() },
+        // NOTE: control_plane_core::TableRef fields are `{ schema, name }` — NOT `table`.
+        table: TableRef { schema: "main".into(), name: "gadget".into() },
         identity: None,
     }
 }
@@ -958,7 +981,7 @@ In `run_mutate` (line ~499) replace the same `parse_params(&action.parameters, b
 
 - [ ] **Step 5: Run the resolver + existing action tests**
 
-Run: `buck2 test //src/services/query-api:params //src/services/query-api:action_conformance //src/services/query-api:mutate_conformance > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
+Run: `buck2 test //src/services/query-api:params //src/services/query-api:action-conformance //src/services/query-api:mutate-conformance > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
 Expected: PASS.
 
 - [ ] **Step 6: Clippy + commit**
@@ -972,54 +995,75 @@ git commit -m "feat(query-api): resolve action write row from the param->propert
 
 ---
 
-## Task 5: End-to-end through the router
+## Task 5: End-to-end through the fixture action path
 
 **Files:**
 - Create: `src/services/query-api/tests/action_mapping_e2e.rs`
 - Modify: `src/services/query-api/BUCK` (add a `loom_fixture_test` target)
 
 **Interfaces:**
-- Consumes: the full path (Tasks 1-4) + the `e2e-support` library (`//src/services/query-api:e2e-support`) for the router driver + ACL helpers (`get`/`StubAction`/`subject_with_role`/`grant_read`, seed helpers `tref`/`land`/`prop`). Study an existing e2e (e.g. `tests/action_e2e.rs` / `tests/update_delete_e2e.rs`) for the exact seeding + `define_action` + POST `/actions/{name}` flow and the `X-Loom-Run-Id` header.
+- Consumes: the full path (Tasks 1-4) + the `e2e-support` library (`//src/services/query-api:e2e-support`).
+- **Study `tests/action_e2e.rs` — it is the exact template.** That test does NOT go over HTTP; it drives the action path **in-process** by calling `query_api::action::run_action(name, body.as_object().unwrap(), &subject, &deps)` directly, where `deps: ActionDeps { cp, action_engine: &engine, serving: &serving }`. It builds the engine with `e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), …)` and an `InProcessServingEngine::new(IcebergCatalog::new(pool.clone()))`, reads back with `query_api::handler::read_object(...)`, and asserts denials via `run_action(...).await.unwrap_err()` matching `ActionError::Forbidden` / `ActionError::WriteDenied(_)`. **Mirror this pattern exactly** — do NOT invent an HTTP/router/`get`/`StubAction` path (those belong to the read/governance tests, not the action write path).
 
 - [ ] **Step 1: Write the failing e2e tests**
 
-Create `src/services/query-api/tests/action_mapping_e2e.rs`. Model it on `tests/action_e2e.rs`: boot the fixture control plane, seed a type + physical table, `define_action` with the mapping, POST the action body (keyed by **param name**), read the object back, assert. Cover:
+Create `src/services/query-api/tests/action_mapping_e2e.rs`, mirroring `action_e2e.rs`'s setup boilerplate verbatim (the fixture boot, `spawn_engine_writer`, `InProcessServingEngine`, `ActionDeps`, ACL grant of `Action::Write` to the subject, and `read_object` readback). Copy its imports and helper usage. Implement four `#[tokio::test]`s:
 
 ```rust
-// 1. Rename: an Insert action whose param `displayName` binds `name` writes the value into `name`.
-//    POST {"id":"7","displayName":"Widget A"} -> GET /objects/Gadget shows name = "Widget A".
-// 2. Constant fill: a property with no param is filled by its constant assignment; incl. a
-//    REQUIRED property covered only by a constant lands with that value.
-//    POST {"displayName":"Widget B"} on an action with assignments [status="active"] and a
-//    constant covering the required id -> row lands with status="active" and the constant id.
-// 3. Gate composition: a Write policy denying the `status` column (or a row-filter excluding
-//    the constant-filled row) -> POST returns 403 with the write_denied body, whether `status`
-//    is filled by a param or a constant (assert both the renamed and constant paths 403 identically).
-// 4. Update mapping: an Update action with a renamed non-identity param PATCHes the bound
-//    property; the identity param may be renamed but binds the identity property.
+// Shared setup per test mirrors action_e2e.rs. `subj` is an ACL subject GRANTED Action::Write
+// on the target type (copy the grant helper action_e2e.rs uses). Seed a "Gadget" type with
+// properties id:Long (identity for the Update case), name:String, status:String, bound to a
+// real Iceberg table via the fixture. Then:
+
+// TEST 1 — rename: define an Insert action `createGadget` with params
+//   [ id:Long required (binds None), displayName:String optional binds "name" ]
+// run_action("createGadget", json!({"id":"7","displayName":"Widget A"}).as_object().unwrap(), &subj, &deps)
+//   -> Ok. read_object(Gadget) -> the row has name == "Widget A" (written via the bound property),
+//   and no "displayName" column exists on the object.
+
+// TEST 2 — constant fill: define an Insert action `makeGadget` with params
+//   [ displayName:String optional binds "name" ] and assignments
+//   [ {property:"id", value: json!("7")}, {property:"status", value: json!("active")} ]
+//   (a REQUIRED property `id` covered ONLY by a constant).
+// run_action("makeGadget", json!({"displayName":"Widget B"}).as_object().unwrap(), &subj, &deps)
+//   -> Ok. read_object -> row has id == 7 AND status == "active" (both constant-filled).
+
+// TEST 3 — gate composition: grant the subject Action::Write but attach a Write policy that
+//   DENIES the `status` column (copy the deny-column policy shape from a governance test, e.g.
+//   update_delete_governance_e2e.rs / write_denial_http.rs). Then:
+//   - run_action on an action that fills `status` via a CONSTANT -> unwrap_err() matches
+//     ActionError::WriteDenied(WriteDenialReason::Column(c)) with c == "status";
+//   - run_action on an action that fills `status` via a renamed PARAM -> the SAME denial.
+//   This proves the resolved row (constant- or param-filled) is gated identically to a direct insert.
+
+// TEST 4 — update mapping: seed a landed Gadget row (via TEST 1's action or a direct insert).
+//   Define an Update action `renameGadget` on Gadget (identity "id") with params
+//   [ key:Long required binds "id", displayName:String optional binds "name" ].
+//   run_action("renameGadget", json!({"key":"7","displayName":"Renamed"}).as_object().unwrap(), &subj, &deps)
+//   -> Ok. read_object -> the row with id 7 now has name == "Renamed" (PATCH via the bound property).
 ```
 
-Write each as a concrete `#[tokio::test]` using the e2e-support helpers, seeding a real Iceberg-backed table via `land`/`prop` exactly as `action_e2e.rs`/`update_delete_e2e.rs` do. Assert HTTP status codes and the read-back object JSON.
+Fill each in concretely against `action_e2e.rs`'s actual API (the exact `spawn_engine_writer` arity, the grant helper, and `read_object`'s `QueryDeps`/`ObjectQuery` args are all visible there — copy them). Use `SqlValue`/JSON readback assertions exactly as `action_e2e.rs` does.
 
 - [ ] **Step 2: Wire the BUCK target**
 
-Add to `src/services/query-api/BUCK` (mirror the existing `action_e2e` `loom_fixture_test` target, including `":e2e-support"` in deps):
+Add to `src/services/query-api/BUCK` (mirror the existing `action-e2e` target at `BUCK:823`, copying its `deps` verbatim — it already includes `":e2e-support"`):
 
 ```starlark
 loom_fixture_test(
-    name = "action_mapping_e2e",
+    name = "action-mapping-e2e",
     crate = "action_mapping_e2e",
     srcs = ["tests/action_mapping_e2e.rs"],
     crate_root = "tests/action_mapping_e2e.rs",
     deps = [
-        # copy the exact dep list from the action_e2e target, plus ":e2e-support"
+        # copy the exact dep list from the `action-e2e` target (BUCK:823), verbatim.
     ],
 )
 ```
 
 - [ ] **Step 3: Run to verify failure, then iterate to green**
 
-Run: `buck2 test //src/services/query-api:action_mapping_e2e > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5.log`
+Run (routes to RE for the non-root postgres boot): `buck2 test //src/services/query-api:action-mapping-e2e > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5.log`
 Expected: initially compiles/runs; assertions drive any remaining fixes. Iterate until PASS.
 
 - [ ] **Step 4: Commit**
