@@ -107,6 +107,18 @@ postgres.external.keys.
 {{- end -}}
 
 {{/*
+On-boot migration env: emitted on the service containers only when
+migrations.mode == onBoot. Each pod applies the schema at startup (sqlx advisory
+lock serialises concurrent pods).
+*/}}
+{{- define "loom.migrateOnBootEnv" -}}
+{{- if eq .Values.migrations.mode "onBoot" }}
+- name: LOOM_DB_MIGRATE_ON_BOOT
+  value: "true"
+{{- end }}
+{{- end -}}
+
+{{/*
 Render a service container image ref: digest-pinned when .digest is set
 (release builds), else repository:tag.
 */}}

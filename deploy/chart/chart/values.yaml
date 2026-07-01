@@ -63,6 +63,22 @@ engine:
 # Service lock-timeout (ms) -> LOOM_LOCK_TIMEOUT_MS.
 lockTimeoutMs: 5000
 
+# --- Schema migrations ---------------------------------------------------------
+# How loom's control-plane schema (src/control-plane/postgres/migrations) is
+# applied to the managed Postgres. A fresh install must migrate before the
+# services can serve.
+#   job      – (default) a pre-install/pre-upgrade Helm hook Job runs the
+#              migrate-and-exit entrypoint (LOOM_MIGRATE=apply, ingest image)
+#              before the Deployments roll. DDL rights live on the one-shot Job.
+#   onBoot   – LOOM_DB_MIGRATE_ON_BOOT=true on the service containers; each pod
+#              migrates at startup. Concurrent replicas race on sqlx's advisory
+#              lock (first wins, rest no-op) — every pod needs DDL rights.
+#   external – neither; apply migrations yourself (pre-chart behaviour).
+migrations:
+  mode: job
+  # Retry cap for the mode=job hook Job.
+  backoffLimit: 3
+
 # --- Object store -------------------------------------------------------------
 # Shared volume backing LOOM_DATA_PATH (the Parquet files the catalog
 # references). The storage *class* is deliberately the deployer's choice — loom

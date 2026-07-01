@@ -69,9 +69,14 @@ buck2 run deploy//chart:chart.push
 
 ### Known limitations (MVP)
 
-- **Schema migrations are not applied by the chart.** CNPG provisions Postgres
-  but loom's migrations (`src/control-plane/postgres/migrations`) must be applied
-  out of band before the services can serve. A migration Job is future work.
+- **Schema migrations** are applied automatically per `migrations.mode`:
+  `job` (default) runs a `pre-install`/`pre-upgrade` hook Job (the ingest image
+  with `LOOM_MIGRATE=apply`) before the Deployments roll, isolating DDL rights to
+  a one-shot pod; `onBoot` sets `LOOM_DB_MIGRATE_ON_BOOT=true` on the service
+  containers so each pod migrates at startup (sqlx's advisory lock serialises
+  concurrent replicas); `external` applies neither, for operators who manage the
+  schema themselves. `mode=job` assumes the Postgres endpoint is reachable at hook
+  time (the CNPG operator prerequisite already covers this).
 - **Shared local object store.** The services currently use a `LocalFileSystem`
   object store at `LOOM_DATA_PATH`, backed by one PVC that ingest writes and
   query-api reads. With the default `ReadWriteOnce` the chart co-schedules

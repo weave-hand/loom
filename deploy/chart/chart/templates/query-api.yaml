@@ -49,6 +49,7 @@ spec:
             - name: LOOM_ENGINE_SOCKET
               value: {{ .Values.engine.socketPath | quote }}
             {{- include "loom.dbEnv" . | nindent 12 }}
+            {{- include "loom.migrateOnBootEnv" . | nindent 12 }}
           readinessProbe:
             tcpSocket:
               port: http
@@ -98,6 +99,7 @@ spec:
             - name: LOOM_ENGINE_SOCKET
               value: {{ .Values.engine.socketPath | quote }}
             {{- include "loom.dbEnv" . | nindent 12 }}
+            {{- include "loom.migrateOnBootEnv" . | nindent 12 }}
           # Readiness gates the pod on the engine having bound the socket so
           # query-api never connects before it exists.
           readinessProbe:

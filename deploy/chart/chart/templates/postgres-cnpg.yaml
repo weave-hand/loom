@@ -3,9 +3,8 @@
 # (postgresql.cnpg.io/v1) installed in the cluster. CNPG generates the
 # `<cluster>-app` secret the services read (host/port/username/password/dbname).
 #
-# NOTE: this provisions Postgres but does NOT apply loom's schema migrations
-# (src/control-plane/postgres/migrations) — run those out of band before the
-# services can serve. See docs/deploy.md.
+# NOTE: this provisions Postgres. Schema migrations are applied per the chart's
+# migrations.mode (default: a pre-install/pre-upgrade hook Job). See docs/deploy.md.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
