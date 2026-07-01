@@ -113,11 +113,13 @@ async fn two_named_indexes_on_one_property_build_and_search_independently() {
                     name: "id".into(),
                     ty: "Long".into(),
                     required: true,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 },
                 PropertyDef {
                     name: "embedding".into(),
                     ty: "vector(8)".into(),
                     required: true,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 },
             ],
             derived: vec![],

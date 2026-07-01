@@ -42,11 +42,13 @@ fn person_type(identity: Option<String>) -> ObjectType {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "name".into(),
                 ty: "Text".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -65,6 +67,7 @@ fn company_type() -> ObjectType {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![],
         table: TableRef {

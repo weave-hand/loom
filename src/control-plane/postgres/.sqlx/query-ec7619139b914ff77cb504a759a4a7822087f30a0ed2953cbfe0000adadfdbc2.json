@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from iceberg_mirror.inline_trigger where table_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ec7619139b914ff77cb504a759a4a7822087f30a0ed2953cbfe0000adadfdbc2"
+}

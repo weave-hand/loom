@@ -48,6 +48,20 @@ pub struct WriteDeniedBody {
     pub column: Option<String>,
 }
 
+/// Documentation shape for a 422 constraint-violation body on a typed-insert action.
+#[derive(ToSchema)]
+pub struct ConstraintViolationsBody {
+    pub violations: Vec<ConstraintViolationItem>,
+}
+
+/// One constraint violation: the property and the rule it failed.
+#[derive(ToSchema)]
+pub struct ConstraintViolationItem {
+    pub property: String,
+    /// `range` | `length` | `pattern` | `one_of`.
+    pub rule: String,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -70,14 +84,76 @@ pub struct WriteDeniedBody {
         VectorSearchResponse,
         JobAck,
         WriteDeniedBody,
+        ConstraintViolationsBody,
+        ConstraintViolationItem,
         crate::http::VectorSearchRequest,
     ))
 )]
 pub struct ApiDoc;
 
-/// Build the static OpenAPI document. Returns a value (not a constant) so slice 2 can
-/// merge ontology-derived operations through this same seam.
+/// Build the static OpenAPI document. Returns a value (not a constant) so the live document
+/// (`live_openapi`) can merge ontology-derived operations through this same seam.
 #[must_use]
 pub fn build_openapi() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
+}
+
+/// Bound on `list_types` page draining — a defensive cap so a misbehaving cursor can never
+/// spin forever. Adapters return one full page today; this tolerates future keyset paging.
+const MAX_TYPE_PAGES: usize = 10_000;
+
+/// Build the OpenAPI document with per-request ontology-derived operations merged onto the
+/// static base. Reads the live ontology through `cp` (`list_types` + per-type `links`), runs
+/// the pure generator, and extends the base document's paths + component schemas. On a read
+/// error it logs and returns the static base unchanged — a docs endpoint must never fail the
+/// whole document because an ontology read hiccupped.
+pub async fn live_openapi(
+    cp: std::sync::Arc<dyn control_plane_core::ControlPlane + Send + Sync>,
+) -> utoipa::openapi::OpenApi {
+    use control_plane_core::PageReq;
+
+    let mut doc = build_openapi();
+    let onto = cp.ontology();
+
+    // Drain every defined type (one full page today; loop tolerates future keyset paging).
+    let mut types = Vec::new();
+    let mut after = None;
+    for _ in 0..MAX_TYPE_PAGES {
+        let page = match onto
+            .list_types(PageReq {
+                after: after.clone(),
+                limit: None,
+            })
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "openapi: list_types failed; serving static base");
+                return doc;
+            }
+        };
+        types.extend(page.items);
+        match page.next {
+            Some(cursor) => after = Some(cursor),
+            None => break,
+        }
+    }
+
+    // Per-type outbound links (a failed read on one type is logged and skipped, not fatal).
+    let mut links = Vec::new();
+    for ty in &types {
+        match onto.links(&ty.name, PageReq::unbounded()).await {
+            Ok(page) => links.extend(page.items),
+            Err(e) => {
+                tracing::warn!(type_name = %ty.name.0, error = %e, "openapi: links read failed");
+            }
+        }
+    }
+
+    let (paths, schemas) = crate::openapi_gen::ontology_openapi(&types, &links);
+    doc.paths.paths.extend(paths.paths);
+    if let Some(components) = doc.components.as_mut() {
+        components.schemas.extend(schemas);
+    }
+    doc
 }

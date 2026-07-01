@@ -23,7 +23,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::IngestError;
-use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason};
+use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason, validate_values};
 use crate::landing::{LandRequest, LandingMaterializer};
 use crate::materialize::resolve_columns;
 use crate::model::{InferTypeError, infer_object_type, model_shape_from_type};
@@ -131,6 +131,8 @@ impl From<LandModel> for ModelShape {
                     name: c.name,
                     ty: c.ty,
                     required: c.required,
+                    // The raw `/datasets` request carries no ontology constraints.
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 })
                 .collect(),
         }
@@ -153,6 +155,9 @@ fn violations_json(violations: &[Violation]) -> serde_json::Value {
             }),
             ViolationReason::Unsupported => {
                 serde_json::json!({ "column": v.column, "reason": "unsupported" })
+            }
+            ViolationReason::Constraint { rule } => {
+                serde_json::json!({ "column": v.column, "reason": "constraint", "rule": rule })
             }
         })
         .collect();
@@ -274,6 +279,17 @@ pub(crate) async fn land_model(
         }
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
     };
+
+    // 5b. Per-value constraint validation over the decoded batches (422 on violation),
+    //     after the shape gate and before any write. The same `core` validator backs the
+    //     query-api typed-insert action, so both write paths enforce identical rules.
+    if let Err(violations) = validate_values(&shape, &batches) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(violations_json(&violations)),
+        )
+            .into_response();
+    }
 
     // 6. Land into the type's table with type-named lineage (rows trace to the model).
     let table = otype.table.clone();

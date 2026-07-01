@@ -11,6 +11,9 @@ use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
 impl Ontology for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_type(&self, ty: ObjectType) -> Result<()> {
+        // Reject malformed constraint declarations (type-inapplicable rule or invalid
+        // regex) before any write — a define-time fault, never a silent write-time one.
+        control_plane_core::validate_constraints(&ty.properties)?;
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query!(
             "insert into ontology.object_type (name, table_schema, table_name, identity) \
@@ -33,14 +36,25 @@ impl Ontology for PgControlPlane {
         .await
         .map_err(backend)?;
         for (i, p) in ty.properties.iter().enumerate() {
+            // Empty constraints (the common case) store NULL, not an empty JSON object,
+            // keeping back-compat rows and unconstrained properties byte-identical.
+            let constraints = if p.constraints.is_empty() {
+                None
+            } else {
+                Some(
+                    serde_json::to_value(&p.constraints)
+                        .map_err(|e| ControlPlaneError::Serialization(e.to_string()))?,
+                )
+            };
             sqlx::query!(
-                "insert into ontology.property (type_name, ordinal, name, ty, required) \
-                 values ($1, $2, $3, $4, $5)",
+                "insert into ontology.property (type_name, ordinal, name, ty, required, constraints) \
+                 values ($1, $2, $3, $4, $5, $6)",
                 ty.name.0,
                 i as i32,
                 p.name,
                 p.ty,
                 p.required,
+                constraints,
             )
             .execute(&mut *tx)
             .await
@@ -129,14 +143,28 @@ impl Ontology for PgControlPlane {
         .await
         .map_err(backend)?
         .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))?;
-        let props = sqlx::query!(
-            "select name, ty, required from ontology.property \
+        let prop_rows = sqlx::query!(
+            "select name, ty, required, constraints from ontology.property \
              where type_name = $1 order by ordinal",
             name.0,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
+        let mut props = Vec::with_capacity(prop_rows.len());
+        for r in prop_rows {
+            let constraints = match r.constraints {
+                Some(v) => serde_json::from_value(v)
+                    .map_err(|e| ControlPlaneError::Serialization(e.to_string()))?,
+                None => control_plane_core::PropertyConstraints::default(),
+            };
+            props.push(PropertyDef {
+                name: r.name,
+                ty: r.ty,
+                required: r.required,
+                constraints,
+            });
+        }
         let derived_rows = sqlx::query!(
             "select name, ty, link_name, agg_kind, agg_column from ontology.derived_property \
              where type_name = $1 order by ordinal",
@@ -160,14 +188,7 @@ impl Ontology for PgControlPlane {
                 schema: row.table_schema,
                 name: row.table_name,
             },
-            properties: props
-                .into_iter()
-                .map(|r| PropertyDef {
-                    name: r.name,
-                    ty: r.ty,
-                    required: r.required,
-                })
-                .collect(),
+            properties: props,
             derived,
             identity: row.identity,
         })

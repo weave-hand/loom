@@ -15649,6 +15649,12 @@ cargo.rust_library(
     deps = [":rand_core-0.9"],
 )
 
+alias(
+    name = "regex",
+    actual = ":regex-1",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "regex-1.12.4.crate",
     sha256 = "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba",
@@ -16385,23 +16391,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "rustls-pki-types-1.14.1.crate",
-    sha256 = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9",
-    strip_prefix = "rustls-pki-types-1.14.1",
-    urls = ["https://static.crates.io/crates/rustls-pki-types/1.14.1/download"],
+    name = "rustls-pki-types-1.15.0.crate",
+    sha256 = "764899a24af3980067ee14bc143654f297b22eaebfe3c7b6b211920a5a59b046",
+    strip_prefix = "rustls-pki-types-1.15.0",
+    urls = ["https://static.crates.io/crates/rustls-pki-types/1.15.0/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "rustls-pki-types-1",
-    srcs = [":rustls-pki-types-1.14.1.crate"],
+    srcs = [":rustls-pki-types-1.15.0.crate"],
     crate = "rustls_pki_types",
-    crate_root = "rustls-pki-types-1.14.1.crate/src/lib.rs",
+    crate_root = "rustls-pki-types-1.15.0.crate/src/lib.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "rustls_pki_types",
         "CARGO_CRATE_NAME": "rustls_pki_types",
-        "CARGO_MANIFEST_DIR": "rustls-pki-types-1.14.1.crate",
+        "CARGO_MANIFEST_DIR": "rustls-pki-types-1.15.0.crate",
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Shared types for the rustls PKI ecosystem",
         "CARGO_PKG_HOMEPAGE": "https://github.com/rustls/pki-types",
@@ -16409,10 +16415,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/rustls/pki-types",
         "CARGO_PKG_RUST_VERSION": "1.60",
-        "CARGO_PKG_VERSION": "1.14.1",
+        "CARGO_PKG_VERSION": "1.15.0",
         "CARGO_PKG_VERSION_MAJOR": "1",
-        "CARGO_PKG_VERSION_MINOR": "14",
-        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_MINOR": "15",
+        "CARGO_PKG_VERSION_PATCH": "0",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [

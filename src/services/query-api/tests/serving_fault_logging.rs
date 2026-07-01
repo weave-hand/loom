@@ -65,6 +65,7 @@ async fn build_faulting_app() -> axum::Router {
             name: "id".into(),
             ty: "long".into(),
             required: false,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![],
         table: TableRef {

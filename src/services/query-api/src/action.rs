@@ -6,9 +6,9 @@
 use std::collections::BTreeMap;
 
 use control_plane_core::{
-    Action, ActionDef, ActionKind, ActionName, ControlPlane, ControlPlaneError, DatasetRef,
-    Decision, EventType, LineageEvent, ObjectType, PageReq, Policy, PolicyTarget, RunId, SubjectId,
-    resolve_logical,
+    Action, ActionDef, ActionKind, ActionName, ConstraintViolation, ControlPlane,
+    ControlPlaneError, DatasetRef, Decision, EventType, LineageEvent, ObjectType, PageReq, Policy,
+    PolicyTarget, PropertyValidator, RunId, SubjectId, resolve_logical,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -43,6 +43,11 @@ pub enum ActionError {
     /// `Forbidden`, which is the coarse Write-gate denial.
     #[error("write denied")]
     WriteDenied(WriteDenialReason),
+    /// One or more inserted values violate their property's declared constraints. Carries
+    /// every violation (property + rule) for the structured `422` body. Distinct from the
+    /// `403` ACL `WriteDenied` — a constraint violation is malformed data, not a denial.
+    #[error("constraint violation")]
+    ConstraintViolation(Vec<ConstraintViolation>),
     /// The targeted object does not exist (no live row for the supplied identity).
     #[error("object not found")]
     NotFound,
@@ -348,6 +353,39 @@ async fn run_insert(
             }
         }
         return Err(ActionError::WriteDenied(reason));
+    }
+
+    // 4c. Per-value constraint validation: reject values violating their property's
+    //     declared constraints with a structured 422 (distinct from the 403 ACL denial).
+    //     An omitted optional (NULL) carries no value to check. The same `core` validator
+    //     drives the ingest land path, so both write paths enforce identical rules.
+    let mut cviol: Vec<ConstraintViolation> = Vec::new();
+    for (col, val) in &pairs {
+        let Some(prop) = target.properties.iter().find(|p| &p.name == col) else {
+            continue;
+        };
+        if prop.constraints.is_empty() {
+            continue;
+        }
+        let validator = PropertyValidator::new(prop)?;
+        match val {
+            SqlValue::Text(s) => validator.check_str(s, &mut cviol),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "range bounds are f64; i64->f64 is acceptable for validation"
+            )]
+            SqlValue::Int(i) => validator.check_num(*i as f64, &mut cviol),
+            SqlValue::Double(d) => validator.check_num(*d, &mut cviol),
+            SqlValue::Bool(_) | SqlValue::Date(_) | SqlValue::Timestamp(_) | SqlValue::Null => {}
+        }
+    }
+    if !cviol.is_empty() {
+        tracing::info!(
+            action = action_name,
+            count = cviol.len(),
+            "insert rejected: constraint violation"
+        );
+        return Err(ActionError::ConstraintViolation(cviol));
     }
 
     // 5. Expand to the target type's FULL property set (declared order): the parsed

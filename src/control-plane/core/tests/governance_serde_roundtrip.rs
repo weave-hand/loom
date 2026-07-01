@@ -55,6 +55,7 @@ fn ontology_payloads_roundtrip() {
             name: "id".into(),
             ty: "int".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![DerivedPropertyDef {
             name: "order_count".into(),

@@ -21,6 +21,7 @@ async fn action_kind_round_trips() {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![],
     })

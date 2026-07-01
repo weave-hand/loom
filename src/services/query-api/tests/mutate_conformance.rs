@@ -17,11 +17,13 @@ fn widget(identity: Option<&str>) -> ObjectType {
                 name: "sku".into(),
                 ty: "String".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],

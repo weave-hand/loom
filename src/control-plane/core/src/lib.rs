@@ -5,6 +5,7 @@ mod acl;
 mod auth;
 mod catalog;
 mod compact_job;
+mod constraints;
 mod error;
 mod flush;
 mod gc;
@@ -23,9 +24,15 @@ pub use acl::{
     Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
     SubjectId, validate_row_filter,
 };
-pub use auth::{Auth, NewUser, PasswordCredential};
+pub use auth::{
+    Auth, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount, ServiceToken,
+};
 pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
 pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
+pub use constraints::{
+    ConstraintRule, ConstraintViolation, LengthConstraint, PropertyConstraints, PropertyValidator,
+    RangeConstraint, validate_constraints,
+};
 pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};
 pub use gc::{GC_JOB_KIND, GcJob};
