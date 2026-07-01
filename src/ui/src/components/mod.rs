@@ -12,12 +12,18 @@ mod badge;
 mod button;
 mod global;
 mod input;
+mod panel;
 mod status;
+mod table;
 mod tabs;
+mod topnav;
 
 pub use badge::Badge;
 pub use button::Button;
 pub use global::GlobalStyles;
 pub use input::{Input, InputKind};
+pub use panel::Panel;
 pub use status::StatusDot;
+pub use table::{Column, DataTable, TableRow};
 pub use tabs::{TabItem, Tabs};
+pub use topnav::{NavItem, TopNav};
