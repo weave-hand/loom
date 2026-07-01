@@ -146,6 +146,23 @@ impl Auth for PgControlPlane {
         // One transaction: ensure the ACL subject, then the service account.
         // A duplicate name aborts on the service_account insert (23505 -> Conflict).
         let mut tx = self.pool().begin().await.map_err(backend)?;
+        // Reject a subject_id that is already a human user: the machine- and
+        // human-identity namespaces must not overlap (else a minted token could
+        // authenticate as an existing user's subject).
+        let clashes_user = sqlx::query_scalar!(
+            "select exists (select 1 from auth.user where subject_id = $1)",
+            &account.subject_id.0
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(backend)?
+        .unwrap_or(false);
+        if clashes_user {
+            return Err(ControlPlaneError::Conflict(format!(
+                "subject {} already belongs to a user",
+                account.subject_id.0
+            )));
+        }
         sqlx::query!(
             "insert into acl.subject (id) values ($1) on conflict (id) do nothing",
             &account.subject_id.0,

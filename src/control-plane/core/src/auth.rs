@@ -98,7 +98,10 @@ pub trait Auth {
 
     /// Create a service account bound to `account.subject_id`. Ensures the ACL
     /// subject exists (so the account is immediately a valid ACL principal, exactly
-    /// like `create_user`). `Conflict` if the name is already taken. No password.
+    /// like `create_user`). No password. `Conflict` if the name is already taken OR
+    /// if `subject_id` already belongs to a human `auth.user` — the machine- and
+    /// human-identity namespaces must not overlap, so a token can never authenticate
+    /// as an existing user's subject.
     async fn create_service_account(&self, account: &NewServiceAccount) -> Result<()>;
 
     /// Persist a service token: the SHA-256 of the issued token, its owning account,

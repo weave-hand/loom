@@ -132,6 +132,19 @@ impl Auth for MemoryControlPlane {
                 account.name
             )));
         }
+        // Reject a subject_id that is already a human user: the machine- and
+        // human-identity namespaces must not overlap (else a minted token could
+        // authenticate as an existing user's subject).
+        if auth
+            .users
+            .values()
+            .any(|u| u.subject_id == account.subject_id.0)
+        {
+            return Err(ControlPlaneError::Conflict(format!(
+                "subject {} already belongs to a user",
+                account.subject_id.0
+            )));
+        }
         auth.service_accounts.insert(
             account.subject_id.0.clone(),
             MemServiceAccount {

@@ -1835,6 +1835,27 @@ pub async fn service_account_contract<A: Auth + Acl>(a: &A) {
         .await;
     assert!(matches!(dup, Err(ControlPlaneError::Conflict(_))));
 
+    // subject_id must not overlap the human-user namespace: creating a service
+    // account whose subject_id already belongs to a user → Conflict, so a minted
+    // token can never authenticate as an existing user's subject.
+    a.create_user(&NewUser {
+        subject_id: sid("human-1"),
+        username: "human-1".into(),
+        password_phc: "phc".into(),
+    })
+    .await
+    .unwrap();
+    let clash = a
+        .create_service_account(&NewServiceAccount {
+            subject_id: sid("human-1"),
+            name: "human-1-svc".into(),
+        })
+        .await;
+    assert!(
+        matches!(clash, Err(ControlPlaneError::Conflict(_))),
+        "a service account cannot adopt an existing user's subject_id"
+    );
+
     // list_service_accounts returns the account metadata (name), never a token.
     let accounts = a.list_service_accounts(PageReq::unbounded()).await.unwrap();
     assert_eq!(accounts.len(), 1);
