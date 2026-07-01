@@ -133,8 +133,8 @@ impl Ontology for WireOntology {
         self.client.gov_get_vector_index(type_name, name).await
     }
 
-    async fn list_types(&self, _page: PageReq) -> Result<Page<ObjectType>> {
-        Err(read_only("list_types"))
+    async fn list_types(&self, page: PageReq) -> Result<Page<ObjectType>> {
+        self.client.gov_list_types(&page).await
     }
 
     async fn define_type(&self, _ty: ObjectType) -> Result<()> {

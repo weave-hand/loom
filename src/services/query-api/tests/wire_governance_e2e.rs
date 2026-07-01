@@ -153,6 +153,25 @@ async fn rpc_roundtrips_match_direct_reads() {
         .expect("wire links");
     assert_eq!(dl.items, wl.items);
 
+    // list_types parity — compare the set of defined type names.
+    let direct_types = cp
+        .ontology()
+        .list_types(PageReq::unbounded())
+        .await
+        .expect("direct list_types");
+    let wire_types = client
+        .gov_list_types(&PageReq::unbounded())
+        .await
+        .expect("wire list_types");
+    let direct_names: std::collections::BTreeSet<_> = direct_types
+        .items
+        .iter()
+        .map(|t| t.name.0.clone())
+        .collect();
+    let wire_names: std::collections::BTreeSet<_> =
+        wire_types.items.iter().map(|t| t.name.0.clone()).collect();
+    assert_eq!(direct_names, wire_names, "list_types parity");
+
     // check parity (deny-by-default: unknown subject -> Deny on both)
     let subject = SubjectId("nobody".into());
     let target = PolicyTarget::Type(name.clone());

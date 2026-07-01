@@ -312,6 +312,20 @@ impl GrpcQueueClient {
         de(&resp.page_json)
     }
 
+    /// Governance: list all defined object types.
+    pub async fn gov_list_types(&self, page: &PageReq) -> Result<Page<ObjectType>> {
+        let resp = self
+            .inner
+            .clone()
+            .list_types(pb::ListTypesRequest {
+                page_json: se(page)?,
+            })
+            .await
+            .map_err(cp_status)?
+            .into_inner();
+        de(&resp.page_json)
+    }
+
     /// Governance: fetch the definition of a named action.
     pub async fn gov_get_action(&self, name: &ActionName) -> Result<ActionDef> {
         let resp = self
