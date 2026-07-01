@@ -5,11 +5,13 @@
 //! docs/superpowers/specs/2026-06-24-engine-serving-execution-wire-design.md.
 
 pub mod action_writer;
+pub mod governed;
 pub mod provider;
 pub mod serving;
 pub mod vector_search;
 
 pub use action_writer::IcebergActionWriter;
+pub use governed::row_filter_to_expr;
 pub use provider::PgTableProvider;
 pub use serving::{
     EngineServingError, IcebergMirrorTableProvider, execute_query, execute_query_stream,
