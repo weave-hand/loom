@@ -68,9 +68,13 @@ impl DbConfig {
         let base = if self.host.starts_with('/') {
             PgConnectOptions::new().socket(&self.host)
         } else {
-            PgConnectOptions::new().host(&self.host).port(self.port)
+            PgConnectOptions::new().host(&self.host)
         };
-        base.username(&self.user)
+        // `.port()` applies to both branches: for a unix socket it selects the
+        // `.s.PGSQL.<port>` socket file, so it must be set even in socket mode or
+        // sqlx probes the default 5432 and misses a cluster on any other port.
+        base.port(self.port)
+            .username(&self.user)
             .password(&self.password)
             .database(&self.dbname)
     }
@@ -87,9 +91,12 @@ impl DbConfig {
     /// free-form passwords are ever supported.
     pub fn pg_url(&self) -> String {
         if self.host.starts_with('/') {
+            // The port is carried in the authority even for the socket form: libpq/sqlx
+            // derive the `.s.PGSQL.<port>` socket filename from it, so omitting it probes
+            // the default 5432 and misses a cluster listening on any other port.
             format!(
-                "postgres://{}:{}@localhost/{}?host={}",
-                self.user, self.password, self.dbname, self.host
+                "postgres://{}:{}@localhost:{}/{}?host={}",
+                self.user, self.password, self.port, self.dbname, self.host
             )
         } else {
             format!(

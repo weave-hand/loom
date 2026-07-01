@@ -4,17 +4,43 @@
 # docs/superpowers/specs/2026-06-30-yew-wasm-ui-experiment-design.md.
 
 load("//tools:wasm_bindgen.bzl", "WASM_BINDGEN_VERSION")
+load("//src:loom_test.bzl", "rust_test")
+
+rust_library(
+    name = "ui-core",
+    crate = "loom_ui_core",
+    srcs = ["src/lib.rs"],
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "logic",
+    crate = "logic",
+    srcs = ["tests/logic.rs"],
+    crate_root = "tests/logic.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
 
 rust_binary(
     name = "app",
     crate = "app",
-    srcs = ["src/main.rs"],
+    srcs = ["src/main.rs", "src/net.rs", "src/session.rs"],
     crate_root = "src/main.rs",
     edition = "2024",
     default_target_platform = "//platforms:wasm",
     deps = [
+        "//third-party:gloo-net",
+        "//third-party:js-sys",
+        "//third-party:serde",
+        "//third-party:serde_json",
         "//third-party:wasm-bindgen",
+        "//third-party:wasm-bindgen-futures",
+        "//third-party:web-sys",
         "//third-party:yew",
+        ":ui-core",
     ],
     visibility = ["PUBLIC"],
 )
@@ -35,7 +61,7 @@ genrule(
     # platform and the cross-config $(location) path would not resolve). The
     # wasm-bindgen tool is an $(exe) dep, so it still configures for the exec host.
     default_target_platform = "//platforms:wasm",
-    srcs = ["index.html"],
+    srcs = ["index.html", "config.js"],
     # Backticks (not $()) for the shell command substitution: buck parses $(...)
     # as its own macro syntax, so a shell $(...) in cmd fails attribute coercion.
     # index.html arrives via srcs ($SRCDIR), not $(location) (which needs a target).
@@ -50,6 +76,7 @@ fi
 mkdir -p $OUT
 $(exe //tools:wasm-bindgen) --target web --no-typescript --out-dir $OUT --out-name app $(location :app)
 cp $SRCDIR/index.html $OUT/index.html
+cp $SRCDIR/config.js $OUT/config.js
 """.format(ver = WASM_BINDGEN_VERSION),
     visibility = ["PUBLIC"],
 )

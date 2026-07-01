@@ -116,6 +116,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         async move { query_api::live_openapi(cp).await }
     });
 
+    // Optional UI serving (tight deploy) + CORS (detached deploy); both default off.
+    let app = query_api::web_static::with_static(
+        app,
+        std::env::var("LOOM_UI_DIR")
+            .ok()
+            .map(std::path::PathBuf::from),
+    );
+    let origins = query_api::web_static::parse_allowed_origins(
+        &std::env::var("LOOM_CORS_ALLOWED_ORIGINS").unwrap_or_default(),
+    );
+    let app = query_api::web_static::with_cors(app, &origins);
+
     // Optional external Arrow Flight export listener (opt-in via LOOM_FLIGHT_BIND_ADDR).
     if let Ok(bind) = std::env::var("LOOM_FLIGHT_BIND_ADDR") {
         use arrow_flight::flight_service_server::FlightServiceServer;
