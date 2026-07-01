@@ -1823,7 +1823,9 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     // Give bob a live session, then disable bob.
     let now2 = OffsetDateTime::now_utc();
     let future2 = now2 + time::Duration::hours(1);
-    a.create_session(&sid("u-bob"), &h(7), future2).await.unwrap();
+    a.create_session(&sid("u-bob"), &h(7), future2)
+        .await
+        .unwrap();
     assert_eq!(
         a.resolve_session(&h(7), now2).await.unwrap(),
         Some(sid("u-bob")),

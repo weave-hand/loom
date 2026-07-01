@@ -201,10 +201,13 @@ async fn disable_blocks_session_and_login_then_enable_restores() {
 
     // mallory's session no longer resolves; login lookup hides her.
     assert!(
-        cp.resolve_session(&token_sha256(&victim_token), time::OffsetDateTime::now_utc())
-            .await
-            .unwrap()
-            .is_none()
+        cp.resolve_session(
+            &token_sha256(&victim_token),
+            time::OffsetDateTime::now_utc()
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     assert!(
         cp.find_password_credential("mallory")
