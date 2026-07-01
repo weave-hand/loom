@@ -1889,7 +1889,10 @@ pub async fn service_account_contract<A: Auth + Acl>(a: &A) {
     let labels: HashSet<String> = tokens.items.iter().map(|t| t.label.clone()).collect();
     assert_eq!(
         labels,
-        ["primary", "rotated"].iter().map(|s| s.to_string()).collect()
+        ["primary", "rotated"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     );
     assert!(
         tokens.items.iter().all(|t| t.revoked_at.is_none()),

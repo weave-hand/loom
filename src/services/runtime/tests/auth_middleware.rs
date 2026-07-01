@@ -93,9 +93,14 @@ async fn seed_service_token(
     })
     .await
     .unwrap();
-    cp.create_service_token(&SubjectId(account.into()), &token_sha256(token), "t", expires)
-        .await
-        .unwrap();
+    cp.create_service_token(
+        &SubjectId(account.into()),
+        &token_sha256(token),
+        "t",
+        expires,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

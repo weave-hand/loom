@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Auth, ControlPlaneError, NewServiceAccount, NewUser, Page, PageReq, PasswordCredential,
-    Result, ServiceAccount, ServiceToken, SubjectId,
+    Auth, ControlPlaneError, NewServiceAccount, NewUser, Page, PageReq, PasswordCredential, Result,
+    ServiceAccount, ServiceToken, SubjectId,
 };
 use time::OffsetDateTime;
 
@@ -182,8 +182,7 @@ impl Auth for MemoryControlPlane {
     ) -> Result<Option<SubjectId>> {
         let auth = self.auth.lock();
         Ok(auth.service_tokens.get(token_sha256).and_then(|t| {
-            (t.revoked_at.is_none() && t.expires_at > now)
-                .then(|| SubjectId(t.subject_id.clone()))
+            (t.revoked_at.is_none() && t.expires_at > now).then(|| SubjectId(t.subject_id.clone()))
         }))
     }
 

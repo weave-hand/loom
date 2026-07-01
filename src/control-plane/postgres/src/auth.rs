@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    Auth, ControlPlaneError, NewServiceAccount, NewUser, Page, PageReq, PasswordCredential,
-    Result, ServiceAccount, ServiceToken, SubjectId,
+    Auth, ControlPlaneError, NewServiceAccount, NewUser, Page, PageReq, PasswordCredential, Result,
+    ServiceAccount, ServiceToken, SubjectId,
 };
 use time::OffsetDateTime;
 
