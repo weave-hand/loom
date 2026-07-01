@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use axum::routing::get;
-use control_plane_core::{Auth, SubjectId};
+use control_plane_core::{Auth, NewServiceAccount, SubjectId};
 use control_plane_memory::MemoryControlPlane;
 use service_runtime::{AuthState, Subject, protect, token_sha256};
 use time::OffsetDateTime;
@@ -78,4 +78,77 @@ async fn expired_token_is_401() {
     .await
     .unwrap();
     assert_eq!(bearer(app(cp), Some(token)).await, StatusCode::UNAUTHORIZED);
+}
+
+async fn seed_service_token(
+    cp: &MemoryControlPlane,
+    account: &str,
+    name: &str,
+    token: &str,
+    expires: OffsetDateTime,
+) {
+    cp.create_service_account(&NewServiceAccount {
+        subject_id: SubjectId(account.into()),
+        name: name.into(),
+    })
+    .await
+    .unwrap();
+    cp.create_service_token(&SubjectId(account.into()), &token_sha256(token), "t", expires)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn valid_service_token_authenticates() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_service_token(
+        &cp,
+        "svc-etl",
+        "etl",
+        "svc-token-xyz",
+        OffsetDateTime::now_utc() + time::Duration::hours(1),
+    )
+    .await;
+    assert_eq!(
+        bearer(app(cp), Some("svc-token-xyz")).await,
+        StatusCode::OK,
+        "a live service token passes require_auth like a session"
+    );
+}
+
+#[tokio::test]
+async fn expired_service_token_is_401() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_service_token(
+        &cp,
+        "svc-etl",
+        "etl",
+        "svc-stale",
+        OffsetDateTime::now_utc() - time::Duration::hours(1),
+    )
+    .await;
+    assert_eq!(
+        bearer(app(cp), Some("svc-stale")).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn revoked_service_token_is_401() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_service_token(
+        &cp,
+        "svc-etl",
+        "etl",
+        "svc-revoked",
+        OffsetDateTime::now_utc() + time::Duration::hours(1),
+    )
+    .await;
+    cp.revoke_service_token(&token_sha256("svc-revoked"))
+        .await
+        .unwrap();
+    assert_eq!(
+        bearer(app(cp), Some("svc-revoked")).await,
+        StatusCode::UNAUTHORIZED
+    );
 }

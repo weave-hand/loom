@@ -70,6 +70,21 @@ impl<S: Send + Sync> FromRequestParts<S> for Subject {
     }
 }
 
+/// Resolve a bearer token hash to a subject: try a login session first (interactive
+/// traffic dominates), then a service token. Both are constant-time hash lookups, so
+/// order is performance-only. This is the single sequencing point so there stays
+/// exactly one path that produces `Unauthorized`.
+async fn resolve_bearer(
+    auth: &(dyn Auth + Send + Sync),
+    hash: &[u8; 32],
+    now: OffsetDateTime,
+) -> Result<Option<SubjectId>, ControlPlaneError> {
+    if let Some(sid) = auth.resolve_session(hash, now).await? {
+        return Ok(Some(sid));
+    }
+    auth.resolve_service_token(hash, now).await
+}
+
 /// Resolve the bearer session token to a verified `Subject`, inject it into
 /// request extensions, and run the handler. Absent/invalid/expired → 401.
 pub async fn require_auth(State(st): State<AuthState>, mut req: Request, next: Next) -> Response {
@@ -77,11 +92,7 @@ pub async fn require_auth(State(st): State<AuthState>, mut req: Request, next: N
         return unauthorized();
     };
     let hash = token_sha256(&token);
-    match st
-        .auth
-        .resolve_session(&hash, OffsetDateTime::now_utc())
-        .await
-    {
+    match resolve_bearer(st.auth.as_ref(), &hash, OffsetDateTime::now_utc()).await {
         Ok(Some(sid)) => {
             req.extensions_mut().insert(Subject(sid));
             next.run(req).await
