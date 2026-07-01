@@ -1,4 +1,6 @@
 load("//src:loom_test.bzl", "rust_test")
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
 rust_library(
     name = "runtime",
     crate = "service_runtime",
@@ -169,5 +171,23 @@ rust_test(
         "//third-party:tokio",
         "//third-party:tower",
         "//third-party:utoipa",
+    ],
+)
+
+# Managed-branch (external Postgres) on-boot migration wiring. Boots a hermetic
+# Postgres via the fixture, so it must route local (loom_fixture_test).
+loom_fixture_test(
+    name = "migrate-managed",
+    crate = "migrate_managed",
+    srcs = ["tests/migrate_managed.rs"],
+    crate_root = "tests/migrate_managed.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/services/managed-postgres:managed-postgres",
+        "//src/services/store-config:store-config",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
     ],
 )
