@@ -3,8 +3,8 @@
 //! An uncoercible value is a 400 (BadFilterValue, carrying the parse fault).
 //! Also covers `between` (against the real engine, proving it matches `ge`+`le`) and the
 //! text-pattern operators `contains`/`startswith`/`endswith` (case-insensitive anchors,
-//! plus literal `%`/`_` escaping) — the first exercise of the rendered
-//! `ILIKE ... ESCAPE '\'` SQL against DataFusion.
+//! plus literal `%` escaping; `_` escaping is unit-covered in `filter_coerce.rs`) — the
+//! first exercise of the rendered `ILIKE ... ESCAPE '\'` SQL against DataFusion.
 
 use control_plane_core::{
     Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId,
