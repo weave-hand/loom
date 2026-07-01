@@ -12,7 +12,9 @@ mod crypto;
 pub use crypto::{AuthError, generate_session_token, hash_password, token_sha256, verify_password};
 
 mod openapi;
-pub use openapi::{BEARER_SCHEME_NAME, with_openapi};
+pub use openapi::{
+    BEARER_SCHEME_NAME, register_bearer_scheme, with_openapi, with_openapi_provider,
+};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
