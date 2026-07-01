@@ -159,10 +159,15 @@ Expected: PASS. (Note: any other test that constructs a `Config { … }` struct 
 
 - [ ] **Step 6: Apply on-boot migration in `build_pool_managed` + add helpers**
 
-In `src/services/runtime/src/lib.rs`, change the external (`None`) branch of `build_pool_managed`:
+In `src/services/runtime/src/lib.rs`, the external branch of `build_pool_managed` is currently a **single-line arm** (`lib.rs:265`):
 
 ```rust
-    match &cfg.embedded {
+        None => Ok((build_pool(&cfg.db).await?, None)),
+```
+
+Replace **exactly that one line** with the multi-line block below (leave the `Some(e) => { … }` embedded arm untouched):
+
+```rust
         None => {
             let pool = build_pool(&cfg.db).await?;
             if cfg.migrate_on_boot {
@@ -173,10 +178,6 @@ In `src/services/runtime/src/lib.rs`, change the external (`None`) branch of `bu
             }
             Ok((pool, None))
         }
-        Some(e) => {
-            // …unchanged embedded branch…
-        }
-    }
 ```
 
 Add, immediately after `build_pool_managed`:
@@ -294,8 +295,9 @@ git commit -m "feat(services): migrate-and-exit entrypoint + on-boot migration w
 - Modify: `src/services/runtime/BUCK` (add a `loom_fixture_test` target)
 
 **Interfaces:**
-- Consumes: `service_runtime::{Config, DbConfig, build_pool_managed, run_migrations}`, `managed_postgres::{EmbeddedPg, EmbeddedPgConfig}`, `store_config::ObjectStoreConfig`, `control_plane_postgres` (schema probe via sqlx), the fixture env `POSTGRES_BIN_DIR`/`POSTGRES_LD_LIBRARY_PATH`.
+- Consumes: `service_runtime::{Config, DbConfig, build_pool_managed, run_migrations}`, `managed_postgres::{EmbeddedPg, EmbeddedPgConfig}`, `store_config::ObjectStoreConfig`, the fixture env `POSTGRES_BIN_DIR`/`POSTGRES_LD_LIBRARY_PATH`. (The schema probe uses bare `sqlx::query_scalar` against `information_schema` — **no** `control_plane_postgres` dep needed.)
 - Produces: proves the external branch of `build_pool_managed` applies the schema iff `migrate_on_boot`, and that `run_migrations` applies it.
+- The `embedded_cfg` helper intentionally mirrors `managed-postgres/tests/embedded_lifecycle.rs:10-18` (per-file fixture pattern; the duplication is deliberate, not a `loom-duplication-fix` target).
 
 - [ ] **Step 1: Write the fixture test**
 
@@ -492,19 +494,22 @@ hasnt() { if grep -q "$1"; then fail "expected NOT to find: $1"; fi; }
 echo "== helm lint =="
 helm lint "$CHART"
 
+# Extract just the Job document (from its `kind: Job` to the next `---`).
+job() { echo "$1" | awk '/^kind: Job$/{f=1} f; /^---$/{if(f)exit}'; }
+
 echo "== migrations.mode=job (default): hook Job present, no on-boot env =="
 OUT="$(helm template loom "$CHART")"
-echo "$OUT" | grep -A30 'kind: Job' | has '"helm.sh/hook": pre-install,pre-upgrade'
-echo "$OUT" | grep -A40 'kind: Job' | has 'name: LOOM_MIGRATE'
+job "$OUT" | has '"helm.sh/hook": pre-install,pre-upgrade'
+job "$OUT" | has 'name: LOOM_MIGRATE'
+job "$OUT" | has 'restartPolicy: Never'
 echo "$OUT" | hasnt 'LOOM_DB_MIGRATE_ON_BOOT'
 
 echo "== migrations.mode=onBoot: env on both Deployments, no Job =="
 OUT="$(helm template loom "$CHART" --set migrations.mode=onBoot)"
 echo "$OUT" | hasnt 'kind: Job'
-# ingest Deployment carries the flag
-echo "$OUT" | awk '/kind: Deployment/,/^---/' | grep -A200 'component: ingest' | has 'LOOM_DB_MIGRATE_ON_BOOT'
-# query-api Deployment carries the flag
-echo "$OUT" | grep -c 'LOOM_DB_MIGRATE_ON_BOOT' | grep -qvx 0 || fail "on-boot flag missing"
+# Both service Deployments carry the flag (≥2 occurrences: ingest + query-api,
+# plus the engine sidecar makes 3). Assert at least the two Deployments.
+[ "$(echo "$OUT" | grep -c 'LOOM_DB_MIGRATE_ON_BOOT')" -ge 2 ] || fail "on-boot flag missing on Deployments"
 
 echo "== migrations.mode=external: neither Job nor on-boot env =="
 OUT="$(helm template loom "$CHART" --set migrations.mode=external)"
@@ -658,7 +663,12 @@ In `templates/postgres-cnpg.yaml`, soften the `NOTE:` comment block (lines ~5-8)
 # migrations.mode (default: a pre-install/pre-upgrade hook Job). See docs/deploy.md.
 ```
 
-In `docs/deploy.md`, replace the "Schema migrations are not applied by the chart" bullet (around lines 72-74) with a short paragraph documenting `migrations.mode` (job default / onBoot / external) and that a fresh install now migrates automatically. Keep exactly one trailing newline, no trailing whitespace.
+In `docs/deploy.md` **"Known limitations (MVP)"** section, rewrite **both** now-stale bullets (lines 72-81):
+
+- Replace the **"Schema migrations are not applied by the chart"** bullet (`:72-74`) with a bullet documenting `migrations.mode` — `job` (default: a pre-install/pre-upgrade hook Job migrates before the Deployments roll), `onBoot` (each pod migrates at startup via `LOOM_DB_MIGRATE_ON_BOOT`), `external` (apply yourself). Note `mode=job` assumes the Postgres endpoint is reachable at hook time (the CNPG operator prerequisite already covers this).
+- Replace the **"Shared local object store"** bullet (`:75-81`) so it no longer says S3 "is on the roadmap": document that `objectStore.s3.enabled=true` now switches the warehouse to S3/MinIO (removing the RWO co-scheduling constraint), and that the default remains the local PVC.
+
+Since both MVP-limitation bullets are resolved, retitle or trim the section as appropriate (e.g. keep only genuine remaining limitations). Keep exactly one trailing newline, no trailing whitespace.
 
 - [ ] **Step 8: Run the assertions to verify they pass**
 
@@ -698,10 +708,14 @@ git commit -m "feat(deploy): migrations.mode (job/onBoot/external) with hook Job
 Append to `deploy/chart/tests/render_assertions.sh` before the final echo:
 
 ```bash
+# Extract the query-api Deployment document (podAffinity lives only there, but the
+# `component: query-api` label also tags the Service — scope to the Deployment).
+qapi_deploy() { echo "$1" | awk '/^kind: Deployment$/{d=1} d && /component: query-api/{p=1} p; /^---$/{if(p)exit}'; }
+
 echo "== default (no S3): PVC + co-scheduling affinity present =="
 OUT="$(helm template loom "$CHART")"
 echo "$OUT" | has 'kind: PersistentVolumeClaim'
-echo "$OUT" | grep -A160 'component: query-api' | has 'podAffinity'
+qapi_deploy "$OUT" | has 'podAffinity'
 echo "$OUT" | hasnt 'LOOM_WAREHOUSE_URI'
 
 echo "== objectStore.s3.enabled: S3 env on all 3 containers, no PVC, relaxed affinity, egress =="
@@ -719,7 +733,7 @@ echo "$OUT" | has 's3://loomwh'
 echo "$OUT" | has 'name: AWS_ENDPOINT_URL'
 echo "$OUT" | has 'name: AWS_ACCESS_KEY_ID'
 # co-scheduling affinity is gone
-echo "$OUT" | grep -A160 'component: query-api' | hasnt 'podAffinity'
+qapi_deploy "$OUT" | hasnt 'podAffinity'
 # egress NetworkPolicy to the S3 port
 echo "$OUT" | grep -A20 'allow-s3' | has 'port: 9000'
 
@@ -850,7 +864,7 @@ In `objectstore-pvc.yaml`, change the opening guard from `{{- if .Values.objectS
 
 - [ ] **Step 7: Add the S3 egress NetworkPolicy**
 
-In `networkpolicy.yaml`, inside the outer `{{- if .Values.networkPolicy.enabled -}}` block (e.g. after the `allow-postgres` block, before `gateway`), add:
+In `networkpolicy.yaml`, insert the block at the **exact anchor**: immediately after the `allow-postgres` block's closing `{{- end }}` and its trailing `---` (currently `networkpolicy.yaml:62-63`), and **before** the `{{- if .Values.gateway.enabled }}` block. This placement is outside the `{{- if .Values.postgres.enabled }}` nesting, so the S3 egress rule renders even when `postgres.enabled=false`. The block is self-contained with its own `s3.enabled` guard and trailing `---`:
 
 ```yaml
 {{- if .Values.objectStore.s3.enabled }}
