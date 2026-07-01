@@ -3,7 +3,7 @@
 //! string, Double as a number, Boolean as a bool, String as a string, Date/Timestamp as
 //! ISO strings. Pure logic, no I/O.
 
-use control_plane_core::{JsonRepr, ParamDef, json_repr_of};
+use control_plane_core::{ActionDef, JsonRepr, ObjectType, ParamDef, json_repr_of};
 use serde_json::Value;
 
 use crate::serving::SqlValue;
@@ -43,6 +43,61 @@ pub fn parse_params(
         }
     }
     Ok(out)
+}
+
+/// Resolve an action invocation body into ordered `(property, SqlValue)` write pairs, applying
+/// the action's param→property mapping (`binds`) and constant assignments. The body is keyed by
+/// PARAMETER name; the returned pairs are keyed by the PROPERTY each param binds (or a constant
+/// fills). Assumes the action already passed conformance (so constants coerce and no property is
+/// double-written). Constants reuse the same `parse_value` coercion — against the PROPERTY's
+/// logical type — that parameters take, so a constant is a first-class equal of a param.
+pub fn resolve_action_row(
+    action: &ActionDef,
+    target: &ObjectType,
+    body: &serde_json::Map<String, Value>,
+) -> Result<Vec<(String, SqlValue)>, ParamError> {
+    // Param leg: reuse parse_params (rejects unknown keys, enforces required, coerces by
+    // param.ty), then remap each pair from param name → bound property. parse_params preserves
+    // action.parameters order, so zipping the param refs onto its output is exact.
+    let param_pairs = parse_params(&action.parameters, body)?;
+    let mut out: Vec<(String, SqlValue)> =
+        Vec::with_capacity(param_pairs.len() + action.assignments.len());
+    for (prm, (_, value)) in action.parameters.iter().zip(param_pairs) {
+        out.push((prm.binds_property().to_string(), value));
+    }
+    // Constant leg: coerce each constant against its PROPERTY's logical type.
+    for a in &action.assignments {
+        let prop_ty = target
+            .properties
+            .iter()
+            .find(|p| p.name == a.property)
+            .map(|p| p.ty.as_str())
+            .ok_or_else(|| {
+                ParamError::BadValue(
+                    a.property.clone(),
+                    "constant names an unknown property".into(),
+                )
+            })?;
+        out.push((
+            a.property.clone(),
+            parse_value(&a.property, prop_ty, &a.value)?,
+        ));
+    }
+    Ok(out)
+}
+
+/// Define-time guard for a constant assignment: the JSON `value` must be a scalar (not
+/// null/array/object) coercible to the property's logical type — the same acceptance the
+/// write path applies via `parse_value`. Keeps the constant and the runtime coercion in
+/// lockstep (a constant that conforms here cannot fail the write-path coercion later).
+pub fn validate_const(property: &str, logical_ty: &str, value: &Value) -> Result<(), ParamError> {
+    if value.is_null() || value.is_array() || value.is_object() {
+        return Err(ParamError::BadValue(
+            property.to_string(),
+            "constant must be a scalar (string, number, or bool)".into(),
+        ));
+    }
+    parse_value(property, logical_ty, value).map(|_| ())
 }
 
 fn parse_value(name: &str, logical_ty: &str, v: &Value) -> Result<SqlValue, ParamError> {

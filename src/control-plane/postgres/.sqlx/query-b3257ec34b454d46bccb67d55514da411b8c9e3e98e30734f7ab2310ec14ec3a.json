@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select property, value from ontology.action_assignment where action_name = $1 order by ordinal",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "property",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_assignment",
+            "name": "property"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_assignment",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "b3257ec34b454d46bccb67d55514da411b8c9e3e98e30734f7ab2310ec14ec3a"
+}

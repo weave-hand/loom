@@ -35,8 +35,10 @@ async fn action_kind_round_trips() {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
+            binds: None,
         }],
         kind: ActionKind::Delete,
+        assignments: vec![],
     })
     .await
     .expect("define Delete action");

@@ -76,6 +76,7 @@ fn param(name: &str, ty: &str, required: bool) -> ParamDef {
         name: name.into(),
         ty: ty.into(),
         required,
+        binds: None,
     }
 }
 
@@ -98,6 +99,7 @@ async fn seeded_state() -> AppState {
         target: TypeName("Widget".into()),
         parameters: vec![param("id", "Long", true), param("name", "String", false)],
         kind: ActionKind::Insert,
+        assignments: vec![],
     })
     .await
     .unwrap();
@@ -110,6 +112,7 @@ async fn seeded_state() -> AppState {
             param("naem", "String", false),
         ],
         kind: ActionKind::Insert,
+        assignments: vec![],
     })
     .await
     .unwrap();

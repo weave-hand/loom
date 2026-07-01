@@ -14,7 +14,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::handler::ObjectRows;
-use crate::params::{ParamError, parse_params};
+use crate::params::ParamError;
 use crate::serving::{ActionEngine, SqlValue};
 use crate::write_filter::{self, WriteVerdict};
 
@@ -117,8 +117,9 @@ pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), 
     }
 }
 
-/// Rules 1 & 2 (shared): every param names a real property of a compatible (same-BaseType)
-/// logical type. Violations are appended to `violations`.
+/// Rules 1 & 2 (shared): every param's BOUND property (`binds`, else its own name) is a real
+/// property of a compatible (same-BaseType) logical type. Violations are appended to
+/// `violations`.
 fn check_param_property_types(
     action: &ActionDef,
     target: &ObjectType,
@@ -126,9 +127,14 @@ fn check_param_property_types(
 ) {
     let target_name = &target.name.0;
     for p in &action.parameters {
-        match target.properties.iter().find(|prop| prop.name == p.name) {
-            None => violations.push(format!(
+        let bound = p.binds_property();
+        match target.properties.iter().find(|prop| prop.name == bound) {
+            None if p.binds.is_none() => violations.push(format!(
                 "parameter `{}` matches no property of type `{}`",
+                p.name, target_name
+            )),
+            None => violations.push(format!(
+                "parameter `{}` binds property `{bound}`, which is not a property of type `{}`",
                 p.name, target_name
             )),
             Some(prop) => {
@@ -155,28 +161,82 @@ fn check_param_property_types(
     }
 }
 
-/// INSERT conformance: rules 1 & 2 (param/property name+type) plus rule 3 (every required
-/// property covered by a required parameter).
+/// Rule 2b & 3 (shared): every constant assignment names a real property and coerces to that
+/// property's logical type, and no property is written twice — by two params, a param and a
+/// constant, or two constants. Violations are appended to `violations`.
+fn check_assignments_and_binds(
+    action: &ActionDef,
+    target: &ObjectType,
+    violations: &mut Vec<String>,
+) {
+    let target_name = &target.name.0;
+    let mut bound: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let dup = |prop: &str| {
+        format!(
+            "property `{prop}` of type `{target_name}` is written by more than one parameter/constant"
+        )
+    };
+    for p in &action.parameters {
+        let prop = p.binds_property();
+        if !bound.insert(prop) {
+            violations.push(dup(prop));
+        }
+    }
+    for a in &action.assignments {
+        match target.properties.iter().find(|prop| prop.name == a.property) {
+            None => violations.push(format!(
+                "constant assignment names property `{}`, which is not a property of type `{target_name}`",
+                a.property
+            )),
+            Some(prop) => {
+                if let Err(e) = crate::params::validate_const(&a.property, &prop.ty, &a.value) {
+                    violations.push(format!("constant for property `{}`: {e}", a.property));
+                }
+            }
+        }
+        if !bound.insert(&a.property) {
+            violations.push(dup(&a.property));
+        }
+    }
+}
+
+/// INSERT conformance: rules 1 & 2 (param/constant name+type), rule 2b/3 (constants +
+/// no double-bind), plus rule 4: every required property is covered by exactly one of
+/// {a required param binding it, a constant assignment}.
 fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
     let target_name = &target.name.0;
     let mut violations: Vec<String> = Vec::new();
 
     check_param_property_types(action, target, &mut violations);
+    check_assignments_and_binds(action, target, &mut violations);
 
-    // Rule 3: every required property is covered by a required parameter.
+    // Rule 4: every required property is covered by a required param binding it, or a constant.
     for prop in &target.properties {
-        if prop.required {
-            match action.parameters.iter().find(|p| p.name == prop.name) {
-                None => violations.push(format!(
-                    "required property `{}` of type `{}` is not covered by any parameter",
-                    prop.name, target_name
-                )),
-                Some(p) if !p.required => violations.push(format!(
-                    "required property `{}` is covered by optional parameter `{}` (it could be omitted, writing NULL)",
-                    prop.name, p.name
-                )),
-                Some(_) => {}
-            }
+        if !prop.required {
+            continue;
+        }
+        let by_required_param = action
+            .parameters
+            .iter()
+            .any(|p| p.binds_property() == prop.name && p.required);
+        let by_constant = action.assignments.iter().any(|a| a.property == prop.name);
+        if by_required_param || by_constant {
+            continue;
+        }
+        if let Some(p) = action
+            .parameters
+            .iter()
+            .find(|p| p.binds_property() == prop.name && !p.required)
+        {
+            violations.push(format!(
+                "required property `{}` is covered by optional parameter `{}` (it could be omitted, writing NULL)",
+                prop.name, p.name
+            ));
+        } else {
+            violations.push(format!(
+                "required property `{}` of type `{target_name}` is not covered by any parameter or constant",
+                prop.name
+            ));
         }
     }
 
@@ -184,9 +244,8 @@ fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(
         Ok(())
     } else {
         Err(ActionError::Misconfigured(format!(
-            "action `{}` does not conform to type `{}`: {}",
+            "action `{}` does not conform to type `{target_name}`: {}",
             action.name.0,
-            target_name,
             violations.join("; ")
         )))
     }
@@ -205,13 +264,18 @@ fn check_mutate_conformance(
     let mut violations: Vec<String> = Vec::new();
 
     check_param_property_types(action, target, &mut violations);
+    check_assignments_and_binds(action, target, &mut violations);
 
     match &target.identity {
         None => violations.push(format!(
             "type `{target_name}` has no declared identity; UPDATE/DELETE require one"
         )),
         Some(idprop) => {
-            match action.parameters.iter().find(|p| &p.name == idprop) {
+            match action
+                .parameters
+                .iter()
+                .find(|p| p.binds_property() == idprop)
+            {
                 None => violations.push(format!(
                     "UPDATE/DELETE on `{target_name}` requires a parameter for the identity property `{idprop}`"
                 )),
@@ -222,12 +286,17 @@ fn check_mutate_conformance(
             }
             if !is_update {
                 for p in &action.parameters {
-                    if &p.name != idprop {
+                    if p.binds_property() != idprop {
                         violations.push(format!(
                             "DELETE on `{target_name}` takes only the identity parameter; `{}` is extra",
                             p.name
                         ));
                     }
+                }
+                if !action.assignments.is_empty() {
+                    violations.push(format!(
+                        "DELETE on `{target_name}` takes no constant assignments"
+                    ));
                 }
             }
         }
@@ -311,8 +380,9 @@ async fn run_insert(
     let action_name = action.name.0.as_str();
     let policy_target = PolicyTarget::Type(action.target.clone());
 
-    // 4. Parse + validate the typed params (ordered by the action's parameter list).
-    let pairs = parse_params(&action.parameters, body)?;
+    // 4. Resolve the write row: parse+validate the typed params, remap each to its bound
+    //    property, and append the action's constant assignments (property-keyed pairs).
+    let pairs = crate::params::resolve_action_row(action, target, body)?;
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
     let values: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
 
@@ -534,7 +604,7 @@ async fn run_mutate(
     let idprop = target.identity.clone().ok_or_else(|| {
         ActionError::Misconfigured(format!("type `{}` has no declared identity", target.name.0))
     })?;
-    let pairs = parse_params(&action.parameters, body)?;
+    let pairs = crate::params::resolve_action_row(action, target, body)?;
     let id_value = pairs
         .iter()
         .find(|(c, _)| c == &idprop)

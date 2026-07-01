@@ -88,6 +88,7 @@ fn ontology_payloads_roundtrip() {
         target: TypeName("customer".into()),
         parameters: vec![],
         kind: ActionKind::Insert,
+        assignments: vec![],
     });
     // ParamDef — the action-parameter wire payload; must survive serde independently.
     roundtrip(&ActionDef {
@@ -98,14 +99,17 @@ fn ontology_payloads_roundtrip() {
                 name: "amount".into(),
                 ty: "Long".into(),
                 required: true,
+                binds: None,
             },
             ParamDef {
                 name: "note".into(),
                 ty: "String".into(),
                 required: false,
+                binds: None,
             },
         ],
         kind: ActionKind::Insert,
+        assignments: vec![],
     });
     roundtrip(&VectorIndexDef {
         name: "emb_idx".into(),

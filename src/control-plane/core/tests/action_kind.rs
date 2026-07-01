@@ -12,6 +12,7 @@ fn action_def_carries_kind() {
         target: TypeName("T".into()),
         parameters: vec![],
         kind: ActionKind::Delete,
+        assignments: vec![],
     };
     assert_eq!(a.kind, ActionKind::Delete);
 }

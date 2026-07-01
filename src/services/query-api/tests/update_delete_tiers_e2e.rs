@@ -64,19 +64,23 @@ async fn define_widget(cp: &PgControlPlane) -> TypeName {
                     name: "id".into(),
                     ty: "Long".into(),
                     required: true,
+                    binds: None,
                 },
                 ParamDef {
                     name: "name".into(),
                     ty: "String".into(),
                     required: false,
+                    binds: None,
                 },
                 ParamDef {
                     name: "qty".into(),
                     ty: "Long".into(),
                     required: false,
+                    binds: None,
                 },
             ],
             kind: ActionKind::Insert,
+            assignments: vec![],
         })
         .await
         .unwrap();
@@ -89,14 +93,17 @@ async fn define_widget(cp: &PgControlPlane) -> TypeName {
                     name: "id".into(),
                     ty: "Long".into(),
                     required: true,
+                    binds: None,
                 },
                 ParamDef {
                     name: "qty".into(),
                     ty: "Long".into(),
                     required: true,
+                    binds: None,
                 },
             ],
             kind: ActionKind::Update,
+            assignments: vec![],
         })
         .await
         .unwrap();
@@ -108,8 +115,10 @@ async fn define_widget(cp: &PgControlPlane) -> TypeName {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                binds: None,
             }],
             kind: ActionKind::Delete,
+            assignments: vec![],
         })
         .await
         .unwrap();

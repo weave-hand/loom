@@ -74,14 +74,17 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
                     name: "id".into(),
                     ty: "Long".into(),
                     required: true,
+                    binds: None,
                 },
                 control_plane_core::ParamDef {
                     name: "name".into(),
                     ty: "String".into(),
                     required: false,
+                    binds: None,
                 },
             ],
             kind: ActionKind::Insert,
+            assignments: vec![],
         })
         .await
         .unwrap();
@@ -270,8 +273,10 @@ async fn ungranted_subject_is_forbidden() {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                binds: None,
             }],
             kind: ActionKind::Insert,
+            assignments: vec![],
         })
         .await
         .unwrap();

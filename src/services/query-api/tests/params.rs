@@ -8,6 +8,7 @@ fn p(name: &str, ty: &str, required: bool) -> ParamDef {
         name: name.into(),
         ty: ty.into(),
         required,
+        binds: None,
     }
 }
 fn body(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -109,5 +110,129 @@ fn invalid_iso_date_is_an_error() {
     assert!(matches!(
         parse_params(&params, &body(json!({ "when": "not-a-date" }))),
         Err(ParamError::BadValue(_, _))
+    ));
+}
+
+// --- resolve_action_row: param->property mapping + constant assignments (slice 1) ---
+
+use control_plane_core::{
+    ActionDef, ActionKind, ActionName, ConstAssignment, ObjectType, PropertyDef, TableRef, TypeName,
+};
+use query_api::params::resolve_action_row;
+
+fn gadget() -> ObjectType {
+    let prop = |name: &str, ty: &str, required: bool| PropertyDef {
+        name: name.into(),
+        ty: ty.into(),
+        required,
+        constraints: control_plane_core::PropertyConstraints::default(),
+    };
+    ObjectType {
+        name: TypeName("Gadget".into()),
+        properties: vec![
+            prop("id", "Long", true),
+            prop("name", "String", false),
+            prop("status", "String", false),
+        ],
+        derived: vec![],
+        table: TableRef {
+            schema: "main".into(),
+            name: "gadget".into(),
+        },
+        identity: None,
+    }
+}
+
+fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
+    ParamDef {
+        name: name.into(),
+        ty: ty.into(),
+        required,
+        binds: binds.map(str::to_string),
+    }
+}
+
+fn insert(params: Vec<ParamDef>, assignments: Vec<ConstAssignment>) -> ActionDef {
+    ActionDef {
+        name: ActionName("a".into()),
+        target: TypeName("Gadget".into()),
+        parameters: params,
+        kind: ActionKind::Insert,
+        assignments,
+    }
+}
+
+#[test]
+fn resolve_maps_binds_to_property() {
+    let action = insert(
+        vec![
+            pb("id", "Long", true, None),
+            pb("displayName", "String", false, Some("name")),
+        ],
+        vec![],
+    );
+    let pairs = resolve_action_row(
+        &action,
+        &gadget(),
+        &body(json!({ "id": "7", "displayName": "Widget A" })),
+    )
+    .unwrap();
+    // keyed by PROPERTY, not param name:
+    assert!(
+        pairs
+            .iter()
+            .any(|(c, v)| c == "name" && *v == SqlValue::Text("Widget A".into()))
+    );
+    assert!(pairs.iter().all(|(c, _)| c != "displayName"));
+}
+
+#[test]
+fn resolve_appends_constants() {
+    let action = insert(
+        vec![pb("id", "Long", true, None)],
+        vec![ConstAssignment {
+            property: "status".into(),
+            value: json!("active"),
+        }],
+    );
+    let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" }))).unwrap();
+    assert!(
+        pairs
+            .iter()
+            .any(|(c, v)| c == "status" && *v == SqlValue::Text("active".into()))
+    );
+}
+
+#[test]
+fn resolve_back_compat_no_binds_no_constants() {
+    let action = insert(
+        vec![
+            pb("id", "Long", true, None),
+            pb("name", "String", false, None),
+        ],
+        vec![],
+    );
+    let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" }))).unwrap();
+    assert_eq!(
+        pairs
+            .iter()
+            .find(|(c, _)| c == "id")
+            .map(|(_, v)| v.clone()),
+        Some(SqlValue::Int(7))
+    );
+    // omitted optional `name` ⇒ Null pair (matches parse_params behavior).
+    assert!(
+        pairs
+            .iter()
+            .any(|(c, v)| c == "name" && *v == SqlValue::Null)
+    );
+}
+
+#[test]
+fn resolve_rejects_unknown_body_key() {
+    let action = insert(vec![pb("id", "Long", true, None)], vec![]);
+    assert!(matches!(
+        resolve_action_row(&action, &gadget(), &body(json!({ "id": "7", "nope": "x" }))),
+        Err(ParamError::Unknown(_))
     ));
 }

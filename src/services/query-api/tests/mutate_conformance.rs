@@ -44,8 +44,10 @@ fn delete_requires_identity_param_only() {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
+            binds: None,
         }],
         kind: ActionKind::Delete,
+        assignments: vec![],
     };
     assert!(check_conformance(&action, &widget(Some("sku"))).is_ok());
 }
@@ -60,14 +62,17 @@ fn delete_rejects_extra_params() {
                 name: "sku".into(),
                 ty: "String".into(),
                 required: true,
+                binds: None,
             },
             ParamDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: false,
+                binds: None,
             },
         ],
         kind: ActionKind::Delete,
+        assignments: vec![],
     };
     assert!(check_conformance(&action, &widget(Some("sku"))).is_err());
 }
@@ -81,8 +86,10 @@ fn mutate_requires_declared_identity() {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
+            binds: None,
         }],
         kind: ActionKind::Delete,
+        assignments: vec![],
     };
     assert!(check_conformance(&action, &widget(None)).is_err());
 }
@@ -98,14 +105,90 @@ fn update_allows_partial_columns() {
                 name: "sku".into(),
                 ty: "String".into(),
                 required: true,
+                binds: None,
             },
             ParamDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: false,
+                binds: None,
             },
         ],
         kind: ActionKind::Update,
+        assignments: vec![],
     };
     assert!(check_conformance(&action, &widget(Some("sku"))).is_ok());
+}
+
+// --- UPDATE/DELETE param->property mapping (binds + assignments) ---
+
+use control_plane_core::ConstAssignment;
+use query_api::action::ActionError;
+
+#[test]
+fn update_identity_via_binds_conforms() {
+    // Identity `sku` is bound by a required param renamed to `key`; `quantity` renames `qty`.
+    let action = ActionDef {
+        name: ActionName("upd".into()),
+        target: TypeName("Widget".into()),
+        parameters: vec![
+            ParamDef {
+                name: "key".into(),
+                ty: "String".into(),
+                required: true,
+                binds: Some("sku".into()),
+            },
+            ParamDef {
+                name: "quantity".into(),
+                ty: "Long".into(),
+                required: false,
+                binds: Some("qty".into()),
+            },
+        ],
+        kind: ActionKind::Update,
+        assignments: vec![],
+    };
+    check_conformance(&action, &widget(Some("sku"))).expect("update conforms via binds");
+}
+
+#[test]
+fn delete_identity_via_binds_conforms() {
+    // Delete's sole param renames the identity.
+    let action = ActionDef {
+        name: ActionName("del".into()),
+        target: TypeName("Widget".into()),
+        parameters: vec![ParamDef {
+            name: "key".into(),
+            ty: "String".into(),
+            required: true,
+            binds: Some("sku".into()),
+        }],
+        kind: ActionKind::Delete,
+        assignments: vec![],
+    };
+    check_conformance(&action, &widget(Some("sku"))).expect("delete conforms via binds");
+}
+
+#[test]
+fn delete_with_assignment_rejected() {
+    // Delete takes only the identity param; a constant assignment is a misconfiguration.
+    let action = ActionDef {
+        name: ActionName("del".into()),
+        target: TypeName("Widget".into()),
+        parameters: vec![ParamDef {
+            name: "key".into(),
+            ty: "String".into(),
+            required: true,
+            binds: Some("sku".into()),
+        }],
+        kind: ActionKind::Delete,
+        assignments: vec![ConstAssignment {
+            property: "qty".into(),
+            value: serde_json::json!(1),
+        }],
+    };
+    assert!(matches!(
+        check_conformance(&action, &widget(Some("sku"))),
+        Err(ActionError::Misconfigured(_))
+    ));
 }
