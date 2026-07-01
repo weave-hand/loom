@@ -13,6 +13,7 @@ rust_library(
         "//src/services/query-api:query-api",
         "//src/services/runtime:runtime",
         "//src/services/managed-postgres:managed-postgres",
+        "//third-party:sqlx",
         "//third-party:tokio",
     ],
     visibility = ["PUBLIC"],
@@ -45,6 +46,19 @@ loom_fixture_test(
         "//third-party:arrow",
         "//third-party:reqwest",
         "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "composite-error-path",
+    crate = "composite_error_path",
+    srcs = ["tests/composite_error_path.rs"],
+    crate_root = "tests/composite_error_path.rs",
+    deps = [
+        ":standalone",
+        "//src/services/runtime:runtime",
         "//third-party:tempfile",
         "//third-party:tokio",
     ],
