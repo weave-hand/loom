@@ -20,6 +20,37 @@ bundles to browser-loadable JS via wasm-bindgen.
 
 Spec/plan: `docs/superpowers/{specs,plans}/2026-06-30-yew-wasm-ui-experiment*`.
 
+## Component library (`loom_ui_components`)
+
+The design-system primitives live in a **separate wasm `rust_library`**,
+`//src/ui:ui-components` (crate `loom_ui_components`, crate root
+`src/components/mod.rs`, glob'd `src/components/**/*.rs` — new component files need
+no BUCK change). Styling is **`stylist`** (CSS-in-Rust, features `["yew","parser"]`
+— `parser` is required for `&str`→`StyleSource`, e.g. `<Global css={r#"…"#} />`).
+Like `:app`, the crate carries a crate-level `#![allow(clippy::pedantic,
+clippy::restriction)]` because `html!`/`css!` expansion isn't lint-clean.
+
+- **Token layer:** `GlobalStyles` (a `stylist` `<Global>`) injects `:root { --loom-* }`
+  custom properties (dark Foundry palette) + base body/font once at the app root.
+  Every component's `css!` references `var(--loom-*)`, so the theme is a one-file swap.
+- **Pure/testable split:** the token *enums* (`ButtonVariant`, `BadgeTone`, `Status`,
+  `Align`) and `format_count` live in the lint-clean `loom_ui_core` lib (`src/lib.rs`),
+  covered by the `//src/ui:tokens` `rust_test`. Components map those enums → css vars.
+- **Primitives:** `Button`, `Badge`, `StatusDot`, `Input` (Text/Password/Search),
+  `Tabs`, `Panel`, generic `DataTable<R>` (callers `impl TableRow` for their row type),
+  `TopNav`. Components are controlled/stateless; interactive state lives in the caller.
+- **Gallery:** `buck2 build //src/ui:gallery-bundle` then `buck2 run //src/ui:gallery-serve`
+  serves a dev-only "kitchen sink" (`:gallery` binary, `src/gallery.rs` + `gallery.html`)
+  rendering every primitive with its variants. It has **no backend/config.js** and never
+  ships in the prod login bundle.
+- **Testing limit (deliberate):** component *rendering* (`html!`) is **not**
+  `rust_test`-able — buck2's runner has no DOM. It's verified by eye in the gallery; the
+  headless-wasm render harness and full-page browser e2e are deferred
+  (`fut-ui-component-test-fixture`, `fut-ui-browser-test-fixture`). Don't add an inline
+  `#[test]` for a component (the `no-inline-tests` hook fails the build regardless).
+
+Spec/plan: `docs/superpowers/{specs,plans}/2026-07-01-ui-component-library*`.
+
 ## Gotchas (in rough order of how much each bit during the build-out)
 
 - **Cross-compiling Rust needs a wasm *cxx* toolchain, not just a rust one.** The rust
