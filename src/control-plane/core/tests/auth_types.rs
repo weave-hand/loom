@@ -19,3 +19,34 @@ fn new_user_and_credential_construct() {
     assert_eq!(c.subject_id, u.subject_id);
     assert_eq!(c.password_phc, u.password_phc);
 }
+
+#[test]
+fn service_account_types_construct() {
+    use control_plane_core::{NewServiceAccount, ServiceAccount, ServiceToken};
+    use time::OffsetDateTime;
+
+    let na = NewServiceAccount {
+        subject_id: SubjectId("svc".into()),
+        name: "etl".into(),
+    };
+    assert_eq!(na.name, "etl");
+
+    let now = OffsetDateTime::now_utc();
+    let acct = ServiceAccount {
+        subject_id: na.subject_id.clone(),
+        name: na.name.clone(),
+        created_at: now,
+    };
+    assert_eq!(acct.subject_id, na.subject_id);
+
+    let tok = ServiceToken {
+        token_sha256: [7u8; 32],
+        subject_id: na.subject_id.clone(),
+        label: "primary".into(),
+        created_at: now,
+        expires_at: now,
+        revoked_at: None,
+    };
+    assert_eq!(tok.token_sha256, [7u8; 32]);
+    assert!(tok.revoked_at.is_none());
+}

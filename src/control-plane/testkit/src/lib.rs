@@ -19,10 +19,10 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
     CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect,
-    EventType, IndexSpec, Lineage, LineageEvent, LinkBacking, LinkDef, Metric, NewJob, NewUser,
-    ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue,
-    RetryPolicy, RoleId, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
-    VectorIndexDef,
+    EventType, IndexSpec, Lineage, LineageEvent, LinkBacking, LinkDef, Metric, NewJob,
+    NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy,
+    PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
+    SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -1800,6 +1800,140 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     a.revoke_session(&h(1)).await.unwrap();
     assert!(a.resolve_session(&h(1), now).await.unwrap().is_none());
     a.revoke_session(&h(1)).await.unwrap(); // no-op, no error
+}
+
+/// Contract for the service-account + service-token `Auth` ops. `a` must be freshly
+/// empty. Bound on `Acl` too so we can prove `create_service_account` made the
+/// subject a real ACL principal (role assignment succeeds).
+pub async fn service_account_contract<A: Auth + Acl>(a: &A) {
+    let sid = |s: &str| SubjectId(s.to_string());
+    let h = |b: u8| -> [u8; 32] { [b; 32] };
+    let now = OffsetDateTime::now_utc();
+    let future = now + time::Duration::hours(1);
+
+    // --- create_service_account ---
+    a.create_service_account(&NewServiceAccount {
+        subject_id: sid("svc-etl"),
+        name: "nightly-etl".into(),
+    })
+    .await
+    .unwrap();
+
+    // create_service_account ensured the ACL subject: assigning a role succeeds
+    // (it returns NotFound for an unknown subject), proving ACL parity with a user.
+    a.define_role(&RoleId("r".into())).await.unwrap();
+    a.assign_role(&sid("svc-etl"), &RoleId("r".into()))
+        .await
+        .unwrap();
+
+    // duplicate name → Conflict
+    let dup = a
+        .create_service_account(&NewServiceAccount {
+            subject_id: sid("svc-other"),
+            name: "nightly-etl".into(),
+        })
+        .await;
+    assert!(matches!(dup, Err(ControlPlaneError::Conflict(_))));
+
+    // list_service_accounts returns the account metadata (name), never a token.
+    let accounts = a.list_service_accounts(PageReq::unbounded()).await.unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts.items[0].name, "nightly-etl");
+    assert_eq!(accounts.items[0].subject_id, sid("svc-etl"));
+
+    // --- create_service_token / resolve ---
+    a.create_service_token(&sid("svc-etl"), &h(1), "primary", future)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.resolve_service_token(&h(1), now).await.unwrap(),
+        Some(sid("svc-etl")),
+        "a live token resolves to its account"
+    );
+
+    // minting for an unknown account → NotFound
+    assert!(matches!(
+        a.create_service_token(&sid("ghost"), &h(2), "x", future)
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // unknown token hash → None
+    assert!(a.resolve_service_token(&h(9), now).await.unwrap().is_none());
+
+    // expired (expires_at <= now) → None
+    assert!(
+        a.resolve_service_token(&h(1), now + time::Duration::hours(2))
+            .await
+            .unwrap()
+            .is_none(),
+        "an expired token does not resolve"
+    );
+
+    // rotation: a second live token overlaps the first.
+    a.create_service_token(&sid("svc-etl"), &h(3), "rotated", future)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.resolve_service_token(&h(3), now).await.unwrap(),
+        Some(sid("svc-etl"))
+    );
+
+    // list_service_tokens returns BOTH, metadata only (label/expiry), never the raw
+    // token — the type has no plaintext field. Scoped to the account's subject.
+    let tokens = a
+        .list_service_tokens(&sid("svc-etl"), PageReq::unbounded())
+        .await
+        .unwrap();
+    assert_eq!(tokens.len(), 2, "both minted tokens are listed");
+    let labels: HashSet<String> = tokens.items.iter().map(|t| t.label.clone()).collect();
+    assert_eq!(
+        labels,
+        ["primary", "rotated"].iter().map(|s| s.to_string()).collect()
+    );
+    assert!(
+        tokens.items.iter().all(|t| t.revoked_at.is_none()),
+        "neither token is revoked yet"
+    );
+
+    // --- revoke (idempotent; reflected in resolve) ---
+    a.revoke_service_token(&h(1)).await.unwrap();
+    assert!(
+        a.resolve_service_token(&h(1), now).await.unwrap().is_none(),
+        "a revoked token does not resolve"
+    );
+    assert_eq!(
+        a.resolve_service_token(&h(3), now).await.unwrap(),
+        Some(sid("svc-etl")),
+        "revoking one token leaves the other live"
+    );
+    a.revoke_service_token(&h(1)).await.unwrap(); // idempotent no-op
+
+    // the revoked token still lists, now with revoked_at set.
+    let after = a
+        .list_service_tokens(&sid("svc-etl"), PageReq::unbounded())
+        .await
+        .unwrap();
+    let revoked = after
+        .items
+        .iter()
+        .find(|t| t.token_sha256 == h(1))
+        .expect("revoked token still listed");
+    assert!(revoked.revoked_at.is_some(), "revoked_at recorded");
+
+    // tokens are scoped: an account with no tokens lists empty.
+    a.create_service_account(&NewServiceAccount {
+        subject_id: sid("svc-empty"),
+        name: "empty".into(),
+    })
+    .await
+    .unwrap();
+    assert!(
+        a.list_service_tokens(&sid("svc-empty"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Both-adapter contract for type-existence validation on the three loom-owned
