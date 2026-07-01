@@ -154,6 +154,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "governed-flight",
+    crate = "governed_flight",
+    srcs = ["tests/governed_flight.rs"],
+    crate_root = "tests/governed_flight.rs",
+    deps = [
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:futures",
+        "//third-party:iceberg",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tonic",
+    ],
+)
+
+loom_fixture_test(
     name = "flight-ticket-membership",
     crate = "flight_ticket_membership",
     srcs = ["tests/flight_ticket_membership.rs"],
