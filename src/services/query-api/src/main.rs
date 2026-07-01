@@ -17,7 +17,14 @@ const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     service_runtime::init_tracing();
     let cfg = service_runtime::Config::from_env()?;
-    let pool = service_runtime::build_pool(&cfg.db).await?;
+    // Migrate-and-exit mode: apply the control-plane schema and exit (chart hook Job).
+    if service_runtime::migrate_requested() {
+        service_runtime::run_migrations(&cfg.db).await?;
+        return Ok(());
+    }
+    // `.1` is the embedded-PG handle (None in external mode); query-api is always
+    // external, so it is discarded. build_pool_managed honors LOOM_DB_MIGRATE_ON_BOOT.
+    let (pool, _pg) = service_runtime::build_pool_managed(&cfg).await?;
 
     // Compose query-api config as defaults < file < env (see `QueryApiConfig`'s `LayeredConfig`).
     let env = service_runtime::env_map();

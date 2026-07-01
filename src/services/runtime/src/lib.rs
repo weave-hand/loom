@@ -114,6 +114,10 @@ pub struct Config {
     pub gc_retention: Duration,
     /// Present when running an embedded (loom-managed) Postgres cluster.
     pub embedded: Option<EmbeddedSettings>,
+    /// When `true`, `build_pool_managed`'s external branch applies the embedded
+    /// control-plane migrations after connecting. From `LOOM_DB_MIGRATE_ON_BOOT`
+    /// (default `false`). The embedded branch always migrates regardless.
+    pub migrate_on_boot: bool,
 }
 
 impl Config {
@@ -188,6 +192,17 @@ impl Config {
             None
         };
 
+        let migrate_on_boot = match vars.get("LOOM_DB_MIGRATE_ON_BOOT").map(String::as_str) {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(other) => {
+                return Err(invalid(
+                    "LOOM_DB_MIGRATE_ON_BOOT",
+                    format!("expected `true` or `false`, got `{other}`"),
+                ));
+            }
+        };
+
         Ok(Config {
             bind_addr,
             db: DbConfig {
@@ -203,6 +218,7 @@ impl Config {
             lock_timeout,
             gc_retention,
             embedded,
+            migrate_on_boot,
         })
     }
 
@@ -267,7 +283,16 @@ pub async fn build_pool_managed(
     cfg: &Config,
 ) -> Result<(PgPool, Option<managed_postgres::EmbeddedPg>), RuntimeError> {
     match &cfg.embedded {
-        None => Ok((build_pool(&cfg.db).await?, None)),
+        None => {
+            let pool = build_pool(&cfg.db).await?;
+            if cfg.migrate_on_boot {
+                tracing::info!("LOOM_DB_MIGRATE_ON_BOOT=true: applying control-plane migrations");
+                control_plane_postgres::run_embedded_migrations(&pool)
+                    .await
+                    .map_err(RuntimeError::Migrate)?;
+            }
+            Ok((pool, None))
+        }
         Some(e) => {
             let pg = managed_postgres::EmbeddedPg::start(e.cfg.clone())
                 .await
@@ -284,6 +309,48 @@ pub async fn build_pool_managed(
                 .await
                 .map_err(RuntimeError::Migrate)?;
             Ok((pool, Some(pg)))
+        }
+    }
+}
+
+/// `true` when the process was started in migrate-and-exit mode (`LOOM_MIGRATE=apply`).
+/// The service binaries check this before normal startup: they apply the migrations
+/// and exit 0, so a chart hook Job can run any service image as a one-shot migrator.
+pub fn migrate_requested() -> bool {
+    std::env::var("LOOM_MIGRATE").as_deref() == Ok("apply")
+}
+
+/// Connect an external control-plane pool from `db` and apply the embedded
+/// migrations. Used by the migrate-and-exit entrypoint (see [`migrate_requested`]).
+///
+/// The migrate Job can start before a freshly-provisioned Postgres (e.g. the
+/// chart's bundled CloudNativePG on a first `helm install`) is accepting
+/// connections, so the initial connect is retried for up to ~2 minutes before
+/// giving up. Once connected, migration itself is not retried (a real DDL failure
+/// should surface).
+pub async fn run_migrations(db: &DbConfig) -> Result<(), RuntimeError> {
+    let pool = connect_pool_waiting(db).await?;
+    control_plane_postgres::run_embedded_migrations(&pool)
+        .await
+        .map_err(RuntimeError::Migrate)?;
+    Ok(())
+}
+
+/// Build a pool, retrying the initial connection while the database is unreachable.
+/// 60 attempts × 2s ≈ 2 minutes, covering a bundled Postgres still coming up.
+async fn connect_pool_waiting(db: &DbConfig) -> Result<PgPool, RuntimeError> {
+    let mut attempt: u32 = 0;
+    loop {
+        match build_pool(db).await {
+            Ok(pool) => return Ok(pool),
+            Err(e) if attempt < 60 => {
+                attempt = attempt.saturating_add(1);
+                tracing::warn!(
+                    "waiting for database to accept connections (attempt {attempt}): {e}"
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(e) => return Err(e),
         }
     }
 }

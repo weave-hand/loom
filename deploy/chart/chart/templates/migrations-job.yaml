@@ -1,0 +1,64 @@
+{{- if not (has .Values.migrations.mode (list "job" "onBoot" "external")) }}
+{{- fail (printf "migrations.mode must be one of job|onBoot|external, got %q" .Values.migrations.mode) }}
+{{- end }}
+{{- if eq .Values.migrations.mode "job" }}
+# Migrate-and-exit hook Job: runs the ingest image with LOOM_MIGRATE=apply, applies
+# loom's control-plane schema, then exits 0. DDL credentials are isolated to this
+# one-shot pod. Hook phases:
+#   post-install — on a fresh install the (bundled CNPG) Postgres and its secret
+#     are created in the main phase, so the migrate Job must run AFTER them; the
+#     entrypoint retries the connect until Postgres is accepting connections.
+#   pre-upgrade  — on upgrade the database already exists, so migrations run BEFORE
+#     the new Deployment pods roll (clean ordering for additive schema changes).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "loom.fullname" . }}-migrate
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "loom.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "loom.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "loom.image" .Values.ingest.image | quote }}
+          imagePullPolicy: {{ .Values.ingest.image.pullPolicy | default "IfNotPresent" }}
+          workingDir: /tmp
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: LOOM_MIGRATE
+              value: "apply"
+            # Config::from_env parses these even though migrate-and-exit uses only
+            # the DB env. LOOM_DATA_PATH stays local (/tmp) — the migrator never
+            # touches the warehouse, so no PVC / S3 is needed for this Job.
+            - name: LOOM_BIND_ADDR
+              value: "0.0.0.0:{{ .Values.ingest.port }}"
+            - name: LOOM_DATA_PATH
+              value: /tmp
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+            {{- include "loom.dbEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

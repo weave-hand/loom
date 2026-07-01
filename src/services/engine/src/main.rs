@@ -19,7 +19,14 @@ use tonic::transport::Server;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
-    let pool = service_runtime::build_pool(&cfg.db).await?;
+    // Migrate-and-exit mode: apply the control-plane schema and exit (chart hook Job).
+    if service_runtime::migrate_requested() {
+        service_runtime::run_migrations(&cfg.db).await?;
+        return Ok(());
+    }
+    // `.1` is the embedded-PG handle (None in external mode); the engine is always
+    // external, so it is discarded. build_pool_managed honors LOOM_DB_MIGRATE_ON_BOOT.
+    let (pool, _pg) = service_runtime::build_pool_managed(&cfg).await?;
     let cp = service_runtime::control_plane(pool.clone(), cfg.lock_timeout);
 
     let mut props = HashMap::new();

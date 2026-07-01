@@ -6,9 +6,15 @@ Services (ClusterIP, no external ingress by default):
 
 {{ if .Values.postgres.enabled -}}
 Postgres (CloudNativePG): cluster "{{ include "loom.pgClusterName" . }}", app secret "{{ include "loom.pgClusterName" . }}-app".
-  ! Apply loom's schema migrations before the services can serve (see docs/deploy.md).
 {{- else -}}
 Postgres: external, via secret "{{ .Values.postgres.external.existingSecret }}".
+{{- end }}
+{{- if eq .Values.migrations.mode "job" }}
+  Schema migrations run automatically via a post-install/pre-upgrade hook Job.
+{{- else if eq .Values.migrations.mode "onBoot" }}
+  Schema migrations run automatically at pod startup (LOOM_DB_MIGRATE_ON_BOOT).
+{{- else }}
+  ! migrations.mode=external — apply loom's schema migrations yourself (see docs/deploy.md).
 {{- end }}
 
 Networking: default-deny is {{ if .Values.networkPolicy.enabled }}ENABLED{{ else }}DISABLED{{ end }}; ingress is {{ if .Values.gateway.enabled }}exposed via Gateway "{{ .Values.gateway.parentRef.name }}" to {{ .Values.gateway.service }}{{ else }}NOT exposed (no HTTPRoute){{ end }}.

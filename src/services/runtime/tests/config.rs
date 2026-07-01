@@ -129,3 +129,32 @@ fn max_connections_malformed_is_error() {
     assert!(matches!(err, ConfigError::Invalid { ref var, .. }
         if var == "LOOM_DB_MAX_CONNECTIONS"));
 }
+
+#[test]
+fn migrate_on_boot_defaults_false() {
+    assert!(!Config::from_map(&full()).unwrap().migrate_on_boot);
+}
+
+#[test]
+fn migrate_on_boot_true_parses() {
+    let mut vars = full();
+    vars.insert("LOOM_DB_MIGRATE_ON_BOOT".into(), "true".into());
+    assert!(Config::from_map(&vars).unwrap().migrate_on_boot);
+}
+
+#[test]
+fn migrate_on_boot_false_parses() {
+    let mut vars = full();
+    vars.insert("LOOM_DB_MIGRATE_ON_BOOT".into(), "false".into());
+    assert!(!Config::from_map(&vars).unwrap().migrate_on_boot);
+}
+
+#[test]
+fn migrate_on_boot_invalid_rejected() {
+    let mut vars = full();
+    vars.insert("LOOM_DB_MIGRATE_ON_BOOT".into(), "yes".into());
+    assert!(
+        matches!(Config::from_map(&vars), Err(ConfigError::Invalid { ref var, .. })
+        if var == "LOOM_DB_MIGRATE_ON_BOOT")
+    );
+}

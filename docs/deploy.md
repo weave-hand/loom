@@ -67,18 +67,30 @@ buck2 run deploy//chart:chart.push
 - A **StorageClass** for the shared object-store PVC. loom does not choose one
   (`objectStore.storageClassName: ""` uses the cluster default).
 
-### Known limitations (MVP)
+### Object store and schema migrations
 
-- **Schema migrations are not applied by the chart.** CNPG provisions Postgres
-  but loom's migrations (`src/control-plane/postgres/migrations`) must be applied
-  out of band before the services can serve. A migration Job is future work.
-- **Shared local object store.** The services currently use a `LocalFileSystem`
-  object store at `LOOM_DATA_PATH`, backed by one PVC that ingest writes and
-  query-api reads. With the default `ReadWriteOnce` the chart co-schedules
-  query-api onto ingest's node (a default `podAffinity`) so both can mount it;
-  for multi-node spread, supply an RWX `objectStore.storageClassName` and
-  override `queryApi.affinity`. (A real S3/MinIO object store is on the roadmap
-  and will remove this constraint.)
+- **Schema migrations** are applied automatically per `migrations.mode`:
+  `job` (default) runs a hook Job (the ingest image with `LOOM_MIGRATE=apply`),
+  isolating DDL rights to a one-shot pod. On a **fresh install** it runs
+  `post-install` — the bundled CNPG cluster and its secret are created in the main
+  phase, so the migrate Job runs after them and its entrypoint retries the connect
+  (~2 min) until Postgres is accepting connections; `helm install` blocks on the
+  Job, so it returns only once the schema is applied. On an **upgrade** it runs
+  `pre-upgrade` — the database already exists, so migrations land before the new
+  Deployment pods roll (clean ordering for additive changes). `onBoot` sets
+  `LOOM_DB_MIGRATE_ON_BOOT=true` on the service containers so each pod migrates at
+  startup (sqlx's advisory lock serialises concurrent replicas); `external` applies
+  neither, for operators who manage the schema themselves.
+- **Object store — local PVC (default) or S3/MinIO.** By default the services use a
+  `LocalFileSystem` warehouse at `LOOM_DATA_PATH`, backed by one PVC that ingest
+  writes and query-api reads; with the default `ReadWriteOnce` the chart
+  co-schedules query-api onto ingest's node (a default `podAffinity`) so both can
+  mount it. For multi-node spread either supply an RWX `objectStore.storageClassName`
+  and override `queryApi.affinity`, or set `objectStore.s3.enabled=true` to point
+  the warehouse at S3/MinIO — that drops the PVC and the co-scheduling affinity, sets
+  the S3 config env on all three containers, and opens a NetworkPolicy egress to the
+  endpoint (`objectStore.s3.port`). Credentials come from a referenced secret
+  (`objectStore.s3.credentialsSecret`).
 
 ### Security posture (defaults)
 
