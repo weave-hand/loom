@@ -25,6 +25,7 @@ use control_plane_postgres::iceberg_landing::{land, overwrite_parquet_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
+use control_plane_postgres::vector_index::{VectorIndexRow, insert_vector_index};
 use iceberg::io::LocalFsStorageFactory;
 use iceberg::{Catalog as _, CatalogBuilder, NamespaceIdent, TableIdent};
 use time::OffsetDateTime;
@@ -160,6 +161,15 @@ async fn mirror_row_counts(pool: &sqlx::PgPool, tid: i64) -> (i64, i64, i64) {
             .await
             .expect("d count");
     (t, c, d)
+}
+
+/// Count of `iceberg_mirror.inline_trigger` rows for a specific `table_id`.
+async fn inline_trigger_count(pool: &sqlx::PgPool, tid: i64) -> i64 {
+    sqlx::query_scalar("select count(*) from iceberg_mirror.inline_trigger where table_id = $1")
+        .bind(tid)
+        .fetch_one(pool)
+        .await
+        .expect("inline_trigger count")
 }
 
 /// True if the physical `iceberg_mirror.inline_<tid>` table still exists.
@@ -499,13 +509,16 @@ async fn gc_reclaims_a_dropped_table() {
     .await
     .expect("land");
     let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
+    // Some(threshold) (not None) so bump_inline_trigger actually runs and creates the
+    // inline_trigger row this test now asserts on; the huge threshold keeps it far from
+    // tripping so no flush job is enqueued (same pattern as inline_flush_trigger.rs).
     inline_append(
         &pool,
         &t,
         &columns(),
         &batch(3),
         lineage(run, "wh", "gone"),
-        None,
+        Some(1 << 40),
     )
     .await
     .expect("inline_append");
@@ -513,6 +526,11 @@ async fn gc_reclaims_a_dropped_table() {
     assert!(
         inline_table_exists(&pool, tid).await,
         "inline table exists before drop"
+    );
+    assert_eq!(
+        inline_trigger_count(&pool, tid).await,
+        1,
+        "inline_append created a trigger row"
     );
 
     let ident = TableIdent::new(NamespaceIdent::new("wh".into()), "gone".into());
@@ -533,6 +551,11 @@ async fn gc_reclaims_a_dropped_table() {
         mirror_row_counts(&pool, tid).await,
         (0, 0, 0),
         "table/column/data_file mirror rows removed"
+    );
+    assert_eq!(
+        inline_trigger_count(&pool, tid).await,
+        0,
+        "inline_trigger orphan reclaimed"
     );
 }
 
@@ -715,4 +738,88 @@ async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
         .await
         .expect("gc2");
     assert_eq!(second, GcSummary::default(), "second gc is a clean no-op");
+}
+
+/// A dropped table that carried a vector index reclaims cleanly: the vector_index rows
+/// (FK children of iceberg_mirror.table) and their Puffin sidecar objects are removed, and
+/// gc_table returns Ok rather than FK-aborting on the surviving vector_index -> table FK.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_reclaims_a_dropped_table_with_vector_index() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "indexed".into(),
+    };
+
+    let s1 = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(4),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "indexed"),
+    )
+    .await
+    .expect("land");
+    let tid = live_tid(&pool, "wh", "indexed").await;
+
+    // A real Puffin sidecar file inside the warehouse, referenced by the binding row.
+    let puffin = wh.path().join("indexed.idx.puffin");
+    std::fs::write(&puffin, b"puffin-bytes").expect("write puffin");
+    let puffin_url = format!("file://{}", puffin.display());
+    let mut conn = pool.acquire().await.expect("conn");
+    insert_vector_index(
+        &mut conn,
+        &VectorIndexRow {
+            table_id: tid,
+            column: "id".into(),
+            index_name: "idx".into(),
+            covered_snapshot: s1.0,
+            metric: "l2".into(),
+            index_kind: "flat".into(),
+            dim: 4,
+            row_count: 4,
+            puffin_path: puffin_url,
+        },
+    )
+    .await
+    .expect("insert vector_index");
+    drop(conn);
+    assert!(puffin.exists(), "puffin sidecar on disk before gc");
+
+    let ident = TableIdent::new(NamespaceIdent::new("wh".into()), "indexed".into());
+    catalog.drop_table(&ident).await.expect("drop");
+    age_all_snapshots(&pool).await;
+
+    // The crux: before the fix this Err'd on the vector_index -> table FK and aborted.
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc must not FK-abort");
+
+    let vi: i64 =
+        sqlx::query_scalar("select count(*) from iceberg_mirror.vector_index where table_id = $1")
+            .bind(tid)
+            .fetch_one(&pool)
+            .await
+            .expect("vi count");
+    assert_eq!(vi, 0, "vector_index rows reclaimed");
+    assert!(
+        !puffin.exists(),
+        "puffin sidecar object deleted (commit-then-delete)"
+    );
+    assert!(
+        summary.objects_deleted >= 1,
+        "at least the puffin sidecar was deleted (got {summary:?})"
+    );
+    assert_eq!(
+        mirror_row_counts(&pool, tid).await,
+        (0, 0, 0),
+        "table/column/data_file rows removed"
+    );
 }

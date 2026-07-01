@@ -1,11 +1,15 @@
-//! Physical GC of end-capped Iceberg-mirror rows (slice 1).
+//! Physical GC of dead Iceberg-mirror bytes: end-capped rows of a LIVE table, and
+//! every DROPPED incarnation of a `(schema, name)`.
 //!
 //! Every Iceberg retirement is an *end-cap*, not a delete: a row's `end_snapshot`
 //! is set so older time-travel reads still see it, while the bytes (and, for
 //! `data_file` rows, the Parquet object) live on. `gc_table` reclaims the
-//! mirror-driven dead bytes — end-capped `data_file` rows + their Parquet, and
-//! end-capped inline rows — under an age-based retention horizon, without ever
-//! breaking an in-window time-travel read.
+//! mirror-driven dead bytes under an age-based retention horizon `H`, without ever
+//! breaking an in-window time-travel read: end-capped `data_file` rows + their
+//! Parquet and end-capped inline rows for the live table, and — for each dropped
+//! incarnation — its aged-out `data_file` Parquet plus, once its drop snapshot
+//! `D = table.end_snapshot` ages past `H`, its physical `inline_<tid>` table and all
+//! its child mirror rows (`vector_index`, `column`, `table`) and its `inline_trigger`.
 //!
 //! ## Safety invariant
 //! A row is reclaimable iff `end_snapshot IS NOT NULL AND end_snapshot <= H`,
@@ -119,6 +123,9 @@ async fn gc_locked(
     }
     for inc in &dropped {
         paths.extend(reclaimable_paths(pool, inc.table_id, h).await?);
+        if inc.drop_snapshot <= h {
+            paths.extend(vector_index_paths(pool, inc.table_id).await?);
+        }
     }
 
     // 4. One transaction: delete the reclaimable mirror rows.
@@ -136,19 +143,26 @@ async fn gc_locked(
     for inc in &dropped {
         data_file_rows += delete_data_files(&mut tx, inc.table_id, h).await?;
         if inc.drop_snapshot <= h {
+            // Full reclaim: no in-window time-travel read can reach this incarnation.
+            // Delete EVERY child of iceberg_mirror.table before the table row (FK order):
+            //   data_file (above) → vector_index → column → table.
+            // Then the no-FK inline_trigger orphan, and the physical inline table.
             drop_inline_table(&mut tx, inc.table_id).await?;
+            delete_vector_index_rows(&mut tx, inc.table_id).await?;
             delete_column_rows(&mut tx, inc.table_id).await?;
             delete_table_row(&mut tx, inc.table_id).await?;
+            delete_inline_trigger_row(&mut tx, inc.table_id).await?;
             tracing::info!(
                 table_id = inc.table_id,
-                "gc: fully reclaimed dropped incarnation (dropped inline table + metadata rows)"
+                "gc: fully reclaimed dropped incarnation (dropped inline table + child mirror rows)"
             );
         }
     }
     tx.commit().await.map_err(backend)?;
 
-    // 5. Commit-then-delete: reclaim the Parquet objects. A failed delete is logged
-    //    and left as an orphan (never re-raised into a hard error).
+    // 5. Commit-then-delete: reclaim the objects (Parquet data files + Puffin
+    //    vector-index sidecars). A failed delete is logged and left as an orphan
+    //    (never re-raised into a hard error).
     let mut objects_deleted = 0u64;
     for path in &paths {
         match catalog.delete_file(path).await {
@@ -156,7 +170,7 @@ async fn gc_locked(
             Err(e) => tracing::warn!(
                 error = %e,
                 path = %path,
-                "gc: failed to delete Parquet object; leaving as orphan"
+                "gc: failed to delete object; leaving as orphan"
             ),
         }
     }
@@ -234,6 +248,48 @@ async fn delete_end_capped_inline_rows(
     .map_err(backend)?
     .rows_affected();
     Ok(rows)
+}
+
+/// Puffin sidecar object paths of `tid`'s vector-index bindings. Collected before the
+/// rows are deleted so the objects reclaim post-commit (commit-then-delete, same policy
+/// as Parquet data files).
+async fn vector_index_paths(pool: &PgPool, tid: i64) -> Result<Vec<String>> {
+    sqlx::query_scalar!(
+        "select puffin_path from iceberg_mirror.vector_index where table_id = $1",
+        tid,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(backend)
+}
+
+/// Delete every `iceberg_mirror.vector_index` row for `tid`. These rows FK-reference
+/// `iceberg_mirror.table(table_id)` with no `ON DELETE`, so they MUST be deleted before
+/// `delete_table_row` — otherwise the table-row delete FK-violates and aborts the whole
+/// GC transaction.
+async fn delete_vector_index_rows(conn: &mut sqlx::PgConnection, tid: i64) -> Result<()> {
+    sqlx::query!(
+        "delete from iceberg_mirror.vector_index where table_id = $1",
+        tid,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Delete the `iceberg_mirror.inline_trigger` row for `tid` (keyed by the stable
+/// table_id, no FK). Prevents a permanent orphan row once a dropped incarnation is fully
+/// reclaimed. Order-independent.
+async fn delete_inline_trigger_row(conn: &mut sqlx::PgConnection, tid: i64) -> Result<()> {
+    sqlx::query!(
+        "delete from iceberg_mirror.inline_trigger where table_id = $1",
+        tid,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
 }
 
 /// Physically drop the per-incarnation inline table `inline_<tid>` (idempotent).
