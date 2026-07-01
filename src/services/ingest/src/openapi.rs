@@ -41,12 +41,15 @@ pub struct ViolationsBody {
 #[derive(ToSchema)]
 pub struct Violation {
     pub column: String,
-    /// `missing_required` | `type_mismatch` | `unsupported`.
+    /// `missing_required` | `type_mismatch` | `unsupported` | `constraint`.
     pub reason: String,
     /// The model-declared type — present only for `type_mismatch`.
     pub expected: Option<String>,
     /// The inferred Arrow type — present only for `type_mismatch`.
     pub found: Option<String>,
+    /// The failed constraint rule (`range`|`length`|`pattern`|`one_of`) — present only
+    /// for `constraint`.
+    pub rule: Option<String>,
 }
 
 #[derive(OpenApi)]

@@ -13,6 +13,7 @@ fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
         name: name.into(),
         ty: ty.into(),
         required,
+        constraints: control_plane_core::PropertyConstraints::default(),
     }
 }
 

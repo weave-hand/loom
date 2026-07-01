@@ -24,6 +24,7 @@ pub fn model_shape_from_type(ty: &ObjectType) -> ModelShape {
                 name: p.name.clone(),
                 ty: p.ty.clone(),
                 required: p.required || identity == Some(p.name.as_str()),
+                constraints: p.constraints.clone(),
             })
             .collect(),
     }
@@ -65,6 +66,7 @@ pub fn infer_object_type(
                 name: field.name().clone(),
                 ty: ty.to_string(),
                 required: !field.is_nullable(),
+                constraints: control_plane_core::PropertyConstraints::default(),
             }),
             None => violations.push(Violation {
                 column: field.name().clone(),

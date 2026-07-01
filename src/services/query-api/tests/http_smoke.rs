@@ -70,6 +70,7 @@ async fn seeded_control_plane() -> MemoryControlPlane {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![],
         table: TableRef {

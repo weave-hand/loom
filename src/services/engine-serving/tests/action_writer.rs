@@ -102,11 +102,13 @@ async fn e2e_seed_widget_table(cp: &PgControlPlane) {
                     name: "id".into(),
                     ty: "Long".into(),
                     required: true,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 },
                 PropertyDef {
                     name: "name".into(),
                     ty: "String".into(),
                     required: false,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 },
             ],
             derived: vec![],

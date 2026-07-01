@@ -709,7 +709,7 @@ async fn graph_tail_respond(
         (status = 400, description = "Bad params"),
         (status = 403, description = "Write denied by ACL policy", body = WriteDeniedBody),
         (status = 404, description = "Unknown action"),
-        (status = 422, description = "Unsupported action shape"),
+        (status = 422, description = "A value violates a property constraint, or an unsupported action shape", body = crate::openapi::ConstraintViolationsBody),
     ),
     security(("bearer_auth" = [])),
     tag = "actions",
@@ -754,6 +754,19 @@ async fn post_action(
         // vs row_filter). The predicate / policy id / role stay server-side.
         Err(crate::action::ActionError::WriteDenied(reason)) => {
             (StatusCode::FORBIDDEN, Json(reason.to_body())).into_response()
+        }
+        // Per-value constraint violation: a structured 422 (malformed data), distinct from
+        // the 403 ACL denial above. Body: { "violations": [ { "property", "rule" }, .. ] }.
+        Err(crate::action::ActionError::ConstraintViolation(violations)) => {
+            let items: Vec<serde_json::Value> = violations
+                .iter()
+                .map(|v| serde_json::json!({ "property": v.property, "rule": v.rule.as_str() }))
+                .collect();
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "violations": items })),
+            )
+                .into_response()
         }
         // Coarse Write-gate denial (and other unit forbiddens): bodyless 403, unchanged.
         Err(crate::action::ActionError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
