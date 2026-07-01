@@ -567,7 +567,7 @@ pub async fn setup_iceberg(
 /// loom renders a `Long` property as a JSON *string* (not a number), so `id`
 /// is read via `as_str()`.
 pub fn ids(rows: &query_api::handler::ObjectRows) -> Vec<String> {
-    let body = objects_to_json(rows);
+    let body = objects_to_json(rows, None);
     let mut out: Vec<String> = body["objects"]
         .as_array()
         .unwrap()

@@ -12,6 +12,9 @@ use utoipa::{OpenApi, ToSchema};
 pub struct ObjectsResponse {
     /// The projected rows; each is an object-type's properties as a JSON map.
     pub objects: Vec<serde_json::Value>,
+    /// Keyset cursor for the next page, or `null` on the last page (or when the read was
+    /// not paginated — `?limit=`/`?cursor=` absent).
+    pub next: Option<String>,
 }
 
 /// Documentation shape for the `{ "roots": [...], "nodes": [...] }` shortest-path-tree

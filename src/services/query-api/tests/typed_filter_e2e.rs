@@ -119,7 +119,7 @@ async fn typed_filters_match_and_reject() {
         default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
-        let body = objects_to_json(rows);
+        let body = objects_to_json(rows, None);
         let mut v: Vec<String> = body["objects"]
             .as_array()
             .unwrap()
@@ -203,7 +203,7 @@ async fn comparison_set_and_null_operators() {
         default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
-        let body = objects_to_json(rows);
+        let body = objects_to_json(rows, None);
         let mut v: Vec<String> = body["objects"]
             .as_array()
             .unwrap()

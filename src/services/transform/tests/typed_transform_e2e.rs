@@ -346,7 +346,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
         "all three enriched rows are governed-readable"
     );
 
-    let body = objects_to_json(&rows);
+    let body = objects_to_json(&rows, None);
     let mut objs: Vec<serde_json::Value> = body["objects"].as_array().unwrap().clone();
     objs.sort_by_key(|o| o["id"].as_str().unwrap().to_string());
     assert_eq!(

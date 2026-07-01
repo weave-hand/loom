@@ -164,7 +164,7 @@ async fn grant_read(cp: &PgControlPlane, role: &RoleId, type_name: &str) {
 }
 
 fn sorted_objects(rows: &query_api::handler::ObjectRows) -> Vec<serde_json::Value> {
-    let body = objects_to_json(rows);
+    let body = objects_to_json(rows, None);
     let mut objs: Vec<serde_json::Value> = body["objects"].as_array().unwrap().clone();
     objs.sort_by_key(|o| o["id"].as_str().unwrap().to_string());
     objs

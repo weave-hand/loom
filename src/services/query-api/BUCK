@@ -1200,6 +1200,22 @@ loom_fixture_test(
 
 
 loom_fixture_test(
+    name = "object-pagination-e2e",
+    crate = "object_pagination_e2e",
+    srcs = ["tests/object_pagination_e2e.rs"],
+    crate_root = "tests/object_pagination_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:tokio",
+    ],
+)
+
+
+loom_fixture_test(
     name = "auth-e2e",
     crate = "auth_e2e",
     srcs = ["tests/auth_e2e.rs"],

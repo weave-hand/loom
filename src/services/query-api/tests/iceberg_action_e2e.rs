@@ -127,7 +127,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
         .await
         .expect("action runs");
     assert_eq!(
-        objects_to_json(&created)["objects"][0],
+        objects_to_json(&created, None)["objects"][0],
         json!({ "id": "42", "name": "gadget" })
     );
 
@@ -152,7 +152,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     .await
     .unwrap();
     assert_eq!(
-        objects_to_json(&rows)["objects"][0],
+        objects_to_json(&rows, None)["objects"][0],
         json!({ "id": "42", "name": "gadget" }),
         "round-trips through the Iceberg serving engine"
     );
