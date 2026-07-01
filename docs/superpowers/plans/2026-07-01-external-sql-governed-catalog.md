@@ -6,7 +6,7 @@
 
 **Architecture:** A `TableProvider` decorator (`GovernedTableProvider`) wraps the existing per-table serving provider and, in `scan`, applies governance as a physical plan: scan the inner provider over its **full** schema, wrap it in a `FilterExec` that unconditionally AND-s the policy row-filters (so a filter may reference a denied column), then a `ProjectionExec` that drops denied columns and replaces masked columns with the `'***'` Utf8 literal. Its `schema()` presents the governed schema (denied absent, masked → Utf8) so a client naming a denied column fails at planning. A new `execute_governed_sql_stream` registers one governed provider per live table from a caller-supplied `GovernedCatalog` and runs the client's SQL. The engine's Flight `do_get` gains a sibling JSON `GovernedStatementQuery` ticket dispatched to it. Existing ungoverned paths are untouched (additive).
 
-**Tech Stack:** Rust 2024, DataFusion (arrow 58), Arrow Flight (tonic), `control_plane_core` ACL types (`RowFilter`/`CompareOp`/`ScalarValue`), `loom_fixture_test` (hermetic Postgres) tests, buck2.
+**Tech Stack:** Rust 2024, **DataFusion 54.0.0 (paired with arrow 58.3.0)** — when searching crate docs/signatures, use the `datafusion` 54 API, `arrow` 58 API — Arrow Flight (tonic), `control_plane_core` ACL types (`RowFilter`/`CompareOp`/`ScalarValue`), `loom_fixture_test` (hermetic Postgres) tests, buck2.
 
 ## Global Constraints
 
@@ -937,10 +937,11 @@ impl TableProvider for GovernedTableProvider {
 
 Then add `execute_governed_sql_stream` (see the Design block above), importing `SessionContext`, `TableReference`, `MemorySchemaProvider`.
 
-Notes for the implementer:
-- Verify exact DataFusion 58 module paths against `serving.rs` (which already imports `create_physical_expr`, `ExecutionProps`, `SessionContext`, `Session`, `TableProvider`, `TableType`, `TableProviderFilterPushDown`, `Column`, `DFSchema`, `TableReference`, `MemorySchemaProvider`, `SchemaRef`, `ExecutionPlan`, `SendableRecordBatchStream`). Reuse those exact paths. `Literal`/`FilterExec`/`ProjectionExec`/`GlobalLimitExec` are the new ones — confirm via `grep -rn "ProjectionExec\|FilterExec\|GlobalLimitExec\|expressions::Literal" third-party` or the datafusion prelude; if a path differs, fix to the crate's actual export.
-- `Literal::new` may require a field name argument in some versions; if the 2-arg form is needed use the version that matches. Alternatively build the mask literal as `datafusion::physical_expr::expressions::lit(DfScalar::Utf8(Some(...)))` if a helper exists. The test will surface the correct API.
-- `ProjectionExec::try_new(Vec<(Arc<dyn PhysicalExpr>, String)>, input)` is the DataFusion 58 signature. Confirm.
+Notes for the implementer (**this is the top implementation risk** — no first-party code constructs `FilterExec`/`ProjectionExec`/`GlobalLimitExec`/`expressions::Literal`/`expressions::Column` today, only `create_physical_expr` at `serving.rs:27,338`; resolve every signature below against the **datafusion 54** compiler under TDD):
+- Reuse the exact module paths already imported in `serving.rs` for the shared symbols (`create_physical_expr`, `ExecutionProps`, `SessionContext`, `Session`, `TableProvider`, `TableType`, `TableProviderFilterPushDown`, `Column`, `DFSchema`, `TableReference`, `MemorySchemaProvider`, `SchemaRef`, `ExecutionPlan`, `SendableRecordBatchStream`). The delegate/inner-scan pattern `self.inner.scan(state, None, &[], None)` is confirmed idiomatic — `provider.rs:286` does exactly this.
+- `Literal`/`FilterExec`/`ProjectionExec`/`GlobalLimitExec` are new to this crate — confirm via `grep -rn "ProjectionExec\|FilterExec\|GlobalLimitExec\|expressions::" third-party/BUCK` and the datafusion 54 docs; if a path differs, fix to the crate's actual export.
+- **`Literal::new` arity is uncertain.** Prefer the helper `datafusion::physical_expr::expressions::lit(DfScalar::Utf8(Some(MASK_MARKER.to_string())))` (returns `Arc<dyn PhysicalExpr>`); fall back to `Arc::new(Literal::new(scalar))` (or the field-name arity if 54 requires it) only if the helper is absent. The test surfaces the correct API.
+- `ProjectionExec::try_new(Vec<(Arc<dyn PhysicalExpr>, String)>, input)` is the expected signature — confirm against datafusion 54.
 
 - [ ] **Step 3: Run the e2e tests to green (iterate on DataFusion APIs under TDD)**
 
