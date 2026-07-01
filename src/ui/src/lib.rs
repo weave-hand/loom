@@ -56,18 +56,6 @@ pub enum ButtonVariant {
     Ghost,
 }
 
-impl ButtonVariant {
-    /// BEM-style modifier suffix, e.g. `loom-btn--primary`.
-    #[must_use]
-    pub fn modifier(self) -> &'static str {
-        match self {
-            Self::Primary => "primary",
-            Self::Secondary => "secondary",
-            Self::Ghost => "ghost",
-        }
-    }
-}
-
 /// Semantic colour of a tag [`Badge`](loom_ui_components::Badge).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BadgeTone {
@@ -120,17 +108,6 @@ pub enum Align {
     End,
 }
 
-impl Align {
-    /// The flexbox `justify-content` value for this alignment.
-    #[must_use]
-    pub fn css_value(self) -> &'static str {
-        match self {
-            Self::Start => "flex-start",
-            Self::End => "flex-end",
-        }
-    }
-}
-
 /// Format a row count the way the catalog table shows it: `2_410_000` → `"2.41M"`,
 /// `18_200` → `"18.2K"`, `880_000` → `"880K"`. Values below 1000 are rendered as-is.
 /// Scaled values show up to 3 significant figures with trailing zeros trimmed.
@@ -164,6 +141,8 @@ pub fn format_count(n: u64) -> String {
         _ => 100.0,
     };
     let rounded = (scaled * multiplier).round() / multiplier;
+    // No M->B tier: display-only formatting; loom defines no billions token/screen,
+    // so values >= ~1e9 render as "NNNNM".
     if rounded >= 1000.0 && suffix == "K" {
         scaled /= 1000.0;
         suffix = "M";

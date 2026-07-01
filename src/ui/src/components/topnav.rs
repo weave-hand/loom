@@ -11,7 +11,7 @@ pub struct NavItem {
 pub struct TopNavProps {
     pub items: Vec<NavItem>,
     #[prop_or_default]
-    pub on_select: Callback<AttrValue>,
+    pub onselect: Callback<AttrValue>,
     #[prop_or_default]
     pub search: Html,
     #[prop_or_default]
@@ -45,9 +45,9 @@ pub fn top_nav(props: &TopNavProps) -> Html {
             <span class="brand">{ "loom" }</span>
             <div class="nav">
                 { for props.items.iter().map(|it| {
-                    let on_select = props.on_select.clone();
+                    let onselect = props.onselect.clone();
                     let label = it.label.clone();
-                    let onclick = Callback::from(move |_| on_select.emit(label.clone()));
+                    let onclick = Callback::from(move |_| onselect.emit(label.clone()));
                     html! {
                         <button class={classes!(it.active.then_some("active"))} {onclick}>
                             { &it.label }

@@ -1,4 +1,4 @@
-use loom_ui_core::{Align, BadgeTone, ButtonVariant, Status, format_count};
+use loom_ui_core::{BadgeTone, Status, format_count};
 
 #[test]
 fn format_count_scales_and_rounds() {
@@ -24,13 +24,6 @@ fn status_maps_to_token_var() {
 }
 
 #[test]
-fn button_variant_modifier() {
-    assert_eq!(ButtonVariant::Primary.modifier(), "primary");
-    assert_eq!(ButtonVariant::Secondary.modifier(), "secondary");
-    assert_eq!(ButtonVariant::Ghost.modifier(), "ghost");
-}
-
-#[test]
 fn badge_tone_maps_to_token_var() {
     assert_eq!(BadgeTone::Neutral.css_var(), "--loom-text-mut");
     assert_eq!(BadgeTone::Info.css_var(), "--loom-accent");
@@ -38,10 +31,4 @@ fn badge_tone_maps_to_token_var() {
     assert_eq!(BadgeTone::Success.css_var(), "--loom-ok");
     assert_eq!(BadgeTone::Warning.css_var(), "--loom-warn");
     assert_eq!(BadgeTone::Danger.css_var(), "--loom-danger");
-}
-
-#[test]
-fn align_maps_to_css_value() {
-    assert_eq!(Align::Start.css_value(), "flex-start");
-    assert_eq!(Align::End.css_value(), "flex-end");
 }
