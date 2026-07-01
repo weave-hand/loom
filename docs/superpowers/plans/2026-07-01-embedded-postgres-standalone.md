@@ -33,7 +33,7 @@
 | `src/services/ingest/src/serve.rs` (create) + `lib.rs` (modify) | `ingest::serve(&Config, PgPool, AuthState, TcpListener, shutdown)` seam. |
 | `src/services/ingest/src/main.rs` (modify) | Thin: shared setup, bind TCP, call `ingest::serve`. |
 | `src/services/ingest/BUCK` (modify) | Add `tokio` to the `:ingest` library deps. |
-| `src/services/query-api/src/serve.rs` (create) + `lib.rs` (modify) | `query_api::serve(&Config, PgPool, AuthState, engine_socket, TcpListener, shutdown)` seam. |
+| `src/services/query-api/src/serve.rs` (create) + `lib.rs` (modify) | `query_api::serve(&Config, Arc<PgControlPlane>, AuthState, engine_socket, TcpListener, shutdown)` seam (no `PgPool` — reads/writes go over the engine wire). |
 | `src/services/query-api/src/main.rs` (modify) | Thin: shared setup, bind TCP, call `query_api::serve`. |
 | `src/services/query-api/BUCK` (modify) | Add `tokio-stream` to the `:query-api` library deps. |
 | `src/services/standalone/src/lib.rs` (create) | `StandaloneAddrs` + `run(Config, StandaloneAddrs, shutdown, ready)` composite. |
@@ -489,7 +489,7 @@ git commit -m "refactor(ingest): extract ingest::serve seam over a pre-bound lis
 
 **Interfaces:**
 - Consumes: `service_runtime::{Config, AuthState, AdminState, protect, login_routes, session_routes, admin_routes, service_account_routes, with_openapi_provider, load, env_map, serve_with_shutdown}`; `query_api::{live_openapi, http::{AppState, router}, engine_client::EngineServingClient, engine_action_client::EngineActionClient, wire_control_plane::WireControlPlane, serving::{ServingEngine, ActionEngine}, flight_export::FlightExportService, web_static, config::QueryApiConfig}`; `engine_wire::{client::GrpcQueueClient, flight::FlightSqlClient}`.
-- Produces: `pub async fn query_api::serve(cfg: &service_runtime::Config, pool: sqlx::PgPool, pg: std::sync::Arc<control_plane_postgres::PgControlPlane>, auth: service_runtime::AuthState, engine_socket: String, listener: tokio::net::TcpListener, shutdown: impl std::future::Future<Output = ()> + Send + 'static) -> Result<(), Box<dyn std::error::Error + Send + Sync>>`. Builds the engine clients internally (engine must already be serving on `engine_socket`).
+- Produces: `pub async fn query_api::serve(cfg: &service_runtime::Config, pg: std::sync::Arc<control_plane_postgres::PgControlPlane>, auth: service_runtime::AuthState, engine_socket: String, listener: tokio::net::TcpListener, shutdown: impl std::future::Future<Output = ()> + Send + 'static) -> Result<(), Box<dyn std::error::Error + Send + Sync>>`. Builds the engine clients internally (engine must already be serving on `engine_socket`). **No `pool` param** — query-api's reads/writes all go over the engine wire; it needs only the concrete `pg` control plane (for the wire-CP wrapper, admin/auth, and dynamic OpenAPI `list_types`).
 
 > **Note:** pass the concrete `Arc<PgControlPlane>` (`pg`) because the dynamic OpenAPI provider and admin/auth wiring need `list_types` and the concrete ACL/Auth types the wire client does not implement — exactly as `main.rs` does today.
 
@@ -520,14 +520,12 @@ const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
 
 pub async fn serve(
     cfg: &service_runtime::Config,
-    pool: sqlx::PgPool,
     pg: Arc<control_plane_postgres::PgControlPlane>,
     auth: service_runtime::AuthState,
     engine_socket: String,
     listener: tokio::net::TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), BoxErr> {
-    let _ = &pool; // pool retained for parity with ingest's signature / future use.
     let env = service_runtime::env_map();
     let app_cfg: crate::config::QueryApiConfig = service_runtime::load(&env)?;
 
@@ -643,9 +641,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         service_runtime::run_migrations(&cfg.db).await?;
         return Ok(());
     }
+    // query-api reads/writes over the engine wire; it needs the concrete control
+    // plane but not the pool directly, so `pool` is consumed building `pg`.
     let (pool, _pg) = service_runtime::build_pool_managed(&cfg).await?;
 
-    let pg = Arc::new(service_runtime::control_plane(pool.clone(), cfg.lock_timeout));
+    let pg = Arc::new(service_runtime::control_plane(pool, cfg.lock_timeout));
     let auth = service_runtime::AuthState {
         auth: pg.clone(),
         session_ttl: service_runtime::session_ttl_from_env(),
@@ -664,7 +664,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
 
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
-    query_api::serve(&cfg, pool, pg, auth, engine_socket, listener, std::future::pending()).await
+    query_api::serve(&cfg, pg, auth, engine_socket, listener, std::future::pending()).await
 }
 ```
 
@@ -708,20 +708,30 @@ This is the feature's real proof. It boots the composite against the fixture-pro
 
 ```rust
 //! End-to-end: the standalone composite boots embedded PG, serves engine+ingest+
-//! query-api together, round-trips a dataset, and shuts down cleanly on signal.
+//! query-api together, round-trips a dataset (ingest POST -> query-api GET over the
+//! engine UDS), and shuts down cleanly on signal.
+use std::sync::Arc;
 use std::time::Duration;
 
+use arrow::array::{Int64Array, RecordBatch, StringArray};
+use arrow::datatypes::{DataType, Field, Schema};
+use e2e_support::{define_widget, grant_read, session_token, subject_with_role};
 use standalone::StandaloneAddrs;
 
-/// Build an embedded-mode Config pointed at the fixture PG binaries + temp dirs.
-/// POSTGRES_BIN_DIR / POSTGRES_LD_LIBRARY_PATH are injected by `loom_fixture_test`.
-fn embedded_config(data_path: &std::path::Path, socket_dir: &std::path::Path) -> service_runtime::Config {
+/// Build an embedded-mode Config pointed at the fixture PG binaries + a temp data
+/// dir. `POSTGRES_BIN_DIR` / `POSTGRES_LD_LIBRARY_PATH` are injected by the
+/// `loom_fixture_test` macro. `Config::from_map` derives the embedded data dir as
+/// `<LOOM_DATA_PATH>/pgdata` and the socket dir as `<LOOM_DATA_PATH>/pgrun`
+/// (verified in `src/services/runtime/src/lib.rs:193-194`) — so `LOOM_DB_HOST`
+/// MUST be `<LOOM_DATA_PATH>/pgrun` (there are no `LOOM_PG_DATA_DIR`/
+/// `LOOM_PG_SOCKET_DIR` env vars; do not invent them).
+fn embedded_config(data_path: &std::path::Path) -> service_runtime::Config {
     use std::collections::HashMap;
     let bin_dir = std::env::var("POSTGRES_BIN_DIR").unwrap();
     let ld = std::env::var("POSTGRES_LD_LIBRARY_PATH").unwrap();
     let mut v: HashMap<String, String> = HashMap::new();
-    v.insert("LOOM_BIND_ADDR".into(), "127.0.0.1:0".into()); // unused by composite
-    v.insert("LOOM_DB_HOST".into(), socket_dir.display().to_string());
+    v.insert("LOOM_BIND_ADDR".into(), "127.0.0.1:0".into()); // unused by the composite
+    v.insert("LOOM_DB_HOST".into(), data_path.join("pgrun").display().to_string());
     v.insert("LOOM_DB_PORT".into(), "5432".into());
     v.insert("LOOM_DB_USER".into(), "postgres".into());
     v.insert("LOOM_DB_PASSWORD".into(), "postgres".into());
@@ -731,9 +741,6 @@ fn embedded_config(data_path: &std::path::Path, socket_dir: &std::path::Path) ->
     v.insert("LOOM_PG_MODE".into(), "embedded".into());
     v.insert("LOOM_PG_BIN_DIR".into(), bin_dir);
     v.insert("LOOM_PG_LD_LIBRARY_PATH".into(), ld);
-    // Point the embedded socket + data dir under the tempdir (see EmbeddedPgConfig).
-    v.insert("LOOM_PG_DATA_DIR".into(), data_path.join("pgdata").display().to_string());
-    v.insert("LOOM_PG_SOCKET_DIR".into(), socket_dir.display().to_string());
     service_runtime::Config::from_map(&v).expect("config")
 }
 
@@ -742,19 +749,47 @@ async fn free_port() -> u16 {
     l.local_addr().unwrap().port()
 }
 
+/// Arrow IPC stream for two `main.widget` rows (id, name, qty). Mirrors the
+/// `ipc_bytes(sample_batch())` pattern in `src/services/ingest/tests/http_model.rs`.
+fn widget_ipc() -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("qty", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2])),
+            Arc::new(StringArray::from(vec!["a", "b"])),
+            Arc::new(Int64Array::from(vec![10_i64, 20])),
+        ],
+    )
+    .unwrap();
+    let mut buf = Vec::new();
+    {
+        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &schema).unwrap();
+        w.write(&batch).unwrap();
+        w.finish().unwrap();
+    }
+    buf
+}
+
 #[tokio::test]
-async fn composite_serves_all_three_and_shuts_down() {
+async fn composite_round_trips_and_shuts_down_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("warehouse")).unwrap();
-    std::fs::create_dir_all(tmp.path().join("sock")).unwrap();
-    let socket_dir = tmp.path().join("sock");
 
-    let cfg = embedded_config(tmp.path(), &socket_dir);
+    // `cfg` moves into the composite; clone it so the test can open its own direct
+    // control-plane pool to the same embedded PG for out-of-band ontology + auth seeding.
+    let cfg = embedded_config(tmp.path());
+    let cfg_direct = cfg.clone();
+
     let engine_socket = tmp.path().join("engine.sock").display().to_string();
     let addrs = StandaloneAddrs {
         query_api: format!("127.0.0.1:{}", free_port().await).parse().unwrap(),
         ingest: format!("127.0.0.1:{}", free_port().await).parse().unwrap(),
-        engine_socket: engine_socket.clone(),
+        engine_socket,
     };
     let qapi = addrs.query_api;
     let ingest = addrs.ingest;
@@ -765,38 +800,68 @@ async fn composite_serves_all_three_and_shuts_down() {
         standalone::run(cfg, addrs, async move { let _ = shutdown_rx.await; }, ready_tx).await
     });
 
-    // Composite is up once every listener is bound.
-    tokio::time::timeout(Duration::from_secs(60), ready_rx)
+    // Composite is up once every listener is bound + the engine is serving.
+    tokio::time::timeout(Duration::from_secs(90), ready_rx)
         .await
-        .expect("composite did not become ready in 60s")
+        .expect("composite did not become ready in 90s")
         .expect("ready channel dropped");
 
-    // The two HTTP services accept connections.
-    let client = reqwest::Client::new();
-    let health_qapi = client.get(format!("http://{qapi}/openapi.json")).send().await;
-    assert!(health_qapi.is_ok(), "query-api not serving: {health_qapi:?}");
-    // Ingest requires auth; an unauthenticated request should reach the router
-    // (401/403/400), proving the listener is live — not a connection error.
-    let ingest_resp = client
-        .post(format!("http://{ingest}/datasets/public/widgets"))
-        .body(Vec::new())
-        .send()
-        .await;
-    assert!(ingest_resp.is_ok(), "ingest not serving: {ingest_resp:?}");
+    // Direct control-plane pool to the same embedded PG for seeding auth + ontology.
+    let pool = service_runtime::build_pool(&cfg_direct.db).await.expect("direct pool");
+    let cp = service_runtime::control_plane(pool, cfg_direct.lock_timeout);
+    let (_subj, role) = subject_with_role(&cp, "reader").await;
+    let token = session_token(&cp, "reader").await;
 
-    // Graceful shutdown: signal, then the composite returns Ok and stops PG cleanly.
+    let client = reqwest::Client::new();
+
+    // (1) Ingest POST lands `main.widget` over HTTP — proves the ingest composition
+    //     (HTTP -> materializer -> Iceberg write -> snapshot commit on the shared PG).
+    let land = client
+        .post(format!("http://{ingest}/datasets/main/widget"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/vnd.apache.arrow.stream")
+        .body(widget_ipc())
+        .send()
+        .await
+        .expect("ingest POST");
+    assert!(land.status().is_success(), "ingest landing failed: {}", land.status());
+
+    // (2) Define the Widget ontology type over the landed `main.widget` table + grant read.
+    define_widget(&cp).await;
+    grant_read(&cp, &role, "Widget").await;
+
+    // (3) query-api GET /objects/Widget — proves the query-api -> engine UDS serving
+    //     wiring, reading back the rows ingest just landed through the one shared catalog.
+    let read = client
+        .get(format!("http://{qapi}/objects/Widget"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("query-api GET");
+    assert_eq!(read.status(), reqwest::StatusCode::OK, "read status");
+    let body: serde_json::Value = read.json().await.expect("json body");
+    let objects = body.get("objects").and_then(|o| o.as_array()).expect("objects array");
+    assert_eq!(objects.len(), 2, "expected 2 landed widgets, got {body}");
+
+    // (4) Graceful shutdown: signal -> composite returns Ok, embedded PG stopped cleanly.
     shutdown_tx.send(()).unwrap();
     let res = tokio::time::timeout(Duration::from_secs(30), handle)
         .await
         .expect("composite did not shut down within 30s");
     assert!(res.unwrap().is_ok());
 
-    // Data dir survives a clean stop (no re-initdb on a second boot): PG_VERSION present.
-    assert!(tmp.path().join("pgdata").join("PG_VERSION").exists());
+    // Data dir survives (no re-initdb next boot) and PG stopped cleanly (no orphan postmaster).
+    assert!(tmp.path().join("pgdata").join("PG_VERSION").exists(), "data dir gone");
+    assert!(
+        !tmp.path().join("pgdata").join("postmaster.pid").exists(),
+        "postmaster.pid left behind — PG not stopped cleanly"
+    );
 }
 ```
 
-> **Implementer note on config env keys:** verify the exact env keys `Config::from_map` reads for the embedded data dir / socket dir (`src/services/runtime/src/lib.rs:132-232` builds `EmbeddedSettings.cfg`). If the current parser derives `data_dir`/`socket_dir` from `LOOM_DATA_PATH` rather than dedicated `LOOM_PG_DATA_DIR`/`LOOM_PG_SOCKET_DIR` vars, drop those two inserts and rely on `LOOM_DATA_PATH`. Do not invent env vars — match the parser.
+> **Implementer note on the ingest token:** the `reader` session token authenticates the ingest `POST /datasets/main/widget` (raw dataset landing is authN-gated, not type-ACL-gated). If landing returns 403 in practice, grant the `reader` role the required action (mirror how `src/services/ingest/tests/http_model.rs` authorizes its landing POSTs) rather than weakening the assertion. The `GET /objects/Widget` read is type-ACL-gated, hence the explicit `grant_read(&cp, &role, "Widget")`.
+>
+> **Implementer note on the type↔table mapping:** `e2e_support::define_widget` maps `Widget` → `TableRef { schema: "main", name: "widget" }`, so the ingest POST targets `/datasets/main/widget` to land into that exact table. If `define_widget`'s table ref differs in the current tree, align the POST path to it.
 
 - [ ] **Step 2: Create `src/services/standalone/Cargo.toml`**
 
@@ -818,7 +883,6 @@ sqlx = { workspace = true }
 
 ```python
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
-load("//src:loom_test.bzl", "rust_test")
 
 rust_library(
     name = "standalone",
@@ -847,15 +911,18 @@ loom_fixture_test(
     crate_root = "tests/composite_e2e.rs",
     deps = [
         ":standalone",
+        "//src/services/query-api:e2e-support",
         "//src/services/runtime:runtime",
+        "//third-party:arrow",
         "//third-party:reqwest",
+        "//third-party:serde_json",
         "//third-party:tempfile",
         "//third-party:tokio",
     ],
 )
 ```
 
-> Confirm `//src:loom_test.bzl` is the correct load path for `rust_test`/`loom_fixture_test` co-use (mirror `src/services/query-api/BUCK`'s load lines). If `reqwest` is not yet a `//third-party` target, use the query-api `e2e-support` HTTP approach (axum `oneshot` via `tower`) against the routers instead — but the composite test needs a *real* TCP client since it exercises bound listeners, so prefer adding `reqwest` (it is already in the tree via `object_store`'s aws feature; verify with `buck2 targets //third-party:reqwest`).
+> Confirmed by the plan review: `//third-party:reqwest` exists (`third-party/BUCK`), the `loom_fixture_test` load path is correct, and `//src/services/query-api:e2e-support` exports `define_widget`/`subject_with_role`/`grant_read`/`session_token`. `rust_library`/`rust_binary` are native prelude rules needing no `load`. If `reqwest`'s client feature is not enabled on the target, prefer enabling it over swapping to a raw `hyper` client — the composite test needs a real TCP client (it exercises bound listeners, not in-process routers).
 
 - [ ] **Step 4: Run the test to verify it fails**
 
@@ -959,10 +1026,7 @@ pub async fn run(
     let qapi_socket = addrs.engine_socket.clone();
     let qapi_sd = sub(sd_rx);
     let qapi = tokio::spawn(async move {
-        query_api::serve(
-            &qapi_cfg, qapi_pg.pool_ref(), qapi_pg, qapi_auth, qapi_socket, qapi_listener, qapi_sd,
-        )
-        .await
+        query_api::serve(&qapi_cfg, qapi_pg, qapi_auth, qapi_socket, qapi_listener, qapi_sd).await
     });
 
     // All listeners are bound and serving: signal composite readiness.
@@ -987,7 +1051,7 @@ fn join_result(r: Result<Result<(), BoxErr>, tokio::task::JoinError>) -> Result<
 }
 ```
 
-> **Implementer note (`qapi_pg.pool_ref()`):** `query_api::serve`'s signature takes `pool: sqlx::PgPool` and `pg: Arc<PgControlPlane>`. The composite already holds `pool` (moved into `ingest`) — so clone `pool` for query-api BEFORE moving it into the ingest task, and pass that clone (not a `pool_ref()` accessor, which does not exist). Adjust the ordering: bind and capture `let qapi_pool = pool.clone();` before the ingest `tokio::spawn`, then pass `qapi_pool`. Fix this when wiring so it compiles; the intent is "share one pool across all three."
+> **Implementer note (pool ownership):** `engine::run` and `ingest::serve` each take a `pool` (clone once per consumer, as shown). `query_api::serve` takes **no** pool — it only needs the shared `pg` control plane — so there is no pool to juggle for query-api. `pg` was built from `pool.clone()` at the top, so all three ultimately share one embedded-PG pool.
 
 - [ ] **Step 6: Run the fixture test to verify it passes**
 
@@ -1036,6 +1100,8 @@ async fn main() -> Result<(), BoxErr> {
     let mut env = service_runtime::env_map();
 
     // Migrate-and-exit works for the loom image too (chart one-shot migrator).
+    // This path targets an EXTERNAL/managed PG (it connects to `cfg.db`), so it runs
+    // before any embedded `extract_pg` and does not set `LOOM_PG_MODE=embedded`.
     if service_runtime::migrate_requested() {
         let cfg = service_runtime::Config::from_map(&env)?;
         service_runtime::run_migrations(&cfg.db).await?;
@@ -1166,13 +1232,13 @@ git commit -m "docs(deploy): document the single-binary loom composite"
 - Explicit engine-readiness gate (bind-first + oneshot) — Task 5 Step 5 (`eng_ready_rx.await` before binding/serving HTTP). ✓
 - Two HTTP ports (8080/8081) — Task 6 `resolve_addrs` defaults + Global Constraints. ✓
 - One SIGINT/SIGTERM handler → fan-out → PG stopped last — Task 6 `shutdown_signal` + Task 5 watch fan-out + `pg_handle.shutdown()` after `join!`. ✓
-- Fixture test: boot embedded → ingest POST + query-api GET round-trip → SIGTERM → clean stop, data dir survives — Task 5 Step 1. ✓
-- Migrate-and-exit for the loom image — Task 6 Step 1. ✓
+- Fixture test: boot embedded → **authed ingest POST `main.widget` → define type → authed query-api GET `/objects/Widget` reading the landed rows back** → SIGTERM → clean stop (`PG_VERSION` survives, no `postmaster.pid` orphan) — Task 5 Step 1. This is the spec's mandated composition round-trip (not health probes), and it only passes if `LOOM_DB_HOST` points at the real embedded socket dir `<LOOM_DATA_PATH>/pgrun`. ✓
+- Migrate-and-exit for the loom image — Task 6 Step 1 (external/managed PG path). ✓
 - Behaviour-preserving lean binaries — Tasks 2–4 keep existing tests green. ✓
 
-**Placeholder scan:** No "TBD"/"handle edge cases". Two `> Implementer note` blocks flag genuine verify-against-source points (env keys for embedded data/socket dir; the `qapi_pool` clone ordering) with the exact fix, not deferred work.
+**Placeholder scan:** No "TBD"/"handle edge cases". The `> Implementer note` blocks flag genuine verify-against-source points (the ingest token's authZ; the `define_widget` table ref; the `reqwest` client feature) with exact fixes, not deferred work.
 
-**Type consistency:** `run(listener, cfg, pool, ready, shutdown)` (engine), `serve(cfg, pool, cp/pg, auth, …, listener, shutdown)` (ingest/query-api), `run(cfg, addrs, shutdown, ready)` (composite), `serve_with_shutdown(listener, router, shutdown)` (runtime) — names/params match across the tasks that consume them. The one deliberate mismatch (`qapi_pg.pool_ref()`) is called out with its fix in Task 5.
+**Type consistency:** `run(listener, &cfg, pool, ready, shutdown)` (engine), `serve(&cfg, pool, cp, auth, admin_subject, max_ttl, listener, shutdown)` (ingest), `serve(&cfg, pg, auth, engine_socket, listener, shutdown)` (query-api — **no `pool` param**), `run(cfg, addrs, shutdown, ready)` (composite), `serve_with_shutdown(listener, router, shutdown)` (runtime) — every call site in the thin mains and the composite matches these. The earlier `qapi_pg.pool_ref()` mismatch is resolved by dropping query-api's dead `pool` param entirely.
 
 ## Execution Handoff
 
