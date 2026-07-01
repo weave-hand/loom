@@ -316,11 +316,13 @@ async fn setup_with_mask(
                 name: "id".into(),
                 ty: "long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "embedding".into(),
                 ty: "vector(4)".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
