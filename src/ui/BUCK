@@ -24,6 +24,15 @@ rust_test(
     deps = [":ui-core"],
 )
 
+rust_test(
+    name = "tokens",
+    crate = "tokens",
+    srcs = ["tests/tokens.rs"],
+    crate_root = "tests/tokens.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
 rust_binary(
     name = "app",
     crate = "app",
