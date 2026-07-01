@@ -14,6 +14,7 @@ pub mod flight_export;
 pub mod handler;
 pub mod http;
 pub mod openapi;
+pub mod openapi_gen;
 pub mod params;
 pub mod path_parse;
 pub mod render;
@@ -23,4 +24,4 @@ pub mod sql;
 pub mod wire_control_plane;
 pub mod write_filter;
 
-pub use openapi::build_openapi;
+pub use openapi::{build_openapi, live_openapi};

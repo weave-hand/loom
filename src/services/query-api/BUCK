@@ -1001,6 +1001,22 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "openapi-gen",
+    crate = "openapi_gen",
+    srcs = ["tests/openapi_gen.rs"],
+    crate_root = "tests/openapi_gen.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:utoipa",
+    ],
+)
+
 loom_fixture_test(
     name = "object-set-e2e",
     crate = "object_set_e2e",

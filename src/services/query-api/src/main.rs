@@ -77,7 +77,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .merge(service_runtime::login_routes(auth_state.clone()))
     .merge(service_runtime::session_routes(auth_state));
-    let app = service_runtime::with_openapi(app, query_api::build_openapi());
+    // Dynamic OpenAPI: `/openapi.json` regenerates per request from the LIVE ontology, read
+    // through the direct Postgres control plane (`pg`) — the wire governance client does not
+    // implement `list_types`. `/docs` (Scalar) loads the live spec by URL.
+    let openapi_cp: Arc<dyn ControlPlane + Send + Sync> = pg.clone();
+    let app = service_runtime::with_openapi_provider(app, move || {
+        let cp = openapi_cp.clone();
+        async move { query_api::live_openapi(cp).await }
+    });
 
     // Optional external Arrow Flight export listener (opt-in via LOOM_FLIGHT_BIND_ADDR).
     if let Ok(bind) = std::env::var("LOOM_FLIGHT_BIND_ADDR") {
