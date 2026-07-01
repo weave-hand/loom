@@ -56,9 +56,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
     };
 
+    let admin_subject = std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME")
+        .ok()
+        .map(control_plane_core::SubjectId);
+    let max_ttl = service_runtime::service_token_max_ttl_from_env();
+
     let app = service_runtime::protect(router(AppState { materializer, cp }), auth_state.clone())
         .merge(service_runtime::login_routes(auth_state.clone()))
-        .merge(service_runtime::session_routes(auth_state));
+        .merge(service_runtime::session_routes(auth_state.clone()))
+        .merge(service_runtime::service_account_routes(
+            auth_state,
+            admin_subject,
+            max_ttl,
+        ));
     let app = service_runtime::with_openapi(app, ingest::build_openapi());
     service_runtime::serve(cfg.bind_addr, app).await?;
     Ok(())
