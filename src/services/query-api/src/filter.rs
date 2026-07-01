@@ -225,7 +225,9 @@ pub fn coerce_predicate(
                 FilterError::BadValue(column.to_string(), format!("unknown logical type: {}", e.0))
             })?;
             if !matches!(repr, JsonRepr::PlainString) {
-                return Err(bad("text-pattern operators apply to string properties only"));
+                return Err(bad(
+                    "text-pattern operators apply to string properties only",
+                ));
             }
             let esc = escape_like(r);
             let pattern = match o {

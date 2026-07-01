@@ -262,8 +262,7 @@ pub async fn compile_object_read(
 
     // Visibility first (denied/masked column -> 400, no type info leak), then parse the
     // raw value into a typed predicate (operator + coerced operands) for the column.
-    let mut predicates: Vec<crate::filter::CallerPredicate> =
-        Vec::with_capacity(q.filters.len());
+    let mut predicates: Vec<crate::filter::CallerPredicate> = Vec::with_capacity(q.filters.len());
     for (col, raw) in &q.filters {
         if !allowed.contains(col) || masked.contains(col) {
             return Err(QueryError::BadFilter(col.clone()));

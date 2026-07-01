@@ -432,7 +432,11 @@ fn caller_only_ops_are_unknown_on_the_write_path() {
         CompareOp::EndsWith,
     ] {
         assert_eq!(
-            compare_cell(&SqlValue::Text("x".into()), op, &ScalarValue::Text("x".into())),
+            compare_cell(
+                &SqlValue::Text("x".into()),
+                op,
+                &ScalarValue::Text("x".into())
+            ),
             None,
             "caller-only op {op:?} must be UNKNOWN on the write path"
         );
