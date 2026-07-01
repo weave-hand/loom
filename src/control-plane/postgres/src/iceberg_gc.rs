@@ -91,16 +91,8 @@ async fn gc_locked(
     table: &TableRef,
     retention: Duration,
 ) -> Result<GcSummary> {
-    // 1. Resolve the live table id. A table with no live mirror row (never
-    //    created, or dropped) is out of scope for slice 1 — a clean no-op.
-    let mut conn = pool.acquire().await.map_err(backend)?;
-    let tid = match live_table_id(&mut conn, &table.schema, &table.name).await? {
-        Some(t) => t,
-        None => return Ok(GcSummary::default()),
-    };
-    drop(conn);
-
-    // 2. Resolve the horizon H = youngest snapshot fully aged out of the window.
+    // 1. Horizon H = youngest snapshot fully aged out of the window. Applies to
+    //    every incarnation (live and, in the dropped loop, each dropped one).
     //    `now()` is taken in Rust; sub-second precision is irrelevant at GC scale.
     //    `max()` over zero matching rows yields NULL → None → a clean no-op.
     let cutoff = OffsetDateTime::now_utc() - time::Duration::seconds(retention.as_secs() as i64);
@@ -111,74 +103,34 @@ async fn gc_locked(
     .fetch_one(pool)
     .await
     .map_err(backend)?;
-    let h = match horizon {
-        Some(h) => h,
-        None => return Ok(GcSummary::default()),
+    let Some(h) = horizon else {
+        return Ok(GcSummary::default());
     };
 
-    // 3. Collect the Parquet paths of reclaimable data files (before deleting the
-    //    rows that name them).
-    let paths: Vec<String> = sqlx::query_scalar!(
-        "select path from iceberg_mirror.data_file \
-         where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
-        tid,
-        h,
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(backend)?;
+    // 2. Resolve the (maybe) live incarnation of (schema, name).
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    let live = live_table_id(&mut conn, &table.schema, &table.name).await?;
+    drop(conn);
 
-    // 4. Delete mirror rows in one transaction: stats first (FK child), then the
-    //    data_file rows, then end-capped inline rows.
+    // 3. Collect the reclaimable Parquet paths (before deleting the rows that name
+    //    them). Live incarnation only in this slice; Task 2 adds the dropped ones.
+    let mut paths: Vec<String> = Vec::new();
+    if let Some(tid) = live {
+        paths.extend(reclaimable_paths(pool, tid, h).await?);
+    }
+
+    // 4. One transaction: delete the reclaimable mirror rows.
     let mut tx = pool.begin().await.map_err(backend)?;
-    sqlx::query!(
-        "delete from iceberg_mirror.data_file_column_stat \
-         where data_file_id in ( \
-             select data_file_id from iceberg_mirror.data_file \
-             where table_id = $1 and end_snapshot is not null and end_snapshot <= $2)",
-        tid,
-        h,
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(backend)?;
-
-    let data_file_rows = sqlx::query!(
-        "delete from iceberg_mirror.data_file \
-         where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
-        tid,
-        h,
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(backend)?
-    .rows_affected();
-
-    // Inline storage is a per-table physical table that may not exist. Guard with
-    // to_regclass; the dynamic table name forces a runtime AssertSqlSafe query.
-    let inline = inline_table_name(tid);
-    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe("select to_regclass($1)::text"))
-        .bind(&inline)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(backend)?;
-    let inline_rows = if exists.is_some() {
-        sqlx::query(AssertSqlSafe(format!(
-            "delete from {inline} where end_snapshot is not null and end_snapshot <= $1"
-        )))
-        .bind(h)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?
-        .rows_affected()
-    } else {
-        0
-    };
-
+    let mut data_file_rows = 0u64;
+    let mut inline_rows = 0u64;
+    if let Some(tid) = live {
+        data_file_rows += delete_data_files(&mut tx, tid, h).await?;
+        inline_rows += delete_end_capped_inline_rows(&mut tx, tid, h).await?;
+    }
     tx.commit().await.map_err(backend)?;
 
-    // 5. Commit-then-delete: now reclaim the Parquet objects. A failed delete is
-    //    logged and left as an orphan (never re-raised into a hard error).
+    // 5. Commit-then-delete: reclaim the Parquet objects. A failed delete is logged
+    //    and left as an orphan (never re-raised into a hard error).
     let mut objects_deleted = 0u64;
     for path in &paths {
         match catalog.delete_file(path).await {
@@ -196,4 +148,72 @@ async fn gc_locked(
         inline_rows,
         objects_deleted,
     })
+}
+
+/// Parquet paths of `tid`'s data files reclaimable at horizon `h`
+/// (`end_snapshot IS NOT NULL AND end_snapshot <= h`).
+async fn reclaimable_paths(pool: &PgPool, tid: i64, h: i64) -> Result<Vec<String>> {
+    sqlx::query_scalar!(
+        "select path from iceberg_mirror.data_file \
+         where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
+        tid,
+        h,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(backend)
+}
+
+/// Delete `tid`'s reclaimable data files (stats child first, then the rows).
+/// Returns the number of `data_file` rows deleted.
+async fn delete_data_files(conn: &mut sqlx::PgConnection, tid: i64, h: i64) -> Result<u64> {
+    sqlx::query!(
+        "delete from iceberg_mirror.data_file_column_stat \
+         where data_file_id in ( \
+             select data_file_id from iceberg_mirror.data_file \
+             where table_id = $1 and end_snapshot is not null and end_snapshot <= $2)",
+        tid,
+        h,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    let rows = sqlx::query!(
+        "delete from iceberg_mirror.data_file \
+         where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
+        tid,
+        h,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?
+    .rows_affected();
+    Ok(rows)
+}
+
+/// Delete end-capped inline rows (`end_snapshot <= h`) from `inline_<tid>`, if the
+/// physical table exists. Returns the number of rows deleted.
+async fn delete_end_capped_inline_rows(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    h: i64,
+) -> Result<u64> {
+    let inline = inline_table_name(tid);
+    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe("select to_regclass($1)::text"))
+        .bind(&inline)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+    if exists.is_none() {
+        return Ok(0);
+    }
+    let rows = sqlx::query(AssertSqlSafe(format!(
+        "delete from {inline} where end_snapshot is not null and end_snapshot <= $1"
+    )))
+    .bind(h)
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?
+    .rows_affected();
+    Ok(rows)
 }
