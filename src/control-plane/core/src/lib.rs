@@ -8,6 +8,7 @@ mod compact_job;
 mod error;
 mod flush;
 mod gc;
+pub mod governed;
 mod identity;
 mod lineage;
 mod logical_type;
@@ -29,6 +30,7 @@ pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
 pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};
 pub use gc::{GC_JOB_KIND, GcJob};
+pub use governed::{GovernedCatalog, GovernedTable};
 pub use identity::{DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TypeId};
 pub use lineage::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
 pub use logical_type::{

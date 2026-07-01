@@ -3,7 +3,11 @@
 //! directly in the query plan, matching `query-api::sql::filter_sql`'s SQL semantics.
 //! See docs/superpowers/specs/2026-06-24-engine-serving-execution-wire-design.md.
 
-use control_plane_core::{CompareOp, RowFilter, ScalarValue, validate_row_filter};
+use std::collections::HashSet;
+
+use control_plane_core::{
+    CompareOp, GovernedCatalog, RowFilter, ScalarValue, TableRef, validate_row_filter,
+};
 use datafusion::logical_expr::not;
 use datafusion::prelude::{Expr, col, lit};
 use datafusion::scalar::ScalarValue as DfScalar;
@@ -97,4 +101,27 @@ pub(crate) fn row_filters_conjunction(
         return Ok(None);
     }
     Ok(Some(fold_bool(fs, true)?))
+}
+
+/// The enforcing per-table policy the provider applies. `denied`/`masked` are sets
+/// for O(1) column membership tests during `scan`/`schema`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TablePolicy {
+    pub row_filters: Vec<RowFilter>,
+    pub denied: HashSet<String>,
+    pub masked: HashSet<String>,
+}
+
+/// The policy for `table` from `catalog`, or the empty (fully-visible) policy when
+/// absent (per spec "absent ⇒ visible").
+#[must_use]
+pub fn policy_for(catalog: &GovernedCatalog, table: &TableRef) -> TablePolicy {
+    match catalog.table_for(table) {
+        Some(gt) => TablePolicy {
+            row_filters: gt.row_filters.clone(),
+            denied: gt.denied.iter().cloned().collect(),
+            masked: gt.masked.iter().cloned().collect(),
+        },
+        None => TablePolicy::default(),
+    }
 }

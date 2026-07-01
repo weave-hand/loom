@@ -1,9 +1,11 @@
 //! Unit tests for `row_filter_to_expr`: the RowFilter → DataFusion Expr translation
 //! that governs the external-SQL path. Pure logic, no Postgres — a `rust_test`.
 
-use control_plane_core::{CompareOp, RowFilter, ScalarValue};
+use control_plane_core::{
+    CompareOp, GovernedCatalog, GovernedTable, RowFilter, ScalarValue, TableRef,
+};
 use datafusion::prelude::{Expr, col, lit};
-use engine_serving::governed::row_filter_to_expr;
+use engine_serving::governed::{policy_for, row_filter_to_expr};
 
 fn cmp(property: &str, op: CompareOp, value: ScalarValue) -> RowFilter {
     RowFilter::Compare {
@@ -107,4 +109,30 @@ fn invariant_violation_fails_closed() {
         ))
         .is_err()
     );
+}
+
+#[test]
+fn policy_for_absent_is_empty_present_is_set_backed() {
+    let t = TableRef {
+        schema: "s".into(),
+        name: "t".into(),
+    };
+    let cat = GovernedCatalog {
+        tables: vec![GovernedTable {
+            table: t.clone(),
+            row_filters: vec![cmp("a", CompareOp::Gt, ScalarValue::Int(5))],
+            denied: vec!["secret".into()],
+            masked: vec!["email".into()],
+        }],
+    };
+    let p = policy_for(&cat, &t);
+    assert!(p.denied.contains("secret") && p.masked.contains("email") && p.row_filters.len() == 1);
+    let empty = policy_for(
+        &cat,
+        &TableRef {
+            schema: "s".into(),
+            name: "x".into(),
+        },
+    );
+    assert!(empty.denied.is_empty() && empty.masked.is_empty() && empty.row_filters.is_empty());
 }

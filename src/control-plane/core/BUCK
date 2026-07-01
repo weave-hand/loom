@@ -68,6 +68,18 @@ rust_test(
 )
 
 rust_test(
+    name = "governed",
+    crate = "governed",
+    srcs = ["tests/governed.rs"],
+    crate_root = "tests/governed.rs",
+    edition = "2024",
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "row-filter-validation",
     crate = "row_filter_validation",
     srcs = ["tests/row_filter_validation.rs"],
