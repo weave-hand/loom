@@ -153,6 +153,8 @@ fn migrate_on_boot_false_parses() {
 fn migrate_on_boot_invalid_rejected() {
     let mut vars = full();
     vars.insert("LOOM_DB_MIGRATE_ON_BOOT".into(), "yes".into());
-    assert!(matches!(Config::from_map(&vars), Err(ConfigError::Invalid { ref var, .. })
-        if var == "LOOM_DB_MIGRATE_ON_BOOT"));
+    assert!(
+        matches!(Config::from_map(&vars), Err(ConfigError::Invalid { ref var, .. })
+        if var == "LOOM_DB_MIGRATE_ON_BOOT")
+    );
 }

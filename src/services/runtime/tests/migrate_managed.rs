@@ -73,9 +73,12 @@ async fn loom_schema_present(pg: &EmbeddedPg) -> bool {
 #[tokio::test]
 async fn build_pool_managed_migrates_on_boot_when_enabled() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let pg = EmbeddedPg::start(embedded_cfg(&tmp.path().join("pgdata"), &tmp.path().join("pgrun")))
-        .await
-        .expect("start");
+    let pg = EmbeddedPg::start(embedded_cfg(
+        &tmp.path().join("pgdata"),
+        &tmp.path().join("pgrun"),
+    ))
+    .await
+    .expect("start");
 
     assert!(
         !loom_schema_present(&pg).await,
@@ -99,9 +102,12 @@ async fn build_pool_managed_migrates_on_boot_when_enabled() {
 #[tokio::test]
 async fn build_pool_managed_does_not_migrate_when_disabled() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let pg = EmbeddedPg::start(embedded_cfg(&tmp.path().join("pgdata"), &tmp.path().join("pgrun")))
-        .await
-        .expect("start");
+    let pg = EmbeddedPg::start(embedded_cfg(
+        &tmp.path().join("pgdata"),
+        &tmp.path().join("pgrun"),
+    ))
+    .await
+    .expect("start");
 
     let cfg = external_config(external_db(&pg), false, tmp.path());
     let (pool, _handle) = service_runtime::build_pool_managed(&cfg)
@@ -119,9 +125,12 @@ async fn build_pool_managed_does_not_migrate_when_disabled() {
 #[tokio::test]
 async fn run_migrations_applies_schema() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let pg = EmbeddedPg::start(embedded_cfg(&tmp.path().join("pgdata"), &tmp.path().join("pgrun")))
-        .await
-        .expect("start");
+    let pg = EmbeddedPg::start(embedded_cfg(
+        &tmp.path().join("pgdata"),
+        &tmp.path().join("pgrun"),
+    ))
+    .await
+    .expect("start");
 
     service_runtime::run_migrations(&external_db(&pg))
         .await
