@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select puffin_path from iceberg_mirror.vector_index where table_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "puffin_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.vector_index",
+            "name": "puffin_path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6e481fa91cd3065e45e2a9a3393409169c4d781d4116698170301c06c9e39a18"
+}
