@@ -852,6 +852,24 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "action-mapping-e2e",
+    crate = "action_mapping_e2e",
+    srcs = ["tests/action_mapping_e2e.rs"],
+    crate_root = "tests/action_mapping_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "params",
     crate = "params",
