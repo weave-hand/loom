@@ -14,7 +14,7 @@ pub use action_writer::IcebergActionWriter;
 pub use governed::{TablePolicy, policy_for, row_filter_to_expr};
 pub use provider::PgTableProvider;
 pub use serving::{
-    EngineServingError, IcebergMirrorTableProvider, execute_query, execute_query_stream,
-    prune_files, register_iceberg_table,
+    EngineServingError, IcebergMirrorTableProvider, build_serving_provider, execute_query,
+    execute_query_stream, prune_files, register_iceberg_table,
 };
 pub use vector_search::{merge_topk, vector_search};
