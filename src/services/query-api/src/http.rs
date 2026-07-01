@@ -174,9 +174,7 @@ async fn get_object(
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(QueryError::BadFilterValue(e)) => {
-            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
-        }
+        Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
         Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
         Err(e) => internal_error("object read serving fault", e),
     }
@@ -351,6 +349,33 @@ fn respond_associations(res: Result<Associations, QueryError>) -> axum::response
     }
 }
 
+/// Render an uncoercible filter value (`QueryError::BadFilterValue`) as a structured `400`
+/// body. A coercion failure (`FilterError::Coerce`) echoes `{error, column, expected, value}`;
+/// a grammar/arity failure (`FilterError::BadValue`) carries `{error, column}` only. A
+/// *visibility* denial is a separate `QueryError::BadFilter` (bare column, no value echo) and
+/// never reaches here.
+fn bad_filter_value_response(e: &crate::filter::FilterError) -> axum::response::Response {
+    use crate::filter::FilterError;
+    let body = match e {
+        FilterError::Coerce {
+            column,
+            expected,
+            value,
+            ..
+        } => serde_json::json!({
+            "error": "bad_filter_value",
+            "column": column,
+            "expected": expected,
+            "value": value,
+        }),
+        FilterError::BadValue(column, _) => serde_json::json!({
+            "error": "bad_filter_value",
+            "column": column,
+        }),
+    };
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
+}
+
 /// Shared HTTP mapping for chain/association read errors.
 fn chain_error(e: QueryError) -> axum::response::Response {
     match e {
@@ -361,7 +386,7 @@ fn chain_error(e: QueryError) -> axum::response::Response {
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        QueryError::BadFilterValue(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
         other => internal_error("chain/association read serving fault", other),
     }
 }
@@ -583,7 +608,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
         QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        QueryError::BadFilterValue(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         other => internal_error("graph read serving fault", other),
     }
