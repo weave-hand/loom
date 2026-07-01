@@ -249,6 +249,20 @@ fn link_response_targets_the_to_type() {
     );
 }
 
+#[test]
+fn link_to_a_type_absent_from_the_snapshot_is_skipped() {
+    // Order is NOT in the type snapshot, so its $ref would dangle — the link op must be
+    // dropped rather than emit an invalid document referencing a missing schema.
+    let (paths, _schemas) = ontology_openapi(&[customer()], &[orders_link()]);
+    let mp = methods_and_paths(&paths);
+    assert!(
+        !mp.contains(&("get".into(), "/objects/Customer/links/orders".into())),
+        "a link to an absent target type must not be generated"
+    );
+    // The present type's own operations still generate.
+    assert!(mp.contains(&("get".into(), "/objects/Customer".into())));
+}
+
 // ---- liveness (memory-backed) --------------------------------------------------------
 
 // MemoryControlPlane::new takes a lock_timeout Duration (see memory/src/lib.rs).

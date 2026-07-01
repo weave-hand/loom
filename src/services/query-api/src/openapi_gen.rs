@@ -203,6 +203,12 @@ pub fn ontology_openapi(
         pb = pb.path(format!("/objects/{name}"), item);
     }
     for l in links {
+        // Only emit a link whose endpoint types are both in the snapshot, so the generated
+        // response `$ref #/components/schemas/{to}` always resolves — a snapshot skew (a
+        // `links` read succeeding while a type read failed) must not yield an invalid document.
+        if !schemas.contains_key(&l.from.0) || !schemas.contains_key(&l.to.0) {
+            continue;
+        }
         pb = pb.path(
             format!("/objects/{}/links/{}", l.from.0, l.name),
             PathItem::new(HttpMethod::Get, link_op(&l.from.0, &l.name, &l.to.0)),
