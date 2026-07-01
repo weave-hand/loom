@@ -11,6 +11,9 @@ fn format_count_scales_and_rounds() {
     assert_eq!(format_count(0), "0");
     assert_eq!(format_count(1_000), "1K");
     assert_eq!(format_count(1_000_000), "1M");
+    assert_eq!(format_count(999_999), "1M");
+    assert_eq!(format_count(999_500), "1M"); // rounds up across the boundary
+    assert_eq!(format_count(994_000), "994K"); // stays in K tier, no false promotion
 }
 
 #[test]

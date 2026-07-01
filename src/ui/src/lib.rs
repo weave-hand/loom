@@ -140,7 +140,7 @@ impl Align {
     reason = "display-only count formatting; exactness not required"
 )]
 pub fn format_count(n: u64) -> String {
-    let (scaled, suffix) = if n >= 1_000_000 {
+    let (mut scaled, mut suffix) = if n >= 1_000_000 {
         (n as f64 / 1_000_000.0, "M")
     } else if n >= 1_000 {
         (n as f64 / 1_000.0, "K")
@@ -148,13 +148,33 @@ pub fn format_count(n: u64) -> String {
         return n.to_string();
     };
     // 3 significant figures: 2.41M, 18.2K, 880K, 9.7K, 142K.
-    let precision = if scaled >= 100.0 {
+    let mut precision = if scaled >= 100.0 {
         0
     } else if scaled >= 10.0 {
         1
     } else {
         2
     };
+    // Rounding at `precision` can push `scaled` up to (or past) 1000 within a
+    // tier (e.g. 999.999K rounds to "1000K"); re-scale up one suffix tier so
+    // the displayed value never overflows its own bucket.
+    let multiplier = match precision {
+        0 => 1.0,
+        1 => 10.0,
+        _ => 100.0,
+    };
+    let rounded = (scaled * multiplier).round() / multiplier;
+    if rounded >= 1000.0 && suffix == "K" {
+        scaled /= 1000.0;
+        suffix = "M";
+        precision = if scaled >= 100.0 {
+            0
+        } else if scaled >= 10.0 {
+            1
+        } else {
+            2
+        };
+    }
     let mut s = format!("{scaled:.precision$}");
     if s.contains('.') {
         s = s.trim_end_matches('0').trim_end_matches('.').to_string();
