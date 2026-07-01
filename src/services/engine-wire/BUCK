@@ -100,6 +100,19 @@ rust_test(
 )
 
 rust_test(
+    name = "governed-ticket",
+    crate = "governed_ticket",
+    srcs = ["tests/governed_ticket.rs"],
+    crate_root = "tests/governed_ticket.rs",
+    edition = "2024",
+    deps = [
+        ":engine-wire",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "build-vector-index-request",
     crate = "build_vector_index_request",
     srcs = ["tests/build_vector_index_request.rs"],
