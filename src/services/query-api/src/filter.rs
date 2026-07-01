@@ -161,6 +161,7 @@ pub fn coerce_predicate(
         "nin" => Some(NotIn),
         "isnull" => Some(IsNull),
         "isnotnull" => Some(IsNotNull),
+        "between" => Some(Between),
         _ => None,
     };
 
@@ -184,6 +185,18 @@ pub fn coerce_predicate(
                 values.push(coerce_filter(column, logical_ty, &part)?);
             }
             Ok(mk(o, values))
+        }
+        Some(Between) => {
+            let r = rest.ok_or_else(|| bad("between requires two operands"))?;
+            let parts = split_set_operands(r).map_err(bad)?;
+            if parts.len() != 2 {
+                return Err(bad("between requires exactly two operands (lo,hi)"));
+            }
+            let mut values = Vec::with_capacity(2);
+            for part in parts {
+                values.push(coerce_filter(column, logical_ty, &part)?);
+            }
+            Ok(mk(Between, values))
         }
         // Scalar ops (eq/ne/lt/le/gt/ge): exactly one operand = `rest`.
         Some(o) => {

@@ -226,6 +226,33 @@ fn scalar_op_does_not_unescape() {
 }
 
 #[test]
+fn between_parses_two_operands() {
+    let p = coerce_predicate("amount", "Integer", "between:11,25").unwrap();
+    assert_eq!(p.op, CompareOp::Between);
+    assert_eq!(p.values, vec![SqlValue::Int(11), SqlValue::Int(25)]);
+}
+
+#[test]
+fn between_wrong_arity_is_rejected() {
+    assert!(matches!(
+        coerce_predicate("amount", "Integer", "between:11"),
+        Err(FilterError::BadValue(_, _))
+    ));
+    assert!(matches!(
+        coerce_predicate("amount", "Integer", "between:1,2,3"),
+        Err(FilterError::BadValue(_, _))
+    ));
+}
+
+#[test]
+fn between_type_mismatch_is_rejected_like_ge() {
+    assert!(matches!(
+        coerce_predicate("amount", "Integer", "between:foo,25"),
+        Err(FilterError::BadValue(_, _))
+    ));
+}
+
+#[test]
 fn predicate_edge_cases_are_pinned() {
     // Single-operand `in` stays a set op (In with a 1-element Vec), not collapsed to Eq.
     let one = coerce_predicate("id", "Long", "in:5").unwrap();
