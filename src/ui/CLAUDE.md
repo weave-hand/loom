@@ -6,16 +6,10 @@ bundles to browser-loadable JS via wasm-bindgen.
 - `buck2 build //src/ui:bundle` → `dist/{app.js, app_bg.wasm, index.html}`
 - `buck2 run //src/ui:serve` serves `dist/` over HTTP — the `--target web` glue
   `fetch()`es the wasm, so `file://` will **not** load it; it must be served over HTTP.
-  (This serves the bundle *alone*, with no backend — the login POST has nothing to hit.)
-- **`tools/dev-up.sh` boots the whole stack** for an end-to-end login: an ephemeral
-  Postgres (the pinned `:postgres-bin`, migrated), `engine-bin` over a file:// warehouse,
-  and `query-api-bin` serving this bundle (`LOOM_UI_DIR`) with a seeded admin. It prints
-  the URL + creds (default `admin` / `loom-dev`) and tears everything down on Ctrl-C. This
-  is the "tight" deploy (query-api serves the UI, same origin); for the detached variant use
-  `LOOM_CORS_ALLOWED_ORIGINS` on query-api + `:serve` for the bundle. There is **no**
-  loom-managed embedded-PG binary — both services connect to an *external* Postgres
-  (`build_pool`, not `build_pool_managed`); the harness runs a socket-only cluster and
-  points `LOOM_DB_HOST` at the socket dir.
+  (This serves the bundle *alone*, with no backend — for an end-to-end login against a
+  real backend, the planned all-in-one binary `fut-embedded-postgres-all-in-one` (embedded
+  PG + engine + query-api in one process, serving this bundle via `LOOM_UI_DIR`) is the
+  intended local run target.)
 - This crate lives **inside** `//src/...` (so CI + the strict pedantic/restriction
   clippy gate cover it) and survives the native `buck2 build //src/...` sweep via
   `default_target_platform = //platforms:wasm` — that makes the sweep cross-compile it
