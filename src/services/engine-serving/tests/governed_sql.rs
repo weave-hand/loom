@@ -125,6 +125,39 @@ async fn denied_column_is_absent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn row_filter_over_denied_column_still_filters() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("secret".to_string(), "string".to_string(), false),
+    ];
+    writer.seed("s", "t", &cols, &[5]).await; // ids 0..4, secret "row0".."row4"
+    let catalog = IcebergCatalog::new(pool);
+
+    // Policy: `secret` is denied, AND the row filter references the denied column
+    // (secret != 'row0', which excludes id 0). This pins the load-bearing apply-order
+    // invariant: the filter runs over the FULL inner schema before denied columns are
+    // projected away, so it must still filter correctly.
+    let cat = GovernedCatalog { tables: vec![GovernedTable {
+        table: gt("s", "t"),
+        row_filters: vec![RowFilter::Compare {
+            property: "secret".into(), op: CompareOp::Ne, value: ScalarValue::Text("row0".into()),
+        }],
+        denied: vec!["secret".into()], masked: vec![],
+    }]};
+    let batches = run(&catalog, "SELECT \"id\" FROM \"s\".\"t\" ORDER BY \"id\"", &cat).await;
+    let ids: Vec<i64> = collect_i64(&batches, 0);
+    assert_eq!(ids, vec![1, 2, 3, 4], "row filter over denied column must still exclude id 0");
+    assert!(!batches.is_empty());
+    assert!(batches[0].schema().field_with_name("secret").is_err(), "denied column absent from output");
+    assert!(batches[0].schema().field_with_name("id").is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn masked_column_redacted_through_group_by() {
     let fx = PgFixture::start();
     let (_cp, db) = fx.fresh_db().await;
