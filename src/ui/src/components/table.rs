@@ -5,6 +5,10 @@ use yew::prelude::*;
 /// A row that knows how to render itself into table cells. Callers implement this
 /// for their domain struct so `DataTable` stays generic and type-safe.
 pub trait TableRow {
+    /// Render this row's cells, one `Html` per [`Column`] in column order.
+    /// `DataTable` zips the returned cells against its `columns`, so a row that
+    /// returns fewer cells than there are columns has its trailing columns left
+    /// blank (and extra cells are dropped) — return exactly `columns.len()` cells.
     fn cells(&self) -> Vec<Html>;
 }
 
