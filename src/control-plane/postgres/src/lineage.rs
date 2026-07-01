@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use control_plane_core::{DatasetRef, Lineage, LineageEvent, Page, PageReq, Result, RunId};
+use control_plane_core::{
+    DatasetRef, Lineage, LineageEvent, Page, PageReq, Result, RunId, check_depth,
+    decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,
+};
 
 use crate::{PgControlPlane, backend, event_type_from_str, event_type_to_str};
 
@@ -61,37 +64,64 @@ impl Lineage for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn events_for(&self, run: &RunId, _page: PageReq) -> Result<Page<LineageEvent>> {
+    async fn events_for(&self, run: &RunId, page: PageReq) -> Result<Page<LineageEvent>> {
+        let after = page.after.as_ref().map(decode_event_cursor).transpose()?;
+        let fetch = page.limit.map_or(i64::MAX, |l| i64::from(l) + 1);
         let rows = sqlx::query!(
             "select event_id, event_type, event_time, payload from lineage.event \
-             where run_id = $1 order by event_id",
+             where run_id = $1 and ($2::bigint is null or event_id > $2) \
+             order by event_id limit $3",
             run.0,
+            after,
+            fetch,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        let mut out = Vec::with_capacity(rows.len());
+        let mut keyed: Vec<(i64, LineageEvent)> = Vec::with_capacity(rows.len());
         for r in rows {
-            out.push(LineageEvent {
-                run_id: *run,
-                event_type: event_type_from_str(&r.event_type),
-                event_time: r.event_time,
-                inputs: self.event_datasets(r.event_id, "input").await?,
-                outputs: self.event_datasets(r.event_id, "output").await?,
-                payload: r.payload,
-            });
+            let event_id = r.event_id;
+            keyed.push((
+                event_id,
+                LineageEvent {
+                    run_id: *run,
+                    event_type: event_type_from_str(&r.event_type),
+                    event_time: r.event_time,
+                    inputs: self.event_datasets(event_id, "input").await?,
+                    outputs: self.event_datasets(event_id, "output").await?,
+                    payload: r.payload,
+                },
+            ));
         }
-        Ok(Page::from_full(out))
+        let paged = Page::from_keyset(keyed, page.limit, |(id, _)| encode_event_cursor(*id));
+        Ok(Page {
+            items: paged.items.into_iter().map(|(_, e)| e).collect(),
+            next: paged.next,
+        })
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn upstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
-        self.graph_step(dataset, "output", "input").await
+    async fn upstream(
+        &self,
+        dataset: &DatasetRef,
+        depth: u32,
+        page: PageReq,
+    ) -> Result<Page<DatasetRef>> {
+        // upstream = walk output→input edges (ancestry).
+        self.graph_closure(dataset, "output", "input", depth, page)
+            .await
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn downstream(&self, dataset: &DatasetRef, _page: PageReq) -> Result<Page<DatasetRef>> {
-        self.graph_step(dataset, "input", "output").await
+    async fn downstream(
+        &self,
+        dataset: &DatasetRef,
+        depth: u32,
+        page: PageReq,
+    ) -> Result<Page<DatasetRef>> {
+        // downstream = walk input→output edges (descendancy).
+        self.graph_closure(dataset, "input", "output", depth, page)
+            .await
     }
 }
 
@@ -117,36 +147,66 @@ impl PgControlPlane {
             .collect())
     }
 
-    /// One-hop graph: distinct datasets on `to_dir` of any event that has
-    /// `dataset` on `from_dir`. `upstream` = (output -> input); `downstream` =
-    /// (input -> output).
+    /// Depth-bounded transitive closure over `lineage.event_dataset`. The seed sits
+    /// on `from_dir`; neighbors are taken from `to_dir` of co-member events. A
+    /// `WITH RECURSIVE` CTE (mirroring query-api's `/graph` reachability) bounded by
+    /// `depth`; `UNION` + the final `DISTINCT` give set semantics and the depth cap
+    /// guarantees termination even on cyclic re-run graphs. Keyset-paginated by
+    /// `(namespace, name)`.
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn graph_step(
+    async fn graph_closure(
         &self,
         dataset: &DatasetRef,
         from_dir: &str,
         to_dir: &str,
+        depth: u32,
+        page: PageReq,
     ) -> Result<Page<DatasetRef>> {
+        check_depth(depth)?;
+        let after = page.after.as_ref().map(decode_dataset_cursor).transpose()?;
+        let (after_ns, after_name) = match &after {
+            Some(d) => (Some(d.namespace.as_str()), Some(d.name.as_str())),
+            None => (None, None),
+        };
+        let max_depth = i32::try_from(depth).unwrap_or(i32::MAX);
+        let fetch = page.limit.map_or(i64::MAX, |l| i64::from(l) + 1);
         let rows = sqlx::query!(
-            "select distinct b.namespace, b.name \
-             from lineage.event_dataset a \
-             join lineage.event_dataset b on b.event_id = a.event_id and b.direction = $4 \
-             where a.direction = $3 and a.namespace = $1 and a.name = $2",
+            "with recursive closure(namespace, name, depth) as ( \
+                 select $1::text, $2::text, 0 \
+               union \
+                 select b.namespace, b.name, closure.depth + 1 \
+                 from closure \
+                 join lineage.event_dataset a \
+                   on a.namespace = closure.namespace and a.name = closure.name \
+                   and a.direction = $3 \
+                 join lineage.event_dataset b \
+                   on b.event_id = a.event_id and b.direction = $4 \
+                 where closure.depth < $5) \
+             select distinct namespace as \"namespace!\", name as \"name!\" \
+             from closure \
+             where not (namespace = $1 and name = $2) \
+               and ($6::text is null or (namespace, name) > ($6, $7)) \
+             order by namespace, name \
+             limit $8",
             &dataset.namespace,
             &dataset.name,
             from_dir,
             to_dir,
+            max_depth,
+            after_ns,
+            after_name,
+            fetch,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(Page::from_full(
-            rows.into_iter()
-                .map(|r| DatasetRef {
-                    namespace: r.namespace,
-                    name: r.name,
-                })
-                .collect(),
-        ))
+        let items: Vec<DatasetRef> = rows
+            .into_iter()
+            .map(|r| DatasetRef {
+                namespace: r.namespace,
+                name: r.name,
+            })
+            .collect();
+        Ok(Page::from_keyset(items, page.limit, encode_dataset_cursor))
     }
 }

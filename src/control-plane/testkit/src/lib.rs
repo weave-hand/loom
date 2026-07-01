@@ -19,8 +19,8 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
     CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect,
-    EventType, IndexSpec, Lineage, LineageEvent, LinkBacking, LinkDef, Metric, NewJob,
-    NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy,
+    EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef, Metric,
+    NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy,
     PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
     SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
@@ -2216,7 +2216,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     // --- one-hop graph via per-event co-membership ---
     assert_eq!(
         set(cp
-            .upstream(&ds("warehouse", "main.c"), PageReq::unbounded())
+            .upstream(&ds("warehouse", "main.c"), 1, PageReq::unbounded())
             .await
             .unwrap()),
         [ds("warehouse", "main.a"), ds("warehouse", "main.b")]
@@ -2225,7 +2225,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     );
     assert_eq!(
         set(cp
-            .downstream(&ds("warehouse", "main.a"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.a"), 1, PageReq::unbounded())
             .await
             .unwrap()),
         [ds("warehouse", "main.c")]
@@ -2234,7 +2234,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     );
     assert_eq!(
         set(cp
-            .downstream(&ds("warehouse", "main.b"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.b"), 1, PageReq::unbounded())
             .await
             .unwrap()),
         [ds("warehouse", "main.c")]
@@ -2242,21 +2242,21 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
             .collect::<HashSet<_>>()
     );
     assert!(
-        cp.downstream(&ds("warehouse", "main.c"), PageReq::unbounded())
+        cp.downstream(&ds("warehouse", "main.c"), 1, PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing consumes c -> no downstream"
     );
     assert!(
-        cp.upstream(&ds("warehouse", "main.a"), PageReq::unbounded())
+        cp.upstream(&ds("warehouse", "main.a"), 1, PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
         "nothing produces a -> no upstream"
     );
     assert!(
-        cp.upstream(&ds("warehouse", "main.missing"), PageReq::unbounded())
+        cp.upstream(&ds("warehouse", "main.missing"), 1, PageReq::unbounded())
             .await
             .unwrap()
             .is_empty(),
@@ -2294,7 +2294,7 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
     // graph spans namespaces (physical -> ontology)
     assert_eq!(
         set(cp
-            .downstream(&ds("warehouse", "main.c"), PageReq::unbounded())
+            .downstream(&ds("warehouse", "main.c"), 1, PageReq::unbounded())
             .await
             .unwrap()),
         [ds("ontology", "Customer")]
@@ -2377,6 +2377,183 @@ pub async fn lineage_contract<CP: ControlPlane + Lineage + Queue>(cp: &CP) {
         cp.dequeue(&kinds, "w").await.unwrap().is_some(),
         "committed enqueue is visible"
     );
+}
+
+/// Contract: transitive closure with a depth cap and cycle termination. Run against
+/// every `Lineage` adapter.
+pub async fn lineage_closure_contract<CP: Lineage>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let set = |p: Page<DatasetRef>| p.into_iter().collect::<HashSet<_>>();
+    let edge = |inp: DatasetRef, out: DatasetRef| LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: ts,
+        inputs: vec![inp],
+        outputs: vec![out],
+        payload: serde_json::json!({}),
+    };
+
+    // chain  A -> B -> C -> D  (each event: input -> output)
+    let (a, b, c, d) = (
+        ds("w", "clo.a"),
+        ds("w", "clo.b"),
+        ds("w", "clo.c"),
+        ds("w", "clo.d"),
+    );
+    cp.emit(edge(a.clone(), b.clone())).await.unwrap();
+    cp.emit(edge(b.clone(), c.clone())).await.unwrap();
+    cp.emit(edge(c.clone(), d.clone())).await.unwrap();
+
+    // upstream (ancestry) of D
+    assert_eq!(
+        set(cp.upstream(&d, 1, PageReq::unbounded()).await.unwrap()),
+        [c.clone()].into_iter().collect(),
+        "depth=1 is one hop"
+    );
+    assert_eq!(
+        set(cp.upstream(&d, 2, PageReq::unbounded()).await.unwrap()),
+        [b.clone(), c.clone()].into_iter().collect(),
+        "depth=2 = two hops"
+    );
+    assert_eq!(
+        set(cp.upstream(&d, 3, PageReq::unbounded()).await.unwrap()),
+        [a.clone(), b.clone(), c.clone()].into_iter().collect(),
+        "depth=3 = full ancestry"
+    );
+    // downstream (descendancy) of A
+    assert_eq!(
+        set(cp.downstream(&a, 3, PageReq::unbounded()).await.unwrap()),
+        [b.clone(), c.clone(), d.clone()].into_iter().collect(),
+        "downstream closure of A"
+    );
+
+    // depth cap + zero depth are rejected (never an unbounded walk)
+    assert!(
+        matches!(
+            cp.upstream(&d, LINEAGE_MAX_DEPTH + 1, PageReq::unbounded())
+                .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "over-cap depth rejected"
+    );
+    assert!(
+        matches!(
+            cp.upstream(&d, 0, PageReq::unbounded()).await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "zero depth rejected"
+    );
+
+    // cycle  P -> Q -> R -> P  terminates and returns the finite reachable set
+    let (p, q, r) = (ds("w", "cyc.p"), ds("w", "cyc.q"), ds("w", "cyc.r"));
+    cp.emit(edge(p.clone(), q.clone())).await.unwrap();
+    cp.emit(edge(q.clone(), r.clone())).await.unwrap();
+    cp.emit(edge(r.clone(), p.clone())).await.unwrap();
+    assert_eq!(
+        set(cp
+            .upstream(&p, LINEAGE_MAX_DEPTH, PageReq::unbounded())
+            .await
+            .unwrap()),
+        [q.clone(), r.clone()].into_iter().collect(),
+        "cyclic upstream terminates; seed P excluded"
+    );
+}
+
+/// Contract: cursor pagination on dataset closure and `events_for`. Run against
+/// every `Lineage` adapter.
+pub async fn lineage_pagination_contract<CP: Lineage>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+
+    // fan-out: 7 inputs each feeding one output Z (one event apiece)
+    let z = ds("w", "pag.z");
+    let inputs: Vec<DatasetRef> = (0..7).map(|i| ds("w", &format!("pag.in{i:02}"))).collect();
+    for inp in &inputs {
+        cp.emit(LineageEvent {
+            run_id: RunId(uuid::Uuid::new_v4()),
+            event_type: EventType::Complete,
+            event_time: ts,
+            inputs: vec![inp.clone()],
+            outputs: vec![z.clone()],
+            payload: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    }
+
+    // page upstream(Z) in pages of 3; every dataset exactly once, in sorted order
+    let mut seen: Vec<DatasetRef> = Vec::new();
+    let mut after: Option<control_plane_core::Cursor> = None;
+    loop {
+        let req = PageReq {
+            after: after.clone(),
+            limit: Some(3),
+        };
+        let page = cp.upstream(&z, 1, req).await.unwrap();
+        assert!(page.items.len() <= 3, "page never exceeds limit");
+        seen.extend(page.items.iter().cloned());
+        match page.next {
+            Some(cur) => after = Some(cur),
+            None => break,
+        }
+    }
+    let mut expected = inputs.clone();
+    expected.sort();
+    assert_eq!(
+        seen, expected,
+        "paged upstream returns every dataset once, in stable order"
+    );
+
+    // events_for pagination: a run with 5 events, pages of 2
+    let run = RunId(uuid::Uuid::new_v4());
+    for i in 0..5 {
+        cp.emit(LineageEvent {
+            run_id: run,
+            event_type: EventType::Running,
+            event_time: ts,
+            inputs: vec![],
+            outputs: vec![ds("w", &format!("ev.o{i}"))],
+            payload: serde_json::json!({ "i": i }),
+        })
+        .await
+        .unwrap();
+    }
+    let mut count = 0usize;
+    let mut after: Option<control_plane_core::Cursor> = None;
+    let ended_with_null;
+    loop {
+        let page = cp
+            .events_for(
+                &run,
+                PageReq {
+                    after: after.clone(),
+                    limit: Some(2),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(page.items.len() <= 2, "events page never exceeds limit");
+        count += page.items.len();
+        match page.next {
+            Some(cur) => after = Some(cur),
+            None => {
+                ended_with_null = true;
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        count, 5,
+        "all events returned across pages, none duplicated/dropped"
+    );
+    assert!(ended_with_null, "final page signals no next");
 }
 
 /// Contract for `Tx` isolation: while a transaction is open and uncommitted, the
