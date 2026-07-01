@@ -9,6 +9,7 @@ rust_library(
     edition = "2024",
     deps = [
         "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
         "//src/services/engine-wire:engine-wire",
         "//src/services/runtime:runtime",
         "//src/loom-config:loom-config",
@@ -22,6 +23,7 @@ rust_library(
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:tokio-stream",
         "//third-party:tonic",
         "//third-party:tower-http",
         "//third-party:tracing",
