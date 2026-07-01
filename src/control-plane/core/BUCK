@@ -7,6 +7,7 @@ rust_library(
     edition = "2024",
     deps = [
         "//third-party:async-trait",
+        "//third-party:regex",
         "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:thiserror",
@@ -14,6 +15,16 @@ rust_library(
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "constraints",
+    crate = "constraints",
+    srcs = ["tests/constraints.rs"],
+    crate_root = "tests/constraints.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
 )
 
 rust_test(
@@ -137,7 +148,7 @@ rust_test(
     crate_root = "tests/auth_types.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
-    deps = [":core"],
+    deps = [":core", "//third-party:time"],
 )
 
 rust_test(

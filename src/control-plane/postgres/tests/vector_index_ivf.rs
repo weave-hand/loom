@@ -112,11 +112,13 @@ async fn ivf_build_writes_decodable_blob_and_mirror_kind() {
                     name: "id".into(),
                     ty: "Long".into(),
                     required: true,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 },
                 PropertyDef {
                     name: "embedding".into(),
                     ty: "vector(4)".into(),
                     required: true,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 },
             ],
             derived: vec![],

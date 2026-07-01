@@ -48,6 +48,20 @@ pub struct WriteDeniedBody {
     pub column: Option<String>,
 }
 
+/// Documentation shape for a 422 constraint-violation body on a typed-insert action.
+#[derive(ToSchema)]
+pub struct ConstraintViolationsBody {
+    pub violations: Vec<ConstraintViolationItem>,
+}
+
+/// One constraint violation: the property and the rule it failed.
+#[derive(ToSchema)]
+pub struct ConstraintViolationItem {
+    pub property: String,
+    /// `range` | `length` | `pattern` | `one_of`.
+    pub rule: String,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -70,6 +84,8 @@ pub struct WriteDeniedBody {
         VectorSearchResponse,
         JobAck,
         WriteDeniedBody,
+        ConstraintViolationsBody,
+        ConstraintViolationItem,
         crate::http::VectorSearchRequest,
     ))
 )]

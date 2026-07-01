@@ -68,21 +68,25 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "customer_id".into(),
                 ty: "Long".into(),
                 required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "amount".into(),
                 ty: "Double".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
             PropertyDef {
                 name: "status".into(),
                 ty: "String".into(),
                 required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
             },
         ],
         derived: vec![],
@@ -97,6 +101,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
             name: "id".into(),
             ty: "Long".into(),
             required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
         }],
         derived: vec![
             DerivedPropertyDef {

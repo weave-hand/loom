@@ -66,6 +66,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cp_flight = cp.clone();
     let auth_flight: std::sync::Arc<dyn control_plane_core::Auth + Send + Sync> = pg.clone();
 
+    let admin_subject = std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME")
+        .ok()
+        .map(control_plane_core::SubjectId);
+    let max_ttl = service_runtime::service_token_max_ttl_from_env();
+
     let app = service_runtime::protect(
         router(AppState {
             cp,
@@ -76,7 +81,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth_state.clone(),
     )
     .merge(service_runtime::login_routes(auth_state.clone()))
-    .merge(service_runtime::session_routes(auth_state));
+    .merge(service_runtime::session_routes(auth_state.clone()))
+    .merge(service_runtime::service_account_routes(
+        auth_state,
+        admin_subject,
+        max_ttl,
+    ));
     // Dynamic OpenAPI: `/openapi.json` regenerates per request from the LIVE ontology, read
     // through the direct Postgres control plane (`pg`) — the wire governance client does not
     // implement `list_types`. `/docs` (Scalar) loads the live spec by URL.

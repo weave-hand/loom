@@ -20,16 +20,22 @@ use crate::vector_index::{IndexSpec, Metric};
 pub struct TypeName(pub String);
 
 /// A logical property of an object type. `ty` is the ontology's logical type
-/// (loom's vocabulary), NOT the physical column type.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// (loom's vocabulary), NOT the physical column type. `constraints` (default empty)
+/// declares optional per-value validation rules enforced on every write path.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PropertyDef {
     pub name: String,
     pub ty: String,
     pub required: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::constraints::PropertyConstraints::is_empty"
+    )]
+    pub constraints: crate::constraints::PropertyConstraints,
 }
 
 /// An ontology object type: a named, propertied view bound to a physical table.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectType {
     pub name: TypeName,
     /// Ordered.

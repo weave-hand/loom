@@ -8,13 +8,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
-use axum::extract::{FromRequestParts, Request, State};
+use axum::extract::{FromRequestParts, Path, Request, State};
 use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use control_plane_core::{Auth, ControlPlaneError, NewUser, SubjectId};
+use control_plane_core::{Auth, ControlPlaneError, NewServiceAccount, NewUser, PageReq, SubjectId};
 use time::OffsetDateTime;
 
 use crate::token_sha256;
@@ -70,6 +70,21 @@ impl<S: Send + Sync> FromRequestParts<S> for Subject {
     }
 }
 
+/// Resolve a bearer token hash to a subject: try a login session first (interactive
+/// traffic dominates), then a service token. Both are constant-time hash lookups, so
+/// order is performance-only. This is the single sequencing point so there stays
+/// exactly one path that produces `Unauthorized`.
+async fn resolve_bearer(
+    auth: &(dyn Auth + Send + Sync),
+    hash: &[u8; 32],
+    now: OffsetDateTime,
+) -> Result<Option<SubjectId>, ControlPlaneError> {
+    if let Some(sid) = auth.resolve_session(hash, now).await? {
+        return Ok(Some(sid));
+    }
+    auth.resolve_service_token(hash, now).await
+}
+
 /// Resolve the bearer session token to a verified `Subject`, inject it into
 /// request extensions, and run the handler. Absent/invalid/expired → 401.
 pub async fn require_auth(State(st): State<AuthState>, mut req: Request, next: Next) -> Response {
@@ -77,11 +92,7 @@ pub async fn require_auth(State(st): State<AuthState>, mut req: Request, next: N
         return unauthorized();
     };
     let hash = token_sha256(&token);
-    match st
-        .auth
-        .resolve_session(&hash, OffsetDateTime::now_utc())
-        .await
-    {
+    match resolve_bearer(st.auth.as_ref(), &hash, OffsetDateTime::now_utc()).await {
         Ok(Some(sid)) => {
             req.extensions_mut().insert(Subject(sid));
             next.run(req).await
@@ -180,6 +191,280 @@ pub fn session_routes(auth: AuthState) -> Router {
             .with_state(auth.clone()),
         auth,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Service-account management (admin-gated)
+// ---------------------------------------------------------------------------
+
+/// Shared state for the admin-gated service-account routes. Carries the authn store,
+/// the bootstrap-admin subject the gate compares against (None ⇒ management is closed
+/// to everyone), and the mandatory-TTL cap.
+#[derive(Clone)]
+struct ServiceAccountState {
+    auth: Arc<dyn Auth + Send + Sync>,
+    admin_subject: Option<SubjectId>,
+    max_ttl: Duration,
+}
+
+/// 403 unless the verified subject is the configured bootstrap admin. This is the
+/// only admin notion today; a first-class auth-admin ACL capability is deferred.
+#[expect(
+    clippy::result_large_err,
+    reason = "Err carries the ready-to-return axum Response (mirrors the handlers' own \
+              Response returns); boxing it would just move the cost to every call site"
+)]
+fn ensure_admin(subject: &Subject, st: &ServiceAccountState) -> Result<(), Response> {
+    match &st.admin_subject {
+        Some(admin) if *admin == subject.0 => Ok(()),
+        _ => Err((
+            StatusCode::FORBIDDEN,
+            "service-account management is admin-only",
+        )
+            .into_response()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CreateAccountReq {
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+struct AccountResp {
+    subject_id: String,
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct MintTokenReq {
+    label: String,
+    /// Requested lifetime in seconds. `expires_at = now + ttl`, capped at max_ttl.
+    ttl_secs: u64,
+}
+
+#[derive(serde::Serialize)]
+struct MintTokenResp {
+    /// The plaintext token — returned exactly once, never persisted or re-derivable.
+    token: String,
+    /// Hex SHA-256 of the token: its stable id, usable in the revoke URL.
+    token_id: String,
+    label: String,
+    /// Expiry as a Unix timestamp (seconds).
+    expires_at: i64,
+}
+
+#[derive(serde::Serialize)]
+struct TokenMetaResp {
+    token_id: String,
+    label: String,
+    created_at: i64,
+    expires_at: i64,
+    revoked_at: Option<i64>,
+}
+
+/// `POST /auth/service-accounts` — admin. Create a service account.
+async fn create_account(
+    subject: Subject,
+    State(st): State<ServiceAccountState>,
+    axum::Json(req): axum::Json<CreateAccountReq>,
+) -> Response {
+    if let Err(r) = ensure_admin(&subject, &st) {
+        return r;
+    }
+    // subject_id == name keeps machine identities operator-legible, mirroring how the
+    // bootstrap admin's subject_id equals its username.
+    let account = NewServiceAccount {
+        subject_id: SubjectId(req.name.clone()),
+        name: req.name.clone(),
+    };
+    match st.auth.create_service_account(&account).await {
+        Ok(()) => (
+            StatusCode::OK,
+            axum::Json(AccountResp {
+                subject_id: req.name.clone(),
+                name: req.name,
+            }),
+        )
+            .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `GET /auth/service-accounts` — admin. List service accounts.
+async fn list_accounts(subject: Subject, State(st): State<ServiceAccountState>) -> Response {
+    if let Err(r) = ensure_admin(&subject, &st) {
+        return r;
+    }
+    match st.auth.list_service_accounts(PageReq::unbounded()).await {
+        Ok(page) => {
+            let accounts: Vec<AccountResp> = page
+                .items
+                .into_iter()
+                .map(|a| AccountResp {
+                    subject_id: a.subject_id.0,
+                    name: a.name,
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({ "accounts": accounts })),
+            )
+                .into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `POST /auth/service-accounts/{id}/tokens` — admin. Mint a token (plaintext once).
+async fn mint_token(
+    subject: Subject,
+    State(st): State<ServiceAccountState>,
+    Path(id): Path<String>,
+    axum::Json(req): axum::Json<MintTokenReq>,
+) -> Response {
+    if let Err(r) = ensure_admin(&subject, &st) {
+        return r;
+    }
+    // Mandatory-TTL cap: reject an over-cap (or zero) request — no immortal tokens.
+    let ttl = Duration::from_secs(req.ttl_secs);
+    if req.ttl_secs == 0 || ttl > st.max_ttl {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "ttl_secs must be in 1..={} (LOOM_SERVICE_TOKEN_MAX_TTL)",
+                st.max_ttl.as_secs()
+            ),
+        )
+            .into_response();
+    }
+    let Ok(ttl_time) = time::Duration::try_from(ttl) else {
+        return (StatusCode::BAD_REQUEST, "ttl_secs too large").into_response();
+    };
+    let expires = OffsetDateTime::now_utc() + ttl_time;
+    let token = crate::generate_session_token();
+    let hash = token_sha256(&token);
+    match st
+        .auth
+        .create_service_token(&SubjectId(id), &hash, &req.label, expires)
+        .await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            axum::Json(MintTokenResp {
+                token,
+                token_id: hex::encode(hash),
+                label: req.label,
+                expires_at: expires.unix_timestamp(),
+            }),
+        )
+            .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `GET /auth/service-accounts/{id}/tokens` — admin. List a token's metadata.
+async fn list_tokens(
+    subject: Subject,
+    State(st): State<ServiceAccountState>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(r) = ensure_admin(&subject, &st) {
+        return r;
+    }
+    match st
+        .auth
+        .list_service_tokens(&SubjectId(id), PageReq::unbounded())
+        .await
+    {
+        Ok(page) => {
+            let tokens: Vec<TokenMetaResp> = page
+                .items
+                .into_iter()
+                .map(|t| TokenMetaResp {
+                    token_id: hex::encode(t.token_sha256),
+                    label: t.label,
+                    created_at: t.created_at.unix_timestamp(),
+                    expires_at: t.expires_at.unix_timestamp(),
+                    revoked_at: t.revoked_at.map(|r| r.unix_timestamp()),
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({ "tokens": tokens })),
+            )
+                .into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `DELETE /auth/service-accounts/{id}/tokens/{token_id}` — admin. Revoke a token,
+/// addressed by its hex SHA-256 id (from the mint/list responses). Idempotent.
+async fn revoke_token(
+    subject: Subject,
+    State(st): State<ServiceAccountState>,
+    Path((_id, token_id)): Path<(String, String)>,
+) -> Response {
+    if let Err(r) = ensure_admin(&subject, &st) {
+        return r;
+    }
+    let Ok(bytes) = hex::decode(&token_id) else {
+        return (StatusCode::BAD_REQUEST, "token_id is not valid hex").into_response();
+    };
+    let Ok(hash): Result<[u8; 32], _> = bytes.try_into() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "token_id must be a 32-byte sha-256",
+        )
+            .into_response();
+    };
+    match st.auth.revoke_service_token(&hash).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// Admin-gated service-account management routes, behind the authn gate. `auth`
+/// supplies authn; `admin_subject` is the only principal allowed to manage (None ⇒
+/// closed); `max_ttl` caps minted-token lifetime.
+pub fn service_account_routes(
+    auth: AuthState,
+    admin_subject: Option<SubjectId>,
+    max_ttl: Duration,
+) -> Router {
+    let mgmt = ServiceAccountState {
+        auth: auth.auth.clone(),
+        admin_subject,
+        max_ttl,
+    };
+    protect(
+        Router::new()
+            .route(
+                "/auth/service-accounts",
+                axum::routing::post(create_account).get(list_accounts),
+            )
+            .route(
+                "/auth/service-accounts/:id/tokens",
+                axum::routing::post(mint_token).get(list_tokens),
+            )
+            .route(
+                "/auth/service-accounts/:id/tokens/:token_id",
+                axum::routing::delete(revoke_token),
+            )
+            .with_state(mgmt),
+        auth,
+    )
+}
+
+/// Read the service-token TTL cap from `LOOM_SERVICE_TOKEN_MAX_TTL` (seconds, default
+/// 90 days). Mint requests over this are rejected (400).
+pub fn service_token_max_ttl_from_env() -> Duration {
+    std::env::var("LOOM_SERVICE_TOKEN_MAX_TTL")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(90 * 24 * 3600))
 }
 
 // ---------------------------------------------------------------------------

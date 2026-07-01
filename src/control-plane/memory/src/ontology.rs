@@ -20,6 +20,9 @@ pub(crate) struct OntologyState {
 impl Ontology for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_type(&self, ty: ObjectType) -> Result<()> {
+        // Reject malformed constraint declarations at define time — same gate as the
+        // postgres adapter, so both reject identically (the testkit contract pins this).
+        control_plane_core::validate_constraints(&ty.properties)?;
         self.ontology.lock().types.insert(ty.name.0.clone(), ty);
         Ok(())
     }

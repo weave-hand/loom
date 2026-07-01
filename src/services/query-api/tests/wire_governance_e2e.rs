@@ -45,6 +45,7 @@ async fn seed(
                     name: "id".into(),
                     ty: "long".into(),
                     required: true,
+                    constraints: control_plane_core::PropertyConstraints::default(),
                 }],
                 derived: vec![],
                 table: TableRef {

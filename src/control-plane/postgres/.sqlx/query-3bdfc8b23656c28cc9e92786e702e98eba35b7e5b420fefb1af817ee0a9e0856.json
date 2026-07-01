@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into auth.service_token (token_sha256, subject_id, label, expires_at) values ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3bdfc8b23656c28cc9e92786e702e98eba35b7e5b420fefb1af817ee0a9e0856"
+}
