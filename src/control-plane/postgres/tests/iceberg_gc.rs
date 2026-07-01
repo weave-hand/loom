@@ -25,8 +25,8 @@ use control_plane_postgres::iceberg_landing::{land, overwrite_parquet_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
-use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
+use iceberg::{Catalog as _, CatalogBuilder, NamespaceIdent, TableIdent};
 use time::OffsetDateTime;
 
 const SEVEN_DAYS: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -109,6 +109,68 @@ async fn age_snapshot(pool: &sqlx::PgPool, snap_id: i64) {
         .execute(pool)
         .await
         .expect("age snapshot");
+}
+
+/// Backdate EVERY snapshot so the whole history looks aged out (H = max snapshot id).
+async fn age_all_snapshots(pool: &sqlx::PgPool) {
+    let old = OffsetDateTime::now_utc() - time::Duration::days(365);
+    sqlx::query("update iceberg_mirror.snapshot set snapshot_time = $1")
+        .bind(old)
+        .execute(pool)
+        .await
+        .expect("age all snapshots");
+}
+
+/// The currently-live `table_id` for `(ns, name)` (fixture-side, before a drop).
+/// `iceberg_mirror.table` is spelled unquoted to match the crate's own SQL (the
+/// keyword parses fine after the schema qualifier — the committed `.sqlx` cache
+/// proves real Postgres accepts it).
+async fn live_tid(pool: &sqlx::PgPool, ns: &str, name: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "select table_id from iceberg_mirror.table \
+         where table_namespace = $1 and table_name = $2 and end_snapshot is null",
+    )
+    .bind(ns)
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .expect("live tid")
+}
+
+/// Count of `table`/`column`/`data_file` mirror rows for a specific `table_id`
+/// (used to assert a dropped incarnation's metadata is fully gone). Returns
+/// (table_rows, column_rows, data_file_rows).
+async fn mirror_row_counts(pool: &sqlx::PgPool, tid: i64) -> (i64, i64, i64) {
+    let t: i64 =
+        sqlx::query_scalar("select count(*) from iceberg_mirror.table where table_id = $1")
+            .bind(tid)
+            .fetch_one(pool)
+            .await
+            .expect("t count");
+    let c: i64 =
+        sqlx::query_scalar("select count(*) from iceberg_mirror.column where table_id = $1")
+            .bind(tid)
+            .fetch_one(pool)
+            .await
+            .expect("c count");
+    let d: i64 =
+        sqlx::query_scalar("select count(*) from iceberg_mirror.data_file where table_id = $1")
+            .bind(tid)
+            .fetch_one(pool)
+            .await
+            .expect("d count");
+    (t, c, d)
+}
+
+/// True if the physical `iceberg_mirror.inline_<tid>` table still exists.
+async fn inline_table_exists(pool: &sqlx::PgPool, tid: i64) -> bool {
+    let name = format!("iceberg_mirror.inline_{tid}");
+    let reg: Option<String> = sqlx::query_scalar("select to_regclass($1)::text")
+        .bind(&name)
+        .fetch_one(pool)
+        .await
+        .expect("to_regclass");
+    reg.is_some()
 }
 
 /// The delete seam removes the object and is idempotent.
@@ -405,4 +467,252 @@ async fn gc_serializes_with_concurrent_flush() {
             .is_none(),
         "flush retired the inline rows"
     );
+}
+
+/// Dropped table reclaimed: land a file + inline rows, drop, age the whole history,
+/// gc → data-file Parquet deleted, inline_<tid> dropped, table/column/data_file rows
+/// gone; the object store no longer holds the file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_reclaims_a_dropped_table() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let ice = IcebergCatalog::new(pool.clone());
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "gone".into(),
+    };
+    let run = RunId(uuid::Uuid::new_v4());
+
+    let s1 = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(10),
+        0,
+        i64::MAX,
+        lineage(run, "wh", "gone"),
+    )
+    .await
+    .expect("land");
+    let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
+    inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &batch(3),
+        lineage(run, "wh", "gone"),
+        None,
+    )
+    .await
+    .expect("inline_append");
+    let tid = live_tid(&pool, "wh", "gone").await;
+    assert!(
+        inline_table_exists(&pool, tid).await,
+        "inline table exists before drop"
+    );
+
+    let ident = TableIdent::new(NamespaceIdent::new("wh".into()), "gone".into());
+    catalog.drop_table(&ident).await.expect("drop");
+    age_all_snapshots(&pool).await; // drop snapshot D <= H → full reclaim
+
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+    assert!(
+        summary.data_file_rows >= 1 && summary.objects_deleted >= 1,
+        "dropped data file reclaimed (got {summary:?})"
+    );
+    assert!(!a_path.exists(), "dropped table's Parquet deleted");
+    assert!(
+        !inline_table_exists(&pool, tid).await,
+        "inline_<tid> dropped"
+    );
+    assert_eq!(
+        mirror_row_counts(&pool, tid).await,
+        (0, 0, 0),
+        "table/column/data_file mirror rows removed"
+    );
+}
+
+/// Within-window drop preserved: dropping then gc-ing BEFORE the drop snapshot ages
+/// out deletes nothing (a time-travel read as-of before the drop still resolves); a
+/// later gc after aging completes the reclaim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_preserves_a_within_window_dropped_table() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let ice = IcebergCatalog::new(pool.clone());
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "recent".into(),
+    };
+
+    let s1 = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(10),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "recent"),
+    )
+    .await
+    .expect("land");
+    let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
+    let tid = live_tid(&pool, "wh", "recent").await;
+
+    let ident = TableIdent::new(NamespaceIdent::new("wh".into()), "recent".into());
+    catalog.drop_table(&ident).await.expect("drop"); // drop snapshot s2 (recent)
+    age_snapshot(&pool, s1.0).await; // H = s1; drop snapshot s2 > H
+
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+    assert_eq!(
+        summary,
+        GcSummary::default(),
+        "within-window drop reclaims nothing"
+    );
+    assert!(a_path.exists(), "Parquet retained while drop is in-window");
+    assert_eq!(
+        mirror_row_counts(&pool, tid).await.0,
+        1,
+        "dropped incarnation's table row retained while in-window"
+    );
+
+    // A later gc, after the drop snapshot ages out, completes the reclaim.
+    age_all_snapshots(&pool).await;
+    gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc2");
+    assert!(!a_path.exists(), "Parquet reclaimed once aged out");
+    assert_eq!(
+        mirror_row_counts(&pool, tid).await,
+        (0, 0, 0),
+        "metadata reclaimed once aged out"
+    );
+}
+
+/// Drop/recreate isolation: create (s,t), drop it, recreate (s,t) with a new table_id,
+/// land into the live one, age the whole history, gc → the DROPPED incarnation's bytes
+/// are reclaimed while the LIVE incarnation's current files + metadata are untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_isolates_dropped_from_recreated_incarnation() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let ice = IcebergCatalog::new(pool.clone());
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "reused".into(),
+    };
+
+    // Incarnation 1: land, capture its file + tid, drop.
+    let s1 = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(10),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "reused"),
+    )
+    .await
+    .expect("land1");
+    let p1 = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
+    let tid1 = live_tid(&pool, "wh", "reused").await;
+    let ident = TableIdent::new(NamespaceIdent::new("wh".into()), "reused".into());
+    catalog.drop_table(&ident).await.expect("drop1");
+
+    // Incarnation 2 (live): re-land under the same name → new table_id.
+    let s2 = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(5),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "reused"),
+    )
+    .await
+    .expect("land2");
+    let p2 = local_path(&ice.files_with_stats(&t, s2).await.expect("files@s2")[0].path);
+    let tid2 = live_tid(&pool, "wh", "reused").await;
+    assert_ne!(tid1, tid2, "recreate allocates a fresh table_id");
+
+    age_all_snapshots(&pool).await;
+    gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+
+    // Dropped incarnation reclaimed; live incarnation untouched.
+    assert!(!p1.exists(), "dropped incarnation's Parquet reclaimed");
+    assert_eq!(
+        mirror_row_counts(&pool, tid1).await,
+        (0, 0, 0),
+        "dropped metadata gone"
+    );
+    assert!(p2.exists(), "live incarnation's current Parquet retained");
+    assert_eq!(
+        mirror_row_counts(&pool, tid2).await.0,
+        1,
+        "live table row retained"
+    );
+    let cur = ice.current_snapshot(&t).await.expect("current");
+    let rows: i64 = ice
+        .files_with_stats(&t, cur.id)
+        .await
+        .expect("files")
+        .iter()
+        .map(|f| f.record_count)
+        .sum();
+    assert_eq!(rows, 5, "live incarnation reads back intact");
+}
+
+/// Idempotent: a second gc on a fully-reclaimed dropped name is a clean no-op.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "twice".into(),
+    };
+
+    land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        &ipc_body(10),
+        0,
+        i64::MAX,
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "twice"),
+    )
+    .await
+    .expect("land");
+    let ident = TableIdent::new(NamespaceIdent::new("wh".into()), "twice".into());
+    catalog.drop_table(&ident).await.expect("drop");
+    age_all_snapshots(&pool).await;
+
+    let first = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc1");
+    assert!(
+        first.data_file_rows >= 1,
+        "first gc reclaims the dropped table"
+    );
+    let second = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc2");
+    assert_eq!(second, GcSummary::default(), "second gc is a clean no-op");
 }
