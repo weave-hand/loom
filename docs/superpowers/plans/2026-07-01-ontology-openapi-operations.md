@@ -36,7 +36,7 @@ These resolve ambiguities in the spec; the reviewer should sanity-check them.
 
 - **Create `src/services/query-api/src/openapi_gen.rs`** — the pure generator + codec. `ontology_openapi(types, links) -> (Paths, Schemas)` and `base_type_to_schema(BaseType, nullable) -> RefOr<Schema>`. No I/O.
 - **Modify `src/services/query-api/src/openapi.rs`** — add `live_openapi(cp) -> OpenApi` (async: reads the ontology, calls the generator, merges onto a `build_openapi()` clone).
-- **Modify `src/services/query-api/src/lib.rs`** — `mod openapi_gen;` + re-export `live_openapi`.
+- **Modify `src/services/query-api/src/lib.rs`** — `pub mod openapi_gen;` (public so the test reaches `query_api::openapi_gen::*`) + re-export `live_openapi`.
 - **Modify `src/services/runtime/src/openapi.rs`** — factor out `register_bearer_scheme`; add `with_openapi_provider`.
 - **Modify `src/services/runtime/src/lib.rs`** — re-export `with_openapi_provider`.
 - **Modify `src/services/query-api/src/main.rs`** — swap the static `with_openapi(app, build_openapi())` for `with_openapi_provider(app, provider)` capturing `pg`.
@@ -179,7 +179,7 @@ Expected: FAIL — `base_type_to_schema` / `openapi_gen` unresolved.
 
 - [ ] **Step 3: Implement the codec**
 
-Add `mod openapi_gen;` and `pub use openapi_gen::{...};` to `src/services/query-api/src/lib.rs` (make the module `pub` so the test can reach `query_api::openapi_gen::base_type_to_schema`). Then create the codec in `openapi_gen.rs`:
+Add `pub mod openapi_gen;` to `src/services/query-api/src/lib.rs` (public so the test can reach `query_api::openapi_gen::base_type_to_schema` / `::ontology_openapi`). Then create the codec in `openapi_gen.rs`:
 
 ```rust
 //! Pure ontology→OpenAPI generation: map an ontology snapshot (types + links) to OpenAPI
@@ -563,12 +563,18 @@ Extend `tests/openapi_gen.rs`:
 
 ```rust
 use std::sync::Arc;
+use std::time::Duration;
 use control_plane_core::{ControlPlane, Ontology};
 use control_plane_memory::MemoryControlPlane;
 
+// MemoryControlPlane::new takes a lock_timeout Duration (see memory/src/lib.rs:74).
+fn mem_cp() -> Arc<dyn ControlPlane + Send + Sync> {
+    Arc::new(MemoryControlPlane::new(Duration::from_millis(300)))
+}
+
 #[tokio::test]
 async fn live_doc_reflects_defined_types_without_restart() {
-    let cp: Arc<dyn ControlPlane + Send + Sync> = Arc::new(MemoryControlPlane::new());
+    let cp = mem_cp();
     cp.ontology().define_type(customer()).await.unwrap();
 
     let doc1 = query_api::live_openapi(cp.clone()).await;
@@ -586,7 +592,7 @@ async fn live_doc_reflects_defined_types_without_restart() {
 
 #[tokio::test]
 async fn static_framework_survives_merge() {
-    let cp: Arc<dyn ControlPlane + Send + Sync> = Arc::new(MemoryControlPlane::new());
+    let cp = mem_cp();
     cp.ontology().define_type(customer()).await.unwrap();
     let doc = query_api::live_openapi(cp).await;
     let j = serde_json::to_value(&doc).unwrap();
@@ -597,7 +603,7 @@ async fn static_framework_survives_merge() {
 
 #[tokio::test]
 async fn full_catalog_is_generated() {
-    let cp: Arc<dyn ControlPlane + Send + Sync> = Arc::new(MemoryControlPlane::new());
+    let cp = mem_cp();
     cp.ontology().define_type(customer()).await.unwrap();
     cp.ontology().define_type(order()).await.unwrap();
     let doc = query_api::live_openapi(cp).await;
@@ -714,14 +720,13 @@ git commit -m "feat(query-api): live_openapi merges ontology ops onto the static
 
 Extend `src/services/runtime/tests/openapi.rs` (mirror the existing `sample_doc()` helper):
 
+Read the body with `http_body_util::BodyExt` (`resp.into_body().collect().await.unwrap().to_bytes()`) — the same pattern the existing tests in this file use (imports `use http_body_util::BodyExt;`), NOT `axum::body::to_bytes` (avoids a missing dep). Add whichever `use` lines are missing at the top of the file; `sample_doc()`, `tower::ServiceExt`, `axum::{body::Body, http::Request}` are already imported.
+
 ```rust
 #[tokio::test]
 async fn provider_serves_openapi_json_with_bearer_scheme() {
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
-
     // A provider that returns a doc carrying a marker path, proving per-request generation.
+    // Build the marker PathItem via whatever the real utoipa 5.5 API is — verify at build.
     let app = service_runtime::with_openapi_provider(axum::Router::new(), || async {
         let mut d = sample_doc();
         d.paths.paths.insert(
@@ -738,8 +743,8 @@ async fn provider_serves_openapi_json_with_bearer_scheme() {
         .oneshot(Request::builder().uri("/openapi.json").body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     // The provider's marker path is present (per-request generation ran).
     assert!(json["paths"]["/live/marker"].is_object());
@@ -749,22 +754,19 @@ async fn provider_serves_openapi_json_with_bearer_scheme() {
 
 #[tokio::test]
 async fn provider_serves_docs_html() {
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
     let app = service_runtime::with_openapi_provider(axum::Router::new(), || async { sample_doc() });
     let resp = app
         .oneshot(Request::builder().uri("/docs").body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let html = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(html.contains("/openapi.json"), "docs must load the live spec URL");
 }
 ```
 
-Ensure the runtime `openapi` test target's deps include `tower` and `serde_json` (mirror the existing test's deps in `src/services/runtime/BUCK`).
+The runtime `openapi` test target already deps `tower`, `serde_json`, `http-body-util`, `axum`, `tokio`, `utoipa` (`src/services/runtime/BUCK`), so **no BUCK change is needed** for these tests. The marker `PathItem::new(HttpMethod::Get, ...)` construction is unverified against the codebase — verify the exact utoipa 5.5 API at build (same caveat as Task 2); the assertion on `/live/marker` is the behavioral gate.
 
 - [ ] **Step 2: Run to verify it fails**
 
