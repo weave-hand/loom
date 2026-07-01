@@ -37,6 +37,7 @@
 **Files:**
 - Modify: `src/services/query-api/src/filter.rs` (the `FilterError` enum ~lines 9-13; `coerce_filter` ~lines 30-35; `coerce_predicate` `bad` closure ~line 121)
 - Test: `src/services/query-api/tests/filter_coerce.rs` (8 `BadValue` assertions at lines 36, 52, 56, 80, 84, 92, 96, 100)
+- Test: `src/services/query-api/tests/identity_in_predicate.rs` (the `uncoercible_value_is_bad_filter_value` assertion at line 134) — **also breaks**, because `identity_in_predicate` (`handler.rs:195`) calls `coerce_filter`, so an uncoercible id value now yields `Coerce`, not `BadValue`.
 
 **Interfaces:**
 - Produces:
@@ -102,6 +103,24 @@ with the `Coerce` variant. The 8 sites and their expected `column`/`expected`/`v
     ));
 ```
 
+Also update `src/services/query-api/tests/identity_in_predicate.rs` — the `uncoercible_value_is_bad_filter_value` test (line 133-136) asserts the `coerce_filter` failure as `BadValue`, which is now `Coerce`. Replace:
+
+```rust
+    assert!(
+        matches!(&err, QueryError::BadFilterValue(FilterError::BadValue(c, _)) if c == "id"),
+        "got {err:?}",
+    );
+```
+
+with:
+
+```rust
+    assert!(
+        matches!(&err, QueryError::BadFilterValue(FilterError::Coerce { column: c, .. }) if c == "id"),
+        "got {err:?}",
+    );
+```
+
 Then add a new test that pins the structured fields (this is the core new behavior):
 
 ```rust
@@ -138,9 +157,9 @@ fn coerce_predicate_grammar_fault_stays_bad_value() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails to compile**
+- [ ] **Step 2: Run the tests to verify they fail to compile**
 
-Run: `buck2 build -M none //src/services/query-api:filter-coerce 2>&1 | tail -20`
+Run: `buck2 build -M none //src/services/query-api:filter-coerce //src/services/query-api:identity-in-predicate 2>&1 | tail -20`
 Expected: FAIL — `FilterError` has no variant `Coerce` (the enum is still `BadValue`-only).
 
 - [ ] **Step 3: Enrich the `FilterError` enum**
@@ -202,13 +221,13 @@ Leave `coerce_predicate`'s own `bad` closure (line 121, `FilterError::BadValue(c
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `buck2 test //src/services/query-api:filter-coerce > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL|PASS" /tmp/t1.log`
-Expected: PASS (all `filter_coerce` tests, including the two new ones).
+Run: `buck2 test //src/services/query-api:filter-coerce //src/services/query-api:identity-in-predicate > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL|PASS" /tmp/t1.log`
+Expected: PASS (all `filter_coerce` tests incl. the two new ones, and the updated `identity_in_predicate` test).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/services/query-api/src/filter.rs src/services/query-api/tests/filter_coerce.rs
+git add src/services/query-api/src/filter.rs src/services/query-api/tests/filter_coerce.rs src/services/query-api/tests/identity_in_predicate.rs
 git commit -m "refactor(query-api): enrich FilterError with structured coercion triple"
 ```
 
@@ -529,21 +548,54 @@ git commit -m "feat(query-api): structured 400 body for uncoercible filter value
 
 - [ ] **Step 1: Write the failing action tests**
 
-In `src/services/query-api/tests/constraints_action_http.rs`, add after `acl_denial_is_403_distinct_from_constraint_422` (end of file):
+In `src/services/query-api/tests/constraints_action_http.rs`, first add a raw-body variant of the helper (the existing `post_json` parses the body as JSON and collapses a plain-text `BadParams` body to `Value::Null`, so it cannot see the param name). Add it directly below the existing `post_json` (after its closing `}` at line 181):
+
+```rust
+/// Like `post_json`, but returns the raw response body text. `BadParams` renders a
+/// plain-text `ParamError` `Display` (not JSON), which `post_json`'s `serde_json` parse
+/// would collapse to `Null`; this surfaces it so a test can assert the offending param name.
+async fn post_json_raw(
+    cp: MemoryControlPlane,
+    writes: Arc<AtomicUsize>,
+    subject: &str,
+    body: serde_json::Value,
+) -> (StatusCode, String) {
+    let state = AppState {
+        cp: Arc::new(cp) as Arc<dyn ControlPlane>,
+        serving: Arc::new(StubServing),
+        action_engine: Arc::new(RecordingEngine { writes }),
+        default_limit: 1000,
+    };
+    let app = router(state);
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/actions/createWidget")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    req.extensions_mut()
+        .insert(Subject(SubjectId(subject.into())));
+    let res = app.oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+```
+
+Then add after `acl_denial_is_403_distinct_from_constraint_422` (end of file):
 
 ```rust
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_required_param_is_422() {
     // A well-formed JSON body that omits the required `code` param fails SEMANTIC
-    // validation → 422 (was 400), aligning with the constraint-violation 422 above.
+    // validation → 422 (was 400), aligning with the constraint-violation 422 above. The
+    // plain-text body names the offending param.
     let cp = seed().await;
     let writes = Arc::new(AtomicUsize::new(0));
-    let (status, body) = post_json(cp, writes.clone(), "analyst", json!({"id": "5"})).await;
+    let (status, body) = post_json_raw(cp, writes.clone(), "analyst", json!({"id": "5"})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
-    // The body names the offending param (plain-text `ParamError` Display).
     assert!(
-        body.as_str().is_some_and(|s| s.contains("code"))
-            || body.to_string().contains("code"),
+        body.contains("code"),
         "expected the body to name the missing `code` param, got {body}"
     );
     assert_eq!(writes.load(Ordering::SeqCst), 0);
@@ -671,7 +723,7 @@ git commit -m "feat(query-api): 422 for semantic action param failures, 400 for 
 
 Run: `buck2 build -M none //src/services/query-api/... > /tmp/build.log 2>&1; grep -E "BUILD SUCCEEDED|FAIL" /tmp/build.log`
 Then: `buck2 test //src/services/query-api/... > /tmp/all.log 2>&1; grep -E "Tests finished|FAIL" /tmp/all.log`
-Expected: build succeeds; tests finish with no failures. Pay attention to any test that matched `FilterError::BadValue` on a `coerce_filter` result elsewhere (grep confirmed only `filter_coerce.rs` does; if the build surfaces another, update it to `Coerce`).
+Expected: build succeeds; tests finish with no failures. Two test files match `FilterError::BadValue` on a `coerce_filter` result and are updated in Task 1: `filter_coerce.rs` and `identity_in_predicate.rs`. If the whole-crate build surfaces any *other* site still matching `BadValue` on a `coerce_filter` result, update it to `Coerce` (re-grep with `grep -rn 'FilterError::BadValue' src/services/query-api/tests` to confirm none remain on a coercion path).
 
 - [ ] **Step 2: Run clippy on the crate**
 
@@ -695,6 +747,10 @@ Handled by `loom-docs-update` during `superpowers:finishing-a-development-branch
 - GET typed-filter stays 400 → Task 2 keeps `StatusCode::BAD_REQUEST` in the helper. ✓
 - Alignment with `road-model-constraints` 422 → Task 3 co-locates the tests; both are 422 on `POST /actions`. ✓
 - Out of scope respected: no error-envelope rework; `BadFilter` semantics unchanged; no 422 elsewhere; no structured body for errors other than `BadFilterValue`. ✓
+
+**Deviation note (intentional):** The spec's Testing section names `typed_filter_e2e.rs` + `action_e2e.rs`, but both are *handler-level* fixture tests that assert `QueryError`/`ActionError` variants — they cannot observe HTTP **status codes or response bodies**, which is exactly what this change alters. So the HTTP-contract assertions live in router-level tests (`filter_error_http.rs`, `constraints_action_http.rs`, `openapi.rs`) instead, which run in-memory (the coercion/visibility checks fire before any serving call, so no Postgres fixture is needed). `typed_filter_e2e.rs:181` already matches `BadFilterValue(_)` with a wildcard inner, so it survives Task 1 unchanged. All six spec Testing behaviors remain covered.
+
+**422 body-schema note (accepted):** The 422 OpenAPI response keeps `body = ConstraintViolationsBody`; a `BadParams` 422 returns plain text, so the documented schema is precise only for the constraint sub-case. The spec does not require a unified 422 body, so this is left as-is (constraint violations are the primary structured 422).
 
 **2. Placeholder scan:** No TBD/TODO; every code step shows the full replacement text; test bodies are complete. ✓
 
