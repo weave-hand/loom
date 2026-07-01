@@ -152,7 +152,7 @@ async fn widget_count(cp: &PgControlPlane, pool: &sqlx::PgPool, subj: &SubjectId
     let rows = read_object(
         &ObjectQuery {
             type_name: "Widget".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),
@@ -206,7 +206,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
     let rows = read_object(
         &ObjectQuery {
             type_name: "Widget".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),

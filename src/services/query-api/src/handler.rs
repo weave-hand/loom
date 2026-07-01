@@ -42,10 +42,13 @@ pub struct GovernedRead {
     pub masked_columns: Vec<String>,
 }
 
-/// A read request: an ontology type plus optional equality filters on allowed columns.
+/// A read request: an ontology type plus optional filters on allowed columns.
 pub struct ObjectQuery {
     pub type_name: String,
-    pub eq_filters: Vec<(String, String)>,
+    /// Caller filter predicates as `(column, raw)` pairs — parsed by
+    /// `filter::coerce_predicate` (eq/ne/lt/le/gt/ge/in/nin/isnull/isnotnull/between/
+    /// contains/startswith/endswith). Repeated keys AND together.
+    pub filters: Vec<(String, String)>,
     /// Object-set input: scope the read to these identity values (an `In` predicate on
     /// the declared identity). Empty = no scoping.
     pub ids: Vec<String>,
@@ -260,8 +263,8 @@ pub async fn compile_object_read(
     // Visibility first (denied/masked column -> 400, no type info leak), then parse the
     // raw value into a typed predicate (operator + coerced operands) for the column.
     let mut predicates: Vec<crate::filter::CallerPredicate> =
-        Vec::with_capacity(q.eq_filters.len());
-    for (col, raw) in &q.eq_filters {
+        Vec::with_capacity(q.filters.len());
+    for (col, raw) in &q.filters {
         if !allowed.contains(col) || masked.contains(col) {
             return Err(QueryError::BadFilter(col.clone()));
         }

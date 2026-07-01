@@ -172,7 +172,7 @@ async fn read_widget(
     let rows = read_object(
         &ObjectQuery {
             type_name: "Widget".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),

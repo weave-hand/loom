@@ -327,7 +327,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
     let rows = read_object(
         &ObjectQuery {
             type_name: "OrderEnriched".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj),

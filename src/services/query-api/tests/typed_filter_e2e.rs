@@ -130,7 +130,7 @@ async fn typed_filters_match_and_reject() {
     let r = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("amount".into(), "10.5".into())],
+            filters: vec![("amount".into(), "10.5".into())],
             ids: vec![],
         },
         &Subject(a.clone()),
@@ -144,7 +144,7 @@ async fn typed_filters_match_and_reject() {
     let r_true = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("active".into(), "true".into())],
+            filters: vec![("active".into(), "true".into())],
             ids: vec![],
         },
         &Subject(a.clone()),
@@ -156,7 +156,7 @@ async fn typed_filters_match_and_reject() {
     let r_false = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("active".into(), "false".into())],
+            filters: vec![("active".into(), "false".into())],
             ids: vec![],
         },
         &Subject(a.clone()),
@@ -170,7 +170,7 @@ async fn typed_filters_match_and_reject() {
     let err = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("amount".into(), "abc".into())],
+            filters: vec![("amount".into(), "abc".into())],
             ids: vec![],
         },
         &Subject(a.clone()),
@@ -212,7 +212,7 @@ async fn comparison_set_and_null_operators() {
             read_object(
                 &ObjectQuery {
                     type_name: "Order".into(),
-                    eq_filters: filters,
+                    filters,
                     ids: vec![],
                 },
                 &Subject(a),

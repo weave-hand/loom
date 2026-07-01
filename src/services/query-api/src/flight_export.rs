@@ -211,7 +211,7 @@ impl FlightService for FlightExportService {
         let governed = compile_object_read(
             &ObjectQuery {
                 type_name: cmd.type_name.clone(),
-                eq_filters: cmd.filters.clone(),
+                filters: cmd.filters.clone(),
                 ids: cmd.ids.clone(),
             },
             &Subject(subject),
@@ -252,7 +252,7 @@ impl FlightService for FlightExportService {
         let governed = compile_object_read(
             &ObjectQuery {
                 type_name: cmd.type_name,
-                eq_filters: cmd.filters,
+                filters: cmd.filters,
                 ids: cmd.ids,
             },
             &Subject(subject),

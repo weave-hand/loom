@@ -146,7 +146,7 @@ async fn read_gadgets(
     let rows = read_object(
         &ObjectQuery {
             type_name: "Gadget".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),
