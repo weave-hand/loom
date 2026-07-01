@@ -24,6 +24,7 @@ rust_library(
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:tracing",
         "//third-party:tracing-subscriber",
         "//third-party:utoipa",
         "//third-party:utoipa-scalar",
