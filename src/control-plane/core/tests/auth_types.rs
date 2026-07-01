@@ -1,6 +1,6 @@
 //! Compile/shape guard for the auth domain types. Behavior is covered by the
 //! testkit `auth_contract`; this just pins the public type surface.
-use control_plane_core::{NewUser, PasswordCredential, SubjectId};
+use control_plane_core::{NewUser, PasswordCredential, SubjectId, UserSummary};
 
 #[test]
 fn new_user_and_credential_construct() {
@@ -18,4 +18,18 @@ fn new_user_and_credential_construct() {
     };
     assert_eq!(c.subject_id, u.subject_id);
     assert_eq!(c.password_phc, u.password_phc);
+}
+
+#[test]
+fn user_summary_fields_are_public() {
+    let s = UserSummary {
+        subject_id: SubjectId("u".into()),
+        username: "u".into(),
+        disabled: false,
+        created_at: time::OffsetDateTime::UNIX_EPOCH,
+    };
+    assert_eq!(s.username, "u");
+    assert!(!s.disabled);
+    assert_eq!(s.subject_id, SubjectId("u".into()));
+    assert_eq!(s.created_at, time::OffsetDateTime::UNIX_EPOCH);
 }

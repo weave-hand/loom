@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select subject_id from auth.session where token_sha256 = $1 and expires_at > $2",
+  "query": "update auth.user set disabled_at = case when $2 then now() else null end where username = $1 returning subject_id",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "auth.session",
+            "table": "auth.\"user\"",
             "name": "subject_id"
           }
         }
@@ -17,13 +17,13 @@
     ],
     "parameters": {
       "Left": [
-        "Bytea",
-        "Timestamptz"
+        "Text",
+        "Bool"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "458b9b2c1a954c5ef69d5610f0b89297281614b8901c1f46485b91d9105e7fcf"
+  "hash": "f129999f8d033955a87c72a8a71b68b9f40d2b3c36b0371a9e89f55efa4e7838"
 }

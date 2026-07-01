@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.subject_id, pc.password_phc from auth.user u join auth.password_credential pc on pc.subject_id = u.subject_id where u.username = $1",
+  "query": "select u.subject_id, pc.password_phc from auth.user u join auth.password_credential pc on pc.subject_id = u.subject_id where u.username = $1 and u.disabled_at is null",
   "describe": {
     "columns": [
       {
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "f123fbc58e252925c6c3675315e1edac057e0d0ee274de5cd3521a624197949c"
+  "hash": "90a1a243a66bf79d34e62d6ce53b09513765d2598fd5e43801beb815e1370d56"
 }

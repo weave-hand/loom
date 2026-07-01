@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select subject_id, username, disabled_at, created_at from auth.user order by username",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "subject_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth.\"user\"",
+            "name": "subject_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth.\"user\"",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "disabled_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth.\"user\"",
+            "name": "disabled_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth.\"user\"",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "0063096bb24d36560ae5e1c71b46d6ca44279ee304be9e421578730de70d4189"
+}

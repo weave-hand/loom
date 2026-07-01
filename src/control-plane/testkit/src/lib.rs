@@ -1800,6 +1800,66 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     a.revoke_session(&h(1)).await.unwrap();
     assert!(a.resolve_session(&h(1), now).await.unwrap().is_none());
     a.revoke_session(&h(1)).await.unwrap(); // no-op, no error
+
+    // --- user management: list ---
+    // alice (created above) plus a second user; both appear, no verifier surfaced.
+    a.create_user(&NewUser {
+        subject_id: sid("u-bob"),
+        username: "bob".into(),
+        password_phc: "phc-bob".into(),
+    })
+    .await
+    .unwrap();
+    let listed = a.list_users(PageReq::unbounded()).await.unwrap();
+    let names: Vec<String> = listed.items.iter().map(|u| u.username.clone()).collect();
+    assert!(names.contains(&"alice".to_string()));
+    assert!(names.contains(&"bob".to_string()));
+    assert!(
+        listed.items.iter().all(|u| !u.disabled),
+        "all active initially"
+    );
+
+    // --- disable: login + session both rejected ---
+    // Give bob a live session, then disable bob.
+    let now2 = OffsetDateTime::now_utc();
+    let future2 = now2 + time::Duration::hours(1);
+    a.create_session(&sid("u-bob"), &h(7), future2).await.unwrap();
+    assert_eq!(
+        a.resolve_session(&h(7), now2).await.unwrap(),
+        Some(sid("u-bob")),
+        "session resolves while active"
+    );
+    a.set_user_disabled("bob", true).await.unwrap();
+    // login lookup now hides bob (uniform None)
+    assert!(
+        a.find_password_credential("bob").await.unwrap().is_none(),
+        "disabled user not returned for login"
+    );
+    // the pre-existing session is rejected (revoked + disabled-honoring resolve)
+    assert!(
+        a.resolve_session(&h(7), now2).await.unwrap().is_none(),
+        "disabled user's session rejected"
+    );
+    // the listing reflects disabled state
+    let listed = a.list_users(PageReq::unbounded()).await.unwrap();
+    assert!(
+        listed
+            .items
+            .iter()
+            .any(|u| u.username == "bob" && u.disabled),
+        "bob shows disabled"
+    );
+
+    // --- enable: login works again (a fresh login, not a resurrected session) ---
+    a.set_user_disabled("bob", false).await.unwrap();
+    let cred = a.find_password_credential("bob").await.unwrap().unwrap();
+    assert_eq!(cred.subject_id, sid("u-bob"));
+
+    // --- set_user_disabled on unknown user → NotFound ---
+    assert!(matches!(
+        a.set_user_disabled("ghost", true).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
 }
 
 /// Both-adapter contract for type-existence validation on the three loom-owned
