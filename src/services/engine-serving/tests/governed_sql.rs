@@ -1,6 +1,7 @@
-//! e2e over `execute_governed_sql_stream`: row filter holds under arbitrary SQL,
-//! denied columns absent, masked columns redacted (incl. through GROUP BY), and an
-//! empty policy = full visibility. Governance is applied regardless of client SQL.
+//! e2e over `execute_governed_sql_stream`: row filter composes with client predicates
+//! and holds through a self-join, denied columns absent, masked columns redacted
+//! (incl. through GROUP BY), and an empty policy = full visibility. Governance is
+//! applied regardless of client SQL.
 
 use arrow::array::{Array, Int64Array, StringArray};
 use control_plane_core::{CompareOp, GovernedCatalog, GovernedTable, RowFilter, ScalarValue, TableRef};
@@ -17,7 +18,7 @@ async fn run(catalog: &IcebergCatalog, sql: &str, cat: &GovernedCatalog) -> Vec<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn row_filter_holds_under_join() {
+async fn row_filter_composes_with_client_predicate() {
     let fx = PgFixture::start();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
@@ -40,10 +41,48 @@ async fn row_filter_holds_under_join() {
             denied: vec![], masked: vec![],
         }],
     };
-    // Client SQL that *tries* to see everything (self-join, WHERE true).
+    // Client SQL that *tries* to see everything (WHERE true) — a single-table scan
+    // proving the client predicate composes with (does not override) the policy filter.
     let batches = run(&catalog, "SELECT o.\"id\" FROM \"s\".\"orders\" o WHERE o.\"id\" >= 0 ORDER BY o.\"id\"", &cat).await;
     let ids: Vec<i64> = collect_i64(&batches, 0);
     assert_eq!(ids, vec![2, 3, 4], "row filter applied regardless of client predicate");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn row_filter_holds_through_self_join() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("name".to_string(), "string".to_string(), false),
+    ];
+    writer.seed("s", "orders", &cols, &[5]).await; // ids 0..4
+    let catalog = IcebergCatalog::new(pool);
+
+    // Policy: only rows with id >= 2 are visible on `orders`.
+    let cat = GovernedCatalog {
+        tables: vec![GovernedTable {
+            table: gt("s", "orders"),
+            row_filters: vec![RowFilter::Compare {
+                property: "id".into(), op: CompareOp::Ge, value: ScalarValue::Int(2),
+            }],
+            denied: vec![], masked: vec![],
+        }],
+    };
+    // Real self-join: if governance leaked, the `b` side could surface filtered-out
+    // rows (id 0 or 1) via the join. Governance is applied inside each table's scan,
+    // below the join, so `b` is fully governed and only {2,3,4} can appear.
+    let batches = run(
+        &catalog,
+        "SELECT b.\"id\" FROM \"s\".\"orders\" a JOIN \"s\".\"orders\" b ON a.\"id\" = b.\"id\" ORDER BY b.\"id\"",
+        &cat,
+    )
+    .await;
+    let ids: Vec<i64> = collect_i64(&batches, 0);
+    assert_eq!(ids, vec![2, 3, 4], "self-join must not surface policy-filtered rows");
 }
 
 fn collect_i64(batches: &[arrow::record_batch::RecordBatch], col: usize) -> Vec<i64> {
