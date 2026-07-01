@@ -13,9 +13,9 @@ bundles to browser-loadable JS via wasm-bindgen.
   the URL + creds (default `admin` / `loom-dev`) and tears everything down on Ctrl-C. This
   is the "tight" deploy (query-api serves the UI, same origin); for the detached variant use
   `LOOM_CORS_ALLOWED_ORIGINS` on query-api + `:serve` for the bundle. There is **no**
-  loom-managed embedded-PG binary — both services connect to an *external* Postgres over
-  TCP (`build_pool`, not `build_pool_managed`), and `DbConfig`'s socket path only sets the
-  port on the TCP branch, so the harness talks TCP to `127.0.0.1`, not the unix socket.
+  loom-managed embedded-PG binary — both services connect to an *external* Postgres
+  (`build_pool`, not `build_pool_managed`); the harness runs a socket-only cluster and
+  points `LOOM_DB_HOST` at the socket dir.
 - This crate lives **inside** `//src/...` (so CI + the strict pedantic/restriction
   clippy gate cover it) and survives the native `buck2 build //src/...` sweep via
   `default_target_platform = //platforms:wasm` — that makes the sweep cross-compile it

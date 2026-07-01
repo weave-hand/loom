@@ -74,10 +74,10 @@ trap cleanup EXIT INT TERM
 #    tools/sqlx-prepare.sh — trust auth, unix socket, listen_addresses='').
 log "initialising ephemeral Postgres…"
 "$PGDIST/bin/initdb" -D "$PGDATA" -U postgres --auth=trust >/dev/null
-# Listen on TCP localhost (services connect over TCP) AND a private socket dir
-# (used only for the createdb/psql setup below).
+# Socket-only cluster on a private socket dir (no TCP). Services connect via the
+# unix socket at $PGSOCK on $PG_PORT.
 "$PGDIST/bin/pg_ctl" -D "$PGDATA" \
-  -o "-p $PG_PORT -k $PGSOCK -c listen_addresses=127.0.0.1" -w -l "$PGDATA/log" start >/dev/null
+  -o "-p $PG_PORT -k $PGSOCK -c listen_addresses=''" -w -l "$PGDATA/log" start >/dev/null
 PG_STARTED=1
 "$PGDIST/bin/createdb" -h "$PGSOCK" -p "$PG_PORT" -U postgres loom
 log "applying control-plane migrations…"
@@ -86,12 +86,11 @@ for f in src/control-plane/postgres/migrations/*.sql; do
     -v ON_ERROR_STOP=1 -q -f "$f" >/dev/null
 done
 
-# 4. Shared service env. Services connect over TCP to 127.0.0.1:$PG_PORT — NOT the
-#    unix socket: DbConfig::pg_connect_options only sets `.port()` on the TCP branch,
-#    so a socket host would be probed at the default 5432 and miss our port.
-#    LOOM_BIND_ADDR is required by Config::from_env for every service even though the
-#    engine binds a unix socket, not the addr.
-export LOOM_DB_HOST=127.0.0.1 LOOM_DB_PORT="$PG_PORT" \
+# 4. Shared service env. A LOOM_DB_HOST beginning with '/' is a libpq unix-socket
+#    directory (see DbConfig::pg_connect_options), connecting on $PG_PORT via the
+#    `.s.PGSQL.<port>` socket file. LOOM_BIND_ADDR is required by Config::from_env for
+#    every service even though the engine binds a unix socket, not the addr.
+export LOOM_DB_HOST="$PGSOCK" LOOM_DB_PORT="$PG_PORT" \
        LOOM_DB_USER=postgres LOOM_DB_PASSWORD= LOOM_DB_NAME=loom \
        LOOM_DATA_PATH="$WORK" LOOM_WAREHOUSE_URI="file://$WAREHOUSE" \
        LOOM_ENGINE_SOCKET="$ENGINE_SOCK"

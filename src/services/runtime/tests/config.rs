@@ -93,9 +93,12 @@ fn pg_url_tcp_and_socket() {
     };
     assert_eq!(tcp.pg_url(), "postgres://loom:secret@db.internal:5432/loom");
 
+    // A non-default port must survive into the socket URL: libpq/sqlx derive the
+    // socket filename `.s.PGSQL.<port>` from it, so dropping the port silently probes
+    // the default 5432 and misses a cluster listening elsewhere.
     let socket = DbConfig {
         host: "/var/run/postgresql".into(),
-        port: 5432,
+        port: 54398,
         user: "loom".into(),
         password: "secret".into(),
         dbname: "loom".into(),
@@ -103,7 +106,41 @@ fn pg_url_tcp_and_socket() {
     };
     assert_eq!(
         socket.pg_url(),
-        "postgres://loom:secret@localhost/loom?host=/var/run/postgresql"
+        "postgres://loom:secret@localhost:54398/loom?host=/var/run/postgresql"
+    );
+}
+
+#[test]
+fn pg_connect_options_honor_port_on_both_branches() {
+    let tcp = DbConfig {
+        host: "db.internal".into(),
+        port: 6001,
+        user: "loom".into(),
+        password: "secret".into(),
+        dbname: "loom".into(),
+        max_connections: None,
+    };
+    let tcp_opts = tcp.pg_connect_options();
+    assert_eq!(tcp_opts.get_port(), 6001);
+    assert_eq!(tcp_opts.get_host(), "db.internal");
+
+    // The socket branch must carry the port too — it selects the `.s.PGSQL.<port>`
+    // socket file. Without it sqlx defaults to 5432 regardless of `port`.
+    let socket = DbConfig {
+        host: "/var/run/postgresql".into(),
+        port: 54398,
+        user: "loom".into(),
+        password: "secret".into(),
+        dbname: "loom".into(),
+        max_connections: None,
+    };
+    let sock_opts = socket.pg_connect_options();
+    assert_eq!(sock_opts.get_port(), 54398);
+    assert_eq!(
+        sock_opts
+            .get_socket()
+            .map(|p| p.to_string_lossy().into_owned()),
+        Some("/var/run/postgresql".to_string())
     );
 }
 
