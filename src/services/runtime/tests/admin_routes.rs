@@ -1,0 +1,237 @@
+//! Admin route behavior against the in-memory fake: the gate (admin/non-admin/
+//! unauthenticated), create + login, bundled roles (assigned / idempotent retry /
+//! unknown role), list (no verifier, disabled state), disable/enable.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::extract::Request;
+use axum::http::{StatusCode, header::AUTHORIZATION};
+use control_plane_core::{Acl, Auth, NewUser, RoleId, SubjectId};
+use control_plane_memory::MemoryControlPlane;
+use http_body_util::BodyExt;
+use service_runtime::{AdminState, AuthState, admin_routes, hash_password, token_sha256};
+use tower::ServiceExt;
+
+const ADMIN: &str = "root";
+
+fn states(cp: Arc<MemoryControlPlane>) -> (AdminState, AuthState) {
+    (
+        AdminState {
+            auth: cp.clone(),
+            acl: cp.clone(),
+            admin_username: ADMIN.into(),
+        },
+        AuthState {
+            auth: cp,
+            session_ttl: Duration::from_secs(3600),
+        },
+    )
+}
+
+/// Seed a user and a live session token; return the token.
+async fn seed_session(cp: &MemoryControlPlane, username: &str) -> String {
+    cp.create_user(&NewUser {
+        subject_id: SubjectId(username.into()),
+        username: username.into(),
+        password_phc: hash_password("pw").unwrap(),
+    })
+    .await
+    .unwrap();
+    let token = format!("tok-{username}");
+    cp.create_session(
+        &SubjectId(username.into()),
+        &token_sha256(&token),
+        time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+    )
+    .await
+    .unwrap();
+    token
+}
+
+fn app(cp: Arc<MemoryControlPlane>) -> axum::Router {
+    let (admin, auth) = states(cp);
+    admin_routes(admin, auth)
+}
+
+async fn send(app: axum::Router, req: Request) -> (StatusCode, String) {
+    let res = app.oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+fn post_json(uri: &str, token: &str, body: &str) -> Request {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn unauthenticated_is_401() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let (status, _) = send(
+        app(cp),
+        Request::builder()
+            .uri("/admin/users")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn non_admin_is_403() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_session(&cp, "alice").await; // not the admin
+    let (status, _) = send(
+        app(cp),
+        Request::builder()
+            .uri("/admin/users")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_creates_user_who_can_login() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_session(&cp, ADMIN).await;
+    let (status, _) = send(
+        app(cp.clone()),
+        post_json(
+            "/admin/users",
+            &token,
+            r#"{"username":"newbie","password":"hunter2","roles":[]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // the created user has a credential and is not disabled
+    let cred = cp
+        .find_password_credential("newbie")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cred.subject_id, SubjectId("newbie".into()));
+}
+
+#[tokio::test]
+async fn bundled_roles_assigned_and_idempotent_retry() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_session(&cp, ADMIN).await;
+    cp.define_role(&RoleId("reader".into())).await.unwrap();
+
+    let body = r#"{"username":"carol","password":"pw","roles":["reader"]}"#;
+    let (status, resp) = send(app(cp.clone()), post_json("/admin/users", &token, body)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["created"], serde_json::json!(true));
+    assert_eq!(v["assigned_roles"], serde_json::json!(["reader"]));
+
+    // Retry identical POST → not a hard conflict (200, created:false), role still listed.
+    let (status, resp) = send(app(cp), post_json("/admin/users", &token, body)).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["created"], serde_json::json!(false));
+    assert_eq!(v["assigned_roles"], serde_json::json!(["reader"]));
+}
+
+#[tokio::test]
+async fn unknown_role_is_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_session(&cp, ADMIN).await;
+    let (status, resp) = send(
+        app(cp),
+        post_json(
+            "/admin/users",
+            &token,
+            r#"{"username":"dave","password":"pw","roles":["ghost"]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["created"], serde_json::json!(true)); // user was created before the bad role
+    assert!(v["error"].as_str().unwrap().contains("ghost"));
+}
+
+#[tokio::test]
+async fn list_users_shows_state_no_verifier() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_session(&cp, ADMIN).await;
+    let (status, resp) = send(
+        app(cp),
+        Request::builder()
+            .uri("/admin/users")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!resp.contains("password"), "no verifier in the listing");
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let users = v["users"].as_array().unwrap();
+    assert!(users.iter().any(|u| u["username"] == "root"));
+}
+
+#[tokio::test]
+async fn disable_blocks_session_and_login_then_enable_restores() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let admin_token = seed_session(&cp, ADMIN).await;
+    let victim_token = seed_session(&cp, "mallory").await;
+
+    // disable mallory
+    let (status, _) = send(
+        app(cp.clone()),
+        post_json("/admin/users/mallory/disable", &admin_token, ""),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // mallory's session no longer resolves; login lookup hides her.
+    assert!(
+        cp.resolve_session(&token_sha256(&victim_token), time::OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        cp.find_password_credential("mallory")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // enable restores login lookup.
+    let (status, _) = send(
+        app(cp.clone()),
+        post_json("/admin/users/mallory/enable", &admin_token, ""),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        cp.find_password_credential("mallory")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn disable_unknown_user_is_404() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_session(&cp, ADMIN).await;
+    let (status, _) = send(app(cp), post_json("/admin/users/ghost/disable", &token, "")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

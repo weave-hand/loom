@@ -8,6 +8,9 @@ pub use auth::{
     session_routes, session_ttl_from_env, status_for,
 };
 
+mod admin;
+pub use admin::{AdminState, admin_routes, require_admin};
+
 mod crypto;
 pub use crypto::{AuthError, generate_session_token, hash_password, token_sha256, verify_password};
 
