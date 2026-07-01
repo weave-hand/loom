@@ -14,7 +14,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::handler::ObjectRows;
-use crate::params::{ParamError, parse_params};
+use crate::params::ParamError;
 use crate::serving::{ActionEngine, SqlValue};
 use crate::write_filter::{self, WriteVerdict};
 
@@ -172,7 +172,9 @@ fn check_assignments_and_binds(
     let target_name = &target.name.0;
     let mut bound: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let dup = |prop: &str| {
-        format!("property `{prop}` of type `{target_name}` is written by more than one parameter/constant")
+        format!(
+            "property `{prop}` of type `{target_name}` is written by more than one parameter/constant"
+        )
     };
     for p in &action.parameters {
         let prop = p.binds_property();
@@ -378,8 +380,9 @@ async fn run_insert(
     let action_name = action.name.0.as_str();
     let policy_target = PolicyTarget::Type(action.target.clone());
 
-    // 4. Parse + validate the typed params (ordered by the action's parameter list).
-    let pairs = parse_params(&action.parameters, body)?;
+    // 4. Resolve the write row: parse+validate the typed params, remap each to its bound
+    //    property, and append the action's constant assignments (property-keyed pairs).
+    let pairs = crate::params::resolve_action_row(action, target, body)?;
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
     let values: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
 
@@ -601,7 +604,7 @@ async fn run_mutate(
     let idprop = target.identity.clone().ok_or_else(|| {
         ActionError::Misconfigured(format!("type `{}` has no declared identity", target.name.0))
     })?;
-    let pairs = parse_params(&action.parameters, body)?;
+    let pairs = crate::params::resolve_action_row(action, target, body)?;
     let id_value = pairs
         .iter()
         .find(|(c, _)| c == &idprop)
