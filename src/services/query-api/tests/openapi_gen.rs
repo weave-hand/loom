@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use control_plane_core::{
-    BaseType, Cardinality, ControlPlane, LinkBacking, LinkDef, ObjectType, Ontology, PropertyDef,
-    TableRef, TypeName,
+    BaseType, Cardinality, ControlPlane, LinkBacking, LinkDef, ObjectType, PropertyDef, TableRef,
+    TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::openapi_gen::{base_type_to_schema, ontology_openapi};
