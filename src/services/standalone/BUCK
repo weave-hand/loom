@@ -13,9 +13,22 @@ rust_library(
         "//src/services/query-api:query-api",
         "//src/services/runtime:runtime",
         "//src/services/managed-postgres:managed-postgres",
-        "//third-party:sqlx",
         "//third-party:tokio",
-        "//third-party:tracing",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "loom",
+    crate = "loom",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        ":standalone",
+        "//src/services/runtime:runtime",
+        "//src/services/managed-postgres-embed:managed-postgres-embed",
+        "//third-party:tokio",
     ],
     visibility = ["PUBLIC"],
 )
