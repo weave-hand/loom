@@ -2,7 +2,7 @@
 # buck2 shim for loom cloud sessions.
 #
 # Installed at /usr/local/sbin/buck2 (which precedes /usr/local/bin on the injected
-# PATH, so it shadows the real binary) by tools/cloud-session-start.sh. Two jobs:
+# PATH, so it shadows the real binary) by tools/cloud-session-start.sh. Three jobs:
 #
 # 1. GitHub egress-proxy bypass for the buck2 DAEMON. buck2's http_archive lowers to a
 #    `download_file` action that ALWAYS runs on the local daemon (never RE), and the
@@ -15,7 +15,20 @@
 #    (objects.githubusercontent.com) while GET succeeds (release-assets.…); bypassing
 #    the proxy for these public, sha256-pinned assets makes http_head + GET both work.
 #
-# 2. Route `buck2 test` execution to RE. Cloud sessions run as root, and buck2/tpx runs
+# 2. Prefer remote execution, to bound local disk. The cloud container is quota-capped
+#    to ~38 GiB writable; a build that runs hybrid actions LOCALLY materializes their
+#    inputs (LLVM, rustc, std — multiple GiB) and can ENOSPC. BUCK_PREFER_REMOTE keeps
+#    hybrid-eligible actions on RE so their inputs never land locally — the same lever CI
+#    sets (buildbuddy.yaml). It is a buck2-native env var read by the CLIENT at
+#    invocation; like NO_PROXY it must reach the agent's non-interactive tool-call shells
+#    (which skip ~/.bashrc), so exporting it HERE — on the path every `buck2` takes — is
+#    what makes it effective, not the parallel profile export alone. Gated on
+#    BUILDBUDDY_API_KEY so it degrades to local when RE is absent; only defaulted (an
+#    explicit caller value wins). This is only HALF the disk fix: it stops INPUT
+#    materialization, not final-OUTPUT download — a whole-tree `buck2 build` still needs
+#    `-M none`, and `buck2 test` still needs scoping. See docs/build-execution.md.
+#
+# 3. Route `buck2 test` execution to RE. Cloud sessions run as root, and buck2/tpx runs
 #    test-run actions on the LOCAL executor by default (it only goes to RE when told).
 #    The fixture tests boot initdb/postgres/duckdb, which refuse to run as root — so a
 #    plain `buck2 test //src/...` here is 88 pass / 82 fail (local-as-root), while the
@@ -32,6 +45,13 @@ set -u
 
 export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"
 export no_proxy="$NO_PROXY"
+
+# Prefer remote execution when RE is available (job 2 above), so hybrid actions keep
+# their inputs on RE instead of materializing multi-GiB toolchains into the ~38 GiB
+# container. Only defaulted: an explicit caller value (set to anything) is left alone.
+if [ -n "${BUILDBUDDY_API_KEY:-}" ] && [ -z "${BUCK_PREFER_REMOTE+x}" ]; then
+  export BUCK_PREFER_REMOTE=true
+fi
 
 # The real binary. tools/cloud-setup.sh always installs it at /usr/local/bin/buck2;
 # the shim lives at /usr/local/sbin/buck2, so the two paths never collide (no exec

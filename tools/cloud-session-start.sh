@@ -36,6 +36,11 @@ if ! grep -q 'LOOM_CLOUD_ENV' "$PROFILE" 2>/dev/null; then
     echo '# --- LOOM_CLOUD_ENV (added by tools/cloud-session-start.sh) ---'
     echo 'export PATH="/usr/local/bin:$PATH"'   # buck2 (and gh, both in standard dirs)
     echo 'export REMOTE_ENV=true'
+    # Prefer remote execution (mirror CI): keep hybrid actions on RE so their inputs are
+    # not materialized into the ~38 GiB container. This profile line is for INTERACTIVE
+    # shells; the buck2 shim below sets the SAME default for the agent's non-interactive
+    # tool-call `buck2` invocations (which skip ~/.bashrc), which is the load-bearing path.
+    echo 'export BUCK_PREFER_REMOTE=true'
     # Secrets: written in plaintext to the profile of an ephemeral cloud session.
     [ -n "${BUILDBUDDY_API_KEY:-}" ] && printf 'export BUILDBUDDY_API_KEY=%q\n' "$BUILDBUDDY_API_KEY"
     [ -n "${GITHUB_TOKEN:-}" ]       && printf 'export GITHUB_TOKEN=%q\n' "$GITHUB_TOKEN"
@@ -67,12 +72,15 @@ fi
 # docs/superpowers/specs/2026-06-25-cloud-session-cold-build-reliability-design.md.
 
 # (1) buck2 shim. /usr/local/sbin precedes /usr/local/bin on PATH, so this shim shadows
-# the real binary. It does two things before exec-ing it: (a) exports the github
+# the real binary. It does three things before exec-ing it: (a) exports the github
 # NO_PROXY bypass so the daemon (which runs `download_file`) can fetch toolchains
 # regardless of how the harness injects env into non-interactive tool shells — the
-# authoritative fix for the "head issue"; and (b) injects --unstable-allow-all-tests-on-re
-# for `buck2 test`, so fixture test RUNS go to RE (non-root `buildbuddy`) instead of the
-# local executor, which here is root and would fail their initdb. Idempotent copy.
+# authoritative fix for the "head issue"; (b) defaults BUCK_PREFER_REMOTE=true so hybrid
+# actions keep their inputs on RE (bounding local disk in the ~38 GiB container) even for
+# tool-call `buck2` invocations that skip ~/.bashrc; and (c) injects
+# --unstable-allow-all-tests-on-re for `buck2 test`, so fixture test RUNS go to RE
+# (non-root `buildbuddy`) instead of the local executor, which here is root and would
+# fail their initdb. Idempotent copy.
 SHIM_SRC="$REPO/tools/ci/buck2-proxy-shim.sh"
 SHIM_DST="/usr/local/sbin/buck2"
 if [ -f "$SHIM_SRC" ]; then
