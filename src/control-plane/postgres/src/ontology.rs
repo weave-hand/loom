@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, Aggregation, ControlPlaneError, DerivedPropertyDef,
-    IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef,
-    Result, TableRef, TypeName, VectorIndexDef,
+    ActionDef, ActionKind, ActionName, Aggregation, ConstAssignment, ControlPlaneError,
+    DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq,
+    ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
 };
 
 use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
@@ -349,13 +349,34 @@ impl Ontology for PgControlPlane {
         .map_err(backend)?;
         for (i, p) in action.parameters.iter().enumerate() {
             sqlx::query!(
-                "insert into ontology.action_param (action_name, ordinal, name, ty, required) \
-                 values ($1, $2, $3, $4, $5)",
+                "insert into ontology.action_param (action_name, ordinal, name, ty, required, binds) \
+                 values ($1, $2, $3, $4, $5, $6)",
                 action.name.0,
                 i as i32,
                 p.name,
                 p.ty,
                 p.required,
+                p.binds,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
+        sqlx::query!(
+            "delete from ontology.action_assignment where action_name = $1",
+            action.name.0,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        for (i, a) in action.assignments.iter().enumerate() {
+            sqlx::query!(
+                "insert into ontology.action_assignment (action_name, ordinal, property, value) \
+                 values ($1, $2, $3, $4)",
+                action.name.0,
+                i as i32,
+                a.property,
+                a.value,
             )
             .execute(&mut *tx)
             .await
@@ -375,7 +396,15 @@ impl Ontology for PgControlPlane {
         .map_err(backend)?
         .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))?;
         let params = sqlx::query!(
-            "select name, ty, required from ontology.action_param \
+            "select name, ty, required, binds from ontology.action_param \
+             where action_name = $1 order by ordinal",
+            name.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let assignment_rows = sqlx::query!(
+            "select property, value from ontology.action_assignment \
              where action_name = $1 order by ordinal",
             name.0,
         )
@@ -396,11 +425,17 @@ impl Ontology for PgControlPlane {
                     name: r.name,
                     ty: r.ty,
                     required: r.required,
-                    binds: None,
+                    binds: r.binds,
                 })
                 .collect(),
             kind,
-            assignments: vec![],
+            assignments: assignment_rows
+                .into_iter()
+                .map(|r| ConstAssignment {
+                    property: r.property,
+                    value: r.value,
+                })
+                .collect(),
         })
     }
 

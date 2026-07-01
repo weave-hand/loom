@@ -18,11 +18,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
-    CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef, Effect,
-    EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef, Metric,
-    NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy,
-    PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
-    SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
+    CompareOp, ConstAssignment, ControlPlane, ControlPlaneError, DatasetRef, Decision,
+    DerivedPropertyDef, Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent,
+    LinkBacking, LinkDef, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page,
+    PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter,
+    RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -992,6 +992,94 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.get_action(&ActionName("nope".into())).await,
         Err(ControlPlaneError::NotFound(_))
     ));
+
+    // --- Action param→property mapping (binds + constant assignments) ---
+    o.define_type(ObjectType {
+        name: tn("Gadget"),
+        table: tref("main", "gadget"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "name".into(),
+                ty: "String".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "status".into(),
+                ty: "String".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+        identity: None,
+    })
+    .await
+    .expect("define Gadget");
+
+    let create_gadget = ActionDef {
+        name: ActionName("createGadget".into()),
+        target: tn("Gadget"),
+        parameters: vec![
+            ParamDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                binds: None,
+            },
+            // Renamed: the operation param `displayName` writes the `name` property.
+            ParamDef {
+                name: "displayName".into(),
+                ty: "String".into(),
+                required: false,
+                binds: Some("name".into()),
+            },
+        ],
+        kind: ActionKind::Insert,
+        assignments: vec![ConstAssignment {
+            property: "status".into(),
+            value: serde_json::json!("active"),
+        }],
+    };
+    o.define_action(create_gadget.clone())
+        .await
+        .expect("define mapping action");
+    assert_eq!(
+        o.get_action(&ActionName("createGadget".into()))
+            .await
+            .unwrap(),
+        create_gadget,
+        "action round-trips with binds + constant assignments",
+    );
+
+    // Redefining with an empty mapping clears binds + assignments (upsert replaces both).
+    o.define_action(ActionDef {
+        name: ActionName("createGadget".into()),
+        target: tn("Gadget"),
+        parameters: vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        kind: ActionKind::Insert,
+        assignments: vec![],
+    })
+    .await
+    .expect("redefine mapping action");
+    let redef = o
+        .get_action(&ActionName("createGadget".into()))
+        .await
+        .unwrap();
+    assert!(redef.assignments.is_empty(), "redefine clears assignments");
+    assert_eq!(redef.parameters.len(), 1, "redefine replaces parameters");
+    assert_eq!(redef.parameters[0].binds, None, "redefine clears binds");
 
     // --- Derived properties ---
     o.define_type(ObjectType {
