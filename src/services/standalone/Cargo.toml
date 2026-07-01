@@ -1,0 +1,11 @@
+[package]
+name = "standalone"
+version = "0.1.0"
+edition = "2024"
+
+# service-runtime, engine, ingest, query-api are buck-only first-party crates
+# (no Cargo manifest dep); their deps live in BUCK only. This manifest exists so
+# reindeer/workspace resolution and rust-analyzer see the third-party crates.
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
