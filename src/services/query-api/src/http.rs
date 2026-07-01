@@ -731,10 +731,10 @@ async fn graph_tail_respond(
     request_body = serde_json::Value,
     responses(
         (status = 201, description = "Action applied; created/affected object"),
-        (status = 400, description = "Bad params"),
+        (status = 400, description = "Malformed or undecodable request body (not a JSON action envelope)"),
         (status = 403, description = "Write denied by ACL policy", body = WriteDeniedBody),
         (status = 404, description = "Unknown action"),
-        (status = 422, description = "A value violates a property constraint, or an unsupported action shape", body = crate::openapi::ConstraintViolationsBody),
+        (status = 422, description = "Semantic validation failure: bad or missing action params, a property-constraint violation, or an unsupported action shape", body = crate::openapi::ConstraintViolationsBody),
     ),
     security(("bearer_auth" = [])),
     tag = "actions",
@@ -795,8 +795,13 @@ async fn post_action(
         }
         // Coarse Write-gate denial (and other unit forbiddens): bodyless 403, unchanged.
         Err(crate::action::ActionError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        // A well-formed body whose params fail SEMANTIC validation (missing required param,
+        // type mismatch, uncoercible value) is 422 — understood, but unprocessable. Malformed
+        // / undecodable bodies never reach here: axum's `Json` extractor 400s invalid JSON,
+        // and the non-object envelope guard above returns 400. Aligns with the
+        // ConstraintViolation 422 on this same write path.
         Err(crate::action::ActionError::BadParams(e)) => {
-            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+            (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
         }
         // A misconfigured action is a server-side config fault, surfaced with detail (distinct
         // from the opaque catch-all 500 below) so the operator can fix the ActionDef.
