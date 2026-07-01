@@ -47,7 +47,7 @@ Extract slice-1's per-table reclaim into `table_id`-parameterized helpers and re
 
 - [ ] **Step 1: Rewrite `gc_locked` and add the three helpers.**
 
-Replace the body of `gc_locked` (currently `src/control-plane/postgres/src/iceberg_gc.rs:88-199`) and add the helpers below it. The new `gc_locked` resolves `H` first, then the live `tid`, collects paths, deletes rows in one transaction, then deletes Parquet post-commit — identical outcomes to slice 1, just factored:
+Replace the body of `gc_locked` (currently `src/control-plane/postgres/src/iceberg_gc.rs:88-199`) and add the helpers below it. The new `gc_locked` resolves `H` first, then the live `tid`, collects paths, deletes rows in one transaction, then deletes Parquet post-commit. Outcomes for the live path are identical to slice 1; the one **intentional** difference is the early-return ordering — slice 1 returns before computing `H` when there is no live row, whereas the new order computes `H` first so both the live and (Task 2) dropped incarnations share the same horizon. This is required for the dropped loop and is behavior-preserving for every live-table case:
 
 ```rust
 async fn gc_locked(
@@ -184,7 +184,7 @@ async fn delete_end_capped_inline_rows(
 }
 ```
 
-Add `use sqlx::PgConnection;` is **not** needed — the helpers spell `sqlx::PgConnection` inline (matching the crate style). Keep the existing `use` block; `live_table_id` is already imported.
+No `use` changes are needed here: the helpers spell `sqlx::PgConnection` inline (matching the crate style), and `AssertSqlSafe`, `PgPool`, `live_table_id`, `inline_table_name`, `backend`, `OffsetDateTime` are all already imported in the existing `use` block (`iceberg_gc.rs:41-51`). (The Interfaces "Consumes" line lists `sqlx::PgConnection` only to document the type the helpers take — it is spelled inline, not imported.)
 
 - [ ] **Step 2: Build the crate.**
 
@@ -282,7 +282,7 @@ async fn inline_table_exists(pool: &sqlx::PgPool, tid: i64) -> bool {
 }
 ```
 
-Note: `iceberg_mirror.table` is a reserved word, so the raw-SQL helpers quote it as `"table"`.
+Note: spell `iceberg_mirror.table` **unquoted** in these raw-SQL helpers — that is what the crate's own SQL does (e.g. `live_table_id`), and the committed `.sqlx` cache proves real Postgres accepts the keyword after the schema qualifier. Do not "fix" it to a quoted `"table"`.
 
 - [ ] **Step 2: Write the four failing tests.**
 
