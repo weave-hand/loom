@@ -89,6 +89,14 @@ fn build_expr(f: &RowFilter) -> Result<Expr, EngineServingError> {
                 }
                 CompareOp::IsNull => Ok(c.is_null()),
                 CompareOp::IsNotNull => Ok(c.is_not_null()),
+                // Not dead code: `row_filter_to_expr` (the only caller that runs
+                // `validate_row_filter` first) never reaches this arm, but
+                // `GovernedTableProvider::scan` -> `row_filters_conjunction` calls
+                // `build_expr` directly, skipping `validate_row_filter`. This arm is
+                // that path's sole in-module fail-closed defense against these four
+                // caller-predicate-only ops; it is unreachable in practice today only
+                // because ACL-write-time validation (control-plane memory/postgres
+                // `acl.rs`) already rejects such filters before they can persist.
                 CompareOp::Between
                 | CompareOp::Contains
                 | CompareOp::StartsWith

@@ -424,6 +424,22 @@ fn gate_none_row_filter_adds_no_constraint() {
 }
 
 #[test]
+fn caller_only_ops_are_unknown_on_the_write_path() {
+    for op in [
+        CompareOp::Between,
+        CompareOp::Contains,
+        CompareOp::StartsWith,
+        CompareOp::EndsWith,
+    ] {
+        assert_eq!(
+            compare_cell(&SqlValue::Text("x".into()), op, &ScalarValue::Text("x".into())),
+            None,
+            "caller-only op {op:?} must be UNKNOWN on the write path"
+        );
+    }
+}
+
+#[test]
 fn gate_fail_closed_on_unknown_row_filter() {
     // A filter on a column the action does not set -> NULL -> UNKNOWN -> deny.
     let cols = vec!["id".to_string()];
