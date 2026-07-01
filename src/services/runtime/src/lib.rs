@@ -317,12 +317,37 @@ pub fn migrate_requested() -> bool {
 
 /// Connect an external control-plane pool from `db` and apply the embedded
 /// migrations. Used by the migrate-and-exit entrypoint (see [`migrate_requested`]).
+///
+/// The migrate Job can start before a freshly-provisioned Postgres (e.g. the
+/// chart's bundled CloudNativePG on a first `helm install`) is accepting
+/// connections, so the initial connect is retried for up to ~2 minutes before
+/// giving up. Once connected, migration itself is not retried (a real DDL failure
+/// should surface).
 pub async fn run_migrations(db: &DbConfig) -> Result<(), RuntimeError> {
-    let pool = build_pool(db).await?;
+    let pool = connect_pool_waiting(db).await?;
     control_plane_postgres::run_embedded_migrations(&pool)
         .await
         .map_err(RuntimeError::Migrate)?;
     Ok(())
+}
+
+/// Build a pool, retrying the initial connection while the database is unreachable.
+/// 60 attempts × 2s ≈ 2 minutes, covering a bundled Postgres still coming up.
+async fn connect_pool_waiting(db: &DbConfig) -> Result<PgPool, RuntimeError> {
+    let mut attempt: u32 = 0;
+    loop {
+        match build_pool(db).await {
+            Ok(pool) => return Ok(pool),
+            Err(e) if attempt < 60 => {
+                attempt = attempt.saturating_add(1);
+                tracing::warn!(
+                    "waiting for database to accept connections (attempt {attempt}): {e}"
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Wrap a pool as a `PgControlPlane`.

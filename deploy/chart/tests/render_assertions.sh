@@ -14,16 +14,23 @@ job() { echo "$1" | awk '/^kind: Job$/{f=1} f; /^---$/{if(f)exit}'; }
 # Extract the query-api Deployment document (podAffinity lives only there, but the
 # `component: query-api` label also tags the Service — scope to the Deployment).
 qapi_deploy() { echo "$1" | awk '/^kind: Deployment$/{d=1} d && /component: query-api/{p=1} p; /^---$/{if(p)exit}'; }
+# Extract the allow-s3 NetworkPolicy document (scope, don't rely on a fixed window).
+allow_s3() { echo "$1" | awk '/name: .*-allow-s3$/{f=1} f; /^---$/{if(f)exit}'; }
 
 echo "== helm lint =="
 helm lint "$CHART"
 
 echo "== migrations.mode=job (default): hook Job present, no on-boot env =="
 OUT="$(helm template loom "$CHART")"
-job "$OUT" | has '"helm.sh/hook": pre-install,pre-upgrade'
+job "$OUT" | has '"helm.sh/hook": post-install,pre-upgrade'
 job "$OUT" | has 'name: LOOM_MIGRATE'
 job "$OUT" | has 'restartPolicy: Never'
 echo "$OUT" | hasnt 'LOOM_DB_MIGRATE_ON_BOOT'
+
+echo "== migrations.mode=<invalid>: render fails loudly =="
+if helm template loom "$CHART" --set migrations.mode=bogus >/dev/null 2>&1; then
+  fail "an invalid migrations.mode should fail rendering"
+fi
 
 echo "== migrations.mode=onBoot: env on the service Deployments, no Job =="
 OUT="$(helm template loom "$CHART" --set migrations.mode=onBoot)"
@@ -57,9 +64,12 @@ echo "$OUT" | hasnt 'claimName:'
 echo "$OUT" | has 's3://loomwh'
 echo "$OUT" | has 'name: AWS_ENDPOINT_URL'
 echo "$OUT" | has 'name: AWS_ACCESS_KEY_ID'
+# NOTE: we deliberately do NOT assert the *absence* of LOOM_DATA_PATH here — the
+# binary's Config::from_env requires it, so it stays set (inert) even under S3.
+# "no local path" is realised as no PVC + no data-volume mount (asserted above).
 # co-scheduling affinity is gone
 qapi_deploy "$OUT" | hasnt 'podAffinity'
 # egress NetworkPolicy to the S3 port
-echo "$OUT" | grep -A20 'allow-s3' | has 'port: 9000'
+allow_s3 "$OUT" | has 'port: 9000'
 
 echo "ALL ASSERTIONS PASSED"

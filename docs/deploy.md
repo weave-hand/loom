@@ -70,13 +70,17 @@ buck2 run deploy//chart:chart.push
 ### Object store and schema migrations
 
 - **Schema migrations** are applied automatically per `migrations.mode`:
-  `job` (default) runs a `pre-install`/`pre-upgrade` hook Job (the ingest image
-  with `LOOM_MIGRATE=apply`) before the Deployments roll, isolating DDL rights to
-  a one-shot pod; `onBoot` sets `LOOM_DB_MIGRATE_ON_BOOT=true` on the service
-  containers so each pod migrates at startup (sqlx's advisory lock serialises
-  concurrent replicas); `external` applies neither, for operators who manage the
-  schema themselves. `mode=job` assumes the Postgres endpoint is reachable at hook
-  time (the CNPG operator prerequisite already covers this).
+  `job` (default) runs a hook Job (the ingest image with `LOOM_MIGRATE=apply`),
+  isolating DDL rights to a one-shot pod. On a **fresh install** it runs
+  `post-install` — the bundled CNPG cluster and its secret are created in the main
+  phase, so the migrate Job runs after them and its entrypoint retries the connect
+  (~2 min) until Postgres is accepting connections; `helm install` blocks on the
+  Job, so it returns only once the schema is applied. On an **upgrade** it runs
+  `pre-upgrade` — the database already exists, so migrations land before the new
+  Deployment pods roll (clean ordering for additive changes). `onBoot` sets
+  `LOOM_DB_MIGRATE_ON_BOOT=true` on the service containers so each pod migrates at
+  startup (sqlx's advisory lock serialises concurrent replicas); `external` applies
+  neither, for operators who manage the schema themselves.
 - **Object store — local PVC (default) or S3/MinIO.** By default the services use a
   `LocalFileSystem` warehouse at `LOOM_DATA_PATH`, backed by one PVC that ingest
   writes and query-api reads; with the default `ReadWriteOnce` the chart

@@ -76,8 +76,9 @@ lockTimeoutMs: 5000
 #   external – neither; apply migrations yourself (pre-chart behaviour).
 migrations:
   mode: job
-  # Retry cap for the mode=job hook Job.
-  backoffLimit: 3
+  # Retry cap for the mode=job hook Job. The entrypoint waits ~2 min for Postgres
+  # to accept connections; this caps whole-pod restarts on top of that.
+  backoffLimit: 6
 
 # --- Object store -------------------------------------------------------------
 # Shared volume backing LOOM_DATA_PATH (the Parquet files the catalog
