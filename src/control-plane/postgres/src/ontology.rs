@@ -396,9 +396,11 @@ impl Ontology for PgControlPlane {
                     name: r.name,
                     ty: r.ty,
                     required: r.required,
+                    binds: None,
                 })
                 .collect(),
             kind,
+            assignments: vec![],
         })
     }
 

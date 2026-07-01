@@ -44,8 +44,10 @@ fn delete_requires_identity_param_only() {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
+            binds: None,
         }],
         kind: ActionKind::Delete,
+        assignments: vec![],
     };
     assert!(check_conformance(&action, &widget(Some("sku"))).is_ok());
 }
@@ -60,14 +62,17 @@ fn delete_rejects_extra_params() {
                 name: "sku".into(),
                 ty: "String".into(),
                 required: true,
+                binds: None,
             },
             ParamDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: false,
+                binds: None,
             },
         ],
         kind: ActionKind::Delete,
+        assignments: vec![],
     };
     assert!(check_conformance(&action, &widget(Some("sku"))).is_err());
 }
@@ -81,8 +86,10 @@ fn mutate_requires_declared_identity() {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
+            binds: None,
         }],
         kind: ActionKind::Delete,
+        assignments: vec![],
     };
     assert!(check_conformance(&action, &widget(None)).is_err());
 }
@@ -98,14 +105,17 @@ fn update_allows_partial_columns() {
                 name: "sku".into(),
                 ty: "String".into(),
                 required: true,
+                binds: None,
             },
             ParamDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: false,
+                binds: None,
             },
         ],
         kind: ActionKind::Update,
+        assignments: vec![],
     };
     assert!(check_conformance(&action, &widget(Some("sku"))).is_ok());
 }

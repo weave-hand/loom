@@ -211,6 +211,19 @@ rust_test(
 )
 
 rust_test(
+    name = "action_mapping",
+    crate = "action_mapping",
+    srcs = ["tests/action_mapping.rs"],
+    crate_root = "tests/action_mapping.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "vector-index",
     crate = "vector_index",
     srcs = ["tests/vector_index.rs"],

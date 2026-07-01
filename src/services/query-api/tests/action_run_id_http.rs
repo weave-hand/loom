@@ -93,14 +93,17 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                binds: None,
             },
             ParamDef {
                 name: "name".into(),
                 ty: "String".into(),
                 required: false,
+                binds: None,
             },
         ],
         kind: ActionKind::Insert,
+        assignments: vec![],
     })
     .await
     .unwrap();

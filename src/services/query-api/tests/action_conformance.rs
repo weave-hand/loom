@@ -22,6 +22,7 @@ fn param(name: &str, ty: &str, required: bool) -> ParamDef {
         name: name.into(),
         ty: ty.into(),
         required,
+        binds: None,
     }
 }
 
@@ -45,6 +46,7 @@ fn action(params: Vec<ParamDef>) -> ActionDef {
         target: TypeName("Widget".into()),
         parameters: params,
         kind: ActionKind::Insert,
+        assignments: vec![],
     }
 }
 

@@ -8,6 +8,7 @@ fn p(name: &str, ty: &str, required: bool) -> ParamDef {
         name: name.into(),
         ty: ty.into(),
         required,
+        binds: None,
     }
 }
 fn body(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {

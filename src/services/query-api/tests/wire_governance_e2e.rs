@@ -101,14 +101,17 @@ async fn seed(
                     name: "name".into(),
                     ty: "String".into(),
                     required: true,
+                    binds: None,
                 },
                 ParamDef {
                     name: "email".into(),
                     ty: "String".into(),
                     required: false,
+                    binds: None,
                 },
             ],
             kind: ActionKind::Insert,
+            assignments: vec![],
         })
         .await
         .expect("define_action");

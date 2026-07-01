@@ -75,6 +75,7 @@ fn param(name: &str, ty: &str, required: bool) -> ParamDef {
         name: name.into(),
         ty: ty.into(),
         required,
+        binds: None,
     }
 }
 
@@ -126,6 +127,7 @@ async fn seed() -> MemoryControlPlane {
         target: TypeName("Widget".into()),
         parameters: vec![param("id", "Long", true), param("code", "String", true)],
         kind: ActionKind::Insert,
+        assignments: vec![],
     })
     .await
     .unwrap();

@@ -930,14 +930,17 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
+                binds: None,
             },
             ParamDef {
                 name: "name".into(),
                 ty: "String".into(),
                 required: false,
+                binds: None,
             },
         ],
         kind: ActionKind::Insert,
+        assignments: vec![],
     };
     o.define_action(create_widget.clone())
         .await
@@ -968,8 +971,10 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
+            binds: None,
         }],
         kind: ActionKind::Insert,
+        assignments: vec![],
     })
     .await
     .expect("redefine action");
@@ -2203,6 +2208,7 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
         target: tn("T"),
         parameters: vec![],
         kind: ActionKind::Insert,
+        assignments: vec![],
     })
     .await
     .expect("define_action on existing target");
@@ -2213,6 +2219,7 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
                 target: tn("Nope"),
                 parameters: vec![],
                 kind: ActionKind::Insert,
+                assignments: vec![],
             })
             .await,
             Err(ControlPlaneError::Validation(_))

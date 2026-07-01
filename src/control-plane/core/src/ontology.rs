@@ -161,6 +161,19 @@ pub struct ParamDef {
     pub name: String,
     pub ty: String,
     pub required: bool,
+    /// The property this parameter writes. `None` ⇒ the property named `name` (so an action
+    /// whose params are named for their properties is unchanged); `Some(p)` renames the
+    /// param away from the property `p` it binds.
+    #[serde(default)]
+    pub binds: Option<String>,
+}
+
+impl ParamDef {
+    /// The property this parameter writes: its explicit `binds`, else its own `name`.
+    #[must_use]
+    pub fn binds_property(&self) -> &str {
+        self.binds.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// A named vector index declared on an object type's `vector(N)` property. The
@@ -177,9 +190,21 @@ pub struct VectorIndexDef {
     pub spec: IndexSpec,
 }
 
-/// A named ontology operation. Part-1 semantics: insert one new instance of `target`,
-/// taking a value for each parameter.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// A declared constant filling a property when no parameter supplies it (the
+/// default/fixed-value case, e.g. `status = "active"`). `value` is the JSON wire form of a
+/// scalar — the canonical representation the query-api write path coerces to the property's
+/// logical type (the same path parameters take); it is validated against the property type at
+/// invocation-time conformance. Not `Eq` because `serde_json::Value` is not `Eq`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConstAssignment {
+    pub property: String,
+    pub value: serde_json::Value,
+}
+
+/// A named ontology operation. Slice-1 semantics: insert/update/delete one instance of
+/// `target`. Parameters are mapped onto the target's properties (via `ParamDef.binds`), and
+/// `assignments` fill properties with declared constants when no parameter supplies them.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDef {
     pub name: ActionName,
     pub target: TypeName,
@@ -188,6 +213,9 @@ pub struct ActionDef {
     /// The mutation kind. `Insert` (part-1 default) creates; `Update`/`Delete` mutate
     /// one existing object by `target`'s declared `identity`.
     pub kind: ActionKind,
+    /// Ordered constant property assignments (the default/fixed-value case).
+    #[serde(default)]
+    pub assignments: Vec<ConstAssignment>,
 }
 
 #[async_trait]
