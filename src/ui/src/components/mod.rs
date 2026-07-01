@@ -11,9 +11,13 @@
 mod badge;
 mod button;
 mod global;
+mod input;
 mod status;
+mod tabs;
 
 pub use badge::Badge;
 pub use button::Button;
 pub use global::GlobalStyles;
+pub use input::{Input, InputKind};
 pub use status::StatusDot;
+pub use tabs::{TabItem, Tabs};

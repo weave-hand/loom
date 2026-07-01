@@ -4,12 +4,35 @@
     reason = "yew html! macro expansion is not lint-clean under loom's strict gate"
 )]
 
-use loom_ui_components::{Badge, Button, GlobalStyles, StatusDot};
+use loom_ui_components::{Badge, Button, GlobalStyles, Input, InputKind, StatusDot, TabItem, Tabs};
 use loom_ui_core::{BadgeTone, ButtonVariant, Status};
 use yew::prelude::*;
 
 #[function_component(Gallery)]
 fn gallery() -> Html {
+    let active_tab = use_state(|| AttrValue::from("preview"));
+    let tabs = vec![
+        TabItem {
+            id: "preview".into(),
+            label: "Preview".into(),
+        },
+        TabItem {
+            id: "schema".into(),
+            label: "Schema".into(),
+        },
+        TabItem {
+            id: "lineage".into(),
+            label: "Lineage".into(),
+        },
+        TabItem {
+            id: "history".into(),
+            label: "History".into(),
+        },
+    ];
+    let onselect = {
+        let active_tab = active_tab.clone();
+        Callback::from(move |id: AttrValue| active_tab.set(id))
+    };
     html! {
         <>
             <GlobalStyles />
@@ -40,6 +63,19 @@ fn gallery() -> Html {
                         <span><StatusDot status={Status::Warn} />{ " stale" }</span>
                         <span><StatusDot status={Status::Error} />{ " failed" }</span>
                     </div>
+                </section>
+                <section>
+                    <h2>{ "Inputs" }</h2>
+                    <div style="display:flex; gap:8px;">
+                        <Input value="" placeholder="username" />
+                        <Input value="" placeholder="password" input_type={InputKind::Password} />
+                        <Input value="" placeholder="Search datasets…" input_type={InputKind::Search} />
+                    </div>
+                </section>
+                <section>
+                    <h2>{ "Tabs" }</h2>
+                    <Tabs tabs={tabs} active={(*active_tab).clone()} onselect={onselect} />
+                    <p>{ format!("active: {}", *active_tab) }</p>
                 </section>
             </main>
         </>
