@@ -103,6 +103,27 @@ fn validate_property_existence() {
 }
 
 #[test]
+fn caller_only_ops_are_rejected_in_acl_row_filters() {
+    for op in [
+        CompareOp::Between,
+        CompareOp::Contains,
+        CompareOp::StartsWith,
+        CompareOp::EndsWith,
+    ] {
+        let f = RowFilter::Compare {
+            property: "name".into(),
+            op,
+            value: ScalarValue::Text("x".into()),
+        };
+        let err = validate_row_filter(&f, None).unwrap_err();
+        assert!(
+            err.contains("not valid in an ACL row filter"),
+            "op {op:?} should be rejected, got: {err}"
+        );
+    }
+}
+
+#[test]
 fn validate_recurses_into_and_or_not() {
     // A malformed leaf deep in the tree is caught.
     let bad = RowFilter::And(vec![

@@ -33,6 +33,10 @@ pub fn compare_cell(cell: &SqlValue, op: CompareOp, operand: &ScalarValue) -> Op
         Eq => eq_cell(cell, operand),
         Ne => not3(eq_cell(cell, operand)),
         Lt | Le | Gt | Ge => order_cell(cell, op, operand),
+        // Caller-predicate-only ops never appear in a stored Policy RowFilter
+        // (validate_row_filter rejects them). Fail closed: None => UNKNOWN => not
+        // Some(true) => row denied.
+        Between | Contains | StartsWith | EndsWith => None,
     }
 }
 

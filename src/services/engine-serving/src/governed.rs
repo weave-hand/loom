@@ -89,6 +89,12 @@ fn build_expr(f: &RowFilter) -> Result<Expr, EngineServingError> {
                 }
                 CompareOp::IsNull => Ok(c.is_null()),
                 CompareOp::IsNotNull => Ok(c.is_not_null()),
+                CompareOp::Between
+                | CompareOp::Contains
+                | CompareOp::StartsWith
+                | CompareOp::EndsWith => Err(EngineServingError::Engine(format!(
+                    "{op:?} is not supported in a row filter"
+                ))),
             }
         }
         RowFilter::And(xs) => fold_bool(xs, true),
