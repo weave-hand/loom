@@ -34,8 +34,7 @@ spec:
           env:
             - name: LOOM_BIND_ADDR
               value: "0.0.0.0:{{ .Values.ingest.port }}"
-            - name: LOOM_DATA_PATH
-              value: {{ .Values.objectStore.mountPath | quote }}
+            {{- include "loom.objectStoreEnv" . | nindent 12 }}
             - name: LOOM_LOCK_TIMEOUT_MS
               value: {{ .Values.lockTimeoutMs | quote }}
             - name: HOME
@@ -55,8 +54,10 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           volumeMounts:
+            {{- if not .Values.objectStore.s3.enabled }}
             - name: data
               mountPath: {{ .Values.objectStore.mountPath }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
           {{- with .Values.ingest.resources }}
@@ -64,9 +65,11 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- if not .Values.objectStore.s3.enabled }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "loom.fullname" . }}-data
+        {{- end }}
         - name: tmp
           emptyDir: {}
       {{- with .Values.ingest.nodeSelector }}

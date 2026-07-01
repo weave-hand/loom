@@ -1,6 +1,8 @@
+{{- if not .Values.objectStore.s3.enabled }}
 # Shared object-store volume backing LOOM_DATA_PATH for both services. The
 # StorageClass is the deployer's choice ("" = cluster default). For >1 replica
 # across pods this must be ReadWriteMany (see values.yaml objectStore notes).
+# Skipped entirely when objectStore.s3.enabled — the warehouse is on S3.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -22,3 +24,4 @@ spec:
   {{- if .Values.objectStore.storageClassName }}
   storageClassName: {{ .Values.objectStore.storageClassName | quote }}
   {{- end }}
+{{- end }}

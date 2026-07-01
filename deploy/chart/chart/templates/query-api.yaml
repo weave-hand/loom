@@ -34,8 +34,7 @@ spec:
           env:
             - name: LOOM_BIND_ADDR
               value: "0.0.0.0:{{ .Values.queryApi.port }}"
-            - name: LOOM_DATA_PATH
-              value: {{ .Values.objectStore.mountPath | quote }}
+            {{- include "loom.objectStoreEnv" . | nindent 12 }}
             - name: LOOM_LOCK_TIMEOUT_MS
               value: {{ .Values.lockTimeoutMs | quote }}
             - name: HOME
@@ -61,8 +60,10 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           volumeMounts:
+            {{- if not .Values.objectStore.s3.enabled }}
             - name: data
               mountPath: {{ .Values.objectStore.mountPath }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             - name: engine-sock
@@ -88,8 +89,7 @@ spec:
             # Config::from_env still parses LOOM_BIND_ADDR — give it a placeholder.
             - name: LOOM_BIND_ADDR
               value: "127.0.0.1:{{ .Values.engine.port }}"
-            - name: LOOM_DATA_PATH
-              value: {{ .Values.objectStore.mountPath | quote }}
+            {{- include "loom.objectStoreEnv" . | nindent 12 }}
             - name: LOOM_LOCK_TIMEOUT_MS
               value: {{ .Values.lockTimeoutMs | quote }}
             - name: HOME
@@ -111,8 +111,10 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 5
           volumeMounts:
+            {{- if not .Values.objectStore.s3.enabled }}
             - name: data
               mountPath: {{ .Values.objectStore.mountPath }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             - name: engine-sock
@@ -122,9 +124,11 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- if not .Values.objectStore.s3.enabled }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "loom.fullname" . }}-data
+        {{- end }}
         - name: tmp
           emptyDir: {}
         # Shared socket dir for the query-api ⇄ engine-sidecar Flight UDS.
@@ -137,10 +141,11 @@ spec:
       {{- if .Values.queryApi.affinity }}
       affinity:
         {{- toYaml .Values.queryApi.affinity | nindent 8 }}
-      {{- else }}
+      {{- else if not .Values.objectStore.s3.enabled }}
       # Default: co-schedule onto the same node as ingest so both pods can mount
       # the shared ReadWriteOnce object-store PVC. Override queryApi.affinity (and
-      # use an RWX storageClassName) to spread across nodes.
+      # use an RWX storageClassName) to spread across nodes. Skipped under S3 —
+      # each pod reaches the warehouse over egress, so no co-scheduling is needed.
       affinity:
         podAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

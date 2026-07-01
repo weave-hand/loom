@@ -107,6 +107,38 @@ postgres.external.keys.
 {{- end -}}
 
 {{/*
+Object-store env for the service containers. Default (no S3) emits the local
+LOOM_DATA_PATH warehouse. With objectStore.s3.enabled it emits the S3 warehouse
+URI + region + optional endpoint + credentials-from-secret; LOOM_DATA_PATH stays
+set (Config::from_env requires it) but is overridden by LOOM_WAREHOUSE_URI.
+*/}}
+{{- define "loom.objectStoreEnv" -}}
+- name: LOOM_DATA_PATH
+  value: {{ .Values.objectStore.mountPath | quote }}
+{{- if .Values.objectStore.s3.enabled }}
+{{- $s3 := .Values.objectStore.s3 }}
+- name: LOOM_WAREHOUSE_URI
+  value: {{ printf "s3://%s%s" (required "objectStore.s3.bucket is required when s3.enabled" $s3.bucket) (empty $s3.prefix | ternary "" (printf "/%s" $s3.prefix)) | quote }}
+- name: AWS_REGION
+  value: {{ $s3.region | quote }}
+{{- with $s3.endpoint }}
+- name: AWS_ENDPOINT_URL
+  value: {{ . | quote }}
+{{- end }}
+- name: AWS_ACCESS_KEY_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ required "objectStore.s3.credentialsSecret is required when s3.enabled" $s3.credentialsSecret }}
+      key: {{ $s3.credentialsKeys.accessKeyId }}
+- name: AWS_SECRET_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ $s3.credentialsSecret }}
+      key: {{ $s3.credentialsKeys.secretAccessKey }}
+{{- end }}
+{{- end -}}
+
+{{/*
 On-boot migration env: emitted on the service containers only when
 migrations.mode == onBoot. Each pod applies the schema at startup (sqlx advisory
 lock serialises concurrent pods).

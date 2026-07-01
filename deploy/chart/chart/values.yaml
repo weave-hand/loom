@@ -97,6 +97,28 @@ objectStore:
   # Keep the PVC (and its landed Parquet data) on `helm uninstall` instead of
   # letting Helm delete it. Set false to allow deletion.
   retain: true
+  # Optional S3/MinIO warehouse. When enabled, the shared PVC is NOT created and
+  # all three containers read/write the Iceberg warehouse over S3 — removing the
+  # single-node ReadWriteOnce co-scheduling constraint. The binary already builds
+  # an S3 store from this config; this is pure chart wiring. Default (disabled)
+  # keeps the file:// PVC path unchanged.
+  s3:
+    enabled: false
+    bucket: ""
+    # Prefix within the bucket: warehouse_uri = s3://<bucket>[/<prefix>].
+    prefix: ""
+    # MinIO / non-AWS endpoint URL. Empty ⇒ real AWS S3. Path-style is implied
+    # by the binary whenever an endpoint is set (required by MinIO).
+    endpoint: ""
+    region: us-east-1
+    # TCP port of the S3 endpoint, opened as egress by the NetworkPolicy. 443 for
+    # AWS S3; set to your MinIO port (commonly 9000) for an in-cluster endpoint.
+    port: 443
+    # Existing secret carrying the S3 credentials (referenced, not created).
+    credentialsSecret: ""
+    credentialsKeys:
+      accessKeyId: AWS_ACCESS_KEY_ID
+      secretAccessKey: AWS_SECRET_ACCESS_KEY
 
 # --- Postgres control plane (CloudNativePG) -----------------------------------
 # Requires the CloudNativePG operator + CRDs installed in the cluster. The
