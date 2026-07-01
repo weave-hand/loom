@@ -142,6 +142,13 @@ wire the environment; see `docs/build-execution.md` for the RE cost model they l
   over RE). `REMOTE_ENV` is just the "this is a cloud routine" marker — RE is driven by
   the key being present. To bump buck2: change `BUCK2_RELEASE` in `cloud-setup.sh`
   alongside `ci.yml` and the submodule pin.
+- **Disk cap — mind ENOSPC.** The cloud container is **~38 GiB writable** (not the
+  ~252 GiB the raw `df` Size shows), and a whole-tree `buck2 build //src/...` *without*
+  `-M none` materializes ≈ 29 GiB of Rust binaries → ENOSPC. In a cloud routine, build
+  with **`buck2 build -M none //src/...`** and **scope** tests to the touched/btd-affected
+  targets — never a bare whole-tree `buck2 build`/`test //src/...`; `buck2 clean` between
+  heavy phases reclaims the space. `BUCK_PREFER_REMOTE` is defaulted on by the buck2 shim
+  (`tools/ci/buck2-proxy-shim.sh`). Full rationale: [`docs/build-execution.md`](docs/build-execution.md) → *Cloud routines: the ~38 GiB disk cap*.
 
 ## Documentation registers
 

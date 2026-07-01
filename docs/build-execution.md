@@ -159,9 +159,38 @@ heavy pinned inputs, or a region-local BuildBuddy CAS to make the download
 *faster* rather than *smaller*. Caching `buck-out` via `actions/cache` is not on
 that list.
 
+## Cloud routines: the ~38 GiB disk cap
+
+Cloud/automated Claude sessions (the code-health routines, `loom-work-checkout`,
+and any scheduled agent) run in a container **quota-capped to ~38 GiB writable**.
+The raw `df -h .` `Size` column reports the shared device (~252 GiB), but the
+`Use%` / `Avail` columns reflect the quota — e.g. `Used 11G  Avail 27G  Use% 28%`
+implies a ~38 GiB denominator, not 252. The same materialization CI dodges will
+**ENOSPC** here: a whole-tree `buck2 build //src/...` *without* `-M none`
+downloads every final artifact — hundreds of static, debug-info Rust binaries
+over the arrow-58 / DataFusion / iceberg graph (the `engine` binary alone is
+~189 MiB; ≈ 29 GiB fully materialized) — and fills the box.
+
+So cloud routines follow CI's discipline, applied per-invocation:
+
+- **Build verification:** `buck2 build -M none //src/...` — never bare
+  `buck2 build //src/...`. `-M none` validates the build on RE without downloading
+  the outputs (single-digit MiB instead of ~29 GiB).
+- **Tests:** scope to the crates/targets the change touches (or the btd-affected
+  set). A test binary you *run* must materialize, so `-M none` cannot help here —
+  bound the cost by **scope**, and never `buck2 test //src/...` whole-tree in the box.
+- **`BUCK_PREFER_REMOTE` is already on** in cloud: the buck2 shim
+  (`tools/ci/buck2-proxy-shim.sh`) defaults it so hybrid actions keep their inputs
+  on RE. It stops *input* materialization, not final-*output* download — it is
+  complementary to `-M none`, never a substitute for it.
+- **Housekeeping:** `buck2 clean` between heavy phases reclaims the full ~29 GiB
+  if a session does approach the wall.
+
 ## Invariants
 
 - New `local_only` / `uses_local_*` actions stay **off the common build path**, or
   every CI run pays to materialize their inputs.
 - New fixture-backed tests use **`loom_fixture_test`**, never a bare `rust_test`.
 - `BUCK2_RELEASE` and the vendored prelude submodule are bumped **together**.
+- In a cloud routine, build with **`-M none`** and **scope** tests — a bare
+  whole-tree `buck2 build`/`test //src/...` ENOSPCs the ~38 GiB container.
