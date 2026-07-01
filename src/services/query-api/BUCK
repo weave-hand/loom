@@ -1039,6 +1039,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "admin-e2e",
+    crate = "admin_e2e",
+    srcs = ["tests/admin_e2e.rs"],
+    crate_root = "tests/admin_e2e.rs",
+    deps = [
+        "//src/services/runtime:runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+loom_fixture_test(
     name = "inline-pg-provider-e2e",
     crate = "inline_pg_provider_e2e",
     srcs = ["tests/inline_pg_provider_e2e.rs"],
