@@ -67,7 +67,7 @@ buck2 run deploy//chart:chart.push
 - A **StorageClass** for the shared object-store PVC. loom does not choose one
   (`objectStore.storageClassName: ""` uses the cluster default).
 
-### Known limitations (MVP)
+### Object store and schema migrations
 
 - **Schema migrations** are applied automatically per `migrations.mode`:
   `job` (default) runs a `pre-install`/`pre-upgrade` hook Job (the ingest image
@@ -77,13 +77,16 @@ buck2 run deploy//chart:chart.push
   concurrent replicas); `external` applies neither, for operators who manage the
   schema themselves. `mode=job` assumes the Postgres endpoint is reachable at hook
   time (the CNPG operator prerequisite already covers this).
-- **Shared local object store.** The services currently use a `LocalFileSystem`
-  object store at `LOOM_DATA_PATH`, backed by one PVC that ingest writes and
-  query-api reads. With the default `ReadWriteOnce` the chart co-schedules
-  query-api onto ingest's node (a default `podAffinity`) so both can mount it;
-  for multi-node spread, supply an RWX `objectStore.storageClassName` and
-  override `queryApi.affinity`. (A real S3/MinIO object store is on the roadmap
-  and will remove this constraint.)
+- **Object store — local PVC (default) or S3/MinIO.** By default the services use a
+  `LocalFileSystem` warehouse at `LOOM_DATA_PATH`, backed by one PVC that ingest
+  writes and query-api reads; with the default `ReadWriteOnce` the chart
+  co-schedules query-api onto ingest's node (a default `podAffinity`) so both can
+  mount it. For multi-node spread either supply an RWX `objectStore.storageClassName`
+  and override `queryApi.affinity`, or set `objectStore.s3.enabled=true` to point
+  the warehouse at S3/MinIO — that drops the PVC and the co-scheduling affinity, sets
+  the S3 config env on all three containers, and opens a NetworkPolicy egress to the
+  endpoint (`objectStore.s3.port`). Credentials come from a referenced secret
+  (`objectStore.s3.credentialsSecret`).
 
 ### Security posture (defaults)
 
