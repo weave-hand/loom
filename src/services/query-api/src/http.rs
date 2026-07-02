@@ -7,7 +7,8 @@ use std::sync::Arc;
 use crate::handler::{
     Associations, ChainQuery, Direction, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop,
     ObjectQuery, QueryDeps, QueryError, read_associations, read_graph_reach,
-    read_graph_reach_union, read_graph_reach_with_tail, read_linked_chain, read_object,
+    read_graph_reach_union, read_graph_reach_with_tail, read_graph_tree, read_linked_chain,
+    read_object,
 };
 use crate::openapi::{JobAck, ObjectsResponse, VectorSearchResponse, WriteDeniedBody};
 use crate::path_parse::{parse_direction, parse_path_hops};
@@ -407,14 +408,25 @@ fn chain_error(e: QueryError) -> axum::response::Response {
 const MAX_GRAPH_DEPTH: u32 = 10;
 const DEFAULT_GRAPH_DEPTH: u32 = 5;
 
+/// Parse a `?tree=` (or similar) boolean flag token. Accepts `true`/`false` (case-insensitive);
+/// any other value is a 400. Absent -> `false` (the caller defaults before calling this).
+fn parse_bool_flag(v: &str) -> Result<bool, ()> {
+    match v.to_ascii_lowercase().as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(()),
+    }
+}
+
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph/{link_name}",
     params(
         ("type_name" = String, Path, description = "Seed object type"),
         ("link_name" = String, Path, description = "Self-link to recurse"),
+        ("tree" = Option<bool>, Query, description = "Return a shortest-path tree ({roots, nodes}; see ObjectTreeResponse) instead of the flat reachable set"),
     ),
     responses(
-        (status = 200, description = "Reachable objects", body = ObjectsResponse),
+        (status = 200, description = "Reachable objects (or a shortest-path tree when ?tree=true; see ObjectTreeResponse)", body = ObjectsResponse),
         (status = 400, description = "Bad depth/filter/path"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Unknown type or link"),
@@ -428,10 +440,11 @@ async fn get_graph(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    // Pull `depth` and `_ids` out; the rest are seed filters.
+    // Pull `depth`, `_ids`, and `tree` out; the rest are seed filters.
     let mut depth = DEFAULT_GRAPH_DEPTH;
     let mut ids: Vec<String> = Vec::new();
     let mut ids_present = false;
+    let mut tree = false;
     let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         match k.as_str() {
@@ -450,6 +463,12 @@ async fn get_graph(
                     .map(String::from)
                     .collect();
             }
+            "tree" => match parse_bool_flag(&v) {
+                Ok(t) => tree = t,
+                Err(()) => {
+                    return (StatusCode::BAD_REQUEST, "tree must be true or false").into_response();
+                }
+            },
             _ => filters.push((k, v)),
         }
     }
@@ -463,16 +482,29 @@ async fn get_graph(
         )
             .into_response();
     }
-    graph_respond(
-        &st,
-        type_name,
-        vec![link_name.into()],
-        depth,
-        filters,
-        ids,
-        &subject,
-    )
-    .await
+    if tree {
+        graph_tree_respond(
+            &st,
+            type_name,
+            vec![link_name.into()],
+            depth,
+            filters,
+            ids,
+            &subject,
+        )
+        .await
+    } else {
+        graph_respond(
+            &st,
+            type_name,
+            vec![link_name.into()],
+            depth,
+            filters,
+            ids,
+            &subject,
+        )
+        .await
+    }
 }
 
 /// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` via `parse_path_hops`
@@ -482,9 +514,12 @@ async fn get_graph(
 /// `graph_respond`.
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph",
-    params(("type_name" = String, Path, description = "Seed object type")),
+    params(
+        ("type_name" = String, Path, description = "Seed object type"),
+        ("tree" = Option<bool>, Query, description = "Return a shortest-path tree ({roots, nodes}; see ObjectTreeResponse) instead of the flat reachable set (path-cycle route only)"),
+    ),
     responses(
-        (status = 200, description = "Reachable objects via path/links", body = ObjectsResponse),
+        (status = 200, description = "Reachable objects via path/links (or a shortest-path tree when ?tree=true; see ObjectTreeResponse)", body = ObjectsResponse),
         (status = 400, description = "Bad path/links/depth/filter"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Unknown type or link"),
@@ -501,6 +536,7 @@ async fn get_graph_path(
     let mut depth = DEFAULT_GRAPH_DEPTH;
     let mut ids: Vec<String> = Vec::new();
     let mut ids_present = false;
+    let mut tree = false;
     let mut path: Vec<Hop> = Vec::new();
     let mut links: Vec<String> = Vec::new();
     let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
@@ -529,6 +565,12 @@ async fn get_graph_path(
                     .map(String::from)
                     .collect();
             }
+            "tree" => match parse_bool_flag(&v) {
+                Ok(t) => tree = t,
+                Err(()) => {
+                    return (StatusCode::BAD_REQUEST, "tree must be true or false").into_response();
+                }
+            },
             _ => filters.push((k, v)),
         }
     }
@@ -552,6 +594,13 @@ async fn get_graph_path(
             .into_response();
     }
     if !links.is_empty() {
+        if tree {
+            return (
+                StatusCode::BAD_REQUEST,
+                "tree view is not supported with links (union)",
+            )
+                .into_response();
+        }
         return graph_union_respond(&st, type_name, links, depth, filters, ids, &subject).await;
     }
     if path.is_empty() {
@@ -570,6 +619,13 @@ async fn get_graph_path(
         .map(|(i, _)| i)
         .collect();
     if !starred.is_empty() {
+        if tree {
+            return (
+                StatusCode::BAD_REQUEST,
+                "tree view is not supported for a recursive-core (*) path",
+            )
+                .into_response();
+        }
         if starred.len() > 1 {
             return (
                 StatusCode::BAD_REQUEST,
@@ -612,7 +668,11 @@ async fn get_graph_path(
         )
         .await;
     }
-    graph_respond(&st, type_name, path, depth, filters, ids, &subject).await
+    if tree {
+        graph_tree_respond(&st, type_name, path, depth, filters, ids, &subject).await
+    } else {
+        graph_respond(&st, type_name, path, depth, filters, ids, &subject).await
+    }
 }
 
 /// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
@@ -662,6 +722,42 @@ async fn graph_respond(
     .await
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Err(e) => graph_error(e),
+    }
+}
+
+/// Tree tail for `?tree=true` on the single `/graph/:link` and `?path=` path-cycle routes:
+/// build a `GraphQuery`, run `read_graph_tree`, render `{roots, nodes}` via `tree_to_json`,
+/// map errors via `graph_error`.
+async fn graph_tree_respond(
+    st: &AppState,
+    type_name: String,
+    path: Vec<Hop>,
+    depth: u32,
+    filters: Vec<(String, String)>,
+    ids: Vec<String>,
+    subject: &Subject,
+) -> axum::response::Response {
+    let deps = QueryDeps {
+        ontology: st.cp.ontology(),
+        acl: st.cp.acl(),
+        serving: st.serving.as_ref(),
+        default_limit: st.default_limit,
+    };
+    match read_graph_tree(
+        &GraphQuery {
+            type_name,
+            path,
+            depth,
+            filters,
+            ids,
+        },
+        subject,
+        &deps,
+    )
+    .await
+    {
+        Ok(tree) => Json(crate::render::tree_to_json(&tree)).into_response(),
         Err(e) => graph_error(e),
     }
 }

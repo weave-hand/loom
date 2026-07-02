@@ -341,6 +341,39 @@ pub fn ids_i64(body: &serde_json::Value) -> Vec<i64> {
     out
 }
 
+/// Read an identity value that may render as a JSON number OR a numeric string (`Long`
+/// identities render as numeric strings — see `ids_i64`). `None` for JSON `null`.
+fn as_id(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+}
+
+/// Extract `(id, depth, parent)` triples from a `{ "roots": [...], "nodes": [...] }`
+/// shortest-path-tree body, in node order. `parent` is `None` for a root (JSON `null`).
+/// Ids parse via `as_id` (Long ids are numeric strings); `depth` is a JSON number.
+pub fn tree_nodes(body: &serde_json::Value) -> Vec<(i64, i64, Option<i64>)> {
+    body["nodes"]
+        .as_array()
+        .map(|ns| {
+            ns.iter()
+                .map(|n| {
+                    let id = as_id(&n["id"]).expect("node id");
+                    let depth = n["depth"].as_i64().expect("node depth i64");
+                    let parent = as_id(&n["parent"]);
+                    (id, depth, parent)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The tree's root identity values as i64s, in response order.
+pub fn tree_roots(body: &serde_json::Value) -> Vec<i64> {
+    body["roots"]
+        .as_array()
+        .map(|rs| rs.iter().filter_map(as_id).collect())
+        .unwrap_or_default()
+}
+
 /// Seed the customer→orders→line_items chain, define the three
 /// ontology types and two FK links, and serve via the in-process Iceberg/DataFusion engine.
 ///

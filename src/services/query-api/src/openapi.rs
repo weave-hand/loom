@@ -14,6 +14,15 @@ pub struct ObjectsResponse {
     pub objects: Vec<serde_json::Value>,
 }
 
+/// Documentation shape for the `{ "roots": [...], "nodes": [...] }` shortest-path-tree
+/// response served when `?tree=true` is set on the graph routes. `roots` are identity values;
+/// each node carries `id`, `depth`, `parent` (null for a root) and the governed typed `object`.
+#[derive(ToSchema)]
+pub struct ObjectTreeResponse {
+    pub roots: Vec<serde_json::Value>,
+    pub nodes: Vec<serde_json::Value>,
+}
+
 /// Documentation shape for a single kNN hit.
 #[derive(ToSchema)]
 pub struct VectorSearchHit {
@@ -83,6 +92,7 @@ pub struct ConstraintViolationItem {
     ),
     components(schemas(
         ObjectsResponse,
+        ObjectTreeResponse,
         VectorSearchHit,
         VectorSearchResponse,
         JobAck,
