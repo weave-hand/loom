@@ -135,7 +135,9 @@ impl ObjectTypeBuilder {
     }
 
     /// Declare `prop` as the type's identity (primary key). Should name one of
-    /// the declared properties; validated by `define_type`, not here.
+    /// the declared properties — NOT validated here or at define time (matching
+    /// literal construction): a dangling identity surfaces only when the
+    /// identity is used (action/read paths).
     pub fn identity(mut self, prop: impl Into<String>) -> Self {
         self.inner.identity = Some(prop.into());
         self
