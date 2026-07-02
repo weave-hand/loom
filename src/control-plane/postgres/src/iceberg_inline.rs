@@ -159,17 +159,15 @@ fn cell_from_arrow(batch: &RecordBatch, col: usize, row: usize, logical: &str) -
         "date" => {
             let arr = dc!(Date32Array);
             Cell::Date((!null).then(|| {
-                time::macros::date!(1970 - 01 - 01)
-                    + time::Duration::days(arr.value(row) as i64)
+                time::macros::date!(1970 - 01 - 01) + time::Duration::days(arr.value(row) as i64)
             }))
         }
         "timestamp" => {
             let arr = dc!(TimestampMicrosecondArray);
             Cell::Ts((!null).then(|| {
                 let micros = arr.value(row);
-                let odt =
-                    time::OffsetDateTime::from_unix_timestamp_nanos(micros as i128 * 1_000)
-                        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+                let odt = time::OffsetDateTime::from_unix_timestamp_nanos(micros as i128 * 1_000)
+                    .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
                 time::PrimitiveDateTime::new(odt.date(), odt.time())
             }))
         }

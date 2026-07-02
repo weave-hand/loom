@@ -112,7 +112,9 @@ async fn inline_live_batch_reconstructs_live_rows() {
 /// iss-inline-downcast-panic (the dc! macro's .expect on caller-shaped data).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inline_append_rejects_mistyped_batch_without_panicking() {
-    use control_plane_core::{ColumnSpec, ControlPlaneError, EventType, LineageEvent, RunId, TableRef};
+    use control_plane_core::{
+        ColumnSpec, ControlPlaneError, EventType, LineageEvent, RunId, TableRef,
+    };
     use std::sync::Arc;
 
     let fx = PgFixture::start();
