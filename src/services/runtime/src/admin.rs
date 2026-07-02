@@ -1,8 +1,9 @@
-//! Admin-gated user provisioning: the `require_admin` gate (config-named
-//! bootstrap admin) plus shared `/admin/users` routes (create / list / disable /
-//! enable). Mounted by query-api, the governance surface. The gate is the single
-//! admin notion this slice introduces — a verified `Subject` whose id equals the
-//! configured bootstrap-admin username; anything else on `/admin/*` is 403.
+//! Admin-gated user provisioning: the `require_admin` gate (reserved `admin`
+//! role) plus shared `/admin/users` routes (create / list / disable / enable).
+//! Mounted by query-api, the governance surface. The gate is the single admin
+//! notion this slice introduces — a verified `Subject` holding the reserved
+//! `admin` role (`control_plane_core::ADMIN_ROLE`, the role `loom create-admin`
+//! assigns); anything else on `/admin/*` is 403.
 
 use std::sync::Arc;
 
@@ -13,7 +14,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use control_plane_core::{
-    Acl, Auth, ControlPlaneError, NewUser, PageReq, RoleId, SubjectId, UserSummary,
+    ADMIN_ROLE, Auth, ControlPlane, ControlPlaneError, NewUser, PageReq, RoleId, SubjectId,
+    UserSummary,
 };
 
 use crate::auth::{AuthState, Subject, protect, status_for, unauthorized};
@@ -23,23 +25,31 @@ use crate::hash_password;
 #[derive(Clone)]
 pub struct AdminState {
     pub auth: Arc<dyn Auth + Send + Sync>,
-    pub acl: Arc<dyn Acl + Send + Sync>,
-    /// The configured bootstrap-admin username (`LOOM_BOOTSTRAP_ADMIN_USERNAME`).
-    pub admin_username: String,
+    /// The direct (postgres-backed) control plane. Supplies `acl()` for the gate
+    /// and role/grant writes, and `ontology()` for `define_type`.
+    pub cp: Arc<dyn ControlPlane>,
 }
 
 fn forbidden() -> Response {
     (StatusCode::FORBIDDEN, "forbidden").into_response()
 }
 
-/// Gate `/admin/*`: allow only a verified subject whose id equals the configured
-/// bootstrap admin. Layered AFTER `require_auth` (which injects [`Subject`]); a
-/// missing `Subject` (unauthenticated) is 401, a non-admin is 403.
+/// Gate `/admin/*`: allow only a verified subject holding the reserved `admin`
+/// role. Layered AFTER `require_auth` (which injects [`Subject`]); missing
+/// `Subject` → 401, a non-admin → 403, a lookup error → 403 (fail closed).
 pub async fn require_admin(State(st): State<AdminState>, req: Request, next: Next) -> Response {
-    match req.extensions().get::<Subject>() {
-        Some(Subject(sid)) if sid.0 == st.admin_username => next.run(req).await,
-        Some(_) => forbidden(),
-        None => unauthorized(),
+    let Some(Subject(sid)) = req.extensions().get::<Subject>().cloned() else {
+        return unauthorized();
+    };
+    match st
+        .cp
+        .acl()
+        .has_role(&sid, &RoleId(ADMIN_ROLE.to_string()))
+        .await
+    {
+        Ok(true) => next.run(req).await,
+        Ok(false) => forbidden(),
+        Err(_) => forbidden(),
     }
 }
 
@@ -86,12 +96,12 @@ async fn create_user(State(st): State<AdminState>, Json(req): Json<CreateUserReq
         Err(ControlPlaneError::Conflict(_)) => false,
         Err(e) => return status_for(&e).into_response(),
     };
-    if let Err(e) = st.acl.define_subject(&subject).await {
+    if let Err(e) = st.cp.acl().define_subject(&subject).await {
         return status_for(&e).into_response();
     }
     let mut assigned = Vec::new();
     for r in &req.roles {
-        match st.acl.assign_role(&subject, &RoleId(r.clone())).await {
+        match st.cp.acl().assign_role(&subject, &RoleId(r.clone())).await {
             Ok(()) => assigned.push(r.clone()),
             Err(ControlPlaneError::NotFound(_)) => {
                 return (

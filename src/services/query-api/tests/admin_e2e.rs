@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{Acl, Auth, NewUser, RoleId, SubjectId};
+use control_plane_core::{ADMIN_ROLE, Acl, Auth, ControlPlane, NewUser, RoleId, SubjectId};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use http_body_util::BodyExt;
@@ -22,8 +22,7 @@ const ADMIN: &str = "root";
 fn app(cp: Arc<PgControlPlane>) -> axum::Router {
     let admin = AdminState {
         auth: cp.clone() as Arc<dyn Auth + Send + Sync>,
-        acl: cp.clone() as Arc<dyn Acl + Send + Sync>,
-        admin_username: ADMIN.into(),
+        cp: cp.clone() as Arc<dyn ControlPlane>,
     };
     let auth = AuthState {
         auth: cp as Arc<dyn Auth + Send + Sync>,
@@ -52,6 +51,17 @@ async fn seed_session(cp: &PgControlPlane, username: &str) -> String {
     token
 }
 
+/// Seed a user, grant the reserved admin role, and mint a session token.
+async fn seed_admin_session(cp: &PgControlPlane, username: &str) -> String {
+    let token = seed_session(cp, username).await;
+    let subject = SubjectId(username.into());
+    cp.define_subject(&subject).await.expect("define_subject");
+    let role = RoleId(ADMIN_ROLE.to_string());
+    cp.define_role(&role).await.expect("define_role");
+    cp.assign_role(&subject, &role).await.expect("assign_role");
+    token
+}
+
 async fn status(app: axum::Router, req: Request) -> StatusCode {
     app.oneshot(req).await.unwrap().status()
 }
@@ -62,7 +72,7 @@ async fn gate_admin_ok_nonadmin_403_unauth_401() {
     let cp = Arc::new(fx.fresh_control_plane().await);
 
     // admin session (subject id == "root" matches the gate)
-    let admin_token = seed_session(&cp, ADMIN).await;
+    let admin_token = seed_admin_session(&cp, ADMIN).await;
     assert_eq!(
         status(
             app(cp.clone()),
@@ -109,7 +119,7 @@ async fn gate_admin_ok_nonadmin_403_unauth_401() {
 async fn create_with_role_then_disable_blocks_login() {
     let fx = PgFixture::shared();
     let cp = Arc::new(fx.fresh_control_plane().await);
-    let admin_token = seed_session(&cp, ADMIN).await;
+    let admin_token = seed_admin_session(&cp, ADMIN).await;
 
     // a pre-existing role the create call will assign
     cp.define_role(&RoleId("reader".into())).await.unwrap();

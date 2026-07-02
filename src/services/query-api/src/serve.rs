@@ -18,7 +18,7 @@ const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
 pub async fn serve(
     _cfg: &service_runtime::Config,
     direct: Arc<dyn ControlPlane>,
-    acl: Arc<dyn control_plane_core::Acl + Send + Sync>,
+    _acl: Arc<dyn control_plane_core::Acl + Send + Sync>,
     auth: service_runtime::AuthState,
     engine_socket: String,
     listener: tokio::net::TcpListener,
@@ -45,14 +45,9 @@ pub async fn serve(
     let cp_flight = cp.clone();
     let auth_flight: Arc<dyn control_plane_core::Auth + Send + Sync> = auth.auth.clone();
 
-    // Admin gate identity: the configured bootstrap admin (default "admin"). An
-    // unset value simply means no subject matches the gate → all /admin/* is 403.
-    let admin_username =
-        std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string());
     let admin_state = service_runtime::AdminState {
         auth: auth.auth.clone(),
-        acl,
-        admin_username,
+        cp: direct.clone(),
     };
     let admin_subject = std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME")
         .ok()
