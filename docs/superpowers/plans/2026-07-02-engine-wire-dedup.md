@@ -1640,7 +1640,7 @@ Part of road-engine-wire-dedup."
   inner-variant exhaustiveness, so the arm must be explicit or the class
   silently falls to the 500 arm).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/query_error_http.rs`:
 
@@ -1689,12 +1689,12 @@ async fn malformed_sql_is_plan_class() {
 }
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test -j 8 //src/services/query-api:query-error-http //src/services/query-api:engine-wire-serving-e2e > /tmp/t7a.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t7a.log`
 Expected: FAIL — compile error, `ServingError::Plan` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `serving.rs` — add to `ServingError` (below `Engine`):
 
@@ -1742,7 +1742,7 @@ planning-fault 400 — constructed only off the engine wire/in-process planner")
 (The vector-search match at `:177-181` keeps its catch-all — `Plan` cannot
 arise there, matching the wire client's `VectorSearchError` domain.)
 
-- [ ] **Step 4: Run to green (the class + every read-path e2e family that rides ServingError)**
+- [x] **Step 4: Run to green (the class + every read-path e2e family that rides ServingError)**
 
 Run: `buck2 test -j 8 //src/services/query-api:query-error-http //src/services/query-api:engine-wire-serving-e2e //src/services/query-api:serving-fault-logging //src/services/query-api:vector_search_e2e //src/services/query-api:http-wire-e2e > /tmp/t7b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7b.log`
 (Target names verified against `src/services/query-api/BUCK` —
@@ -1752,7 +1752,7 @@ Expected: PASS — `internal_variants_are_opaque_500` and
 in-process dim-mismatch 400 e2e is unaffected.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c7.log 2>&1; cat /tmp/c7.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p7.log 2>&1; grep -c Failed /tmp/p7.log` — expected `0`.
 

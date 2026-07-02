@@ -147,7 +147,15 @@ impl query_api::serving::ServingEngine for InProcessServingEngine {
         let inlined = inline_params(sql, params);
         let batches = execute_query(&self.catalog, &inlined, None)
             .await
-            .map_err(|e| ServingError::Engine(e.to_string()))?;
+            .map_err(|e| match e {
+                // Full Display, not the inner DataFusionError: the wire path's message
+                // is the engine's `query planning failed: {df}` (serving_status uses
+                // e.to_string()), and the in-process twin must match it byte-for-byte.
+                e @ engine_serving::EngineServingError::Plan(_) => {
+                    ServingError::Plan(e.to_string())
+                }
+                other => ServingError::Engine(other.to_string()),
+            })?;
         Ok(batches_to_rows(batches))
     }
 

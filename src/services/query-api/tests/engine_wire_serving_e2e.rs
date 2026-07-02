@@ -18,7 +18,7 @@ use engine::flight::FlightDataService;
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use query_api::engine_client::EngineServingClient;
-use query_api::serving::{ServingEngine, SqlValue};
+use query_api::serving::{ServingEngine, ServingError, SqlValue};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
@@ -134,5 +134,29 @@ async fn large_result_streams_past_unary_cap() {
         rows.rows.len(),
         600_000,
         "all rows must arrive over the stream"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WHITELISTED (road-engine-wire-dedup): over the wire, a planning-class SQL
+// fault now reaches query-api as ServingError::Plan (HTTP 400), not an opaque
+// Engine 500. (The code-agnostic is_err assertion above stays green.)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_sql_is_plan_class() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
+    let client = EngineServingClient::connect(&sock).await.expect("connect");
+
+    let err = client
+        .fetch_rows("SELECT FROM nope", &[])
+        .await
+        .expect_err("malformed SQL must error");
+    assert!(
+        matches!(&err, ServingError::Plan(m) if m.starts_with("query planning failed: ")),
+        "planning fault must carry the Plan class, got: {err:?}"
     );
 }
