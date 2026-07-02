@@ -172,34 +172,19 @@ async fn get_object(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    // Pull the `_ids` object-set input, `_or` groups, and the `limit`/`cursor` pagination
+    // Split the `_ids` object-set input, `_or` groups, and the `limit`/`cursor` pagination
     // knobs out of the params; the rest are filters. Repeated filter keys are preserved (a
     // column may carry several predicates, e.g. a range); the handler parses each value's
     // operator and coerces it. Presence of `limit` OR `cursor` selects the paginated read path.
-    let mut ids: Vec<String> = Vec::new();
-    let mut or_raw: Vec<String> = Vec::new();
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    let mut raw_limit: Option<String> = None;
-    let mut raw_cursor: Option<String> = None;
-    for (k, v) in params {
-        match k.as_str() {
-            "_ids" => {
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-                if ids.is_empty() {
-                    return (StatusCode::BAD_REQUEST, "_ids requires at least one value")
-                        .into_response();
-                }
-            }
-            "_or" => or_raw.push(v),
-            "limit" => raw_limit = Some(v),
-            "cursor" => raw_cursor = Some(v),
-            _ => filters.push((k, v)),
-        }
-    }
+    let (reserved, filters) =
+        crate::query_params::split_reserved(params, &["_ids", "_or", "limit", "cursor"]);
+    let ids = match crate::query_params::parse_ids(reserved.last("_ids")) {
+        Ok(ids) => ids,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let or_raw: Vec<String> = reserved.all("_or").to_vec();
+    let raw_limit = reserved.last("limit").map(String::from);
+    let raw_cursor = reserved.last("cursor").map(String::from);
     let deps = QueryDeps {
         ontology: st.cp.ontology(),
         acl: st.cp.acl(),
@@ -288,32 +273,15 @@ async fn get_linked(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    // Pull `_direction` (single-hop knob), `_shape`, and `_ids` out of the params; the rest
+    // Split `_direction` (single-hop knob), `_shape`, and `_ids` out of the params; the rest
     // are filters.
-    let mut direction_raw: Option<String> = None;
-    let mut shape: Option<String> = None;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "_direction" => direction_raw = Some(v),
-            "_shape" => shape = Some(v),
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            _ => filter_params.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    let direction = match parse_direction(direction_raw.as_deref()) {
+    let (reserved, filter_params) =
+        crate::query_params::split_reserved(params, &["_direction", "_shape", "_ids"]);
+    let ids = match crate::query_params::parse_ids(reserved.last("_ids")) {
+        Ok(ids) => ids,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let direction = match parse_direction(reserved.last("_direction")) {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
@@ -341,7 +309,7 @@ async fn get_linked(
         filters,
         ids,
     };
-    match shape.as_deref() {
+    match reserved.last("_shape") {
         None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
         Some("association") => {
             respond_associations(read_associations(&query, &subject, &deps).await)
@@ -370,29 +338,16 @@ async fn get_linked_chain(
 ) -> impl IntoResponse {
     // `_path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
     // every other pair is a filter. Repeated filter keys are preserved (e.g. a range).
-    let mut hops: Vec<Hop> = Vec::new();
-    let mut shape: Option<String> = None;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "_path" => hops = parse_path_hops(&v),
-            "_shape" => shape = Some(v),
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            _ => filter_params.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
+    let (reserved, filter_params) =
+        crate::query_params::split_reserved(params, &["_path", "_shape", "_ids"]);
+    let ids = match crate::query_params::parse_ids(reserved.last("_ids")) {
+        Ok(ids) => ids,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let hops: Vec<Hop> = reserved
+        .last("_path")
+        .map(parse_path_hops)
+        .unwrap_or_default();
     // Filter keys reference bare link names; resolve against those (direction-independent).
     let names: Vec<String> = hops.iter().map(|h| h.link.clone()).collect();
     let filters = match crate::chain_filter::resolve_chain_filters(&names, filter_params) {
@@ -411,7 +366,7 @@ async fn get_linked_chain(
         filters,
         ids,
     };
-    match shape.as_deref() {
+    match reserved.last("_shape") {
         None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
         Some("association") => {
             respond_associations(read_associations(&query, &subject, &deps).await)
@@ -495,6 +450,35 @@ fn parse_bool_flag(v: &str) -> Result<bool, ()> {
     }
 }
 
+/// The shared `/graph` route knobs — `_ids`, `depth` (default + `MAX_GRAPH_DEPTH`
+/// range guardrail), `tree` — pulled from the route's reserved params. Err carries
+/// the ready 400 response (fixed check order: ids, depth parse, tree, depth range),
+/// boxed to keep the `Result`'s Err variant small (`clippy::result_large_err`).
+fn graph_knobs(
+    reserved: &crate::query_params::ReservedParams,
+) -> Result<(Vec<String>, u32, bool), Box<axum::response::Response>> {
+    let ids = crate::query_params::parse_ids(reserved.last("_ids"))
+        .map_err(|m| Box::new((StatusCode::BAD_REQUEST, m).into_response()))?;
+    let depth = crate::query_params::parse_depth(reserved.last("depth"), DEFAULT_GRAPH_DEPTH)
+        .map_err(|m| Box::new((StatusCode::BAD_REQUEST, m).into_response()))?;
+    let tree = match reserved.last("tree") {
+        None => false,
+        Some(v) => parse_bool_flag(v).map_err(|()| {
+            Box::new((StatusCode::BAD_REQUEST, "tree must be true or false").into_response())
+        })?,
+    };
+    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
+            )
+                .into_response(),
+        ));
+    }
+    Ok((ids, depth, tree))
+}
+
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph/{link_name}",
     params(
@@ -517,48 +501,13 @@ async fn get_graph(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    // Pull `depth`, `_ids`, and `tree` out; the rest are seed filters.
-    let mut depth = DEFAULT_GRAPH_DEPTH;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut tree = false;
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "depth" => match v.parse::<u32>() {
-                Ok(d) => depth = d,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
-                        .into_response();
-                }
-            },
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            "tree" => match parse_bool_flag(&v) {
-                Ok(t) => tree = t,
-                Err(()) => {
-                    return (StatusCode::BAD_REQUEST, "tree must be true or false").into_response();
-                }
-            },
-            _ => filters.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
-        )
-            .into_response();
-    }
+    // Split `depth`, `_ids`, and `tree` out; the rest are seed filters.
+    let (reserved, filters) =
+        crate::query_params::split_reserved(params, &["depth", "_ids", "tree"]);
+    let (ids, depth, tree) = match graph_knobs(&reserved) {
+        Ok(t) => t,
+        Err(resp) => return *resp,
+    };
     if tree {
         graph_tree_respond(
             &st,
@@ -610,57 +559,20 @@ async fn get_graph_path(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    let mut depth = DEFAULT_GRAPH_DEPTH;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut tree = false;
-    let mut path: Vec<Hop> = Vec::new();
-    let mut links: Vec<String> = Vec::new();
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "path" => path = parse_path_hops(&v),
-            "links" => {
-                links = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect()
-            }
-            "depth" => match v.parse::<u32>() {
-                Ok(d) => depth = d,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
-                        .into_response();
-                }
-            },
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            "tree" => match parse_bool_flag(&v) {
-                Ok(t) => tree = t,
-                Err(()) => {
-                    return (StatusCode::BAD_REQUEST, "tree must be true or false").into_response();
-                }
-            },
-            _ => filters.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
-        )
-            .into_response();
-    }
+    let (reserved, filters) =
+        crate::query_params::split_reserved(params, &["path", "links", "depth", "_ids", "tree"]);
+    let (ids, depth, tree) = match graph_knobs(&reserved) {
+        Ok(t) => t,
+        Err(resp) => return *resp,
+    };
+    let path: Vec<Hop> = reserved
+        .last("path")
+        .map(parse_path_hops)
+        .unwrap_or_default();
+    let links: Vec<String> = reserved
+        .last("links")
+        .map(crate::query_params::comma_list)
+        .unwrap_or_default();
     // Exactly one of `path` (ordered cycle / `*` recursive-core+tail) or `links` (self-link
     // union) selects the mode.
     if !path.is_empty() && !links.is_empty() {
@@ -1112,23 +1024,14 @@ async fn lineage_closure(
     params: Vec<(String, String)>,
     dir: LineageDir,
 ) -> axum::response::Response {
-    let mut depth: u32 = 1;
-    let mut after: Option<String> = None;
-    let mut limit: Option<String> = None;
-    for (k, v) in params {
-        match k.as_str() {
-            "depth" => match v.parse::<u32>() {
-                Ok(d) => depth = d,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
-                        .into_response();
-                }
-            },
-            "after" => after = Some(v),
-            "limit" => limit = Some(v),
-            _ => {} // ignore unknown query params
-        }
-    }
+    // Unknown params were ignored before the splitter; discarding the "filters" side keeps that.
+    let (reserved, _) = crate::query_params::split_reserved(params, &["depth", "after", "limit"]);
+    let depth = match crate::query_params::parse_depth(reserved.last("depth"), 1) {
+        Ok(d) => d,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let after = reserved.last("after").map(String::from);
+    let limit = reserved.last("limit").map(String::from);
     let page = match crate::lineage_read::parse_lineage_page(after, limit) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
@@ -1221,15 +1124,9 @@ async fn get_lineage_run_events(
     let Ok(uuid) = uuid::Uuid::parse_str(&run_id) else {
         return (StatusCode::BAD_REQUEST, "run_id must be a UUID").into_response();
     };
-    let mut after: Option<String> = None;
-    let mut limit: Option<String> = None;
-    for (k, v) in params {
-        match k.as_str() {
-            "after" => after = Some(v),
-            "limit" => limit = Some(v),
-            _ => {}
-        }
-    }
+    let (reserved, _) = crate::query_params::split_reserved(params, &["after", "limit"]);
+    let after = reserved.last("after").map(String::from);
+    let limit = reserved.last("limit").map(String::from);
     let page = match crate::lineage_read::parse_lineage_page(after, limit) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),

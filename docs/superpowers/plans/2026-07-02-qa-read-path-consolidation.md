@@ -1209,7 +1209,7 @@ Part of road-qa-read-path-consolidation."
   `fn graph_knobs(&ReservedParams) -> Result<(Vec<String>, u32, bool), axum::response::Response>`.
 - Consumed by: Task 6's `get_graph_path` rewrite (same `reserved` scrape).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/services/query-api/tests/query_params.rs`:
 
@@ -1316,12 +1316,12 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/query-api:query-params > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t5.log`
 Expected: FAIL — compile error (`query_api::query_params` unresolved).
 
-- [ ] **Step 3: Implement the module**
+- [x] **Step 3: Implement the module**
 
 Create `src/services/query-api/src/query_params.rs`:
 
@@ -1417,12 +1417,12 @@ pub fn parse_depth(raw: Option<&str>, default: u32) -> Result<u32, &'static str>
 Add `pub mod query_params;` to `src/services/query-api/src/lib.rs` (after
 `pub mod path_parse;`).
 
-- [ ] **Step 4: Run the unit tests to green**
+- [x] **Step 4: Run the unit tests to green**
 
 Run: `buck2 test //src/services/query-api:query-params > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5.log`
 Expected: PASS.
 
-- [ ] **Step 5: Rewire the seven scraper loops**
+- [x] **Step 5: Rewire the seven scraper loops**
 
 In `http.rs` add (below `parse_bool_flag`):
 
@@ -1559,7 +1559,7 @@ and its tail's `shape.as_deref()` likewise becomes `reserved.last("_shape")`.
     let limit = reserved.last("limit").map(String::from);
 ```
 
-- [ ] **Step 6: Run the wire pins to green**
+- [x] **Step 6: Run the wire pins to green**
 
 Run: `buck2 test //src/services/query-api:query-params //src/services/query-api:http-smoke //src/services/query-api:path-parse > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5.log`
 Expected: PASS.
@@ -1567,7 +1567,7 @@ Run: `buck2 test -j 8 //src/services/query-api:object-set-e2e //src/services/que
 Expected: PASS — all unmodified.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c5.log 2>&1; cat /tmp/c5.log` — artifact empty.
 
-- [ ] **Step 7: prek + commit**
+- [x] **Step 7: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p5.log 2>&1; grep -c Failed /tmp/p5.log` — expected `0`.
 
