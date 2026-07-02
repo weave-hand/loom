@@ -130,7 +130,7 @@ bootstrap test boots `EmbeddedPg` directly, mirroring
 | `service_token_max_ttl_from_env` | `ingest/src/main.rs:25`, `query-api/src/serve.rs:51`, `standalone/src/lib.rs:56` | Tasks 4 (serve.rs), 5 (standalone), 6 (ingest), deleted Task 7 |
 | `migrate_requested` (live-env) | `query-api/src/main.rs:9`, `ingest/src/main.rs:10`, `engine/src/main.rs:7`, `standalone/src/main.rs:28` | Task 6 (signature → `(vars)`; three mains via `bootstrap`, standalone main direct) |
 | `parse_env_or` (live-env) | `engine/src/run.rs:51-52` (def :92-101) | Task 5 (deleted; `EngineTuning::from_map` in callers) |
-| `Config::from_map` | prod: `runtime/src/lib.rs:236` (`from_env`), `standalone/src/main.rs:29,50,78`; tests: `runtime/tests/config.rs` (×14), `embedded_config.rs` (×2), `object_store_config.rs` (×9), `standalone/tests/composite_e2e.rs:41`, `composite_error_path.rs:42` | Task 3 (decomposed internally — zero caller changes) |
+| `Config::from_map` | prod: `runtime/src/lib.rs:236` (`from_env`), `standalone/src/main.rs:29,50,78`; tests: `runtime/tests/config.rs` (×14), `embedded_config.rs` (×2), `object_store_config.rs` (×8), `standalone/tests/composite_e2e.rs:41`, `composite_error_path.rs:42` | Task 3 (decomposed internally — zero caller changes) |
 | `Config::from_env` | `query-api/src/main.rs:7`, `ingest/src/main.rs:9`, `engine/src/main.rs:6`, `transform/src/main.rs:46` | Task 6 (three mains → `bootstrap`); transform keeps it (out of scope) |
 | `build_pool_managed` | `query-api/src/main.rs:17`, `ingest/src/main.rs:14`, `engine/src/main.rs:11`, `standalone/src/lib.rs:31`, `runtime/tests/migrate_managed.rs:89,113` | Task 6 (three mains via `bootstrap`); standalone + tests unchanged |
 | `LOOM_ENGINE_SOCKET` (live-env) | `query-api/src/main.rs:27`, `engine/src/main.rs:13` (snapshot-correct already: `standalone/src/main.rs:98-101`, `worker/src/main.rs:54`) | Tasks 5 (engine main), 6 (query-api main) — `req_var` over the snapshot |
@@ -143,6 +143,8 @@ bootstrap test boots `EmbeddedPg` directly, mirroring
 1. Malformed `LOOM_SESSION_TTL_SECS` / `LOOM_SERVICE_TOKEN_MAX_TTL` now **fail
    startup** naming the key (was: silent fallback to 86400s / 90d). Absent keys
    keep the identical defaults. This *is* the iss-config-silent-fallbacks fix.
+   The engine main previously never read either key at all; via `bootstrap` it
+   now parses both, so a malformed value newly fails engine startup too.
 2. `LOOM_INLINE_BYTE_LIMIT` / `LOOM_FLUSH_BYTE_THRESHOLD` parse at main startup
    from the snapshot (was: live env inside `engine::run`, after two catalog
    builds). Malformed values already errored; they now error earlier with the
@@ -811,7 +813,9 @@ into `BoxErr`):
 ```
 
 Then sweep the remaining live-env reads in the same file onto the snapshot.
-Replace lines 81-95 (`with_static` through the flight-export gate):
+Replace lines 80-95 (the `// Optional UI serving` comment line through the
+flight-export gate — the comment is included in the replaced range so it is
+not duplicated):
 
 ```rust
     // Optional UI serving (tight deploy) + CORS (detached deploy); both default off.
