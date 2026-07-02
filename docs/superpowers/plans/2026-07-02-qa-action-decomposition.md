@@ -270,7 +270,7 @@ TEST, never the production code.
   WriteDenialReason}`.
 - Produces: three new `#[tokio::test]` fns that later tasks keep green.
 
-- [ ] **Step 1: Append the corrupt-PK pin to `update_delete_e2e.rs`**
+- [x] **Step 1: Append the corrupt-PK pin to `update_delete_e2e.rs`**
 
 Add `use control_plane_core::ControlPlaneError;` to the file's imports, then
 append:
@@ -351,7 +351,7 @@ async fn duplicate_identity_is_a_backend_fault() {
 }
 ```
 
-- [ ] **Step 2: Append the two cross-leg order pins to
+- [x] **Step 2: Append the two cross-leg order pins to
   `update_delete_governance_e2e.rs`**
 
 ```rust
@@ -499,14 +499,14 @@ async fn update_order_deny_column_beats_resulting_row_filter() {
 }
 ```
 
-- [ ] **Step 3: Run both fixture targets — the pins are green against the
+- [x] **Step 3: Run both fixture targets — the pins are green against the
   UNMODIFIED code**
 
 Run: `buck2 test -j 8 //src/services/query-api:update-delete-e2e //src/services/query-api:update-delete-governance-e2e > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
 Expected: PASS (3 new + 8 pre-existing tests). A failure here means a
 mis-written pin — fix the test.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p1.log 2>&1; grep -c Failed /tmp/p1.log` — expected `0`.
 

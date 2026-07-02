@@ -383,3 +383,146 @@ async fn vector_guard() {
 
     drop(warehouse);
 }
+
+// ---------------------------------------------------------------------------
+// ORDER PIN — one policy carrying BOTH legs. The mutate enforcement order is
+// security-relevant: the existing-row row-filter leg runs BEFORE deny-column
+// (a subject who cannot address the row learns nothing about column policies),
+// and deny-column runs BEFORE the resulting-row filter (a denied column is
+// reported as such even when the resulting row would also fail).
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_order_existing_row_filter_beats_deny_column() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    let widget = define_widget(&cp).await;
+    let (subj, role) = grant_writer_role(&cp, &widget).await;
+
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+
+    // Seed {id:1, qty:9} BEFORE the policy (qty=9 will fail the filter).
+    run_action(
+        "createWidget",
+        json!({ "id": "1", "qty": "9" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("seed insert (no policy yet)");
+
+    // ONE policy with BOTH legs: row_filter `qty < 5` AND deny_columns ["qty"].
+    cp.set_policy(
+        &role,
+        Action::Write,
+        Policy {
+            target: PolicyTarget::Type(widget.clone()),
+            row_filter: Some(RowFilter::Compare {
+                property: "qty".into(),
+                op: CompareOp::Lt,
+                value: ScalarValue::Int(5),
+            }),
+            deny_columns: vec!["qty".to_string()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    // UPDATE {id:1, qty:1}: the existing row (qty=9) fails the filter AND `qty`
+    // is a denied column. The existing-row leg must win: reason row_filter.
+    let err = run_action(
+        "updateWidget",
+        json!({ "id": "1", "qty": "1" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, ActionError::WriteDenied(WriteDenialReason::RowFilter)),
+        "existing-row filter leg runs before deny-column, got: {err:?}"
+    );
+
+    drop(warehouse);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_order_deny_column_beats_resulting_row_filter() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    let widget = define_widget(&cp).await;
+    let (subj, role) = grant_writer_role(&cp, &widget).await;
+
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+
+    // Seed {id:1, qty:1} BEFORE the policy (qty=1 passes the filter).
+    run_action(
+        "createWidget",
+        json!({ "id": "1", "qty": "1" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("seed insert (no policy yet)");
+
+    // ONE policy with BOTH legs, as above.
+    cp.set_policy(
+        &role,
+        Action::Write,
+        Policy {
+            target: PolicyTarget::Type(widget.clone()),
+            row_filter: Some(RowFilter::Compare {
+                property: "qty".into(),
+                op: CompareOp::Lt,
+                value: ScalarValue::Int(5),
+            }),
+            deny_columns: vec!["qty".to_string()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    // UPDATE {id:1, qty:9}: the existing row (qty=1) PASSES the filter; `qty` is
+    // denied AND the resulting row (qty=9) would fail. Deny-column must win.
+    let err = run_action(
+        "updateWidget",
+        json!({ "id": "1", "qty": "9" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            ActionError::WriteDenied(WriteDenialReason::Column(c)) if c == "qty"
+        ),
+        "deny-column leg runs before the resulting-row filter, got: {err:?}"
+    );
+
+    drop(warehouse);
+}
