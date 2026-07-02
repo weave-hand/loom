@@ -258,4 +258,14 @@ async fn build_covers_all_rows_live_at_s() {
         events.items[0].outputs[0].name, built.puffin_path,
         "output name is the puffin path"
     );
+
+    // The input node must be the CANONICAL loom dataset ref (same node the
+    // landing/flush paths emit), not an ad-hoc {schema, name} pair — otherwise
+    // the index-build edge is disconnected from the table's lineage graph.
+    // Guards iss-vector-build-lineage-ref.
+    assert_eq!(
+        events.items[0].inputs,
+        vec![control_plane_core::DatasetRef::from(&table)],
+        "input is the canonical loom dataset ref for the source table"
+    );
 }

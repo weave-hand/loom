@@ -503,10 +503,7 @@ pub async fn build_vector_index(
         run_id,
         event_type: EventType::Complete,
         event_time: OffsetDateTime::now_utc(),
-        inputs: vec![DatasetRef {
-            namespace: table.schema.clone(),
-            name: table.name.clone(),
-        }],
+        inputs: vec![DatasetRef::from(table)],
         outputs: vec![DatasetRef {
             namespace: "loom-vector-index".to_string(),
             name: puffin_path.clone(),
