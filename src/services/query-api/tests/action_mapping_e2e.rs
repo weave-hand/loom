@@ -148,6 +148,7 @@ async fn read_gadgets(
             type_name: "Gadget".into(),
             filters: vec![],
             ids: vec![],
+            or_raw: Vec::new(),
         },
         &Subject(subj.clone()),
         &deps,

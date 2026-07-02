@@ -90,6 +90,7 @@ mod post_filter {
             std::slice::from_ref(&row_filter),
             std::slice::from_ref(&pred),
             &[],
+            &[],
             2,
         )
         .unwrap();

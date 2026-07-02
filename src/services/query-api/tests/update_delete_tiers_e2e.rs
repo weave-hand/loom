@@ -170,6 +170,7 @@ async fn read_widget(
             type_name: "Widget".into(),
             filters: vec![],
             ids: vec![],
+            or_raw: Vec::new(),
         },
         &Subject(subj.clone()),
         &qdeps,

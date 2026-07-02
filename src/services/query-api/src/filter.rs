@@ -247,3 +247,36 @@ pub fn coerce_predicate(
         }
     }
 }
+
+/// Split an `_or` group value into member predicate strings. Members are separated by
+/// UNESCAPED commas, reusing the set-operand escape convention (`\,` -> `,`, `\\` -> `\`)
+/// so a member carrying a set operator escapes its operand commas (`region:in:EU\,UK`) —
+/// the escape is consumed here, leaving a plain comma the member's `coerce_predicate`
+/// re-splits for the `in` list. Fewer than two members is rejected: an OR of one is just a
+/// plain predicate and an empty `_or` is meaningless, so requiring >=2 keeps intent explicit.
+///
+/// Caveat: because escapes are consumed once here, a `set`-operand carrying a *literal*
+/// backslash-escape inside an OR member (e.g. `region:in:a\\b`) is unescaped to `a\b` and
+/// then rejected by the inner `split_set_operands` as an invalid escape — a clean 400, never
+/// a crash or a leak. Cross-column OR of a set with escaped operands is a fringe case; the
+/// plain (`?region=in:a\\b`) path still supports it. See FUTURE `fut-or-set-operand-escaping`.
+pub fn split_or_members(raw: &str) -> Result<Vec<String>, FilterError> {
+    let bad = |m: String| FilterError::BadValue("_or".to_string(), m);
+    let members = split_set_operands(raw).map_err(|e| bad(format!("OR-group: {e}")))?;
+    if members.len() < 2 {
+        return Err(bad("an OR-group needs at least two members".to_string()));
+    }
+    Ok(members)
+}
+
+/// Split one `_or` member into `(column, value)` at the FIRST `:`. `value` is the same
+/// string a plain `?column=value` filter carries (consumed by `coerce_predicate`). A member
+/// with no `:` names no column and is rejected.
+pub fn split_member(member: &str) -> Result<(&str, &str), FilterError> {
+    member.split_once(':').ok_or_else(|| {
+        FilterError::BadValue(
+            "_or".to_string(),
+            format!("member '{member}' must be column:value"),
+        )
+    })
+}

@@ -27,6 +27,7 @@ fn projects_allowed_columns_and_quotes_identifiers() {
         &[],
         &[],
         &[],
+        &[],
         100,
     )
     .unwrap();
@@ -49,6 +50,7 @@ fn compiles_acl_compare_leaf_as_bound_param() {
         &["id".into()],
         &[],
         std::slice::from_ref(&f),
+        &[],
         &[],
         &[],
         100,
@@ -89,6 +91,7 @@ fn compiles_and_or_not_tree() {
         std::slice::from_ref(&f),
         &[],
         &[],
+        &[],
         10,
     )
     .unwrap();
@@ -114,6 +117,7 @@ fn expands_in_list_into_placeholders() {
         &["id".into()],
         &[],
         std::slice::from_ref(&f),
+        &[],
         &[],
         &[],
         10,
@@ -143,6 +147,7 @@ fn ands_acl_filter_with_request_equality_filter() {
         &[],
         std::slice::from_ref(&acl),
         &preds,
+        &[],
         &[],
         10,
     )
@@ -174,6 +179,7 @@ fn expands_not_in_list_into_placeholders() {
         std::slice::from_ref(&f),
         &[],
         &[],
+        &[],
         10,
     )
     .unwrap();
@@ -202,6 +208,7 @@ fn compiles_is_not_null_without_a_param() {
         std::slice::from_ref(&f),
         &[],
         &[],
+        &[],
         10,
     )
     .unwrap();
@@ -217,7 +224,8 @@ fn eq_filters_only_form_the_where_clause() {
     // No ACL row filter, only a request equality filter: the WHERE prefix and
     // conjunct-joining must still be correct (no leading/trailing AND).
     let preds = vec![eqp("status", SqlValue::Text("open".into()))];
-    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 10"#
@@ -231,6 +239,7 @@ fn masks_a_column_with_marker() {
         &t(),
         &["id".into(), "secret".into()],
         &["secret".into()],
+        &[],
         &[],
         &[],
         &[],
@@ -256,6 +265,7 @@ fn masking_preserves_projection_order_and_other_columns() {
         &[],
         &[],
         &[],
+        &[],
         10,
     )
     .unwrap();
@@ -278,6 +288,7 @@ fn malformed_filter_is_an_error_not_a_panic() {
         &["id".into()],
         &[],
         std::slice::from_ref(&bad),
+        &[],
         &[],
         &[],
         10,
@@ -309,6 +320,7 @@ fn derived_fk_count_compiles_to_a_correlated_subquery() {
             name: "customer".into(),
         },
         &["id".to_string()],
+        &[],
         &[],
         &[],
         &[],
@@ -359,6 +371,7 @@ fn derived_jointable_sum_with_target_filter_orders_params_first() {
         &[],
         &[],
         &[eqp("region", SqlValue::Text("CA".into()))],
+        &[],
         &derived,
         100,
     )
@@ -388,6 +401,7 @@ fn masked_derived_emits_marker_no_subquery_no_alias() {
             name: "customer".into(),
         },
         &["id".to_string()],
+        &[],
         &[],
         &[],
         &[],
@@ -709,7 +723,8 @@ fn caller_predicate_gt_renders_with_param() {
         op: CompareOp::Gt,
         values: vec![SqlValue::Int(100)],
     }];
-    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("amount" > ?) LIMIT 10"#
@@ -724,7 +739,8 @@ fn caller_predicate_in_expands_placeholders() {
         op: CompareOp::In,
         values: vec![SqlValue::Text("open".into()), SqlValue::Text("paid".into())],
     }];
-    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("status" IN (?, ?)) LIMIT 10"#
@@ -742,7 +758,8 @@ fn caller_predicate_isnotnull_no_param() {
         op: CompareOp::IsNotNull,
         values: vec![],
     }];
-    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
@@ -764,7 +781,8 @@ fn caller_predicate_range_two_same_column_ands() {
             values: vec![SqlValue::Int(200)],
         },
     ];
-    let (sql, params) = compile_select(&t(), &["id".into()], &[], &[], &preds, &[], 10).unwrap();
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("amount" >= ?) AND ("amount" <= ?) LIMIT 10"#
@@ -785,6 +803,7 @@ fn compiles_between_as_two_bound_params() {
         &[],
         &[],
         std::slice::from_ref(&p),
+        &[],
         &[],
         100,
     )
@@ -809,6 +828,7 @@ fn compiles_contains_as_ilike_with_escape_and_bound_param() {
         &[],
         &[],
         std::slice::from_ref(&p),
+        &[],
         &[],
         100,
     )
@@ -850,4 +870,151 @@ fn caller_predicate_binds_at_chain_alias() {
          WHERE (t_1.\"amount\" > ?) LIMIT 100"
     );
     assert_eq!(params, vec![SqlValue::Int(50)]);
+}
+
+#[test]
+fn or_group_renders_as_parenthesized_disjunction_after_plain_preds() {
+    let group = vec![
+        CallerPredicate {
+            column: "amount".into(),
+            op: CompareOp::Gt,
+            values: vec![SqlValue::Int(100)],
+        },
+        eqp("status", SqlValue::Text("vip".into())),
+    ];
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &[],
+        &[eqp("region", SqlValue::Text("CA".into()))],
+        std::slice::from_ref(&group),
+        &[],
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("region" = ?) AND (("amount" > ?) OR ("status" = ?)) LIMIT 10"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("CA".into()),
+            SqlValue::Int(100),
+            SqlValue::Text("vip".into())
+        ]
+    );
+}
+
+#[test]
+fn two_or_groups_render_as_two_anded_disjunctions() {
+    let g1 = vec![eqp("a", SqlValue::Int(1)), eqp("b", SqlValue::Int(2))];
+    let g2 = vec![eqp("c", SqlValue::Int(3)), eqp("d", SqlValue::Int(4))];
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], &[], &[], &[g1, g2], &[], 10).unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE (("a" = ?) OR ("b" = ?)) AND (("c" = ?) OR ("d" = ?)) LIMIT 10"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Int(1),
+            SqlValue::Int(2),
+            SqlValue::Int(3),
+            SqlValue::Int(4)
+        ]
+    );
+}
+
+#[test]
+fn or_group_member_in_expands_placeholders() {
+    // Operator reuse: a set operator inside an OR-group renders through caller_predicate_sql.
+    let group = vec![
+        CallerPredicate {
+            column: "region".into(),
+            op: CompareOp::In,
+            values: vec![SqlValue::Text("EU".into()), SqlValue::Text("UK".into())],
+        },
+        eqp("status", SqlValue::Text("vip".into())),
+    ];
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &[],
+        &[],
+        std::slice::from_ref(&group),
+        &[],
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE (("region" IN (?, ?)) OR ("status" = ?)) LIMIT 10"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("EU".into()),
+            SqlValue::Text("UK".into()),
+            SqlValue::Text("vip".into())
+        ]
+    );
+}
+
+#[test]
+fn acl_row_filter_stays_anded_above_or_group() {
+    // Governance gate (spec Testing #5, structural half): an ACL RowFilter is a top-level
+    // conjunct ANDed ABOVE the OR-group — an OR-group can never disjoin it away. Uses a
+    // non-empty row_filters (not just a plain caller predicate) to prove the ACL leg holds.
+    let acl = RowFilter::Compare {
+        property: "tenant".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("acme".into()),
+    };
+    let group = vec![
+        CallerPredicate {
+            column: "amount".into(),
+            op: CompareOp::Gt,
+            values: vec![SqlValue::Int(100)],
+        },
+        eqp("status", SqlValue::Text("vip".into())),
+    ];
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        std::slice::from_ref(&acl),
+        &[],
+        std::slice::from_ref(&group),
+        &[],
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("tenant" = ?) AND (("amount" > ?) OR ("status" = ?)) LIMIT 10"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("acme".into()),
+            SqlValue::Int(100),
+            SqlValue::Text("vip".into())
+        ]
+    );
+}
+
+#[test]
+fn empty_inner_or_group_is_skipped_not_rendered_as_parens() {
+    // Defense-in-depth for the pub API: an empty group must never emit the invalid `()`
+    // fragment. The handler guarantees >=2 members via split_or_members, but a direct
+    // caller could pass an empty inner group — it is skipped, leaving a bare SELECT.
+    let empty: Vec<Vec<CallerPredicate>> = vec![vec![]];
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], &[], &[], &empty, &[], 10).unwrap();
+    assert_eq!(sql, r#"SELECT "id" FROM "main"."orders" LIMIT 10"#);
+    assert!(params.is_empty());
 }

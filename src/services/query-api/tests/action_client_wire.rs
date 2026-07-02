@@ -78,6 +78,7 @@ async fn write_object_through_wire_client() {
             type_name: "Widget".into(),
             filters: vec![],
             ids: vec![],
+            or_raw: Vec::new(),
         },
         &Subject(subj),
         &qdeps,

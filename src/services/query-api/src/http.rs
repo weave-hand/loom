@@ -147,6 +147,7 @@ async fn get_object(
     // filter keys are preserved (a column may carry several predicates, e.g. a range); the
     // handler parses each value's operator and coerces it.
     let mut ids: Vec<String> = Vec::new();
+    let mut or_raw: Vec<String> = Vec::new();
     let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         if k == "_ids" {
@@ -159,6 +160,8 @@ async fn get_object(
                 return (StatusCode::BAD_REQUEST, "_ids requires at least one value")
                     .into_response();
             }
+        } else if k == "_or" {
+            or_raw.push(v);
         } else {
             filters.push((k, v));
         }
@@ -174,6 +177,7 @@ async fn get_object(
             type_name,
             filters,
             ids,
+            or_raw,
         },
         &subject,
         &deps,
