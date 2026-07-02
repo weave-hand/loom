@@ -14,7 +14,10 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use control_plane_core::{Auth, ControlPlaneError, NewServiceAccount, PageReq, SubjectId};
+use control_plane_core::{
+    ADMIN_ROLE, Auth, ControlPlane, ControlPlaneError, NewServiceAccount, PageReq, RoleId,
+    SubjectId,
+};
 use time::OffsetDateTime;
 
 use crate::token_sha256;
@@ -198,25 +201,25 @@ pub fn session_routes(auth: AuthState) -> Router {
 // ---------------------------------------------------------------------------
 
 /// Shared state for the admin-gated service-account routes. Carries the authn store,
-/// the bootstrap-admin subject the gate compares against (None ⇒ management is closed
-/// to everyone), and the mandatory-TTL cap.
+/// the control plane used to check the reserved `admin` role, and the mandatory-TTL
+/// cap.
 #[derive(Clone)]
 struct ServiceAccountState {
     auth: Arc<dyn Auth + Send + Sync>,
-    admin_subject: Option<SubjectId>,
+    cp: Arc<dyn ControlPlane>,
     max_ttl: Duration,
 }
 
-/// 403 unless the verified subject is the configured bootstrap admin. This is the
-/// only admin notion today; a first-class auth-admin ACL capability is deferred.
-#[expect(
-    clippy::result_large_err,
-    reason = "Err carries the ready-to-return axum Response (mirrors the handlers' own \
-              Response returns); boxing it would just move the cost to every call site"
-)]
-fn ensure_admin(subject: &Subject, st: &ServiceAccountState) -> Result<(), Response> {
-    match &st.admin_subject {
-        Some(admin) if *admin == subject.0 => Ok(()),
+/// 403 unless the verified subject holds the reserved `admin` role. Matches the
+/// `/admin/*` gate (`crate::admin::require_admin`); a lookup error fails closed.
+async fn ensure_admin(subject: &Subject, st: &ServiceAccountState) -> Result<(), Response> {
+    match st
+        .cp
+        .acl()
+        .has_role(&subject.0, &RoleId(ADMIN_ROLE.to_string()))
+        .await
+    {
+        Ok(true) => Ok(()),
         _ => Err((
             StatusCode::FORBIDDEN,
             "service-account management is admin-only",
@@ -269,7 +272,7 @@ async fn create_account(
     State(st): State<ServiceAccountState>,
     axum::Json(req): axum::Json<CreateAccountReq>,
 ) -> Response {
-    if let Err(r) = ensure_admin(&subject, &st) {
+    if let Err(r) = ensure_admin(&subject, &st).await {
         return r;
     }
     // subject_id == name keeps machine identities operator-legible, mirroring how the
@@ -293,7 +296,7 @@ async fn create_account(
 
 /// `GET /auth/service-accounts` — admin. List service accounts.
 async fn list_accounts(subject: Subject, State(st): State<ServiceAccountState>) -> Response {
-    if let Err(r) = ensure_admin(&subject, &st) {
+    if let Err(r) = ensure_admin(&subject, &st).await {
         return r;
     }
     match st.auth.list_service_accounts(PageReq::unbounded()).await {
@@ -323,7 +326,7 @@ async fn mint_token(
     Path(id): Path<String>,
     axum::Json(req): axum::Json<MintTokenReq>,
 ) -> Response {
-    if let Err(r) = ensure_admin(&subject, &st) {
+    if let Err(r) = ensure_admin(&subject, &st).await {
         return r;
     }
     // Mandatory-TTL cap: reject an over-cap (or zero) request — no immortal tokens.
@@ -369,7 +372,7 @@ async fn list_tokens(
     State(st): State<ServiceAccountState>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(r) = ensure_admin(&subject, &st) {
+    if let Err(r) = ensure_admin(&subject, &st).await {
         return r;
     }
     match st
@@ -406,7 +409,7 @@ async fn revoke_token(
     State(st): State<ServiceAccountState>,
     Path((_id, token_id)): Path<(String, String)>,
 ) -> Response {
-    if let Err(r) = ensure_admin(&subject, &st) {
+    if let Err(r) = ensure_admin(&subject, &st).await {
         return r;
     }
     let Ok(bytes) = hex::decode(&token_id) else {
@@ -426,16 +429,16 @@ async fn revoke_token(
 }
 
 /// Admin-gated service-account management routes, behind the authn gate. `auth`
-/// supplies authn; `admin_subject` is the only principal allowed to manage (None ⇒
-/// closed); `max_ttl` caps minted-token lifetime.
+/// supplies authn; `cp` supplies the ACL check gating management on the reserved
+/// `admin` role; `max_ttl` caps minted-token lifetime.
 pub fn service_account_routes(
     auth: AuthState,
-    admin_subject: Option<SubjectId>,
+    cp: Arc<dyn ControlPlane>,
     max_ttl: Duration,
 ) -> Router {
     let mgmt = ServiceAccountState {
         auth: auth.auth.clone(),
-        admin_subject,
+        cp,
         max_ttl,
     };
     protect(

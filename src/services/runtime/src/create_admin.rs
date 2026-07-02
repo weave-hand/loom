@@ -29,7 +29,7 @@ pub async fn run_create_admin<CP: Auth + Acl + Sync>(
     if username.trim().is_empty() {
         return Err(CreateAdminError::EmptyUsername);
     }
-    if password.is_empty() {
+    if password.trim().is_empty() {
         return Err(CreateAdminError::EmptyPassword);
     }
     if cp.is_bootstrap_sealed().await? {
@@ -37,12 +37,17 @@ pub async fn run_create_admin<CP: Auth + Acl + Sync>(
     }
     let phc = crate::hash_password(password).map_err(|e| CreateAdminError::Hash(e.to_string()))?;
     let subject = SubjectId(username.to_string());
-    cp.create_user(&NewUser {
-        subject_id: subject.clone(),
-        username: username.to_string(),
-        password_phc: phc,
-    })
-    .await?;
+    match cp
+        .create_user(&NewUser {
+            subject_id: subject.clone(),
+            username: username.to_string(),
+            password_phc: phc,
+        })
+        .await
+    {
+        Ok(()) | Err(ControlPlaneError::Conflict(_)) => {}
+        Err(e) => return Err(e.into()),
+    }
     cp.define_subject(&subject).await?;
     let admin_role = RoleId(ADMIN_ROLE.to_string());
     cp.define_role(&admin_role).await?;

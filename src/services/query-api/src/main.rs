@@ -33,7 +33,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     query_api::serve(
         &cfg,
-        pg.clone(),
         pg,
         auth,
         engine_socket,

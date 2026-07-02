@@ -18,7 +18,6 @@ const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
 pub async fn serve(
     _cfg: &service_runtime::Config,
     direct: Arc<dyn ControlPlane>,
-    _acl: Arc<dyn control_plane_core::Acl + Send + Sync>,
     auth: service_runtime::AuthState,
     engine_socket: String,
     listener: tokio::net::TcpListener,
@@ -49,9 +48,6 @@ pub async fn serve(
         auth: auth.auth.clone(),
         cp: direct.clone(),
     };
-    let admin_subject = std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME")
-        .ok()
-        .map(control_plane_core::SubjectId);
     let max_ttl = service_runtime::service_token_max_ttl_from_env();
 
     let app = service_runtime::protect(
@@ -68,7 +64,7 @@ pub async fn serve(
     .merge(service_runtime::admin_routes(admin_state, auth.clone()))
     .merge(service_runtime::service_account_routes(
         auth,
-        admin_subject,
+        direct.clone(),
         max_ttl,
     ));
 

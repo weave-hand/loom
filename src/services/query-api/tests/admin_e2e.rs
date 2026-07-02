@@ -323,18 +323,7 @@ async fn governance_routes_end_to_end() {
     assert!(roles.contains(&ADMIN_ROLE.to_string()), "roles: {roles:?}");
     assert!(roles.contains(&"reader".to_string()), "roles: {roles:?}");
 
-    // POST /admin/roles/reader/grants — grant Read on Widget.
-    let (status, _) = send_json(
-        full_app(cp.clone(), eng.clone()),
-        "POST",
-        "/admin/roles/reader/grants",
-        &admin_token,
-        Some(r#"{"action":"read","type":"Widget"}"#),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-
-    // POST /admin/users — provision a reader-role user.
+    // POST /admin/users — provision a reader-role user, BEFORE the grant exists.
     let (status, _) = send_json(
         full_app(cp.clone(), eng.clone()),
         "POST",
@@ -354,6 +343,34 @@ async fn governance_routes_end_to_end() {
     )
     .await
     .unwrap();
+
+    // Before the grant, the reader-role subject is denied — the admin role held by
+    // `admin_token` above is NOT a bypass for other subjects, and holding the
+    // (still ungranted) "reader" role isn't enough on its own.
+    let (status, body) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "GET",
+        "/objects/Widget",
+        &reader_token,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "reader read before grant should be 403: {body:?}"
+    );
+
+    // POST /admin/roles/reader/grants — grant Read on Widget.
+    let (status, _) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "POST",
+        "/admin/roles/reader/grants",
+        &admin_token,
+        Some(r#"{"action":"read","type":"Widget"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
 
     // The reader can now read Widget objects — governed by the grant just made.
     let (status, body) = send_json(

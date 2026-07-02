@@ -53,9 +53,6 @@ async fn serve_composite(
         auth: pg.clone(),
         session_ttl: service_runtime::session_ttl_from_env(),
     };
-    let admin_subject = std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME")
-        .ok()
-        .map(control_plane_core::SubjectId);
     let max_ttl = service_runtime::service_token_max_ttl_from_env();
 
     // One shutdown source fanned out to all three servers via a watch channel.
@@ -115,7 +112,6 @@ async fn serve_composite(
     let ingest_cp: Arc<dyn ControlPlane> = pg.clone();
     let ingest_auth = auth.clone();
     let ingest_pool = pool.clone();
-    let ingest_admin = admin_subject.clone();
     let ingest_sd = sub(sd_rx.clone());
     tasks.spawn(async move {
         (
@@ -125,7 +121,6 @@ async fn serve_composite(
                 ingest_pool,
                 ingest_cp,
                 ingest_auth,
-                ingest_admin,
                 max_ttl,
                 ingest_listener,
                 ingest_sd,
@@ -144,7 +139,6 @@ async fn serve_composite(
             "query-api",
             query_api::serve(
                 &qapi_cfg,
-                qapi_pg.clone(),
                 qapi_pg,
                 qapi_auth,
                 qapi_socket,

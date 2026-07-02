@@ -5,7 +5,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use control_plane_core::{ControlPlane, SubjectId};
+use control_plane_core::ControlPlane;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -16,16 +16,11 @@ use crate::landing::{IcebergMaterializer, LandingMaterializer};
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "seam function: all args are required singletons passed through from the binary"
-)]
 pub async fn serve(
     cfg: &service_runtime::Config,
     pool: sqlx::PgPool,
     cp: Arc<dyn ControlPlane>,
     auth: service_runtime::AuthState,
-    admin_subject: Option<SubjectId>,
     max_ttl: Duration,
     listener: tokio::net::TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
@@ -43,13 +38,12 @@ pub async fn serve(
         })
     };
 
+    let sa_cp = cp.clone();
     let app = service_runtime::protect(router(AppState { materializer, cp }), auth.clone())
         .merge(service_runtime::login_routes(auth.clone()))
         .merge(service_runtime::session_routes(auth.clone()))
         .merge(service_runtime::service_account_routes(
-            auth,
-            admin_subject,
-            max_ttl,
+            auth, sa_cp, max_ttl,
         ));
     let app = service_runtime::with_openapi(app, crate::build_openapi());
     service_runtime::serve_with_shutdown(listener, app, shutdown).await?;

@@ -236,7 +236,13 @@ async fn grant(
     let action = match req.action.as_str() {
         "read" => Action::Read,
         "write" => Action::Write,
-        _ => return (StatusCode::BAD_REQUEST, "action must be read|write").into_response(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "action must be read|write" })),
+            )
+                .into_response();
+        }
     };
     let target = PolicyTarget::Type(TypeName(req.r#type.clone()));
     match st
