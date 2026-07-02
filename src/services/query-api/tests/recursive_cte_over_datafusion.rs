@@ -11,7 +11,7 @@ use query_api::filter::CallerPredicate;
 use query_api::serving::{Rows, SqlValue};
 use query_api::serving_datafusion::batches_to_rows;
 use query_api::sql::{
-    DataFusionDialect, GraphStep, compile_graph_reach, compile_graph_reach_union,
+    DataFusionDialect, GraphStep, ReachSpec, compile_graph_reach, compile_graph_reach_union,
 };
 
 /// Sorted `id` column values from a `Rows` whose projection is `("id", "name")`.
@@ -84,14 +84,16 @@ async fn fk_self_link_recursive_reach_over_datafusion() {
     }];
     let (sql, params) = compile_graph_reach(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &person(),
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &[],
+            allowed_cols: &["id".to_string(), "name".to_string()],
+            mask_cols: &[],
+            depth: 3,
+        },
         &[step],
-        &seed,
-        &[],
-        &["id".to_string(), "name".to_string()],
-        &[],
-        3,
         100,
     )
     .expect("compile_graph_reach");
@@ -189,14 +191,16 @@ async fn union_self_links_recursive_reach_over_datafusion() {
     }];
     let (sql, params) = compile_graph_reach_union(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &person(),
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &[],
+            allowed_cols: &["id".to_string(), "name".to_string()],
+            mask_cols: &[],
+            depth: 3,
+        },
         &backings,
-        &seed,
-        &[],
-        &["id".to_string(), "name".to_string()],
-        &[],
-        3,
         100,
     )
     .expect("compile_graph_reach_union");

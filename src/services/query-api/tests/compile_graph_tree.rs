@@ -6,7 +6,7 @@
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{DataFusionDialect, GraphStep, compile_graph_tree};
+use query_api::sql::{DataFusionDialect, GraphStep, ReachSpec, compile_graph_tree};
 
 fn person() -> TableRef {
     TableRef {
@@ -24,18 +24,20 @@ fn fk_self_link_tree_shape() {
     };
     let (sql, params) = compile_graph_tree(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &person(),
+            identity: "id",
+            seed_predicates: &[], // no seed predicates
+            row_filters: &[],     // no row-filters
+            allowed_cols: &["id".to_string(), "name".to_string()],
+            mask_cols: &[],
+            depth: 3,
+        },
         &[GraphStep {
             backing,
             next_table: person(),
             next_filters: vec![],
         }],
-        &[], // no seed predicates
-        &[], // no row-filters
-        &["id".to_string(), "name".to_string()],
-        &[],
-        3,
     )
     .unwrap();
     assert!(params.is_empty());
@@ -118,18 +120,20 @@ fn join_table_tree_with_row_filter_and_seed_param_order() {
     }];
     let (sql, params) = compile_graph_tree(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &person(),
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &row_filters,
+            allowed_cols: &["id".to_string()],
+            mask_cols: &[],
+            depth: 2,
+        },
         &[GraphStep {
             backing,
             next_table: person(),
             next_filters: vec![],
         }],
-        &seed,
-        &row_filters,
-        &["id".to_string()],
-        &[],
-        2,
     )
     .unwrap();
     // join-table hop
@@ -187,14 +191,16 @@ fn two_step_path_cycle_tree() {
     ];
     let (sql, _params) = compile_graph_tree(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &person(),
+            identity: "id",
+            seed_predicates: &[],
+            row_filters: &[],
+            allowed_cols: &["id".to_string()],
+            mask_cols: &[],
+            depth: 2,
+        },
         &path,
-        &[],
-        &[],
-        &["id".to_string()],
-        &[],
-        2,
     )
     .unwrap();
     assert!(

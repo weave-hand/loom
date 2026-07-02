@@ -975,14 +975,16 @@ pub async fn read_graph_reach(
 
     let (sql, params) = crate::sql::compile_graph_reach(
         deps.serving.dialect(),
-        &r.g.otype.table,
-        &r.identity,
+        &crate::sql::ReachSpec {
+            table: &r.g.otype.table,
+            identity: &r.identity,
+            seed_predicates: &r.seed_predicates,
+            row_filters: &r.g.row_filters,
+            allowed_cols: &r.proj.columns,
+            mask_cols: &r.proj.masked,
+            depth: q.depth,
+        },
         &r.steps,
-        &r.seed_predicates,
-        &r.g.row_filters,
-        &r.proj.columns,
-        &r.proj.masked,
-        q.depth,
         deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
@@ -1014,14 +1016,16 @@ pub async fn read_graph_tree(
 
     let (sql, params) = crate::sql::compile_graph_tree(
         deps.serving.dialect(),
-        &r.g.otype.table,
-        &r.identity,
+        &crate::sql::ReachSpec {
+            table: &r.g.otype.table,
+            identity: &r.identity,
+            seed_predicates: &r.seed_predicates,
+            row_filters: &r.g.row_filters,
+            allowed_cols: &r.proj.columns,
+            mask_cols: &r.proj.masked,
+            depth: q.depth,
+        },
         &r.steps,
-        &r.seed_predicates,
-        &r.g.row_filters,
-        &r.proj.columns,
-        &r.proj.masked,
-        q.depth,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     // Contract guard (mirrors the sibling reads): the tree projects the visible columns then
@@ -1254,14 +1258,16 @@ pub async fn read_graph_reach_union(
 
     let (sql, params) = crate::sql::compile_graph_reach_union(
         deps.serving.dialect(),
-        &g.otype.table,
-        &identity,
+        &crate::sql::ReachSpec {
+            table: &g.otype.table,
+            identity: &identity,
+            seed_predicates: &seeds,
+            row_filters: &g.row_filters,
+            allowed_cols: &proj.columns,
+            mask_cols: &proj.masked,
+            depth: q.depth,
+        },
         &backings,
-        &seeds,
-        &g.row_filters,
-        &proj.columns,
-        &proj.masked,
-        q.depth,
         deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
@@ -1382,17 +1388,19 @@ pub async fn read_graph_reach_with_tail(
 
     let (sql, params) = crate::sql::compile_graph_reach_tail(
         deps.serving.dialect(),
-        &g.otype.table,
-        &identity,
+        &crate::sql::ReachSpec {
+            table: &g.otype.table,
+            identity: &identity,
+            seed_predicates: &seeds,
+            row_filters: &g.row_filters,
+            allowed_cols: &proj.columns,
+            mask_cols: &proj.masked,
+            depth: q.depth,
+        },
         &core_backing,
-        &seeds,
-        &g.row_filters,
         &tail_types,
         &tail_hops,
-        &proj.columns,
-        &proj.masked,
         final_g.otype.identity.as_deref(),
-        q.depth,
         deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;

@@ -7,7 +7,7 @@
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{DataFusionDialect, compile_graph_reach_union};
+use query_api::sql::{DataFusionDialect, ReachSpec, compile_graph_reach_union};
 
 fn person() -> TableRef {
     TableRef {
@@ -40,14 +40,16 @@ fn two_self_links_union_with_row_filter() {
     }];
     let (sql, params) = compile_graph_reach_union(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &person(),
+            identity: "id",
+            seed_predicates: &[], // no seed predicates
+            row_filters: &row_filters,
+            allowed_cols: &["id".to_string(), "name".to_string()],
+            mask_cols: &[],
+            depth: 3,
+        },
         &[fk, jt],
-        &[], // no seed predicates
-        &row_filters,
-        &["id".to_string(), "name".to_string()],
-        &[],
-        3,
         1000,
     )
     .unwrap();
@@ -118,14 +120,16 @@ fn single_self_link_with_seed_predicate() {
     }];
     let (sql, params) = compile_graph_reach_union(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &person(),
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &[], // no row-filters
+            allowed_cols: &["id".to_string()],
+            mask_cols: &[],
+            depth: 2,
+        },
         &[fk],
-        &seed,
-        &[], // no row-filters
-        &["id".to_string()],
-        &[],
-        2,
         1000,
     )
     .unwrap();
