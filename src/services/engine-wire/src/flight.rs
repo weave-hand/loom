@@ -328,7 +328,7 @@ impl FlightSqlClient {
             .clone()
             .get_flight_info(descriptor)
             .await
-            .map_err(crate::client::be)?
+            .map_err(crate::client::sql_status)?
             .into_inner();
         let ticket = info
             .endpoint
@@ -342,7 +342,7 @@ impl FlightSqlClient {
             .clone()
             .do_get(ticket)
             .await
-            .map_err(crate::client::be)?;
+            .map_err(crate::client::sql_status)?;
         // Decode the schema-first FlightData stream into RecordBatches, mapping the
         // stream's FlightError items to control-plane errors (same `be` mapping the
         // buffered path uses). The stream owns the (cloned) response, so it is 'static.

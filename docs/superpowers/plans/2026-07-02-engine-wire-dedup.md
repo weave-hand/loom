@@ -1380,7 +1380,7 @@ total `serving_status` in the engine (replacing three ad-hoc mappings);
   `pub fn engine_wire::client::sql_status(Status) -> ControlPlaneError`.
   Task 7 consumes the `Validation` class in query-api.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/services/engine/tests/serving_status.rs` (pure — runs on RE):
 
@@ -1500,14 +1500,14 @@ async fn malformed_sql_is_validation_class() {
 }
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test -j 8 //src/services/engine:serving-status //src/services/engine-wire:cp-status //src/services/engine:flight-sql > /tmp/t6a.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t6a.log`
 Expected: FAIL — compile errors (`Plan` variant, `serving_status`,
 `sql_status` not found); the flight pin would be red even after compilation
 (current wire returns `internal` → `Backend`).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `engine-serving/src/serving.rs` — add the variant (below `Engine`):
 
@@ -1587,7 +1587,7 @@ mappings from `.map_err(crate::client::be)` to
 `.map_err(crate::client::sql_status)`. The missing-ticket fault and the
 mid-stream item mapping keep `be` (execution-class).
 
-- [ ] **Step 4: Run to green**
+- [x] **Step 4: Run to green**
 
 Run: `buck2 test -j 8 //src/services/engine:serving-status //src/services/engine-wire/... //src/services/engine/... > /tmp/t6b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6b.log`
 Expected: PASS — the new pins go green; every pre-existing engine/engine-wire
@@ -1599,7 +1599,7 @@ code-agnostic; the export path's plan faults still surface as its own
 `internal` — its mapping is untouched).
 Run: `buck2 build '//src/services/engine:engine[clippy.txt]' '//src/services/engine-wire:engine-wire[clippy.txt]' '//src/services/engine-serving:engine-serving[clippy.txt]' > /tmp/c6.log 2>&1; cat /tmp/c6.log` — artifacts empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p6.log 2>&1; grep -c Failed /tmp/p6.log` — expected `0`.
 

@@ -38,6 +38,13 @@ use crate::provider::PgTableProvider;
 pub enum EngineServingError {
     #[error("engine serving: {0}")]
     Engine(String),
+    /// The SQL failed DataFusion *planning* (`ctx.sql(...)`) — a parse/logical-plan
+    /// fault in the statement itself: the client's error class, never the engine's.
+    /// Wire callers map this to `invalid_argument` (query-api surfaces 400);
+    /// execution/stream/catalog faults stay [`Engine`](Self::Engine) (internal/500).
+    /// Classified conservatively: ONLY the `ctx.sql()` call sites construct it.
+    #[error("query planning failed: {0}")]
+    Plan(#[source] datafusion::error::DataFusionError),
     /// No vector index has been built for the requested (table, column) at the
     /// current snapshot. Callers should surface this as a 404/not-found, never
     /// panic. See FUTURE `fut-inline-vector-hot-delta`.
@@ -50,6 +57,8 @@ pub enum EngineServingError {
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.
+/// WARNING: class-erasing — never use this on a `ctx.sql()` planning fault
+/// (that is `EngineServingError::Plan`, the client-fault class).
 pub(crate) fn to_serving<E: std::fmt::Display>(e: E) -> EngineServingError {
     EngineServingError::Engine(e.to_string())
 }
@@ -465,7 +474,7 @@ pub async fn execute_query(
     for table in catalog.live_tables().await.map_err(to_serving)? {
         register_iceberg_table(&ctx, catalog, &table, serving_store).await?;
     }
-    let df = ctx.sql(sql).await.map_err(to_serving)?;
+    let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
     df.collect().await.map_err(to_serving)
 }
 
@@ -485,6 +494,6 @@ pub async fn execute_query_stream(
     for table in catalog.live_tables().await.map_err(to_serving)? {
         register_iceberg_table(&ctx, catalog, &table, serving_store).await?;
     }
-    let df = ctx.sql(sql).await.map_err(to_serving)?;
+    let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
     df.execute_stream().await.map_err(to_serving)
 }

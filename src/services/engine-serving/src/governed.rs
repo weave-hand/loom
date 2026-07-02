@@ -316,6 +316,6 @@ pub async fn execute_governed_sql_stream(
         )
         .map_err(to_serving)?;
     }
-    let df = ctx.sql(sql).await.map_err(to_serving)?;
+    let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
     df.execute_stream().await.map_err(to_serving)
 }

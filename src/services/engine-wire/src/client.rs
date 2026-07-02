@@ -35,6 +35,19 @@ pub fn cp_status(s: tonic::Status) -> ControlPlaneError {
     }
 }
 
+/// Map a tonic [`tonic::Status`] from the engine's Flight **SQL** plane back to a
+/// [`ControlPlaneError`], inverting the engine-side `serving_status` mapping so the
+/// planning-error class survives the wire: `InvalidArgument` (the engine classifies
+/// only `ctx.sql()` planning faults this way on the SQL plane) -> `Validation`;
+/// everything else stays an opaque `Backend`. Mirrors [`cp_status`].
+#[must_use]
+pub fn sql_status(s: tonic::Status) -> ControlPlaneError {
+    match s.code() {
+        tonic::Code::InvalidArgument => ControlPlaneError::Validation(s.message().to_string()),
+        _ => be(s),
+    }
+}
+
 /// Decode a serde-JSON governance payload, mapping decode failure to `Serialization`.
 fn de<T: serde::de::DeserializeOwned>(json: &str) -> Result<T> {
     serde_json::from_str(json).map_err(|e| ControlPlaneError::Serialization(e.to_string()))

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use arrow_array::{Array, Int64Array};
 use arrow_flight::flight_service_server::FlightServiceServer;
+use control_plane_core::ControlPlaneError;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
@@ -114,4 +115,29 @@ async fn flight_sql_streams_unioned_result() {
     // Malformed SQL must surface as an error (engine maps it from do_get).
     let err = client.execute("SELECT FROM nope".to_string()).await;
     assert!(err.is_err(), "malformed SQL must error");
+}
+
+// ---------------------------------------------------------------------------
+// WHITELISTED (road-engine-wire-dedup): a statement that fails DataFusion
+// PLANNING is the client's fault — invalid_argument on the wire, Validation off
+// the client — no longer an opaque internal/Backend. (The pre-existing
+// malformed-SQL assertion above is code-agnostic and stays green.)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_sql_is_validation_class() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
+    let client = FlightSqlClient::connect(&sock).await.expect("connect");
+
+    let err = client
+        .execute("SELECT FROM nope".to_string())
+        .await
+        .expect_err("malformed SQL must error");
+    assert!(
+        matches!(&err, ControlPlaneError::Validation(m) if m.starts_with("query planning failed: ")),
+        "planning fault must carry the Validation class, got: {err:?}"
+    );
 }

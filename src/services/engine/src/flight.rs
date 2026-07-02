@@ -25,6 +25,22 @@ use prost::Message;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status, Streaming};
 
+/// The one total `EngineServingError` -> gRPC `Status` mapping for the engine's
+/// Flight data plane. Class-preserving: `Plan` (bad SQL — the client's fault) ->
+/// `invalid_argument`; `NoIndex` -> `not_found`; `DimMismatch` ->
+/// `invalid_argument`; `Engine` (execution/backend) -> `internal`. The
+/// NoIndex/DimMismatch arms carry the INNER message only (no enum prefix),
+/// preserving the wire messages the clients' inverse mappings decode.
+pub fn serving_status(e: engine_serving::EngineServingError) -> Status {
+    use engine_serving::EngineServingError as E;
+    match e {
+        E::NoIndex(m) => Status::not_found(m),
+        E::DimMismatch(m) => Status::invalid_argument(m),
+        e @ E::Plan(_) => Status::invalid_argument(e.to_string()),
+        e @ E::Engine(_) => Status::internal(e.to_string()),
+    }
+}
+
 pub struct FlightDataService {
     /// File-ticket data plane (worker/compaction): a real Iceberg `SqlCatalog`.
     pub catalog: SqlCatalog,
@@ -50,9 +66,9 @@ impl FlightDataService {
     }
 
     /// Run `sql` through the streaming serving tier and Flight-encode the result
-    /// `RecordBatch` stream (schema message first, then batches). DataFusion/stream
-    /// errors map to `Status::internal`, matching the old unary handler's mapping so
-    /// query-api's HTTP error codes are unchanged.
+    /// `RecordBatch` stream (schema message first, then batches). Serving errors map
+    /// via [`serving_status`]: planning faults to `invalid_argument`, execution
+    /// faults to `internal` — so query-api's HTTP error codes track the class.
     async fn do_get_sql(
         &self,
         sql: String,
@@ -63,14 +79,15 @@ impl FlightDataService {
             self.serving_store.as_ref(),
         )
         .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+        .map_err(serving_status)?;
         Ok(Self::encode_response(stream.map_err(|e| {
             FlightError::from_external_error(Box::new(e))
         })))
     }
 
     /// Run a governed SQL statement (client SQL + caller-resolved governed catalog) through
-    /// the governed serving path and Flight-encode the result stream. Mirrors `do_get_sql`.
+    /// the governed serving path and Flight-encode the result stream. Mirrors `do_get_sql`
+    /// (planning faults map to `invalid_argument`, execution faults to `internal`).
     async fn do_get_governed_sql(
         &self,
         q: engine_wire::flight::GovernedStatementQuery,
@@ -82,7 +99,7 @@ impl FlightDataService {
             self.serving_store.as_ref(),
         )
         .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+        .map_err(serving_status)?;
         Ok(Self::encode_response(stream.map_err(|e| {
             FlightError::from_external_error(Box::new(e))
         })))
@@ -110,11 +127,7 @@ impl FlightDataService {
             vs.ef_search,
         )
         .await
-        .map_err(|e| match e {
-            engine_serving::EngineServingError::NoIndex(msg) => Status::not_found(msg),
-            engine_serving::EngineServingError::DimMismatch(msg) => Status::invalid_argument(msg),
-            other => Status::internal(other.to_string()),
-        })?;
+        .map_err(serving_status)?;
         Ok(Self::encode_response(futures::stream::iter(
             std::iter::once(Ok::<_, FlightError>(batch)),
         )))

@@ -147,6 +147,19 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "serving-status",
+    crate = "serving_status",
+    srcs = ["tests/serving_status.rs"],
+    crate_root = "tests/serving_status.rs",
+    deps = [
+        ":engine",
+        "//src/services/engine-serving:engine-serving",
+        "//third-party:datafusion",
+        "//third-party:tonic",
+    ],
+)
+
 loom_fixture_test(
     name = "flight-sql",
     crate = "flight_sql",
