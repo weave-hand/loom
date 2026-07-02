@@ -42,6 +42,19 @@ rust_test(
 )
 
 rust_test(
+    name = "ontology-builder",
+    crate = "ontology_builder",
+    srcs = ["tests/ontology_builder.rs"],
+    crate_root = "tests/ontology_builder.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "error-display",
     crate = "error_display",
     srcs = ["tests/error_display.rs"],

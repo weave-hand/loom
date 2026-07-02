@@ -32,10 +32,10 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, Auth, Cardinality, ColumnSpec, ControlPlane,
+    Acl, Action, ActionDef, ActionKind, Auth, Cardinality, ColumnSpec, ControlPlane,
     ControlPlaneError, DatasetId, Effect, EventType, IndexSpec, LineageEvent, LinkBacking, LinkDef,
-    Metric, NewUser, ObjectType, Ontology, ParamDef, Policy, PolicyTarget, PropertyDef, RoleId,
-    RowFilter, RunId, SubjectId, TableRef, TypeName, VectorIndexDef,
+    Metric, NewUser, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter,
+    RunId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -44,6 +44,7 @@ use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::vector_index::build_vector_index;
 use engine_serving::execute_query;
 use http_body_util::BodyExt;
+use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::http::{AppState, router};
 use query_api::render::objects_to_json;
 use query_api::serving::{ActionEngine, ServingError, SqlValue, inline_params};
@@ -841,132 +842,108 @@ pub async fn seed_vector_type(
 pub async fn define_widget(cp: &PgControlPlane) -> TypeName {
     let widget = TypeName("Widget".into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: widget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "widget".into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "qty".into(),
-                    ty: "Long".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-        })
+        .define_type(
+            ObjectType::build("Widget", ("main", "widget"))
+                .prop_req("id", "Long")
+                .prop("name", "String")
+                .prop("qty", "Long")
+                .identity("id")
+                .done(),
+        )
         .await
         .unwrap();
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createWidget".into()),
-            target: widget.clone(),
-            parameters: vec![
-                ParamDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    binds: None,
-                },
-                ParamDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    binds: None,
-                },
-                ParamDef {
-                    name: "qty".into(),
-                    ty: "Long".into(),
-                    required: false,
-                    binds: None,
-                },
-            ],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
+        .define_action(
+            ActionDef::build("createWidget", "Widget", ActionKind::Insert)
+                .param_req("id", "Long")
+                .param("name", "String")
+                .param("qty", "Long")
+                .done(),
+        )
         .await
         .unwrap();
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("updateWidget".into()),
-            target: widget.clone(),
-            parameters: vec![
-                ParamDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    binds: None,
-                },
-                ParamDef {
-                    name: "qty".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    binds: None,
-                },
-            ],
-            kind: ActionKind::Update,
-            assignments: vec![],
-        })
+        .define_action(
+            ActionDef::build("updateWidget", "Widget", ActionKind::Update)
+                .param_req("id", "Long")
+                .param_req("qty", "Long")
+                .done(),
+        )
         .await
         .unwrap();
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("deleteWidget".into()),
-            target: widget.clone(),
-            parameters: vec![ParamDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            }],
-            kind: ActionKind::Delete,
-            assignments: vec![],
-        })
+        .define_action(
+            ActionDef::build("deleteWidget", "Widget", ActionKind::Delete)
+                .param_req("id", "Long")
+                .done(),
+        )
         .await
         .unwrap();
     widget
 }
 
-/// Grant `Write` + `Read` on `widget` to a fresh `writer` subject (role `writers`).
-/// Promoted from `update_delete_tiers_e2e.rs`.
-pub async fn grant_writer(cp: &PgControlPlane, widget: &TypeName) -> SubjectId {
+/// Grant `Write` + `Read` on `widget` to a fresh `writer` subject (role `writers`),
+/// returning both the subject and the role so callers can `set_policy` on the role.
+/// Promoted from `update_delete_governance_e2e.rs` (the one signature delta in the
+/// update_delete family).
+pub async fn grant_writer_role(cp: &PgControlPlane, widget: &TypeName) -> (SubjectId, RoleId) {
     let subj = SubjectId("writer".into());
     let role = RoleId("writers".into());
     cp.define_subject(&subj).await.unwrap();
     cp.define_role(&role).await.unwrap();
     cp.assign_role(&subj, &role).await.unwrap();
-    cp.grant(
-        &role,
-        Action::Write,
-        PolicyTarget::Type(widget.clone()),
-        Effect::Allow,
+    for action in [Action::Write, Action::Read] {
+        cp.grant(
+            &role,
+            action,
+            PolicyTarget::Type(widget.clone()),
+            Effect::Allow,
+        )
+        .await
+        .unwrap();
+    }
+    (subj, role)
+}
+
+/// Grant `Write` + `Read` on `widget` to a fresh `writer` subject (role `writers`).
+/// Promoted from `update_delete_tiers_e2e.rs`.
+pub async fn grant_writer(cp: &PgControlPlane, widget: &TypeName) -> SubjectId {
+    grant_writer_role(cp, widget).await.0
+}
+
+/// The single Widget object visible to `subj` for `id`, as JSON (or `None`).
+/// Promoted from `update_delete_e2e.rs`/`update_delete_tiers_e2e.rs`.
+pub async fn read_widget(
+    cp: &PgControlPlane,
+    pool: &sqlx::PgPool,
+    subj: &SubjectId,
+    id: i64,
+) -> Option<serde_json::Value> {
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let qdeps = QueryDeps {
+        ontology: cp.ontology(),
+        acl: cp.acl(),
+        serving: &serving,
+        default_limit: 1000,
+    };
+    let rows = read_object(
+        &ObjectQuery {
+            type_name: "Widget".into(),
+            filters: vec![],
+            ids: vec![],
+            or_raw: Vec::new(),
+        },
+        &Subject(subj.clone()),
+        &qdeps,
     )
     .await
     .unwrap();
-    cp.grant(
-        &role,
-        Action::Read,
-        PolicyTarget::Type(widget.clone()),
-        Effect::Allow,
-    )
-    .await
-    .unwrap();
-    subj
+    objects_to_json(&rows, None)["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == serde_json::json!(id.to_string()))
+        .cloned()
 }
 
 /// Keeps the spawned engine server and its socket dir alive for the test's lifetime.
