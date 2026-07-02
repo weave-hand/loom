@@ -3,7 +3,7 @@
 //! governance short-circuits (BadGraphPath for a non-self core link, UnknownLink for an unknown
 //! core/tail link, BadGraphPath for an empty tail, NoIdentity, Forbidden when a tail type is not
 //! Read-granted) and the happy path returning the stub's projected rows. Real recursion + the
-//! DISTINCT tail is the graph tail e2e.
+//! windowed identity-dedup tail is the graph tail e2e.
 
 use std::time::Duration;
 

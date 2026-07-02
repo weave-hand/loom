@@ -3,7 +3,8 @@
 //!   - knows*,worksAt from {1} returns companies of the depth>=1 reachable people {2,3}, and
 //!     EXCLUDES company 10 (person 1's own employer — the seed is not in its own reach set),
 //!   - a multi-hop tail knows*,worksAt,locatedIn projects the final City type and DEDUPS (two
-//!     companies sharing one city collapse to a single row via SELECT DISTINCT),
+//!     companies sharing one city collapse to a single row — City declares identity "id", so the
+//!     dedup keys on the raw identity via a windowed ROW_NUMBER),
 //!   - a Read row-filter (active=true) on Person prunes the recursive core (inactive person 3 is
 //!     cut, dropping its company 12),
 //!   - worksAt,knows* (the `*` is not the path prefix) -> 400,
@@ -223,8 +224,8 @@ async fn multi_hop_tail_projects_cities_and_dedups() {
     grant_read(&cp, &role, "City").await;
 
     // knows*,worksAt,locatedIn from {1}: reach {2,3} -> companies {11,12} -> cities {20,20}.
-    // SELECT DISTINCT collapses the shared city 20 to a single row. City 22 (company 10's city) is
-    // absent. => {20}.
+    // The identity-keyed window dedup collapses the shared city 20 to a single row. City 22
+    // (company 10's city) is absent. => {20}.
     let (status, body) = get(
         cp.clone(),
         eng.clone(),

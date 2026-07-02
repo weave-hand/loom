@@ -1113,6 +1113,7 @@ pub async fn read_linked_chain(
         &hops,
         &to_allowed,
         &to_mask_cols,
+        target.otype.identity.as_deref(),
         deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
@@ -1849,6 +1850,7 @@ pub async fn read_graph_reach_with_tail(
         &tail_hops,
         &allowed,
         &mask_cols,
+        final_type.identity.as_deref(),
         q.depth,
         deps.default_limit,
     )?;

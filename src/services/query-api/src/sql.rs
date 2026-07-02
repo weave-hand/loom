@@ -649,11 +649,12 @@ pub fn compile_chain_with(
     hops: &[LinkBacking],
     allowed_cols: &[String],
     mask_cols: &[String],
+    identity: Option<&str>,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     let k = hops.len();
     let final_alias = format!("t_{k}");
-    let cols = allowed_cols
+    let col_exprs: Vec<String> = allowed_cols
         .iter()
         .map(|c| {
             if mask_cols.iter().any(|m| m == c) {
@@ -662,15 +663,41 @@ pub fn compile_chain_with(
                 format!("{final_alias}.{}", dialect.quote_ident(c))
             }
         })
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect();
     let (from, conjuncts, params) = chain_from_where(dialect, types, hops)?;
-    let mut sql = format!("SELECT DISTINCT {cols} FROM {from}");
-    if !conjuncts.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&conjuncts.join(" AND "));
-    }
-    let _write = write!(sql, " {}", dialect.limit_clause(limit));
+    let where_sql = if conjuncts.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conjuncts.join(" AND "))
+    };
+    let limit_clause = dialect.limit_clause(limit);
+    let sql = match identity {
+        // Identity-keyed dedup: partition on the RAW identity (below the masking layer) so
+        // distinct objects are never collapsed when the identity column is masked/denied. The
+        // raw identity appears only in PARTITION BY inside the subquery; the outer select
+        // projects the masked/visible columns verbatim, so it never leaks.
+        Some(id) => {
+            let inner_cols = col_exprs.join(", ");
+            let partition = format!("{final_alias}.{}", dialect.quote_ident(id));
+            let outer_cols = allowed_cols
+                .iter()
+                .map(|c| dialect.quote_ident(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "SELECT {outer_cols} FROM (\
+                   SELECT {inner_cols}, \
+                   ROW_NUMBER() OVER (PARTITION BY {partition}) AS _loom_rn \
+                   FROM {from}{where_sql}\
+                 ) _dedup WHERE _loom_rn = 1 {limit_clause}"
+            )
+        }
+        // No declared identity: back-compatible DISTINCT over the visible projection.
+        None => {
+            let cols = col_exprs.join(", ");
+            format!("SELECT DISTINCT {cols} FROM {from}{where_sql} {limit_clause}")
+        }
+    };
     Ok((sql, params))
 }
 
@@ -887,8 +914,10 @@ fn reach_projection_where(
 /// `table`) up to `depth` times. Each recursive step joins `cur` through the whole path to
 /// `nxt` (both `table`), governing each intermediate landing with its `next_filters` and the
 /// final node `nxt` with the start `row_filters`. A 1-step path is the single-self-link case
-/// (byte-identical SQL). Termination by the inlined `depth` bound; `DISTINCT` dedups. Every
-/// caller value is a bound param.
+/// (byte-identical SQL). Termination by the inlined `depth` bound; the recursive `UNION` dedups
+/// the reachable id set, and the `p` projection is keyed by `p.id IN (SELECT id FROM reach)` so it
+/// is already object-unique (no projection `DISTINCT` — that would collapse masked identities).
+/// Every caller value is a bound param.
 #[allow(
     clippy::too_many_arguments,
     reason = "SQL compile functions require all builder parameters"
@@ -928,7 +957,7 @@ pub fn compile_graph_reach(
            UNION \
            SELECT nxt.{id} AS id, r.depth + 1 AS depth FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
          ) \
-         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
+         SELECT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
     );
     Ok((sql, params))
 }
@@ -1023,7 +1052,7 @@ pub fn compile_graph_tree(
 ///   JOIN tbl nxt ON e.to_id = nxt.id
 ///   WHERE r.depth < {depth} AND {row_filters_at_nxt}
 /// )
-/// SELECT DISTINCT {cols} FROM tbl p WHERE p.id IN (SELECT id FROM reach WHERE depth >= 1)
+/// SELECT {cols} FROM tbl p WHERE p.id IN (SELECT id FROM reach WHERE depth >= 1)
 ///   AND {row_filters_at_p} LIMIT {limit}
 /// ```
 ///
@@ -1122,7 +1151,7 @@ pub fn compile_graph_reach_union(
            UNION \
            {recursive}\
          ) \
-         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
+         SELECT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
     );
     Ok((sql, params))
 }
@@ -1192,8 +1221,11 @@ fn recursive_reach_cte(
 /// Compile a depth-bounded recursive-core + relational-tail reachability read: from the seed set,
 /// follow `core_backing` (a self-link on `table`) 1..`depth` times to a reachable set, then chain
 /// `tail_hops` forward off that set (`tail_types[0]` = `table`, `tail_types[k]` = the projected
-/// final type) and project the final type's columns DISTINCT. The recursive core is the
-/// [`recursive_reach_cte`]; the tail is the shared [`chain_from_where`]; the two are glued by
+/// final type) and project the final type's columns, deduped per object. When `final_identity` is
+/// `Some`, the dedup partitions on the final type's RAW identity via a windowed `ROW_NUMBER()`
+/// (below the masking layer, so a masked/denied identity cannot collapse distinct objects); when
+/// `None`, it falls back to `SELECT DISTINCT` over the visible projection. The recursive core is
+/// the [`recursive_reach_cte`]; the tail is the shared [`chain_from_where`]; the two are glued by
 /// `t_0.{identity} IN (SELECT id FROM reach WHERE depth >= 1)` (the depth>=1 reachable set,
 /// excluding the seed unless a cycle re-reaches it). `tail_types[0]` MUST carry empty row-filters:
 /// the queried type's governance lives in the CTE (`core_row_filters`), so re-applying at `t_0`
@@ -1216,6 +1248,7 @@ pub fn compile_graph_reach_tail(
     tail_hops: &[LinkBacking],
     allowed_cols: &[String],
     mask_cols: &[String],
+    final_identity: Option<&str>,
     depth: u32,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
@@ -1253,7 +1286,7 @@ pub fn compile_graph_reach_tail(
 
     let k = tail_hops.len();
     let final_alias = format!("t_{k}");
-    let cols = allowed_cols
+    let col_exprs: Vec<String> = allowed_cols
         .iter()
         .map(|c| {
             if mask_cols.iter().any(|m| m == c) {
@@ -1262,8 +1295,7 @@ pub fn compile_graph_reach_tail(
                 format!("{final_alias}.{}", q(c))
             }
         })
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect();
 
     // Glue: t_0 (the queried type at the tail's source) is constrained to the depth>=1 reach set.
     let mut where_conj = vec![format!(
@@ -1274,7 +1306,33 @@ pub fn compile_graph_reach_tail(
 
     let limit_clause = dialect.limit_clause(limit);
 
-    let sql = format!("{cte} SELECT DISTINCT {cols} FROM {from} WHERE {where_sql} {limit_clause}");
+    let sql = match final_identity {
+        // Identity-keyed dedup on the RAW final-target identity, below the masking layer (same
+        // shape as `compile_chain_with`). NB: `fid` shadows nothing risky — the outer `id`
+        // (core self-link PK) is already baked into `where_sql` above; `fid` is used only for the
+        // final-target PARTITION BY.
+        Some(fid) => {
+            let inner_cols = col_exprs.join(", ");
+            let partition = format!("{final_alias}.{}", q(fid));
+            let outer_cols = allowed_cols
+                .iter()
+                .map(|c| q(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{cte} SELECT {outer_cols} FROM (\
+                   SELECT {inner_cols}, \
+                   ROW_NUMBER() OVER (PARTITION BY {partition}) AS _loom_rn \
+                   FROM {from} WHERE {where_sql}\
+                 ) _dedup WHERE _loom_rn = 1 {limit_clause}"
+            )
+        }
+        // No declared final identity: back-compatible DISTINCT over the visible projection.
+        None => {
+            let cols = col_exprs.join(", ");
+            format!("{cte} SELECT DISTINCT {cols} FROM {from} WHERE {where_sql} {limit_clause}")
+        }
+    };
     Ok((sql, params))
 }
 
@@ -1286,6 +1344,7 @@ pub fn compile_chain(
     hops: &[LinkBacking],
     allowed_cols: &[String],
     mask_cols: &[String],
+    identity: Option<&str>,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     compile_chain_with(
@@ -1294,6 +1353,7 @@ pub fn compile_chain(
         hops,
         allowed_cols,
         mask_cols,
+        identity,
         limit,
     )
 }
