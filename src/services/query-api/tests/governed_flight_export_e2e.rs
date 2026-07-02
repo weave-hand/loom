@@ -366,8 +366,8 @@ async fn setup_with_mask(
 /// as `List<Float32>` (not flattened to Utf8 through `SqlValue`), and some row is value-exact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_streams_vectors_value_exact() {
-    let fx = PgFixture::start();
-    let (addr, token, _cp, _wh, _sock) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (addr, token, _cp, _wh, _sock) = setup(fx).await;
 
     let url = format!("http://{addr}");
     let channel = tonic::transport::Endpoint::try_from(url)
@@ -439,8 +439,8 @@ async fn export_streams_vectors_value_exact() {
 /// A second authenticated subject WITHOUT a Read grant on Chunk is `PermissionDenied`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_denied_without_grant() {
-    let fx = PgFixture::start();
-    let (addr, _token, cp, _wh, _sock) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (addr, _token, cp, _wh, _sock) = setup(fx).await;
 
     // A valid token for a subject with a role but no Read grant on Chunk.
     let (_subj, _role) = e2e_support::subject_with_role(cp.as_ref(), "intruder").await;
@@ -465,8 +465,8 @@ async fn export_denied_without_grant() {
 /// A request with no bearer token at all is `Unauthenticated`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_requires_bearer_token() {
-    let fx = PgFixture::start();
-    let (addr, _token, _cp, _wh, _sock) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (addr, _token, _cp, _wh, _sock) = setup(fx).await;
 
     let url = format!("http://{addr}");
     let channel = tonic::transport::Endpoint::try_from(url)
@@ -487,8 +487,8 @@ async fn export_requires_bearer_token() {
 /// A well-formed but unrecognised bearer token is `Unauthenticated` (not just a missing one).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_rejects_invalid_token() {
-    let fx = PgFixture::start();
-    let (addr, _token, _cp, _wh, _sock) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (addr, _token, _cp, _wh, _sock) = setup(fx).await;
 
     let url = format!("http://{addr}");
     let channel = tonic::transport::Endpoint::try_from(url)
@@ -515,8 +515,8 @@ async fn export_rejects_invalid_token() {
 /// dataset must fail the stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_cap_exceeded_errors_stream() {
-    let fx = PgFixture::start();
-    let (addr, token, _cp, _wh, _sock) = setup_with_cap(&fx, 1000).await;
+    let fx = PgFixture::shared();
+    let (addr, token, _cp, _wh, _sock) = setup_with_cap(fx, 1000).await;
 
     let url = format!("http://{addr}");
     let channel = tonic::transport::Endpoint::try_from(url)
@@ -559,8 +559,8 @@ async fn export_cap_exceeded_errors_stream() {
 /// `embedding` survives value-exact as `List<Float32>` (no over-masking).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_masked_scalar_schema_and_values() {
-    let fx = PgFixture::start();
-    let (addr, token, _cp, _wh, _sock) = setup_with_mask(&fx).await;
+    let fx = PgFixture::shared();
+    let (addr, token, _cp, _wh, _sock) = setup_with_mask(fx).await;
 
     let url = format!("http://{addr}");
     let channel = tonic::transport::Endpoint::try_from(url)

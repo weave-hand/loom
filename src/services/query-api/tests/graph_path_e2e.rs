@@ -205,8 +205,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shared_membership_reach_depth_bounds_and_cycle() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -263,8 +263,8 @@ async fn shared_membership_reach_depth_bounds_and_cycle() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn intermediate_team_filter_prunes_reach_through_inactive_team() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -308,8 +308,8 @@ async fn intermediate_team_filter_prunes_reach_through_inactive_team() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn non_cyclic_path_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -340,8 +340,8 @@ async fn non_cyclic_path_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn absent_or_empty_path_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

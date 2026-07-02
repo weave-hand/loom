@@ -110,8 +110,8 @@ async fn setup(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn typed_filters_match_and_reject() {
-    let fx = PgFixture::start();
-    let (cp, eng, a, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, a, _writer) = setup(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
@@ -194,8 +194,8 @@ async fn typed_filters_match_and_reject() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn comparison_set_and_null_operators() {
-    let fx = PgFixture::start();
-    let (cp, eng, a, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, a, _writer) = setup(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
@@ -368,8 +368,8 @@ async fn setup_ranges_and_text(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn between_matches_ge_and_le() {
-    let fx = PgFixture::start();
-    let (cp, eng, a, _writer) = setup_ranges_and_text(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, a, _writer) = setup_ranges_and_text(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
@@ -425,8 +425,8 @@ async fn between_matches_ge_and_le() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn contains_is_case_insensitive_and_anchors() {
-    let fx = PgFixture::start();
-    let (cp, eng, a, _writer) = setup_ranges_and_text(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, a, _writer) = setup_ranges_and_text(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
@@ -487,8 +487,8 @@ async fn contains_is_case_insensitive_and_anchors() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn contains_literal_percent_matches_the_character() {
-    let fx = PgFixture::start();
-    let (cp, eng, a, _writer) = setup_ranges_and_text(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, a, _writer) = setup_ranges_and_text(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
@@ -535,8 +535,8 @@ async fn contains_literal_percent_matches_the_character() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn or_groups_union_and_governance() {
-    let fx = PgFixture::start();
-    let (cp, eng, a, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, a, _writer) = setup(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
@@ -632,8 +632,8 @@ async fn or_groups_union_and_governance() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn or_group_never_weakens_governance() {
-    let fx = PgFixture::start();
-    let (cp, eng, a, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, a, _writer) = setup(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,

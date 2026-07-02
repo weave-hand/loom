@@ -186,7 +186,7 @@ async fn inline_table_exists(pool: &sqlx::PgPool, tid: i64) -> bool {
 /// The delete seam removes the object and is idempotent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_file_removes_object_and_is_idempotent() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -213,7 +213,7 @@ async fn delete_file_removes_object_and_is_idempotent() {
 /// Reclaimable: A (end=s2 ≤ H). Retained: B (end=s3 > H), C (live).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -308,7 +308,7 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
 /// survives and still reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_aged_inline_rows() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -353,7 +353,7 @@ async fn gc_reclaims_aged_inline_rows() {
 /// No-op: nothing aged out ⇒ horizon undefined ⇒ reclaim nothing, succeed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_is_a_noop_when_nothing_aged_out() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -393,7 +393,7 @@ async fn gc_is_a_noop_when_nothing_aged_out() {
 /// the same advisory key and serialize — neither errors, final state is consistent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gc_serializes_with_concurrent_flush() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog_g = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -484,7 +484,7 @@ async fn gc_serializes_with_concurrent_flush() {
 /// gone; the object store no longer holds the file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_a_dropped_table() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -564,7 +564,7 @@ async fn gc_reclaims_a_dropped_table() {
 /// later gc after aging completes the reclaim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_preserves_a_within_window_dropped_table() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -625,7 +625,7 @@ async fn gc_preserves_a_within_window_dropped_table() {
 /// are reclaimed while the LIVE incarnation's current files + metadata are untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_isolates_dropped_from_recreated_incarnation() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -701,7 +701,7 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
 /// Idempotent: a second gc on a fully-reclaimed dropped name is a clean no-op.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -745,7 +745,7 @@ async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
 /// gc_table returns Ok rather than FK-aborting on the surviving vector_index -> table FK.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_a_dropped_table_with_vector_index() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

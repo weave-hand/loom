@@ -109,7 +109,7 @@ async fn sqlx_cache_matches_live_schema() {
     let cached: Vec<CachedQuery> = files.iter().map(|p| parse_cache_file(p)).collect();
 
     // Boot the hermetic cluster + a migrated db.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
 
     // Raw connection for `.describe` against the live, migrated schema.

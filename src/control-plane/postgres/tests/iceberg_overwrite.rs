@@ -96,7 +96,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 /// snapshot only `b` is live; the prior snapshot still time-travels to `a`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overwrite_expires_old_and_preserves_time_travel() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -152,7 +152,7 @@ async fn overwrite_expires_old_and_preserves_time_travel() {
 /// operates on replaced data immediately (no backfill).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replaced_files_carry_per_column_stats() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -197,7 +197,7 @@ async fn replaced_files_carry_per_column_stats() {
 /// snapshot lists none; the prior snapshot still time-travels to the original.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn truncate_overwrite_with_zero_files() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -241,7 +241,7 @@ async fn truncate_overwrite_with_zero_files() {
 /// the lineage read (same shape the append path emits).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overwrite_emits_lineage() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -299,7 +299,7 @@ async fn overwrite_emits_lineage() {
 /// rolled back, proving the end-cap is transactional.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overwrite_atomicity_leaves_prior_set_intact() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

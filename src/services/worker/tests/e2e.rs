@@ -171,12 +171,12 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
 /// Drive form: bare `dequeue → handle_flush → complete` cycle (not `Worker::run`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inline_threshold_enqueues_and_worker_flushes() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
     // Stand up the engine server (owns the second pool + catalog instance).
-    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db).await;
 
     let table = TableRef {
         schema: "wh".into(),
@@ -272,10 +272,10 @@ async fn inline_threshold_enqueues_and_worker_flushes() {
 /// the rows are written exactly once. Holds under any interleaving, so non-flaky.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_dispatch_flush_is_idempotent_over_the_wire() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db).await;
 
     let table = TableRef {
         schema: "wh".into(),
@@ -343,10 +343,10 @@ async fn duplicate_dispatch_flush_is_idempotent_over_the_wire() {
 /// physically deleting an aged-out end-capped Parquet object.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_job_flows_through_worker_and_reclaims_object() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
-    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db).await;
 
     // Seed with a test-local catalog: land A (10 rows), then overwrite with B
     // (4 rows; end-caps A). The mirror records absolute file:// paths, which the

@@ -122,9 +122,9 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
 /// it over the wire, then a second dequeue returns None.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dequeue_and_complete() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db).await;
     let client = GrpcQueueClient::connect(&sock).await.expect("connect");
 
     // Seed a job directly via the fixture's control plane.
@@ -160,9 +160,9 @@ async fn dequeue_and_complete() {
 /// Case 2: fail with Retry then Abandon — no panic, Abandon makes the job terminal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fail_retry_then_abandon() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db).await;
     let client = GrpcQueueClient::connect(&sock).await.expect("connect");
 
     cp.enqueue(NewJob {
@@ -216,9 +216,9 @@ async fn fail_retry_then_abandon() {
 /// Case 3: await_jobs wakes when a job is enqueued.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn await_jobs_wakes_on_notify() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db).await;
     let client = GrpcQueueClient::connect(&sock).await.expect("connect");
 
     // Start await_jobs (5s timeout) in a background task.
@@ -253,7 +253,7 @@ async fn await_jobs_wakes_on_notify() {
 /// Case 4: flush_table over the wire drains inline rows into a Parquet file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_over_wire() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(&db).await;

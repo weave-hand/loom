@@ -8,7 +8,7 @@ use query_api::serving_datafusion::batches_to_rows;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fetch_rows_unions_file_and_inline() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -60,7 +60,7 @@ async fn fetch_rows_unions_file_and_inline() {
 async fn fetch_rows_inline_only_table() {
     // A table that only ever had inline writes (no Parquet files) still reads back —
     // exercises the "no file:// URLs, only memory://" registration path.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

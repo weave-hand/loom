@@ -6,21 +6,21 @@ const LOCK_TIMEOUT: Duration = Duration::from_millis(300);
 
 #[tokio::test]
 async fn postgres_passes_queue_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::queue_contract(&cp, LOCK_TIMEOUT).await;
 }
 
 #[tokio::test]
 async fn postgres_passes_await_jobs_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::await_jobs_contract(cp).await;
 }
 
 #[tokio::test]
 async fn postgres_passes_queue_concurrency_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::queue_concurrency_contract(cp).await;
 }

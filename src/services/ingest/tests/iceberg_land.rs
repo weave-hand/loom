@@ -43,7 +43,7 @@ fn ipc_bytes() -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn small_iceberg_land_inlines_through_http() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(&db).await;

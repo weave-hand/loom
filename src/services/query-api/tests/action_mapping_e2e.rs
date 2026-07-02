@@ -160,7 +160,7 @@ async fn read_gadgets(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rename_param_writes_bound_property() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let GadgetWriter {
         cp,
         pool,
@@ -170,7 +170,7 @@ async fn rename_param_writes_bound_property() {
         role: _,
         _eg,
         warehouse,
-    } = setup_gadget_writer(&fx).await;
+    } = setup_gadget_writer(fx).await;
 
     // `displayName` binds the `name` property; `id` covers itself.
     cp.ontology()
@@ -221,7 +221,7 @@ async fn rename_param_writes_bound_property() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn constants_fill_properties_including_a_required_one() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let GadgetWriter {
         cp,
         pool,
@@ -231,7 +231,7 @@ async fn constants_fill_properties_including_a_required_one() {
         role: _,
         _eg,
         warehouse,
-    } = setup_gadget_writer(&fx).await;
+    } = setup_gadget_writer(fx).await;
 
     // A REQUIRED property (`id`) covered ONLY by a constant; `status` also constant-filled;
     // only `displayName`->`name` comes from the body.
@@ -287,7 +287,7 @@ async fn constants_fill_properties_including_a_required_one() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resolved_row_is_governed_identically_for_constant_and_renamed_param() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let GadgetWriter {
         cp,
         pool,
@@ -297,7 +297,7 @@ async fn resolved_row_is_governed_identically_for_constant_and_renamed_param() {
         engine,
         _eg,
         warehouse,
-    } = setup_gadget_writer(&fx).await;
+    } = setup_gadget_writer(fx).await;
 
     // Two actions that both write `status`: one via a constant, one via a renamed param.
     cp.ontology()
@@ -389,7 +389,7 @@ async fn resolved_row_is_governed_identically_for_constant_and_renamed_param() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_targets_and_patches_via_bound_property() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let GadgetWriter {
         cp,
         pool,
@@ -399,7 +399,7 @@ async fn update_targets_and_patches_via_bound_property() {
         role: _,
         _eg,
         warehouse,
-    } = setup_gadget_writer(&fx).await;
+    } = setup_gadget_writer(fx).await;
 
     // Seed one Gadget via a plain insert action.
     cp.ontology()

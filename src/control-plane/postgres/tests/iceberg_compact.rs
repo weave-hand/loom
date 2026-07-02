@@ -91,7 +91,7 @@ fn syn_file(path: &str, rows: i64) -> DataFile {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_expires_subset_and_preserves_time_travel() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -171,7 +171,7 @@ async fn compact_expires_subset_and_preserves_time_travel() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_conflicts_on_non_live_expire_path() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -209,7 +209,7 @@ async fn compact_conflicts_on_non_live_expire_path() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_missing_table_is_none() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
@@ -227,7 +227,7 @@ async fn compact_missing_table_is_none() {
 async fn two_concurrent_compactions_race_exactly_one_commits() {
     // The spec's real conflict case: two compactions target the SAME live small-file
     // set; exactly one commits, the other gets Conflict (then a re-run converges).
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

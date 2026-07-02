@@ -19,7 +19,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn writes_real_parquet_and_commits() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let warehouse = tempfile::tempdir().expect("warehouse");
 
@@ -127,7 +127,7 @@ async fn writes_real_parquet_and_commits() {
 /// the commit through `do_update_table(.., Some(ev))`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn append_with_lineage_emits_one_event_atomically() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let warehouse = tempfile::tempdir().expect("warehouse");
 

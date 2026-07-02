@@ -5,7 +5,7 @@ use sqlx::Row;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inline_append_writes_rows_snapshot_and_lineage() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -61,7 +61,7 @@ async fn inline_append_writes_rows_snapshot_and_lineage() {
 async fn inline_live_batch_reconstructs_live_rows() {
     use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -117,7 +117,7 @@ async fn inline_append_rejects_mistyped_batch_without_panicking() {
     };
     use std::sync::Arc;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 

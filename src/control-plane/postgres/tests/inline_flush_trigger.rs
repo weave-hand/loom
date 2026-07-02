@@ -53,7 +53,7 @@ async fn job_count(pool: &sqlx::PgPool, kind: &str) -> i64 {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_threshold_enqueues_nothing() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let table = TableRef {
@@ -77,7 +77,7 @@ async fn sub_threshold_enqueues_nothing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crossing_enqueues_exactly_one_with_payload() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let table = TableRef {
@@ -109,7 +109,7 @@ async fn crossing_enqueues_exactly_one_with_payload() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crossing_twice_is_debounced_to_one_job() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let table = TableRef {
@@ -134,7 +134,7 @@ async fn crossing_twice_is_debounced_to_one_job() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn none_threshold_never_enqueues() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let table = TableRef {
@@ -191,7 +191,7 @@ async fn trigger_row(pool: &sqlx::PgPool, schema: &str, name: &str) -> Option<(i
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_resets_trigger_on_some() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -232,7 +232,7 @@ async fn flush_resets_trigger_on_some() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn noop_flush_disarms_the_flag() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

@@ -8,7 +8,7 @@ use futures::TryStreamExt;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_matches_collected() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

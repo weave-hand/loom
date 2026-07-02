@@ -129,7 +129,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
 /// 4. `list_files` after compact returns exactly the coalesced file with record_count=5.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_files_then_compact_over_the_wire() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
@@ -137,7 +137,7 @@ async fn list_files_then_compact_over_the_wire() {
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
-    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db).await;
 
     let table = TableRef {
         schema: "main".into(),

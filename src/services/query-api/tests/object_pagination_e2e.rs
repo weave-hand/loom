@@ -85,8 +85,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
 
 #[tokio::test(flavor = "multi_thread")]
 async fn paginates_with_cursor_covering_all_rows() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -129,8 +129,8 @@ async fn paginates_with_cursor_covering_all_rows() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pagination_on_no_identity_type_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -150,8 +150,8 @@ async fn pagination_on_no_identity_type_is_400() {
 /// ungoverned-visibility identity), so masking `id` on `Order` -> 400, same as denying it.
 #[tokio::test(flavor = "multi_thread")]
 async fn masked_identity_pagination_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -172,8 +172,8 @@ async fn masked_identity_pagination_is_400() {
 /// page 2 can't decode.
 #[tokio::test(flavor = "multi_thread")]
 async fn non_round_trippable_identity_type_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -196,8 +196,8 @@ async fn non_round_trippable_identity_type_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ids_and_pagination_are_mutually_exclusive_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -220,8 +220,8 @@ async fn ids_and_pagination_are_mutually_exclusive_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn malformed_cursor_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -325,8 +325,8 @@ async fn setup_with_derived(
 /// `orderCount` derived column, with matching values.
 #[tokio::test(flavor = "multi_thread")]
 async fn paginated_read_includes_derived_columns_matching_plain_read() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup_with_derived(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup_with_derived(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

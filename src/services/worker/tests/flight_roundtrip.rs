@@ -149,7 +149,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
 /// fetches the whole file set in one `do_get` and reconstructs exactly 5 rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
@@ -164,7 +164,7 @@ async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
     let wh = tempfile::tempdir().expect("warehouse dir");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
-    let (_sock_dir, sock) = spawn_server(&fx, &db).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db).await;
 
     let table = TableRef {
         schema: "wh".into(),

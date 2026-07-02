@@ -159,7 +159,7 @@ fn make_compact_job(schema: &str, name: &str) -> Job {
 /// second run is a no-op.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_compacts_small_files_over_the_wire() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
@@ -172,7 +172,7 @@ async fn worker_compacts_small_files_over_the_wire() {
     // Catalog for seeding (land calls).
     let catalog = make_catalog(fx.pg_dsn(&db), &wh_str).await;
 
-    let (_sock_dir, sock) = spawn_server(&fx, &db, &wh_str).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db, &wh_str).await;
 
     let acc = TableRef {
         schema: "main".into(),

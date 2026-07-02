@@ -155,7 +155,7 @@ async fn grant_writer(cp: &PgControlPlane, widget: &TypeName) -> (SubjectId, Rol
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_column_denied() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -164,7 +164,7 @@ async fn update_column_denied() {
     let (subj, role) = grant_writer(&cp, &widget).await;
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -225,7 +225,7 @@ async fn update_column_denied() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_row_filter_denied_resulting() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -252,7 +252,7 @@ async fn update_row_filter_denied_resulting() {
     .unwrap();
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -294,7 +294,7 @@ async fn update_row_filter_denied_resulting() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_row_filter_denied_existing() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -303,7 +303,7 @@ async fn update_row_filter_denied_existing() {
     let (subj, role) = grant_writer(&cp, &widget).await;
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -363,7 +363,7 @@ async fn update_row_filter_denied_existing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_row_filter_denied() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -372,7 +372,7 @@ async fn delete_row_filter_denied() {
     let (subj, role) = grant_writer(&cp, &widget).await;
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -440,7 +440,7 @@ async fn delete_row_filter_denied() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vector_guard() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -515,7 +515,7 @@ async fn vector_guard() {
     .unwrap();
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {

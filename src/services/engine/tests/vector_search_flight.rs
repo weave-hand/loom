@@ -164,7 +164,7 @@ fn distances(batch: &RecordBatch) -> Vec<f32> {
 async fn vector_search_flight_top_k() {
     use control_plane_postgres::PgControlPlane;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(&db).await;
@@ -252,7 +252,7 @@ async fn vector_search_flight_top_k() {
         .expect("build_vector_index");
 
     // Spawn the Flight server.
-    let (_sock_dir, sock) = spawn_flight(&fx, &db, &wh.path().display().to_string()).await;
+    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
     let client = FlightTableClient::connect(&sock).await.expect("connect");
 
     // Query: k=2, nearest to id=1's embedding [1,0,0,0].
@@ -287,7 +287,7 @@ async fn vector_search_flight_top_k() {
 async fn vector_search_no_index_is_not_found() {
     use control_plane_postgres::PgControlPlane;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(&db).await;
@@ -341,7 +341,7 @@ async fn vector_search_no_index_is_not_found() {
     .expect("land row");
 
     // Spawn the Flight server.
-    let (_sock_dir, sock) = spawn_flight(&fx, &db, &wh.path().display().to_string()).await;
+    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
     let client = FlightTableClient::connect(&sock).await.expect("connect");
 
     // Must get an error (not_found mapped from NoIndex).

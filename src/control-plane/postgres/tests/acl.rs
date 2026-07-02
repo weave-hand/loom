@@ -2,7 +2,7 @@ use control_plane_postgres::fixture::PgFixture;
 
 #[tokio::test]
 async fn postgres_passes_acl_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::acl_contract(&cp).await;
 }

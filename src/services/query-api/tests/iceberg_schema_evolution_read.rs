@@ -65,7 +65,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn read_after_additive_land_returns_superset_with_nulls() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

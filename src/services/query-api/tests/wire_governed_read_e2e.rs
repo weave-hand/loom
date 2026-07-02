@@ -18,7 +18,7 @@ use query_api::wire_control_plane::WireControlPlane;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn governed_read_parity_over_wire() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -114,7 +114,7 @@ async fn governed_read_parity_over_wire() {
 
     // 5. Spawn the engine for governance-over-wire (it reads the SAME Postgres db);
     //    build WireControlPlane. The warehouse it gets is unused by governance reads.
-    let (sock, _guard) = spawn_engine(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+    let (sock, _guard) = spawn_engine(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
     let cp = Arc::new(cp);
     let wire = WireControlPlane::new(
         connect_gov_client(&sock).await,

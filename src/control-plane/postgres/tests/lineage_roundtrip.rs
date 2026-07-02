@@ -71,7 +71,7 @@ fn lineage_envelope_round_trips() {
         .enable_all()
         .build()
         .unwrap();
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, _db) = rt.block_on(fx.fresh_db());
 
     // Bounded case count: each case is one DB round-trip.

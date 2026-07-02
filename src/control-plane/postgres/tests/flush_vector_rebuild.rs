@@ -184,8 +184,8 @@ async fn job_count_by_state(pool: &PgPool, kind: &str, state: &str) -> i64 {
 /// Flush auto-enqueues exactly one `build_vector_index` job per declared index.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_enqueues_one_build_job_per_declared_index() {
-    let fx = PgFixture::start();
-    let (_cp, catalog, pool, table, _wh) = setup(&fx, true).await;
+    let fx = PgFixture::shared();
+    let (_cp, catalog, pool, table, _wh) = setup(fx, true).await;
 
     let run = RunId(uuid::Uuid::new_v4());
     let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
@@ -225,8 +225,8 @@ async fn flush_enqueues_one_build_job_per_declared_index() {
 /// Flush on a table with no declared vector index enqueues nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_without_declared_index_enqueues_nothing() {
-    let fx = PgFixture::start();
-    let (_cp, catalog, pool, table, _wh) = setup(&fx, false).await;
+    let fx = PgFixture::shared();
+    let (_cp, catalog, pool, table, _wh) = setup(fx, false).await;
 
     let run = RunId(uuid::Uuid::new_v4());
     let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
@@ -258,7 +258,7 @@ async fn flush_without_declared_index_enqueues_nothing() {
 /// No-op flush (no live inline rows) enqueues nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn noop_flush_enqueues_nothing() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     // Create a CP with the timeout for this test
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
@@ -321,8 +321,8 @@ async fn noop_flush_enqueues_nothing() {
 /// to a single enqueued job.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_flushes_with_pending_build_enqueue_one() {
-    let fx = PgFixture::start();
-    let (_cp, catalog, pool, table, _wh) = setup(&fx, true).await;
+    let fx = PgFixture::shared();
+    let (_cp, catalog, pool, table, _wh) = setup(fx, true).await;
     let run = RunId(uuid::Uuid::new_v4());
 
     // Land + flush → 1 available job.
@@ -376,8 +376,8 @@ async fn two_flushes_with_pending_build_enqueue_one() {
 /// Flush while the build job is running (not available) enqueues a fresh pending job.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_while_build_running_enqueues_a_fresh_pending() {
-    let fx = PgFixture::start();
-    let (_cp, catalog, pool, table, _wh) = setup(&fx, true).await;
+    let fx = PgFixture::shared();
+    let (_cp, catalog, pool, table, _wh) = setup(fx, true).await;
     let run = RunId(uuid::Uuid::new_v4());
 
     // Land + flush → 1 available job.

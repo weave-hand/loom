@@ -12,7 +12,7 @@ use query_api::serving_datafusion::batches_to_rows;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn registers_and_selects_back() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

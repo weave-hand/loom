@@ -148,6 +148,7 @@ rust_library(
         "//third-party:hex",
         "//third-party:hmac",
         "//third-party:iceberg",
+        "//third-party:libc",
         "//third-party:object_store",
         "//third-party:parquet",
         "//third-party:reqwest",
@@ -240,6 +241,18 @@ rust_test(
     crate_root = "tests/boot_throttle.rs",
     edition = "2024",
     deps = [":postgres", "//third-party:tempfile"],
+)
+
+loom_fixture_test(
+    name = "fixture-shared",
+    crate = "fixture_shared",
+    srcs = ["tests/fixture_shared.rs"],
+    crate_root = "tests/fixture_shared.rs",
+    deps = [
+        ":postgres",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
 )
 
 loom_fixture_test(

@@ -84,7 +84,7 @@ async fn live_rows(cp: &IcebergControlPlane, table: &TableRef, snap: SnapshotId)
 /// live contents while the prior snapshot still time-travels.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transform_writes_output_to_iceberg() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();
@@ -206,7 +206,7 @@ async fn transform_writes_output_to_iceberg() {
 /// the engine and asserts the actual row CONTENTS. It fails pre-fix and passes post-fix.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transform_output_is_readable_through_serving_engine() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();

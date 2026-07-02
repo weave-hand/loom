@@ -130,7 +130,7 @@ async fn seed_widget_table(cp: &PgControlPlane) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn write_object_over_wire() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     // Seed the main.widget mirror table (same as engine-serving test).
     seed_widget_table(&cp).await;

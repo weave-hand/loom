@@ -4,7 +4,7 @@ use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 
 #[tokio::test]
 async fn inline_identical_reappend_ok_divergent_rejected() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let (cp, db) = fixture.fresh_db().await;
     let writer = IcebergWriter::new(cp.pool().clone(), fixture.pg_dsn(&db));
     let cols = vec![

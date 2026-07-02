@@ -21,7 +21,7 @@ use transform_e2e_support::{cols, lineage, make_catalog, scalar_i64, seed_table,
 
 #[tokio::test(flavor = "multi_thread")]
 async fn transform_reads_transform_output_with_absolute_paths() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();

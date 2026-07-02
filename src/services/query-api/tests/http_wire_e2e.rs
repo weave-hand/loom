@@ -209,7 +209,7 @@ async fn run_wire_vertical(backend: WireBackend) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn iceberg_wire_vertical() {
-    let fx = PgFixture::start();
-    let (backend, _keep) = iceberg_backend(&fx).await;
+    let fx = PgFixture::shared();
+    let (backend, _keep) = iceberg_backend(fx).await;
     run_wire_vertical(backend).await;
 }

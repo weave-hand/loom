@@ -192,7 +192,7 @@ async fn read_widget(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_time_travel() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -201,7 +201,7 @@ async fn update_time_travel() {
     let subj = grant_writer(&cp, &widget).await;
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -272,7 +272,7 @@ async fn update_time_travel() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_time_travel() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -281,7 +281,7 @@ async fn delete_time_travel() {
     let subj = grant_writer(&cp, &widget).await;
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -360,7 +360,7 @@ async fn delete_time_travel() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mutate_flushed_file_row() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -370,7 +370,7 @@ async fn mutate_flushed_file_row() {
 
     // inline_byte_limit=0: every row's byte size exceeds the limit, so INSERT goes to Parquet.
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 0, i64::MAX).await;
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 0, i64::MAX).await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,

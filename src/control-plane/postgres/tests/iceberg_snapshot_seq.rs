@@ -8,7 +8,7 @@ use control_plane_postgres::iceberg_mirror::next_snapshot;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn next_snapshot_is_concurrency_safe() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let cp = fx.fresh_control_plane().await;
     let pool = cp.pool().clone();
 

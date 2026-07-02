@@ -174,9 +174,9 @@ async fn setup_active(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn linear_chain_tree_has_root_and_parent_pointers() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, eng, _writer) = setup(
-        &fx,
+        fx,
         vec![1, 2, 3],
         vec!["ann", "bob", "cal"],
         &[(1, 2), (2, 3)],
@@ -214,9 +214,9 @@ async fn linear_chain_tree_has_root_and_parent_pointers() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn without_flag_returns_the_flat_set() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, eng, _writer) = setup(
-        &fx,
+        fx,
         vec![1, 2, 3],
         vec!["ann", "bob", "cal"],
         &[(1, 2), (2, 3)],
@@ -249,8 +249,8 @@ async fn without_flag_returns_the_flat_set() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tree_with_links_union_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx, vec![1, 2], vec!["ann", "bob"], &[(1, 2)]).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx, vec![1, 2], vec!["ann", "bob"], &[(1, 2)]).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -270,8 +270,8 @@ async fn tree_with_links_union_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tree_with_starred_path_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx, vec![1, 2], vec!["ann", "bob"], &[(1, 2)]).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx, vec![1, 2], vec!["ann", "bob"], &[(1, 2)]).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -295,8 +295,8 @@ async fn tree_with_starred_path_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tree_with_invalid_value_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx, vec![1, 2], vec!["ann", "bob"], &[(1, 2)]).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx, vec![1, 2], vec!["ann", "bob"], &[(1, 2)]).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -316,10 +316,10 @@ async fn tree_with_invalid_value_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tie_break_picks_smallest_parent_deterministically() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     // Two shortest paths to 4: 1->2->4 and 1->3->4. Tie-break => parent(4) == 2 (smaller id).
     let (cp, eng, _writer) = setup(
-        &fx,
+        fx,
         vec![1, 2, 3, 4],
         vec!["a", "b", "c", "d"],
         &[(1, 2), (1, 3), (2, 4), (3, 4)],
@@ -358,11 +358,11 @@ async fn tie_break_picks_smallest_parent_deterministically() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn parent_pointers_form_a_valid_rooted_tree() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     // Linear plus a branch: 1->2->3, 2->4. Every non-root has a parent that is itself in the
     // tree, and reconstructed depth == reported depth (no dangling parent).
     let (cp, eng, _writer) = setup(
-        &fx,
+        fx,
         vec![1, 2, 3, 4],
         vec!["a", "b", "c", "d"],
         &[(1, 2), (2, 3), (2, 4)],
@@ -403,11 +403,11 @@ async fn parent_pointers_form_a_valid_rooted_tree() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cycle_terminates_and_seed_stays_a_root() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     // 1->2->3->1 cycle. From {1}, depth 3 terminates; each node settles to its min depth; the
     // seed 1, re-reached by the cycle, stays a depth-0 parentless root.
     let (cp, eng, _writer) = setup(
-        &fx,
+        fx,
         vec![1, 2, 3],
         vec!["a", "b", "c"],
         &[(1, 2), (2, 3), (3, 1)],
@@ -439,13 +439,13 @@ async fn cycle_terminates_and_seed_stays_a_root() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn row_filter_prunes_and_no_node_reports_a_blocked_parent() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     // Branch graph 1->2, 1->3, 3->4; node 2 is INACTIVE. A Read row-filter active=true removes
     // 2 from the permitted subgraph. The 1->3->4 branch stays permitted, so 3 and 4 SURVIVE
     // (pruning-with-survivors, not a degenerate root-only result), while 2 is absent entirely
     // and no surviving node reports 2 as its parent.
     let (cp, eng, _writer) = setup_active(
-        &fx,
+        fx,
         vec![1, 2, 3, 4],
         vec!["a", "b", "c", "d"],
         vec![true, false, true, true],
@@ -501,12 +501,12 @@ async fn row_filter_prunes_and_no_node_reports_a_blocked_parent() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn forest_two_roots_and_shared_node_settles_to_min_depth() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     // Two seeds {1, 10} whose components OVERLAP at node 3: 1->2->3 (3 is depth 2 from seed 1)
     // and 10->3 (3 is depth 1 from seed 10). Node 3 is reachable from both seeds; it must
     // settle to the MIN depth (1) => parent 10, deterministically — the spec's forest property.
     let (cp, eng, _writer) = setup(
-        &fx,
+        fx,
         vec![1, 2, 3, 10],
         vec!["a", "b", "c", "x"],
         &[(1, 2), (2, 3), (10, 3)],

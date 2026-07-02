@@ -76,7 +76,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 /// and assert exact row count + schema field names.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reads_landed_file_back_to_exact_rows() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

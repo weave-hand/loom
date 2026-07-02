@@ -17,7 +17,7 @@ fn col(order: i64, name: &str, ty: &str, nullable: bool) -> ProjectedColumn {
 
 #[tokio::test]
 async fn reconcile_creates_then_appends_then_stamps() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let (cp, _db) = fixture.fresh_db().await;
     let pool = cp.pool().clone();
     let mut conn = pool.acquire().await.unwrap();
@@ -76,7 +76,7 @@ async fn reconcile_creates_then_appends_then_stamps() {
 
 #[tokio::test]
 async fn reconcile_rejects_drop() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let (cp, _db) = fixture.fresh_db().await;
     let pool = cp.pool().clone();
     let mut conn = pool.acquire().await.unwrap();

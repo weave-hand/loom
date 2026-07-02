@@ -75,7 +75,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn iceberg_tx_compact_files_swaps_subset() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pgcp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

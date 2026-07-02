@@ -12,7 +12,7 @@ async fn unions_file_and_inline_rows() {
     // Seed >=1 Parquet file row AND >=1 live inline row in the same table, then
     // SELECT * and assert the row count == file_rows + inline_rows, and that an
     // inline-only id is present.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -78,7 +78,7 @@ async fn time_travel_excludes_rows_added_after_snapshot() {
     // 2. Inline row B -> snap_b (> snap_a).
     // 3. inline_live_batch at snap_a -> 1 row (only A).
     // 4. inline_live_batch at snap_b -> 2 rows (A and B).
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -150,7 +150,7 @@ async fn time_travel_excludes_rows_added_after_snapshot() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pushdown_where_and_limit_return_correct_rows() {
     // Seed inline rows ids 1..=5, then verify WHERE and LIMIT filtering is correct.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

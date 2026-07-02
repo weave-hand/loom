@@ -27,9 +27,9 @@ fn results(status: StatusCode, body: &serde_json::Value) -> Vec<serde_json::Valu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_returns_ranked_ids_for_permitted_subject() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Docs").await;
     let cp = Arc::new(cp);
@@ -53,9 +53,9 @@ async fn search_returns_ranked_ids_for_permitted_subject() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_forbidden_without_read_grant() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     // role exists but no grant_read.
     let (_subj, _role) = subject_with_role(&cp, "mallory").await;
     let cp = Arc::new(cp);
@@ -73,9 +73,9 @@ async fn search_forbidden_without_read_grant() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_unknown_type_is_forbidden_no_leak() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     // Granted on Docs, but probing a type that does not exist.
     let (_subj, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Docs").await;
@@ -98,9 +98,9 @@ async fn search_unknown_type_is_forbidden_no_leak() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_missing_index_is_not_found() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Docs").await;
     let cp = Arc::new(cp);
@@ -122,9 +122,9 @@ async fn search_missing_index_is_not_found() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_bad_requests_are_rejected() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Docs").await;
     let cp = Arc::new(cp);
@@ -176,9 +176,9 @@ async fn search_bad_requests_are_rejected() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn row_filter_drops_nearest_hit() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "carol").await;
     // Read on Docs but with a row filter that excludes the exact match (id = 1).
     grant_read_filtered(
@@ -213,9 +213,9 @@ async fn row_filter_drops_nearest_hit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_accepts_tuning_knobs() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Docs").await;
     let cp = Arc::new(cp);
@@ -257,9 +257,9 @@ async fn search_accepts_tuning_knobs() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_forbidden_when_identity_denied_no_row_filter() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "dave").await;
     // Coarse Read + deny the identity column `id`, no row filter.
     grant_read_columns(&cp, &role, "Docs", vec!["id".into()], vec![]).await;
@@ -282,9 +282,9 @@ async fn search_forbidden_when_identity_denied_no_row_filter() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_forbidden_when_identity_masked_no_row_filter() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "erin").await;
     // Coarse Read + mask the identity column `id`, no row filter.
     grant_read_columns(&cp, &role, "Docs", vec![], vec!["id".into()]).await;
@@ -307,9 +307,9 @@ async fn search_forbidden_when_identity_masked_no_row_filter() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_forbidden_when_identity_governed_with_row_filter() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "frank").await;
     // Coarse Read first, then a policy that BOTH denies `id` AND carries a row filter.
     // Previously this path returned an incidental BadFilter/500; now a deliberate 403.
@@ -349,9 +349,9 @@ async fn search_forbidden_when_identity_governed_with_row_filter() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_ok_when_identity_ungoverned_regression() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
-    let (cp, serving, _writer) = seed_vector_type(&fx, &db).await;
+    let (cp, serving, _writer) = seed_vector_type(fx, &db).await;
     let (_subj, role) = subject_with_role(&cp, "grace").await;
     // Plain Read, identity column not governed → unchanged behavior, value-exact hits.
     grant_read(&cp, &role, "Docs").await;

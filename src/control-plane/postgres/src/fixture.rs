@@ -25,7 +25,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -90,7 +90,11 @@ impl BootThrottle {
     /// conflicts even within one process. Marker files are never deleted (empty,
     /// reused across runs), which avoids a create/unlink race.
     pub fn acquire(&self) -> SlotGuard {
-        let deadline = Instant::now() + Duration::from_secs(120);
+        // Under `PgFixture::shared()` a slot is held for a whole test binary's
+        // lifetime, so ninth-and-later concurrent binaries legitimately wait
+        // for a binary to finish, not just for a boot; 300s stays a backstop
+        // against a wedged holder, not a scheduler.
+        let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             for i in 0..self.slots {
                 let path = self.dir.join(format!("slot-{i}"));
@@ -110,7 +114,7 @@ impl BootThrottle {
             }
             if Instant::now() >= deadline {
                 panic!(
-                    "could not acquire a pg fixture boot slot within 120s \
+                    "could not acquire a pg fixture boot slot within 300s \
                      (LOOM_PG_FIXTURE_SLOTS too low, or slots leaked?)"
                 );
             }
@@ -138,6 +142,36 @@ fn boot_throttle() -> &'static BootThrottle {
             .unwrap_or_else(|| PathBuf::from("/tmp/loom-pg-fixture-slots"));
         BootThrottle::new(dir, slots)
     })
+}
+
+static SHARED: OnceLock<PgFixture> = OnceLock::new();
+static SHARED_PID: AtomicI32 = AtomicI32::new(0);
+static SHARED_DIRS: OnceLock<[PathBuf; 2]> = OnceLock::new();
+
+/// Reap the shared cluster on NORMAL process exit: libtest terminates via
+/// `process::exit`, which skips static destructors but runs atexit handlers.
+/// Abnormal exits (SIGKILL, e.g. a buck2 test timeout) are covered by the
+/// server's PDEATHSIG instead.
+extern "C" fn reap_shared_cluster() {
+    let pid = SHARED_PID.load(Ordering::SeqCst);
+    if pid > 0 {
+        // SAFETY: pid is our own child's, recorded at spawn; signalling one's
+        // own child is sound, and SIGKILL cannot be mis-handled by the target.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        let mut status: libc::c_int = 0;
+        // SAFETY: waitpid on our own child reaps the zombie created above;
+        // the status pointer is a valid local.
+        unsafe {
+            libc::waitpid(pid, &raw mut status, 0);
+        }
+    }
+    if let Some(dirs) = SHARED_DIRS.get() {
+        for d in dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
 }
 
 /// A running ephemeral Postgres cluster. Killed and cleaned up on drop.
@@ -171,6 +205,70 @@ impl PgFixture {
     /// for the spawned binaries' shared-library search path (the dist libs + the
     /// bundled libxml2). Panics on failure — test-only.
     pub fn start() -> Self {
+        Self::start_with(false)
+    }
+
+    /// The process-wide shared cluster. Prefer this over `start()`: isolation
+    /// is database-level via [`fresh_db`](Self::fresh_db), and one cluster per
+    /// test process cuts whole-suite boots ~3x while holding a single
+    /// boot-throttle slot (for the process lifetime — strictly fewer live
+    /// clusters than per-test fixtures). Use `start()` only for cluster-level
+    /// isolation.
+    ///
+    /// Lifecycle: never dropped. Reaped on normal exit by an atexit handler
+    /// (libtest exits via `process::exit`, skipping static drops) and on
+    /// abnormal exit by PDEATHSIG — which fires on SPAWNING-THREAD death
+    /// (prctl(2)), so the boot happens on a dedicated thread parked for the
+    /// process lifetime, never a per-test tokio worker.
+    ///
+    /// Shared-cluster semantics: advisory locks are per-DATABASE in Postgres
+    /// (the lock tag includes the database OID), so `fresh_db` isolation covers
+    /// them; `pg_notify` channels are per-database and stay isolated too.
+    pub fn shared() -> &'static PgFixture {
+        SHARED.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::sync_channel(0);
+            std::thread::Builder::new()
+                .name("pg-fixture-shared".into())
+                .spawn(move || {
+                    let fx = PgFixture::start_with(true);
+                    tx.send(fx).expect("deliver shared fixture");
+                    // Keep this thread alive for the process lifetime: it is
+                    // the PDEATHSIG anchor. park() can wake spuriously — loop.
+                    #[expect(
+                        clippy::infinite_loop,
+                        reason = "deliberate: this thread is the PDEATHSIG anchor and must \
+                                  live until process death"
+                    )]
+                    loop {
+                        std::thread::park();
+                    }
+                })
+                .expect("spawn pg-fixture-shared thread");
+            let fx = rx.recv().expect("receive shared fixture");
+            SHARED_PID.store(
+                i32::try_from(fx.server.id()).expect("pid fits i32"),
+                Ordering::SeqCst,
+            );
+            let _ = SHARED_DIRS.set([
+                fx._data_dir.path().to_path_buf(),
+                fx.socket_dir.path().to_path_buf(),
+            ]);
+            // SAFETY: registers an extern "C" fn; the handler only reads
+            // statics initialized above and syscalls on our own child.
+            unsafe {
+                libc::atexit(reap_shared_cluster);
+            }
+            fx
+        })
+    }
+
+    /// Shared boot seam for [`start`](Self::start) and [`shared`](Self::shared).
+    /// When `pdeathsig` is true, the **server** process (not initdb/pg_isready,
+    /// which run to completion) is armed to SIGKILL itself when the spawning
+    /// thread dies — only sound from `shared()`'s dedicated process-lifetime
+    /// thread, never a per-test tokio worker (prctl(2): PDEATHSIG fires on
+    /// spawning-THREAD death).
+    fn start_with(pdeathsig: bool) -> Self {
         // Gate before initdb: bounds the number of live fixture clusters so the
         // whole-suite boot doesn't exhaust kernel SysV-semaphore resources
         // (`iss-fixture-boot-contention`). Held for the cluster's lifetime.
@@ -199,7 +297,8 @@ impl PgFixture {
             .success();
         assert!(initdb_ok, "initdb failed");
 
-        let server = pg_command(bin.join("postgres"), &ld_library_path)
+        let mut server_cmd = pg_command(bin.join("postgres"), &ld_library_path);
+        server_cmd
             .arg("-D")
             .arg(data_dir.path())
             .arg("-k")
@@ -217,8 +316,36 @@ impl PgFixture {
             // flake). `mmap` places DSM in $PGDATA/pg_dynshmem/ — inside the per-cluster
             // data tempdir, which self-cleans on Drop and lives on disk, not the tmpfs.
             .args(["-c", "dynamic_shared_memory_type=mmap"])
-            .spawn()
-            .expect("spawn postgres");
+            // One cluster now serves a whole test binary's concurrently-running
+            // tests (PgFixture::shared): N libtest threads × ~15 pooled conns
+            // exceeds the default 100. Live clusters stay throttle-bounded, so
+            // the SysV-semaphore cost is a bounded per-cluster 2x, not a
+            // cluster-count increase.
+            .args(["-c", "max_connections=200"]);
+        if pdeathsig {
+            use std::os::unix::process::CommandExt;
+            // Defined outside the unsafe block below so each block holds
+            // exactly one unsafe op with its own SAFETY comment
+            // (multiple_unsafe_ops_per_block; an unsafe block lexically
+            // extends into nested closures, tripping unused_unsafe otherwise).
+            let arm_pdeathsig = || {
+                // SAFETY: prctl(PR_SET_PDEATHSIG) is async-signal-safe;
+                // arms the kernel to SIGKILL this child when the thread
+                // that spawned it dies (which, for shared(), is the
+                // process-lifetime pg-fixture-shared thread).
+                let rc = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
+                if rc == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            };
+            // SAFETY: pre_exec runs in the forked child before exec; the
+            // closure performs no allocation and takes no locks.
+            unsafe {
+                server_cmd.pre_exec(arm_pdeathsig);
+            }
+        }
+        let server = server_cmd.spawn().expect("spawn postgres");
 
         let fixture = Self {
             _data_dir: data_dir,

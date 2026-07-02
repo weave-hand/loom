@@ -13,7 +13,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn files_with_stats_retypes_bounds_per_file() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

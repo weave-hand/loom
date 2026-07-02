@@ -16,7 +16,7 @@ use query_api::serving::SqlValue;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn governed_object_read() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

@@ -185,8 +185,8 @@ fn ids_of(rows: &query_api::handler::ObjectRows) -> Vec<i64> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fk_traversal_returns_linked_targets() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let (subj, role) = analyst(&cp).await;
     grant_read(&cp, &role, "Customer").await;
     grant_read(&cp, &role, "Order").await;
@@ -214,8 +214,8 @@ async fn fk_traversal_returns_linked_targets() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_read_on_source_is_forbidden() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let (subj, role) = analyst(&cp).await;
     grant_read(&cp, &role, "Order").await;
 
@@ -241,8 +241,8 @@ async fn missing_read_on_source_is_forbidden() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_read_on_target_is_forbidden() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let (subj, role) = analyst(&cp).await;
     grant_read(&cp, &role, "Customer").await;
 
@@ -268,8 +268,8 @@ async fn missing_read_on_target_is_forbidden() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_row_filter_closes_the_leak() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let (subj, role) = analyst(&cp).await;
     grant_read(&cp, &role, "Customer").await;
     grant_read(&cp, &role, "Order").await;
@@ -316,8 +316,8 @@ async fn source_row_filter_closes_the_leak() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn target_row_filter_and_projection_apply() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let (subj, role) = analyst(&cp).await;
     grant_read(&cp, &role, "Customer").await;
     grant_read(&cp, &role, "Order").await;
@@ -364,8 +364,8 @@ async fn target_row_filter_and_projection_apply() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_filter_on_denied_column_is_bad_filter() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let (subj, role) = analyst(&cp).await;
     grant_read(&cp, &role, "Customer").await;
     grant_read(&cp, &role, "Order").await;
@@ -404,8 +404,8 @@ async fn source_filter_on_denied_column_is_bad_filter() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn many_to_many_dedups_shared_targets() {
-    let fx = PgFixture::start();
-    let (cp, eng, writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, writer) = setup(fx).await;
     let (subj, role) = analyst(&cp).await;
     grant_read(&cp, &role, "Customer").await;
     grant_read(&cp, &role, "Order").await;
@@ -462,8 +462,8 @@ async fn many_to_many_dedups_shared_targets() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unknown_link_is_reported() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let (subj, role) = analyst(&cp).await;
     grant_read(&cp, &role, "Customer").await;
     grant_read(&cp, &role, "Order").await;
