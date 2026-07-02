@@ -1,0 +1,15 @@
+[package]
+name = "loom-ui-e2e"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "loom_ui_e2e"
+path = "src/lib.rs"
+
+[dependencies]
+fantoccini = { version = "0.22", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "time"] }
+serde_json = "1"
+tempfile = "3"
