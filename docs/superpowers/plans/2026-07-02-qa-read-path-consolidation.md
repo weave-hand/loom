@@ -89,7 +89,8 @@ becomes one helper.
   only in `engine_client.rs:74-75` (the vector-search RPC), and `read_object`
   cannot emit `UnknownLink`/`BadChain`/`NotCyclicPath`/`BadGraphPath`
   (verified over `compile_object_read_with`), so unioning the five partial
-  copies changes **no reachable response** (see whitelist §4).
+  copies changes exactly ONE constructible response — `/search`'s
+  `BadFilterValue` 500→400, whitelisted in §4 — plus defensive dead arms.
 - **`query_params` is a new pure module** (mirroring `path_parse`'s
   socket-free pattern): `split_reserved(params, keys)` (per-route reserved-key
   sets — a universal set would silently consume `_direction` on `/objects`,
@@ -119,13 +120,20 @@ lockfile / `.sqlx` changes, no BUCK changes beyond the two new test targets.
   above. Register: `docs/ROADMAP.md#road-qa-read-path-consolidation`.
 - **Behavior-preserving:** wire responses, SQL text, error bodies, and status
   codes stay byte-identical except the four whitelisted changes below. The
-  compile tests assert **exact SQL strings** — they are the byte-identity pin
-  for every sql.rs task.
+  chain/select compile tests assert **exact SQL strings**, but the graph-reach
+  family's existing tests are **fragment (`contains`) pins only** — and both
+  union tests pass empty `mask_cols`, so the masked branch Task 1 replaces has
+  no compile-level coverage. Task 1 therefore FIRST adds two exact full-SQL
+  pins (union with a masked projection; tail pinning the whole
+  `recursive_reach_cte` text), verified green against the current compiler,
+  and only then substitutes the helpers under them.
 - **Existing e2e tests pass unmodified.** The ONLY test files this plan may
   touch are: the six compile-test files in Task 3 (call **shape** only —
   every assertion stays byte-identical), plus appends to
-  `tests/sql_compile.rs` (Task 2) and `tests/path_parse.rs` (Task 6), and the
-  two new test files. `tests/e2e_support.rs` is not touched.
+  `tests/compile_graph_reach_union.rs` + `tests/compile_graph_reach_tail.rs`
+  (Task 1's exact-SQL pins), `tests/sql_compile.rs` (Task 2) and
+  `tests/path_parse.rs` (Task 6), and the two new test files.
+  `tests/e2e_support.rs` is not touched.
 - **TDD:** every new fn/type lands with its test written first and observed
   red; pure-refactor tasks run their pinning suite green before AND after.
 - Tests are separate `rust_test` targets wired in
@@ -170,8 +178,8 @@ lockfile / `.sqlx` changes, no BUCK changes beyond the two new test targets.
 | --- | --- | --- |
 | `compile_graph_reach` | `handler.rs:976`; tests: `compile_graph_reach.rs` ×3, `recursive_cte_over_datafusion.rs:85` | Task 3 |
 | `compile_graph_tree` | `handler.rs:1015`; tests: `compile_graph_tree.rs` ×3, `compile_graph_tree_exec.rs:69` | Task 3 |
-| `compile_graph_reach_union` | `handler.rs:1255`; tests: `compile_graph_reach_union.rs` ×2, `recursive_cte_over_datafusion.rs:190` | Task 3 |
-| `compile_graph_reach_tail` | `handler.rs:1383`; tests: `compile_graph_reach_tail.rs` ×4 | Task 3 |
+| `compile_graph_reach_union` | `handler.rs:1255`; tests: `compile_graph_reach_union.rs` ×2 (+1 exact pin added in Task 1), `recursive_cte_over_datafusion.rs:190` | Task 3 |
+| `compile_graph_reach_tail` | `handler.rs:1383`; tests: `compile_graph_reach_tail.rs` ×4 (+1 exact pin added in Task 1) | Task 3 |
 | `recursive_reach_cte` (private) | `sql.rs:1272` (inside `compile_graph_reach_tail`) | Tasks 1-3 |
 | `caller_predicate_sql` (private) | `sql.rs:429,440,637,821,1089,1193` | Task 2 (fallible) |
 | `reach_seed_where` | `sql.rs:944,1001` (+ the 2 inline copies) | Task 1 (reuse), Task 2 (fallible) |
@@ -204,23 +212,40 @@ lockfile / `.sqlx` changes, no BUCK changes beyond the two new test targets.
    a fixed check order (`_ids`, `depth`, `tree`, depth-range) instead of
    query-string arrival order. Any single-error request returns the identical
    status + body. No test pins multi-error precedence.
-4. **Total error mapping adds arms on unreachable route×variant combos**: e.g.
-   a hypothetical `UnknownLink` on `/objects/{type}` would now be 404 (was
-   opaque 500), `Serving(NoIndex)` outside `/search` would be 404. Verified
-   unreachable today (`NoIndex`/`DimMismatch` built only in
-   `engine_client.rs:74-75`; `read_object`'s error surface has no
-   link/graph/chain variants) — this changes defensive dead arms only, and
-   makes the mapping future-proof-total.
+4. **Total error mapping unifies the route×variant grid**: almost all newly
+   mapped combos are unreachable — e.g. a hypothetical `UnknownLink` on
+   `/objects/{type}` would now be 404 (was opaque 500), `Serving(NoIndex)`
+   outside `/search` would be 404; verified (`NoIndex`/`DimMismatch` built
+   only in `engine_client.rs:74-75`; `read_object`'s error surface has no
+   link/graph/chain variants). **One combo IS constructible:** on `/search`,
+   `QueryError::BadFilterValue` can arise via `vector_search` →
+   `identity_in_predicate` → `coerce_filter` (`handler.rs:614`,
+   `governed.rs:238-242`) when an engine-served identity value fails
+   round-trip coercion — today post_search's catch-all returns an opaque 500
+   (`http.rs:1081`); under the total mapping it becomes the structured
+   `bad_filter_value` 400. Deliberate: it only fires on a pathological
+   engine/ontology inconsistency (the identity values came from the engine
+   itself), and the 400 body echoes only the identity column + offending
+   value. Everything else is defensive dead arms, making the mapping
+   future-proof-total.
 
 ---
 
 ### Task 1: sql.rs — reuse the reach helpers in the union / CTE / chain compilers
 
-Pure substitution; the exact-SQL-string compile tests are the byte-identity
-pin (this is a refactor task: the pinning suite runs green before and after,
-and no assertion changes).
+Pure substitution — but the existing graph-reach tests are **fragment pins
+only** (`contains(…)`; both union tests pass `mask_cols = &[]`, so the masked
+branch being replaced has no compile-level coverage, and `recursive_reach_cte`
+is pinned only via fragments + the DataFusion exec test). Step 1 therefore
+adds two **exact full-SQL** pins, green against the CURRENT compiler; the
+substitution then happens under them. The chain family is already
+exact-pinned (`tests/sql_compile.rs`, e.g.
+`identity_masked_dedups_on_raw_identity_via_window`).
 
 **Files:**
+- Test (append FIRST): `src/services/query-api/tests/compile_graph_reach_union.rs`,
+  `src/services/query-api/tests/compile_graph_reach_tail.rs` (existing
+  targets — no BUCK change)
 - Modify: `src/services/query-api/src/sql.rs` (`compile_graph_reach_union`
   :1066-1157, `recursive_reach_cte` :1174-1219, `compile_graph_reach_tail`
   cols block :1287-1298, `compile_chain_with` cols block :655-666)
@@ -232,14 +257,159 @@ and no assertion changes).
   `reach_projection_where` (:898), `masked_col_exprs` (:351).
 - Produces: no signature changes; SQL output byte-identical (param push order
   identical: seed predicates, seed filters, recursive filters, projection
-  filters).
+  filters), proven by the new exact pins.
 
-- [ ] **Step 1: Run the pinning suite green (baseline)**
+- [ ] **Step 1: Write the exact full-SQL pins (green against the current compiler)**
+
+The expected strings below were captured from the CURRENT compilers (probe
+`assert_eq!` runs against the pre-refactor tree, 2026-07-02) — byte-exact,
+including every space. Both tests exercise every helper-replaced region: seed
+predicates + row filters (`reach_seed_where`), the depth bound +
+filters-at-`nxt` (`reach_recursive_where`), a NON-EMPTY `mask_cols`
+(`masked_col_exprs`), and the reach-membership projection
+(`reach_projection_where`).
+
+Append to `src/services/query-api/tests/compile_graph_reach_union.rs` (its
+existing imports cover everything):
+
+```rust
+#[test]
+fn union_masked_projection_full_sql_is_byte_exact() {
+    // One FK self-link, one seed predicate, one row filter, one MASKED column —
+    // every helper-replaced region of the compiler renders. Byte-exact pin for the
+    // helper-reuse refactor (the other union tests assert fragments only and pass
+    // empty mask_cols).
+    let fk = LinkBacking::ForeignKey {
+        from_column: "knows_id".into(),
+        to_column: "id".into(),
+    };
+    let seed = vec![CallerPredicate {
+        column: "name".into(),
+        op: CompareOp::Eq,
+        values: vec![SqlValue::Text("Ada".into())],
+    }];
+    let row_filters = vec![RowFilter::Compare {
+        property: "active".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Bool(true),
+    }];
+    let (sql, params) = compile_graph_reach_union(
+        &DataFusionDialect,
+        &person(),
+        "id",
+        &[fk],
+        &seed,
+        &row_filters,
+        &["id".to_string(), "name".to_string(), "email".to_string()],
+        &["email".to_string()],
+        3,
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"WITH RECURSIVE reach(id, depth) AS (SELECT s."id" AS id, 0 AS depth FROM "main"."person" s WHERE (s."name" = ?) AND (s."active" = ?) UNION SELECT e.to_id AS id, r.depth + 1 AS depth FROM reach r JOIN (SELECT cur."id" AS from_id, nxt."id" AS to_id FROM "main"."person" cur JOIN "main"."person" nxt ON cur."knows_id" = nxt."id") e ON r.id = e.from_id JOIN "main"."person" nxt ON e.to_id = nxt."id" WHERE r.depth < 3 AND (nxt."active" = ?)) SELECT p."id", p."name", '***' AS "email" FROM "main"."person" p WHERE p."id" IN (SELECT id FROM reach WHERE depth >= 1) AND (p."active" = ?) LIMIT 100"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("Ada".into()),
+            SqlValue::Bool(true),
+            SqlValue::Bool(true),
+            SqlValue::Bool(true),
+        ]
+    );
+}
+```
+
+Append to `src/services/query-api/tests/compile_graph_reach_tail.rs` (its
+existing imports cover everything):
+
+```rust
+#[test]
+fn tail_full_sql_including_cte_is_byte_exact() {
+    // FK core with seed predicate + core row filter (pins the WHOLE
+    // recursive_reach_cte text), FK tail with a tail-type row filter, MASKED final
+    // column, no declared final identity (DISTINCT branch). Byte-exact pin for the
+    // helper-reuse refactor (the other tail tests assert fragments only).
+    let core = LinkBacking::ForeignKey {
+        from_column: "knows_id".into(),
+        to_column: "id".into(),
+    };
+    let seed = vec![CallerPredicate {
+        column: "name".into(),
+        op: CompareOp::Eq,
+        values: vec![SqlValue::Text("Ada".into())],
+    }];
+    let core_rf = vec![RowFilter::Compare {
+        property: "active".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Bool(true),
+    }];
+    let tail_types = vec![
+        ChainType {
+            table: tref("person"),
+            row_filters: vec![],
+            predicates: vec![],
+        },
+        ChainType {
+            table: tref("company"),
+            row_filters: vec![RowFilter::Compare {
+                property: "public".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Bool(true),
+            }],
+            predicates: vec![],
+        },
+    ];
+    let tail_hops = vec![LinkBacking::ForeignKey {
+        from_column: "worksat_id".into(),
+        to_column: "id".into(),
+    }];
+    let (sql, params) = compile_graph_reach_tail(
+        &DataFusionDialect,
+        &tref("person"),
+        "id",
+        &core,
+        &seed,
+        &core_rf,
+        &tail_types,
+        &tail_hops,
+        &["id".to_string(), "cname".to_string()],
+        &["cname".to_string()],
+        None,
+        2,
+        50,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"WITH RECURSIVE reach(id, depth) AS (SELECT s."id" AS id, 0 AS depth FROM "main"."person" s WHERE (s."name" = ?) AND (s."active" = ?) UNION SELECT nxt."id" AS id, r.depth + 1 AS depth FROM reach r JOIN "main"."person" cur ON cur."id" = r.id JOIN "main"."person" nxt ON cur."knows_id" = nxt."id" WHERE r.depth < 2 AND (nxt."active" = ?)) SELECT DISTINCT t_1."id", '***' AS "cname" FROM "main"."company" t_1 JOIN "main"."person" t_0 ON t_0."worksat_id" = t_1."id" WHERE t_0."id" IN (SELECT id FROM reach WHERE depth >= 1) AND (t_1."public" = ?) LIMIT 50"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("Ada".into()),
+            SqlValue::Bool(true),
+            SqlValue::Bool(true),
+            SqlValue::Bool(true),
+        ]
+    );
+}
+```
+
+(NOTE for Task 3: these two tests are compiler call sites and get the same
+mechanical `ReachSpec` call-shape migration there — assertions byte-identical,
+like every other compile test.)
+
+- [ ] **Step 2: Run the pinning suite green (baseline, incl. the new pins)**
 
 Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:sql-dialect //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-tree //src/services/query-api:compile-graph-tree-exec //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail //src/services/query-api:compile-chain-pairs //src/services/query-api:recursive-cte-over-datafusion > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
-Expected: PASS (all).
+Expected: PASS — the two new pins are green against the UNMODIFIED compiler.
+If either fails here, the expected string was mis-transcribed: fix the TEST,
+never the compiler.
 
-- [ ] **Step 2: Substitute the helpers**
+- [ ] **Step 3: Substitute the helpers**
 
 In `compile_graph_reach_union`, replace the validate loop (:1078-1080), the
 inline seed block (:1086-1098), the inline rec-where block (:1114-1122 —
@@ -337,26 +507,29 @@ In `compile_chain_with`, replace the inline cols block (:657-666):
 (`masked_col_exprs`'s `alias` is a raw prefix — `"p."` / `"t_2."` — so the
 rendered exprs are byte-identical to the inline `format!` forms.)
 
-- [ ] **Step 3: Run the pinning suite green (post)**
+- [ ] **Step 4: Run the pinning suite green (post-substitution)**
 
 Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:sql-dialect //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-tree //src/services/query-api:compile-graph-tree-exec //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail //src/services/query-api:compile-chain-pairs //src/services/query-api:recursive-cte-over-datafusion > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
-Expected: PASS — identical test list, zero assertion changes.
+Expected: PASS — identical test list; the two Step-1 pins prove byte-identity
+of the rewritten compilers; zero assertion changes anywhere.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c1.log 2>&1; cat /tmp/c1.log` — artifact empty.
 
-- [ ] **Step 4: prek + commit**
+- [ ] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p1.log 2>&1; grep -c Failed /tmp/p1.log` — expected `0`.
 
 ```bash
-git add src/services/query-api/src/sql.rs
+git add src/services/query-api/src/sql.rs src/services/query-api/tests/compile_graph_reach_union.rs src/services/query-api/tests/compile_graph_reach_tail.rs
 git commit -m "refactor(query-api): reuse reach SQL helpers in union/CTE/tail compilers
 
 compile_graph_reach_union and recursive_reach_cte re-inlined reach_seed_where
 (three copies of the seed WHERE in one file), reach_recursive_where (empty-path
 degenerate), validate_reach_filters, and reach_projection_where;
 compile_graph_reach_tail, compile_graph_reach_union, and compile_chain_with
-re-inlined masked_col_exprs. Pure substitution — the exact-SQL compile tests
-pass unmodified (byte-identical output, identical param order).
+re-inlined masked_col_exprs. Pure substitution, proven byte-identical by two
+new exact full-SQL pins (union with a masked projection; tail pinning the
+whole recursive_reach_cte text) captured green against the pre-refactor
+compiler — the pre-existing graph tests were fragment assertions only.
 
 Part of road-qa-read-path-consolidation."
 ```
@@ -570,8 +743,9 @@ Part of road-qa-read-path-consolidation."
 - Modify (call shape ONLY — every assertion byte-identical):
   `src/services/query-api/tests/compile_graph_reach.rs` (3 calls),
   `tests/compile_graph_tree.rs` (3), `tests/compile_graph_tree_exec.rs` (1),
-  `tests/compile_graph_reach_union.rs` (2), `tests/compile_graph_reach_tail.rs`
-  (4), `tests/recursive_cte_over_datafusion.rs` (2)
+  `tests/compile_graph_reach_union.rs` (3, incl. Task 1's exact pin),
+  `tests/compile_graph_reach_tail.rs` (5, incl. Task 1's exact pin),
+  `tests/recursive_cte_over_datafusion.rs` (2)
 
 **Interfaces:**
 - Produces (all `pub` in `query_api::sql`):
@@ -754,7 +928,7 @@ In `compile_graph_reach_tail`, the internal `recursive_reach_cte` call
     )?;
 ```
 
-- [ ] **Step 3: Update the 15 test call sites (call shape only)**
+- [ ] **Step 3: Update the 17 test call sites (call shape only)**
 
 Mechanical rule — the old positional args map into the spec:
 old `(dialect, table, identity, path/backings/core…, seed_predicates,
@@ -783,8 +957,10 @@ example — `tests/compile_graph_reach_union.rs:40-52` becomes:
 
 Apply the same transformation at every call site listed in the inventory
 (`compile_graph_reach.rs` ×3, `compile_graph_tree.rs` ×3 — no `limit` arg,
-`compile_graph_tree_exec.rs:69`, `compile_graph_reach_union.rs` ×2,
-`compile_graph_reach_tail.rs:45,134` and its 2 others,
+`compile_graph_tree_exec.rs:69`, `compile_graph_reach_union.rs` ×3 (incl.
+Task 1's `union_masked_projection_full_sql_is_byte_exact`),
+`compile_graph_reach_tail.rs:45,134` + its 2 others + Task 1's
+`tail_full_sql_including_cte_is_byte_exact`,
 `recursive_cte_over_datafusion.rs:85,190`), adding `ReachSpec` to each file's
 `use query_api::sql::{…}` line. Temporaries: where an old arg was an inline
 expression (e.g. `&person()` / `&tref("person")`), bind it to a `let` above
@@ -1229,9 +1405,11 @@ pub fn parse_ids(raw: Option<&str>) -> Result<Vec<String>, &'static str> {
 pub fn parse_depth(raw: Option<&str>, default: u32) -> Result<u32, &'static str> {
     match raw {
         None => Ok(default),
+        // Named binding, not `|_|` — the enforced clippy::map_err_ignore lint
+        // rejects a wildcard closure param (see engine_client.rs:59 precedent).
         Some(v) => v
             .parse::<u32>()
-            .map_err(|_| "depth must be a positive integer"),
+            .map_err(|_parse_err| "depth must be a positive integer"),
     }
 }
 ```
@@ -1293,7 +1471,9 @@ fn graph_knobs(
 (keep the route's explanatory comment, rephrased for the splitter; the rest
 of the fn is unchanged — whitelisted change #2 applies here.)
 
-`get_linked` — replace :293-315 with:
+`get_linked` — replace :293-319 (the scraper locals + loop + `_ids` check +
+`parse_direction` match — the replacement below includes the direction parse,
+so replacing only through :315 would leave a dangling duplicate) with:
 
 ```rust
     let (reserved, filter_params) =
@@ -1950,8 +2130,9 @@ Rewire (contexts preserve today's log lines exactly):
 Run: `buck2 test //src/services/query-api:query-error-http //src/services/query-api:http-smoke > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7.log`
 Expected: PASS.
 Run: `buck2 test -j 8 //src/services/query-api:object-set-e2e //src/services/query-api:object-pagination-e2e //src/services/query-api:filter-error-http //src/services/query-api:link-traversal //src/services/query-api:association-e2e //src/services/query-api:graph-path-e2e //src/services/query-api:vector_search_e2e //src/services/query-api:http-wire-e2e > /tmp/t7e.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7e.log`
-Expected: PASS — every status/body assertion unmodified (whitelist #4 is
-unreachable-arm-only).
+Expected: PASS — every status/body assertion unmodified (whitelist #4's only
+constructible change — `/search` `BadFilterValue` 500→400 — fires solely on a
+pathological engine/ontology inconsistency no e2e seeds).
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c7.log 2>&1; cat /tmp/c7.log` — artifact empty.
 
 - [ ] **Step 5: prek + commit**
@@ -1965,10 +2146,12 @@ git commit -m "refactor(query-api): one total QueryError -> HTTP response mappin
 query_error_response unions the four partial per-route copies (get_object x2,
 chain_error, graph_error) plus post_search's Serving special cases. No
 catch-all over QueryError variants — a new variant fails compilation, forcing
-a deliberate status. Reachably behavior-identical (NoIndex/DimMismatch are
-vector-search-only; the read paths cannot emit the link/graph variants);
-whitelisted #4 covers the defensive dead arms. New pure rust_test
-:query-error-http pins every variant's status.
+a deliberate status. One constructible change, whitelisted (#4): /search's
+BadFilterValue (engine-served identity failing round-trip coercion) goes
+opaque-500 -> structured 400; everything else newly mapped is a defensive
+dead arm (NoIndex/DimMismatch are vector-search-only; the read paths cannot
+emit the link/graph variants). New pure rust_test :query-error-http pins
+every variant's status.
 
 Part of road-qa-read-path-consolidation."
 ```
@@ -2195,7 +2378,7 @@ In `docs/ROADMAP.md:292-293`, flip the checkbox/status and replace the prose:
 
 ```markdown
 - [x] **query-api read-path consolidation (sql.rs / graph / http.rs)** `{#road-qa-read-path-consolidation area:quality status:done from:2026-07-02-pillar-idioms-audit-design pr:- spec:2026-07-02-pillar-idioms-audit-design}`
-  Done (PR #-). **sql.rs:** the union/CTE/tail/chain compilers reuse `reach_seed_where`/`reach_recursive_where`/`validate_reach_filters`/`reach_projection_where`/`masked_col_exprs` (byte-identical SQL, pinned by the exact-string compile tests); `ReachSpec<'a>` replaces the positional prefix of the five reach-family compilers, deleting their five `#[allow(too_many_arguments)]` (the register's "six" was drift — seven existed; the two `compile_select_with`/`compile_select` allows are a different parameter shape and deliberately remain); the three `#[expect(indexing_slicing)]` in `caller_predicate_sql` became fallible slice patterns (`CompileError::MalformedFilter`, fail-closed without panicking the request task). **Graph:** `governed_identity` + per-variant compile stages + `read_graph_reach_spec` over a `GraphReadSpec` borrow enum collapse the three parallel entry points onto one spine (pub fns kept as delegates — handler tests and e2es, incl. the `final_g`-fold pin in graph_tail_e2e, passed unmodified); `path_parse::parse_graph_mode` owns `/graph`'s mode grammar. **http.rs:** `query_params::{split_reserved,parse_ids,parse_depth}` replaces the 7 hand-rolled scraper loops (per-route reserved-key sets); one **total** `query_error_response` replaces the four partial `QueryError` mappings + post_search's fifth; `AppState::deps()` replaces 8 literals (census said 7); `respond_shaped` collapses the get_linked/get_linked_chain census pair; flight_export's duplicated governed-read block is one `governed()` helper. Deliberate behavior changes were limited to the plan's four-item whitelist (panic→500 on the predicate-arity invariant; two degenerate repeated/multi-invalid-param edges; unreachable defensive arms in the total mapping).
+  Done (PR #-). **sql.rs:** the union/CTE/tail/chain compilers reuse `reach_seed_where`/`reach_recursive_where`/`validate_reach_filters`/`reach_projection_where`/`masked_col_exprs` (byte-identical SQL, pinned by exact full-SQL tests added ahead of the substitution — the pre-existing graph tests asserted fragments only); `ReachSpec<'a>` replaces the positional prefix of the five reach-family compilers, deleting their five `#[allow(too_many_arguments)]` (the register's "six" was drift — seven existed; the two `compile_select_with`/`compile_select` allows are a different parameter shape and deliberately remain); the three `#[expect(indexing_slicing)]` in `caller_predicate_sql` became fallible slice patterns (`CompileError::MalformedFilter`, fail-closed without panicking the request task). **Graph:** `governed_identity` + per-variant compile stages + `read_graph_reach_spec` over a `GraphReadSpec` borrow enum collapse the three parallel entry points onto one spine (pub fns kept as delegates — handler tests and e2es, incl. the `final_g`-fold pin in graph_tail_e2e, passed unmodified); `path_parse::parse_graph_mode` owns `/graph`'s mode grammar. **http.rs:** `query_params::{split_reserved,parse_ids,parse_depth}` replaces the 7 hand-rolled scraper loops (per-route reserved-key sets); one **total** `query_error_response` replaces the four partial `QueryError` mappings + post_search's fifth; `AppState::deps()` replaces 8 literals (census said 7); `respond_shaped` collapses the get_linked/get_linked_chain census pair; flight_export's duplicated governed-read block is one `governed()` helper. Deliberate behavior changes were limited to the plan's four-item whitelist (panic→500 on the predicate-arity invariant; two degenerate repeated/multi-invalid-param edges; the total-mapping unification — dead defensive arms plus one constructible `/search` `BadFilterValue` 500→400 on a pathological engine/ontology inconsistency).
 ```
 
 Run: `bash tools/docs.sh validate`
