@@ -7,8 +7,9 @@
 use arrow_array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
+use arrow_flight::sql::{Any, CommandStatementQuery, ProstMessageExt, TicketStatementQuery};
 use arrow_flight::{FlightDescriptor, Ticket};
+use arrow_schema::ArrowError;
 use control_plane_core::{GovernedCatalog, Result};
 use futures::{Stream, TryStreamExt};
 use prost::Message;
@@ -108,6 +109,97 @@ impl GovernedStatementQuery {
     /// Decode from `Ticket.ticket` bytes.
     pub fn decode(bytes: &[u8]) -> std::result::Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
+    }
+}
+
+/// A decoded engine `do_get` ticket — one variant per serving plane. The decode
+/// ORDER is load-bearing and lives here, next to the ticket types whose
+/// `deny_unknown_fields` disjointness it depends on: the protobuf Flight SQL
+/// ticket is tried first (a legacy JSON ticket always starts with `{`, an invalid
+/// protobuf `Any`, so the file path is never misrouted), then the three JSON
+/// shapes fall through in order, the file ticket terminal.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EngineTicket {
+    /// Flight SQL read plane: the SQL carried in a `TicketStatementQuery` handle.
+    Sql(String),
+    /// Governed-SQL plane: arbitrary client SQL + a caller-resolved governed catalog.
+    GovernedSql(GovernedStatementQuery),
+    /// k-NN vector-search plane.
+    VectorSearch(VectorSearchTicket),
+    /// File-ticket data plane: an explicit live-file set to stream.
+    Files(FlightTicket),
+}
+
+/// Why a `do_get` ticket failed to decode. Each variant's `Display` is the exact
+/// wire message the engine emitted before this enum existed (pinned by
+/// `engine/tests/ticket_errors.rs`); the `From<TicketError> for tonic::Status`
+/// below fixes the code split.
+#[derive(Debug, thiserror::Error)]
+pub enum TicketError {
+    /// A protobuf `Any` matched `TicketStatementQuery` but failed to unpack.
+    /// No fall-through: a matched Flight SQL ticket fails in place.
+    #[error("bad flight-sql ticket: {0}")]
+    FlightSqlUnpack(#[source] ArrowError),
+    /// `Any::unpack` returned `None` after `is::<TicketStatementQuery>()` matched —
+    /// an arrow-flight invariant violation, the server's fault, never the client's.
+    #[error("flight-sql ticket unpack returned None")]
+    FlightSqlEmpty,
+    /// The statement handle of a matched Flight SQL ticket is not UTF-8.
+    #[error("non-utf8 sql: {0}")]
+    NonUtf8Sql(#[source] std::string::FromUtf8Error),
+    /// The terminal failure of the fall-through chain: a ticket that is neither
+    /// Flight SQL, governed, nor kNN must be a file ticket.
+    #[error("bad flight ticket: {0}")]
+    BadFileTicket(#[source] serde_json::Error),
+}
+
+impl From<TicketError> for tonic::Status {
+    fn from(e: TicketError) -> Self {
+        match &e {
+            // Server-side invariant violation, not a client fault.
+            TicketError::FlightSqlEmpty => tonic::Status::internal(e.to_string()),
+            TicketError::FlightSqlUnpack(_)
+            | TicketError::NonUtf8Sql(_)
+            | TicketError::BadFileTicket(_) => tonic::Status::invalid_argument(e.to_string()),
+        }
+    }
+}
+
+impl EngineTicket {
+    /// Decode a `Ticket.ticket` payload into its serving plane.
+    ///
+    /// Flight SQL read path first: a `TicketStatementQuery` (Any-wrapped) carrying
+    /// the SQL. Try the protobuf decode first; a legacy JSON ticket always starts
+    /// with `{` (an invalid protobuf `Any`), so this never misroutes the file path.
+    /// (The decode-then-`is::<>()` ordering is load-bearing.) The JSON planes then
+    /// fall through in order — `deny_unknown_fields` on all three JSON shapes makes
+    /// each stage unambiguous — with the file ticket terminal.
+    pub fn decode(bytes: &[u8]) -> std::result::Result<Self, TicketError> {
+        if let Ok(any) = Any::decode(bytes)
+            && any.is::<TicketStatementQuery>()
+        {
+            let tsq = any
+                .unpack::<TicketStatementQuery>()
+                .map_err(TicketError::FlightSqlUnpack)?
+                .ok_or(TicketError::FlightSqlEmpty)?;
+            let sql = String::from_utf8(tsq.statement_handle.to_vec())
+                .map_err(TicketError::NonUtf8Sql)?;
+            return Ok(Self::Sql(sql));
+        }
+        // loom-native governed SQL ticket (JSON): disjoint fields
+        // (deny_unknown_fields) from the other JSON tickets.
+        if let Ok(gq) = GovernedStatementQuery::decode(bytes) {
+            return Ok(Self::GovernedSql(gq));
+        }
+        // loom-native k-NN ticket (JSON). Disjoint fields from FlightTicket
+        // (deny_unknown_fields on both) make this unambiguous.
+        if let Ok(vs) = VectorSearchTicket::decode(bytes) {
+            return Ok(Self::VectorSearch(vs));
+        }
+        // File-ticket data plane: a JSON `FlightTicket` naming data files.
+        FlightTicket::decode(bytes)
+            .map(Self::Files)
+            .map_err(TicketError::BadFileTicket)
     }
 }
 

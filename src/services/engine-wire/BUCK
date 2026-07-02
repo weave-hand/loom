@@ -47,6 +47,7 @@ cargo.rust_library(
         "//third-party:time",
         "//third-party:arrow-flight",
         "//third-party:arrow-array",
+        "//third-party:arrow-schema",
         "//third-party:futures",
         "//third-party:thiserror",
     ],
@@ -109,6 +110,21 @@ rust_test(
         ":engine-wire",
         "//src/control-plane/core:core",
         "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "engine-ticket",
+    crate = "engine_ticket",
+    srcs = ["tests/engine_ticket.rs"],
+    crate_root = "tests/engine_ticket.rs",
+    edition = "2024",
+    deps = [
+        ":engine-wire",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-flight",
+        "//third-party:prost",
+        "//third-party:tonic",
     ],
 )
 

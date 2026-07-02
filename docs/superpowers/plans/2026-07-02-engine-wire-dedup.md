@@ -622,7 +622,7 @@ impl From<TicketError> for tonic::Status;
 
   Task 3's `do_get` consumes all of it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/services/engine-wire/tests/engine_ticket.rs`:
 
@@ -788,12 +788,12 @@ rust_test(
 and add `"//third-party:arrow-schema",` to the `engine-wire` library's `deps`
 (BUCK-only, the crate's existing convention for `thiserror`/`futures`).
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/engine-wire:engine-ticket > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t2.log`
 Expected: FAIL — compile error, `EngineTicket`/`TicketError` not found.
 
-- [ ] **Step 3: Implement in `engine-wire/src/flight.rs`**
+- [x] **Step 3: Implement in `engine-wire/src/flight.rs`**
 
 Extend the sql import (line 10) to
 `use arrow_flight::sql::{Any, CommandStatementQuery, ProstMessageExt, TicketStatementQuery};`
@@ -896,13 +896,13 @@ impl EngineTicket {
 (Note `std::result::Result` — the module aliases `Result` to
 `control_plane_core::Result`, matching the existing `decode` methods' style.)
 
-- [ ] **Step 4: Run to green**
+- [x] **Step 4: Run to green**
 
 Run: `buck2 test //src/services/engine-wire/... > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
 Expected: PASS (new unit target + the pre-existing ticket/convert/status tests).
 Run: `buck2 build '//src/services/engine-wire:engine-wire[clippy.txt]' > /tmp/c2.log 2>&1; cat /tmp/c2.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p2.log 2>&1; grep -c Failed /tmp/p2.log` — expected `0`.
 
