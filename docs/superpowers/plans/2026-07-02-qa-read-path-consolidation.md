@@ -421,7 +421,15 @@ pub fn compile_graph_reach(
 
 - `compile_graph_tree(dialect, spec, path)` — the `limit` param never existed here; nothing else changes.
 - `compile_graph_reach_union(dialect, spec, backings, limit)`.
-- `compile_graph_reach_tail(dialect, spec, core_backing, tail_types, tail_hops, final_identity, limit)` — in the body, `core_row_filters` becomes `row_filters` from the destructure (rename the body uses, or destructure as `row_filters: core_row_filters`).
+- `compile_graph_reach_tail(dialect, spec, core_backing, tail_types, tail_hops, final_identity, limit)` — **partial destructure only**: after this task, `table`/`seed_predicates`/`row_filters`/`depth` are consumed solely by the pass-through `recursive_reach_cte(dialect, spec, core_backing, &mut params)?` call, so a full destructure leaves four unused bindings and fails the 0-byte clippy gate. Use:
+  ```rust
+  let &ReachSpec {
+      identity,
+      allowed_cols,
+      mask_cols,
+      ..
+  } = spec;
+  ```
 - `recursive_reach_cte(dialect, spec, backing, params)` (private) — destructure only what it uses:
   ```rust
   fn recursive_reach_cte(
@@ -1094,7 +1102,8 @@ Update the `use crate::handler::{...}` import list (drop the deleted names, add 
 - `tests/graph_reach.rs` and `tests/graph_path_e2e.rs`: `read_graph_reach(&GraphQuery { type_name, path, depth, filters, ids }, ...)` becomes `read_graph(&GraphReadQuery { type_name, kind: GraphReadKind::PathCycle { path }, depth, filters, ids }, ...)`. (If `graph_path_e2e.rs` drives HTTP only, it needs no change — check first.)
 - `tests/graph_reach_union.rs`: `read_graph_reach_union(&GraphUnionQuery { type_name, links, depth, filters, ids }, ...)` becomes `read_graph(&GraphReadQuery { type_name, kind: GraphReadKind::UnionSelfLinks { links }, depth, filters, ids }, ...)`.
 - `tests/graph_reach_tail.rs`: `read_graph_reach_with_tail(&GraphTailQuery { type_name, core_link, tail_links, depth, filters, ids }, ...)` becomes `read_graph(&GraphReadQuery { type_name, kind: GraphReadKind::CoreTail { core_link, tail_links }, depth, filters, ids }, ...)`.
-- Update each file's imports. Assertions unchanged.
+- `tests/graph_reach.rs` builds its queries through a local `graph_query(&[…]) -> GraphQuery` helper, not only inline literals — adapt the helper too (return `GraphReadQuery` wrapping `GraphReadKind::PathCycle`).
+- Update each file's imports — DROP the now-unused `GraphQuery`/`GraphUnionQuery`/`GraphTailQuery` imports (a dangling import warns and fails the 0-byte clippy gate); add `GraphReadKind`, `GraphReadQuery`, `read_graph`. Assertions unchanged.
 
 - [ ] **Step 7: Build, run the full graph suite, commit**
 
