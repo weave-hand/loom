@@ -485,22 +485,3 @@ pub fn session_ttl(vars: &HashMap<String, String>) -> Result<Duration, loom_conf
         86_400_u64,
     )?))
 }
-
-/// Read the service-token TTL cap from `LOOM_SERVICE_TOKEN_MAX_TTL` (seconds, default
-/// 90 days). Mint requests over this are rejected (400).
-pub fn service_token_max_ttl_from_env() -> Duration {
-    std::env::var("LOOM_SERVICE_TOKEN_MAX_TTL")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(90 * 24 * 3600))
-}
-
-/// Read the session TTL from `LOOM_SESSION_TTL_SECS` (default 24h).
-pub fn session_ttl_from_env() -> Duration {
-    std::env::var("LOOM_SESSION_TTL_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(86_400))
-}

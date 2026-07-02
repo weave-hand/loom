@@ -1724,7 +1724,7 @@ Part of road-service-bootstrap."
 - Modify: `docs/ROADMAP.md` (~line 290), `docs/ISSUES.md` (~line 102),
   `docs/deploy.md:191-192`
 
-- [ ] **Step 1: Delete and prove zero callers**
+- [x] **Step 1: Delete and prove zero callers**
 
 Delete both `*_from_env` fns from `src/services/runtime/src/auth.rs` and remove
 `service_token_max_ttl_from_env` / `session_ttl_from_env` from the `pub use
@@ -1741,7 +1741,7 @@ expected: **no hits** (all remaining `std::env` uses are `std::env::vars()`
 inside `Config::from_env` — kept for the transform main — and the
 fixture-injected `POSTGRES_*` reads inside test files).
 
-- [ ] **Step 2: Affected-package sweep**
+- [x] **Step 2: Affected-package sweep**
 
 Run: `buck2 test -j 8 //src/loom-config: //src/services/store-config: //src/services/runtime: //src/services/engine: //src/services/standalone: //src/services/ingest: //src/services/query-api: > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7.log`
 Expected: PASS (this covers the ingest/query-api e2e suites over the changed
@@ -1749,7 +1749,7 @@ serve/main paths). Verify `git status src/control-plane/postgres/.sqlx` is
 clean and `git diff origin/main -- third-party/BUCK` is empty (no dep changes
 were made anywhere in this plan).
 
-- [ ] **Step 3: Close the register items + stale deploy rows**
+- [x] **Step 3: Close the register items + stale deploy rows**
 
 In `docs/ROADMAP.md` (~line 290), flip `road-service-bootstrap` to
 `- [x] … {#road-service-bootstrap area:quality status:done from:2026-07-02-pillar-idioms-audit-design pr:#N spec:2026-07-02-pillar-idioms-audit-design}`
@@ -1781,7 +1781,7 @@ commit to the same branch; or amend at PR time).
 
 Validate: `bash tools/docs.sh validate` — expected: OK.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p7.log 2>&1; grep -c Failed /tmp/p7.log` — expected `0`.
 

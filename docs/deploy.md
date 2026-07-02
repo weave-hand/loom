@@ -188,8 +188,6 @@ buck2 build //src/services/standalone:loom
 | `LOOM_QUERY_API_BIND_ADDR` | no | `0.0.0.0:8080` | TCP address for the query-api HTTP listener. |
 | `LOOM_INGEST_BIND_ADDR` | no | `0.0.0.0:8081` | TCP address for the ingest HTTP listener. |
 | `LOOM_FLIGHT_BIND_ADDR` | no | — | If set, also exposes the engine's Arrow Flight SQL endpoint on this address. |
-| `LOOM_BOOTSTRAP_ADMIN_USERNAME` | no | — | Create an admin user on first boot (requires `LOOM_BOOTSTRAP_ADMIN_PASSWORD`). |
-| `LOOM_BOOTSTRAP_ADMIN_PASSWORD` | no | — | Password for the bootstrapped admin user. |
 | `LOOM_PG_BIN_DIR` | no | — | Path to an external `pg_ctl`/`postgres` install. **Optional in embedded mode** — the binary self-extracts its baked-in Postgres distribution to `<LOOM_DATA_PATH>/cache/pg-<version>/` and wires it automatically. |
 | `LOOM_MIGRATE` | no | — | Set to `apply` to run schema migrations and exit immediately (useful with an external/managed Postgres before starting the full process). |
 | `LOOM_DB_HOST`, `LOOM_DB_PORT`, `LOOM_DB_USER`, `LOOM_DB_PASSWORD`, `LOOM_DB_NAME` | yes | — | Control-plane database connection vars. In **embedded** mode `LOOM_DB_NAME` names the database created inside the bundled cluster; the connection uses the embedded socket at `<LOOM_DATA_PATH>/pgrun` as the `postgres` superuser, so `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD` are **required by config parsing but ignored** (supply any placeholder). In **external** mode all five are the real connection settings. Reducing this verbosity for embedded mode is tracked — see the ergonomics note. |

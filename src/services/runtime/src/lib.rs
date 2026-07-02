@@ -5,8 +5,7 @@
 mod auth;
 pub use auth::{
     AuthState, Subject, login_routes, protect, require_auth, service_account_routes,
-    service_token_max_ttl, service_token_max_ttl_from_env, session_routes, session_ttl,
-    session_ttl_from_env, status_for,
+    service_token_max_ttl, session_routes, session_ttl, status_for,
 };
 
 pub mod create_admin;
