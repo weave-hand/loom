@@ -146,6 +146,33 @@ impl Auth for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn is_bootstrap_sealed(&self) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar!("select exists (select 1 from acl.bootstrap where id = 1)")
+                .fetch_one(self.pool())
+                .await
+                .map_err(backend)?
+                .unwrap_or(false),
+        )
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn seal_bootstrap(&self) -> Result<()> {
+        let inserted =
+            sqlx::query!("insert into acl.bootstrap (id) values (1) on conflict (id) do nothing")
+                .execute(self.pool())
+                .await
+                .map_err(backend)?
+                .rows_affected();
+        if inserted == 0 {
+            return Err(ControlPlaneError::Conflict(
+                "bootstrap already sealed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn list_users(&self, _page: PageReq) -> Result<Page<UserSummary>> {
         // Select `disabled_at` directly and derive the bool in Rust — avoids a
         // computed-column nullability override (`as "x!"`) for a plain read.

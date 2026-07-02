@@ -1980,6 +1980,24 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     // Fresh store: no users.
     assert!(!a.has_any_user().await.unwrap());
 
+    // --- bootstrap sealing: one-way ---
+    assert!(
+        !a.is_bootstrap_sealed().await.unwrap(),
+        "fresh CP is not sealed"
+    );
+    a.seal_bootstrap().await.unwrap();
+    assert!(
+        a.is_bootstrap_sealed().await.unwrap(),
+        "sealed after seal_bootstrap"
+    );
+    assert!(
+        matches!(
+            a.seal_bootstrap().await,
+            Err(control_plane_core::ControlPlaneError::Conflict(_))
+        ),
+        "second seal is a Conflict, never a silent success"
+    );
+
     // --- create_user ---
     a.create_user(&NewUser {
         subject_id: sid("u-alice"),
