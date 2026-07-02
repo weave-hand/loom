@@ -7,16 +7,18 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Schema, SchemaRef};
 use async_trait::async_trait;
+use control_plane_core::BaseType;
+use control_plane_postgres::iceberg_inline::column_array;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::datasource::MemTable;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::sql::unparser::Unparser;
 use datafusion::sql::unparser::dialect::PostgreSqlDialect;
-use sqlx::{AssertSqlSafe, PgPool, Row};
+use sqlx::{AssertSqlSafe, PgPool};
 
 use crate::serving::EngineServingError as ServingError;
 
@@ -31,9 +33,10 @@ pub struct PgTableProvider {
     relation: String,
     /// The authoritative arrow-58 schema the provider presents (table schema).
     schema: SchemaRef,
-    /// loom logical type per column, parallel to `schema.fields()` — drives the
-    /// PG-row → arrow decode (the seven logical types in `arrow_field`).
-    logical_types: Vec<String>,
+    /// loom logical type per column, parallel to `schema.fields()` — resolved ONCE
+    /// at construction (an unsupported logical type never constructs a provider),
+    /// and decoded by the postgres adapter's shared `column_array`.
+    logical_types: Vec<BaseType>,
     /// A fixed predicate always ANDed into the scan's WHERE (the MVCC snapshot
     /// filter for inline rows). `None` for an unfiltered scan.
     base_filter: Option<String>,
@@ -44,7 +47,7 @@ impl PgTableProvider {
         pool: PgPool,
         relation: String,
         schema: SchemaRef,
-        logical_types: Vec<String>,
+        logical_types: Vec<BaseType>,
         base_filter: Option<String>,
     ) -> Self {
         Self {
@@ -109,98 +112,6 @@ pub fn build_scan_sql(
     format!("SELECT {select_list} FROM {relation}{where_clause}{limit_clause}")
 }
 
-/// Decode `rows` to one arrow-58 array per column, typed by `logical_types[i]`
-/// (positional — the SELECT list order). Mirrors `iceberg_inline::column_array`
-/// (the whole tree is arrow 58). sqlx decodes to plain Rust types, so only the
-/// arrow side differs.
-fn pg_rows_to_arrays(
-    rows: &[sqlx::postgres::PgRow],
-    logical_types: &[String],
-) -> Result<Vec<ArrayRef>, ServingError> {
-    use arrow::array::builder::{
-        BooleanBuilder, Date32Builder, Float64Builder, Int32Builder, Int64Builder, StringBuilder,
-        TimestampMicrosecondBuilder,
-    };
-
-    let map_err = |e: sqlx::Error| ServingError::Engine(e.to_string());
-    macro_rules! get {
-        ($ty:ty, $i:expr) => {
-            rows.iter()
-                .map(|r| r.try_get::<Option<$ty>, _>($i))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(map_err)?
-        };
-    }
-
-    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(logical_types.len());
-    for (i, logical) in logical_types.iter().enumerate() {
-        let array: ArrayRef = match logical.as_str() {
-            "integer" => {
-                let mut b = Int32Builder::new();
-                for v in get!(i32, i) {
-                    b.append_option(v);
-                }
-                Arc::new(b.finish())
-            }
-            "long" => {
-                let mut b = Int64Builder::new();
-                for v in get!(i64, i) {
-                    b.append_option(v);
-                }
-                Arc::new(b.finish())
-            }
-            "double" => {
-                let mut b = Float64Builder::new();
-                for v in get!(f64, i) {
-                    b.append_option(v);
-                }
-                Arc::new(b.finish())
-            }
-            "boolean" => {
-                let mut b = BooleanBuilder::new();
-                for v in get!(bool, i) {
-                    b.append_option(v);
-                }
-                Arc::new(b.finish())
-            }
-            "string" => {
-                let mut b = StringBuilder::new();
-                for v in get!(String, i) {
-                    b.append_option(v);
-                }
-                Arc::new(b.finish())
-            }
-            "date" => {
-                let mut b = Date32Builder::new();
-                let epoch = time::macros::date!(1970 - 01 - 01);
-                for v in get!(time::Date, i) {
-                    b.append_option(v.map(|d| (d - epoch).whole_days() as i32));
-                }
-                Arc::new(b.finish())
-            }
-            "timestamp" => {
-                let mut b = TimestampMicrosecondBuilder::new();
-                for v in get!(time::PrimitiveDateTime, i) {
-                    b.append_option(v.map(|t| {
-                        (t.assume_utc() - time::OffsetDateTime::UNIX_EPOCH)
-                            .whole_microseconds()
-                            .try_into()
-                            .unwrap_or(i64::MAX)
-                    }));
-                }
-                Arc::new(b.finish())
-            }
-            other => {
-                return Err(ServingError::Engine(format!(
-                    "inline PG provider: unsupported logical type {other:?}"
-                )));
-            }
-        };
-        arrays.push(array);
-    }
-    Ok(arrays)
-}
-
 impl PgTableProvider {
     /// Run `sql`, decode the projected columns (`proj_logicals`, in SELECT order)
     /// into one batch with `proj_schema`. For an empty SELECT list (`SELECT 1`),
@@ -209,7 +120,7 @@ impl PgTableProvider {
         &self,
         sql: String,
         proj_schema: SchemaRef,
-        proj_logicals: &[String],
+        proj_logicals: &[BaseType],
     ) -> Result<RecordBatch, ServingError> {
         let rows = sqlx::query(AssertSqlSafe(sql))
             .fetch_all(&self.pool)
@@ -222,7 +133,16 @@ impl PgTableProvider {
             return RecordBatch::try_new_with_options(proj_schema, vec![], &opts)
                 .map_err(|e| ServingError::Engine(e.to_string()));
         }
-        let arrays = pg_rows_to_arrays(&rows, proj_logicals)?;
+        // One shared decode for ALL PG-row → Arrow reads (the postgres adapter's
+        // `column_array`), so this provider can never drift from inline_live_batch
+        // again (iss-pg-provider-vector-drift).
+        let arrays = proj_logicals
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| {
+                column_array(&rows, i, *ty).map_err(|e| ServingError::Engine(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         RecordBatch::try_new(proj_schema, arrays).map_err(|e| ServingError::Engine(e.to_string()))
     }
 }
@@ -263,13 +183,13 @@ impl TableProvider for PgTableProvider {
         );
 
         // Projected schema + parallel logical types for the decode.
-        let (proj_schema, proj_logicals): (SchemaRef, Vec<String>) = match projection {
+        let (proj_schema, proj_logicals): (SchemaRef, Vec<BaseType>) = match projection {
             Some(idx) if idx.is_empty() => (Arc::new(Schema::empty()), Vec::new()),
             Some(idx) => {
                 let s = self.schema.project(idx).map_err(|e| {
                     datafusion::error::DataFusionError::ArrowError(Box::new(e), None)
                 })?;
-                let l = idx.iter().map(|&i| self.logical_types[i].clone()).collect();
+                let l = idx.iter().map(|&i| self.logical_types[i]).collect();
                 (Arc::new(s), l)
             }
             None => (self.schema.clone(), self.logical_types.clone()),

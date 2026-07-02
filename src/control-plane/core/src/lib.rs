@@ -48,6 +48,7 @@ pub use lineage::{
 };
 pub use logical_type::{
     BaseType, JsonRepr, UnknownLogicalType, json_repr_of, resolve_logical, satisfies,
+    vector_list_field,
 };
 pub use ontology::{
     ActionDef, ActionKind, ActionName, Aggregation, Cardinality, ConstAssignment,

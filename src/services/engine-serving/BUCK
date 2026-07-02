@@ -100,6 +100,28 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "inline-vector-sql",
+    crate = "inline_vector_sql",
+    srcs = ["tests/inline_vector_sql.rs"],
+    crate_root = "tests/inline_vector_sql.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "vector-index-auto-rebuild",
     crate = "vector_index_auto_rebuild",
     srcs = ["tests/vector_index_auto_rebuild.rs"],

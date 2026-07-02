@@ -29,14 +29,16 @@ pub fn arrow_logical_type(dt: &DataType) -> Option<&'static str> {
 
 /// loom logical type name -> Arrow `DataType`. The inverse of `arrow_logical_type`,
 /// over exactly the five types `infer_columns` round-trips. `None` for an unmapped
-/// name (kept deliberately small — YAGNI; widen via `fut-datafusion-type-coverage`).
+/// name (kept deliberately small — YAGNI; widen via `fut-datafusion-type-coverage`),
+/// but the `DataType` VALUES come from core's authoritative
+/// `BaseType::arrow_data_type` map, so ingest can never disagree with serving on a
+/// type it does support.
 pub fn logical_arrow_type(ty: &str) -> Option<DataType> {
     match ty {
-        "boolean" => Some(DataType::Boolean),
-        "integer" => Some(DataType::Int32),
-        "long" => Some(DataType::Int64),
-        "double" => Some(DataType::Float64),
-        "string" => Some(DataType::Utf8),
+        "boolean" | "integer" | "long" | "double" | "string" => {
+            control_plane_core::resolve_logical(ty)
+                .map(control_plane_core::BaseType::arrow_data_type)
+        }
         _ => None,
     }
 }

@@ -6,6 +6,7 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = "2024",
     deps = [
+        "//third-party:arrow-schema",
         "//third-party:async-trait",
         "//third-party:regex",
         "//third-party:serde",
@@ -118,7 +119,10 @@ rust_test(
     crate_root = "tests/logical_type.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
-    deps = [":core"],
+    deps = [
+        ":core",
+        "//third-party:arrow-schema",
+    ],
 )
 
 rust_test(
