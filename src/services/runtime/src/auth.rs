@@ -3,6 +3,7 @@
 //! `protect` combinator both binaries apply to their routers. This is the first
 //! and only producer of `ControlPlaneError::Unauthorized` (→ HTTP 401).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -460,21 +461,27 @@ pub fn service_account_routes(
     )
 }
 
-/// Read the service-token TTL cap from `LOOM_SERVICE_TOKEN_MAX_TTL` (seconds, default
-/// 90 days). Mint requests over this are rejected (400).
-pub fn service_token_max_ttl_from_env() -> Duration {
-    std::env::var("LOOM_SERVICE_TOKEN_MAX_TTL")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(90 * 24 * 3600))
+/// Fail-loud read of the service-token TTL cap from the env snapshot
+/// (`LOOM_SERVICE_TOKEN_MAX_TTL`, seconds, default 90 days). Mint requests over
+/// the cap are rejected (400). A present-but-malformed value is a startup error
+/// naming the key — never a silent fallback (iss-config-silent-fallbacks).
+pub fn service_token_max_ttl(
+    vars: &HashMap<String, String>,
+) -> Result<Duration, loom_config::ConfigError> {
+    Ok(Duration::from_secs(loom_config::parse_var(
+        vars,
+        "LOOM_SERVICE_TOKEN_MAX_TTL",
+        90 * 24 * 3600_u64,
+    )?))
 }
 
-/// Read the session TTL from `LOOM_SESSION_TTL_SECS` (default 24h).
-pub fn session_ttl_from_env() -> Duration {
-    std::env::var("LOOM_SESSION_TTL_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(86_400))
+/// Fail-loud read of the session TTL from the env snapshot
+/// (`LOOM_SESSION_TTL_SECS`, default 24h). Same fallback semantics as
+/// [`service_token_max_ttl`].
+pub fn session_ttl(vars: &HashMap<String, String>) -> Result<Duration, loom_config::ConfigError> {
+    Ok(Duration::from_secs(loom_config::parse_var(
+        vars,
+        "LOOM_SESSION_TTL_SECS",
+        86_400_u64,
+    )?))
 }

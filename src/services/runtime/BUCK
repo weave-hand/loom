@@ -44,6 +44,15 @@ rust_test(
 )
 
 rust_test(
+    name = "ttl",
+    crate = "ttl",
+    srcs = ["tests/ttl.rs"],
+    crate_root = "tests/ttl.rs",
+    edition = "2024",
+    deps = [":runtime"],
+)
+
+rust_test(
     name = "overlay-opt",
     crate = "overlay_opt",
     srcs = ["tests/overlay_opt.rs"],
@@ -189,6 +198,23 @@ rust_test(
         "//third-party:tokio",
         "//third-party:tower",
         "//third-party:utoipa",
+    ],
+)
+
+# bootstrap() end-to-end: migrate gate, Ready context, TTL fail-fast ordering.
+# Boots a hermetic Postgres via EmbeddedPg, so it must route local.
+loom_fixture_test(
+    name = "bootstrap",
+    crate = "bootstrap",
+    srcs = ["tests/bootstrap.rs"],
+    crate_root = "tests/bootstrap.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/services/managed-postgres:managed-postgres",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
     ],
 )
 

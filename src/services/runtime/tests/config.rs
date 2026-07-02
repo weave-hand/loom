@@ -195,3 +195,38 @@ fn migrate_on_boot_invalid_rejected() {
         if var == "LOOM_DB_MIGRATE_ON_BOOT")
     );
 }
+
+#[test]
+fn db_config_from_map_parses_discrete_fields() {
+    let mut v = full();
+    v.insert("LOOM_DB_MAX_CONNECTIONS".into(), "9".into());
+    let db = DbConfig::from_map(&v).unwrap();
+    assert_eq!(db.host, "db.internal");
+    assert_eq!(db.port, 5432);
+    assert_eq!(db.user, "loom");
+    assert_eq!(db.password, "secret");
+    assert_eq!(db.dbname, "loom");
+    assert_eq!(db.max_connections, Some(9));
+}
+
+#[test]
+fn parse_migrate_on_boot_keeps_from_map_semantics() {
+    use service_runtime::parse_migrate_on_boot;
+    assert!(!parse_migrate_on_boot(&full()).unwrap());
+    let mut v = full();
+    v.insert("LOOM_DB_MIGRATE_ON_BOOT".into(), "true".into());
+    assert!(parse_migrate_on_boot(&v).unwrap());
+    v.insert("LOOM_DB_MIGRATE_ON_BOOT".into(), "yes".into());
+    assert!(matches!(parse_migrate_on_boot(&v),
+        Err(ConfigError::Invalid { ref var, .. }) if var == "LOOM_DB_MIGRATE_ON_BOOT"));
+}
+
+#[test]
+fn migrate_requested_reads_the_snapshot() {
+    let mut v = full();
+    assert!(!service_runtime::migrate_requested(&v));
+    v.insert("LOOM_MIGRATE".into(), "apply".into());
+    assert!(service_runtime::migrate_requested(&v));
+    v.insert("LOOM_MIGRATE".into(), "yes".into());
+    assert!(!service_runtime::migrate_requested(&v));
+}

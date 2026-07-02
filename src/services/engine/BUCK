@@ -127,6 +127,17 @@ loom_fixture_test(
 )
 
 rust_test(
+    name = "engine-tuning",
+    crate = "engine_tuning",
+    srcs = ["tests/engine_tuning.rs"],
+    crate_root = "tests/engine_tuning.rs",
+    deps = [
+        ":engine",
+        "//src/services/runtime:runtime",
+    ],
+)
+
+rust_test(
     name = "flight-membership-helper",
     crate = "flight_membership_helper",
     srcs = ["tests/flight_membership_helper.rs"],

@@ -21,6 +21,25 @@ pub enum StoreConfigError {
     Store(object_store::Error),
 }
 
+/// Config-seam bridge: an object-store parse/build failure surfaces as the shared
+/// `loom_config::ConfigError` (replacing the inline mapping `Config::from_map`
+/// carried). `Store` errors have no more specific key than the warehouse URI
+/// that selected the backend.
+impl From<StoreConfigError> for loom_config::ConfigError {
+    fn from(e: StoreConfigError) -> Self {
+        match e {
+            StoreConfigError::Missing(k) => loom_config::ConfigError::MissingVar(k),
+            StoreConfigError::Invalid { var, detail } => {
+                loom_config::ConfigError::Invalid { var, detail }
+            }
+            StoreConfigError::Store(inner) => loom_config::ConfigError::Invalid {
+                var: "LOOM_WAREHOUSE_URI".into(),
+                detail: inner.to_string(),
+            },
+        }
+    }
+}
+
 /// Object-store backend for the Iceberg warehouse, selected by `LOOM_WAREHOUSE_URI`'s
 /// scheme. `file://` (or unset) => local disk; `s3://bucket/prefix` => S3/MinIO.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -63,9 +63,10 @@ async fn engine_dies_before_ready_surfaces_real_error_and_stops_pg() {
     // composite has to return on its own via the engine-before-ready path. The outer
     // timeout is the regression guard: a stuck-open composite would hang here.
     let (ready_tx, _ready_rx) = tokio::sync::oneshot::channel::<()>();
+    let tuning = standalone::StandaloneTuning::from_map(&HashMap::new()).expect("tuning");
     let res = tokio::time::timeout(
         Duration::from_secs(90),
-        standalone::run(cfg, addrs, std::future::pending::<()>(), ready_tx),
+        standalone::run(cfg, addrs, tuning, std::future::pending::<()>(), ready_tx),
     )
     .await
     .expect("composite hung instead of returning the engine error");
