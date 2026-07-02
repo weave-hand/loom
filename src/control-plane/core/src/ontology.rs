@@ -48,6 +48,105 @@ pub struct ObjectType {
     pub identity: Option<String>,
 }
 
+impl ObjectType {
+    /// Start a fluent [`ObjectTypeBuilder`] for a type named `name`, backed by the
+    /// physical table `(schema, table)`. Plain construction — no validation, no
+    /// I/O (that stays with [`Ontology::define_type`], exactly as for a literal).
+    ///
+    /// ```
+    /// use control_plane_core::ObjectType;
+    /// let docs = ObjectType::build("Docs", ("wh", "docs"))
+    ///     .prop_req("id", "Long")
+    ///     .prop("note", "String")
+    ///     .identity("id")
+    ///     .done();
+    /// assert_eq!(docs.identity.as_deref(), Some("id"));
+    /// ```
+    pub fn build(
+        name: impl Into<String>,
+        table: (impl Into<String>, impl Into<String>),
+    ) -> ObjectTypeBuilder {
+        ObjectTypeBuilder {
+            inner: ObjectType {
+                name: TypeName(name.into()),
+                properties: Vec::new(),
+                derived: Vec::new(),
+                table: TableRef {
+                    schema: table.0.into(),
+                    name: table.1.into(),
+                },
+                identity: None,
+            },
+        }
+    }
+}
+
+/// Fluent constructor for [`ObjectType`] — see [`ObjectType::build`]. Methods
+/// append in call order (`properties`/`derived` are ordered).
+#[derive(Clone, Debug)]
+pub struct ObjectTypeBuilder {
+    inner: ObjectType,
+}
+
+impl ObjectTypeBuilder {
+    /// Append an optional (`required: false`), unconstrained property.
+    pub fn prop(self, name: impl Into<String>, ty: impl Into<String>) -> Self {
+        self.prop_with(
+            name,
+            ty,
+            false,
+            crate::constraints::PropertyConstraints::default(),
+        )
+    }
+
+    /// Append a required, unconstrained property.
+    pub fn prop_req(self, name: impl Into<String>, ty: impl Into<String>) -> Self {
+        self.prop_with(
+            name,
+            ty,
+            true,
+            crate::constraints::PropertyConstraints::default(),
+        )
+    }
+
+    /// Append a property with explicit requiredness and constraints — the full
+    /// [`PropertyDef`] surface.
+    pub fn prop_with(
+        mut self,
+        name: impl Into<String>,
+        ty: impl Into<String>,
+        required: bool,
+        constraints: crate::constraints::PropertyConstraints,
+    ) -> Self {
+        self.inner.properties.push(PropertyDef {
+            name: name.into(),
+            ty: ty.into(),
+            required,
+            constraints,
+        });
+        self
+    }
+
+    /// Append a derived (aggregate-over-link) property. Passthrough — the
+    /// [`DerivedPropertyDef`] literal is already minimal.
+    pub fn derived(mut self, def: DerivedPropertyDef) -> Self {
+        self.inner.derived.push(def);
+        self
+    }
+
+    /// Declare `prop` as the type's identity (primary key). Should name one of
+    /// the declared properties; validated by `define_type`, not here.
+    pub fn identity(mut self, prop: impl Into<String>) -> Self {
+        self.inner.identity = Some(prop.into());
+        self
+    }
+
+    /// Finish: the assembled [`ObjectType`].
+    pub fn done(self) -> ObjectType {
+        self.inner
+    }
+}
+
 /// Link multiplicity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Cardinality {
@@ -216,6 +315,101 @@ pub struct ActionDef {
     /// Ordered constant property assignments (the default/fixed-value case).
     #[serde(default)]
     pub assignments: Vec<ConstAssignment>,
+}
+
+impl ActionDef {
+    /// Start a fluent [`ActionDefBuilder`] for an action named `name` targeting
+    /// the type `target`, of mutation kind `kind`. Plain construction — no
+    /// validation, no I/O (that stays with [`Ontology::define_action`]).
+    ///
+    /// ```
+    /// use control_plane_core::{ActionDef, ActionKind};
+    /// let update = ActionDef::build("updateWidget", "Widget", ActionKind::Update)
+    ///     .param_req("id", "Long")
+    ///     .param_req("qty", "Long")
+    ///     .done();
+    /// assert_eq!(update.parameters.len(), 2);
+    /// ```
+    pub fn build(
+        name: impl Into<String>,
+        target: impl Into<String>,
+        kind: ActionKind,
+    ) -> ActionDefBuilder {
+        ActionDefBuilder {
+            inner: ActionDef {
+                name: ActionName(name.into()),
+                target: TypeName(target.into()),
+                parameters: Vec::new(),
+                kind,
+                assignments: Vec::new(),
+            },
+        }
+    }
+}
+
+/// Fluent constructor for [`ActionDef`] — see [`ActionDef::build`]. Methods
+/// append in call order (`parameters`/`assignments` are ordered).
+#[derive(Clone, Debug)]
+pub struct ActionDefBuilder {
+    inner: ActionDef,
+}
+
+impl ActionDefBuilder {
+    /// Append an optional (`required: false`) parameter binding the property of
+    /// the same name (`binds: None`).
+    pub fn param(mut self, name: impl Into<String>, ty: impl Into<String>) -> Self {
+        self.inner.parameters.push(ParamDef {
+            name: name.into(),
+            ty: ty.into(),
+            required: false,
+            binds: None,
+        });
+        self
+    }
+
+    /// Append a required parameter binding the property of the same name.
+    pub fn param_req(mut self, name: impl Into<String>, ty: impl Into<String>) -> Self {
+        self.inner.parameters.push(ParamDef {
+            name: name.into(),
+            ty: ty.into(),
+            required: true,
+            binds: None,
+        });
+        self
+    }
+
+    /// Append a parameter renamed away from the property it writes
+    /// ([`ParamDef::binds`] = `Some(binds)`) — the full [`ParamDef`] surface.
+    pub fn param_bound(
+        mut self,
+        name: impl Into<String>,
+        ty: impl Into<String>,
+        required: bool,
+        binds: impl Into<String>,
+    ) -> Self {
+        self.inner.parameters.push(ParamDef {
+            name: name.into(),
+            ty: ty.into(),
+            required,
+            binds: Some(binds.into()),
+        });
+        self
+    }
+
+    /// Append a declared constant assignment ([`ConstAssignment`]) filling
+    /// `property` with `value` when no parameter supplies it.
+    pub fn assign(mut self, property: impl Into<String>, value: serde_json::Value) -> Self {
+        self.inner.assignments.push(ConstAssignment {
+            property: property.into(),
+            value,
+        });
+        self
+    }
+
+    /// Finish: the assembled [`ActionDef`].
+    pub fn done(self) -> ActionDef {
+        self.inner
+    }
 }
 
 #[async_trait]
