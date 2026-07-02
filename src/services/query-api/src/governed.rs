@@ -10,7 +10,7 @@ use control_plane_core::{
     PropertyDef, RowFilter, SubjectId, TypeName,
 };
 
-use crate::handler::QueryError;
+use crate::handler::{Direction, Hop, QueryError};
 
 /// The resolved, policy-folded governance context for one `(subject, type)` pair: the
 /// object type plus the subject's cumulative Read policy (row filters ANDed by the SQL
@@ -263,4 +263,75 @@ pub(crate) fn coerce_visible_predicate(
     }
     let ty = prop_ty(object_type, col).unwrap_or("");
     Ok(crate::filter::coerce_predicate(col, ty, raw)?)
+}
+
+/// Resolve one directed hop from `current`: `Forward` follows an outbound link by name
+/// (`links`); `Inverse` follows an inbound link backwards (`links_to`) with an ambiguity
+/// check (inbound names need not be unique — links are keyed `(name, from)`) and the
+/// backing column roles swapped so the symmetric join compiler reads it in reverse.
+/// A missing link is `UnknownLink`; a `links()`/`links_to()` NotFound on `current` is a
+/// defensive `UnknownType` (unreachable when the caller just resolved `current`).
+pub async fn resolve_hop(
+    ontology: &(dyn Ontology + Send + Sync),
+    current: &TypeName,
+    hop: &Hop,
+) -> Result<(TypeName, control_plane_core::LinkBacking), QueryError> {
+    match hop.direction {
+        Direction::Forward => {
+            let links = ontology
+                .links(current, PageReq::unbounded())
+                .await
+                .map_err(|e| match e {
+                    ControlPlaneError::NotFound(_) => QueryError::UnknownType(current.0.clone()),
+                    other => QueryError::ControlPlane(other),
+                })?;
+            let link = links
+                .items
+                .into_iter()
+                .find(|l| l.name == hop.link)
+                .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
+            Ok((link.to, link.backing))
+        }
+        Direction::Inverse => {
+            let links = ontology
+                .links_to(current, PageReq::unbounded())
+                .await
+                .map_err(|e| match e {
+                    ControlPlaneError::NotFound(_) => QueryError::UnknownType(current.0.clone()),
+                    other => QueryError::ControlPlane(other),
+                })?;
+            let mut matches = links.items.into_iter().filter(|l| l.name == hop.link);
+            let link = matches
+                .next()
+                .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
+            if matches.next().is_some() {
+                return Err(QueryError::AmbiguousLink(hop.link.clone()));
+            }
+            // Inverse: land on the origin, backing reversed so the symmetric join
+            // reaches `current` back to `link.from`.
+            Ok((link.from, link.backing.reversed()))
+        }
+    }
+}
+
+/// The shared caller-filter + object-set seed loop: each `(column, raw)` filter is
+/// visibility-gated against `allowed`/masked (denied, masked, or unknown column ->
+/// `BadFilter`, no type-info leak) and coerced to a typed predicate; then `ids` lowers
+/// to an `In` predicate on the declared identity. Order: filters (as given), then ids.
+pub fn seed_predicates(
+    g: &GovernedType,
+    allowed: &[String],
+    filters: &[(String, String)],
+    ids: &[String],
+) -> Result<Vec<crate::filter::CallerPredicate>, QueryError> {
+    let mut predicates = Vec::with_capacity(filters.len() + 1);
+    for (col, raw) in filters {
+        predicates.push(coerce_visible_predicate(
+            col, raw, &g.otype, allowed, &g.masked,
+        )?);
+    }
+    if let Some(p) = identity_in_predicate(&g.otype, &g.denied, &g.masked, ids)? {
+        predicates.push(p);
+    }
+    Ok(predicates)
 }

@@ -157,7 +157,7 @@ pub enum QueryError {
 
 pub use crate::governed::{
     GovernedType, OnMissing, Projection, identity_in_predicate, identity_is_governed, prop_ty,
-    resolve_governed,
+    resolve_governed, resolve_hop, seed_predicates,
 };
 use crate::governed::{coerce_visible_predicate, load_policy, project_allowed};
 

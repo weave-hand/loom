@@ -1028,6 +1028,32 @@ rust_test(
 )
 
 rust_test(
+    name = "seed-predicates",
+    crate = "seed_predicates",
+    srcs = ["tests/seed_predicates.rs"],
+    crate_root = "tests/seed_predicates.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
+    name = "resolve-hop",
+    crate = "resolve_hop",
+    srcs = ["tests/resolve_hop.rs"],
+    crate_root = "tests/resolve_hop.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "resolve-governed",
     crate = "resolve_governed",
     srcs = ["tests/resolve_governed.rs"],
