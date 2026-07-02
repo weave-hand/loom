@@ -75,6 +75,20 @@ rust_test(
 )
 
 rust_test(
+    name = "lineage-completed",
+    crate = "lineage_completed",
+    srcs = ["tests/lineage_completed.rs"],
+    crate_root = "tests/lineage_completed.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+    ],
+)
+
+rust_test(
     name = "serde-roundtrip",
     crate = "serde_roundtrip",
     srcs = ["tests/serde_roundtrip.rs"],
