@@ -673,7 +673,7 @@ Part of road-service-bootstrap."
 - The old `*_from_env` fns stay (still called by the mains and standalone)
   until Tasks 5–6 migrate those callers; Task 7 deletes them.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/services/runtime/tests/ttl.rs`:
 
@@ -751,12 +751,12 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/runtime:ttl > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t4.log`
 Expected: FAIL — `session_ttl`/`service_token_max_ttl` unresolved.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/services/runtime/src/auth.rs`: add `use std::collections::HashMap;` to
 the imports, and add ABOVE the two `*_from_env` fns (which stay for now):
@@ -854,13 +854,13 @@ async fn spawn_flight_export(
 (the `let max_rows = std::env::var("LOOM_EXPORT_MAX_ROWS")…` block is deleted;
 the rest of the fn is unchanged).
 
-- [ ] **Step 4: Run to green**
+- [x] **Step 4: Run to green**
 
 Run: `buck2 test //src/services/runtime:ttl > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
 Expected: PASS.
 Run: `buck2 build '//src/services/runtime:runtime[clippy.txt]' '//src/services/query-api:query-api[clippy.txt]' > /tmp/c4.log 2>&1` — artifacts empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p4.log 2>&1; grep -c Failed /tmp/p4.log` — expected `0`.
 

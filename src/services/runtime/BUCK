@@ -44,6 +44,15 @@ rust_test(
 )
 
 rust_test(
+    name = "ttl",
+    crate = "ttl",
+    srcs = ["tests/ttl.rs"],
+    crate_root = "tests/ttl.rs",
+    edition = "2024",
+    deps = [":runtime"],
+)
+
+rust_test(
     name = "overlay-opt",
     crate = "overlay_opt",
     srcs = ["tests/overlay_opt.rs"],

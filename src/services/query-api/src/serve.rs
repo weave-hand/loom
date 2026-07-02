@@ -48,7 +48,7 @@ pub async fn serve(
         auth: auth.auth.clone(),
         cp: direct.clone(),
     };
-    let max_ttl = service_runtime::service_token_max_ttl_from_env();
+    let max_ttl = service_runtime::service_token_max_ttl(&env)?;
 
     let app = service_runtime::protect(
         router(AppState {
@@ -78,20 +78,21 @@ pub async fn serve(
     });
 
     // Optional UI serving (tight deploy) + CORS (detached deploy); both default off.
-    let app = crate::web_static::with_static(
-        app,
-        std::env::var("LOOM_UI_DIR")
-            .ok()
-            .map(std::path::PathBuf::from),
-    );
+    let app =
+        crate::web_static::with_static(app, env.get("LOOM_UI_DIR").map(std::path::PathBuf::from));
     let origins = crate::web_static::parse_allowed_origins(
-        &std::env::var("LOOM_CORS_ALLOWED_ORIGINS").unwrap_or_default(),
+        env.get("LOOM_CORS_ALLOWED_ORIGINS")
+            .map_or("", String::as_str),
     );
     let app = crate::web_static::with_cors(app, &origins);
 
     // Optional external Arrow Flight export listener (opt-in via LOOM_FLIGHT_BIND_ADDR).
-    if let Ok(bind) = std::env::var("LOOM_FLIGHT_BIND_ADDR") {
-        spawn_flight_export(&bind, &engine_socket, auth_flight, cp_flight).await?;
+    if let Some(bind) = env.get("LOOM_FLIGHT_BIND_ADDR") {
+        // Fail-loud: a malformed row cap is a startup error when the export
+        // endpoint was explicitly requested (was: silent fallback to the default).
+        let max_rows =
+            service_runtime::parse_var(&env, "LOOM_EXPORT_MAX_ROWS", DEFAULT_EXPORT_MAX_ROWS)?;
+        spawn_flight_export(bind, &engine_socket, auth_flight, cp_flight, max_rows).await?;
     }
 
     service_runtime::serve_with_shutdown(listener, app, shutdown).await?;
@@ -103,15 +104,12 @@ async fn spawn_flight_export(
     engine_socket: &str,
     auth_flight: Arc<dyn control_plane_core::Auth + Send + Sync>,
     cp_flight: Arc<dyn ControlPlane>,
+    max_rows: u32,
 ) -> Result<(), BoxErr> {
     use arrow_flight::flight_service_server::FlightServiceServer;
 
     use crate::flight_export::FlightExportService;
 
-    let max_rows = std::env::var("LOOM_EXPORT_MAX_ROWS")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_EXPORT_MAX_ROWS);
     let addr: std::net::SocketAddr = bind
         .parse()
         .map_err(|e| -> BoxErr { format!("LOOM_FLIGHT_BIND_ADDR `{bind}` invalid: {e}").into() })?;
