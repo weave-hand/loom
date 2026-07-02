@@ -786,6 +786,18 @@ rust_test(
 )
 
 rust_test(
+    name = "compile-graph-tree",
+    crate = "compile_graph_tree",
+    srcs = ["tests/compile_graph_tree.rs"],
+    crate_root = "tests/compile_graph_tree.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
     name = "compile-graph-reach-union",
     crate = "compile_graph_reach_union",
     srcs = ["tests/compile_graph_reach_union.rs"],

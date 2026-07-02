@@ -50,6 +50,13 @@ impl SqlDialect for DataFusionDialect {
 /// data), so inlining it as a SQL literal is not an injection vector.
 const MASK_MARKER: &str = "***";
 
+/// Output column aliases for the shortest-path-tree read: the settled BFS depth, the
+/// predecessor (parent) identity value (NULL for roots), and the node's own identity value.
+/// The handler splits these three trailing columns off each served row.
+pub const TREE_DEPTH_COL: &str = "__depth";
+pub const TREE_PARENT_COL: &str = "__parent";
+pub const TREE_NODE_ID_COL: &str = "__id";
+
 /// A row filter that violated the CompareOp<->ScalarValue invariant (e.g. malformed
 /// persisted policy data). Surfaced by the query API as an opaque 500, never a panic.
 #[derive(Debug, thiserror::Error)]
@@ -897,6 +904,78 @@ pub fn compile_graph_reach(
            SELECT nxt.{id} AS id, r.depth + 1 AS depth FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
          ) \
          SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
+    );
+    Ok((sql, params))
+}
+
+/// Compile a depth-bounded shortest-path-**tree** query over a path-cycle (a 1-step path is the
+/// single-self-link case). A variant of [`compile_graph_reach`]: the recursive CTE carries the
+/// predecessor node id (`reach(id, depth, pred)`) so every reach-edge records which node it was
+/// reached from; a non-recursive `settled` CTE keeps exactly one row per node — minimum depth,
+/// then minimum predecessor identity (`ROW_NUMBER() OVER (PARTITION BY id ORDER BY depth ASC,
+/// pred ASC NULLS FIRST)` + `WHERE rn = 1`) — the shortest-path parent, deterministically. The
+/// outer SELECT joins settled ids back to the table and projects the visible object columns plus
+/// `__depth`/`__parent`/`__id`. Unlike reachability it **includes depth-0 roots** (a tree needs
+/// its roots) and emits **no LIMIT** (the depth cap bounds the tree; a LIMIT could orphan a
+/// child). Governance is threaded exactly as reachability: seed/every recursive hop/projection
+/// row-filters. Param order matches [`compile_graph_reach`] (seed predicates, seed filters,
+/// recursive filters, projection filters) minus the limit. The anchor's `pred` is
+/// `NULLIF(s.<id>, s.<id>)` — a NULL typed as the identity column, union-compatible with the
+/// recursive term's `r.id` without the compiler knowing the SQL type.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "SQL compile functions require all builder parameters"
+)]
+pub fn compile_graph_tree(
+    dialect: &dyn SqlDialect,
+    table: &TableRef,
+    identity: &str,
+    path: &[GraphStep],
+    seed_predicates: &[CallerPredicate],
+    row_filters: &[RowFilter],
+    allowed_cols: &[String],
+    mask_cols: &[String],
+    depth: u32,
+) -> Result<(String, Vec<SqlValue>), CompileError> {
+    validate_reach_filters(row_filters, path)?;
+
+    let q = |id: &str| dialect.quote_ident(id);
+    let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
+    let id = q(identity);
+    let mut params: Vec<SqlValue> = Vec::new();
+
+    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params);
+    let joins = reach_joins(dialect, path);
+    let rec_where = reach_recursive_where(dialect, path, row_filters, depth, &mut params);
+
+    // Projection of `p`: visible columns (masked -> marker), governed by the start row-filters.
+    let cols = masked_col_exprs(dialect, allowed_cols, mask_cols, "p.").join(", ");
+    let mut proj_conj: Vec<String> = Vec::new();
+    for f in row_filters {
+        proj_conj.push(filter_sql(dialect, f, "p", &mut params));
+    }
+    let proj_and = if proj_conj.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {}", proj_conj.join(" AND "))
+    };
+
+    let depth_col = TREE_DEPTH_COL;
+    let parent_col = TREE_PARENT_COL;
+    let node_id_col = TREE_NODE_ID_COL;
+
+    let sql = format!(
+        "WITH RECURSIVE reach(id, depth, pred) AS (\
+           SELECT s.{id} AS id, 0 AS depth, NULLIF(s.{id}, s.{id}) AS pred FROM {tbl} s{seed_where} \
+           UNION \
+           SELECT nxt.{id} AS id, r.depth + 1 AS depth, r.id AS pred FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
+         ), \
+         settled AS (\
+           SELECT id, depth, pred, ROW_NUMBER() OVER (PARTITION BY id ORDER BY depth ASC, pred ASC NULLS FIRST) AS rn FROM reach\
+         ) \
+         SELECT {cols}, t.depth AS {depth_col}, t.pred AS {parent_col}, p.{id} AS {node_id_col} \
+         FROM settled t JOIN {tbl} p ON p.{id} = t.id WHERE t.rn = 1{proj_and} \
+         ORDER BY t.depth ASC, p.{id} ASC"
     );
     Ok((sql, params))
 }
