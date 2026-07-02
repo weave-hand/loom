@@ -180,11 +180,9 @@ async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
         &columns(),
         &ipc_body(&[1, 2, 3]),
         InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: // inline_byte_limit = 0 → always write real Parquet
-        i64::MAX,
+            inline_byte_limit: 0,           // always write real Parquet
+            flush_byte_threshold: i64::MAX, // no auto-enqueue
         },
-        // flush_byte_threshold → no auto-enqueue
         lineage(RunId(uuid::Uuid::new_v4()), &table),
     )
     .await
