@@ -63,3 +63,17 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "create-admin",
+    crate = "create_admin",
+    srcs = ["tests/create_admin.rs"],
+    crate_root = "tests/create_admin.rs",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/runtime:runtime",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)

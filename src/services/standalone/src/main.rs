@@ -13,6 +13,13 @@ const DEFAULT_INGEST_ADDR: &str = "0.0.0.0:8081";
 #[tokio::main]
 async fn main() -> Result<(), BoxErr> {
     service_runtime::init_tracing();
+
+    // Out-of-band first-admin bootstrap. `loom create-admin --username <u>` reads
+    // the password from stdin (prompt to stderr); no network path.
+    if std::env::args().nth(1).as_deref() == Some("create-admin") {
+        return create_admin_cli().await;
+    }
+
     let mut env = service_runtime::env_map();
 
     // Migrate-and-exit works for the loom image too (chart one-shot migrator).
@@ -44,6 +51,42 @@ async fn main() -> Result<(), BoxErr> {
     let addrs = resolve_addrs(&env)?;
 
     standalone::run(cfg, addrs, shutdown_signal(), ready_noop()).await
+}
+
+async fn create_admin_cli() -> Result<(), BoxErr> {
+    use std::io::Write;
+    let mut username = None;
+    let mut args = std::env::args().skip(2);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--username" => username = args.next(),
+            "--password-stdin" => {} // password always read from stdin
+            other => return Err(format!("unknown create-admin arg: {other}").into()),
+        }
+    }
+    let username = username.ok_or_else(|| -> BoxErr { "--username is required".into() })?;
+
+    // Read one line of password from stdin (works piped and interactive).
+    let mut stderr = std::io::stderr();
+    write!(stderr, "Password: ")?;
+    stderr.flush()?;
+    let mut password = String::new();
+    std::io::stdin().read_line(&mut password)?;
+    let password = password.trim_end_matches(['\n', '\r']).to_string();
+
+    let env = service_runtime::env_map();
+    let cfg = service_runtime::Config::from_map(&env)?;
+    let pool = service_runtime::build_pool(&cfg.db).await?;
+    let cp = service_runtime::control_plane(pool, cfg.lock_timeout);
+    service_runtime::create_admin::run_create_admin(&cp, &username, &password).await?;
+    #[expect(
+        clippy::print_stdout,
+        reason = "CLI subcommand result — the intended user-facing confirmation"
+    )]
+    {
+        println!("created admin '{username}' and sealed the instance");
+    }
+    Ok(())
 }
 
 fn resolve_addrs(env: &HashMap<String, String>) -> Result<StandaloneAddrs, BoxErr> {

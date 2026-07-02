@@ -14,7 +14,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use control_plane_core::{Auth, ControlPlaneError, NewServiceAccount, NewUser, PageReq, SubjectId};
+use control_plane_core::{Auth, ControlPlaneError, NewServiceAccount, PageReq, SubjectId};
 use time::OffsetDateTime;
 
 use crate::token_sha256;
@@ -467,19 +467,6 @@ pub fn service_token_max_ttl_from_env() -> Duration {
         .unwrap_or(Duration::from_secs(90 * 24 * 3600))
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap-admin seeding
-// ---------------------------------------------------------------------------
-
-/// Failure seeding the bootstrap admin.
-#[derive(Debug, thiserror::Error)]
-pub enum BootstrapError {
-    #[error(transparent)]
-    Hash(#[from] crate::AuthError),
-    #[error(transparent)]
-    Store(#[from] ControlPlaneError),
-}
-
 /// Read the session TTL from `LOOM_SESSION_TTL_SECS` (default 24h).
 pub fn session_ttl_from_env() -> Duration {
     std::env::var("LOOM_SESSION_TTL_SECS")
@@ -487,25 +474,4 @@ pub fn session_ttl_from_env() -> Duration {
         .and_then(|s| s.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or(Duration::from_secs(86_400))
-}
-
-/// Seed `username`/`password` as the first user iff the store has no users yet.
-/// The admin's subject id equals its username (role assignment stays an operator
-/// ACL task). A non-empty store is a no-op (so a restart never re-seeds).
-pub async fn bootstrap_admin<A: Auth>(
-    auth: &A,
-    username: &str,
-    password: &str,
-) -> Result<(), BootstrapError> {
-    if auth.has_any_user().await? {
-        return Ok(());
-    }
-    let password_phc = crate::hash_password(password)?;
-    auth.create_user(&NewUser {
-        subject_id: SubjectId(username.to_string()),
-        username: username.to_string(),
-        password_phc,
-    })
-    .await?;
-    Ok(())
 }
