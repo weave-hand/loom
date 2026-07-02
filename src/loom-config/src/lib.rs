@@ -47,6 +47,29 @@ where
     Ok(())
 }
 
+/// Read a required key from the env snapshot; `ConfigError::MissingVar` naming the
+/// key when absent. The `req` closure `Config::from_map` used to hand-roll.
+pub fn req_var(vars: &HashMap<String, String>, key: &str) -> Result<String, ConfigError> {
+    vars.get(key)
+        .cloned()
+        .ok_or_else(|| ConfigError::MissingVar(key.to_string()))
+}
+
+/// Parse `vars[key]`, falling back to `default` only when the key is ABSENT. A
+/// present-but-malformed value is `ConfigError::Invalid` naming the key — a startup
+/// error, never a silent fallback (iss-config-silent-fallbacks). The by-value
+/// sibling of [`overlay_opt`] for callers building a value instead of patching a slot.
+pub fn parse_var<T>(vars: &HashMap<String, String>, key: &str, default: T) -> Result<T, ConfigError>
+where
+    T: FromStr,
+    T::Err: core::fmt::Display,
+{
+    match vars.get(key) {
+        Some(raw) => raw.parse().map_err(|e| invalid(key, e)),
+        None => Ok(default),
+    }
+}
+
 /// Snapshot the process environment into a map — read once per `main` so config
 /// loading is consistent and testable without touching the real environment.
 #[must_use]

@@ -177,7 +177,7 @@ bootstrap test boots `EmbeddedPg` directly, mirroring
   `pub fn parse_var<T: FromStr>(vars, key, default: T) -> Result<T, ConfigError>`.
 - Consumed by Tasks 3–6 (runtime, engine) via the `service_runtime` re-export.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `src/loom-config/tests/overlay.rs`, and extend its import line to
 `use loom_config::{ConfigError, env_map, overlay_opt, parse_config_doc, parse_var, req_var};`:
@@ -216,12 +216,12 @@ fn parse_var_malformed_is_error_naming_key() {
 }
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/loom-config:overlay > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t1.log`
 Expected: FAIL — compile error (`req_var`/`parse_var` unresolved).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add to `src/loom-config/src/lib.rs` (after `overlay_opt`, matching its style):
 
@@ -250,13 +250,13 @@ where
 }
 ```
 
-- [ ] **Step 4: Run to green + clippy**
+- [x] **Step 4: Run to green + clippy**
 
 Run: `buck2 test //src/loom-config:overlay > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
 Expected: PASS.
 Run: `buck2 build '//src/loom-config:loom-config[clippy.txt]' > /tmp/c1.log 2>&1` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p1.log 2>&1; grep -c Failed /tmp/p1.log` — expected `0`.
 
