@@ -1032,7 +1032,7 @@ pub async fn read_graph_reach_spec(
   `graph_tree.rs` and every e2e stay byte-unmodified.
 - `read_graph_tree` and `resolve_graph` keep their signatures.
 
-- [ ] **Step 1: Extract the shared prologue and per-variant compile stages**
+- [x] **Step 1: Extract the shared prologue and per-variant compile stages**
 
 Add above `GraphResolved` (:1094):
 
@@ -1110,7 +1110,7 @@ local `type_name`; trailing :1398-1399 → `Ok((proj, sql, params))`). The
 **`final_g` fold** (:1345-1373), tail validation, and compile call stay
 verbatim — `tests/graph_tail_e2e.rs` pins its dedup/projection behavior.
 
-- [ ] **Step 2: Add the spine and turn the pub entry points into delegates**
+- [x] **Step 2: Add the spine and turn the pub entry points into delegates**
 
 ```rust
 /// The one /graph reachability spine: run the variant's compile stage, execute on
@@ -1162,7 +1162,7 @@ pub async fn read_graph_reach_with_tail(
 (`read_graph_tree` keeps calling `resolve_graph` + its identity-governed
 guard — unchanged.)
 
-- [ ] **Step 3: Run the pinned handler + e2e suites to green**
+- [x] **Step 3: Run the pinned handler + e2e suites to green**
 
 Run: `buck2 test //src/services/query-api:graph-reach //src/services/query-api:graph-tree //src/services/query-api:graph-reach-union //src/services/query-api:graph-reach-tail //src/services/query-api:associations > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
 Expected: PASS — all four fake-backed handler test files unmodified.
@@ -1170,7 +1170,7 @@ Run: `buck2 test -j 8 //src/services/query-api:graph-reach-e2e //src/services/qu
 Expected: PASS — the e2e pins (incl. the `final_g` fold behavior) unmodified.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c4.log 2>&1; cat /tmp/c4.log` — artifact empty.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p4.log 2>&1; grep -c Failed /tmp/p4.log` — expected `0`.
 

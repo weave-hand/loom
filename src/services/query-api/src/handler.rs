@@ -971,8 +971,16 @@ pub async fn read_graph_reach(
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
-    let r = resolve_graph(q, subject, deps).await?;
+    read_graph_reach_spec(GraphReadSpec::PathCycle(q), subject, deps).await
+}
 
+/// Path-cycle compile stage: resolve + govern the cycle, compile the reach SQL.
+async fn compile_reach_cycle(
+    q: &GraphQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<(Projection, String, Vec<SqlValue>), QueryError> {
+    let r = resolve_graph(q, subject, deps).await?;
     let (sql, params) = crate::sql::compile_graph_reach(
         deps.serving.dialect(),
         &crate::sql::ReachSpec {
@@ -987,8 +995,35 @@ pub async fn read_graph_reach(
         &r.steps,
         deps.default_limit,
     )?;
+    Ok((r.proj, sql, params))
+}
+
+/// One /graph reachability read, whichever recursion structure the route selected.
+/// Borrowed: the HTTP layer builds the query struct and hands a reference in.
+pub enum GraphReadSpec<'q> {
+    /// `?path=l1,..,lk` (or the single `/graph/:link`): a path-cycle repeated to depth.
+    PathCycle(&'q GraphQuery),
+    /// `?links=l1,..`: a union of self-links.
+    UnionSelfLinks(&'q GraphUnionQuery),
+    /// `?path=l0*,l1,..`: a recursive core + relational tail.
+    CoreTail(&'q GraphTailQuery),
+}
+
+/// The one /graph reachability spine: run the variant's compile stage, execute on
+/// the serving engine, zip the projection onto the served rows. Governance lives in
+/// the compile stages (each starts at `governed_identity` -> `resolve_governed`).
+pub async fn read_graph_reach_spec(
+    spec: GraphReadSpec<'_>,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    let (proj, sql, params) = match spec {
+        GraphReadSpec::PathCycle(q) => compile_reach_cycle(q, subject, deps).await?,
+        GraphReadSpec::UnionSelfLinks(q) => compile_reach_union(q, subject, deps).await?,
+        GraphReadSpec::CoreTail(q) => compile_reach_tail(q, subject, deps).await?,
+    };
     let served = deps.serving.fetch_rows(&sql, &params).await?;
-    Ok(r.proj.into_object_rows(served))
+    Ok(proj.into_object_rows(served))
 }
 
 /// Serve a bounded shortest-path-**tree** read over a path-cycle (a 1-element path is the
@@ -1090,6 +1125,32 @@ pub async fn read_graph_tree(
     })
 }
 
+/// The shared prologue of every /graph read variant: Read-gate + resolve the queried
+/// type (`resolve_governed`, deny-before-existence-leak) and require its declared
+/// identity — the recursion's dedup key. Previously copied verbatim into
+/// `resolve_graph`, the union read, and the tail read.
+async fn governed_identity(
+    type_name: &str,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<(GovernedType, String), QueryError> {
+    let name = TypeName(type_name.to_string());
+    let g = resolve_governed(
+        deps.ontology,
+        deps.acl,
+        &subject.0,
+        &name,
+        OnMissing::NotFound,
+    )
+    .await?;
+    let identity = g
+        .otype
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::NoIdentity(type_name.to_string()))?;
+    Ok((g, identity))
+}
+
 /// Everything the two graph reads (reachable-set and shortest-path-tree) need after
 /// resolving the queried type, ACL policy, and the path-cycle: the governed type (whose
 /// row-filters govern the recursion start), the declared identity (the recursion's
@@ -1113,22 +1174,8 @@ async fn resolve_graph(
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<GraphResolved, QueryError> {
+    let (g, identity) = governed_identity(&q.type_name, subject, deps).await?;
     let type_name = TypeName(q.type_name.clone());
-    let g = resolve_governed(
-        deps.ontology,
-        deps.acl,
-        &subject.0,
-        &type_name,
-        OnMissing::NotFound,
-    )
-    .await?;
-
-    // Declared identity is the recursion's dedup key.
-    let identity = g
-        .otype
-        .identity
-        .clone()
-        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
 
     // Resolve the path-cycle: walk l1..lK from the queried type. Each landed type is
     // Read-gated and its row-filters loaded (intermediate governance). After the last
@@ -1208,22 +1255,18 @@ pub async fn read_graph_reach_union(
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
-    let type_name = TypeName(q.type_name.clone());
-    let g = resolve_governed(
-        deps.ontology,
-        deps.acl,
-        &subject.0,
-        &type_name,
-        OnMissing::NotFound,
-    )
-    .await?;
+    read_graph_reach_spec(GraphReadSpec::UnionSelfLinks(q), subject, deps).await
+}
 
-    // Declared identity is the recursion's dedup key.
-    let identity = g
-        .otype
-        .identity
-        .clone()
-        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
+/// Union-of-self-links compile stage: resolve + govern the self-link set, compile the
+/// union reach SQL.
+async fn compile_reach_union(
+    q: &GraphUnionQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<(Projection, String, Vec<SqlValue>), QueryError> {
+    let (g, identity) = governed_identity(&q.type_name, subject, deps).await?;
+    let type_name = TypeName(q.type_name.clone());
 
     // Resolve the self-link set: every named link must be an outbound link of the queried type
     // whose `to` is the queried type (a self-link). Dedup by name (first-seen order; a link
@@ -1270,8 +1313,7 @@ pub async fn read_graph_reach_union(
         &backings,
         deps.default_limit,
     )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
-    Ok(proj.into_object_rows(served))
+    Ok((proj, sql, params))
 }
 
 /// A bounded recursive-core + relational-tail reachability read. `core_link` is a `*`-suffixed
@@ -1300,22 +1342,18 @@ pub async fn read_graph_reach_with_tail(
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
-    let type_name = TypeName(q.type_name.clone());
-    let g = resolve_governed(
-        deps.ontology,
-        deps.acl,
-        &subject.0,
-        &type_name,
-        OnMissing::NotFound,
-    )
-    .await?;
+    read_graph_reach_spec(GraphReadSpec::CoreTail(q), subject, deps).await
+}
 
-    // Declared identity: the recursion's dedup key and the tail's join key back to reach.
-    let identity = g
-        .otype
-        .identity
-        .clone()
-        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
+/// Recursive-core + relational-tail compile stage: resolve + govern the core self-link
+/// and every tail-reached type, compile the core+tail reach SQL.
+async fn compile_reach_tail(
+    q: &GraphTailQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<(Projection, String, Vec<SqlValue>), QueryError> {
+    let (g, identity) = governed_identity(&q.type_name, subject, deps).await?;
+    let type_name = TypeName(q.type_name.clone());
 
     // The relational tail must be non-empty (a bare recursive core is `/graph/:link`).
     if q.tail_links.is_empty() {
@@ -1403,6 +1441,5 @@ pub async fn read_graph_reach_with_tail(
         final_g.otype.identity.as_deref(),
         deps.default_limit,
     )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
-    Ok(proj.into_object_rows(served))
+    Ok((proj, sql, params))
 }
