@@ -189,7 +189,7 @@ This task delivers the shared behavioral contract AND the memory implementation 
 - Test: `src/control-plane/memory/tests/lineage.rs` (wire a test that calls the new contract)
 
 **Interfaces:**
-- Consumes: `control_plane_core::type_table_binding_event` (Task 1); the in-scope testkit imports (`ObjectType`, `TableRef`, `TypeName`, `DatasetRef`, `LineageEvent`, `EventType`, `RunId`, `PageReq`, `Ontology`, `Lineage`, `HashSet`, `OffsetDateTime`, `uuid`).
+- Consumes: the in-scope testkit imports (`ObjectType`, `TableRef`, `TypeName`, `DatasetRef`, `LineageEvent`, `EventType`, `RunId`, `Page`, `PageReq`, `Ontology`, `Lineage`, `HashSet`, `OffsetDateTime`, `uuid`). The contract exercises the binding edge indirectly — it calls `define_type` (which emits via Task 1's constructor) and asserts only on `upstream`/`downstream`; it does NOT call `type_table_binding_event` itself. The memory `define_type` (Step 4) is what consumes Task 1's constructor.
 - Produces (used by Task 3): `pub async fn type_table_binding_contract<CP: Ontology + Lineage>(cp: &CP)`.
 
 - [ ] **Step 1: Write the contract (the failing test body)** — append to `src/control-plane/testkit/src/lib.rs`:
@@ -452,17 +452,18 @@ async fn postgres_binding_edge_is_source_guarded() {
 }
 ```
 
-- [ ] **Step 3: Add the `sqlx` dep to the `lineage` test target** — in `src/control-plane/postgres/BUCK`, the `lineage` `loom_fixture_test` (line ~301) currently has:
+- [ ] **Step 3: Add the `core` + `sqlx` deps to the `lineage` test target** — in `src/control-plane/postgres/BUCK`, the `lineage` `loom_fixture_test` (line ~301) currently has:
 
 ```python
     deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
 ```
 
-Change it to add `sqlx` (needed by the guard-count test's `sqlx::query_scalar`):
+Change it to add BOTH `//src/control-plane/core:core` (the guard-count test does `use control_plane_core::{ObjectType, Ontology, TableRef, TypeName}` — buck2 requires a crate to be a **direct** dep to `use` it; the existing `lineage` target omits core only because its sources never named it) AND `//third-party:sqlx` (the guard-count test's `sqlx::query_scalar`):
 
 ```python
     deps = [
         ":postgres",
+        "//src/control-plane/core:core",
         "//src/control-plane/testkit:testkit",
         "//third-party:sqlx",
         "//third-party:tokio",
