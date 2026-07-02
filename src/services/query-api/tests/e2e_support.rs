@@ -270,6 +270,64 @@ pub async fn get(
     (status, json)
 }
 
+/// A `ServingEngine` that has no data backend — every data read errors. The lineage
+/// read routes never touch the serving engine, so tests of those routes wire this
+/// in to satisfy `AppState` without standing up an Iceberg warehouse.
+pub struct NoServing;
+
+#[async_trait]
+impl query_api::serving::ServingEngine for NoServing {
+    async fn fetch_rows(
+        &self,
+        _sql: &str,
+        _params: &[SqlValue],
+    ) -> Result<query_api::serving::Rows, ServingError> {
+        Err(ServingError::Engine("no serving engine configured".into()))
+    }
+
+    async fn vector_search(
+        &self,
+        _table: &TableRef,
+        _index_name: &str,
+        _query: &[f32],
+        _k: usize,
+        _nprobe: Option<u32>,
+        _ef_search: Option<u32>,
+    ) -> Result<query_api::serving::Rows, ServingError> {
+        Err(ServingError::Engine("no serving engine configured".into()))
+    }
+
+    fn dialect(&self) -> &'static dyn query_api::sql::SqlDialect {
+        &DataFusionDialect
+    }
+}
+
+/// Drive the HTTP router (behind the auth gate) with NO Authorization header and
+/// return just the status — for asserting the 401 on unauthenticated requests.
+pub async fn get_unauth(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
+    uri: &str,
+) -> StatusCode {
+    let app = protect(
+        router(AppState {
+            cp: cp.clone() as Arc<dyn ControlPlane>,
+            serving: eng,
+            action_engine: Arc::new(StubAction),
+            default_limit: 1000,
+        }),
+        AuthState {
+            auth: cp.clone(),
+            session_ttl: std::time::Duration::from_secs(3600),
+        },
+    );
+    let res = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    res.status()
+}
+
 /// Collect the sorted set of `id`s from an {"objects":[...]} reachability body. `id` is a
 /// `Long`, rendered as a numeric STRING (int64 exceeds JSON's safe-integer range), so parse.
 pub fn ids_i64(body: &serde_json::Value) -> Vec<i64> {
