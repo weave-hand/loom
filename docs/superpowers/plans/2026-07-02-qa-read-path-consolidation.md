@@ -2280,7 +2280,7 @@ Part of road-qa-read-path-consolidation."
   `async fn governed(&self, cmd: ExportCommand, subject: SubjectId) -> Result<crate::handler::GovernedRead, Status>`.
 - Consumes: `compile_object_read` (unchanged), `map_query_err` (unchanged).
 
-- [ ] **Step 1: Implement the helper and collapse both call sites**
+- [x] **Step 1: Implement the helper and collapse both call sites**
 
 Add to the existing `impl FlightExportService` block (after `new`):
 
@@ -2333,7 +2333,7 @@ the helper. Imports: `crate::handler::GovernedRead` is already reachable via
 the existing `crate::handler::{…}` use — extend that line with
 `GovernedRead`.)
 
-- [ ] **Step 2: Run the flight pins to green**
+- [x] **Step 2: Run the flight pins to green**
 
 Run: `buck2 test //src/services/query-api:export-command > /tmp/t9.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t9.log`
 Expected: PASS.
@@ -2341,7 +2341,7 @@ Run: `buck2 test -j 8 //src/services/query-api:governed-flight-export-e2e > /tmp
 Expected: PASS — schema/data/governance assertions unmodified.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c9.log 2>&1; cat /tmp/c9.log` — artifact empty.
 
-- [ ] **Step 3: prek + commit**
+- [x] **Step 3: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p9.log 2>&1; grep -c Failed /tmp/p9.log` — expected `0`.
 
