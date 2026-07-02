@@ -17,7 +17,9 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use e2e_support::{InProcessServingEngine, grant_read, grant_read_columns, subject_with_role, tref};
+use e2e_support::{
+    InProcessServingEngine, grant_read, grant_read_columns, subject_with_role, tref,
+};
 use query_api::handler::{ChainQuery, ObjectRows, QueryDeps, Subject, read_linked_chain};
 use query_api::serving::SqlValue;
 use std::sync::Arc;

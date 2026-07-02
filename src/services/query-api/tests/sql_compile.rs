@@ -503,7 +503,8 @@ fn chain_fk_then_jointable_adds_mapping_join_for_that_hop_only() {
             to_key: "id".into(),
         },
     ];
-    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], None, 100).unwrap();
+    let (sql, params) =
+        compile_chain(&types, &hops, &["name".to_string()], &[], None, 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_2.\"name\" FROM \"main\".\"tags\" t_2 \
@@ -587,7 +588,8 @@ fn chain_single_hop_jointable_renders_j1_mapping() {
         to_column: "tag_id".into(),
         to_key: "id".into(),
     }];
-    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], None, 100).unwrap();
+    let (sql, params) =
+        compile_chain(&types, &hops, &["name".to_string()], &[], None, 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_1.\"name\" FROM \"main\".\"tags\" t_1 \
