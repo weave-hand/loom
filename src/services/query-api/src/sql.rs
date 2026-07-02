@@ -461,6 +461,7 @@ pub fn compile_select_with(
     predicates: &[CallerPredicate],
     or_groups: &[Vec<CallerPredicate>],
     derived: &[DerivedSelect],
+    order_by: Option<&str>,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     validate_select_filters(row_filters, derived)?;
@@ -490,6 +491,9 @@ pub fn compile_select_with(
     if !conjuncts.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
+    }
+    if let Some(col) = order_by {
+        let _write = write!(sql, " ORDER BY {} ASC", dialect.quote_ident(col));
     }
     let _write = write!(sql, " {}", dialect.limit_clause(limit));
     Ok((sql, params))
@@ -521,6 +525,7 @@ pub fn compile_select(
         predicates,
         or_groups,
         derived,
+        None,
         limit,
     )
 }

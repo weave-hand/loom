@@ -155,7 +155,7 @@ async fn read_gadgets(
     )
     .await
     .unwrap();
-    objects_to_json(&rows)
+    objects_to_json(&rows, None)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -205,7 +205,7 @@ async fn rename_param_writes_bound_property() {
     .expect("rename action runs");
 
     // Returned object is keyed by PROPERTY: the bound `name`, never the param `displayName`.
-    let created_json = objects_to_json(&created);
+    let created_json = objects_to_json(&created, None);
     assert_eq!(created_json["objects"][0]["name"], json!("Widget A"));
     assert!(
         created_json["objects"][0].get("displayName").is_none(),
@@ -459,7 +459,7 @@ async fn update_targets_and_patches_via_bound_property() {
     .await
     .expect("update via binds runs");
     assert_eq!(
-        objects_to_json(&updated)["objects"][0]["name"],
+        objects_to_json(&updated, None)["objects"][0]["name"],
         json!("Renamed")
     );
 

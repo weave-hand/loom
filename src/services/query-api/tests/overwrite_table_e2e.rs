@@ -159,7 +159,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
     .await
     .unwrap();
     assert_eq!(
-        objects_to_json(&rows_before)["objects"]
+        objects_to_json(&rows_before, None)["objects"]
             .as_array()
             .unwrap()
             .len(),
@@ -213,7 +213,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
     )
     .await
     .unwrap();
-    let objs = objects_to_json(&rows_after);
+    let objs = objects_to_json(&rows_after, None);
     let arr = objs["objects"].as_array().unwrap();
     assert_eq!(arr.len(), 1, "exactly 1 row after overwrite");
     assert_eq!(

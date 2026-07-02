@@ -19,6 +19,7 @@ fn expected() -> BTreeSet<(String, String)> {
         ("get", "/lineage/datasets/{namespace}/{name}/upstream"),
         ("get", "/lineage/datasets/{namespace}/{name}/downstream"),
         ("get", "/lineage/runs/{run_id}/events"),
+        ("get", "/ontology/types"),
     ]
     .iter()
     .map(|(m, p)| ((*m).to_string(), (*p).to_string()))

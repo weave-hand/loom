@@ -4,15 +4,17 @@
 //! type or a declared/value mismatch falls back to the cell's natural rendering rather
 //! than failing a permitted read.
 
-use control_plane_core::{JsonRepr, json_repr_of};
+use control_plane_core::{Cursor, JsonRepr, json_repr_of};
 use serde_json::{Value, json};
 
 use crate::handler::{Associations, ObjectRows, ObjectTree};
 use crate::serving::{SqlValue, iso_date, iso_timestamp};
 
-/// `{ "objects": [ { property: typed_value, ... }, ... ] }`. Keys are the projected
-/// column names in `columns` order; values are rendered per the aligned logical type.
-pub fn objects_to_json(rows: &ObjectRows) -> Value {
+/// `{ "objects": [ { property: typed_value, ... }, ... ], "next": <string>|null }`. Keys are
+/// the projected column names in `columns` order; values are rendered per the aligned
+/// logical type. `next` is the keyset cursor for the following page (the un-paginated read
+/// path passes `None`, which always renders as JSON `null`).
+pub fn objects_to_json(rows: &ObjectRows, next: Option<&Cursor>) -> Value {
     let objects: Vec<Value> = rows
         .rows
         .iter()
@@ -29,7 +31,7 @@ pub fn objects_to_json(rows: &ObjectRows) -> Value {
             Value::Object(obj)
         })
         .collect();
-    json!({ "objects": objects })
+    json!({ "objects": objects, "next": next.map(|c| c.0.clone()) })
 }
 
 /// `{ "associations": [ { "from": <typed id>, "to": <typed id> }, ... ] }`. Each id is

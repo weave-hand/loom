@@ -87,7 +87,7 @@ async fn write_object_through_wire_client() {
     .expect("read_object must succeed after wire write");
 
     assert_eq!(
-        objects_to_json(&rows)["objects"][0],
+        objects_to_json(&rows, None)["objects"][0],
         json!({ "id": "7", "name": "hi", "qty": null }),
         "row round-trips through EngineActionClient wire"
     );

@@ -21,6 +21,7 @@ service EngineControl {
   rpc Resolve          (ResolveRequest)          returns (ResolveResponse);
   rpc Links            (LinksRequest)            returns (LinksResponse);
   rpc LinksTo          (LinksToRequest)          returns (LinksToResponse);
+  rpc ListTypes        (ListTypesRequest)        returns (ListTypesResponse);
   rpc GetAction        (GetActionRequest)        returns (GetActionResponse);
   rpc VectorIndexesFor (VectorIndexesForRequest) returns (VectorIndexesForResponse);
   rpc GetVectorIndex   (GetVectorIndexRequest)   returns (GetVectorIndexResponse);
@@ -104,6 +105,9 @@ message LinksResponse { string page_json = 1; }            // Page<LinkDef>
 
 message LinksToRequest  { string type_name = 1; string page_json = 2; }
 message LinksToResponse { string page_json = 1; }          // Page<LinkDef>
+
+message ListTypesRequest  { string page_json = 1; }   // PageReq
+message ListTypesResponse { string page_json = 1; }   // Page<ObjectType>
 
 message GetActionRequest  { string action_name = 1; }
 message GetActionResponse { string action_def_json = 1; }  // ActionDef

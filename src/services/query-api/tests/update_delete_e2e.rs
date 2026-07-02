@@ -181,7 +181,7 @@ async fn read_widget(
     )
     .await
     .unwrap();
-    objects_to_json(&rows)["objects"]
+    objects_to_json(&rows, None)["objects"]
         .as_array()
         .unwrap()
         .iter()
@@ -231,7 +231,7 @@ async fn update_merges_named_columns() {
     .await
     .expect("update runs");
     // The affected object returns the new version.
-    let affected_json = objects_to_json(&affected);
+    let affected_json = objects_to_json(&affected, None);
     assert_eq!(affected_json["objects"][0]["qty"], json!("9"));
     assert_eq!(affected_json["objects"][0]["name"], json!("a"));
 

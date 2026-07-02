@@ -119,7 +119,7 @@ async fn typed_filters_match_and_reject() {
         default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
-        let body = objects_to_json(rows);
+        let body = objects_to_json(rows, None);
         let mut v: Vec<String> = body["objects"]
             .as_array()
             .unwrap()
@@ -203,7 +203,7 @@ async fn comparison_set_and_null_operators() {
         default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
-        let body = objects_to_json(rows);
+        let body = objects_to_json(rows, None);
         let mut v: Vec<String> = body["objects"]
             .as_array()
             .unwrap()
@@ -377,7 +377,7 @@ async fn between_matches_ge_and_le() {
         default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
-        let body = objects_to_json(rows);
+        let body = objects_to_json(rows, None);
         let mut v: Vec<String> = body["objects"]
             .as_array()
             .unwrap()
@@ -434,7 +434,7 @@ async fn contains_is_case_insensitive_and_anchors() {
         default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
-        let body = objects_to_json(rows);
+        let body = objects_to_json(rows, None);
         let mut v: Vec<String> = body["objects"]
             .as_array()
             .unwrap()
@@ -496,7 +496,7 @@ async fn contains_literal_percent_matches_the_character() {
         default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
-        let body = objects_to_json(rows);
+        let body = objects_to_json(rows, None);
         let mut v: Vec<String> = body["objects"]
             .as_array()
             .unwrap()
@@ -544,7 +544,7 @@ async fn or_groups_union_and_governance() {
         default_limit: 1000,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
-        let body = objects_to_json(rows);
+        let body = objects_to_json(rows, None);
         let mut v: Vec<String> = body["objects"]
             .as_array()
             .unwrap()

@@ -382,6 +382,17 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         }))
     }
 
+    async fn list_types(
+        &self,
+        req: Request<pb::ListTypesRequest>,
+    ) -> std::result::Result<Response<pb::ListTypesResponse>, Status> {
+        let page: control_plane_core::PageReq = de_arg(&req.into_inner().page_json, "page")?;
+        let types = self.cp.ontology().list_types(page).await.map_err(status)?;
+        Ok(Response::new(pb::ListTypesResponse {
+            page_json: se_out(&types)?,
+        }))
+    }
+
     async fn get_action(
         &self,
         req: Request<pb::GetActionRequest>,

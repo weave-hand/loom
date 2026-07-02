@@ -189,7 +189,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
         .expect("action runs");
 
     // The created object is returned with typed values (Long id as string).
-    let created_json = objects_to_json(&created);
+    let created_json = objects_to_json(&created, None);
     assert_eq!(
         created_json["objects"][0],
         json!({ "id": "42", "name": "gadget" }),
@@ -217,7 +217,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
     .await
     .unwrap();
     assert_eq!(
-        objects_to_json(&rows)["objects"][0],
+        objects_to_json(&rows, None)["objects"][0],
         json!({ "id": "42", "name": "gadget" }),
         "round-trips"
     );

@@ -8,9 +8,11 @@ use crate::handler::{
     Associations, ChainQuery, Direction, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop,
     ObjectQuery, QueryDeps, QueryError, read_associations, read_graph_reach,
     read_graph_reach_union, read_graph_reach_with_tail, read_graph_tree, read_linked_chain,
-    read_object,
+    read_object, read_object_page,
 };
-use crate::openapi::{JobAck, ObjectsResponse, VectorSearchResponse, WriteDeniedBody};
+use crate::openapi::{
+    JobAck, ObjectsResponse, OntologyTypesResponse, VectorSearchResponse, WriteDeniedBody,
+};
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
 use axum::Router;
@@ -18,7 +20,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
-use control_plane_core::{ControlPlane, ControlPlaneError, DatasetRef, GC_JOB_KIND, NewJob, RunId};
+use control_plane_core::{
+    ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, NewJob, PageReq, RunId,
+};
 use service_runtime::Subject;
 
 /// Upper bound on a single `/search` request's `k` — caps per-request work.
@@ -86,7 +90,28 @@ pub fn router(state: AppState) -> Router {
             get(get_lineage_downstream),
         )
         .route("/lineage/runs/:run_id/events", get(get_lineage_run_events))
+        .route("/ontology/types", get(list_ontology_types))
         .with_state(state)
+}
+
+/// Ontology metadata: the defined object-type names, for the object-explorer UI's type
+/// sidebar. Auth-required (via `Subject`) but deliberately NOT per-type ACL-gated —
+/// this is ontology metadata (like `/openapi.json`), not object data; ACL governs the
+/// latter via `/objects/{type}`.
+#[utoipa::path(
+    get, path = "/ontology/types",
+    responses((status = 200, description = "Object-type names", body = OntologyTypesResponse)),
+    security(("bearer_auth" = [])),
+    tag = "ontology",
+)]
+async fn list_ontology_types(State(st): State<AppState>, _subject: Subject) -> impl IntoResponse {
+    match st.cp.ontology().list_types(PageReq::unbounded()).await {
+        Ok(page) => {
+            let types: Vec<String> = page.items.into_iter().map(|t| t.name.0).collect();
+            Json(serde_json::json!({ "types": types })).into_response()
+        }
+        Err(e) => internal_error("ontology list_types fault", e),
+    }
 }
 
 /// Operator-triggered physical GC: enqueue a `gc_table` job for `(schema, table)`.
@@ -127,10 +152,14 @@ async fn enqueue_gc(
 
 #[utoipa::path(
     get, path = "/objects/{type_name}",
-    params(("type_name" = String, Path, description = "Ontology object type")),
+    params(
+        ("type_name" = String, Path, description = "Ontology object type"),
+        ("limit" = Option<u32>, Query, description = "Page size, clamped to [1,200]; presence (with `cursor`) selects cursor pagination"),
+        ("cursor" = Option<String>, Query, description = "Opaque keyset cursor from a previous page's `next`; presence (with `limit`) selects cursor pagination"),
+    ),
     responses(
         (status = 200, description = "Matching objects", body = ObjectsResponse),
-        (status = 400, description = "Bad filter or _ids"),
+        (status = 400, description = "Bad filter, _ids, or pagination (no declared identity, denied/masked identity, _ids + pagination together, or a malformed cursor)"),
         (status = 403, description = "Forbidden by ACL policy"),
         (status = 404, description = "Unknown type"),
     ),
@@ -143,27 +172,32 @@ async fn get_object(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    // Pull the `_ids` object-set input out of the params; the rest are filters. Repeated
-    // filter keys are preserved (a column may carry several predicates, e.g. a range); the
-    // handler parses each value's operator and coerces it.
+    // Pull the `_ids` object-set input, `_or` groups, and the `limit`/`cursor` pagination
+    // knobs out of the params; the rest are filters. Repeated filter keys are preserved (a
+    // column may carry several predicates, e.g. a range); the handler parses each value's
+    // operator and coerces it. Presence of `limit` OR `cursor` selects the paginated read path.
     let mut ids: Vec<String> = Vec::new();
     let mut or_raw: Vec<String> = Vec::new();
     let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
+    let mut raw_limit: Option<String> = None;
+    let mut raw_cursor: Option<String> = None;
     for (k, v) in params {
-        if k == "_ids" {
-            ids = v
-                .split(',')
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect();
-            if ids.is_empty() {
-                return (StatusCode::BAD_REQUEST, "_ids requires at least one value")
-                    .into_response();
+        match k.as_str() {
+            "_ids" => {
+                ids = v
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+                if ids.is_empty() {
+                    return (StatusCode::BAD_REQUEST, "_ids requires at least one value")
+                        .into_response();
+                }
             }
-        } else if k == "_or" {
-            or_raw.push(v);
-        } else {
-            filters.push((k, v));
+            "_or" => or_raw.push(v),
+            "limit" => raw_limit = Some(v),
+            "cursor" => raw_cursor = Some(v),
+            _ => filters.push((k, v)),
         }
     }
     let deps = QueryDeps {
@@ -172,6 +206,45 @@ async fn get_object(
         serving: st.serving.as_ref(),
         default_limit: st.default_limit,
     };
+    let paginated = raw_limit.is_some() || raw_cursor.is_some();
+    if paginated {
+        let limit = match raw_limit {
+            Some(s) => match s.parse::<u32>() {
+                Ok(n) => n.clamp(1, crate::handler::MAX_PAGE),
+                Err(_) => {
+                    return (StatusCode::BAD_REQUEST, "limit must be a positive integer")
+                        .into_response();
+                }
+            },
+            None => deps.default_limit.clamp(1, crate::handler::MAX_PAGE),
+        };
+        let after = raw_cursor.map(Cursor);
+        return match read_object_page(
+            &ObjectQuery {
+                type_name,
+                filters,
+                ids,
+                or_raw,
+            },
+            &subject,
+            &deps,
+            limit,
+            after,
+        )
+        .await
+        {
+            Ok((rows, next)) => {
+                Json(crate::render::objects_to_json(&rows, next.as_ref())).into_response()
+            }
+            Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
+            Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+            Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
+            Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
+            Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
+            Err(QueryError::BadPagination(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
+            Err(e) => internal_error("object read serving fault", e),
+        };
+    }
     match read_object(
         &ObjectQuery {
             type_name,
@@ -184,7 +257,7 @@ async fn get_object(
     )
     .await
     {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
@@ -351,7 +424,7 @@ fn respond_objects(
     res: Result<crate::handler::ObjectRows, QueryError>,
 ) -> axum::response::Response {
     match res {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => chain_error(e),
     }
 }
@@ -725,7 +798,7 @@ async fn graph_respond(
     )
     .await
     {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => graph_error(e),
     }
 }
@@ -796,7 +869,7 @@ async fn graph_union_respond(
     )
     .await
     {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => graph_error(e),
     }
 }
@@ -837,7 +910,7 @@ async fn graph_tail_respond(
     )
     .await
     {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows)).into_response(),
+        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => graph_error(e),
     }
 }
@@ -873,7 +946,7 @@ async fn post_action(
     };
     match crate::action::run_action(&action_name, &obj, &subject.0, &deps).await {
         Ok((rows, run_id)) => {
-            let body = crate::render::objects_to_json(&rows);
+            let body = crate::render::objects_to_json(&rows, None);
             // objects_to_json yields {"objects":[{...}]}; return the single created object.
             let one = body
                 .get("objects")

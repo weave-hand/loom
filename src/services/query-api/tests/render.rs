@@ -13,7 +13,7 @@ fn one(logical_ty: &str, cell: SqlValue) -> serde_json::Value {
         logical_types: vec![logical_ty.into()],
         rows: vec![vec![cell]],
     };
-    objects_to_json(&rows)["objects"][0]["c"].clone()
+    objects_to_json(&rows, None)["objects"][0]["c"].clone()
 }
 
 #[test]
@@ -79,10 +79,10 @@ fn objects_to_json_builds_keyed_objects_in_column_order() {
         ],
     };
     assert_eq!(
-        objects_to_json(&rows),
+        objects_to_json(&rows, None),
         json!({ "objects": [
             { "id": "1", "email": "a@x" },
             { "id": "2", "email": "b@x" },
-        ] })
+        ], "next": null })
     );
 }

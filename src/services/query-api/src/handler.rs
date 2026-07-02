@@ -125,6 +125,12 @@ pub enum QueryError {
     /// misplaced/duplicated `*` — are rejected by the HTTP layer before the handler.)
     #[error("malformed graph path: {0}")]
     BadGraphPath(String),
+    /// Cursor pagination cannot be honored for this request: the type has no declared
+    /// identity, the identity column is denied/masked, `_ids` and pagination were both
+    /// given, or the `cursor` value does not coerce to the identity's logical type. Fail
+    /// closed — never emit a cursor over a masked/denied identity column.
+    #[error("bad pagination: {0}")]
+    BadPagination(String),
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error(transparent)]
@@ -268,6 +274,19 @@ fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
 /// Returns the SQL + params + projected `columns`/`logical_types` (SELECT order) + which
 /// output columns were masked. Shared by the HTTP read path and the Flight export path so
 /// governance lives in exactly one place.
+///
+/// `order_by` and `extra_predicate` are the pagination hooks used by `read_object_page`:
+/// `order_by` is the identity column to `ORDER BY … ASC` (the callers of the plain,
+/// un-paginated read pass `None`), and `extra_predicate` is the caller's already-coerced
+/// keyset predicate (`identity > cursor`), trusted as-is since `read_object_page` only
+/// builds it after its own fail-closed identity-visibility guards pass. Threading both
+/// through here — rather than have `read_object_page` re-run projection/derived-resolution
+/// itself — is what gives the paginated read the same derived (aggregate-over-link) columns
+/// as the plain read.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "governed-read compile function requires all builder parameters"
+)]
 pub async fn compile_object_read(
     q: &ObjectQuery,
     subject: &Subject,
@@ -275,6 +294,8 @@ pub async fn compile_object_read(
     acl: &(dyn Acl + Send + Sync),
     dialect: &dyn SqlDialect,
     limit: u32,
+    order_by: Option<&str>,
+    extra_predicate: Option<crate::filter::CallerPredicate>,
 ) -> Result<GovernedRead, QueryError> {
     let type_name = TypeName(q.type_name.clone());
     let target = PolicyTarget::Type(type_name.clone());
@@ -324,6 +345,11 @@ pub async fn compile_object_read(
 
     // Object-set input: scope to the given identities (an In predicate on the identity).
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
+        predicates.push(p);
+    }
+    // Pagination's keyset predicate (identity > cursor), pre-coerced and visibility-checked
+    // by `read_object_page` before this call.
+    if let Some(p) = extra_predicate {
         predicates.push(p);
     }
 
@@ -411,6 +437,7 @@ pub async fn compile_object_read(
         &predicates,
         &or_groups,
         &derived_selects,
+        order_by,
         limit,
     )?;
     // Output columns = physical `allowed` (in order) ++ surviving derived (in order).
@@ -461,6 +488,8 @@ pub async fn read_object(
         deps.acl,
         deps.serving.dialect(),
         deps.default_limit,
+        None,
+        None,
     )
     .await?;
     let served = deps.serving.fetch_rows(&g.sql, &g.params).await?;
@@ -475,6 +504,158 @@ pub async fn read_object(
         logical_types: g.logical_types,
         rows: served.rows,
     })
+}
+
+/// Cap on the caller-requested page size (`?limit=`), independent of `deps.default_limit`
+/// (the un-paginated path's cap). A request above this is clamped, never rejected.
+pub const MAX_PAGE: u32 = 200;
+
+/// Encode an identity cell as an opaque keyset cursor — the same total, round-trippable
+/// scalar rendering `sqlvalue_to_id_string` uses (an integer id -> its digits, a string id
+/// -> itself). A `SqlValue::Null` identity cannot occur for a primary key.
+fn encode_id_cursor(v: &SqlValue) -> control_plane_core::Cursor {
+    control_plane_core::Cursor(sqlvalue_to_id_string(v))
+}
+
+/// A governed, cursor-paginated object read: orders by the type's declared identity
+/// (ascending), applies `after` as a strict `>` keyset predicate on it, fetches `limit + 1`
+/// rows, and returns the (possibly truncated) page plus the cursor to fetch the next page
+/// (`None` on the last page). Fails closed with `BadPagination` when: the type has no
+/// declared identity; the identity column is denied or masked (never emit a cursor over an
+/// ungoverned-visibility identity); the identity's logical type is not one the cursor
+/// round-trips losslessly (only Integer/Long/String are — see `sqlvalue_to_id_string`);
+/// `_ids` is also present (mutually exclusive with pagination); or `after` does not coerce
+/// to the identity's logical type.
+pub async fn read_object_page(
+    q: &ObjectQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+    limit: u32,
+    after: Option<control_plane_core::Cursor>,
+) -> Result<(ObjectRows, Option<control_plane_core::Cursor>), QueryError> {
+    if !q.ids.is_empty() {
+        return Err(QueryError::BadPagination(
+            "_ids and pagination are mutually exclusive".to_string(),
+        ));
+    }
+
+    let type_name = TypeName(q.type_name.clone());
+    let target = PolicyTarget::Type(type_name.clone());
+
+    // Coarse gate, deny-by-default, before existence is revealed — identical to
+    // `compile_object_read`.
+    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
+        return Err(QueryError::Forbidden);
+    }
+    let object_type = deps
+        .ontology
+        .get_type(&type_name)
+        .await
+        .map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
+            other => QueryError::ControlPlane(other),
+        })?;
+
+    // Row filters aren't needed here: `compile_object_read` below re-derives its own (from
+    // the same subject/target) as part of the governed projection it builds.
+    let (_row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+
+    let identity = object_type
+        .identity
+        .clone()
+        .ok_or_else(|| QueryError::BadPagination("type has no declared identity".to_string()))?;
+    if identity_is_governed(&object_type, &denied, &masked) {
+        return Err(QueryError::BadPagination(
+            "identity column not readable".to_string(),
+        ));
+    }
+
+    let id_ty = object_type
+        .properties
+        .iter()
+        .find(|p| p.name == identity)
+        .map(|p| p.ty.as_str())
+        .unwrap_or("");
+
+    // Fail closed: only reject identity logical types the cursor round-trips losslessly.
+    // `sqlvalue_to_id_string` only encodes `SqlValue::Int` (digits) and `SqlValue::Text`
+    // (verbatim) without loss; every other `SqlValue` kind falls back to `{:?}` Debug
+    // formatting, which `coerce_filter` cannot decode back on the next page's `cursor=`.
+    // `BaseType::Integer`/`Long` always coerce to `SqlValue::Int` (see `coerce_filter`'s
+    // `JsonRepr::Number`/`NumericString` arms — Integer identities are always
+    // integer-valued, and Long always parses as i64), and `BaseType::String` always
+    // coerces to `SqlValue::Text`. Reject everything else (Double, Boolean, Date,
+    // Timestamp, Vector, or an unrecognized type name) up front rather than emitting a
+    // cursor that stalls pagination on page 2.
+    let cursor_round_trips = matches!(
+        control_plane_core::resolve_logical(id_ty),
+        Some(
+            control_plane_core::BaseType::Integer
+                | control_plane_core::BaseType::Long
+                | control_plane_core::BaseType::String
+        )
+    );
+    if !cursor_round_trips {
+        return Err(QueryError::BadPagination(
+            "pagination unsupported for this identity type".to_string(),
+        ));
+    }
+
+    // Keyset predicate: identity > cursor. A cursor that doesn't coerce to the identity's
+    // logical type is a malformed cursor, not a backend fault -> BadPagination (400). Built
+    // here (after every fail-closed identity guard above has passed) and handed to
+    // `compile_object_read` as a trusted, already-coerced extra predicate — the same
+    // governed-projection path (including derived columns) the plain read uses.
+    let extra_predicate = match &after {
+        Some(cursor) => {
+            let bound = crate::filter::coerce_filter(&identity, id_ty, &cursor.0)
+                .map_err(|e| QueryError::BadPagination(format!("invalid cursor: {e}")))?;
+            Some(crate::filter::CallerPredicate {
+                column: identity.clone(),
+                op: control_plane_core::CompareOp::Gt,
+                values: vec![bound],
+            })
+        }
+        None => None,
+    };
+
+    let fetch_limit = limit.saturating_add(1);
+    let g = compile_object_read(
+        q,
+        subject,
+        deps.ontology,
+        deps.acl,
+        deps.serving.dialect(),
+        fetch_limit,
+        Some(&identity),
+        extra_predicate,
+    )
+    .await?;
+    let served = deps.serving.fetch_rows(&g.sql, &g.params).await?;
+    debug_assert_eq!(
+        served.columns, g.columns,
+        "serving engine returned columns out of the projected order"
+    );
+
+    let id_idx = g
+        .columns
+        .iter()
+        .position(|c| c == &identity)
+        .ok_or_else(|| QueryError::BadPagination("identity column not projected".to_string()))?;
+
+    let page = control_plane_core::Page::from_keyset(served.rows, Some(limit), |row| {
+        let cell = row.get(id_idx).unwrap_or(&SqlValue::Null);
+        encode_id_cursor(cell)
+    });
+
+    Ok((
+        ObjectRows {
+            columns: g.columns,
+            logical_types: g.logical_types,
+            rows: page.items,
+        },
+        page.next,
+    ))
 }
 
 /// One ranked kNN hit: the identity value and its distance.
@@ -596,6 +777,7 @@ pub async fn vector_search(
         std::slice::from_ref(&pred),
         &[],
         &[],
+        None,
         limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;

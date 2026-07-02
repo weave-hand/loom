@@ -220,6 +220,8 @@ impl FlightService for FlightExportService {
             self.cp.acl(),
             &DataFusionDialect,
             self.max_rows.saturating_add(1),
+            None,
+            None,
         )
         .await
         .map_err(map_query_err)?;
@@ -262,6 +264,8 @@ impl FlightService for FlightExportService {
             self.cp.acl(),
             &DataFusionDialect,
             self.max_rows.saturating_add(1),
+            None,
+            None,
         )
         .await
         .map_err(map_query_err)?;

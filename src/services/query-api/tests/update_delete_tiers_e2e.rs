@@ -177,7 +177,7 @@ async fn read_widget(
     )
     .await
     .unwrap();
-    objects_to_json(&rows)["objects"]
+    objects_to_json(&rows, None)["objects"]
         .as_array()
         .unwrap()
         .iter()
