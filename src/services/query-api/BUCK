@@ -1495,6 +1495,21 @@ loom_fixture_test(
     ],
 )
 
+rust_test(
+    name = "read-page-single-resolve",
+    crate = "read_page_single_resolve",
+    srcs = ["tests/read_page_single_resolve.rs"],
+    crate_root = "tests/read_page_single_resolve.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "lineage-http-e2e",
     crate = "lineage_http_e2e",

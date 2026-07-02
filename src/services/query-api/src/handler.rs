@@ -185,6 +185,11 @@ fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
 /// through here — rather than have `read_object_page` re-run projection/derived-resolution
 /// itself — is what gives the paginated read the same derived (aggregate-over-link) columns
 /// as the plain read.
+///
+/// A thin wrapper over [`compile_object_read_with`]: resolves the governance prologue once
+/// via [`resolve_governed`] and hands the result over. Kept as its own function (exact
+/// signature preserved) so the Flight export path and the plain, un-paginated HTTP read can
+/// call it without also having to resolve governance themselves.
 #[allow(
     clippy::too_many_arguments,
     reason = "governed-read compile function requires all builder parameters"
@@ -200,57 +205,49 @@ pub async fn compile_object_read(
     extra_predicate: Option<crate::filter::CallerPredicate>,
 ) -> Result<GovernedRead, QueryError> {
     let type_name = TypeName(q.type_name.clone());
-    let target = PolicyTarget::Type(type_name.clone());
+    let g = resolve_governed(ontology, acl, &subject.0, &type_name, OnMissing::NotFound).await?;
+    compile_object_read_with(
+        &g,
+        q,
+        subject,
+        ontology,
+        acl,
+        dialect,
+        limit,
+        order_by,
+        extra_predicate,
+    )
+    .await
+}
 
-    // Coarse gate, deny-by-default: the subject must hold a Read grant on this type.
-    // No grant — including an unknown/anonymous subject — is Forbidden, returned BEFORE
-    // we reveal whether the type exists. Fine-grained row/column policy below only
-    // narrows what an already-permitted subject sees.
-    if acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
-        return Err(QueryError::Forbidden);
-    }
+/// The compile stage of a governed object read, over an already-resolved
+/// [`GovernedType`] — so a caller that needed the governance context for its own
+/// guards (`read_object_page`) resolves it exactly once. `ontology`/`acl` are still
+/// needed to govern derived (aggregate-over-link) columns both-ends.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "governed-read compile function requires all builder parameters"
+)]
+pub async fn compile_object_read_with(
+    g: &GovernedType,
+    q: &ObjectQuery,
+    subject: &Subject,
+    ontology: &(dyn Ontology + Send + Sync),
+    acl: &(dyn Acl + Send + Sync),
+    dialect: &dyn SqlDialect,
+    limit: u32,
+    order_by: Option<&str>,
+    extra_predicate: Option<crate::filter::CallerPredicate>,
+) -> Result<GovernedRead, QueryError> {
+    let type_name = TypeName(q.type_name.clone());
 
-    // resolve: type -> ObjectType (table + ordered properties). A genuine miss is a
-    // client 404 (UnknownType); a backend fault must propagate as itself (-> 500),
-    // not masquerade as an unknown type.
-    let object_type = ontology.get_type(&type_name).await.map_err(|e| match e {
-        ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
-        other => QueryError::ControlPlane(other),
-    })?;
+    // projection: type properties minus denied, preserving property order; fail-closed.
+    let mut proj = Projection::visible(g)?;
 
-    let (row_filters, denied, masked) = load_policy(acl, &subject.0, &target).await?;
-
-    // projection: type properties minus denied columns, preserving property order.
-    let allowed: Vec<String> = project_allowed(&object_type.properties, &denied);
-    if allowed.is_empty() {
-        return Err(QueryError::Forbidden);
-    }
-    // masked columns to actually apply: those still visible (deny wins over mask).
-    let mask_cols: Vec<String> = allowed
-        .iter()
-        .filter(|c| masked.contains(*c))
-        .cloned()
-        .collect();
-
-    // Visibility first (denied/masked column -> 400, no type info leak), then parse the raw
-    // value into a typed predicate (operator + coerced operands) for the column.
-    let mut predicates: Vec<crate::filter::CallerPredicate> = Vec::with_capacity(q.filters.len());
-    for (col, raw) in &q.filters {
-        predicates.push(coerce_visible_predicate(
-            col,
-            raw,
-            &object_type,
-            &allowed,
-            &masked,
-        )?);
-    }
-
-    // Object-set input: scope to the given identities (an In predicate on the identity).
-    if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
-        predicates.push(p);
-    }
-    // Pagination's keyset predicate (identity > cursor), pre-coerced and visibility-checked
-    // by `read_object_page` before this call.
+    // Caller filters + object-set ids, visibility-gated and coerced; then pagination's
+    // pre-coerced keyset predicate (trusted — read_object_page built it after its own
+    // fail-closed identity guards passed).
+    let mut predicates = seed_predicates(g, &proj.columns, &q.filters, &q.ids)?;
     if let Some(p) = extra_predicate {
         predicates.push(p);
     }
@@ -269,9 +266,9 @@ pub async fn compile_object_read(
             group.push(coerce_visible_predicate(
                 col,
                 val,
-                &object_type,
-                &allowed,
-                &masked,
+                &g.otype,
+                &proj.columns,
+                &g.masked,
             )?);
         }
         or_groups.push(group);
@@ -284,13 +281,13 @@ pub async fn compile_object_read(
     let mut derived_names: Vec<String> = Vec::new();
     let mut derived_types: Vec<String> = Vec::new();
     let mut derived_selects: Vec<crate::sql::DerivedSelect> = Vec::new();
-    if !object_type.derived.is_empty() {
+    if !g.otype.derived.is_empty() {
         let links = ontology.links(&type_name, PageReq::unbounded()).await?;
-        for d in &object_type.derived {
-            if denied.contains(&d.name) {
+        for d in &g.otype.derived {
+            if g.denied.contains(&d.name) {
                 continue;
             }
-            if masked.contains(&d.name) {
+            if g.masked.contains(&d.name) {
                 derived_names.push(d.name.clone());
                 derived_types.push(d.ty.clone());
                 derived_selects.push(crate::sql::DerivedSelect::Masked(d.name.clone()));
@@ -330,51 +327,30 @@ pub async fn compile_object_read(
         }
     }
 
+    // Compile over the PHYSICAL projection (derived columns ride in derived_selects).
     let (sql, params) = compile_select_with(
         dialect,
-        &object_type.table,
-        &allowed,
-        &mask_cols,
-        &row_filters,
+        &g.otype.table,
+        &proj.columns,
+        &proj.masked,
+        &g.row_filters,
         &predicates,
         &or_groups,
         &derived_selects,
         order_by,
         limit,
     )?;
-    // Output columns = physical `allowed` (in order) ++ surviving derived (in order).
-    let mut columns = allowed.clone();
-    columns.extend(derived_names.iter().cloned());
-    // Logical type per projected column, in output order — which is the SELECT order
-    // compile_select emits, hence the order of a served row's cells. Physical columns map
-    // from the type's properties (a column with no matching property — cannot happen
-    // post-projection — maps to "" -> the renderer's natural fallback); derived columns
-    // carry their declared `ty`.
-    let mut logical_types: Vec<String> = allowed
-        .iter()
-        .map(|name| {
-            object_type
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    logical_types.extend(derived_types.iter().cloned());
-    // Which projected output columns were masked (SELECTed as the constant mask marker, so
-    // streamed back as Utf8). Load-bearing for the export Arrow schema; see `GovernedRead`.
-    let masked_columns: Vec<String> = columns
-        .iter()
-        .filter(|c| masked.contains(*c))
-        .cloned()
-        .collect();
+    // Output columns = physical (in order) ++ surviving derived (in order).
+    for (name, ty) in derived_names.into_iter().zip(derived_types) {
+        let is_masked = g.masked.contains(&name);
+        proj.push(name, ty, is_masked);
+    }
     Ok(GovernedRead {
         sql,
         params,
-        columns,
-        logical_types,
-        masked_columns,
+        columns: proj.columns,
+        logical_types: proj.logical_types,
+        masked_columns: proj.masked,
     })
 }
 
@@ -395,17 +371,7 @@ pub async fn read_object(
     )
     .await?;
     let served = deps.serving.fetch_rows(&g.sql, &g.params).await?;
-    // The serving engine must echo the projected columns in SELECT order — the contract
-    // that lets the renderer zip logical_types/columns onto each row's cells by position.
-    debug_assert_eq!(
-        served.columns, g.columns,
-        "serving engine returned columns out of the projected order"
-    );
-    Ok(ObjectRows {
-        columns: g.columns,
-        logical_types: g.logical_types,
-        rows: served.rows,
-    })
+    Ok(g.into_object_rows(served))
 }
 
 /// Cap on the caller-requested page size (`?limit=`), independent of `deps.default_limit`
@@ -442,42 +408,26 @@ pub async fn read_object_page(
     }
 
     let type_name = TypeName(q.type_name.clone());
-    let target = PolicyTarget::Type(type_name.clone());
+    let g = resolve_governed(
+        deps.ontology,
+        deps.acl,
+        &subject.0,
+        &type_name,
+        OnMissing::NotFound,
+    )
+    .await?;
 
-    // Coarse gate, deny-by-default, before existence is revealed — identical to
-    // `compile_object_read`.
-    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
-        return Err(QueryError::Forbidden);
-    }
-    let object_type = deps
-        .ontology
-        .get_type(&type_name)
-        .await
-        .map_err(|e| match e {
-            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
-            other => QueryError::ControlPlane(other),
+    let identity =
+        g.otype.identity.clone().ok_or_else(|| {
+            QueryError::BadPagination("type has no declared identity".to_string())
         })?;
-
-    // Row filters aren't needed here: `compile_object_read` below re-derives its own (from
-    // the same subject/target) as part of the governed projection it builds.
-    let (_row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
-
-    let identity = object_type
-        .identity
-        .clone()
-        .ok_or_else(|| QueryError::BadPagination("type has no declared identity".to_string()))?;
-    if identity_is_governed(&object_type, &denied, &masked) {
+    if g.identity_governed() {
         return Err(QueryError::BadPagination(
             "identity column not readable".to_string(),
         ));
     }
 
-    let id_ty = object_type
-        .properties
-        .iter()
-        .find(|p| p.name == identity)
-        .map(|p| p.ty.as_str())
-        .unwrap_or("");
+    let id_ty = prop_ty(&g.otype, &identity).unwrap_or("");
 
     // Fail closed: only reject identity logical types the cursor round-trips losslessly.
     // `sqlvalue_to_id_string` only encodes `SqlValue::Int` (digits) and `SqlValue::Text`
@@ -522,7 +472,8 @@ pub async fn read_object_page(
     };
 
     let fetch_limit = limit.saturating_add(1);
-    let g = compile_object_read(
+    let gr = compile_object_read_with(
+        &g,
         q,
         subject,
         deps.ontology,
@@ -533,13 +484,13 @@ pub async fn read_object_page(
         extra_predicate,
     )
     .await?;
-    let served = deps.serving.fetch_rows(&g.sql, &g.params).await?;
+    let served = deps.serving.fetch_rows(&gr.sql, &gr.params).await?;
     debug_assert_eq!(
-        served.columns, g.columns,
+        served.columns, gr.columns,
         "serving engine returned columns out of the projected order"
     );
 
-    let id_idx = g
+    let id_idx = gr
         .columns
         .iter()
         .position(|c| c == &identity)
@@ -552,8 +503,8 @@ pub async fn read_object_page(
 
     Ok((
         ObjectRows {
-            columns: g.columns,
-            logical_types: g.logical_types,
+            columns: gr.columns,
+            logical_types: gr.logical_types,
             rows: page.items,
         },
         page.next,
@@ -618,24 +569,21 @@ pub async fn vector_search(
     deps: &QueryDeps<'_>,
 ) -> Result<Vec<VectorHit>, QueryError> {
     let type_name = TypeName(q.type_name.clone());
-    let target = PolicyTarget::Type(type_name.clone());
-
-    // Coarse gate, deny-by-default, BEFORE revealing whether the type exists.
-    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
-        return Err(QueryError::Forbidden);
-    }
-    // Resolve the type; a granted-but-nonexistent type is still no-leak Forbidden.
-    let otype = match deps.ontology.get_type(&type_name).await {
-        Ok(t) => t,
-        Err(ControlPlaneError::NotFound(_)) => return Err(QueryError::Forbidden),
-        Err(e) => return Err(QueryError::ControlPlane(e)),
-    };
+    // No-leak: unknown type and missing Read grant are both Forbidden.
+    let g = resolve_governed(
+        deps.ontology,
+        deps.acl,
+        &subject.0,
+        &type_name,
+        OnMissing::Forbidden,
+    )
+    .await?;
 
     // Engine kNN over the named index (ServingError::NoIndex/DimMismatch propagate as Serving).
     let rows = deps
         .serving
         .vector_search(
-            &otype.table,
+            &g.otype.table,
             &q.index_name,
             &q.query,
             q.k,
@@ -648,34 +596,32 @@ pub async fn vector_search(
         return Ok(hits);
     }
 
-    // Row-filter post-filter. Empty filters (unrestricted) → return engine hits unchanged.
-    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
-    // Fail closed: the search response *is* a list of identity values, so a policy that
-    // denies or masks the identity column must not be silently disregarded. Guard runs
-    // BEFORE the empty-filter early return so both policy shapes (no row filter, and with
-    // a row filter) refuse identically with a deliberate 403 instead of leaking ids
-    // (empty-filter path) or an incidental BadFilter/500 (row-filter path).
-    if identity_is_governed(&otype, &denied, &masked) {
+    // Row-filter post-filter. Fail closed: the search response *is* a list of identity
+    // values, so a policy that denies or masks the identity column must not be silently
+    // disregarded. Guard runs BEFORE the empty-filter early return so both policy shapes
+    // refuse identically with a deliberate 403.
+    if g.identity_governed() {
         return Err(QueryError::Forbidden);
     }
-    if row_filters.is_empty() {
+    if g.row_filters.is_empty() {
         return Ok(hits);
     }
-    let identity = otype
+    let identity = g
+        .otype
         .identity
         .clone()
-        .ok_or_else(|| QueryError::NoIdentity(otype.name.0.clone()))?;
+        .ok_or_else(|| QueryError::NoIdentity(g.otype.name.0.clone()))?;
     let candidate_strs: Vec<String> = hits.iter().map(|h| sqlvalue_to_id_string(&h.id)).collect();
-    let Some(pred) = identity_in_predicate(&otype, &denied, &masked, &candidate_strs)? else {
+    let Some(pred) = identity_in_predicate(&g.otype, &g.denied, &g.masked, &candidate_strs)? else {
         return Ok(hits); // no candidates to scope (empty handled above; defensive)
     };
     let limit = u32::try_from(candidate_strs.len()).unwrap_or(u32::MAX);
     let (sql, params) = compile_select_with(
         deps.serving.dialect(),
-        &otype.table,
+        &g.otype.table,
         std::slice::from_ref(&identity),
         &[],
-        &row_filters,
+        &g.row_filters,
         std::slice::from_ref(&pred),
         &[],
         &[],
