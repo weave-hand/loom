@@ -57,3 +57,20 @@ fn direction_invalid_is_error() {
     assert!(parse_direction(Some("sideways")).is_err());
     assert!(parse_direction(Some("")).is_err());
 }
+
+#[test]
+fn graph_path_inherits_the_inverse_grammar() {
+    assert_eq!(
+        parse_path_hops("memberOf,~memberOf"),
+        vec![
+            Hop {
+                link: "memberOf".into(),
+                direction: Direction::Forward,
+            },
+            Hop {
+                link: "memberOf".into(),
+                direction: Direction::Inverse,
+            },
+        ]
+    );
+}
