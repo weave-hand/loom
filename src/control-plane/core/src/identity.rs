@@ -4,8 +4,8 @@
 //! docs/superpowers/specs/2026-06-12-qualified-dataset-identity-design.md.
 
 use crate::catalog::TableRef;
-use crate::lineage::DatasetRef;
-use crate::ontology::TypeName;
+use crate::lineage::{DatasetRef, EventType, LineageEvent, RunId};
+use crate::ontology::{ObjectType, TypeName};
 
 /// loom's canonical logical namespace for datasets it governs. Deployment-independent:
 /// a loom table's logical identity is stable regardless of which Postgres host backs the
@@ -115,5 +115,34 @@ impl From<&TypeName> for TypeId {
 impl From<&TypeName> for DatasetRef {
     fn from(name: &TypeName) -> Self {
         TypeId::from(name).dataset_ref()
+    }
+}
+
+/// The `payload."loom.kind"` marker distinguishing a type↔table binding event from
+/// any other lineage event. Lets a future filter/GC recognize the seam edge without
+/// affecting closure traversal (the closure ignores payload entirely).
+pub const TYPE_TABLE_BINDING_KIND: &str = "type-table-binding";
+
+/// Build the lineage *binding edge* for a type and its backing table. The physical
+/// rows of the table are consumed to constitute the type, so the table is the **input**
+/// (upstream) node and the type is the **output** (downstream) node — the direction that
+/// makes `upstream(type)` reach the table and `downstream(table)` reach the type. Both
+/// control-plane adapters call this one constructor so their binding events cannot drift
+/// (marker payload, direction, `EventType::Complete`). A fresh `RunId` per event is
+/// intentional (see the design's *RunId determinism* open question); the source-guard in
+/// each adapter's `define_type` — not run-id identity — prevents duplicate edges. That
+/// guard is best-effort, not exactly-once under concurrency: two racing first-`define_type`
+/// calls for the same new type can each emit an edge. This is harmless — lineage is
+/// append-only and the closure reads set-dedupe parallel edges — matching loom's existing
+/// best-effort emit semantics.
+#[must_use]
+pub fn type_table_binding_event(ty: &ObjectType) -> LineageEvent {
+    LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![DatasetId::from(&ty.table).dataset_ref()],
+        outputs: vec![TypeId::from(&ty.name).dataset_ref()],
+        payload: serde_json::json!({ "loom.kind": TYPE_TABLE_BINDING_KIND }),
     }
 }

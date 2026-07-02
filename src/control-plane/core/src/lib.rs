@@ -38,7 +38,10 @@ pub use error::{ControlPlaneError, Result};
 pub use flush::{FLUSH_JOB_KIND, FlushJob};
 pub use gc::{GC_JOB_KIND, GcJob};
 pub use governed::{GovernedCatalog, GovernedTable};
-pub use identity::{DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TypeId};
+pub use identity::{
+    DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TYPE_TABLE_BINDING_KIND, TypeId,
+    type_table_binding_event,
+};
 pub use lineage::{
     DatasetRef, EventType, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, RunId, check_depth,
     decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,

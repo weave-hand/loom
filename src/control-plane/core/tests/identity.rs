@@ -103,3 +103,56 @@ fn external_and_empty_are_not_type_refs() {
         assert_eq!(TypeId::from_dataset_ref(&dr), None, "ns={ns} nm={nm}");
     }
 }
+
+use control_plane_core::{
+    EventType, ObjectType, TYPE_TABLE_BINDING_KIND, type_table_binding_event,
+};
+
+fn otype(name: &str, schema: &str, table: &str) -> ObjectType {
+    ObjectType {
+        name: TypeName(name.into()),
+        properties: vec![],
+        derived: vec![],
+        table: tref(schema, table),
+        identity: None,
+    }
+}
+
+#[test]
+fn binding_event_points_table_to_type() {
+    let ev = type_table_binding_event(&otype("Customer", "main", "customers"));
+    // The table is consumed to constitute the type: table is INPUT, type is OUTPUT.
+    assert_eq!(
+        ev.inputs,
+        vec![DatasetRef {
+            namespace: "loom".into(),
+            name: "main.customers".into(),
+        }],
+        "backing table is the input (upstream) node"
+    );
+    assert_eq!(
+        ev.outputs,
+        vec![DatasetRef {
+            namespace: "loom:type".into(),
+            name: "Customer".into(),
+        }],
+        "the type is the output (downstream) node"
+    );
+    assert_eq!(ev.event_type, EventType::Complete, "a completed fact");
+    assert_eq!(
+        ev.payload,
+        serde_json::json!({ "loom.kind": TYPE_TABLE_BINDING_KIND }),
+        "carries the binding marker"
+    );
+    assert_eq!(TYPE_TABLE_BINDING_KIND, "type-table-binding");
+}
+
+#[test]
+fn binding_events_have_distinct_fresh_run_ids() {
+    let a = type_table_binding_event(&otype("Customer", "main", "customers"));
+    let b = type_table_binding_event(&otype("Customer", "main", "customers"));
+    assert_ne!(
+        a.run_id.0, b.run_id.0,
+        "each binding event gets a fresh RunId"
+    );
+}

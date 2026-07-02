@@ -3291,3 +3291,129 @@ where
     bpaths.sort();
     assert_eq!(bpaths, vec!["a.parquet", "b.parquet", "c.parquet"]);
 }
+
+/// Contract: `define_type` emits a type↔table *binding edge* so a provenance walk
+/// crosses the type↔table seam. The physical table is upstream of the type. The edge
+/// is an ordinary `LineageEvent`, so the closure needs no changes. Run against every
+/// adapter implementing `Ontology + Lineage`.
+pub async fn type_table_binding_contract<CP: Ontology + Lineage>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    let set = |p: Page<DatasetRef>| p.into_iter().collect::<HashSet<_>>();
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let edge = |inp: DatasetRef, out: DatasetRef| LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: ts,
+        inputs: vec![inp],
+        outputs: vec![out],
+        payload: serde_json::json!({}),
+    };
+    let otype = |name: &str, schema: &str, table: &str| ObjectType {
+        name: TypeName(name.into()),
+        properties: vec![],
+        derived: vec![],
+        table: TableRef {
+            schema: schema.into(),
+            name: table.into(),
+        },
+        identity: None,
+    };
+
+    // define type X bound to main.customers -> emits binding edge {customers -> type/X}
+    cp.define_type(otype("Bnd_X", "main", "bnd_customers"))
+        .await
+        .unwrap();
+
+    let table_ref = ds("loom", "main.bnd_customers");
+    let type_x = ds("loom:type", "Bnd_X");
+    let type_y = ds("loom:type", "Bnd_Y");
+    let s3 = ds("s3://raw", "bnd_src");
+
+    // ingest edge s3 -> loom/main.bnd_customers ; transform edge type/X -> type/Y
+    cp.emit(edge(s3.clone(), table_ref.clone())).await.unwrap();
+    cp.emit(edge(type_x.clone(), type_y.clone())).await.unwrap();
+
+    // 1. crosses the seam: upstream(Y, depth=3) reaches X, the backing table, and s3.
+    let up_y3 = set(cp.upstream(&type_y, 3, PageReq::unbounded()).await.unwrap());
+    assert!(up_y3.contains(&type_x), "upstream(Y) reaches X");
+    assert!(
+        up_y3.contains(&table_ref),
+        "upstream(Y) crosses the binding to the backing table"
+    );
+    assert!(
+        up_y3.contains(&s3),
+        "upstream(Y) reaches the table's ingest source"
+    );
+    // downstream(table, depth=2) reaches the type and its typed descendant.
+    let down_t2 = set(cp
+        .downstream(&table_ref, 2, PageReq::unbounded())
+        .await
+        .unwrap());
+    assert!(
+        down_t2.contains(&type_x),
+        "downstream(table) reaches the type"
+    );
+    assert!(down_t2.contains(&type_y), "downstream(table) reaches Y");
+
+    // 4. Direction: table is upstream of type; type is downstream of table (one hop).
+    let up_x1 = set(cp.upstream(&type_x, 1, PageReq::unbounded()).await.unwrap());
+    assert_eq!(
+        up_x1,
+        [table_ref.clone()].into_iter().collect(),
+        "table is the sole one-hop upstream of the type"
+    );
+    let down_t1 = set(cp
+        .downstream(&table_ref, 1, PageReq::unbounded())
+        .await
+        .unwrap());
+    assert!(
+        down_t1.contains(&type_x),
+        "type is downstream of the table (one hop)"
+    );
+
+    // 5. Depth accounting: the seam costs one hop.
+    let up_y1 = set(cp.upstream(&type_y, 1, PageReq::unbounded()).await.unwrap());
+    assert_eq!(
+        up_y1,
+        [type_x.clone()].into_iter().collect(),
+        "depth=1 reaches only X — the seam is not yet crossed"
+    );
+    let up_y2 = set(cp.upstream(&type_y, 2, PageReq::unbounded()).await.unwrap());
+    assert!(
+        up_y2.contains(&table_ref),
+        "depth=2 crosses the seam to the backing table"
+    );
+
+    // 2. Idempotent re-define: re-defining X->same table adds no spurious upstream;
+    //    the type stays single-sourced to exactly its backing table. (Row-level
+    //    exactly-once is pinned by the postgres guard-count test in Task 3, since the
+    //    read is set-deduplicated and cannot count duplicate identical edges.)
+    cp.define_type(otype("Bnd_X", "main", "bnd_customers"))
+        .await
+        .unwrap();
+    let up_x_redef = set(cp.upstream(&type_x, 1, PageReq::unbounded()).await.unwrap());
+    assert_eq!(
+        up_x_redef,
+        [table_ref.clone()].into_iter().collect(),
+        "redundant re-define leaves the type single-sourced to its table"
+    );
+
+    // 3. Rebind to a NEW table appends a second edge (append-only history); the old
+    //    binding is retained.
+    cp.define_type(otype("Bnd_X", "main", "bnd_customers_v2"))
+        .await
+        .unwrap();
+    let table_ref_v2 = ds("loom", "main.bnd_customers_v2");
+    let up_x_rebind = set(cp.upstream(&type_x, 1, PageReq::unbounded()).await.unwrap());
+    assert!(
+        up_x_rebind.contains(&table_ref),
+        "rebind retains the original binding (append-only)"
+    );
+    assert!(
+        up_x_rebind.contains(&table_ref_v2),
+        "rebind adds the new backing table as an upstream"
+    );
+}

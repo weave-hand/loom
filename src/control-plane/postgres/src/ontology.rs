@@ -15,6 +15,21 @@ impl Ontology for PgControlPlane {
         // regex) before any write — a define-time fault, never a silent write-time one.
         control_plane_core::validate_constraints(&ty.properties)?;
         let mut tx = self.pool.begin().await.map_err(backend)?;
+        // Source guard: read the type's PRIOR backing table (if any) before the upsert so
+        // we emit the binding edge only when the type is new or its table changed. Reuses
+        // `resolve`'s exact SQL string, so it shares that query's committed `.sqlx` cache
+        // entry — no cache regeneration.
+        let prior = sqlx::query!(
+            "select table_schema, table_name from ontology.object_type where name = $1",
+            ty.name.0,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let binding_changed = match &prior {
+            Some(r) => r.table_schema != ty.table.schema || r.table_name != ty.table.name,
+            None => true,
+        };
         sqlx::query!(
             "insert into ontology.object_type (name, table_schema, table_name, identity) \
              values ($1, $2, $3, $4) \
@@ -84,6 +99,10 @@ impl Ontology for PgControlPlane {
             .execute(&mut *tx)
             .await
             .map_err(backend)?;
+        }
+        if binding_changed {
+            crate::lineage::pg_emit(&mut *tx, &control_plane_core::type_table_binding_event(&ty))
+                .await?;
         }
         tx.commit().await.map_err(backend)?;
         Ok(())
