@@ -377,6 +377,20 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "compile-graph-tree-exec",
+    crate = "compile_graph_tree_exec",
+    srcs = ["tests/compile_graph_tree_exec.rs"],
+    crate_root = "tests/compile_graph_tree_exec.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "inverse-hops-e2e",
     crate = "inverse_hops_e2e",
     srcs = ["tests/inverse_hops_e2e.rs"],
