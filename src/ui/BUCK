@@ -13,6 +13,9 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
+    deps = [
+        "//third-party:serde_json",
+    ],
 )
 
 rust_test(
@@ -31,6 +34,15 @@ rust_test(
     crate_root = "tests/tokens.rs",
     edition = "2024",
     deps = [":ui-core"],
+)
+
+rust_test(
+    name = "objects",
+    crate = "objects",
+    srcs = ["tests/objects.rs"],
+    crate_root = "tests/objects.rs",
+    edition = "2024",
+    deps = ["//third-party:serde_json", ":ui-core"],
 )
 
 rust_binary(

@@ -160,3 +160,54 @@ pub fn format_count(n: u64) -> String {
     }
     format!("{s}{suffix}")
 }
+
+use serde_json::{Map, Value};
+
+/// One page of a governed object read: the decoded rows plus the forward cursor
+/// (`None` = last page). Mirrors the `{ "objects": [...], "next": ... }` wire shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectsPage {
+    pub rows: Vec<Map<String, Value>>,
+    pub next: Option<String>,
+}
+
+/// Parse the `GET /objects/{type}` envelope. Total: missing/!array `objects` → no
+/// rows; non-object members are skipped; missing/null `next` → `None`.
+#[must_use]
+pub fn parse_objects_page(body: &Value) -> ObjectsPage {
+    let rows = body
+        .get("objects")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_object().cloned()).collect())
+        .unwrap_or_default();
+    let next = body
+        .get("next")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    ObjectsPage { rows, next }
+}
+
+/// The union of object keys across `rows`, in first-seen order — stable table columns.
+#[must_use]
+pub fn columns_from_objects(rows: &[Map<String, Value>]) -> Vec<String> {
+    let mut cols = Vec::new();
+    for row in rows {
+        for k in row.keys() {
+            if !cols.iter().any(|c| c == k) {
+                cols.push(k.clone());
+            }
+        }
+    }
+    cols
+}
+
+/// Render a JSON value for a table cell / drawer field. Total, display-only.
+#[must_use]
+pub fn cell_to_string(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        Value::Bool(_) | Value::Number(_) => v.to_string(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(v).unwrap_or_default(),
+    }
+}
