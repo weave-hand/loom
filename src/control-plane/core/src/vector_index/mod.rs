@@ -5,6 +5,13 @@
 
 use crate::error::{ControlPlaneError, Result};
 
+mod codec;
+
+use codec::{
+    ByteReader, F32Section, KIND_FLAT, KIND_HNSW, KIND_IVF_FLAT, KIND_OFFSET, bad, pack_rows,
+    read_f32_section, read_header, read_keys, write_f32s, write_header, write_keys,
+};
+
 /// Which index to build, chosen at build time. `Flat` is the default (exact);
 /// `IvfFlat` is the approximate IVF index with an optional `nlist` override;
 /// `Hnsw` is the approximate HNSW graph index with optional `m`/`ef_construction`.
@@ -168,18 +175,7 @@ pub struct FlatIndex {
 impl FlatIndex {
     /// Build from `(identity, vector)` rows. Errors if any vector length != `dim`.
     pub fn build(dim: u32, metric: Metric, rows: Vec<(VectorKey, Vec<f32>)>) -> Result<FlatIndex> {
-        let d = dim as usize;
-        let mut keys = Vec::with_capacity(rows.len());
-        let mut data = Vec::with_capacity(rows.len() * d);
-        for (key, v) in rows {
-            if v.len() != d {
-                return Err(ControlPlaneError::Backend(
-                    format!("vector dim mismatch: expected {d}, got {}", v.len()).into(),
-                ));
-            }
-            keys.push(key);
-            data.extend_from_slice(&v);
-        }
+        let (keys, data) = pack_rows(dim, rows)?;
         Ok(FlatIndex {
             dim,
             metric,
@@ -221,81 +217,21 @@ impl FlatIndex {
     )]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        out.extend_from_slice(b"LVIX");
-        out.push(1); // version
-        out.push(match self.metric {
-            Metric::Cosine => 0,
-            Metric::L2 => 1,
-        });
-        out.push(0); // kind: flat
+        write_header(&mut out, self.metric, KIND_FLAT);
         out.extend_from_slice(&self.dim.to_le_bytes());
         out.extend_from_slice(&self.row_count().to_le_bytes());
-        for &f in &self.data {
-            out.extend_from_slice(&f.to_le_bytes());
-        }
-        let key_kind: u8 = match self.keys.first() {
-            Some(VectorKey::Str(_)) => 1,
-            _ => 0, // empty or Int
-        };
-        out.push(key_kind);
-        for key in &self.keys {
-            match key {
-                VectorKey::Int(i) => out.extend_from_slice(&i.to_le_bytes()),
-                VectorKey::Str(s) => {
-                    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
-                    out.extend_from_slice(s.as_bytes());
-                }
-            }
-        }
+        write_f32s(&mut out, &self.data);
+        write_keys(&mut out, &self.keys);
         out
     }
 
     pub fn deserialize(bytes: &[u8]) -> Result<FlatIndex> {
-        let mut c = Cursor { b: bytes, p: 0 };
-        let magic = c.take(4)?;
-        if magic != b"LVIX" {
-            return Err(bad("bad magic"));
-        }
-        if c.u8()? != 1 {
-            return Err(bad("unsupported version"));
-        }
-        let metric = match c.u8()? {
-            0 => Metric::Cosine,
-            1 => Metric::L2,
-            _ => return Err(bad("bad metric")),
-        };
-        if c.u8()? != 0 {
-            return Err(bad("bad index kind"));
-        }
-        let dim = c.u32()?;
-        let row_count = c.u32()?;
-        let d = dim as usize;
-        // Bound the data section against the buffer before allocating, so a
-        // corrupt header cannot drive a huge speculative `Vec::with_capacity`.
-        let data_len = (row_count as usize)
-            .checked_mul(d)
-            .ok_or_else(|| bad("row_count * dim overflow"))?;
-        if data_len > c.remaining() {
-            return Err(bad("data section exceeds buffer"));
-        }
-        let mut data = Vec::with_capacity(data_len);
-        for _ in 0..data_len {
-            data.push(c.f32()?);
-        }
-        let key_kind = c.u8()?;
-        let mut keys = Vec::with_capacity((row_count as usize).min(c.remaining()));
-        for _ in 0..row_count {
-            match key_kind {
-                0 => keys.push(VectorKey::Int(c.i64()?)),
-                1 => {
-                    let len = c.u32()? as usize;
-                    let raw = c.take(len)?;
-                    let s = std::str::from_utf8(raw).map_err(|e| bad(&e.to_string()))?;
-                    keys.push(VectorKey::Str(s.to_string()));
-                }
-                _ => return Err(bad("bad key kind")),
-            }
-        }
+        let mut r = ByteReader::new(bytes);
+        let metric = read_header(&mut r, KIND_FLAT, "bad index kind")?;
+        let dim = r.u32()?;
+        let row_count = r.u32()?;
+        let data = read_f32_section(&mut r, row_count as usize, dim as usize, F32Section::Data)?;
+        let keys = read_keys(&mut r, row_count as usize)?;
         Ok(FlatIndex {
             dim,
             metric,
@@ -303,10 +239,6 @@ impl FlatIndex {
             data,
         })
     }
-}
-
-fn bad(m: &str) -> ControlPlaneError {
-    ControlPlaneError::Backend(format!("vector index decode: {m}").into())
 }
 
 // =============================================================================
@@ -389,18 +321,8 @@ impl IvfFlatIndex {
         nlist: Option<u32>,
     ) -> Result<IvfFlatIndex> {
         let d = dim as usize;
-        let n = rows.len();
-        let mut keys = Vec::with_capacity(n);
-        let mut data = Vec::with_capacity(n * d);
-        for (key, v) in rows {
-            if v.len() != d {
-                return Err(ControlPlaneError::Backend(
-                    format!("vector dim mismatch: expected {d}, got {}", v.len()).into(),
-                ));
-            }
-            keys.push(key);
-            data.extend_from_slice(&v);
-        }
+        let (keys, data) = pack_rows(dim, rows)?;
+        let n = keys.len();
 
         if n == 0 {
             return Ok(IvfFlatIndex {
@@ -460,104 +382,38 @@ impl IvfFlatIndex {
     // data (row_count*dim f32 LE) | u8 key_kind | keys (as FlatIndex)
     fn serialize_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        out.extend_from_slice(b"LVIX");
-        out.push(1); // version
-        out.push(match self.metric {
-            Metric::Cosine => 0,
-            Metric::L2 => 1,
-        });
-        out.push(1); // kind: ivf_flat
+        write_header(&mut out, self.metric, KIND_IVF_FLAT);
         out.extend_from_slice(&self.dim.to_le_bytes());
         out.extend_from_slice(&self.nlist.to_le_bytes());
         out.extend_from_slice(&self.nprobe.to_le_bytes());
         out.extend_from_slice(&self.row_count().to_le_bytes());
-        for &f in &self.centroids {
-            out.extend_from_slice(&f.to_le_bytes());
-        }
+        write_f32s(&mut out, &self.centroids);
         for &a in &self.assignments {
             out.extend_from_slice(&a.to_le_bytes());
         }
-        for &f in &self.data {
-            out.extend_from_slice(&f.to_le_bytes());
-        }
-        let key_kind: u8 = match self.keys.first() {
-            Some(VectorKey::Str(_)) => 1,
-            _ => 0,
-        };
-        out.push(key_kind);
-        for key in &self.keys {
-            match key {
-                VectorKey::Int(i) => out.extend_from_slice(&i.to_le_bytes()),
-                VectorKey::Str(s) => {
-                    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
-                    out.extend_from_slice(s.as_bytes());
-                }
-            }
-        }
+        write_f32s(&mut out, &self.data);
+        write_keys(&mut out, &self.keys);
         out
     }
 
     pub fn deserialize(bytes: &[u8]) -> Result<IvfFlatIndex> {
-        let mut c = Cursor { b: bytes, p: 0 };
-        if c.take(4)? != b"LVIX" {
-            return Err(bad("bad magic"));
-        }
-        if c.u8()? != 1 {
-            return Err(bad("unsupported version"));
-        }
-        let metric = match c.u8()? {
-            0 => Metric::Cosine,
-            1 => Metric::L2,
-            _ => return Err(bad("bad metric")),
-        };
-        if c.u8()? != 1 {
-            return Err(bad("not an ivf_flat index"));
-        }
-        let dim = c.u32()?;
-        let nlist = c.u32()?;
-        let nprobe = c.u32()?;
-        let row_count = c.u32()?;
+        let mut r = ByteReader::new(bytes);
+        let metric = read_header(&mut r, KIND_IVF_FLAT, "not an ivf_flat index")?;
+        let dim = r.u32()?;
+        let nlist = r.u32()?;
+        let nprobe = r.u32()?;
+        let row_count = r.u32()?;
         let d = dim as usize;
-        // Bound each header product against the buffer before allocating, so a
-        // corrupt header cannot drive a huge speculative `Vec::with_capacity`.
-        let cent_len = (nlist as usize)
-            .checked_mul(d)
-            .ok_or_else(|| bad("nlist * dim overflow"))?;
-        if cent_len > c.remaining() {
-            return Err(bad("centroid section exceeds buffer"));
-        }
-        let mut centroids = Vec::with_capacity(cent_len);
-        for _ in 0..cent_len {
-            centroids.push(c.f32()?);
-        }
-        let mut assignments = Vec::with_capacity((row_count as usize).min(c.remaining()));
+        let centroids = read_f32_section(&mut r, nlist as usize, d, F32Section::Centroids)?;
+        // The u32 assignments section is IVF-only, so it stays local; the
+        // `min(remaining)` cap bounds the speculative allocation the same way
+        // the codec's shared sections do.
+        let mut assignments = Vec::with_capacity((row_count as usize).min(r.remaining()));
         for _ in 0..row_count {
-            assignments.push(c.u32()?);
+            assignments.push(r.u32()?);
         }
-        let data_len = (row_count as usize)
-            .checked_mul(d)
-            .ok_or_else(|| bad("row_count * dim overflow"))?;
-        if data_len > c.remaining() {
-            return Err(bad("data section exceeds buffer"));
-        }
-        let mut data = Vec::with_capacity(data_len);
-        for _ in 0..data_len {
-            data.push(c.f32()?);
-        }
-        let key_kind = c.u8()?;
-        let mut keys = Vec::with_capacity((row_count as usize).min(c.remaining()));
-        for _ in 0..row_count {
-            match key_kind {
-                0 => keys.push(VectorKey::Int(c.i64()?)),
-                1 => {
-                    let len = c.u32()? as usize;
-                    let raw = c.take(len)?;
-                    let s = std::str::from_utf8(raw).map_err(|e| bad(&e.to_string()))?;
-                    keys.push(VectorKey::Str(s.to_string()));
-                }
-                _ => return Err(bad("bad key kind")),
-            }
-        }
+        let data = read_f32_section(&mut r, row_count as usize, d, F32Section::Data)?;
+        let keys = read_keys(&mut r, row_count as usize)?;
         Ok(IvfFlatIndex {
             dim,
             metric,
@@ -721,43 +577,6 @@ impl VectorIndex for IvfFlatIndex {
             .take(k)
             .filter_map(|(i, dd)| self.keys.get(i).map(|key| (key.clone(), dd)))
             .collect()
-    }
-}
-
-struct Cursor<'a> {
-    b: &'a [u8],
-    p: usize,
-}
-impl<'a> Cursor<'a> {
-    /// Bytes left to read. An untrusted element count exceeding this cannot be
-    /// satisfied (every element occupies at least one byte), so it bounds
-    /// speculative `Vec::with_capacity` against a corrupt header.
-    fn remaining(&self) -> usize {
-        self.b.len().saturating_sub(self.p)
-    }
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self.p.checked_add(n).ok_or_else(|| bad("overflow"))?;
-        let s = self.b.get(self.p..end).ok_or_else(|| bad("truncated"))?;
-        self.p = end;
-        Ok(s)
-    }
-    fn u8(&mut self) -> Result<u8> {
-        Ok(*self.take(1)?.first().ok_or_else(|| bad("truncated"))?)
-    }
-    fn u32(&mut self) -> Result<u32> {
-        let s = self.take(4)?;
-        let arr: [u8; 4] = s.try_into().map_err(|e| bad(&format!("u32: {e}")))?;
-        Ok(u32::from_le_bytes(arr))
-    }
-    fn i64(&mut self) -> Result<i64> {
-        let s = self.take(8)?;
-        let arr: [u8; 8] = s.try_into().map_err(|e| bad(&format!("i64: {e}")))?;
-        Ok(i64::from_le_bytes(arr))
-    }
-    fn f32(&mut self) -> Result<f32> {
-        let s = self.take(4)?;
-        let arr: [u8; 4] = s.try_into().map_err(|e| bad(&format!("f32: {e}")))?;
-        Ok(f32::from_le_bytes(arr))
     }
 }
 
@@ -959,17 +778,7 @@ impl HnswIndex {
         ef_construction: Option<u32>,
     ) -> Result<HnswIndex> {
         let d = dim as usize;
-        let mut keys = Vec::with_capacity(rows.len());
-        let mut data = Vec::with_capacity(rows.len() * d);
-        for (key, v) in rows {
-            if v.len() != d {
-                return Err(ControlPlaneError::Backend(
-                    format!("vector dim mismatch: expected {d}, got {}", v.len()).into(),
-                ));
-            }
-            keys.push(key);
-            data.extend_from_slice(&v);
-        }
+        let (keys, data) = pack_rows(dim, rows)?;
         let n = keys.len();
         let m = m.unwrap_or(HNSW_DEFAULT_M).max(1);
         let ef_construction = ef_construction
@@ -1110,13 +919,7 @@ impl HnswIndex {
     // u8 key_kind | keys (as FlatIndex)
     fn serialize_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        out.extend_from_slice(b"LVIX");
-        out.push(1); // version
-        out.push(match self.metric {
-            Metric::Cosine => 0,
-            Metric::L2 => 1,
-        });
-        out.push(2); // kind: hnsw
+        write_header(&mut out, self.metric, KIND_HNSW);
         out.extend_from_slice(&self.dim.to_le_bytes());
         out.extend_from_slice(&self.m.to_le_bytes());
         out.extend_from_slice(&self.ef_construction.to_le_bytes());
@@ -1124,9 +927,7 @@ impl HnswIndex {
         out.extend_from_slice(&self.entry_point.to_le_bytes());
         out.extend_from_slice(&self.max_layer.to_le_bytes());
         out.extend_from_slice(&self.row_count().to_le_bytes());
-        for &f in &self.data {
-            out.extend_from_slice(&f.to_le_bytes());
-        }
+        write_f32s(&mut out, &self.data);
         for node in &self.layers {
             // node.len() == node_level + 1, always >= 1 and <= HNSW_MAX_LEVEL + 1 <= 65.
             let nml = node.len().saturating_sub(1) as u8;
@@ -1138,77 +939,42 @@ impl HnswIndex {
                 }
             }
         }
-        let key_kind: u8 = match self.keys.first() {
-            Some(VectorKey::Str(_)) => 1,
-            _ => 0,
-        };
-        out.push(key_kind);
-        for key in &self.keys {
-            match key {
-                VectorKey::Int(i) => out.extend_from_slice(&i.to_le_bytes()),
-                VectorKey::Str(s) => {
-                    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
-                    out.extend_from_slice(s.as_bytes());
-                }
-            }
-        }
+        write_keys(&mut out, &self.keys);
         out
     }
 
     pub fn deserialize(bytes: &[u8]) -> Result<HnswIndex> {
-        let mut c = Cursor { b: bytes, p: 0 };
-        if c.take(4)? != b"LVIX" {
-            return Err(bad("bad magic"));
-        }
-        if c.u8()? != 1 {
-            return Err(bad("unsupported version"));
-        }
-        let metric = match c.u8()? {
-            0 => Metric::Cosine,
-            1 => Metric::L2,
-            _ => return Err(bad("bad metric")),
-        };
-        if c.u8()? != 2 {
-            return Err(bad("not an hnsw index"));
-        }
-        let dim = c.u32()?;
-        let m = c.u32()?;
-        let ef_construction = c.u32()?;
-        let ef_search = c.u32()?;
-        let entry_point = c.u32()?;
-        let max_layer = c.u32()?;
-        let row_count = c.u32()?;
+        let mut r = ByteReader::new(bytes);
+        let metric = read_header(&mut r, KIND_HNSW, "not an hnsw index")?;
+        let dim = r.u32()?;
+        let m = r.u32()?;
+        let ef_construction = r.u32()?;
+        let ef_search = r.u32()?;
+        let entry_point = r.u32()?;
+        let max_layer = r.u32()?;
+        let row_count = r.u32()?;
         let d = dim as usize;
         let rc = row_count as usize;
-        // Bound the data section against the buffer before allocating: a
-        // corrupt-but-self-consistent header otherwise drives a huge speculative
-        // allocation. Each f32 is 4 bytes, so `rc * d` elements cannot exceed the
-        // bytes left to read (conservative: never rejects a well-formed blob).
-        let data_len = rc
-            .checked_mul(d)
-            .ok_or_else(|| bad("row_count * dim overflow"))?;
-        if data_len > c.remaining() {
-            return Err(bad("data section exceeds buffer"));
-        }
+        let data = read_f32_section(&mut r, rc, d, F32Section::Data)?;
+        // The remaining guards are HNSW's decode-time graph invariant — what
+        // makes the search-time `layers[c][lc]`/`row_slice` indexing sound —
+        // not a wire-format concern, so they stay here. The `rc > 0` gates are
+        // load-bearing: an empty blob (rc=0, max_layer=0) must stay decodable.
         if rc > 0 && entry_point as usize >= rc {
             return Err(bad("entry_point out of range"));
         }
-        let mut data = Vec::with_capacity(data_len);
-        for _ in 0..data_len {
-            data.push(c.f32()?);
-        }
-        let mut layers: Vec<Vec<Vec<u32>>> = Vec::with_capacity(rc.min(c.remaining()));
+        let mut layers: Vec<Vec<Vec<u32>>> = Vec::with_capacity(rc.min(r.remaining()));
         for _ in 0..row_count {
-            let nml = c.u8()? as usize;
+            let nml = r.u8()? as usize;
             let mut node: Vec<Vec<u32>> = Vec::with_capacity(nml + 1);
             for _ in 0..=nml {
-                let cnt = c.u32()? as usize;
-                if cnt > c.remaining() {
+                let cnt = r.u32()? as usize;
+                if cnt > r.remaining() {
                     return Err(bad("neighbor list exceeds buffer"));
                 }
                 let mut nbrs = Vec::with_capacity(cnt);
                 for _ in 0..cnt {
-                    let nbr = c.u32()?;
+                    let nbr = r.u32()?;
                     if nbr as usize >= rc {
                         return Err(bad("neighbor index out of range"));
                     }
@@ -1235,20 +1001,7 @@ impl HnswIndex {
         if rc > 0 && max_layer as usize >= layers.get(entry_point as usize).map_or(0, Vec::len) {
             return Err(bad("max_layer exceeds entry point height"));
         }
-        let key_kind = c.u8()?;
-        let mut keys = Vec::with_capacity(rc.min(c.remaining()));
-        for _ in 0..row_count {
-            match key_kind {
-                0 => keys.push(VectorKey::Int(c.i64()?)),
-                1 => {
-                    let len = c.u32()? as usize;
-                    let raw = c.take(len)?;
-                    let s = std::str::from_utf8(raw).map_err(|e| bad(&e.to_string()))?;
-                    keys.push(VectorKey::Str(s.to_string()));
-                }
-                _ => return Err(bad("bad key kind")),
-            }
-        }
+        let keys = read_keys(&mut r, rc)?;
         Ok(HnswIndex {
             dim,
             metric,
@@ -1332,11 +1085,13 @@ impl VectorIndex for HnswIndex {
 /// the `kind` byte (offset 6: magic[4] + version + metric). Used by the engine
 /// serving + postgres read paths.
 pub fn decode(bytes: &[u8]) -> Result<Box<dyn VectorIndex>> {
-    let kind = *bytes.get(6).ok_or_else(|| bad("truncated index header"))?;
+    let kind = *bytes
+        .get(KIND_OFFSET)
+        .ok_or_else(|| bad("truncated index header"))?;
     match kind {
-        0 => Ok(Box::new(FlatIndex::deserialize(bytes)?)),
-        1 => Ok(Box::new(IvfFlatIndex::deserialize(bytes)?)),
-        2 => Ok(Box::new(HnswIndex::deserialize(bytes)?)),
+        KIND_FLAT => Ok(Box::new(FlatIndex::deserialize(bytes)?)),
+        KIND_IVF_FLAT => Ok(Box::new(IvfFlatIndex::deserialize(bytes)?)),
+        KIND_HNSW => Ok(Box::new(HnswIndex::deserialize(bytes)?)),
         _ => Err(bad("unknown index kind")),
     }
 }
