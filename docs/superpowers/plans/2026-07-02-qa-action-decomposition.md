@@ -1144,7 +1144,7 @@ pub fn expand_to_full_row(
   Task 7 calls `value_constraint_violations` from `run_mutate`; Task 6
   appends the epilogue test to this test file.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/services/query-api/tests/insert_phases.rs`:
 
@@ -1253,12 +1253,12 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run to see it fail**
+- [x] **Step 2: Run to see it fail**
 
 Run: `buck2 test //src/services/query-api:insert-phases > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t5.log`
 Expected: FAIL — compile error, neither fn exists.
 
-- [ ] **Step 3: Extract the two fns and rewire `run_insert`**
+- [x] **Step 3: Extract the two fns and rewire `run_insert`**
 
 Add to `action.rs` above `run_insert` (bodies are the verbatim moved blocks;
 the `cast_precision_loss` expect moves WITH its arm — it is pre-existing and
@@ -1361,7 +1361,7 @@ property set` through the `for p in &target.properties { … }` loop) with:
 (the stray `use std::collections::HashMap;` inside `run_insert` moves into
 `expand_to_full_row`.)
 
-- [ ] **Step 4: Run to green (unit + every insert pin)**
+- [x] **Step 4: Run to green (unit + every insert pin)**
 
 Run: `buck2 test -j 8 //src/services/query-api:insert-phases //src/services/query-api:constraints-action-http //src/services/query-api:write-denial-http //src/services/query-api:action-run-id-http //src/services/query-api:action-conformance-handler //src/services/query-api:action-e2e //src/services/query-api:action-mapping-e2e //src/services/query-api:iceberg-action-e2e > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5.log`
 Expected: PASS — `constraints_action_http` pins the exact 422 violations body
@@ -1369,7 +1369,7 @@ and the no-write guarantee; the action e2es pin the full-row write (NULL
 expansion) + atomic lineage.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c5.log 2>&1; cat /tmp/c5.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p5.log 2>&1; grep -c Failed /tmp/p5.log` — expected `0`.
 

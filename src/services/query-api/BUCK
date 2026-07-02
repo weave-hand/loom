@@ -930,6 +930,18 @@ rust_test(
 )
 
 rust_test(
+    name = "insert-phases",
+    crate = "insert_phases",
+    srcs = ["tests/insert_phases.rs"],
+    crate_root = "tests/insert_phases.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
     name = "serving-fault-logging",
     crate = "serving_fault_logging",
     srcs = ["tests/serving_fault_logging.rs"],

@@ -367,6 +367,71 @@ pub async fn run_action(
     }
 }
 
+/// Collect every declared-constraint violation over resolved `(property, value)` write
+/// pairs, using the same `core` [`PropertyValidator`] that gates the ingest land path —
+/// both write paths enforce identical rules. A NULL cell carries no value to check
+/// (omitted optionals pass); a pair naming no property is skipped (conformance rejects
+/// that shape upstream); a property with no declared constraints is skipped. Pure; the
+/// unit-test seam for the constraint phase.
+///
+/// NOTE: named `value_constraint_violations`, not the register's `validate_constraints` —
+/// that name is `control_plane_core::validate_constraints`, the define-time *declaration*
+/// validator, and shadowing it here would invite exactly the wrong import.
+pub fn value_constraint_violations(
+    target: &ObjectType,
+    pairs: &[(String, SqlValue)],
+) -> Result<Vec<ConstraintViolation>, ActionError> {
+    let mut cviol: Vec<ConstraintViolation> = Vec::new();
+    for (col, val) in pairs {
+        let Some(prop) = target.properties.iter().find(|p| &p.name == col) else {
+            continue;
+        };
+        if prop.constraints.is_empty() {
+            continue;
+        }
+        let validator = PropertyValidator::new(prop)?;
+        match val {
+            SqlValue::Text(s) => validator.check_str(s, &mut cviol),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "range bounds are f64; i64->f64 is acceptable for validation"
+            )]
+            SqlValue::Int(i) => validator.check_num(*i as f64, &mut cviol),
+            SqlValue::Double(d) => validator.check_num(*d, &mut cviol),
+            SqlValue::Bool(_) | SqlValue::Date(_) | SqlValue::Timestamp(_) | SqlValue::Null => {}
+        }
+    }
+    Ok(cviol)
+}
+
+/// Expand resolved write pairs to the target type's FULL property set (declared order):
+/// the parsed value when the action set the column, else NULL. The loom-owned Parquet
+/// write must carry every column so the file schema matches the table (part-1
+/// unspecified columns default to NULL). Returns the parallel
+/// `(columns, values, logical_types)`. Pure; the unit-test seam for the expansion phase.
+pub fn expand_to_full_row(
+    target: &ObjectType,
+    pairs: &[(String, SqlValue)],
+) -> (Vec<String>, Vec<SqlValue>, Vec<String>) {
+    use std::collections::HashMap;
+    let parsed: HashMap<&str, &SqlValue> = pairs.iter().map(|(c, v)| (c.as_str(), v)).collect();
+    let mut full_columns: Vec<String> = Vec::with_capacity(target.properties.len());
+    let mut full_values: Vec<SqlValue> = Vec::with_capacity(target.properties.len());
+    let mut full_logical: Vec<String> = Vec::with_capacity(target.properties.len());
+    for p in &target.properties {
+        full_columns.push(p.name.clone());
+        full_values.push(
+            parsed
+                .get(p.name.as_str())
+                .copied()
+                .cloned()
+                .unwrap_or(SqlValue::Null),
+        );
+        full_logical.push(p.ty.clone());
+    }
+    (full_columns, full_values, full_logical)
+}
+
 /// INSERT: parse the body into a new row, gate it through the fine-grained Write policy
 /// (deny-column over the set columns + row-filter on the inserted row), then atomically
 /// commit the row and its lineage event via `write_object`.
@@ -429,26 +494,7 @@ async fn run_insert(
     //     declared constraints with a structured 422 (distinct from the 403 ACL denial).
     //     An omitted optional (NULL) carries no value to check. The same `core` validator
     //     drives the ingest land path, so both write paths enforce identical rules.
-    let mut cviol: Vec<ConstraintViolation> = Vec::new();
-    for (col, val) in &pairs {
-        let Some(prop) = target.properties.iter().find(|p| &p.name == col) else {
-            continue;
-        };
-        if prop.constraints.is_empty() {
-            continue;
-        }
-        let validator = PropertyValidator::new(prop)?;
-        match val {
-            SqlValue::Text(s) => validator.check_str(s, &mut cviol),
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "range bounds are f64; i64->f64 is acceptable for validation"
-            )]
-            SqlValue::Int(i) => validator.check_num(*i as f64, &mut cviol),
-            SqlValue::Double(d) => validator.check_num(*d, &mut cviol),
-            SqlValue::Bool(_) | SqlValue::Date(_) | SqlValue::Timestamp(_) | SqlValue::Null => {}
-        }
-    }
+    let cviol = value_constraint_violations(target, &pairs)?;
     if !cviol.is_empty() {
         tracing::info!(
             action = action_name,
@@ -458,26 +504,8 @@ async fn run_insert(
         return Err(ActionError::ConstraintViolation(cviol));
     }
 
-    // 5. Expand to the target type's FULL property set (declared order): the parsed
-    //    value when the action set the column, else NULL. The loom-owned Parquet
-    //    write must carry every column so the file schema matches the table (part-1
-    //    unspecified columns default to NULL).
-    use std::collections::HashMap;
-    let parsed: HashMap<&str, &SqlValue> = pairs.iter().map(|(c, v)| (c.as_str(), v)).collect();
-    let mut full_columns: Vec<String> = Vec::with_capacity(target.properties.len());
-    let mut full_values: Vec<SqlValue> = Vec::with_capacity(target.properties.len());
-    let mut full_logical: Vec<String> = Vec::with_capacity(target.properties.len());
-    for p in &target.properties {
-        full_columns.push(p.name.clone());
-        full_values.push(
-            parsed
-                .get(p.name.as_str())
-                .copied()
-                .cloned()
-                .unwrap_or(SqlValue::Null),
-        );
-        full_logical.push(p.ty.clone());
-    }
+    // 5. Expand to the target type's FULL property set (declared order).
+    let (full_columns, full_values, full_logical) = expand_to_full_row(target, &pairs);
 
     // 6. Mint the run id and build the lineage event UP FRONT, so the caller owns the
     //    run_id and hands it to the engine, which commits row + event atomically.
