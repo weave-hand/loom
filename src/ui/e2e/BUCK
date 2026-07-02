@@ -1,0 +1,59 @@
+# Full-page UI login e2e. Native (host-platform) test that consumes the wasm
+# bundle as a data input (LOOM_UI_DIR) and a vendored headless browser. Uses
+# loom_fixture_test so it inherits the PgFixture env (POSTGRES_BIN_DIR, slot dir)
+# and the local/RE placement policy; the extra env wires the browser + bundle.
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
+# `//src/ui:bundle` self-selects the wasm platform via its own
+# `default_target_platform` ONLY when it is a root/top-level build target;
+# `default_target_platform` does not apply across a dependency edge — a native
+# target (this whole package's login rust_test has no platform override) that
+# reaches :bundle through a `$(location …)` macro configures it under the
+# *native* platform instead, which feeds :bundle's own `$(location :app)` a
+# native ELF instead of a wasm module and wasm-bindgen fails to parse it. Force
+# the wasm configuration explicitly with a `configured_alias` so the
+# dependency edge is pinned regardless of the referencing target's platform.
+configured_alias(
+    name = "bundle-wasm",
+    actual = "//src/ui:bundle",
+    platform = "//platforms:wasm",
+)
+
+# Harness library (not a rust_test): carries a crate-level #![allow] for the
+# panic-safety lints, like the query-api e2e-support library.
+rust_library(
+    name = "e2e-support",
+    crate = "loom_ui_e2e",
+    srcs = ["src/lib.rs"],
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//third-party:fantoccini",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/runtime:runtime",
+        "//src/services/standalone:standalone",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "login",
+    crate = "login",
+    srcs = ["tests/login.rs"],
+    crate_root = "tests/login.rs",
+    deps = [
+        ":e2e-support",
+        "//third-party:fantoccini",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//src/control-plane/postgres:postgres",
+    ],
+    env = {
+        "CHROME_BIN": "$(location //third-party/browser:chrome-headless-shell)/chrome-headless-shell",
+        "CHROMEDRIVER_BIN": "$(location //third-party/browser:chromedriver)",
+        "LOOM_UI_DIR": "$(location :bundle-wasm)",
+    },
+)

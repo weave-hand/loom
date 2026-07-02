@@ -57,6 +57,7 @@ rust_binary(
         "//third-party:js-sys",
         "//third-party:serde",
         "//third-party:serde_json",
+        "//third-party:stylist",
         "//third-party:wasm-bindgen",
         "//third-party:wasm-bindgen-futures",
         "//third-party:web-sys",

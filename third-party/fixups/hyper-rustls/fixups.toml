@@ -1,0 +1,6 @@
+# fantoccini pulls hyper-rustls with default features, which select the aws-lc-rs
+# crypto provider — a native C build (aws-lc-sys) that does not compile under our
+# buck2 reindeer setup (its bindgen/C buildscript can't run, so CRYPTO_library_init
+# is undefined). Steer rustls onto the `ring` provider, which loom already builds.
+omit_features = ["aws-lc-rs"]
+features = ["ring"]

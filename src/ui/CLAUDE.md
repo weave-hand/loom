@@ -56,9 +56,20 @@ clippy::restriction)]` because `html!`/`css!` expansion isn't lint-clean.
   ships in the prod login bundle.
 - **Testing limit (deliberate):** component *rendering* (`html!`) is **not**
   `rust_test`-able — buck2's runner has no DOM. It's verified by eye in the gallery; the
-  headless-wasm render harness and full-page browser e2e are deferred
-  (`fut-ui-component-test-fixture`, `fut-ui-browser-test-fixture`). Don't add an inline
+  per-component headless-wasm render harness is still deferred
+  (`fut-ui-component-test-fixture`). Don't add an inline
   `#[test]` for a component (the `no-inline-tests` hook fails the build regardless).
+- **Login e2e (`//src/ui/e2e:login`)** — the full-page layer that *does* exercise the
+  rendered DOM: a `fantoccini` (Rust WebDriver) test that boots the composite (fresh DB on
+  the shared `PgFixture`, `standalone::run` serving this bundle via `LOOM_UI_DIR`) and
+  drives a **vendored** headless Chromium (`//third-party/browser`, Chrome for Testing,
+  x86_64-linux) through render / bad-creds error / success → Explorer. The Postgres side is
+  hermetic; the **browser takes its libs from the host**, so it runs on the local executor
+  and **auto-skips when no browser is present** (set `LOOM_UI_E2E=1` to turn a
+  browser-start failure into a hard error). Run it on a host with a browser:
+  `LOOM_UI_E2E=1 buck2 test //src/ui/e2e:login`. Stable DOM hooks it depends on:
+  `#login-username`, `#login-password`, `.signin`, `p.error`, and the Explorer's `<nav>`;
+  session token in sessionStorage key `loom_token`. Hermetic-RE hardening: `fut-ui-e2e-hermetic-browser`.
 
 Spec/plan: `docs/superpowers/{specs,plans}/2026-07-01-ui-component-library*`.
 
