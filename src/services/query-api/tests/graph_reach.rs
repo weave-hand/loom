@@ -1,4 +1,4 @@
-//! read_graph_reach on an in-memory control plane + a stub serving engine. The stub
+//! read_graph (PathCycle mode) on an in-memory control plane + a stub serving engine. The stub
 //! returns canned object rows whose columns match the Person projection;
 //! the test asserts the governance short-circuits (`NotCyclicPath`, `NoIdentity`), the
 //! happy path that returns the stub's reachable objects (single self-link and a 2-link
@@ -14,7 +14,7 @@ use control_plane_core::{
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{
-    Direction, GraphQuery, Hop, QueryDeps, QueryError, Subject, read_graph_reach,
+    Direction, GraphReadKind, GraphReadQuery, Hop, QueryDeps, QueryError, Subject, read_graph,
 };
 use query_api::serving::{Rows, ServingEngine, ServingError, SqlValue};
 
@@ -226,21 +226,23 @@ async fn seeded(person: ObjectType) -> (MemoryControlPlane, SubjectId) {
     (cp, analyst)
 }
 
-fn graph_query(path: &[&str]) -> GraphQuery {
-    GraphQuery {
+fn graph_query(path: &[&str]) -> GraphReadQuery {
+    GraphReadQuery {
         type_name: "Person".into(),
-        path: path.iter().map(|s| (*s).into()).collect(),
+        kind: GraphReadKind::PathCycle {
+            path: path.iter().map(|s| (*s).into()).collect(),
+        },
         depth: 3,
         filters: vec![],
         ids: vec![],
     }
 }
 
-/// Build a GraphQuery from explicit (name, direction) hops.
-fn graph_query_hops(hops: Vec<Hop>) -> GraphQuery {
-    GraphQuery {
+/// Build a GraphReadQuery from explicit (name, direction) hops.
+fn graph_query_hops(hops: Vec<Hop>) -> GraphReadQuery {
+    GraphReadQuery {
         type_name: "Person".into(),
-        path: hops,
+        kind: GraphReadKind::PathCycle { path: hops },
         depth: 3,
         filters: vec![],
         ids: vec![],
@@ -271,7 +273,7 @@ async fn rejects_a_non_cyclic_single_link() {
         default_limit: 1000,
     };
     // `employer` lands on Company, not back on Person -> not a cycle.
-    let err = read_graph_reach(&graph_query(&["employer"]), &Subject(subj), &deps)
+    let err = read_graph(&graph_query(&["employer"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -291,7 +293,7 @@ async fn rejects_a_non_cyclic_multi_link_path() {
         default_limit: 1000,
     };
     // Person --memberOf--> Team --worksAt--> Company: lands on Company, not Person.
-    let err = read_graph_reach(
+    let err = read_graph(
         &graph_query(&["memberOf", "worksAt"]),
         &Subject(subj),
         &deps,
@@ -314,7 +316,7 @@ async fn rejects_a_type_without_identity() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(&graph_query(&["knows"]), &Subject(subj), &deps)
+    let err = read_graph(&graph_query(&["knows"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -338,7 +340,7 @@ async fn returns_reachable_objects_for_a_self_link() {
         serving: &serving,
         default_limit: 1000,
     };
-    let rows = read_graph_reach(&graph_query(&["knows"]), &Subject(subj), &deps)
+    let rows = read_graph(&graph_query(&["knows"]), &Subject(subj), &deps)
         .await
         .unwrap();
     assert_eq!(rows.columns, vec!["id".to_string(), "name".to_string()]);
@@ -372,7 +374,7 @@ async fn returns_reachable_objects_for_a_cyclic_path() {
         serving: &serving,
         default_limit: 1000,
     };
-    let rows = read_graph_reach(
+    let rows = read_graph(
         &graph_query(&["memberOf", "hasMember"]),
         &Subject(subj),
         &deps,
@@ -406,7 +408,7 @@ async fn resolves_a_mixed_forward_inverse_cycle() {
         serving: &serving,
         default_limit: 1000,
     };
-    let rows = read_graph_reach(
+    let rows = read_graph(
         &graph_query_hops(vec![fwd("memberOf"), inv("memberOf")]),
         &Subject(subj),
         &deps,
@@ -434,7 +436,7 @@ async fn inverse_hop_absent_inbound_is_unknown_link() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(
+    let err = read_graph(
         &graph_query_hops(vec![inv("employer")]),
         &Subject(subj),
         &deps,
@@ -462,7 +464,7 @@ async fn non_cyclic_mixed_path_reserializes_with_tilde() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(
+    let err = read_graph(
         &graph_query_hops(vec![inv("hasMember")]),
         &Subject(subj),
         &deps,
@@ -503,7 +505,7 @@ async fn inverse_hop_matching_two_inbound_links_is_ambiguous() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(
+    let err = read_graph(
         &graph_query_hops(vec![inv("sharesWith")]),
         &Subject(subj),
         &deps,
@@ -542,7 +544,7 @@ async fn forbidden_inverse_landing_type() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(
+    let err = read_graph(
         &graph_query_hops(vec![inv("watches")]),
         &Subject(subj),
         &deps,

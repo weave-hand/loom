@@ -1,4 +1,4 @@
-//! read_graph_reach_union on an in-memory control plane + a stub serving engine. The stub
+//! read_graph (UnionSelfLinks mode) on an in-memory control plane + a stub serving engine. The stub
 //! returns canned object rows matching the Person projection [id, name]; the test asserts the
 //! governance short-circuits (NotCyclicPath for a non-self link, UnknownLink, empty link set,
 //! NoIdentity), the happy path returning the stub's reachable objects, and that duplicate link
@@ -12,7 +12,9 @@ use control_plane_core::{
     PropertyDef, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
-use query_api::handler::{GraphUnionQuery, QueryDeps, QueryError, Subject, read_graph_reach_union};
+use query_api::handler::{
+    GraphReadKind, GraphReadQuery, QueryDeps, QueryError, Subject, read_graph,
+};
 use query_api::serving::{Rows, ServingEngine, ServingError, SqlValue};
 
 /// A serving stub returning canned object rows in the projected order [id, name].
@@ -152,10 +154,12 @@ async fn seeded(person: ObjectType) -> (MemoryControlPlane, SubjectId) {
     (cp, analyst)
 }
 
-fn union_query(links: &[&str]) -> GraphUnionQuery {
-    GraphUnionQuery {
+fn union_query(links: &[&str]) -> GraphReadQuery {
+    GraphReadQuery {
         type_name: "Person".into(),
-        links: links.iter().map(|s| s.to_string()).collect(),
+        kind: GraphReadKind::UnionSelfLinks {
+            links: links.iter().map(|s| s.to_string()).collect(),
+        },
         depth: 3,
         filters: vec![],
         ids: vec![],
@@ -173,7 +177,7 @@ async fn rejects_a_non_self_link() {
         default_limit: 1000,
     };
     // `employer` lands on Company, not back on Person -> not a self-link.
-    let err = read_graph_reach_union(&union_query(&["knows", "employer"]), &Subject(subj), &deps)
+    let err = read_graph(&union_query(&["knows", "employer"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -192,7 +196,7 @@ async fn rejects_an_unknown_link() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach_union(&union_query(&["knows", "nope"]), &Subject(subj), &deps)
+    let err = read_graph(&union_query(&["knows", "nope"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -211,7 +215,7 @@ async fn rejects_an_empty_link_set() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach_union(&union_query(&[]), &Subject(subj), &deps)
+    let err = read_graph(&union_query(&[]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -230,7 +234,7 @@ async fn rejects_a_type_without_identity() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach_union(&union_query(&["knows"]), &Subject(subj), &deps)
+    let err = read_graph(&union_query(&["knows"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -254,7 +258,7 @@ async fn returns_reachable_objects_for_a_self_link_union() {
         serving: &serving,
         default_limit: 1000,
     };
-    let rows = read_graph_reach_union(
+    let rows = read_graph(
         &union_query(&["knows", "colleagues"]),
         &Subject(subj),
         &deps,
@@ -288,7 +292,7 @@ async fn duplicate_link_names_collapse() {
         serving: &serving,
         default_limit: 1000,
     };
-    let rows = read_graph_reach_union(&union_query(&["knows", "knows"]), &Subject(subj), &deps)
+    let rows = read_graph(&union_query(&["knows", "knows"]), &Subject(subj), &deps)
         .await
         .unwrap();
     assert_eq!(

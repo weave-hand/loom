@@ -5,10 +5,9 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use crate::handler::{
-    Associations, ChainQuery, Direction, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop,
-    ObjectQuery, QueryDeps, QueryError, read_associations, read_graph_reach,
-    read_graph_reach_union, read_graph_reach_with_tail, read_graph_tree, read_linked_chain,
-    read_object, read_object_page,
+    Associations, ChainQuery, Direction, GraphQuery, GraphReadKind, GraphReadQuery, Hop,
+    ObjectQuery, QueryDeps, QueryError, read_associations, read_graph, read_graph_tree,
+    read_linked_chain, read_object, read_object_page,
 };
 use crate::openapi::{
     JobAck, ObjectsResponse, OntologyTypesResponse, VectorSearchResponse, WriteDeniedBody,
@@ -571,10 +570,12 @@ async fn get_graph(
         )
         .await
     } else {
-        graph_respond(
+        graph_read_respond(
             &st,
             type_name,
-            vec![link_name.into()],
+            GraphReadKind::PathCycle {
+                path: vec![link_name.into()],
+            },
             depth,
             filters,
             ids,
@@ -587,8 +588,8 @@ async fn get_graph(
 /// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` via `parse_path_hops`
 /// (comma-split; empty/absent -> 400), where a `~`-prefixed element is followed backward
 /// (an inverse hop, same grammar as the `/links` chain), plus the same `depth`/`_ids`/filter
-/// handling as `get_graph`, then shares the `read_graph_reach` call + error mapping via
-/// `graph_respond`.
+/// handling as `get_graph`, then shares the `read_graph` call + error mapping via
+/// `graph_read_respond`.
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph",
     params(
@@ -678,7 +679,16 @@ async fn get_graph_path(
             )
                 .into_response();
         }
-        return graph_union_respond(&st, type_name, links, depth, filters, ids, &subject).await;
+        return graph_read_respond(
+            &st,
+            type_name,
+            GraphReadKind::UnionSelfLinks { links },
+            depth,
+            filters,
+            ids,
+            &subject,
+        )
+        .await;
     }
     if path.is_empty() {
         return (
@@ -740,15 +750,33 @@ async fn get_graph_path(
                 Direction::Inverse => format!("~{}", h.link),
             })
             .collect();
-        return graph_tail_respond(
-            &st, type_name, core_link, tail_links, depth, filters, ids, &subject,
+        return graph_read_respond(
+            &st,
+            type_name,
+            GraphReadKind::CoreTail {
+                core_link,
+                tail_links,
+            },
+            depth,
+            filters,
+            ids,
+            &subject,
         )
         .await;
     }
     if tree {
         graph_tree_respond(&st, type_name, path, depth, filters, ids, &subject).await
     } else {
-        graph_respond(&st, type_name, path, depth, filters, ids, &subject).await
+        graph_read_respond(
+            &st,
+            type_name,
+            GraphReadKind::PathCycle { path },
+            depth,
+            filters,
+            ids,
+            &subject,
+        )
+        .await
     }
 }
 
@@ -768,12 +796,12 @@ fn graph_error(e: QueryError) -> axum::response::Response {
     }
 }
 
-/// Path-cycle (`?path=` / single `/graph/:link`) tail: build a `GraphQuery`, run
-/// `read_graph_reach`, map via `graph_error`.
-async fn graph_respond(
+/// Shared `/graph` object-read tail: build a `GraphReadQuery` of the given kind, run
+/// `read_graph`, render, map errors via `graph_error`.
+async fn graph_read_respond(
     st: &AppState,
     type_name: String,
-    path: Vec<Hop>,
+    kind: GraphReadKind,
     depth: u32,
     filters: Vec<(String, String)>,
     ids: Vec<String>,
@@ -785,10 +813,10 @@ async fn graph_respond(
         serving: st.serving.as_ref(),
         default_limit: st.default_limit,
     };
-    match read_graph_reach(
-        &GraphQuery {
+    match read_graph(
+        &GraphReadQuery {
             type_name,
-            path,
+            kind,
             depth,
             filters,
             ids,
@@ -835,82 +863,6 @@ async fn graph_tree_respond(
     .await
     {
         Ok(tree) => Json(crate::render::tree_to_json(&tree)).into_response(),
-        Err(e) => graph_error(e),
-    }
-}
-
-/// Union (`?links=`) tail: build a `GraphUnionQuery`, run `read_graph_reach_union`, map via
-/// `graph_error`.
-async fn graph_union_respond(
-    st: &AppState,
-    type_name: String,
-    links: Vec<String>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
-    subject: &Subject,
-) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
-    match read_graph_reach_union(
-        &GraphUnionQuery {
-            type_name,
-            links,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => graph_error(e),
-    }
-}
-
-/// Recursive-core + relational-tail (`?path=l0*,l1,…`) tail: build a `GraphTailQuery`, run
-/// `read_graph_reach_with_tail`, map via `graph_error`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "HTTP handler requires all routing params"
-)]
-async fn graph_tail_respond(
-    st: &AppState,
-    type_name: String,
-    core_link: String,
-    tail_links: Vec<String>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
-    subject: &Subject,
-) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
-    match read_graph_reach_with_tail(
-        &GraphTailQuery {
-            type_name,
-            core_link,
-            tail_links,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => graph_error(e),
     }
 }

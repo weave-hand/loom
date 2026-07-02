@@ -1,4 +1,4 @@
-//! read_graph_reach_with_tail on an in-memory control plane + a stub serving engine. The stub
+//! read_graph (CoreTail mode) on an in-memory control plane + a stub serving engine. The stub
 //! returns canned object rows matching the Company projection [id, name]; the test asserts the
 //! governance short-circuits (BadGraphPath for a non-self core link, UnknownLink for an unknown
 //! core/tail link, BadGraphPath for an empty tail, NoIdentity, Forbidden when a tail type is not
@@ -14,7 +14,7 @@ use control_plane_core::{
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{
-    GraphTailQuery, QueryDeps, QueryError, Subject, read_graph_reach_with_tail,
+    GraphReadKind, GraphReadQuery, QueryDeps, QueryError, Subject, read_graph,
 };
 use query_api::serving::{Rows, ServingEngine, ServingError, SqlValue};
 
@@ -146,11 +146,13 @@ async fn seeded(person: ObjectType, grant_company: bool) -> (MemoryControlPlane,
     (cp, analyst)
 }
 
-fn tail_query(core: &str, tail: &[&str]) -> GraphTailQuery {
-    GraphTailQuery {
+fn tail_query(core: &str, tail: &[&str]) -> GraphReadQuery {
+    GraphReadQuery {
         type_name: "Person".into(),
-        core_link: core.into(),
-        tail_links: tail.iter().map(|s| s.to_string()).collect(),
+        kind: GraphReadKind::CoreTail {
+            core_link: core.into(),
+            tail_links: tail.iter().map(|s| s.to_string()).collect(),
+        },
         depth: 3,
         filters: vec![],
         ids: vec![],
@@ -168,7 +170,7 @@ async fn rejects_a_non_self_core_link() {
         default_limit: 1000,
     };
     // `worksAt` lands on Company, not back on Person -> not a self-link core.
-    let err = read_graph_reach_with_tail(&tail_query("worksAt", &["knows"]), &Subject(subj), &deps)
+    let err = read_graph(&tail_query("worksAt", &["knows"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -187,7 +189,7 @@ async fn rejects_an_unknown_core_link() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach_with_tail(&tail_query("nope", &["worksAt"]), &Subject(subj), &deps)
+    let err = read_graph(&tail_query("nope", &["worksAt"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -206,7 +208,7 @@ async fn rejects_an_unknown_tail_link() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach_with_tail(&tail_query("knows", &["nope"]), &Subject(subj), &deps)
+    let err = read_graph(&tail_query("knows", &["nope"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -225,7 +227,7 @@ async fn rejects_an_empty_tail() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach_with_tail(&tail_query("knows", &[]), &Subject(subj), &deps)
+    let err = read_graph(&tail_query("knows", &[]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -244,7 +246,7 @@ async fn rejects_a_type_without_identity() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
+    let err = read_graph(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -264,7 +266,7 @@ async fn forbids_when_tail_type_not_granted() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
+    let err = read_graph(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
         .await
         .unwrap_err();
     assert!(
@@ -288,10 +290,9 @@ async fn returns_projected_tail_objects() {
         serving: &serving,
         default_limit: 1000,
     };
-    let rows =
-        read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
-            .await
-            .unwrap();
+    let rows = read_graph(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
+        .await
+        .unwrap();
     // Projection is the FINAL tail type (Company): columns [id, name], logical [Long, Text].
     assert_eq!(rows.columns, vec!["id".to_string(), "name".to_string()]);
     assert_eq!(

@@ -744,17 +744,6 @@ pub struct GraphQuery {
     pub ids: Vec<String>,
 }
 
-/// A bounded recursive reachability read over a UNION of self-links. `filters`/`ids` scope the
-/// SEED set (the starting objects); the recursion follows ANY ONE of `links` (each a self-link
-/// on `type_name`) up to `depth` times.
-pub struct GraphUnionQuery {
-    pub type_name: String,
-    pub links: Vec<String>,
-    pub depth: u32,
-    pub filters: Vec<(String, String)>,
-    pub ids: Vec<String>,
-}
-
 /// Resolve + govern a chain: depth check, source Read gate, per-hop type resolution
 /// (forward/inverse) with Read-on-every-reached-type, per-position row-filters, and
 /// caller-filter coercion/visibility. Returns the per-position governance context, the
@@ -963,54 +952,23 @@ pub async fn read_associations(
     })
 }
 
-/// Serve a bounded recursive reachability read over a path-cycle: from the seed set, repeat
-/// `path` (a cyclic link pattern returning to the queried type) up to `depth` times, return
-/// the deduped reachable objects. Governed: Read on the queried type AND every intermediate
-/// type in the cycle, row-filters at the seed/every recursive expansion/projection, declared
-/// identity (dedup key; visibility not required since it is never projected unless it is
-/// itself a visible column).
-pub async fn read_graph_reach(
-    q: &GraphQuery,
-    subject: &Subject,
-    deps: &QueryDeps<'_>,
-) -> Result<ObjectRows, QueryError> {
-    let r = resolve_graph(q, subject, deps).await?;
-
-    let (sql, params) = crate::sql::compile_graph_reach(
-        deps.serving.dialect(),
-        &crate::sql::ReachSpec {
-            table: &r.g.otype.table,
-            identity: &r.identity,
-            seed_predicates: &r.seed_predicates,
-            row_filters: &r.g.row_filters,
-            allowed_cols: &r.proj.columns,
-            mask_cols: &r.proj.masked,
-            depth: q.depth,
-        },
-        &r.steps,
-        deps.default_limit,
-    )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
-    Ok(r.proj.into_object_rows(served))
-}
-
 /// Serve a bounded shortest-path-**tree** read over a path-cycle (a 1-element path is the
 /// single-self-link case): from the seed set, repeat `path` up to `depth` times, and for every
 /// reachable node return its shortest-path parent pointer + BFS depth, rooted at the seed set.
-/// Governance is `read_graph_reach`'s exactly (Read on the queried + every intermediate type;
-/// row-filters at seed/expansion/projection so no denied intermediate can be a parent), plus
-/// one precondition: because the tree PROJECTS identity as `id`/`parent`, a denied or masked
-/// identity cannot be served without leaking it -> `Forbidden` (undeclared identity is already
-/// `NoIdentity` from `resolve_graph`). The compiler emits no LIMIT (a LIMIT could drop a parent
-/// while keeping its child); the depth cap bounds the *path length*, so — unlike the
-/// `default_limit`-capped reach read — the full reachable set within the cap is returned
-/// unpaginated, which can be wider than the equivalent reach query.
+/// Governance is [`read_graph`]'s `PathCycle` mode exactly (Read on the queried + every
+/// intermediate type; row-filters at seed/expansion/projection so no denied intermediate can be
+/// a parent), plus one precondition: because the tree PROJECTS identity as `id`/`parent`, a
+/// denied or masked identity cannot be served without leaking it -> `Forbidden` (undeclared
+/// identity is already `NoIdentity` from `resolve_graph`). The compiler emits no LIMIT (a LIMIT
+/// could drop a parent while keeping its child); the depth cap bounds the *path length*, so —
+/// unlike the `default_limit`-capped reach read — the full reachable set within the cap is
+/// returned unpaginated, which can be wider than the equivalent reach query.
 pub async fn read_graph_tree(
     q: &GraphQuery,
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectTree, QueryError> {
-    let r = resolve_graph(q, subject, deps).await?;
+    let r = resolve_graph(&q.type_name, &q.path, &q.filters, &q.ids, subject, deps).await?;
 
     // The tree projects identity (id + parent). A denied/masked identity would leak -> Forbidden.
     if r.g.identity_governed() {
@@ -1106,43 +1064,31 @@ struct GraphResolved {
     seed_predicates: Vec<crate::filter::CallerPredicate>,
 }
 
-/// Resolve + govern a graph read: Read-gate the queried type, resolve the path-cycle (Read on
-/// every intermediate type, its row-filters folded into the step), require a declared identity
-/// (the recursion's dedup key), project the visible columns, and coerce/visibility-check the
-/// seed predicates + `?_ids=`. Shared verbatim by `read_graph_reach` (reachable set) and
-/// `read_graph_tree` (shortest-path tree) so governance lives in one place.
+/// Resolve + govern a path-cycle graph read: the shared prologue, the path-cycle walk
+/// (Read on every intermediate type, its row-filters folded into the step), the visible
+/// projection, and the coerced seed predicates + `?_ids=`. Shared by [`read_graph`]'s
+/// path-cycle arm and [`read_graph_tree`] so cycle governance lives in one place.
 async fn resolve_graph(
-    q: &GraphQuery,
+    type_name: &str,
+    path: &[Hop],
+    filters: &[(String, String)],
+    ids: &[String],
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<GraphResolved, QueryError> {
-    let type_name = TypeName(q.type_name.clone());
-    let g = resolve_governed(
-        deps.ontology,
-        deps.acl,
-        &subject.0,
-        &type_name,
-        OnMissing::NotFound,
-    )
-    .await?;
-
-    // Declared identity is the recursion's dedup key.
-    let identity = g
-        .otype
-        .identity
-        .clone()
-        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
+    let (g, identity) = graph_prologue(type_name, subject, deps).await?;
+    let name = TypeName(type_name.to_string());
 
     // Resolve the path-cycle: walk l1..lK from the queried type. Each landed type is
     // Read-gated and its row-filters loaded (intermediate governance). After the last
     // link the type must be the queried type again (a cycle) — else it cannot repeat.
-    if q.path.is_empty() {
+    if path.is_empty() {
         return Err(QueryError::NotCyclicPath(String::new()));
     }
-    let mut steps: Vec<crate::sql::GraphStep> = Vec::with_capacity(q.path.len());
-    let mut current = type_name.clone();
-    let last = q.path.len() - 1;
-    for (i, hop) in q.path.iter().enumerate() {
+    let mut steps: Vec<crate::sql::GraphStep> = Vec::with_capacity(path.len());
+    let mut current = name.clone();
+    let last = path.len() - 1;
+    for (i, hop) in path.iter().enumerate() {
         let (landed, backing) = resolve_hop(deps.ontology, &current, hop).await?;
         // Read on every reached type (intermediate + final), forward or inverse. A link
         // pointing at a missing type is an internal inconsistency, not a 404.
@@ -1168,15 +1114,15 @@ async fn resolve_graph(
         });
         current = landed;
     }
-    if current != type_name {
-        return Err(QueryError::NotCyclicPath(hop_path_string(&q.path)));
+    if current != name {
+        return Err(QueryError::NotCyclicPath(hop_path_string(path)));
     }
 
     // Projection: visible columns minus denied; masked applied. Empty -> Forbidden.
     let proj = Projection::visible(&g)?;
 
     // Seed predicates: source filters (visibility-checked + coerced) then the ?_ids= set.
-    let seed = seed_predicates(&g, &proj.columns, &q.filters, &q.ids)?;
+    let seed = seed_predicates(&g, &proj.columns, filters, ids)?;
 
     Ok(GraphResolved {
         g,
@@ -1199,49 +1145,77 @@ fn hop_path_string(path: &[Hop]) -> String {
         .join(",")
 }
 
-/// Serve a bounded recursive reachability read over a UNION of self-links: from the seed set,
-/// repeatedly follow ANY ONE of `links` (each a self-link on the queried type) up to `depth`
-/// times, return the deduped reachable objects. Governed: Read on the queried type and the
-/// queried type's row-filters at the seed/every recursive expansion/projection; declared identity
-/// (dedup key). Every named link must be a self-link (its `to` is the queried type) -> else
-/// NotCyclicPath; an unknown link -> UnknownLink. Because every link lands on the already-gated
-/// queried type, there are no intermediate types and no per-link Read gate.
-pub async fn read_graph_reach_union(
-    q: &GraphUnionQuery,
+/// The recursion structure of a `/graph` object read: which of the three reachability
+/// modes the request selects. The prologue (coarse Read gate, declared identity), the
+/// seed scoping, and the serve/zip epilogue are shared by [`read_graph`]; the kind picks
+/// the middle — what to resolve and which compiler to call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphReadKind {
+    /// Repeat a cyclic link `path` (a 1-element path is the single-self-link case).
+    PathCycle { path: Vec<Hop> },
+    /// Repeatedly follow ANY ONE of `links` (each a self-link on the queried type).
+    UnionSelfLinks { links: Vec<String> },
+    /// Follow `core_link` (a `*`-suffixed self-link) transitively, then chain
+    /// `tail_links` forward off the reachable set and project the final landed type.
+    CoreTail {
+        core_link: String,
+        tail_links: Vec<String>,
+    },
+}
+
+/// A bounded recursive reachability read, mode-polymorphic over [`GraphReadKind`].
+/// `filters`/`ids` scope the SEED set (the recursion start) in every mode.
+pub struct GraphReadQuery {
+    pub type_name: String,
+    pub kind: GraphReadKind,
+    pub depth: u32,
+    pub filters: Vec<(String, String)>,
+    pub ids: Vec<String>,
+}
+
+/// The shared `/graph` prologue: coarse-Read-gate + resolve the queried type (404 on a
+/// genuine miss) and require its declared identity (the recursion's dedup key). Every
+/// graph mode starts here, so the NoIdentity-before-mode-validation error precedence
+/// lives in exactly one place.
+async fn graph_prologue(
+    type_name: &str,
     subject: &Subject,
     deps: &QueryDeps<'_>,
-) -> Result<ObjectRows, QueryError> {
-    let type_name = TypeName(q.type_name.clone());
+) -> Result<(GovernedType, String), QueryError> {
+    let name = TypeName(type_name.to_string());
     let g = resolve_governed(
         deps.ontology,
         deps.acl,
         &subject.0,
-        &type_name,
+        &name,
         OnMissing::NotFound,
     )
     .await?;
-
-    // Declared identity is the recursion's dedup key.
     let identity = g
         .otype
         .identity
         .clone()
-        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
+        .ok_or_else(|| QueryError::NoIdentity(type_name.to_string()))?;
+    Ok((g, identity))
+}
 
-    // Resolve the self-link set: every named link must be an outbound link of the queried type
-    // whose `to` is the queried type (a self-link). Dedup by name (first-seen order; a link
-    // listed twice yields one arm). No per-link Read gate — every link lands on the queried type,
-    // already gated above.
-    if q.links.is_empty() {
+/// Resolve a union read's self-link set: every named link must be an outbound link of
+/// the queried type whose `to` is the queried type (a self-link) -> else NotCyclicPath;
+/// an unknown link -> UnknownLink. Dedup by name (first-seen order; a link listed twice
+/// yields one arm). No per-link Read gate — every link lands on the already-gated
+/// queried type.
+async fn resolve_self_link_backings(
+    ontology: &(dyn Ontology + Send + Sync),
+    type_name: &TypeName,
+    link_names: &[String],
+) -> Result<Vec<control_plane_core::LinkBacking>, QueryError> {
+    if link_names.is_empty() {
         return Err(QueryError::NotCyclicPath(String::new()));
     }
-    let links = deps
-        .ontology
-        .links(&type_name, PageReq::unbounded())
-        .await?;
-    let mut backings: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(q.links.len());
+    let links = ontology.links(type_name, PageReq::unbounded()).await?;
+    let mut backings: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(link_names.len());
     let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
-    for link_name in &q.links {
+    for link_name in link_names {
         if !seen.insert(link_name) {
             continue; // duplicate -> one arm
         }
@@ -1250,99 +1224,56 @@ pub async fn read_graph_reach_union(
             .iter()
             .find(|l| &l.name == link_name)
             .ok_or_else(|| QueryError::UnknownLink(link_name.clone()))?;
-        if link.to != type_name {
+        if &link.to != type_name {
             return Err(QueryError::NotCyclicPath(link_name.clone()));
         }
         backings.push(link.backing.clone());
     }
-
-    let proj = Projection::visible(&g)?;
-    let seeds = seed_predicates(&g, &proj.columns, &q.filters, &q.ids)?;
-
-    let (sql, params) = crate::sql::compile_graph_reach_union(
-        deps.serving.dialect(),
-        &crate::sql::ReachSpec {
-            table: &g.otype.table,
-            identity: &identity,
-            seed_predicates: &seeds,
-            row_filters: &g.row_filters,
-            allowed_cols: &proj.columns,
-            mask_cols: &proj.masked,
-            depth: q.depth,
-        },
-        &backings,
-        deps.default_limit,
-    )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
-    Ok(proj.into_object_rows(served))
+    Ok(backings)
 }
 
-/// A bounded recursive-core + relational-tail reachability read. `core_link` is a `*`-suffixed
-/// self-link on `type_name` followed transitively up to `depth` times (the recursive core);
-/// `tail_links` is a forward chain of ordinary links continuing from the depth>=1 reachable set,
-/// landing on a (possibly different) final type that is projected. `filters`/`ids` scope the SEED
-/// set (the recursion start), as in part-1/2/3.
-pub struct GraphTailQuery {
-    pub type_name: String,
-    pub core_link: String,
-    pub tail_links: Vec<String>,
-    pub depth: u32,
-    pub filters: Vec<(String, String)>,
-    pub ids: Vec<String>,
-}
-
-/// Serve a recursive-core + relational-tail read: from the seed set, follow `core_link` (a
-/// self-link) 1..`depth` times to a reachable set, then chain `tail_links` forward off that set
-/// and project the final type. Governed: Read on the queried type (whose row-filters govern the
-/// recursive core, applied at the seed and every recursive expansion) AND every tail-reached type
-/// (row-filters at each), declared identity on the queried type (the recursion's dedup key + the
-/// join key from the tail back to the reachable set). The core link must be a self-link and the
-/// tail non-empty, else `BadGraphPath`; an unknown core/tail link -> `UnknownLink`.
-pub async fn read_graph_reach_with_tail(
-    q: &GraphTailQuery,
+/// Resolve a core+tail read's structure: the `*` core must be a self-link on the queried
+/// type and the tail non-empty (else BadGraphPath); each tail hop resolves FORWARD with
+/// Read on every landed type. Returns the core backing, the compiler tail chain
+/// (position 0 = the queried type with EMPTY row-filters — its governance lives in the
+/// recursive CTE), the tail hop backings, and the FINAL landed type's governance (the
+/// projection source). The `final_g` fold is load-bearing: the projection and the
+/// final-identity dedup key come from the LAST tail landing, not the queried type.
+async fn resolve_core_tail(
+    type_name: &TypeName,
+    g: &GovernedType,
+    core_link: &str,
+    tail_links: &[String],
     subject: &Subject,
     deps: &QueryDeps<'_>,
-) -> Result<ObjectRows, QueryError> {
-    let type_name = TypeName(q.type_name.clone());
-    let g = resolve_governed(
-        deps.ontology,
-        deps.acl,
-        &subject.0,
-        &type_name,
-        OnMissing::NotFound,
-    )
-    .await?;
-
-    // Declared identity: the recursion's dedup key and the tail's join key back to reach.
-    let identity = g
-        .otype
-        .identity
-        .clone()
-        .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
-
+) -> Result<
+    (
+        control_plane_core::LinkBacking,
+        Vec<crate::sql::ChainType>,
+        Vec<control_plane_core::LinkBacking>,
+        GovernedType,
+    ),
+    QueryError,
+> {
     // The relational tail must be non-empty (a bare recursive core is `/graph/:link`).
-    if q.tail_links.is_empty() {
+    if tail_links.is_empty() {
         return Err(QueryError::BadGraphPath(format!(
-            "recursive core `{}*` requires a relational tail; use /graph/:link for bare reachability",
-            q.core_link
+            "recursive core `{core_link}*` requires a relational tail; use /graph/:link for bare reachability"
         )));
     }
 
-    // Resolve the recursive core link: an outbound link of the queried type whose `to` is the
-    // queried type itself (a self-link).
-    let links = deps
-        .ontology
-        .links(&type_name, PageReq::unbounded())
-        .await?;
+    // Resolve the recursive core link: an outbound link of the queried type whose `to`
+    // is the queried type itself (a self-link).
+    let links = deps.ontology.links(type_name, PageReq::unbounded()).await?;
     let core = links
         .items
         .iter()
-        .find(|l| l.name == q.core_link)
-        .ok_or_else(|| QueryError::UnknownLink(q.core_link.clone()))?;
-    if core.to != type_name {
+        .find(|l| l.name == core_link)
+        .ok_or_else(|| QueryError::UnknownLink(core_link.to_string()))?;
+    if &core.to != type_name {
         return Err(QueryError::BadGraphPath(format!(
-            "recursive core `{}*` must land back on `{}`",
-            q.core_link, q.type_name
+            "recursive core `{core_link}*` must land back on `{}`",
+            type_name.0
         )));
     }
     let core_backing = core.backing.clone();
@@ -1356,11 +1287,10 @@ pub async fn read_graph_reach_with_tail(
         row_filters: vec![],
         predicates: vec![],
     }];
-    let mut tail_hops: Vec<control_plane_core::LinkBacking> =
-        Vec::with_capacity(q.tail_links.len());
+    let mut tail_hops: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(tail_links.len());
     let mut current = type_name.clone();
     let mut final_g = g.clone();
-    for link_name in &q.tail_links {
+    for link_name in tail_links {
         let (landed, backing) =
             resolve_hop(deps.ontology, &current, &Hop::from(link_name.as_str())).await?;
         let landed_g = resolve_governed(
@@ -1380,32 +1310,94 @@ pub async fn read_graph_reach_with_tail(
         final_g = landed_g;
         current = landed;
     }
+    Ok((core_backing, tail_types, tail_hops, final_g))
+}
 
-    // Projection: the FINAL tail type's visible columns (masked -> marker). Empty -> Forbidden.
-    let proj = Projection::visible(&final_g)?;
-
-    // Seed predicates scope the recursion start (alias `s` in the CTE), governed by the
-    // QUERIED type's projection.
-    let source_allowed = g.allowed();
-    let seeds = seed_predicates(&g, &source_allowed, &q.filters, &q.ids)?;
-
-    let (sql, params) = crate::sql::compile_graph_reach_tail(
-        deps.serving.dialect(),
-        &crate::sql::ReachSpec {
-            table: &g.otype.table,
-            identity: &identity,
-            seed_predicates: &seeds,
-            row_filters: &g.row_filters,
-            allowed_cols: &proj.columns,
-            mask_cols: &proj.masked,
-            depth: q.depth,
-        },
-        &core_backing,
-        &tail_types,
-        &tail_hops,
-        final_g.otype.identity.as_deref(),
-        deps.default_limit,
-    )?;
+/// Serve a bounded recursive reachability read (deduped reachable objects), polymorphic
+/// over the three graph modes. Governance per mode is documented on the mode resolvers;
+/// all modes share the prologue (Read gate + declared identity), the seed scoping, and
+/// the serve/zip epilogue.
+pub async fn read_graph(
+    q: &GraphReadQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectRows, QueryError> {
+    let dialect = deps.serving.dialect();
+    let (proj, (sql, params)) = match &q.kind {
+        GraphReadKind::PathCycle { path } => {
+            let r = resolve_graph(&q.type_name, path, &q.filters, &q.ids, subject, deps).await?;
+            let compiled = crate::sql::compile_graph_reach(
+                dialect,
+                &crate::sql::ReachSpec {
+                    table: &r.g.otype.table,
+                    identity: &r.identity,
+                    seed_predicates: &r.seed_predicates,
+                    row_filters: &r.g.row_filters,
+                    allowed_cols: &r.proj.columns,
+                    mask_cols: &r.proj.masked,
+                    depth: q.depth,
+                },
+                &r.steps,
+                deps.default_limit,
+            )?;
+            (r.proj, compiled)
+        }
+        GraphReadKind::UnionSelfLinks { links } => {
+            let (g, identity) = graph_prologue(&q.type_name, subject, deps).await?;
+            let name = TypeName(q.type_name.clone());
+            let backings = resolve_self_link_backings(deps.ontology, &name, links).await?;
+            let proj = Projection::visible(&g)?;
+            let seeds = seed_predicates(&g, &proj.columns, &q.filters, &q.ids)?;
+            let compiled = crate::sql::compile_graph_reach_union(
+                dialect,
+                &crate::sql::ReachSpec {
+                    table: &g.otype.table,
+                    identity: &identity,
+                    seed_predicates: &seeds,
+                    row_filters: &g.row_filters,
+                    allowed_cols: &proj.columns,
+                    mask_cols: &proj.masked,
+                    depth: q.depth,
+                },
+                &backings,
+                deps.default_limit,
+            )?;
+            (proj, compiled)
+        }
+        GraphReadKind::CoreTail {
+            core_link,
+            tail_links,
+        } => {
+            let (g, identity) = graph_prologue(&q.type_name, subject, deps).await?;
+            let name = TypeName(q.type_name.clone());
+            let (core_backing, tail_types, tail_hops, final_g) =
+                resolve_core_tail(&name, &g, core_link, tail_links, subject, deps).await?;
+            // Projection: the FINAL tail type's visible columns. Empty -> Forbidden.
+            let proj = Projection::visible(&final_g)?;
+            // Seed predicates scope the recursion start (alias `s` in the CTE), governed
+            // by the QUERIED type's projection.
+            let source_allowed = g.allowed();
+            let seeds = seed_predicates(&g, &source_allowed, &q.filters, &q.ids)?;
+            let compiled = crate::sql::compile_graph_reach_tail(
+                dialect,
+                &crate::sql::ReachSpec {
+                    table: &g.otype.table,
+                    identity: &identity,
+                    seed_predicates: &seeds,
+                    row_filters: &g.row_filters,
+                    allowed_cols: &proj.columns,
+                    mask_cols: &proj.masked,
+                    depth: q.depth,
+                },
+                &core_backing,
+                &tail_types,
+                &tail_hops,
+                final_g.otype.identity.as_deref(),
+                deps.default_limit,
+            )?;
+            (proj, compiled)
+        }
+    };
     let served = deps.serving.fetch_rows(&sql, &params).await?;
     Ok(proj.into_object_rows(served))
 }
