@@ -2,8 +2,11 @@
 //! Used by dataset→model binding to check a landed column's logical type satisfies a
 //! declared property's logical type. Pure logic, no I/O. The vocabulary is CLOSED: an
 //! unrecognized logical type is an error, never a silent pass — that keeps the ontology
-//! authoritative. Physical mapping (logical ↔ Iceberg type strings) lives in the
-//! postgres adapter (`control_plane_postgres::iceberg_type`).
+//! authoritative. Physical mappings: logical ↔ Iceberg type strings live in the
+//! postgres adapter (`control_plane_postgres::iceberg_type`); logical → Arrow
+//! `DataType` lives HERE (`BaseType::arrow_data_type`) as the single map every
+//! conversion site consults (adapter inline reads, engine serving, flight export,
+//! ingest inference).
 //!
 //! NOTE: this vocabulary also classifies how each type renders on the JSON wire
 //! (see `JsonRepr` / `json_repr_of`): Date/Timestamp -> ISO-8601 strings, Long ->
@@ -81,6 +84,36 @@ impl BaseType {
             BaseType::Vector(_) => JsonRepr::FloatArray,
         }
     }
+
+    /// THE authoritative loom-logical → Arrow (58) physical mapping. Every
+    /// conversion site (postgres adapter reads, engine serving schemas, query-api
+    /// flight export, datafusion-io inference) consults this — never a local copy
+    /// (see iss-pg-provider-vector-drift for what a drifted copy cost). Canonical,
+    /// non-`*View` variants, so decoded values match the file-Parquet side.
+    pub fn arrow_data_type(self) -> arrow_schema::DataType {
+        use arrow_schema::{DataType, TimeUnit};
+        match self {
+            BaseType::Integer => DataType::Int32,
+            BaseType::Long => DataType::Int64,
+            BaseType::Double => DataType::Float64,
+            BaseType::Boolean => DataType::Boolean,
+            BaseType::String => DataType::Utf8,
+            BaseType::Date => DataType::Date32,
+            BaseType::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
+            BaseType::Vector(_) => DataType::List(std::sync::Arc::new(vector_list_field())),
+        }
+    }
+}
+
+/// The Arrow list-child field of every loom `Vector(N)` column, in memory and on
+/// the wire: `"item"`, non-null `Float32`. `"item"` is arrow-rs's own default
+/// (`ListBuilder`, `Field::new_list_field`), so wire batches match without
+/// relabeling. Iceberg's Parquet storage uses `"element"` (+ `PARQUET:field_id`);
+/// that relabel happens ONLY at the storage write boundary
+/// (`iceberg_landing::coerce_batch_to_ice`) — DataFusion's schema adapter casts
+/// the name back on read.
+pub fn vector_list_field() -> arrow_schema::Field {
+    arrow_schema::Field::new("item", arrow_schema::DataType::Float32, false)
 }
 
 /// Parse the parameterized `vector(N)` logical form (case-insensitive) to its

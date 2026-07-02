@@ -1,5 +1,6 @@
 use control_plane_core::{
     BaseType, JsonRepr, UnknownLogicalType, json_repr_of, resolve_logical, satisfies,
+    vector_list_field,
 };
 
 #[test]
@@ -102,4 +103,36 @@ fn json_repr_of_errors_on_unknown_type() {
         json_repr_of("Money"),
         Err(UnknownLogicalType("Money".into()))
     );
+}
+
+#[test]
+fn arrow_data_type_maps_every_base_type() {
+    use arrow_schema::{DataType, TimeUnit};
+    assert_eq!(BaseType::Integer.arrow_data_type(), DataType::Int32);
+    assert_eq!(BaseType::Long.arrow_data_type(), DataType::Int64);
+    assert_eq!(BaseType::Double.arrow_data_type(), DataType::Float64);
+    assert_eq!(BaseType::Boolean.arrow_data_type(), DataType::Boolean);
+    assert_eq!(BaseType::String.arrow_data_type(), DataType::Utf8);
+    assert_eq!(BaseType::Date.arrow_data_type(), DataType::Date32);
+    assert_eq!(
+        BaseType::Timestamp.arrow_data_type(),
+        DataType::Timestamp(TimeUnit::Microsecond, None)
+    );
+}
+
+#[test]
+fn vector_arrow_type_is_list_of_item_float32() {
+    use arrow_schema::DataType;
+    // The list child is named "item" (arrow-rs's default; loom's wire/in-memory
+    // convention). Iceberg's Parquet storage relabels to "element" at the write
+    // boundary only (coerce_batch_to_ice) — never in an in-memory schema.
+    match BaseType::Vector(4).arrow_data_type() {
+        DataType::List(f) => {
+            assert_eq!(f.name(), "item");
+            assert_eq!(f.data_type(), &DataType::Float32);
+            assert!(!f.is_nullable());
+        }
+        other => panic!("expected List, got {other:?}"),
+    }
+    assert_eq!(vector_list_field().name(), "item");
 }
