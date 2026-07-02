@@ -466,7 +466,7 @@ async fn get_graph(
     graph_respond(
         &st,
         type_name,
-        vec![link_name],
+        vec![link_name.into()],
         depth,
         filters,
         ids,
@@ -605,7 +605,16 @@ async fn get_graph_path(
         )
         .await;
     }
-    graph_respond(&st, type_name, path, depth, filters, ids, &subject).await
+    graph_respond(
+        &st,
+        type_name,
+        path.into_iter().map(Hop::from).collect(),
+        depth,
+        filters,
+        ids,
+        &subject,
+    )
+    .await
 }
 
 /// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
@@ -628,7 +637,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
 async fn graph_respond(
     st: &AppState,
     type_name: String,
-    path: Vec<String>,
+    path: Vec<Hop>,
     depth: u32,
     filters: Vec<(String, String)>,
     ids: Vec<String>,

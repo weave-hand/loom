@@ -645,7 +645,7 @@ pub struct ChainQuery {
 /// case.
 pub struct GraphQuery {
     pub type_name: String,
-    pub path: Vec<String>,
+    pub path: Vec<Hop>,
     pub depth: u32,
     pub filters: Vec<(String, String)>,
     pub ids: Vec<String>,
@@ -1021,16 +1021,36 @@ pub async fn read_graph_reach(
     let mut steps: Vec<crate::sql::GraphStep> = Vec::with_capacity(q.path.len());
     let mut current = type_name.clone();
     let last = q.path.len() - 1;
-    for (i, link_name) in q.path.iter().enumerate() {
-        let links = deps.ontology.links(&current, PageReq::unbounded()).await?;
-        let link = links
-            .items
-            .into_iter()
-            .find(|l| &l.name == link_name)
-            .ok_or_else(|| QueryError::UnknownLink(link_name.clone()))?;
-        let landed = link.to.clone();
+    for (i, hop) in q.path.iter().enumerate() {
+        let (landed, backing) = match hop.direction {
+            Direction::Forward => {
+                let links = deps.ontology.links(&current, PageReq::unbounded()).await?;
+                let link = links
+                    .items
+                    .into_iter()
+                    .find(|l| l.name == hop.link)
+                    .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
+                (link.to.clone(), link.backing.clone())
+            }
+            Direction::Inverse => {
+                let links = deps
+                    .ontology
+                    .links_to(&current, PageReq::unbounded())
+                    .await?;
+                let mut matches = links.items.into_iter().filter(|l| l.name == hop.link);
+                let link = matches
+                    .next()
+                    .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
+                if matches.next().is_some() {
+                    return Err(QueryError::AmbiguousLink(hop.link.clone()));
+                }
+                // Inverse: land on the origin, backing reversed so the symmetric join
+                // reaches `current` back to `link.from`.
+                (link.from.clone(), link.backing.reversed())
+            }
+        };
         let landed_target = PolicyTarget::Type(landed.clone());
-        // Read on every reached type (intermediate + final).
+        // Read on every reached type (intermediate + final), forward or inverse.
         if deps
             .acl
             .check(&subject.0, Action::Read, &landed_target)
@@ -1049,14 +1069,14 @@ pub async fn read_graph_reach(
             landed_filters
         };
         steps.push(crate::sql::GraphStep {
-            backing: link.backing.clone(),
+            backing,
             next_table: landed_type.table.clone(),
             next_filters,
         });
         current = landed;
     }
     if current != type_name {
-        return Err(QueryError::NotCyclicPath(q.path.join(",")));
+        return Err(QueryError::NotCyclicPath(hop_path_string(&q.path)));
     }
 
     // Projection: visible columns minus denied; masked applied. Empty -> Forbidden.
@@ -1121,6 +1141,18 @@ pub async fn read_graph_reach(
         logical_types,
         rows: served.rows,
     })
+}
+
+/// Re-serialize a resolved path for error messages, re-emitting the `~` sigil for inverse
+/// hops so the rendered path round-trips the request (`memberOf,~memberOf`).
+fn hop_path_string(path: &[Hop]) -> String {
+    path.iter()
+        .map(|h| match h.direction {
+            Direction::Forward => h.link.clone(),
+            Direction::Inverse => format!("~{}", h.link),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Serve a bounded recursive reachability read over a UNION of self-links: from the seed set,
