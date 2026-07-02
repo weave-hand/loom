@@ -1059,6 +1059,18 @@ rust_test(
 )
 
 rust_test(
+    name = "path-parse-props",
+    crate = "path_parse_props",
+    srcs = ["tests/path_parse_props.rs"],
+    crate_root = "tests/path_parse_props.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:proptest",
+    ],
+)
+
+rust_test(
     name = "query-params",
     crate = "query_params",
     srcs = ["tests/query_params.rs"],
