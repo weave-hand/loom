@@ -311,10 +311,15 @@ pub async fn compile_object_read(
 
     // Visibility first (denied/masked column -> 400, no type info leak), then parse the raw
     // value into a typed predicate (operator + coerced operands) for the column.
-    let mut predicates: Vec<crate::filter::CallerPredicate> =
-        Vec::with_capacity(q.filters.len());
+    let mut predicates: Vec<crate::filter::CallerPredicate> = Vec::with_capacity(q.filters.len());
     for (col, raw) in &q.filters {
-        predicates.push(coerce_visible_predicate(col, raw, &object_type, &allowed, &masked)?);
+        predicates.push(coerce_visible_predicate(
+            col,
+            raw,
+            &object_type,
+            &allowed,
+            &masked,
+        )?);
     }
 
     // Object-set input: scope to the given identities (an In predicate on the identity).
@@ -333,7 +338,13 @@ pub async fn compile_object_read(
         let mut group = Vec::with_capacity(members.len());
         for member in &members {
             let (col, val) = crate::filter::split_member(member)?;
-            group.push(coerce_visible_predicate(col, val, &object_type, &allowed, &masked)?);
+            group.push(coerce_visible_predicate(
+                col,
+                val,
+                &object_type,
+                &allowed,
+                &masked,
+            )?);
         }
         or_groups.push(group);
     }

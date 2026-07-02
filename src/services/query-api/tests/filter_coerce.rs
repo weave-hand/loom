@@ -362,7 +362,10 @@ fn or_group_with_fewer_than_two_members_is_rejected() {
         split_or_members("amount:gt:100"),
         Err(FilterError::BadValue(_, _))
     ));
-    assert!(matches!(split_or_members(""), Err(FilterError::BadValue(_, _))));
+    assert!(matches!(
+        split_or_members(""),
+        Err(FilterError::BadValue(_, _))
+    ));
 }
 
 #[test]
@@ -370,5 +373,8 @@ fn or_member_split_column_from_value() {
     assert_eq!(split_member("amount:gt:100").unwrap(), ("amount", "gt:100"));
     assert_eq!(split_member("status:eq:vip").unwrap(), ("status", "eq:vip"));
     // A member naming no column (no `:`) is rejected.
-    assert!(matches!(split_member("vip"), Err(FilterError::BadValue(_, _))));
+    assert!(matches!(
+        split_member("vip"),
+        Err(FilterError::BadValue(_, _))
+    ));
 }
