@@ -1072,12 +1072,12 @@ same error class/messages `execute` produced.
 **Files:**
 - Modify: `src/services/engine-wire/src/flight.rs`
 
-- [ ] **Step 1: Run the pinning suite BEFORE (baseline green)**
+- [x] **Step 1: Run the pinning suite BEFORE (baseline green)**
 
 Run: `buck2 test -j 8 //src/services/engine:flight-sql //src/services/query-api:engine-wire-serving-e2e //src/services/query-api:governed-flight-export-e2e //src/services/worker:flight-roundtrip > /tmp/t4a.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4a.log`
 Expected: PASS.
 
-- [ ] **Step 2: Refactor**
+- [x] **Step 2: Refactor**
 
 Extend the root import to
 `use arrow_flight::{FlightData, FlightDescriptor, Ticket};` and add the
@@ -1143,7 +1143,7 @@ Rewrite the four sites:
         Ok(Box::pin(decode_batches(resp).map_err(crate::client::be)))
 ```
 
-- [ ] **Step 3: Run to green**
+- [x] **Step 3: Run to green**
 
 Run: `buck2 test -j 8 //src/services/engine-wire/... //src/services/engine:flight-sql //src/services/query-api:engine-wire-serving-e2e //src/services/query-api:governed-flight-export-e2e //src/services/worker:flight-roundtrip > /tmp/t4b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4b.log`
 Expected: PASS — `flight_sql` pins `execute` (roundtrip + malformed-SQL
@@ -1151,7 +1151,7 @@ Expected: PASS — `flight_sql` pins `execute` (roundtrip + malformed-SQL
 the export e2e pins `execute_stream`, the worker roundtrip pins `fetch`.
 Run: `buck2 build '//src/services/engine-wire:engine-wire[clippy.txt]' > /tmp/c4.log 2>&1; cat /tmp/c4.log` — artifact empty.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p4.log 2>&1; grep -c Failed /tmp/p4.log` — expected `0`.
 
