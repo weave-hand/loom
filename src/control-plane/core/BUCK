@@ -128,7 +128,10 @@ rust_test(
     crate_root = "tests/identity.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
-    deps = [":core"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
 )
 
 rust_test(
