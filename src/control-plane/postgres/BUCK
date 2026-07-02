@@ -244,6 +244,18 @@ rust_test(
 )
 
 loom_fixture_test(
+    name = "fixture-shared",
+    crate = "fixture_shared",
+    srcs = ["tests/fixture_shared.rs"],
+    crate_root = "tests/fixture_shared.rs",
+    deps = [
+        ":postgres",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "queue",
     crate = "queue",
     srcs = ["tests/queue.rs"],
