@@ -221,9 +221,9 @@ impl PgFixture {
     /// (prctl(2)), so the boot happens on a dedicated thread parked for the
     /// process lifetime, never a per-test tokio worker.
     ///
-    /// Shared-cluster semantics: advisory locks are cluster-wide (all loom
-    /// uses are transaction-scoped, so cross-test contention affects timing
-    /// only); `pg_notify` channels are per-database and stay isolated.
+    /// Shared-cluster semantics: advisory locks are per-DATABASE in Postgres
+    /// (the lock tag includes the database OID), so `fresh_db` isolation covers
+    /// them; `pg_notify` channels are per-database and stay isolated too.
     pub fn shared() -> &'static PgFixture {
         SHARED.get_or_init(|| {
             let (tx, rx) = std::sync::mpsc::sync_channel(0);
