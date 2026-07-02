@@ -4,7 +4,7 @@
 
 use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, ObjectType, Ontology, PageReq, PolicyTarget,
-    PropertyDef, RowFilter, SubjectId, TypeName,
+    RowFilter, TypeName,
 };
 pub use service_runtime::Subject;
 
@@ -139,125 +139,10 @@ pub enum QueryError {
     Malformed(#[from] crate::sql::CompileError),
 }
 
-/// Load the subject's cumulative policy for `target`: row filters (ANDed by the
-/// caller via the SQL compiler), unioned denied + masked columns. Minimal ACL.
-async fn load_policy(
-    acl: &(dyn Acl + Send + Sync),
-    subject: &SubjectId,
-    target: &PolicyTarget,
-) -> Result<
-    (
-        Vec<RowFilter>,
-        std::collections::HashSet<String>,
-        std::collections::HashSet<String>,
-    ),
-    QueryError,
-> {
-    let policies = acl
-        .policies_for(subject, Action::Read, target, PageReq::unbounded())
-        .await?;
-    let mut row_filters = Vec::new();
-    let mut denied = std::collections::HashSet::new();
-    let mut masked = std::collections::HashSet::new();
-    for p in policies.items {
-        if let Some(f) = p.row_filter {
-            row_filters.push(f);
-        }
-        denied.extend(p.deny_columns);
-        masked.extend(p.mask_columns);
-    }
-    Ok((row_filters, denied, masked))
-}
-
-/// An object type's properties (in order) minus denied columns.
-fn project_allowed(
-    properties: &[PropertyDef],
-    denied: &std::collections::HashSet<String>,
-) -> Vec<String> {
-    properties
-        .iter()
-        .map(|p| p.name.clone())
-        .filter(|n| !denied.contains(n))
-        .collect()
-}
-
-/// True when the type's declared identity column is denied or masked by policy,
-/// so its values must not be revealed. Identity-less types are never governed here.
-pub fn identity_is_governed(
-    otype: &ObjectType,
-    denied: &std::collections::HashSet<String>,
-    masked: &std::collections::HashSet<String>,
-) -> bool {
-    match &otype.identity {
-        Some(id) => denied.contains(id) || masked.contains(id),
-        None => false,
-    }
-}
-
-/// Lower an object-set input (`ids`) to an `In` predicate on `otype`'s declared identity
-/// column, governed like any caller filter. `None` when `ids` is empty. Errors: no
-/// declared identity (`NoIdentity`); the identity column is denied or masked, so it is not
-/// a permitted filter column (`BadFilter`); or a value does not coerce (`BadFilter`).
-pub fn identity_in_predicate(
-    otype: &ObjectType,
-    denied: &std::collections::HashSet<String>,
-    masked: &std::collections::HashSet<String>,
-    ids: &[String],
-) -> Result<Option<crate::filter::CallerPredicate>, QueryError> {
-    if ids.is_empty() {
-        return Ok(None);
-    }
-    let identity = otype
-        .identity
-        .clone()
-        .ok_or_else(|| QueryError::NoIdentity(otype.name.0.clone()))?;
-    // The identity column must be a permitted filter column: not denied, not masked.
-    // Re-expressed via the shared `identity_is_governed` helper so the /search guard
-    // and this filter-lowering check cannot drift. (`project_allowed` computes the same
-    // deny membership via `!denied.contains`; `identity_is_governed` checks
-    // `denied.contains(id) || masked.contains(id)` directly — equivalent.)
-    if identity_is_governed(otype, denied, masked) {
-        return Err(QueryError::BadFilter(identity));
-    }
-    let ty = otype
-        .properties
-        .iter()
-        .find(|p| p.name == identity)
-        .map(|p| p.ty.as_str())
-        .unwrap_or("");
-    let mut values = Vec::with_capacity(ids.len());
-    for raw in ids {
-        values.push(crate::filter::coerce_filter(&identity, ty, raw)?);
-    }
-    Ok(Some(crate::filter::CallerPredicate {
-        column: identity,
-        op: control_plane_core::CompareOp::In,
-        values,
-    }))
-}
-
-/// Coerce one raw caller filter `raw` on `col` into a typed predicate, applying the same
-/// visibility gate a plain filter gets: a denied (not in `allowed`) or masked column is a
-/// `BadFilter` (400, no type-info leak), never a silent pass. Shared by plain `eq_filters`
-/// and every `_or` member so an OR-group can never widen what a column-denial forbids.
-fn coerce_visible_predicate(
-    col: &str,
-    raw: &str,
-    object_type: &ObjectType,
-    allowed: &[String],
-    masked: &std::collections::HashSet<String>,
-) -> Result<crate::filter::CallerPredicate, QueryError> {
-    if !allowed.iter().any(|c| c.as_str() == col) || masked.contains(col) {
-        return Err(QueryError::BadFilter(col.to_string()));
-    }
-    let ty = object_type
-        .properties
-        .iter()
-        .find(|p| p.name.as_str() == col)
-        .map(|p| p.ty.as_str())
-        .unwrap_or("");
-    Ok(crate::filter::coerce_predicate(col, ty, raw)?)
-}
+pub use crate::governed::{
+    GovernedType, OnMissing, identity_in_predicate, identity_is_governed, prop_ty, resolve_governed,
+};
+use crate::governed::{coerce_visible_predicate, load_policy, project_allowed};
 
 /// The target column a derived aggregate reads, if any (COUNT reads none).
 fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {

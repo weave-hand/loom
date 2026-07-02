@@ -1028,6 +1028,21 @@ rust_test(
 )
 
 rust_test(
+    name = "resolve-governed",
+    crate = "resolve_governed",
+    srcs = ["tests/resolve_governed.rs"],
+    crate_root = "tests/resolve_governed.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "action-conformance",
     crate = "action_conformance",
     srcs = ["tests/action_conformance.rs"],
