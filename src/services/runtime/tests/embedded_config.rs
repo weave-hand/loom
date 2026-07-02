@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::path::Path;
 
-use service_runtime::Config;
+use service_runtime::{Config, EmbeddedSettings};
 
 fn base() -> HashMap<String, String> {
     // The minimal external-mode keys Config::from_map requires.
@@ -31,6 +32,32 @@ fn embedded_mode_derives_pgdata_and_socket_under_data_path() {
     vars.insert("LOOM_PG_BIN_DIR".into(), "/opt/pg/bin".into());
     let cfg = Config::from_map(&vars).expect("parse embedded");
     let e = cfg.embedded.expect("embedded settings present");
+    assert_eq!(e.cfg.bin_dir, std::path::PathBuf::from("/opt/pg/bin"));
+    assert_eq!(
+        e.cfg.data_dir,
+        std::path::PathBuf::from("/tmp/loomdata/pgdata")
+    );
+    assert_eq!(
+        e.cfg.socket_dir,
+        std::path::PathBuf::from("/tmp/loomdata/pgrun")
+    );
+    assert_eq!(e.cfg.database, "loom");
+}
+
+#[test]
+fn embedded_settings_from_map_is_none_in_external_mode() {
+    let s = EmbeddedSettings::from_map(&base(), Path::new("/tmp/loomdata")).expect("parse");
+    assert!(s.is_none());
+}
+
+#[test]
+fn embedded_settings_from_map_derives_dirs_from_data_path() {
+    let mut vars = base();
+    vars.insert("LOOM_PG_MODE".into(), "embedded".into());
+    vars.insert("LOOM_PG_BIN_DIR".into(), "/opt/pg/bin".into());
+    let e = EmbeddedSettings::from_map(&vars, Path::new("/tmp/loomdata"))
+        .expect("parse")
+        .expect("embedded settings present");
     assert_eq!(e.cfg.bin_dir, std::path::PathBuf::from("/opt/pg/bin"));
     assert_eq!(
         e.cfg.data_dir,

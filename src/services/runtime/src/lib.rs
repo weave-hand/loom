@@ -23,7 +23,7 @@ pub use openapi::{
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,13 +40,40 @@ pub use store_config::{
 };
 
 pub use loom_config::{
-    ConfigError, LayeredConfig, env_map, invalid, load, overlay_opt, parse_config_doc,
+    ConfigError, LayeredConfig, env_map, invalid, load, overlay_opt, parse_config_doc, parse_var,
+    req_var,
 };
 
 /// Embedded-Postgres settings, present only when `LOOM_PG_MODE=embedded`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmbeddedSettings {
     pub cfg: managed_postgres::EmbeddedPgConfig,
+}
+
+impl EmbeddedSettings {
+    /// Parse the embedded-PG settings from the env snapshot: `Some` only when
+    /// `LOOM_PG_MODE=embedded` (anything else, including absent, is external
+    /// mode). The data/socket dirs derive from `data_path` (`pgdata`/`pgrun`).
+    pub fn from_map(
+        vars: &HashMap<String, String>,
+        data_path: &Path,
+    ) -> Result<Option<EmbeddedSettings>, ConfigError> {
+        if vars.get("LOOM_PG_MODE").map(String::as_str) != Some("embedded") {
+            return Ok(None);
+        }
+        Ok(Some(EmbeddedSettings {
+            cfg: managed_postgres::EmbeddedPgConfig {
+                bin_dir: PathBuf::from(req_var(vars, "LOOM_PG_BIN_DIR")?),
+                ld_library_path: vars
+                    .get("LOOM_PG_LD_LIBRARY_PATH")
+                    .cloned()
+                    .unwrap_or_default(),
+                data_dir: data_path.join("pgdata"),
+                socket_dir: data_path.join("pgrun"),
+                database: req_var(vars, "LOOM_DB_NAME")?,
+            },
+        }))
+    }
 }
 
 /// Discrete Postgres connection fields. Feeds the sqlx control-plane pool and the
@@ -63,6 +90,27 @@ pub struct DbConfig {
 }
 
 impl DbConfig {
+    /// Parse the discrete `LOOM_DB_*` connection fields from the env snapshot.
+    pub fn from_map(vars: &HashMap<String, String>) -> Result<DbConfig, ConfigError> {
+        let max_connections = match vars.get("LOOM_DB_MAX_CONNECTIONS") {
+            Some(s) => Some(
+                s.parse::<u32>()
+                    .map_err(|e| invalid("LOOM_DB_MAX_CONNECTIONS", e))?,
+            ),
+            None => None,
+        };
+        Ok(DbConfig {
+            host: req_var(vars, "LOOM_DB_HOST")?,
+            port: req_var(vars, "LOOM_DB_PORT")?
+                .parse::<u16>()
+                .map_err(|e| invalid("LOOM_DB_PORT", e))?,
+            user: req_var(vars, "LOOM_DB_USER")?,
+            password: req_var(vars, "LOOM_DB_PASSWORD")?,
+            dbname: req_var(vars, "LOOM_DB_NAME")?,
+            max_connections,
+        })
+    }
+
     /// sqlx connect options. A `host` beginning with `/` is a unix-socket directory
     /// (libpq convention); otherwise a TCP host:port.
     pub fn pg_connect_options(&self) -> PgConnectOptions {
@@ -128,96 +176,43 @@ pub struct Config {
     pub migrate_on_boot: bool,
 }
 
+/// Parse `LOOM_DB_MIGRATE_ON_BOOT` (default `false`). Only the literal
+/// `true`/`false` are accepted; anything else fails startup naming the key.
+pub fn parse_migrate_on_boot(vars: &HashMap<String, String>) -> Result<bool, ConfigError> {
+    match vars.get("LOOM_DB_MIGRATE_ON_BOOT").map(String::as_str) {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(other) => Err(invalid(
+            "LOOM_DB_MIGRATE_ON_BOOT",
+            format!("expected `true` or `false`, got `{other}`"),
+        )),
+    }
+}
+
 impl Config {
     /// Parse from a key->value map. `from_env` wraps this with `std::env::vars()`.
     pub fn from_map(vars: &HashMap<String, String>) -> Result<Config, ConfigError> {
-        let req = |k: &str| {
-            vars.get(k)
-                .cloned()
-                .ok_or_else(|| ConfigError::MissingVar(k.to_string()))
-        };
-        let invalid = |var: &str, detail: String| ConfigError::Invalid {
-            var: var.to_string(),
-            detail,
-        };
-
-        let bind_addr = req("LOOM_BIND_ADDR")?
+        let bind_addr = req_var(vars, "LOOM_BIND_ADDR")?
             .parse()
-            .map_err(|e: std::net::AddrParseError| invalid("LOOM_BIND_ADDR", e.to_string()))?;
-        let port = req("LOOM_DB_PORT")?
-            .parse::<u16>()
-            .map_err(|e| invalid("LOOM_DB_PORT", e.to_string()))?;
-        let lock_timeout = match vars.get("LOOM_LOCK_TIMEOUT_MS") {
-            Some(s) => Duration::from_millis(
-                s.parse::<u64>()
-                    .map_err(|e| invalid("LOOM_LOCK_TIMEOUT_MS", e.to_string()))?,
-            ),
-            None => Duration::from_millis(5000),
-        };
-        let gc_retention = match vars.get("LOOM_GC_RETENTION_SECS") {
-            Some(s) => Duration::from_secs(
-                s.parse::<u64>()
-                    .map_err(|e| invalid("LOOM_GC_RETENTION_SECS", e.to_string()))?,
-            ),
-            None => Duration::from_secs(7 * 24 * 3600),
-        };
-
-        let max_connections = match vars.get("LOOM_DB_MAX_CONNECTIONS") {
-            Some(s) => Some(
-                s.parse::<u32>()
-                    .map_err(|e| invalid("LOOM_DB_MAX_CONNECTIONS", e.to_string()))?,
-            ),
-            None => None,
-        };
-
-        let data_path = PathBuf::from(req("LOOM_DATA_PATH")?);
+            .map_err(|e: std::net::AddrParseError| invalid("LOOM_BIND_ADDR", e))?;
+        let lock_timeout =
+            Duration::from_millis(parse_var(vars, "LOOM_LOCK_TIMEOUT_MS", 5000_u64)?);
+        let gc_retention = Duration::from_secs(parse_var(
+            vars,
+            "LOOM_GC_RETENTION_SECS",
+            7 * 24 * 3600_u64,
+        )?);
+        let data_path = PathBuf::from(req_var(vars, "LOOM_DATA_PATH")?);
         let object_store = ObjectStoreConfig::parse(vars, &data_path)?;
-
-        let embedded = if vars.get("LOOM_PG_MODE").map(String::as_str) == Some("embedded") {
-            let bin_dir = PathBuf::from(req("LOOM_PG_BIN_DIR")?);
-            Some(EmbeddedSettings {
-                cfg: managed_postgres::EmbeddedPgConfig {
-                    bin_dir,
-                    ld_library_path: vars
-                        .get("LOOM_PG_LD_LIBRARY_PATH")
-                        .cloned()
-                        .unwrap_or_default(),
-                    data_dir: data_path.join("pgdata"),
-                    socket_dir: data_path.join("pgrun"),
-                    database: req("LOOM_DB_NAME")?,
-                },
-            })
-        } else {
-            None
-        };
-
-        let migrate_on_boot = match vars.get("LOOM_DB_MIGRATE_ON_BOOT").map(String::as_str) {
-            None | Some("false") => false,
-            Some("true") => true,
-            Some(other) => {
-                return Err(invalid(
-                    "LOOM_DB_MIGRATE_ON_BOOT",
-                    format!("expected `true` or `false`, got `{other}`"),
-                ));
-            }
-        };
-
         Ok(Config {
             bind_addr,
-            db: DbConfig {
-                host: req("LOOM_DB_HOST")?,
-                port,
-                user: req("LOOM_DB_USER")?,
-                password: req("LOOM_DB_PASSWORD")?,
-                dbname: req("LOOM_DB_NAME")?,
-                max_connections,
-            },
-            data_path,
+            db: DbConfig::from_map(vars)?,
+            data_path: data_path.clone(),
             object_store,
             lock_timeout,
             gc_retention,
-            embedded,
-            migrate_on_boot,
+            embedded: EmbeddedSettings::from_map(vars, &data_path)?,
+            migrate_on_boot: parse_migrate_on_boot(vars)?,
         })
     }
 

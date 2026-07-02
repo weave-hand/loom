@@ -442,7 +442,7 @@ Part of road-service-bootstrap."
   `embedded_config.rs` / `object_store_config.rs` passes **unmodified** —
   same variants, same `var` names, same `LOOM_DB_MIGRATE_ON_BOOT` message.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `src/services/runtime/tests/config.rs` (its imports already cover
 `Config, ConfigError, DbConfig`):
@@ -500,12 +500,12 @@ fn embedded_settings_from_map_derives_dirs_from_data_path() {
 }
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/runtime:config //src/services/runtime:embedded-config > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t3.log`
 Expected: FAIL — compile errors (the three fns don't exist).
 
-- [ ] **Step 3: Implement the decomposition**
+- [x] **Step 3: Implement the decomposition**
 
 In `src/services/runtime/src/lib.rs`:
 
@@ -623,13 +623,13 @@ pub fn parse_migrate_on_boot(vars: &HashMap<String, String>) -> Result<bool, Con
 struct literal; cloning one `PathBuf` at startup is fine and keeps the
 composition flat.)
 
-- [ ] **Step 4: Run the full pinned-behavior suite to green**
+- [x] **Step 4: Run the full pinned-behavior suite to green**
 
 Run: `buck2 test //src/services/runtime:config //src/services/runtime:embedded-config //src/services/runtime:object-store-config > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
 Expected: PASS — all pre-existing tests unmodified, plus the four new ones.
 Run: `buck2 build '//src/services/runtime:runtime[clippy.txt]' > /tmp/c3.log 2>&1` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p3.log 2>&1; grep -c Failed /tmp/p3.log` — expected `0`.
 
