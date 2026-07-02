@@ -64,8 +64,9 @@ pub fn compile_select(
   `{ row_filters: &'a [RowFilter], predicates: &'a [CallerPredicate], or_groups: &'a [Vec<CallerPredicate>], derived: &'a [DerivedSelect] }`.
 - `CallerPredicate { column: String, op: control_plane_core::CompareOp, values: Vec<SqlValue> }`
   (`query_api::filter::CallerPredicate`).
-- `SqlValue { Text(String), Int(i64), Bool(bool), Double(f64), Date, Timestamp, Null }`
-  (`query_api::serving::SqlValue`).
+- `SqlValue { Text(String), Int(i64), Bool(bool), Double(f64), Date(time::Date), Timestamp(time::PrimitiveDateTime), Null }`
+  (`query_api::serving::SqlValue`). The Task 1 generators only ever construct
+  `Text`/`Int`/`Bool`.
 - `TableRef { schema: String, name: String }` (from `control_plane_core`).
 - Placeholder token is the literal `?` (the only production dialect,
   `DataFusionDialect`, renders `?` and ignores the index). Every operand is
@@ -725,7 +726,6 @@ rust_test(
     edition = "2024",
     deps = [
         ":query-api",
-        "//src/control-plane/core:core",
         "//third-party:proptest",
     ],
 )
