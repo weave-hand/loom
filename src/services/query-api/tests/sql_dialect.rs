@@ -135,7 +135,10 @@ fn compile_select_emits_order_by_when_requested() {
         sql.find("ORDER BY").unwrap() < sql.find("LIMIT").unwrap(),
         "got: {sql}"
     );
-    assert!(sql.contains("\"id\""), "orders by identity: {sql}");
+    assert!(
+        sql.contains(r#"ORDER BY "id" ASC"#),
+        "orders by identity: {sql}"
+    );
 }
 
 #[test]

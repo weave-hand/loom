@@ -1225,6 +1225,7 @@ loom_fixture_test(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:axum",
+        "//third-party:serde_json",
         "//third-party:tokio",
     ],
 )

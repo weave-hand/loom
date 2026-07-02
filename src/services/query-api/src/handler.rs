@@ -274,6 +274,19 @@ fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
 /// Returns the SQL + params + projected `columns`/`logical_types` (SELECT order) + which
 /// output columns were masked. Shared by the HTTP read path and the Flight export path so
 /// governance lives in exactly one place.
+///
+/// `order_by` and `extra_predicate` are the pagination hooks used by `read_object_page`:
+/// `order_by` is the identity column to `ORDER BY … ASC` (the callers of the plain,
+/// un-paginated read pass `None`), and `extra_predicate` is the caller's already-coerced
+/// keyset predicate (`identity > cursor`), trusted as-is since `read_object_page` only
+/// builds it after its own fail-closed identity-visibility guards pass. Threading both
+/// through here — rather than have `read_object_page` re-run projection/derived-resolution
+/// itself — is what gives the paginated read the same derived (aggregate-over-link) columns
+/// as the plain read.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "governed-read compile function requires all builder parameters"
+)]
 pub async fn compile_object_read(
     q: &ObjectQuery,
     subject: &Subject,
@@ -281,6 +294,8 @@ pub async fn compile_object_read(
     acl: &(dyn Acl + Send + Sync),
     dialect: &dyn SqlDialect,
     limit: u32,
+    order_by: Option<&str>,
+    extra_predicate: Option<crate::filter::CallerPredicate>,
 ) -> Result<GovernedRead, QueryError> {
     let type_name = TypeName(q.type_name.clone());
     let target = PolicyTarget::Type(type_name.clone());
@@ -330,6 +345,11 @@ pub async fn compile_object_read(
 
     // Object-set input: scope to the given identities (an In predicate on the identity).
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
+        predicates.push(p);
+    }
+    // Pagination's keyset predicate (identity > cursor), pre-coerced and visibility-checked
+    // by `read_object_page` before this call.
+    if let Some(p) = extra_predicate {
         predicates.push(p);
     }
 
@@ -417,7 +437,7 @@ pub async fn compile_object_read(
         &predicates,
         &or_groups,
         &derived_selects,
-        None,
+        order_by,
         limit,
     )?;
     // Output columns = physical `allowed` (in order) ++ surviving derived (in order).
@@ -468,6 +488,8 @@ pub async fn read_object(
         deps.acl,
         deps.serving.dialect(),
         deps.default_limit,
+        None,
+        None,
     )
     .await?;
     let served = deps.serving.fetch_rows(&g.sql, &g.params).await?;
@@ -534,7 +556,9 @@ pub async fn read_object_page(
             other => QueryError::ControlPlane(other),
         })?;
 
-    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+    // Row filters aren't needed here: `compile_object_read` below re-derives its own (from
+    // the same subject/target) as part of the governed projection it builds.
+    let (_row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
 
     let identity = object_type
         .identity
@@ -545,16 +569,6 @@ pub async fn read_object_page(
             "identity column not readable".to_string(),
         ));
     }
-
-    let allowed: Vec<String> = project_allowed(&object_type.properties, &denied);
-    if allowed.is_empty() {
-        return Err(QueryError::Forbidden);
-    }
-    let mask_cols: Vec<String> = allowed
-        .iter()
-        .filter(|c| masked.contains(*c))
-        .cloned()
-        .collect();
 
     let id_ty = object_type
         .properties
@@ -587,64 +601,44 @@ pub async fn read_object_page(
         ));
     }
 
-    // Visibility first (denied/masked column -> 400), then coerce, exactly as
-    // `compile_object_read`'s filter loop.
-    let mut predicates: Vec<crate::filter::CallerPredicate> =
-        Vec::with_capacity(q.eq_filters.len() + 1);
-    for (col, raw) in &q.eq_filters {
-        if !allowed.contains(col) || masked.contains(col) {
-            return Err(QueryError::BadFilter(col.clone()));
-        }
-        let ty = object_type
-            .properties
-            .iter()
-            .find(|p| &p.name == col)
-            .map(|p| p.ty.as_str())
-            .unwrap_or("");
-        predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
-    }
     // Keyset predicate: identity > cursor. A cursor that doesn't coerce to the identity's
-    // logical type is a malformed cursor, not a backend fault -> BadPagination (400).
-    if let Some(cursor) = &after {
-        let bound = crate::filter::coerce_filter(&identity, id_ty, &cursor.0)
-            .map_err(|e| QueryError::BadPagination(format!("invalid cursor: {e}")))?;
-        predicates.push(crate::filter::CallerPredicate {
-            column: identity.clone(),
-            op: control_plane_core::CompareOp::Gt,
-            values: vec![bound],
-        });
-    }
+    // logical type is a malformed cursor, not a backend fault -> BadPagination (400). Built
+    // here (after every fail-closed identity guard above has passed) and handed to
+    // `compile_object_read` as a trusted, already-coerced extra predicate — the same
+    // governed-projection path (including derived columns) the plain read uses.
+    let extra_predicate = match &after {
+        Some(cursor) => {
+            let bound = crate::filter::coerce_filter(&identity, id_ty, &cursor.0)
+                .map_err(|e| QueryError::BadPagination(format!("invalid cursor: {e}")))?;
+            Some(crate::filter::CallerPredicate {
+                column: identity.clone(),
+                op: control_plane_core::CompareOp::Gt,
+                values: vec![bound],
+            })
+        }
+        None => None,
+    };
 
     let fetch_limit = limit.saturating_add(1);
-    let (sql, params) = compile_select_with(
+    let g = compile_object_read(
+        q,
+        subject,
+        deps.ontology,
+        deps.acl,
         deps.serving.dialect(),
-        &object_type.table,
-        &allowed,
-        &mask_cols,
-        &row_filters,
-        &predicates,
-        &[],
-        Some(&identity),
         fetch_limit,
-    )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
+        Some(&identity),
+        extra_predicate,
+    )
+    .await?;
+    let served = deps.serving.fetch_rows(&g.sql, &g.params).await?;
     debug_assert_eq!(
-        served.columns, allowed,
+        served.columns, g.columns,
         "serving engine returned columns out of the projected order"
     );
-    let logical_types: Vec<String> = allowed
-        .iter()
-        .map(|name| {
-            object_type
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
 
-    let id_idx = allowed
+    let id_idx = g
+        .columns
         .iter()
         .position(|c| c == &identity)
         .ok_or_else(|| QueryError::BadPagination("identity column not projected".to_string()))?;
@@ -656,8 +650,8 @@ pub async fn read_object_page(
 
     Ok((
         ObjectRows {
-            columns: allowed,
-            logical_types,
+            columns: g.columns,
+            logical_types: g.logical_types,
             rows: page.items,
         },
         page.next,

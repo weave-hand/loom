@@ -8,7 +8,10 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use control_plane_core::{ObjectType, Ontology, TypeName};
+use control_plane_core::{
+    Aggregation, Cardinality, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType, Ontology,
+    TypeName,
+};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -233,4 +236,130 @@ async fn malformed_cursor_is_400() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "malformed cursor -> 400");
+}
+
+/// Seed Customer(id) -(orders)-> Order(id, customer_id) with `Customer.orderCount` a
+/// governed derived (COUNT-over-link) property, mirroring
+/// `derived_properties_e2e::setup`. Unlike that fixture, `Customer` here declares an
+/// `identity` (`id`) so it is a valid pagination target.
+async fn setup_with_derived(
+    fx: &PgFixture,
+) -> (PgControlPlane, InProcessServingEngine, IcebergWriter) {
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+
+    let cust = tref("main", "customer");
+    writer
+        .seed_arrays(
+            "main",
+            "customer",
+            &[("id".to_string(), "long".to_string(), false)],
+            &[SeedCol::Long(vec![1, 2, 3])],
+        )
+        .await;
+
+    let ord = tref("main", "orders");
+    writer
+        .seed_arrays(
+            "main",
+            "orders",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("customer_id".to_string(), "long".to_string(), false),
+            ],
+            &[
+                SeedCol::Long(vec![10, 11, 12]),
+                SeedCol::Long(vec![1, 1, 2]),
+            ],
+        )
+        .await;
+
+    cp.define_type(ObjectType {
+        name: TypeName("Order".into()),
+        properties: vec![prop("id", "Long", true), prop("customer_id", "Long", true)],
+        derived: vec![],
+        table: ord.clone(),
+        identity: Some("id".into()),
+    })
+    .await
+    .unwrap();
+    cp.define_type(ObjectType {
+        name: TypeName("Customer".into()),
+        properties: vec![prop("id", "Long", true)],
+        derived: vec![DerivedPropertyDef {
+            name: "orderCount".into(),
+            ty: "Long".into(),
+            link: "orders".into(),
+            agg: Aggregation::Count,
+        }],
+        table: cust.clone(),
+        identity: Some("id".into()),
+    })
+    .await
+    .unwrap();
+
+    cp.define_link(LinkDef {
+        name: "orders".into(),
+        from: TypeName("Customer".into()),
+        to: TypeName("Order".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+    })
+    .await
+    .unwrap();
+
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
+    (cp, eng, writer)
+}
+
+/// Regression for the final-review finding: `read_object_page` used to build its SELECT
+/// without resolving governed derived (aggregate-over-link) properties, so a paginated read
+/// returned a narrower object shape than the plain read for the same type. Assert both
+/// `GET /objects/Customer` (plain) and `GET /objects/Customer?limit=` (paginated) carry the
+/// `orderCount` derived column, with matching values.
+#[tokio::test(flavor = "multi_thread")]
+async fn paginated_read_includes_derived_columns_matching_plain_read() {
+    let fx = PgFixture::start();
+    let (cp, eng, _writer) = setup_with_derived(&fx).await;
+    let cp = Arc::new(cp);
+    let eng = Arc::new(eng);
+
+    let (_a, role) = subject_with_role(&cp, "alice").await;
+    grant_read(&cp, &role, "Customer").await;
+    grant_read(&cp, &role, "Order").await;
+
+    let (status_plain, body_plain) =
+        get(cp.clone(), eng.clone(), "/objects/Customer", "alice").await;
+    assert_eq!(status_plain, StatusCode::OK);
+    let (status_page, body_page) = get(
+        cp.clone(),
+        eng.clone(),
+        "/objects/Customer?limit=10",
+        "alice",
+    )
+    .await;
+    assert_eq!(status_page, StatusCode::OK);
+
+    let mut plain_objs: Vec<serde_json::Value> = body_plain["objects"].as_array().unwrap().clone();
+    let mut page_objs: Vec<serde_json::Value> = body_page["objects"].as_array().unwrap().clone();
+    let by_id = |o: &serde_json::Value| o["id"].as_str().unwrap().to_string();
+    plain_objs.sort_by_key(by_id);
+    page_objs.sort_by_key(by_id);
+
+    for o in &plain_objs {
+        assert!(
+            o.get("orderCount").is_some(),
+            "plain read missing derived column: {o}"
+        );
+    }
+    assert_eq!(
+        plain_objs, page_objs,
+        "paginated read shape (incl. derived columns) must match the plain read shape"
+    );
 }
