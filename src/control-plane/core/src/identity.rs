@@ -130,7 +130,11 @@ pub const TYPE_TABLE_BINDING_KIND: &str = "type-table-binding";
 /// control-plane adapters call this one constructor so their binding events cannot drift
 /// (marker payload, direction, `EventType::Complete`). A fresh `RunId` per event is
 /// intentional (see the design's *RunId determinism* open question); the source-guard in
-/// each adapter's `define_type` — not run-id identity — prevents duplicate edges.
+/// each adapter's `define_type` — not run-id identity — prevents duplicate edges. That
+/// guard is best-effort, not exactly-once under concurrency: two racing first-`define_type`
+/// calls for the same new type can each emit an edge. This is harmless — lineage is
+/// append-only and the closure reads set-dedupe parallel edges — matching loom's existing
+/// best-effort emit semantics.
 #[must_use]
 pub fn type_table_binding_event(ty: &ObjectType) -> LineageEvent {
     LineageEvent {
