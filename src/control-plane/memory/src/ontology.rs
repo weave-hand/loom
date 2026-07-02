@@ -23,7 +23,19 @@ impl Ontology for MemoryControlPlane {
         // Reject malformed constraint declarations at define time — same gate as the
         // postgres adapter, so both reject identically (the testkit contract pins this).
         control_plane_core::validate_constraints(&ty.properties)?;
-        self.ontology.lock().types.insert(ty.name.0.clone(), ty);
+        // Emit the type↔table binding edge iff the type is new or its backing table
+        // changed (source guard: an unchanged re-define emits nothing). Lock order is
+        // ontology-then-lineage; no other memory path holds both, so nesting is safe.
+        let mut ont = self.ontology.lock();
+        let changed = ont
+            .types
+            .get(&ty.name.0)
+            .is_none_or(|prev| prev.table != ty.table);
+        let event = changed.then(|| control_plane_core::type_table_binding_event(&ty));
+        ont.types.insert(ty.name.0.clone(), ty);
+        if let Some(event) = event {
+            self.lineage.lock().events.push(event);
+        }
         Ok(())
     }
 
