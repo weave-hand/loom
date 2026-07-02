@@ -52,7 +52,7 @@ Creates the crate, the `LineageNaming` struct with its private `site_namespace`,
 - Create (test): `src/services/lineage-naming/tests/naming.rs`
 
 **Interfaces:**
-- Consumes: `control_plane_core::{DatasetRef, TableRef, TypeName, DatasetId, TypeId, LOOM_DATASET_NAMESPACE}`; `store_config::{ObjectStoreConfig, ObjectStoreBackend, S3Backend}`.
+- Consumes: `control_plane_core::{DatasetRef, TableRef, TypeName, DatasetId, TypeId}` (`LOOM_DATASET_NAMESPACE` is added by Task 2 with `resolve`, not here); `store_config::{ObjectStoreConfig, ObjectStoreBackend}` (the `S3Backend` payload is bound via the `ObjectStoreBackend::S3(s)` match arm — no need to name the type in a `use`). Follow the exact `use` lines in the code blocks below, not this prose summary.
 - Produces (relied on by Task 2 and downstream `road-lineage-acl-filtering`):
   - `pub struct LineageNaming { site_namespace: String }`
   - `pub enum ResolvedDataset { Table(TableRef), Type(TypeName), External(DatasetRef) }` — derives `Clone, Debug, PartialEq, Eq`.
