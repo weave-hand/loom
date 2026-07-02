@@ -220,13 +220,7 @@ async fn get_object(
             Ok((rows, next)) => {
                 Json(crate::render::objects_to_json(&rows, next.as_ref())).into_response()
             }
-            Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-            Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-            Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-            Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
-            Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-            Err(QueryError::BadPagination(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
-            Err(e) => internal_error("object read serving fault", e),
+            Err(e) => query_error_response(e, "object read serving fault"),
         };
     }
     match read_object(
@@ -242,12 +236,7 @@ async fn get_object(
     .await
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
-        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-        Err(e) => internal_error("object read serving fault", e),
+        Err(e) => query_error_response(e, "object read serving fault"),
     }
 }
 
@@ -379,14 +368,14 @@ fn respond_objects(
 ) -> axum::response::Response {
     match res {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => chain_error(e),
+        Err(e) => query_error_response(e, "chain/association read serving fault"),
     }
 }
 
 fn respond_associations(res: Result<Associations, QueryError>) -> axum::response::Response {
     match res {
         Ok(a) => Json(crate::render::associations_to_json(&a)).into_response(),
-        Err(e) => chain_error(e),
+        Err(e) => query_error_response(e, "chain/association read serving fault"),
     }
 }
 
@@ -417,18 +406,36 @@ fn bad_filter_value_response(e: &crate::filter::FilterError) -> axum::response::
     (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-/// Shared HTTP mapping for chain/association read errors.
-fn chain_error(e: QueryError) -> axum::response::Response {
+/// The single, TOTAL `QueryError` -> HTTP response mapping — the union of the four
+/// partial per-route copies it replaced (object/chain/graph/search). No catch-all
+/// over `QueryError`'s variants: adding a variant fails compilation here, forcing a
+/// deliberate status. Client-fault variants echo only caller-supplied names (type/
+/// column/link — no internal detail); backend faults go through `internal_error`
+/// (logged server-side, opaque body). `Serving` splits: `NoIndex` is the /search
+/// 404, `DimMismatch` its 400 — both constructed only on the vector-search path —
+/// and everything else is an opaque 500.
+pub fn query_error_response(e: QueryError, context: &'static str) -> axum::response::Response {
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
         QueryError::AmbiguousLink(l) => (StatusCode::BAD_REQUEST, l).into_response(),
-        QueryError::BadChain(m) => (StatusCode::BAD_REQUEST, m).into_response(),
-        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
         QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
-        other => internal_error("chain/association read serving fault", other),
+        QueryError::BadChain(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
+        QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
+        QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::BadPagination(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::Serving(crate::serving::ServingError::NoIndex(m)) => {
+            (StatusCode::NOT_FOUND, m).into_response()
+        }
+        QueryError::Serving(crate::serving::ServingError::DimMismatch(m)) => {
+            (StatusCode::BAD_REQUEST, m).into_response()
+        }
+        e @ (QueryError::ControlPlane(_) | QueryError::Serving(_) | QueryError::Malformed(_)) => {
+            internal_error(context, e)
+        }
     }
 }
 
@@ -604,22 +611,6 @@ async fn get_graph_path(
     }
 }
 
-/// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
-fn graph_error(e: QueryError) -> axum::response::Response {
-    match e {
-        QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
-        QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
-        QueryError::AmbiguousLink(l) => (StatusCode::BAD_REQUEST, l).into_response(),
-        QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
-        QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
-        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
-        QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
-        QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
-        other => internal_error("graph read serving fault", other),
-    }
-}
-
 /// The one /graph reachability tail: run the spec'd read via the handler spine,
 /// render, map errors.
 async fn graph_respond(
@@ -635,7 +626,7 @@ async fn graph_respond(
     };
     match read_graph_reach_spec(spec, subject, &deps).await {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => graph_error(e),
+        Err(e) => query_error_response(e, "graph read serving fault"),
     }
 }
 
@@ -654,7 +645,7 @@ async fn graph_tree_respond(
     };
     match read_graph_tree(&q, subject, &deps).await {
         Ok(tree) => Json(crate::render::tree_to_json(&tree)).into_response(),
-        Err(e) => graph_error(e),
+        Err(e) => query_error_response(e, "graph read serving fault"),
     }
 }
 
@@ -813,15 +804,7 @@ async fn post_search(
                 .collect();
             Json(serde_json::json!({ "results": results })).into_response()
         }
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(QueryError::Serving(crate::serving::ServingError::NoIndex(m))) => {
-            (StatusCode::NOT_FOUND, m).into_response()
-        }
-        Err(QueryError::Serving(crate::serving::ServingError::DimMismatch(m))) => {
-            (StatusCode::BAD_REQUEST, m).into_response()
-        }
-        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-        Err(e) => internal_error("vector search serving fault", e),
+        Err(e) => query_error_response(e, "vector search serving fault"),
     }
 }
 

@@ -1963,7 +1963,7 @@ Part of road-qa-read-path-consolidation."
   (no catch-all arm over its variants; a new variant fails compilation here).
   `bad_filter_value_response` and `internal_error` stay as its delegates.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/services/query-api/tests/query_error_http.rs`:
 
@@ -2055,12 +2055,12 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/query-api:query-error-http > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t7.log`
 Expected: FAIL — `query_error_response` unresolved.
 
-- [ ] **Step 3: Implement the total mapping and rewire every site**
+- [x] **Step 3: Implement the total mapping and rewire every site**
 
 Add to `http.rs`, replacing `chain_error` (:467-479) and `graph_error`
 (:756-769) — both deleted:
@@ -2125,7 +2125,7 @@ Rewire (contexts preserve today's log lines exactly):
     }
 ```
 
-- [ ] **Step 4: Run to green**
+- [x] **Step 4: Run to green**
 
 Run: `buck2 test //src/services/query-api:query-error-http //src/services/query-api:http-smoke > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7.log`
 Expected: PASS.
@@ -2135,7 +2135,7 @@ constructible change — `/search` `BadFilterValue` 500→400 — fires solely o
 pathological engine/ontology inconsistency no e2e seeds).
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c7.log 2>&1; cat /tmp/c7.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p7.log 2>&1; grep -c Failed /tmp/p7.log` — expected `0`.
 
