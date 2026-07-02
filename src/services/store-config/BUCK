@@ -8,6 +8,7 @@ cargo.rust_library(
     crate_root = "src/lib.rs",
     edition = "2024",
     deps = [
+        "//src/loom-config:loom-config",
         "//third-party:object_store",
         "//third-party:thiserror",
     ],
@@ -20,5 +21,9 @@ rust_test(
     srcs = ["tests/config.rs"],
     crate_root = "tests/config.rs",
     edition = "2024",
-    deps = [":store-config"],
+    deps = [
+        ":store-config",
+        "//src/loom-config:loom-config",
+        "//third-party:object_store",
+    ],
 )

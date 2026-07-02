@@ -290,7 +290,7 @@ Part of road-service-bootstrap."
 - Consumed by: `Config::from_map` (this task) — and any future
   `ObjectStoreConfig` caller that surfaces `ConfigError`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/services/store-config/tests/config.rs` (add
 `use store_config::StoreConfigError;` to its imports):
@@ -356,12 +356,12 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run to see it fail**
+- [x] **Step 2: Run to see it fail**
 
 Run: `buck2 test //src/services/store-config:config > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t2.log`
 Expected: FAIL — no `From<StoreConfigError>` impl.
 
-- [ ] **Step 3: Implement the impl and switch runtime's mapping**
+- [x] **Step 3: Implement the impl and switch runtime's mapping**
 
 In `src/services/store-config/src/lib.rs`, directly below the
 `StoreConfigError` enum:
@@ -396,14 +396,14 @@ In `src/services/runtime/src/lib.rs`, replace lines 174-183 (the
 
 (`?` uses the new `From` impl — `from_map` returns `Result<_, ConfigError>`.)
 
-- [ ] **Step 4: Run to green**
+- [x] **Step 4: Run to green**
 
 Run: `buck2 test //src/services/store-config:config //src/services/runtime:object-store-config //src/services/runtime:config > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
 Expected: PASS (the runtime object-store tests pin the mapping's observable
 behavior — `Missing` → error on absent AWS keys, etc.).
 Run: `buck2 build '//src/services/store-config:store-config[clippy.txt]' '//src/services/runtime:runtime[clippy.txt]' > /tmp/c2.log 2>&1` — artifacts empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p2.log 2>&1; grep -c Failed /tmp/p2.log` — expected `0`.
 

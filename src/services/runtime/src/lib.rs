@@ -171,16 +171,7 @@ impl Config {
         };
 
         let data_path = PathBuf::from(req("LOOM_DATA_PATH")?);
-        let object_store = ObjectStoreConfig::parse(vars, &data_path).map_err(|e| match e {
-            store_config::StoreConfigError::Missing(k) => ConfigError::MissingVar(k),
-            store_config::StoreConfigError::Invalid { var, detail } => {
-                ConfigError::Invalid { var, detail }
-            }
-            store_config::StoreConfigError::Store(inner) => ConfigError::Invalid {
-                var: "LOOM_WAREHOUSE_URI".into(),
-                detail: inner.to_string(),
-            },
-        })?;
+        let object_store = ObjectStoreConfig::parse(vars, &data_path)?;
 
         let embedded = if vars.get("LOOM_PG_MODE").map(String::as_str) == Some("embedded") {
             let bin_dir = PathBuf::from(req("LOOM_PG_BIN_DIR")?);
