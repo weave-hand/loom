@@ -63,8 +63,14 @@ fn parse_ids_splits_and_drops_empty_elements() {
 
 #[test]
 fn parse_ids_empty_is_the_routes_400_message() {
-    assert_eq!(parse_ids(Some("")).unwrap_err(), "_ids requires at least one value");
-    assert_eq!(parse_ids(Some(",")).unwrap_err(), "_ids requires at least one value");
+    assert_eq!(
+        parse_ids(Some("")).unwrap_err(),
+        "_ids requires at least one value"
+    );
+    assert_eq!(
+        parse_ids(Some(",")).unwrap_err(),
+        "_ids requires at least one value"
+    );
 }
 
 #[test]

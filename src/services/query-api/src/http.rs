@@ -5,10 +5,9 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use crate::handler::{
-    Associations, ChainQuery, Direction, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop,
-    ObjectQuery, QueryDeps, QueryError, read_associations, read_graph_reach,
-    read_graph_reach_union, read_graph_reach_with_tail, read_graph_tree, read_linked_chain,
-    read_object, read_object_page,
+    Associations, ChainQuery, GraphQuery, GraphReadSpec, GraphTailQuery, GraphUnionQuery, Hop,
+    ObjectQuery, QueryDeps, QueryError, read_associations, read_graph_reach_spec, read_graph_tree,
+    read_linked_chain, read_object, read_object_page,
 };
 use crate::openapi::{
     JobAck, ObjectsResponse, OntologyTypesResponse, VectorSearchResponse, WriteDeniedBody,
@@ -508,28 +507,17 @@ async fn get_graph(
         Ok(t) => t,
         Err(resp) => return *resp,
     };
+    let q = GraphQuery {
+        type_name,
+        path: vec![link_name.into()],
+        depth,
+        filters,
+        ids,
+    };
     if tree {
-        graph_tree_respond(
-            &st,
-            type_name,
-            vec![link_name.into()],
-            depth,
-            filters,
-            ids,
-            &subject,
-        )
-        .await
+        graph_tree_respond(&st, q, &subject).await
     } else {
-        graph_respond(
-            &st,
-            type_name,
-            vec![link_name.into()],
-            depth,
-            filters,
-            ids,
-            &subject,
-        )
-        .await
+        graph_respond(&st, GraphReadSpec::PathCycle(&q), &subject).await
     }
 }
 
@@ -573,94 +561,46 @@ async fn get_graph_path(
         .last("links")
         .map(crate::query_params::comma_list)
         .unwrap_or_default();
-    // Exactly one of `path` (ordered cycle / `*` recursive-core+tail) or `links` (self-link
-    // union) selects the mode.
-    if !path.is_empty() && !links.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "specify either path or links, not both",
-        )
-            .into_response();
-    }
-    if !links.is_empty() {
-        if tree {
-            return (
-                StatusCode::BAD_REQUEST,
-                "tree view is not supported with links (union)",
-            )
-                .into_response();
+    match crate::path_parse::parse_graph_mode(path, links, tree) {
+        Err(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        Ok(crate::path_parse::GraphMode::Union(links)) => {
+            let q = GraphUnionQuery {
+                type_name,
+                links,
+                depth,
+                filters,
+                ids,
+            };
+            graph_respond(&st, GraphReadSpec::UnionSelfLinks(&q), &subject).await
         }
-        return graph_union_respond(&st, type_name, links, depth, filters, ids, &subject).await;
-    }
-    if path.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "path or links requires at least one link",
-        )
-            .into_response();
-    }
-    // Part B: a `*`-suffixed FORWARD segment marks a recursive core + relational tail. `~foo*`
-    // is NOT a tail — it stays a path-cycle inverse hop whose name ends in `*` (=> UnknownLink).
-    let starred: Vec<usize> = path
-        .iter()
-        .enumerate()
-        .filter(|(_, h)| h.direction == Direction::Forward && h.link.ends_with('*'))
-        .map(|(i, _)| i)
-        .collect();
-    if !starred.is_empty() {
-        if tree {
-            return (
-                StatusCode::BAD_REQUEST,
-                "tree view is not supported for a recursive-core (*) path",
-            )
-                .into_response();
+        Ok(crate::path_parse::GraphMode::CoreTail {
+            core_link,
+            tail_links,
+        }) => {
+            let q = GraphTailQuery {
+                type_name,
+                core_link,
+                tail_links,
+                depth,
+                filters,
+                ids,
+            };
+            graph_respond(&st, GraphReadSpec::CoreTail(&q), &subject).await
         }
-        if starred.len() > 1 {
-            return (
-                StatusCode::BAD_REQUEST,
-                "at most one path segment may be marked recursive with `*`",
-            )
-                .into_response();
+        Ok(crate::path_parse::GraphMode::PathCycle(path)) => {
+            let q = GraphQuery {
+                type_name,
+                path,
+                depth,
+                filters,
+                ids,
+            };
+            if tree {
+                graph_tree_respond(&st, q, &subject).await
+            } else {
+                graph_respond(&st, GraphReadSpec::PathCycle(&q), &subject).await
+            }
         }
-        if starred.first().copied().unwrap_or(0) != 0 {
-            return (
-                StatusCode::BAD_REQUEST,
-                "the recursive `*` segment must be the first path segment",
-            )
-                .into_response();
-        }
-        let Some(first_hop) = path.first() else {
-            return (StatusCode::BAD_REQUEST, "empty path").into_response();
-        };
-        let core_link = first_hop.link.trim_end_matches('*').to_string();
-        if core_link.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                "recursive core link name must not be empty",
-            )
-                .into_response();
-        }
-        // Tail is forward-only (part-B non-goal defers inverse tails); re-emit each remaining
-        // hop's name, re-attaching `~` for any inverse hop so it resolves as an (absent)
-        // forward link rather than silently dropping the sigil.
-        let tail_links: Vec<String> = path
-            .get(1..)
-            .unwrap_or_default()
-            .iter()
-            .map(|h| match h.direction {
-                Direction::Forward => h.link.clone(),
-                Direction::Inverse => format!("~{}", h.link),
-            })
-            .collect();
-        return graph_tail_respond(
-            &st, type_name, core_link, tail_links, depth, filters, ids, &subject,
-        )
-        .await;
-    }
-    if tree {
-        graph_tree_respond(&st, type_name, path, depth, filters, ids, &subject).await
-    } else {
-        graph_respond(&st, type_name, path, depth, filters, ids, &subject).await
     }
 }
 
@@ -680,15 +620,11 @@ fn graph_error(e: QueryError) -> axum::response::Response {
     }
 }
 
-/// Path-cycle (`?path=` / single `/graph/:link`) tail: build a `GraphQuery`, run
-/// `read_graph_reach`, map via `graph_error`.
+/// The one /graph reachability tail: run the spec'd read via the handler spine,
+/// render, map errors.
 async fn graph_respond(
     st: &AppState,
-    type_name: String,
-    path: Vec<Hop>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
+    spec: GraphReadSpec<'_>,
     subject: &Subject,
 ) -> axum::response::Response {
     let deps = QueryDeps {
@@ -697,34 +633,17 @@ async fn graph_respond(
         serving: st.serving.as_ref(),
         default_limit: st.default_limit,
     };
-    match read_graph_reach(
-        &GraphQuery {
-            type_name,
-            path,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
+    match read_graph_reach_spec(spec, subject, &deps).await {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => graph_error(e),
     }
 }
 
-/// Tree tail for `?tree=true` on the single `/graph/:link` and `?path=` path-cycle routes:
-/// build a `GraphQuery`, run `read_graph_tree`, render `{roots, nodes}` via `tree_to_json`,
-/// map errors via `graph_error`.
+/// Tree tail for `?tree=true` on the path-cycle routes: run `read_graph_tree`,
+/// render `{roots, nodes}` via `tree_to_json`, map errors via `graph_error`.
 async fn graph_tree_respond(
     st: &AppState,
-    type_name: String,
-    path: Vec<Hop>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
+    q: GraphQuery,
     subject: &Subject,
 ) -> axum::response::Response {
     let deps = QueryDeps {
@@ -733,96 +652,8 @@ async fn graph_tree_respond(
         serving: st.serving.as_ref(),
         default_limit: st.default_limit,
     };
-    match read_graph_tree(
-        &GraphQuery {
-            type_name,
-            path,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
+    match read_graph_tree(&q, subject, &deps).await {
         Ok(tree) => Json(crate::render::tree_to_json(&tree)).into_response(),
-        Err(e) => graph_error(e),
-    }
-}
-
-/// Union (`?links=`) tail: build a `GraphUnionQuery`, run `read_graph_reach_union`, map via
-/// `graph_error`.
-async fn graph_union_respond(
-    st: &AppState,
-    type_name: String,
-    links: Vec<String>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
-    subject: &Subject,
-) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
-    match read_graph_reach_union(
-        &GraphUnionQuery {
-            type_name,
-            links,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => graph_error(e),
-    }
-}
-
-/// Recursive-core + relational-tail (`?path=l0*,l1,…`) tail: build a `GraphTailQuery`, run
-/// `read_graph_reach_with_tail`, map via `graph_error`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "HTTP handler requires all routing params"
-)]
-async fn graph_tail_respond(
-    st: &AppState,
-    type_name: String,
-    core_link: String,
-    tail_links: Vec<String>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
-    subject: &Subject,
-) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
-    match read_graph_reach_with_tail(
-        &GraphTailQuery {
-            type_name,
-            core_link,
-            tail_links,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => graph_error(e),
     }
 }

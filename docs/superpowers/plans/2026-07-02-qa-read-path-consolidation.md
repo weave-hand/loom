@@ -1617,7 +1617,7 @@ pub fn parse_graph_mode(path: Vec<Hop>, links: Vec<String>, tree: bool) -> Resul
   `graph_respond(st, spec: GraphReadSpec<'_>, subject)` (consumes Task 4's
   spine).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `src/services/query-api/tests/path_parse.rs` (extend its import to
 include `GraphMode, parse_graph_mode`, and `Direction, Hop` from
@@ -1708,12 +1708,12 @@ fn graph_mode_star_rules() {
 }
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/query-api:path-parse > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t6.log`
 Expected: FAIL — `GraphMode`/`parse_graph_mode` unresolved.
 
-- [ ] **Step 3: Implement `parse_graph_mode`**
+- [x] **Step 3: Implement `parse_graph_mode`**
 
 Append to `src/services/query-api/src/path_parse.rs` (its `use` already
 brings `Direction, Hop`):
@@ -1804,12 +1804,12 @@ tree-with-star at :699 BEFORE starred-count at :706 — preserved. NOTE the old
 code checked tree-with-star only when `starred` was non-empty; identical
 here.)
 
-- [ ] **Step 4: Run the mode tests to green**
+- [x] **Step 4: Run the mode tests to green**
 
 Run: `buck2 test //src/services/query-api:path-parse > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log`
 Expected: PASS.
 
-- [ ] **Step 5: Collapse the respond tails in http.rs**
+- [x] **Step 5: Collapse the respond tails in http.rs**
 
 Add `GraphReadSpec` and `read_graph_reach_spec` to the `crate::handler` import
 list. Replace `graph_respond` (:773-804), `graph_tree_respond` (:809-840),
@@ -1918,7 +1918,7 @@ end of the fn) becomes:
     }
 ```
 
-- [ ] **Step 6: Run the graph wire pins to green**
+- [x] **Step 6: Run the graph wire pins to green**
 
 Run: `buck2 test //src/services/query-api:path-parse //src/services/query-api:http-smoke > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log`
 Expected: PASS.
@@ -1927,7 +1927,7 @@ Expected: PASS — every mode/error-message assertion unmodified.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c6.log 2>&1; cat /tmp/c6.log` — artifact empty (http.rs's
 `too_many_arguments` allow is gone).
 
-- [ ] **Step 7: prek + commit**
+- [x] **Step 7: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p6.log 2>&1; grep -c Failed /tmp/p6.log` — expected `0`.
 
