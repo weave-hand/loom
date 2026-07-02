@@ -7,8 +7,9 @@
 use arrow_array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
-use arrow_flight::{FlightDescriptor, Ticket};
+use arrow_flight::sql::{Any, CommandStatementQuery, ProstMessageExt, TicketStatementQuery};
+use arrow_flight::{FlightData, FlightDescriptor, Ticket};
+use arrow_schema::ArrowError;
 use control_plane_core::{GovernedCatalog, Result};
 use futures::{Stream, TryStreamExt};
 use prost::Message;
@@ -111,6 +112,109 @@ impl GovernedStatementQuery {
     }
 }
 
+/// A decoded engine `do_get` ticket — one variant per serving plane. The decode
+/// ORDER is load-bearing and lives here, next to the ticket types whose
+/// `deny_unknown_fields` disjointness it depends on: the protobuf Flight SQL
+/// ticket is tried first (a legacy JSON ticket always starts with `{`, an invalid
+/// protobuf `Any`, so the file path is never misrouted), then the three JSON
+/// shapes fall through in order, the file ticket terminal.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EngineTicket {
+    /// Flight SQL read plane: the SQL carried in a `TicketStatementQuery` handle.
+    Sql(String),
+    /// Governed-SQL plane: arbitrary client SQL + a caller-resolved governed catalog.
+    GovernedSql(GovernedStatementQuery),
+    /// k-NN vector-search plane.
+    VectorSearch(VectorSearchTicket),
+    /// File-ticket data plane: an explicit live-file set to stream.
+    Files(FlightTicket),
+}
+
+/// Why a `do_get` ticket failed to decode. Each variant's `Display` is the exact
+/// wire message the engine emitted before this enum existed (pinned by
+/// `engine/tests/ticket_errors.rs`); the `From<TicketError> for tonic::Status`
+/// below fixes the code split.
+#[derive(Debug, thiserror::Error)]
+pub enum TicketError {
+    /// A protobuf `Any` matched `TicketStatementQuery` but failed to unpack.
+    /// No fall-through: a matched Flight SQL ticket fails in place.
+    #[error("bad flight-sql ticket: {0}")]
+    FlightSqlUnpack(#[source] ArrowError),
+    /// `Any::unpack` returned `None` after `is::<TicketStatementQuery>()` matched —
+    /// an arrow-flight invariant violation, the server's fault, never the client's.
+    #[error("flight-sql ticket unpack returned None")]
+    FlightSqlEmpty,
+    /// The statement handle of a matched Flight SQL ticket is not UTF-8.
+    #[error("non-utf8 sql: {0}")]
+    NonUtf8Sql(#[source] std::string::FromUtf8Error),
+    /// The terminal failure of the fall-through chain: a ticket that is neither
+    /// Flight SQL, governed, nor kNN must be a file ticket.
+    #[error("bad flight ticket: {0}")]
+    BadFileTicket(#[source] serde_json::Error),
+}
+
+impl From<TicketError> for tonic::Status {
+    fn from(e: TicketError) -> Self {
+        match &e {
+            // Server-side invariant violation, not a client fault.
+            TicketError::FlightSqlEmpty => tonic::Status::internal(e.to_string()),
+            TicketError::FlightSqlUnpack(_)
+            | TicketError::NonUtf8Sql(_)
+            | TicketError::BadFileTicket(_) => tonic::Status::invalid_argument(e.to_string()),
+        }
+    }
+}
+
+impl EngineTicket {
+    /// Decode a `Ticket.ticket` payload into its serving plane.
+    ///
+    /// Flight SQL read path first: a `TicketStatementQuery` (Any-wrapped) carrying
+    /// the SQL. Try the protobuf decode first; a legacy JSON ticket always starts
+    /// with `{` (an invalid protobuf `Any`), so this never misroutes the file path.
+    /// (The decode-then-`is::<>()` ordering is load-bearing.) The JSON planes then
+    /// fall through in order — `deny_unknown_fields` on all three JSON shapes makes
+    /// each stage unambiguous — with the file ticket terminal.
+    pub fn decode(bytes: &[u8]) -> std::result::Result<Self, TicketError> {
+        if let Ok(any) = Any::decode(bytes)
+            && any.is::<TicketStatementQuery>()
+        {
+            let tsq = any
+                .unpack::<TicketStatementQuery>()
+                .map_err(TicketError::FlightSqlUnpack)?
+                .ok_or(TicketError::FlightSqlEmpty)?;
+            let sql = String::from_utf8(tsq.statement_handle.to_vec())
+                .map_err(TicketError::NonUtf8Sql)?;
+            return Ok(Self::Sql(sql));
+        }
+        // loom-native governed SQL ticket (JSON): disjoint fields
+        // (deny_unknown_fields) from the other JSON tickets.
+        if let Ok(gq) = GovernedStatementQuery::decode(bytes) {
+            return Ok(Self::GovernedSql(gq));
+        }
+        // loom-native k-NN ticket (JSON). Disjoint fields from FlightTicket
+        // (deny_unknown_fields on both) make this unambiguous.
+        if let Ok(vs) = VectorSearchTicket::decode(bytes) {
+            return Ok(Self::VectorSearch(vs));
+        }
+        // File-ticket data plane: a JSON `FlightTicket` naming data files.
+        FlightTicket::decode(bytes)
+            .map(Self::Files)
+            .map_err(TicketError::BadFileTicket)
+    }
+}
+
+/// Decode a `do_get` response's schema-first `FlightData` stream into
+/// `RecordBatch`es, mapping inbound `tonic::Status` items to
+/// `FlightError::Tonic` (via `From`). The shared decode step of every
+/// `do_get` consumer in this module; error mapping onto the caller's domain
+/// stays at each call site.
+fn decode_batches(resp: tonic::Response<tonic::Streaming<FlightData>>) -> FlightRecordBatchStream {
+    FlightRecordBatchStream::new_from_flight_data(
+        resp.into_inner()
+            .map_err(arrow_flight::error::FlightError::from),
+    )
+}
+
 /// Zero-pool client for the engine's Arrow Flight data plane. Holds no
 /// Postgres connection: it streams a file set's rows from the engine over
 /// the engine's Unix-domain socket.
@@ -140,13 +244,10 @@ impl FlightTableClient {
             })
             .await
             .map_err(crate::client::be)?;
-        // Map inbound tonic::Status errors to FlightError::Tonic via From impl,
-        // then decode the schema-first FlightData stream into RecordBatches.
-        let stream = FlightRecordBatchStream::new_from_flight_data(
-            resp.into_inner()
-                .map_err(arrow_flight::error::FlightError::from),
-        );
-        let batches: Vec<RecordBatch> = stream.try_collect().await.map_err(crate::client::be)?;
+        let batches: Vec<RecordBatch> = decode_batches(resp)
+            .try_collect()
+            .await
+            .map_err(crate::client::be)?;
         Ok(batches)
     }
 
@@ -171,11 +272,7 @@ impl FlightTableClient {
                 }
                 _ => VectorSearchError::Engine(s.message().to_string()),
             })?;
-        let stream = FlightRecordBatchStream::new_from_flight_data(
-            resp.into_inner()
-                .map_err(arrow_flight::error::FlightError::from),
-        );
-        stream
+        decode_batches(resp)
             .try_collect()
             .await
             .map_err(|e| VectorSearchError::Engine(e.to_string()))
@@ -203,39 +300,11 @@ impl FlightSqlClient {
     /// Execute already-compiled, param-inlined `sql` and collect the streamed result.
     /// Each `RecordBatch` arrives as its own Flight message, so a wide/large result
     /// never serialises into a single oversized gRPC message (the unary path's cap).
+    /// Buffering wrapper over [`execute_stream`](Self::execute_stream) — the stream's
+    /// items are already mapped to control-plane errors, so collecting preserves the
+    /// error class/messages of the old hand-rolled body.
     pub async fn execute(&self, sql: String) -> Result<Vec<RecordBatch>> {
-        let cmd = CommandStatementQuery {
-            query: sql,
-            transaction_id: None,
-        };
-        let descriptor = FlightDescriptor::new_cmd(cmd.as_any().encode_to_vec());
-
-        let info = self
-            .inner
-            .clone()
-            .get_flight_info(descriptor)
-            .await
-            .map_err(crate::client::be)?
-            .into_inner();
-        let ticket = info
-            .endpoint
-            .into_iter()
-            .next()
-            .and_then(|e| e.ticket)
-            .ok_or_else(|| crate::client::be("flight info carried no ticket"))?;
-
-        let resp = self
-            .inner
-            .clone()
-            .do_get(ticket)
-            .await
-            .map_err(crate::client::be)?;
-        let stream = FlightRecordBatchStream::new_from_flight_data(
-            resp.into_inner()
-                .map_err(arrow_flight::error::FlightError::from),
-        );
-        let batches: Vec<RecordBatch> = stream.try_collect().await.map_err(crate::client::be)?;
-        Ok(batches)
+        self.execute_stream(sql).await?.try_collect().await
     }
 
     /// Like [`execute`](Self::execute) but returns the decoded `do_get` result as a
@@ -259,7 +328,7 @@ impl FlightSqlClient {
             .clone()
             .get_flight_info(descriptor)
             .await
-            .map_err(crate::client::be)?
+            .map_err(crate::client::sql_status)?
             .into_inner();
         let ticket = info
             .endpoint
@@ -273,15 +342,10 @@ impl FlightSqlClient {
             .clone()
             .do_get(ticket)
             .await
-            .map_err(crate::client::be)?;
+            .map_err(crate::client::sql_status)?;
         // Decode the schema-first FlightData stream into RecordBatches, mapping the
         // stream's FlightError items to control-plane errors (same `be` mapping the
         // buffered path uses). The stream owns the (cloned) response, so it is 'static.
-        let stream = FlightRecordBatchStream::new_from_flight_data(
-            resp.into_inner()
-                .map_err(arrow_flight::error::FlightError::from),
-        )
-        .map_err(crate::client::be);
-        Ok(Box::pin(stream))
+        Ok(Box::pin(decode_batches(resp).map_err(crate::client::be)))
     }
 }

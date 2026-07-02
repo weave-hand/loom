@@ -147,6 +147,19 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "serving-status",
+    crate = "serving_status",
+    srcs = ["tests/serving_status.rs"],
+    crate_root = "tests/serving_status.rs",
+    deps = [
+        ":engine",
+        "//src/services/engine-serving:engine-serving",
+        "//third-party:datafusion",
+        "//third-party:tonic",
+    ],
+)
+
 loom_fixture_test(
     name = "flight-sql",
     crate = "flight_sql",
@@ -207,6 +220,26 @@ loom_fixture_test(
         "//third-party:tokio",
         "//third-party:tokio-stream",
         "//third-party:tonic",
+    ],
+)
+
+loom_fixture_test(
+    name = "ticket-errors",
+    crate = "ticket_errors",
+    srcs = ["tests/ticket_errors.rs"],
+    crate_root = "tests/ticket_errors.rs",
+    deps = [
+        ":engine",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-flight",
+        "//third-party:hyper-util",
+        "//third-party:iceberg",
+        "//third-party:prost",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:tower",
     ],
 )
 

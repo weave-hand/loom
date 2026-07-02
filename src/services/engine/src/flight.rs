@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
@@ -18,10 +19,27 @@ use control_plane_core::{Catalog, TableRef};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
+use engine_wire::flight::EngineTicket;
 use futures::TryStreamExt; // for `.map_err` on the FlightDataEncoder stream
 use prost::Message;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status, Streaming};
+
+/// The one total `EngineServingError` -> gRPC `Status` mapping for the engine's
+/// Flight data plane. Class-preserving: `Plan` (bad SQL — the client's fault) ->
+/// `invalid_argument`; `NoIndex` -> `not_found`; `DimMismatch` ->
+/// `invalid_argument`; `Engine` (execution/backend) -> `internal`. The
+/// NoIndex/DimMismatch arms carry the INNER message only (no enum prefix),
+/// preserving the wire messages the clients' inverse mappings decode.
+pub fn serving_status(e: engine_serving::EngineServingError) -> Status {
+    use engine_serving::EngineServingError as E;
+    match e {
+        E::NoIndex(m) => Status::not_found(m),
+        E::DimMismatch(m) => Status::invalid_argument(m),
+        e @ E::Plan(_) => Status::invalid_argument(e.to_string()),
+        e @ E::Engine(_) => Status::internal(e.to_string()),
+    }
+}
 
 pub struct FlightDataService {
     /// File-ticket data plane (worker/compaction): a real Iceberg `SqlCatalog`.
@@ -34,10 +52,23 @@ pub struct FlightDataService {
 }
 
 impl FlightDataService {
+    /// Flight-encode a `RecordBatch` stream (schema message first, then batches)
+    /// and box it as the `do_get` response. Encoder/stream errors map to
+    /// `Status::internal`, matching the old unary handler's mapping so query-api's
+    /// HTTP error codes are unchanged. The shared tail of all four serving planes.
+    fn encode_response(
+        batches: impl futures::Stream<Item = Result<RecordBatch, FlightError>> + Send + 'static,
+    ) -> Response<<Self as FlightService>::DoGetStream> {
+        let out = FlightDataEncoderBuilder::new()
+            .build(batches)
+            .map_err(|e| Status::internal(e.to_string()));
+        Response::new(Box::pin(out))
+    }
+
     /// Run `sql` through the streaming serving tier and Flight-encode the result
-    /// `RecordBatch` stream (schema message first, then batches). DataFusion/stream
-    /// errors map to `Status::internal`, matching the old unary handler's mapping so
-    /// query-api's HTTP error codes are unchanged.
+    /// `RecordBatch` stream (schema message first, then batches). Serving errors map
+    /// via [`serving_status`]: planning faults to `invalid_argument`, execution
+    /// faults to `internal` — so query-api's HTTP error codes track the class.
     async fn do_get_sql(
         &self,
         sql: String,
@@ -48,16 +79,15 @@ impl FlightDataService {
             self.serving_store.as_ref(),
         )
         .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-        let mapped = stream.map_err(|e| FlightError::from_external_error(Box::new(e)));
-        let out = FlightDataEncoderBuilder::new()
-            .build(mapped)
-            .map_err(|e| Status::internal(e.to_string()));
-        Ok(Response::new(Box::pin(out)))
+        .map_err(serving_status)?;
+        Ok(Self::encode_response(stream.map_err(|e| {
+            FlightError::from_external_error(Box::new(e))
+        })))
     }
 
     /// Run a governed SQL statement (client SQL + caller-resolved governed catalog) through
-    /// the governed serving path and Flight-encode the result stream. Mirrors `do_get_sql`.
+    /// the governed serving path and Flight-encode the result stream. Mirrors `do_get_sql`
+    /// (planning faults map to `invalid_argument`, execution faults to `internal`).
     async fn do_get_governed_sql(
         &self,
         q: engine_wire::flight::GovernedStatementQuery,
@@ -69,12 +99,10 @@ impl FlightDataService {
             self.serving_store.as_ref(),
         )
         .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-        let mapped = stream.map_err(|e| FlightError::from_external_error(Box::new(e)));
-        let out = FlightDataEncoderBuilder::new()
-            .build(mapped)
-            .map_err(|e| Status::internal(e.to_string()));
-        Ok(Response::new(Box::pin(out)))
+        .map_err(serving_status)?;
+        Ok(Self::encode_response(stream.map_err(|e| {
+            FlightError::from_external_error(Box::new(e))
+        })))
     }
 
     /// Run a k-NN vector search and Flight-encode the single resulting
@@ -99,69 +127,19 @@ impl FlightDataService {
             vs.ef_search,
         )
         .await
-        .map_err(|e| match e {
-            engine_serving::EngineServingError::NoIndex(msg) => Status::not_found(msg),
-            engine_serving::EngineServingError::DimMismatch(msg) => Status::invalid_argument(msg),
-            other => Status::internal(other.to_string()),
-        })?;
-        let input = futures::stream::iter(std::iter::once(Ok(batch)));
-        let stream = FlightDataEncoderBuilder::new()
-            .build(input)
-            .map_err(|e| Status::internal(e.to_string()));
-        Ok(Response::new(Box::pin(stream)))
+        .map_err(serving_status)?;
+        Ok(Self::encode_response(futures::stream::iter(
+            std::iter::once(Ok::<_, FlightError>(batch)),
+        )))
     }
-}
 
-#[tonic::async_trait]
-impl FlightService for FlightDataService {
-    type HandshakeStream =
-        Pin<Box<dyn futures::Stream<Item = Result<HandshakeResponse, Status>> + Send>>;
-    type ListFlightsStream =
-        Pin<Box<dyn futures::Stream<Item = Result<FlightInfo, Status>> + Send>>;
-    type DoGetStream = Pin<Box<dyn futures::Stream<Item = Result<FlightData, Status>> + Send>>;
-    type DoPutStream = Pin<Box<dyn futures::Stream<Item = Result<PutResult, Status>> + Send>>;
-    type DoExchangeStream = Pin<Box<dyn futures::Stream<Item = Result<FlightData, Status>> + Send>>;
-    type DoActionStream =
-        Pin<Box<dyn futures::Stream<Item = Result<arrow_flight::Result, Status>> + Send>>;
-    type ListActionsStream =
-        Pin<Box<dyn futures::Stream<Item = Result<ActionType, Status>> + Send>>;
-
-    async fn do_get(
+    /// File-ticket data plane: stream an explicit live-file set. Every
+    /// ticket-named path must belong to the table's live snapshot (see the
+    /// defense-in-depth comment inline).
+    async fn do_get_files(
         &self,
-        request: Request<Ticket>,
-    ) -> Result<Response<Self::DoGetStream>, Status> {
-        let ticket = request.into_inner();
-
-        // Flight SQL read path: a TicketStatementQuery (Any-wrapped) carrying the SQL.
-        // Try the protobuf decode first; a legacy JSON `FlightTicket` always starts
-        // with `{` (an invalid protobuf `Any`), so this never misroutes the file path.
-        // (The decode-then-`is::<>()` ordering is load-bearing.)
-        if let Ok(any) = Any::decode(&ticket.ticket[..])
-            && any.is::<TicketStatementQuery>()
-        {
-            let tsq = any
-                .unpack::<TicketStatementQuery>()
-                .map_err(|e| Status::invalid_argument(format!("bad flight-sql ticket: {e}")))?
-                .ok_or_else(|| Status::internal("flight-sql ticket unpack returned None"))?;
-            let sql = String::from_utf8(tsq.statement_handle.to_vec())
-                .map_err(|e| Status::invalid_argument(format!("non-utf8 sql: {e}")))?;
-            return self.do_get_sql(sql).await;
-        }
-
-        // loom-native governed SQL ticket (JSON): arbitrary client SQL + a resolved governed
-        // catalog. Disjoint fields (deny_unknown_fields) from the other JSON tickets.
-        if let Ok(gq) = engine_wire::flight::GovernedStatementQuery::decode(&ticket.ticket) {
-            return self.do_get_governed_sql(gq).await;
-        }
-
-        // loom-native k-NN ticket (JSON). Disjoint fields from FlightTicket
-        // (deny_unknown_fields on both) make this unambiguous.
-        if let Ok(vs) = engine_wire::flight::VectorSearchTicket::decode(&ticket.ticket) {
-            return self.do_get_vector_search(vs).await;
-        }
-
-        // File-ticket data plane (existing): a JSON `FlightTicket` naming data files.
-        let req = FlightTicketReq::decode(ticket)?;
+        req: engine_wire::flight::FlightTicket,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         let table = TableRef {
             schema: req.schema,
             name: req.name,
@@ -211,11 +189,39 @@ impl FlightService for FlightDataService {
 
         // FlightDataEncoderBuilder emits a schema message first, then the data —
         // satisfying the stream's schema-fidelity contract.
-        let input = futures::stream::iter(batches.into_iter().map(Ok));
-        let stream = FlightDataEncoderBuilder::new()
-            .build(input)
-            .map_err(|e| Status::internal(e.to_string()));
-        Ok(Response::new(Box::pin(stream)))
+        Ok(Self::encode_response(futures::stream::iter(
+            batches.into_iter().map(Ok::<_, FlightError>),
+        )))
+    }
+}
+
+#[tonic::async_trait]
+impl FlightService for FlightDataService {
+    type HandshakeStream =
+        Pin<Box<dyn futures::Stream<Item = Result<HandshakeResponse, Status>> + Send>>;
+    type ListFlightsStream =
+        Pin<Box<dyn futures::Stream<Item = Result<FlightInfo, Status>> + Send>>;
+    type DoGetStream = Pin<Box<dyn futures::Stream<Item = Result<FlightData, Status>> + Send>>;
+    type DoPutStream = Pin<Box<dyn futures::Stream<Item = Result<PutResult, Status>> + Send>>;
+    type DoExchangeStream = Pin<Box<dyn futures::Stream<Item = Result<FlightData, Status>> + Send>>;
+    type DoActionStream =
+        Pin<Box<dyn futures::Stream<Item = Result<arrow_flight::Result, Status>> + Send>>;
+    type ListActionsStream =
+        Pin<Box<dyn futures::Stream<Item = Result<ActionType, Status>> + Send>>;
+
+    async fn do_get(
+        &self,
+        request: Request<Ticket>,
+    ) -> Result<Response<Self::DoGetStream>, Status> {
+        let ticket = request.into_inner();
+        // Decode order + fall-through invariants live with the ticket types:
+        // engine_wire::flight::EngineTicket (and its unit pins).
+        match EngineTicket::decode(&ticket.ticket)? {
+            EngineTicket::Sql(sql) => self.do_get_sql(sql).await,
+            EngineTicket::GovernedSql(q) => self.do_get_governed_sql(q).await,
+            EngineTicket::VectorSearch(vs) => self.do_get_vector_search(vs).await,
+            EngineTicket::Files(ft) => self.do_get_files(ft).await,
+        }
     }
 
     async fn handshake(
@@ -306,23 +312,4 @@ impl FlightService for FlightDataService {
 #[must_use = "the membership result must be mapped to a Status"]
 pub fn all_in_live_set(live: &HashSet<String>, requested: &[String]) -> bool {
     requested.iter().all(|p| live.contains(p))
-}
-
-/// Decode a `FlightTicket` from the request, mapping a bad ticket to
-/// `invalid_argument`.
-struct FlightTicketReq {
-    schema: String,
-    name: String,
-    files: Vec<String>,
-}
-impl FlightTicketReq {
-    fn decode(t: Ticket) -> Result<Self, Status> {
-        let ft = engine_wire::flight::FlightTicket::decode(&t.ticket)
-            .map_err(|e| Status::invalid_argument(format!("bad flight ticket: {e}")))?;
-        Ok(Self {
-            schema: ft.schema,
-            name: ft.name,
-            files: ft.files,
-        })
-    }
 }

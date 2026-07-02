@@ -97,3 +97,17 @@ fn internal_variants_are_opaque_500() {
         StatusCode::INTERNAL_SERVER_ERROR
     );
 }
+
+#[test]
+fn plan_class_is_400_with_message_body() {
+    // WHITELISTED (road-engine-wire-dedup): an engine PLANNING fault is the
+    // statement's fault -> 400 echoing the engine's plan message (the same
+    // engine-built-message echo precedent as DimMismatch). Execution faults
+    // (ServingError::Engine) stay opaque 500 — pinned above.
+    assert_eq!(
+        status(QueryError::Serving(ServingError::Plan(
+            "query planning failed: no table".into()
+        ))),
+        StatusCode::BAD_REQUEST
+    );
+}

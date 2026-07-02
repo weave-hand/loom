@@ -52,6 +52,12 @@ pub struct Rows {
 pub enum ServingError {
     #[error("serving engine: {0}")]
     Engine(String),
+    /// The engine rejected the SQL at *planning* time (the `Validation` class off
+    /// the Flight SQL wire; in-process: `EngineServingError::Plan`) → 400. The
+    /// message is the engine's `query planning failed: …` — pass-through Display,
+    /// no re-prefixing.
+    #[error("{0}")]
+    Plan(String),
     /// No built vector index for the requested name/type → 404.
     #[error("no vector index: {0}")]
     NoIndex(String),

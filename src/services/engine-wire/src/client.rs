@@ -12,6 +12,10 @@ use crate::convert;
 use crate::pb;
 use crate::pb::engine_control_client::EngineControlClient;
 
+/// Flatten ANY error to an opaque `ControlPlaneError::Backend` string.
+/// WARNING: class-erasing — after road-engine-wire-dedup this is legitimate
+/// only for transport faults and planes with no error classes; class-carrying
+/// planes must use [`cp_status`] (governance) / `sql_status` (Flight SQL).
 pub(crate) fn be<E: std::fmt::Display>(e: E) -> ControlPlaneError {
     ControlPlaneError::Backend(e.to_string().into())
 }
@@ -31,6 +35,19 @@ pub fn cp_status(s: tonic::Status) -> ControlPlaneError {
     }
 }
 
+/// Map a tonic [`tonic::Status`] from the engine's Flight **SQL** plane back to a
+/// [`ControlPlaneError`], inverting the engine-side `serving_status` mapping so the
+/// planning-error class survives the wire: `InvalidArgument` (the engine classifies
+/// only `ctx.sql()` planning faults this way on the SQL plane) -> `Validation`;
+/// everything else stays an opaque `Backend`. Mirrors [`cp_status`].
+#[must_use]
+pub fn sql_status(s: tonic::Status) -> ControlPlaneError {
+    match s.code() {
+        tonic::Code::InvalidArgument => ControlPlaneError::Validation(s.message().to_string()),
+        _ => be(s),
+    }
+}
+
 /// Decode a serde-JSON governance payload, mapping decode failure to `Serialization`.
 fn de<T: serde::de::DeserializeOwned>(json: &str) -> Result<T> {
     serde_json::from_str(json).map_err(|e| ControlPlaneError::Serialization(e.to_string()))
@@ -39,6 +56,38 @@ fn de<T: serde::de::DeserializeOwned>(json: &str) -> Result<T> {
 /// Encode a governance argument to serde-JSON, mapping failure to `Serialization`.
 fn se<T: serde::Serialize>(v: &T) -> Result<String> {
     serde_json::to_string(v).map_err(|e| ControlPlaneError::Serialization(e.to_string()))
+}
+
+/// Expand a governance-read RPC method. Every governance getter shares one body
+/// shape — build the pb request, call the RPC, map `Status` via [`cp_status`]
+/// (class-preserving), JSON-decode the named response field via `de` — so the
+/// macro takes the method name + args, the RPC and response-field names, and the
+/// request expression, and generates exactly that body. Data-plane RPCs
+/// (flush/gc/write/…) stay hand-written: different error mapping (`be`) and
+/// typed non-JSON responses.
+///
+/// Matcher shape note: the argument list is captured as `$($args:tt)*` and the
+/// request as one trailing `$req:expr` because the naive per-field fragments
+/// (`$ty:ty` before `)`, `$v:expr` before `}`) violate `macro_rules!`
+/// follow-set rules.
+macro_rules! gov_rpc {
+    (
+        $(#[$meta:meta])*
+        fn $name:ident($($args:tt)*) -> $ret:ty;
+        rpc $rpc:ident, out $out:ident, req $req:expr
+    ) => {
+        $(#[$meta])*
+        pub async fn $name(&self, $($args)*) -> Result<$ret> {
+            let resp = self
+                .inner
+                .clone()
+                .$rpc($req)
+                .await
+                .map_err(cp_status)?
+                .into_inner();
+            de(&resp.$out)
+        }
+    };
 }
 
 /// A cloneable gRPC client for the engine's `EngineControl` service.
@@ -210,170 +259,92 @@ impl GrpcQueueClient {
         Ok(resp.snapshot_id)
     }
 
-    /// Governance: check whether `subject` may perform `action` on `target`.
-    pub async fn gov_check(
-        &self,
-        subject: &SubjectId,
-        action: Action,
-        target: &PolicyTarget,
-    ) -> Result<Decision> {
-        let resp = self
-            .inner
-            .clone()
-            .check(pb::CheckRequest {
-                subject_json: se(subject)?,
-                action_json: se(&action)?,
-                target_json: se(target)?,
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.decision_json)
+    gov_rpc! {
+        /// Governance: check whether `subject` may perform `action` on `target`.
+        fn gov_check(subject: &SubjectId, action: Action, target: &PolicyTarget) -> Decision;
+        rpc check, out decision_json, req pb::CheckRequest {
+            subject_json: se(subject)?,
+            action_json: se(&action)?,
+            target_json: se(target)?,
+        }
     }
 
-    /// Governance: list policies granting `subject` `action` on `target`.
-    pub async fn gov_policies_for(
-        &self,
-        subject: &SubjectId,
-        action: Action,
-        target: &PolicyTarget,
-        page: &PageReq,
-    ) -> Result<Page<Policy>> {
-        let resp = self
-            .inner
-            .clone()
-            .policies_for(pb::PoliciesForRequest {
-                subject_json: se(subject)?,
-                action_json: se(&action)?,
-                target_json: se(target)?,
-                page_json: se(page)?,
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.page_json)
+    gov_rpc! {
+        /// Governance: list policies granting `subject` `action` on `target`.
+        fn gov_policies_for(subject: &SubjectId, action: Action, target: &PolicyTarget, page: &PageReq) -> Page<Policy>;
+        rpc policies_for, out page_json, req pb::PoliciesForRequest {
+            subject_json: se(subject)?,
+            action_json: se(&action)?,
+            target_json: se(target)?,
+            page_json: se(page)?,
+        }
     }
 
-    /// Governance: fetch the ontology definition of a named object type.
-    pub async fn gov_get_type(&self, name: &TypeName) -> Result<ObjectType> {
-        let resp = self
-            .inner
-            .clone()
-            .get_type(pb::GetTypeRequest {
-                type_name: name.0.clone(),
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.object_type_json)
+    gov_rpc! {
+        /// Governance: fetch the ontology definition of a named object type.
+        fn gov_get_type(name: &TypeName) -> ObjectType;
+        rpc get_type, out object_type_json, req pb::GetTypeRequest {
+            type_name: name.0.clone(),
+        }
     }
 
-    /// Governance: resolve a type name to its underlying catalog `TableRef`.
-    pub async fn gov_resolve(&self, name: &TypeName) -> Result<TableRef> {
-        let resp = self
-            .inner
-            .clone()
-            .resolve(pb::ResolveRequest {
-                type_name: name.0.clone(),
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.table_ref_json)
+    gov_rpc! {
+        /// Governance: resolve a type name to its underlying catalog `TableRef`.
+        fn gov_resolve(name: &TypeName) -> TableRef;
+        rpc resolve, out table_ref_json, req pb::ResolveRequest {
+            type_name: name.0.clone(),
+        }
     }
 
-    /// Governance: list links declared on a named object type.
-    pub async fn gov_links(&self, name: &TypeName, page: &PageReq) -> Result<Page<LinkDef>> {
-        let resp = self
-            .inner
-            .clone()
-            .links(pb::LinksRequest {
-                type_name: name.0.clone(),
-                page_json: se(page)?,
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.page_json)
+    gov_rpc! {
+        /// Governance: list links declared on a named object type.
+        fn gov_links(name: &TypeName, page: &PageReq) -> Page<LinkDef>;
+        rpc links, out page_json, req pb::LinksRequest {
+            type_name: name.0.clone(),
+            page_json: se(page)?,
+        }
     }
 
-    /// Governance: list links that target a named object type.
-    pub async fn gov_links_to(&self, name: &TypeName, page: &PageReq) -> Result<Page<LinkDef>> {
-        let resp = self
-            .inner
-            .clone()
-            .links_to(pb::LinksToRequest {
-                type_name: name.0.clone(),
-                page_json: se(page)?,
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.page_json)
+    gov_rpc! {
+        /// Governance: list links that target a named object type.
+        fn gov_links_to(name: &TypeName, page: &PageReq) -> Page<LinkDef>;
+        rpc links_to, out page_json, req pb::LinksToRequest {
+            type_name: name.0.clone(),
+            page_json: se(page)?,
+        }
     }
 
-    /// Governance: list all defined object types.
-    pub async fn gov_list_types(&self, page: &PageReq) -> Result<Page<ObjectType>> {
-        let resp = self
-            .inner
-            .clone()
-            .list_types(pb::ListTypesRequest {
-                page_json: se(page)?,
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.page_json)
+    gov_rpc! {
+        /// Governance: list all defined object types.
+        fn gov_list_types(page: &PageReq) -> Page<ObjectType>;
+        rpc list_types, out page_json, req pb::ListTypesRequest {
+            page_json: se(page)?,
+        }
     }
 
-    /// Governance: fetch the definition of a named action.
-    pub async fn gov_get_action(&self, name: &ActionName) -> Result<ActionDef> {
-        let resp = self
-            .inner
-            .clone()
-            .get_action(pb::GetActionRequest {
-                action_name: name.0.clone(),
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.action_def_json)
+    gov_rpc! {
+        /// Governance: fetch the definition of a named action.
+        fn gov_get_action(name: &ActionName) -> ActionDef;
+        rpc get_action, out action_def_json, req pb::GetActionRequest {
+            action_name: name.0.clone(),
+        }
     }
 
-    /// Governance: list all vector index definitions for a named object type.
-    pub async fn gov_vector_indexes_for(
-        &self,
-        type_name: &TypeName,
-    ) -> Result<Vec<VectorIndexDef>> {
-        let resp = self
-            .inner
-            .clone()
-            .vector_indexes_for(pb::VectorIndexesForRequest {
-                type_name: type_name.0.clone(),
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.indexes_json)
+    gov_rpc! {
+        /// Governance: list all vector index definitions for a named object type.
+        fn gov_vector_indexes_for(type_name: &TypeName) -> Vec<VectorIndexDef>;
+        rpc vector_indexes_for, out indexes_json, req pb::VectorIndexesForRequest {
+            type_name: type_name.0.clone(),
+        }
     }
 
-    /// Governance: fetch a specific named vector index definition for a type.
-    pub async fn gov_get_vector_index(
-        &self,
-        type_name: &TypeName,
-        name: &str,
-    ) -> Result<Option<VectorIndexDef>> {
-        let resp = self
-            .inner
-            .clone()
-            .get_vector_index(pb::GetVectorIndexRequest {
-                type_name: type_name.0.clone(),
-                name: name.to_string(),
-            })
-            .await
-            .map_err(cp_status)?
-            .into_inner();
-        de(&resp.index_json)
+    gov_rpc! {
+        /// Governance: fetch a specific named vector index definition for a type.
+        fn gov_get_vector_index(type_name: &TypeName, name: &str) -> Option<VectorIndexDef>;
+        rpc get_vector_index, out index_json, req pb::GetVectorIndexRequest {
+            type_name: type_name.0.clone(),
+            name: name.to_string(),
+        }
     }
 }
 
