@@ -1124,3 +1124,69 @@ fn identity_none_is_byte_identical_to_distinct_fallback() {
          LIMIT 100"
     );
 }
+
+#[test]
+fn between_predicate_with_wrong_arity_is_malformed_not_panic() {
+    let p = CallerPredicate {
+        column: "amount".into(),
+        op: CompareOp::Between,
+        values: vec![SqlValue::Int(1)], // needs exactly two
+    };
+    let err = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &[],
+        std::slice::from_ref(&p),
+        &[],
+        &[],
+        100,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("between predicate"), "got: {err}");
+}
+
+#[test]
+fn scalar_predicate_with_no_operand_is_malformed_not_panic() {
+    let p = CallerPredicate {
+        column: "status".into(),
+        op: CompareOp::Eq,
+        values: vec![],
+    };
+    let err = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &[],
+        std::slice::from_ref(&p),
+        &[],
+        &[],
+        100,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("scalar predicate"), "got: {err}");
+}
+
+#[test]
+fn text_pattern_predicate_with_no_operand_is_malformed_not_panic() {
+    let p = CallerPredicate {
+        column: "name".into(),
+        op: CompareOp::Contains,
+        values: vec![],
+    };
+    let err = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &[],
+        std::slice::from_ref(&p),
+        &[],
+        &[],
+        100,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("text-pattern predicate"),
+        "got: {err}"
+    );
+}
