@@ -5,149 +5,14 @@
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, CompareOp, ControlPlane, Effect, ObjectType,
-    ParamDef, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, CompareOp, ControlPlane, Effect, ObjectType, Policy,
+    PolicyTarget, RoleId, RowFilter, ScalarValue, SubjectId, TypeName,
 };
-use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use e2e_support::InProcessServingEngine;
+use e2e_support::{InProcessServingEngine, define_widget, grant_writer_role};
 use query_api::action::{ActionDeps, ActionError, WriteDenialReason, run_action};
 use serde_json::json;
-
-/// Define `Widget(id Long identity, name String, qty Long)` + `createWidget`,
-/// `updateWidget` (id+qty), and `deleteWidget` (id) actions.
-async fn define_widget(cp: &PgControlPlane) -> TypeName {
-    let widget = TypeName("Widget".into());
-    cp.ontology()
-        .define_type(ObjectType {
-            name: widget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "widget".into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "qty".into(),
-                    ty: "Long".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-        })
-        .await
-        .unwrap();
-    cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createWidget".into()),
-            target: widget.clone(),
-            parameters: vec![
-                ParamDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    binds: None,
-                },
-                ParamDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    binds: None,
-                },
-                ParamDef {
-                    name: "qty".into(),
-                    ty: "Long".into(),
-                    required: false,
-                    binds: None,
-                },
-            ],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
-        .await
-        .unwrap();
-    cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("updateWidget".into()),
-            target: widget.clone(),
-            parameters: vec![
-                ParamDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    binds: None,
-                },
-                ParamDef {
-                    name: "qty".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    binds: None,
-                },
-            ],
-            kind: ActionKind::Update,
-            assignments: vec![],
-        })
-        .await
-        .unwrap();
-    cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("deleteWidget".into()),
-            target: widget.clone(),
-            parameters: vec![ParamDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            }],
-            kind: ActionKind::Delete,
-            assignments: vec![],
-        })
-        .await
-        .unwrap();
-    widget
-}
-
-/// Grant Write + Read on `widget` to a fresh `writer` subject; return both the
-/// subject and the role so callers can call `set_policy` on the role.
-async fn grant_writer(cp: &PgControlPlane, widget: &TypeName) -> (SubjectId, RoleId) {
-    let subj = SubjectId("writer".into());
-    let role = RoleId("writers".into());
-    cp.define_subject(&subj).await.unwrap();
-    cp.define_role(&role).await.unwrap();
-    cp.assign_role(&subj, &role).await.unwrap();
-    cp.grant(
-        &role,
-        Action::Write,
-        PolicyTarget::Type(widget.clone()),
-        Effect::Allow,
-    )
-    .await
-    .unwrap();
-    cp.grant(
-        &role,
-        Action::Read,
-        PolicyTarget::Type(widget.clone()),
-        Effect::Allow,
-    )
-    .await
-    .unwrap();
-    (subj, role)
-}
 
 // ---------------------------------------------------------------------------
 // Test 1 — deny-column blocks an UPDATE that sets the denied column
@@ -161,7 +26,7 @@ async fn update_column_denied() {
     let warehouse = tempfile::tempdir().expect("warehouse");
 
     let widget = define_widget(&cp).await;
-    let (subj, role) = grant_writer(&cp, &widget).await;
+    let (subj, role) = grant_writer_role(&cp, &widget).await;
 
     let (engine, _eg) =
         e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
@@ -231,7 +96,7 @@ async fn update_row_filter_denied_resulting() {
     let warehouse = tempfile::tempdir().expect("warehouse");
 
     let widget = define_widget(&cp).await;
-    let (subj, role) = grant_writer(&cp, &widget).await;
+    let (subj, role) = grant_writer_role(&cp, &widget).await;
 
     // Set policy first: row_filter `qty < 5`.
     cp.set_policy(
@@ -300,7 +165,7 @@ async fn update_row_filter_denied_existing() {
     let warehouse = tempfile::tempdir().expect("warehouse");
 
     let widget = define_widget(&cp).await;
-    let (subj, role) = grant_writer(&cp, &widget).await;
+    let (subj, role) = grant_writer_role(&cp, &widget).await;
 
     let (engine, _eg) =
         e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
@@ -369,7 +234,7 @@ async fn delete_row_filter_denied() {
     let warehouse = tempfile::tempdir().expect("warehouse");
 
     let widget = define_widget(&cp).await;
-    let (subj, role) = grant_writer(&cp, &widget).await;
+    let (subj, role) = grant_writer_role(&cp, &widget).await;
 
     let (engine, _eg) =
         e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
@@ -448,46 +313,23 @@ async fn vector_guard() {
     // Define VectorWidget(id Long identity, embedding vector(4)).
     let vwidget = TypeName("VectorWidget".into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: vwidget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "vector_widget".into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-        })
+        .define_type(
+            ObjectType::build("VectorWidget", ("main", "vector_widget"))
+                .prop_req("id", "Long")
+                .prop("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .unwrap();
 
     // Define deleteVectorWidget (Delete, param id).
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("deleteVectorWidget".into()),
-            target: vwidget.clone(),
-            parameters: vec![ParamDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            }],
-            kind: ActionKind::Delete,
-            assignments: vec![],
-        })
+        .define_action(
+            ActionDef::build("deleteVectorWidget", "VectorWidget", ActionKind::Delete)
+                .param_req("id", "Long")
+                .done(),
+        )
         .await
         .unwrap();
 
