@@ -3,6 +3,7 @@
 use control_plane_core::CompareOp;
 use query_api::filter::coerce_predicate;
 use query_api::filter::{FilterError, coerce_filter};
+use query_api::filter::{split_member, split_or_members};
 use query_api::serving::SqlValue;
 
 #[test]
@@ -335,4 +336,39 @@ fn coerce_predicate_grammar_fault_stays_bad_value() {
         coerce_predicate("amount", "double", "gt:abc").unwrap_err(),
         FilterError::Coerce { .. }
     ));
+}
+
+#[test]
+fn or_members_split_on_unescaped_commas() {
+    assert_eq!(
+        split_or_members("amount:gt:100,status:eq:vip").unwrap(),
+        vec!["amount:gt:100".to_string(), "status:eq:vip".to_string()]
+    );
+}
+
+#[test]
+fn or_member_escaped_comma_keeps_set_operand_list_intact() {
+    // A member carrying an `in` set escapes its operand commas so the member-split does
+    // not cut the set; the escape is consumed here, leaving a plain comma for coerce.
+    assert_eq!(
+        split_or_members(r"region:in:EU\,UK,status:eq:vip").unwrap(),
+        vec!["region:in:EU,UK".to_string(), "status:eq:vip".to_string()]
+    );
+}
+
+#[test]
+fn or_group_with_fewer_than_two_members_is_rejected() {
+    assert!(matches!(
+        split_or_members("amount:gt:100"),
+        Err(FilterError::BadValue(_, _))
+    ));
+    assert!(matches!(split_or_members(""), Err(FilterError::BadValue(_, _))));
+}
+
+#[test]
+fn or_member_split_column_from_value() {
+    assert_eq!(split_member("amount:gt:100").unwrap(), ("amount", "gt:100"));
+    assert_eq!(split_member("status:eq:vip").unwrap(), ("status", "eq:vip"));
+    // A member naming no column (no `:`) is rejected.
+    assert!(matches!(split_member("vip"), Err(FilterError::BadValue(_, _))));
 }
