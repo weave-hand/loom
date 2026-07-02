@@ -7,6 +7,34 @@ use super::{Metric, SplitMix64, distance, row_slice, row_slice_mut};
 pub(super) const KMEANS_SEED: u64 = 0x6C6F_6F6D_7665_6331;
 pub(super) const KMEANS_MAX_ITERS: usize = 20;
 
+/// Nearest of `centroids[0..k]` to `p`: `(index, distance)`. Pure first-wins
+/// argmin (strict `<`) over the same `distance` calls the inlined scan made —
+/// order-preserving for both metrics, so extraction cannot move a byte.
+///
+/// Used ONLY by the Lloyd assign loop. The k-means++ init loop deliberately
+/// keeps its incremental *squared*-distance form instead: `cosine_distance`
+/// can round slightly negative when a point is compared against a centroid
+/// that is a copy of itself, and once distances can be negative, squaring is
+/// not monotone — recasting the init as `(min d)²` would not be bit-safe.
+fn nearest_centroid(
+    metric: Metric,
+    p: &[f32],
+    centroids: &[f32],
+    d: usize,
+    k: usize,
+) -> (u32, f32) {
+    let mut best = 0u32;
+    let mut bestd = f32::INFINITY;
+    for c in 0..k {
+        let dd = distance(metric, p, row_slice(centroids, d, c));
+        if dd < bestd {
+            bestd = dd;
+            best = c as u32;
+        }
+    }
+    (best, bestd)
+}
+
 /// Deterministic k-means: k-means++ seeded init (metric-consistent) + Lloyd
 /// iterations. Returns `(centroids [k*d], assignments [n])`. Requires
 /// `1 <= k <= n` and `n >= 1`.
@@ -60,15 +88,7 @@ pub(super) fn kmeans(
         let mut changed = false;
         for i in 0..n {
             let p = row_slice(data, d, i);
-            let mut best = 0u32;
-            let mut bestd = f32::INFINITY;
-            for c in 0..k {
-                let dd = distance(metric, p, row_slice(&centroids, d, c));
-                if dd < bestd {
-                    bestd = dd;
-                    best = c as u32;
-                }
-            }
+            let (best, _) = nearest_centroid(metric, p, &centroids, d, k);
             if assignments[i] != best {
                 changed = true;
                 assignments[i] = best;

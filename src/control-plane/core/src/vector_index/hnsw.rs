@@ -23,6 +23,51 @@ fn cmp_dist(a: (f32, u32), b: (f32, u32)) -> std::cmp::Ordering {
         .then(a.1.cmp(&b.1))
 }
 
+// The two beam-search maintenance helpers below keep their linear scans
+// deliberately: both are O(len) with len bounded by `ef` (+M fan-out), where a
+// heap's constant factors and code weight buy nothing. The manual first-wins
+// scans (strict `Less` / strict `Greater`) are load-bearing: an
+// `iter().min_by`/`max_by` keeps the LAST extremum on ties (reachable via NaN
+// distances → `cmp_dist` Equal), which would change node selection.
+
+/// Pop the frontier element nearest by `cmp_dist` (linear min-scan,
+/// `swap_remove`); `None` when the frontier is exhausted.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "j and best are both < frontier.len() by the loop bound"
+)]
+fn pop_nearest(frontier: &mut Vec<(f32, u32)>) -> Option<(f32, u32)> {
+    if frontier.is_empty() {
+        return None;
+    }
+    let mut best = 0usize;
+    for j in 1..frontier.len() {
+        if cmp_dist(frontier[j], frontier[best]) == std::cmp::Ordering::Less {
+            best = j;
+        }
+    }
+    Some(frontier.swap_remove(best))
+}
+
+/// Evict the current worst result by `cmp_dist` (linear max-scan, `swap_remove`).
+/// No-op on an empty vec (callers only invoke it when `results.len() > ef >= 1`).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "j and w are both < results.len() by the loop bound"
+)]
+fn evict_worst(results: &mut Vec<(f32, u32)>) {
+    if results.is_empty() {
+        return;
+    }
+    let mut w = 0usize;
+    for j in 1..results.len() {
+        if cmp_dist(results[j], results[w]) == std::cmp::Ordering::Greater {
+            w = j;
+        }
+    }
+    results.swap_remove(w);
+}
+
 /// Best-first beam search within a single graph layer. Returns up to `ef` nearest
 /// nodes to `query`, ascending by `cmp_dist`. Visited-set guarded; no recursion.
 #[expect(
@@ -55,15 +100,7 @@ fn hnsw_search_layer(
             results.push((de, e));
         }
     }
-    while !frontier.is_empty() {
-        // Pop the nearest frontier element (linear min-scan; `ef` is bounded).
-        let mut best = 0usize;
-        for j in 1..frontier.len() {
-            if cmp_dist(frontier[j], frontier[best]) == std::cmp::Ordering::Less {
-                best = j;
-            }
-        }
-        let (cd, c) = frontier.swap_remove(best);
+    while let Some((cd, c)) = pop_nearest(&mut frontier) {
         let worst = results
             .iter()
             .map(|&(dd, _)| dd)
@@ -82,14 +119,7 @@ fn hnsw_search_layer(
                     frontier.push((dn, nbr));
                     results.push((dn, nbr));
                     if results.len() > ef {
-                        // Evict the current worst result.
-                        let mut w = 0usize;
-                        for j in 1..results.len() {
-                            if cmp_dist(results[j], results[w]) == std::cmp::Ordering::Greater {
-                                w = j;
-                            }
-                        }
-                        results.swap_remove(w);
+                        evict_worst(&mut results);
                     }
                 }
             }
