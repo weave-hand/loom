@@ -7,10 +7,10 @@
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use control_plane_core::snapshot::StatValue;
-use control_plane_core::{BaseType, TableRef, resolve_logical};
+use control_plane_core::{TableRef, resolve_logical};
 use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
@@ -201,7 +201,16 @@ async fn build_inline_provider(
         "begin_snapshot <= {0} and (end_snapshot is null or end_snapshot > {0})",
         at.0
     );
-    let logical_types: Vec<String> = cols.iter().map(|c| c.ty.clone()).collect();
+    // Resolve every column's logical type ONCE at provider construction — an
+    // unsupported type is rejected here, never mid-scan.
+    let logical_types = cols
+        .iter()
+        .map(|c| {
+            resolve_logical(&c.ty).ok_or_else(|| {
+                EngineServingError::Engine(format!("unknown logical type `{}`", c.ty))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(PgTableProvider::new(
         catalog.pool.clone(),
         inline_table_name(tid),
@@ -209,27 +218,6 @@ async fn build_inline_provider(
         logical_types,
         Some(base),
     )))
-}
-
-/// Map a loom logical `BaseType` to the canonical arrow `DataType` the serving path
-/// reads (mirrors the mirror `one_cell` mapping in `serving.rs`): string/int stay
-/// Utf8/Int*, never the `*View` variants, so `arrow_to_sqlvalue` maps them.
-fn base_to_arrow(b: BaseType) -> DataType {
-    match b {
-        BaseType::Integer => DataType::Int32,
-        BaseType::Long => DataType::Int64,
-        BaseType::Double => DataType::Float64,
-        BaseType::Boolean => DataType::Boolean,
-        BaseType::String => DataType::Utf8,
-        BaseType::Date => DataType::Date32,
-        BaseType::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
-        // A vector column is `list<float>` (a non-null f32 element). Per-object JSON
-        // serving of vectors is deferred (`fut-vector-json-serving`); the column is
-        // read via the columnar Arrow path, so this only fixes its schema presence.
-        BaseType::Vector(_) => {
-            DataType::List(Arc::new(Field::new("element", DataType::Float32, false)))
-        }
-    }
 }
 
 /// Build the authoritative arrow schema for a table from the mirror's column
@@ -246,7 +234,7 @@ fn arrow_schema_from_mirror(
             let base = resolve_logical(&c.ty).ok_or_else(|| {
                 EngineServingError::Engine(format!("unknown logical type `{}`", c.ty))
             })?;
-            Ok(Field::new(&c.name, base_to_arrow(base), c.nullable))
+            Ok(Field::new(&c.name, base.arrow_data_type(), c.nullable))
         })
         .collect::<Result<Vec<_>, EngineServingError>>()?;
     Ok(Arc::new(Schema::new(fields)))
