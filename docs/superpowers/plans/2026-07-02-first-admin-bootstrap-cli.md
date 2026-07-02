@@ -21,18 +21,20 @@
 
 ---
 
-### Task 1: `Acl::has_role` (core trait + both adapters + contract)
+### Task 1: `Acl::has_role` + `Acl::list_roles` (core trait + both adapters + contract)
 
 **Files:**
-- Modify: `src/control-plane/core/src/acl.rs` (add trait method + `ADMIN_ROLE` const)
+- Modify: `src/control-plane/core/src/acl.rs` (add trait methods + `ADMIN_ROLE` const)
 - Modify: `src/control-plane/core/src/lib.rs` (re-export `ADMIN_ROLE`)
-- Modify: `src/control-plane/postgres/src/acl.rs` (impl)
-- Modify: `src/control-plane/memory/src/acl.rs` (impl)
+- Modify: `src/control-plane/postgres/src/acl.rs` (impls)
+- Modify: `src/control-plane/memory/src/acl.rs` (impls)
 - Modify: `src/control-plane/testkit/src/lib.rs` (`acl_contract` cases)
-- Regenerate: `src/control-plane/postgres/.sqlx` (new query)
+- Regenerate: `src/control-plane/postgres/.sqlx` (new queries)
 
 **Interfaces:**
-- Produces: `Acl::has_role(&self, subject: &SubjectId, role: &RoleId) -> Result<bool>` — direct membership (not inheritance-transitive); unknown subject/role → `Ok(false)`, never an error. `pub const ADMIN_ROLE: &str = "admin";`
+- Produces: `Acl::has_role(&self, subject: &SubjectId, role: &RoleId) -> Result<bool>` — direct membership (not inheritance-transitive); unknown subject/role → `Ok(false)`, never an error.
+- Produces: `Acl::list_roles(&self) -> Result<Vec<RoleId>>` — all defined roles, sorted by id ascending.
+- Produces: `pub const ADMIN_ROLE: &str = "admin";`
 
 - [ ] **Step 1: Add the contract assertions to `acl_contract`**
 
@@ -56,6 +58,14 @@ assert!(
     !a.has_role(&sid("alice"), &rid("no-such-role")).await.unwrap(),
     "unknown role → false, not error"
 );
+
+// --- list_roles: all defined roles, sorted ---
+let roles = a.list_roles().await.unwrap();
+assert!(roles.contains(&rid("reader")), "list_roles includes a defined role");
+assert!(
+    roles.windows(2).all(|w| w[0].0 <= w[1].0),
+    "list_roles is sorted by id ascending"
+);
 ```
 
 - [ ] **Step 2: Add the trait method (compile-fails the contract)**
@@ -66,6 +76,8 @@ In `src/control-plane/core/src/acl.rs`, add to the `Acl` trait (after `assign_ro
     /// `true` iff `subject` is directly assigned `role` (NOT inheritance-transitive).
     /// Unknown subject or role → `Ok(false)`, never an error. Used by the admin gate.
     async fn has_role(&self, subject: &SubjectId, role: &RoleId) -> Result<bool>;
+    /// All defined roles, sorted by id ascending. Used by the admin console.
+    async fn list_roles(&self) -> Result<Vec<RoleId>>;
 ```
 
 And near the top-level items of the same file add:
@@ -96,6 +108,14 @@ In `src/control-plane/memory/src/acl.rs`, inside `impl Acl for MemoryControlPlan
             .members
             .contains(&(subject.0.clone(), role.0.clone())))
     }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_roles(&self) -> Result<Vec<RoleId>> {
+        let mut roles: Vec<RoleId> =
+            self.acl.lock().roles.iter().cloned().map(RoleId).collect();
+        roles.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(roles)
+    }
 ```
 
 - [ ] **Step 5: Implement in the postgres adapter**
@@ -115,6 +135,17 @@ In `src/control-plane/postgres/src/acl.rs`, inside `impl Acl for PgControlPlane`
         .await
         .map_err(backend)?
         .unwrap_or(false))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_roles(&self) -> Result<Vec<RoleId>> {
+        Ok(sqlx::query_scalar!("select id from acl.role order by id asc")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?
+            .into_iter()
+            .map(RoleId)
+            .collect())
     }
 ```
 
@@ -577,14 +608,13 @@ git commit -m "feat(acl): admin gate keyed on the admin role (has_role); AdminSt
 - Consumes: `ControlPlane::acl()`/`ontology()`, `Acl::{define_role, grant}`, `Ontology::define_type`, `ObjectType`/`PropertyDef`/`TableRef`/`TypeName`/`Action`/`PolicyTarget`/`Effect`.
 - Produces routes (all under `require_admin`):
   - `POST /admin/roles` `{ "role": "reader" }` → 201
+  - `GET /admin/roles` → `{ "roles": ["admin","reader"] }` (via `Acl::list_roles` from Task 1)
   - `POST /admin/roles/{role}/grants` `{ "action": "read"|"write", "type": "Widget" }` → 201 (unknown type → 400)
   - `POST /admin/models` `{ "name","table":{"schema","name"},"identity","properties":[{"name","ty","required"}] }` → 201
 
-(No role-listing route this slice — YAGNI; a role is created then granted/assigned by name. `Acl` has no `list_roles`, and adding one is deferred.)
-
 - [ ] **Step 1: Write the governance e2e (failing)**
 
-In `src/services/query-api/tests/admin_e2e.rs`, add a test that (as the admin-role subject): `POST /admin/models` defining a `Widget` over an existing landed `main.widget`; `POST /admin/roles {role:"reader"}`; `POST /admin/roles/reader/grants {action:"read", type:"Widget"}`; creates a reader user via `POST /admin/users`; then asserts the reader can `GET /objects/Widget` and that a non-admin gets 403 on each new route, and a grant to an unknown type returns 400. (Reuse the existing `e2e_support` seed helpers for landing `main.widget`.)
+In `src/services/query-api/tests/admin_e2e.rs`, add a test that (as the admin-role subject): `POST /admin/models` defining a `Widget` over an existing landed `main.widget`; `POST /admin/roles {role:"reader"}`; `GET /admin/roles` returns a list containing `"admin"` and `"reader"`; `POST /admin/roles/reader/grants {action:"read", type:"Widget"}`; creates a reader user via `POST /admin/users`; then asserts the reader can `GET /objects/Widget` and that a non-admin gets 403 on each new route (incl. `GET /admin/roles`), and a grant to an unknown type returns 400. (Reuse the existing `e2e_support` seed helpers for landing `main.widget`.)
 
 - [ ] **Step 2: Run to confirm 404/failure**
 
@@ -602,6 +632,15 @@ struct CreateRoleReq { role: String }
 async fn create_role(State(st): State<AdminState>, Json(req): Json<CreateRoleReq>) -> Response {
     match st.cp.acl().define_role(&RoleId(req.role.clone())).await {
         Ok(()) => (StatusCode::CREATED, Json(serde_json::json!({ "role": req.role }))).into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+async fn list_roles(State(st): State<AdminState>) -> Response {
+    match st.cp.acl().list_roles().await {
+        Ok(roles) => Json(serde_json::json!({
+            "roles": roles.into_iter().map(|r| r.0).collect::<Vec<_>>()
+        })).into_response(),
         Err(e) => status_for(&e).into_response(),
     }
 }
@@ -666,7 +705,7 @@ In `admin_routes` (`admin.rs` ~line 185) add to `inner`:
 
 ```rust
         .route("/admin/models", post(define_model))
-        .route("/admin/roles", post(create_role))
+        .route("/admin/roles", post(create_role).get(list_roles))
         .route("/admin/roles/:role/grants", post(grant))
 ```
 
