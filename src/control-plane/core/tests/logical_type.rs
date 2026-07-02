@@ -136,3 +136,25 @@ fn vector_arrow_type_is_list_of_item_float32() {
     }
     assert_eq!(vector_list_field().name(), "item");
 }
+
+#[test]
+fn is_numeric_covers_only_integer_long_double() {
+    use control_plane_core::BaseType::*;
+    for b in [Integer, Long, Double] {
+        assert!(b.is_numeric(), "{b:?} should be numeric");
+    }
+    for b in [Boolean, String, Date, Timestamp] {
+        assert!(!b.is_numeric(), "{b:?} should not be numeric");
+    }
+    assert!(!control_plane_core::BaseType::Vector(3).is_numeric());
+}
+
+#[test]
+fn is_ordered_is_everything_except_boolean() {
+    use control_plane_core::BaseType::*;
+    assert!(!Boolean.is_ordered());
+    for b in [Integer, Long, Double, String, Date, Timestamp] {
+        assert!(b.is_ordered(), "{b:?} should be ordered");
+    }
+    assert!(control_plane_core::BaseType::Vector(3).is_ordered());
+}

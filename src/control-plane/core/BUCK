@@ -332,3 +332,13 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "aggregation-typing",
+    crate = "aggregation_typing",
+    srcs = ["tests/aggregation_typing.rs"],
+    crate_root = "tests/aggregation_typing.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
