@@ -1,0 +1,28 @@
+load("//src:loom_test.bzl", "rust_test")
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+cargo.rust_library(
+    name = "lineage-naming",
+    crate = "lineage_naming",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/services/store-config:store-config",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "naming",
+    crate = "naming",
+    srcs = ["tests/naming.rs"],
+    crate_root = "tests/naming.rs",
+    edition = "2024",
+    deps = [
+        ":lineage-naming",
+        "//src/control-plane/core:core",
+        "//src/services/store-config:store-config",
+    ],
+)
