@@ -506,6 +506,7 @@ Create `src/services/query-api/tests/graph_inverse_e2e.rs`. Seed the identical `
 4. **Error arms:**
    - `?path=~memberOf` queried on a type where the single inverse hop does not close (e.g. `GET /objects/Team/graph?path=~memberOf` lands on Person ≠ Team) → 400 `NotCyclicPath`. (Confirm against the fixture which query type makes it non-cyclic; the spec bullet's "lands on Person from Team" describes querying **Team**.)
    - an unknown inverse link (`?path=~nope`) → 404.
+   - **`~`+`*` HTTP-gating regression (REQUIRED — closes the Task-2 Important finding):** `?path=~memberOf*` must NOT be routed to the recursive-tail branch; the `starred` filter in `get_graph_path` requires `direction == Forward`, so a `~`-prefixed starred element stays a path-cycle inverse hop named `memberOf*`, resolved via `links_to` → no link named `memberOf*` → **404 `UnknownLink`**. Assert status 404 for `GET /objects/Person/graph?path=~memberOf*`. This is the only test in the suite that protects the `direction == Direction::Forward` clause at `http.rs:~530`; without it, dropping that clause would silently reintroduce the bug. (URL-encode `*` if the router requires it, but `*`/`~` are RFC-3986 unreserved and normally pass raw.)
    - (Ambiguous-inverse is already a committed **handler** test in Task 1 — `inverse_hop_matching_two_inbound_links_is_ambiguous` — so it need NOT be re-asserted here. Only add an e2e `?path=~dup` → 400 case if it is trivial in this fixture; otherwise skip it, the handler test is authoritative.)
 
 Skeleton (fill in real column/id values from the fixture — no placeholders in the committed file):
@@ -533,6 +534,15 @@ Expected: PASS. If it fails on the exact reachable-id sets, verify against `grap
 ```bash
 git add src/services/query-api/tests/graph_inverse_e2e.rs src/services/query-api/BUCK
 git commit -m "test(query-api): e2e inverse hops in /graph over memberOf-only graph"
+```
+
+- [ ] **Step 6: Minor doc-comment refresh (closes a Task-2 Minor finding)**
+
+The doc comment above `get_graph_path` in `src/services/query-api/src/http.rs` (~line 444-446) still describes `?path=` as a bare "comma-split" and does not mention that it now inherits the `~` inverse-hop grammar via `parse_path_hops`. Update that comment (one or two lines) to note that a `~`-prefixed path element is followed backward (inverse hop), consistent with the `/links` chain. Do NOT change behavior. Commit with the e2e or as a tiny separate `docs`/`style` commit:
+
+```bash
+git add src/services/query-api/src/http.rs
+git commit -m "docs(query-api): note ~ inverse-hop grammar in get_graph_path comment"
 ```
 
 ---
