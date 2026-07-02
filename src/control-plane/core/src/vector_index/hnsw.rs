@@ -373,14 +373,16 @@ impl HnswIndex {
         let row_count = r.u32()?;
         let d = dim as usize;
         let rc = row_count as usize;
-        let data = read_f32_section(&mut r, rc, d, F32Section::Data)?;
-        // The remaining guards are HNSW's decode-time graph invariant — what
-        // makes the search-time `layers[c][lc]`/`row_slice` indexing sound —
-        // not a wire-format concern, so they stay here. The `rc > 0` gates are
-        // load-bearing: an empty blob (rc=0, max_layer=0) must stay decodable.
+        // The graph-invariant guards below are HNSW's decode-time soundness —
+        // what makes the search-time `layers[c][lc]`/`row_slice` indexing
+        // sound — not a wire-format concern, so they stay here. The `rc > 0`
+        // gates are load-bearing: an empty blob (rc=0, max_layer=0) must stay
+        // decodable. This header-only check runs BEFORE the data reads to
+        // preserve the pre-split guard ordering.
         if rc > 0 && entry_point as usize >= rc {
             return Err(bad("entry_point out of range"));
         }
+        let data = read_f32_section(&mut r, rc, d, F32Section::Data)?;
         let mut layers: Vec<Vec<Vec<u32>>> = Vec::with_capacity(rc.min(r.remaining()));
         for _ in 0..row_count {
             let nml = r.u8()? as usize;
