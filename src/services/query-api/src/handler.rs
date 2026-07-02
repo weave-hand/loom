@@ -708,14 +708,6 @@ pub async fn read_linked_objects(
 /// road-config-seam-unification.
 const MAX_CHAIN_DEPTH: usize = 4;
 
-/// Per-position governance metadata for a resolved chain, aligned with the `ChainType`
-/// vector passed to `compile_chain` (index 0 = source, index k = final target).
-struct HopMeta {
-    otype: ObjectType,
-    denied: std::collections::HashSet<String>,
-    masked: std::collections::HashSet<String>,
-}
-
 /// A caller equality filter addressed at a chain position. `position` 0 is the source;
 /// `position` k is the final target. Built by the HTTP resolver from a `<linkname>.col`
 /// (or bare = source) query key; coerced + visibility-checked against the type at that
@@ -763,16 +755,17 @@ pub struct GraphUnionQuery {
 
 /// Resolve + govern a chain: depth check, source Read gate, per-hop type resolution
 /// (forward/inverse) with Read-on-every-reached-type, per-position row-filters, and
-/// caller-filter coercion/visibility. Returns the per-position metadata, the compiler
-/// `ChainType`s (row-filters + caller predicates), and the hop backings. Shared by the
-/// object-projection read and the association read so governance lives in one place.
+/// caller-filter coercion/visibility. Returns the per-position governance context, the
+/// compiler `ChainType`s (row-filters + caller predicates), and the hop backings. Shared
+/// by the object-projection read and the association read so governance lives in one
+/// place.
 async fn resolve_chain(
     q: &ChainQuery,
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<
     (
-        Vec<HopMeta>,
+        Vec<GovernedType>,
         Vec<crate::sql::ChainType>,
         Vec<control_plane_core::LinkBacking>,
     ),
@@ -786,133 +779,59 @@ async fn resolve_chain(
     }
 
     let from_name = TypeName(q.from_type.clone());
-    let from_target = PolicyTarget::Type(from_name.clone());
     // Read on the source (deny-by-default, before existence is revealed).
-    if deps
-        .acl
-        .check(&subject.0, Action::Read, &from_target)
-        .await?
-        == Decision::Deny
-    {
-        return Err(QueryError::Forbidden);
-    }
-    let from_type = deps
-        .ontology
-        .get_type(&from_name)
-        .await
-        .map_err(|e| match e {
-            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.from_type.clone()),
-            other => QueryError::ControlPlane(other),
-        })?;
-    let (s_filters, s_denied, s_masked) = load_policy(deps.acl, &subject.0, &from_target).await?;
+    let source = resolve_governed(
+        deps.ontology,
+        deps.acl,
+        &subject.0,
+        &from_name,
+        OnMissing::NotFound,
+    )
+    .await?;
 
-    // Per-position governance metadata, aligned with `ctypes` (index 0 = source).
-    let mut metas: Vec<HopMeta> = vec![HopMeta {
-        otype: from_type.clone(),
-        denied: s_denied,
-        masked: s_masked,
-    }];
     let mut ctypes: Vec<crate::sql::ChainType> = vec![crate::sql::ChainType {
-        table: from_type.table.clone(),
-        row_filters: s_filters,
+        table: source.otype.table.clone(),
+        row_filters: source.row_filters.clone(),
         predicates: vec![],
     }];
+    let mut metas: Vec<GovernedType> = vec![source];
     let mut hops: Vec<control_plane_core::LinkBacking> = Vec::with_capacity(q.path.len());
 
-    let mut current_name = from_name.clone();
+    let mut current_name = from_name;
     for hop in &q.path {
-        let (next_name, backing) = match hop.direction {
-            Direction::Forward => {
-                let links = deps
-                    .ontology
-                    .links(&current_name, PageReq::unbounded())
-                    .await
-                    .map_err(|e| match e {
-                        ControlPlaneError::NotFound(_) => {
-                            QueryError::UnknownType(current_name.0.clone())
-                        }
-                        other => QueryError::ControlPlane(other),
-                    })?;
-                let link = links
-                    .items
-                    .into_iter()
-                    .find(|l| l.name == hop.link)
-                    .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
-                (link.to.clone(), link.backing.clone())
-            }
-            Direction::Inverse => {
-                let links = deps
-                    .ontology
-                    .links_to(&current_name, PageReq::unbounded())
-                    .await
-                    .map_err(|e| match e {
-                        ControlPlaneError::NotFound(_) => {
-                            QueryError::UnknownType(current_name.0.clone())
-                        }
-                        other => QueryError::ControlPlane(other),
-                    })?;
-                let mut matches = links.items.into_iter().filter(|l| l.name == hop.link);
-                let link = matches
-                    .next()
-                    .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
-                if matches.next().is_some() {
-                    return Err(QueryError::AmbiguousLink(hop.link.clone()));
-                }
-                // Inverse: follow the link to its origin, with the backing column roles
-                // swapped so the symmetric chain compiler joins `current` back to `from`.
-                (link.from.clone(), link.backing.reversed())
-            }
-        };
-        let next_target = PolicyTarget::Type(next_name.clone());
-        // Read on every reached type (the leak-free guarantee), forward or inverse.
-        if deps
-            .acl
-            .check(&subject.0, Action::Read, &next_target)
-            .await?
-            == Decision::Deny
-        {
-            return Err(QueryError::Forbidden);
-        }
-        // A link pointing at a missing type is an internal inconsistency, not a 404.
-        let next_type = deps.ontology.get_type(&next_name).await?;
-        let (t_filters, t_denied, t_masked) =
-            load_policy(deps.acl, &subject.0, &next_target).await?;
+        let (next_name, backing) = resolve_hop(deps.ontology, &current_name, hop).await?;
+        // Read on every reached type (the leak-free guarantee), forward or inverse. A
+        // link pointing at a missing type is an internal inconsistency, not a 404.
+        let next = resolve_governed(
+            deps.ontology,
+            deps.acl,
+            &subject.0,
+            &next_name,
+            OnMissing::Internal,
+        )
+        .await?;
         hops.push(backing);
         ctypes.push(crate::sql::ChainType {
-            table: next_type.table.clone(),
-            row_filters: t_filters,
+            table: next.otype.table.clone(),
+            row_filters: next.row_filters.clone(),
             predicates: vec![],
         });
-        metas.push(HopMeta {
-            otype: next_type,
-            denied: t_denied,
-            masked: t_masked,
-        });
+        metas.push(next);
         current_name = next_name;
     }
 
     // Caller filters, governed per position: visibility first (denied/masked or unknown
     // column -> 400, no type-info leak), then parse the raw value into a typed predicate
-    // (operator + coerced operands) bound at the position's alias `t_i`.
+    // bound at the position's alias `t_i`. The per-position visible projection is
+    // computed ONCE, not per filter.
+    let allowed_per_position: Vec<Vec<String>> = metas.iter().map(GovernedType::allowed).collect();
     for f in &q.filters {
-        if f.position >= ctypes.len() {
+        let (Some(meta), Some(allowed)) =
+            (metas.get(f.position), allowed_per_position.get(f.position))
+        else {
             return Err(QueryError::BadFilter(f.column.clone()));
-        }
-        let meta = metas
-            .get(f.position)
-            .ok_or_else(|| QueryError::BadFilter(f.column.clone()))?;
-        let allowed = project_allowed(&meta.otype.properties, &meta.denied);
-        if !allowed.contains(&f.column) || meta.masked.contains(&f.column) {
-            return Err(QueryError::BadFilter(f.column.clone()));
-        }
-        let ty = meta
-            .otype
-            .properties
-            .iter()
-            .find(|p| p.name == f.column)
-            .map(|p| p.ty.as_str())
-            .unwrap_or("");
-        let p = crate::filter::coerce_predicate(&f.column, ty, &f.raw)?;
+        };
+        let p = coerce_visible_predicate(&f.column, &f.raw, &meta.otype, allowed, &meta.masked)?;
         ctypes
             .get_mut(f.position)
             .ok_or_else(|| QueryError::BadFilter(f.column.clone()))?
@@ -945,47 +864,19 @@ pub async fn read_linked_chain(
     let target = metas
         .last()
         .ok_or_else(|| QueryError::BadChain("empty chain".to_string()))?;
-    let to_allowed = project_allowed(&target.otype.properties, &target.denied);
-    if to_allowed.is_empty() {
-        return Err(QueryError::Forbidden);
-    }
-    let to_mask_cols: Vec<String> = to_allowed
-        .iter()
-        .filter(|c| target.masked.contains(*c))
-        .cloned()
-        .collect();
+    let proj = Projection::visible(target)?;
 
     let (sql, params) = compile_chain_with(
         deps.serving.dialect(),
         &ctypes,
         &hops,
-        &to_allowed,
-        &to_mask_cols,
+        &proj.columns,
+        &proj.masked,
         target.otype.identity.as_deref(),
         deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
-    let logical_types: Vec<String> = to_allowed
-        .iter()
-        .map(|name| {
-            target
-                .otype
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    debug_assert_eq!(
-        served.columns, to_allowed,
-        "serving engine returned columns out of the projected order"
-    );
-    Ok(ObjectRows {
-        columns: to_allowed,
-        logical_types,
-        rows: served.rows,
-    })
+    Ok(proj.into_object_rows(served))
 }
 
 /// A governed source→target association result: deduped identity pairs plus the logical
@@ -1028,28 +919,20 @@ pub async fn read_associations(
 
     // …and the identity column must be visible (not denied, not masked) on each end —
     // you cannot associate objects you cannot identify.
-    let s_allowed = project_allowed(&source.otype.properties, &source.denied);
+    let s_allowed = source.allowed();
     if !s_allowed.contains(&source_id) || source.masked.contains(&source_id) {
         return Err(QueryError::Forbidden);
     }
-    let t_allowed = project_allowed(&target.otype.properties, &target.denied);
+    let t_allowed = target.allowed();
     if !t_allowed.contains(&target_id) || target.masked.contains(&target_id) {
         return Err(QueryError::Forbidden);
     }
 
-    let from_id_type = source
-        .otype
-        .properties
-        .iter()
-        .find(|p| p.name == source_id)
-        .map(|p| p.ty.clone())
+    let from_id_type = prop_ty(&source.otype, &source_id)
+        .map(str::to_string)
         .unwrap_or_default();
-    let to_id_type = target
-        .otype
-        .properties
-        .iter()
-        .find(|p| p.name == target_id)
-        .map(|p| p.ty.clone())
+    let to_id_type = prop_ty(&target.otype, &target_id)
+        .map(str::to_string)
         .unwrap_or_default();
 
     let (sql, params) = crate::sql::compile_chain_pairs(
