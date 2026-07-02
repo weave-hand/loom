@@ -2,7 +2,10 @@
 //! (property type/nullability, identity, reserved names). No catalog/ontology —
 //! just an `ObjectType` and a `TableSchema`.
 
-use control_plane_core::{ColumnDef, ObjectType, PropertyDef, TableRef, TableSchema, TypeName};
+use control_plane_core::{
+    Aggregation, ColumnDef, DerivedPropertyDef, ObjectType, PropertyDef, TableRef, TableSchema,
+    TypeName,
+};
 use ingest::bind::{
     BindViolationReason, identity_violation, property_violations, reserved_name_violations,
     structural_violations,
@@ -71,6 +74,20 @@ fn conforming_property_yields_no_violation() {
 }
 
 #[test]
+fn property_type_mismatch_is_reported() {
+    // Property declared `String` but the physical column is `long` -> TypeMismatch
+    // (both are known logical types, so not UnknownLogicalType).
+    let ty = otype(vec![prop("id", "String", true)], None);
+    let schema = TableSchema {
+        columns: vec![col("id", "long", false)],
+    };
+    let v = property_violations(&ty, &schema);
+    assert!(v
+        .iter()
+        .any(|x| matches!(x.reason, BindViolationReason::TypeMismatch { .. })));
+}
+
+#[test]
 fn identity_naming_no_property_is_reported() {
     let ty = otype(vec![prop("id", "Long", true)], Some("missing"));
     let v = identity_violation(&ty).expect("violation");
@@ -97,6 +114,21 @@ fn underscore_property_and_derived_names_are_reserved() {
     let v = reserved_name_violations(&ty);
     assert_eq!(v.len(), 1);
     assert_eq!(v[0].property, "_secret");
+    assert_eq!(v[0].reason, BindViolationReason::ReservedName);
+}
+
+#[test]
+fn underscore_derived_name_is_reserved() {
+    let mut ty = otype(vec![prop("id", "Long", true)], None);
+    ty.derived = vec![DerivedPropertyDef {
+        name: "_hidden".into(),
+        ty: "Long".into(),
+        link: "orders".into(),
+        agg: Aggregation::Count,
+    }];
+    let v = reserved_name_violations(&ty);
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].property, "_hidden");
     assert_eq!(v[0].reason, BindViolationReason::ReservedName);
 }
 

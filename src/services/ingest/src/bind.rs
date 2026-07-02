@@ -72,6 +72,9 @@ pub async fn bind(
     if !type_def.derived.is_empty() {
         let links = match ontology.links(&type_def.name, PageReq::unbounded()).await {
             Ok(p) => p.items,
+            // A not-yet-defined type has no links (NotFound -> empty), so every derived
+            // link reads as unknown — encoding the authoring order (types -> links ->
+            // bind-with-derived). Mirrors the read-time resolution in query-api's handler.rs.
             Err(ControlPlaneError::NotFound(_)) => Vec::new(),
             Err(e) => return Err(BindError::ControlPlane(e)),
         };
