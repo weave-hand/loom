@@ -1043,6 +1043,18 @@ rust_test(
 )
 
 rust_test(
+    name = "projection",
+    crate = "projection",
+    srcs = ["tests/projection.rs"],
+    crate_root = "tests/projection.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
     name = "action-conformance",
     crate = "action_conformance",
     srcs = ["tests/action_conformance.rs"],

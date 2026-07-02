@@ -121,6 +121,73 @@ pub(crate) async fn load_policy(
     Ok((row_filters, denied, masked))
 }
 
+/// The governed output-column set of one read, in SELECT order: the visible physical
+/// columns (type properties minus denied, in property order), extended with any derived
+/// columns via [`Projection::push`]. Owns the positional logical-type zip, the masked
+/// subset (columns SELECTed as the mask marker, so streamed back as Utf8 — load-bearing
+/// for the Flight export schema), and the served-rows conversion with its column-order
+/// contract check.
+#[derive(Debug)]
+pub struct Projection {
+    pub columns: Vec<String>,
+    pub logical_types: Vec<String>,
+    pub masked: Vec<String>,
+}
+
+impl Projection {
+    /// The visible physical projection of `g`. Fail-closed: a subject with no visible
+    /// columns gets `Forbidden`, never an empty SELECT.
+    pub fn visible(g: &GovernedType) -> Result<Self, QueryError> {
+        let columns = project_allowed(&g.otype.properties, &g.denied);
+        if columns.is_empty() {
+            return Err(QueryError::Forbidden);
+        }
+        let logical_types = columns
+            .iter()
+            .map(|name| {
+                prop_ty(&g.otype, name)
+                    .map(str::to_string)
+                    .unwrap_or_default()
+            })
+            .collect();
+        let masked = columns
+            .iter()
+            .filter(|c| g.masked.contains(*c))
+            .cloned()
+            .collect();
+        Ok(Self {
+            columns,
+            logical_types,
+            masked,
+        })
+    }
+
+    /// Append one derived output column (name + declared logical type); `masked` marks
+    /// it as mask-marker-SELECTed for the output mask set.
+    pub fn push(&mut self, name: String, ty: String, masked: bool) {
+        if masked {
+            self.masked.push(name.clone());
+        }
+        self.columns.push(name);
+        self.logical_types.push(ty);
+    }
+
+    /// Zip served rows into an `ObjectRows`. The serving engine must echo the projected
+    /// columns in SELECT order — the contract that lets the renderer zip
+    /// `logical_types`/`columns` onto each row's cells by position.
+    pub fn into_object_rows(self, served: crate::serving::Rows) -> crate::handler::ObjectRows {
+        debug_assert_eq!(
+            served.columns, self.columns,
+            "serving engine returned columns out of the projected order"
+        );
+        crate::handler::ObjectRows {
+            columns: self.columns,
+            logical_types: self.logical_types,
+            rows: served.rows,
+        }
+    }
+}
+
 /// An object type's properties (in order) minus denied columns.
 pub(crate) fn project_allowed(properties: &[PropertyDef], denied: &HashSet<String>) -> Vec<String> {
     properties

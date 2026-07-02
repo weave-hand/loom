@@ -64,6 +64,22 @@ pub struct GovernedRead {
     pub masked_columns: Vec<String>,
 }
 
+impl GovernedRead {
+    /// Zip served rows into an `ObjectRows` using this read's projected columns and
+    /// logical types, asserting the engine echoed the SELECT column order.
+    pub fn into_object_rows(self, served: crate::serving::Rows) -> ObjectRows {
+        debug_assert_eq!(
+            served.columns, self.columns,
+            "serving engine returned columns out of the projected order"
+        );
+        ObjectRows {
+            columns: self.columns,
+            logical_types: self.logical_types,
+            rows: served.rows,
+        }
+    }
+}
+
 /// A read request: an ontology type plus optional filters on allowed columns.
 pub struct ObjectQuery {
     pub type_name: String,
@@ -140,7 +156,8 @@ pub enum QueryError {
 }
 
 pub use crate::governed::{
-    GovernedType, OnMissing, identity_in_predicate, identity_is_governed, prop_ty, resolve_governed,
+    GovernedType, OnMissing, Projection, identity_in_predicate, identity_is_governed, prop_ty,
+    resolve_governed,
 };
 use crate::governed::{coerce_visible_predicate, load_policy, project_allowed};
 
