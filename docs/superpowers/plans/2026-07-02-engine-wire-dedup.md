@@ -1182,12 +1182,12 @@ unit tests.
 **Files:**
 - Modify: `src/services/engine-wire/src/client.rs`
 
-- [ ] **Step 1: Run the pinning suite BEFORE (baseline green)**
+- [x] **Step 1: Run the pinning suite BEFORE (baseline green)**
 
 Run: `buck2 test -j 8 //src/services/query-api:wire-governance-e2e //src/services/query-api:wire-governed-read-e2e //src/services/query-api:wire-lineage-e2e //src/services/engine:wire > /tmp/t5a.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5a.log`
 Expected: PASS.
 
-- [ ] **Step 2: Add the macro and regenerate the 10 getters**
+- [x] **Step 2: Add the macro and regenerate the 10 getters**
 
 Below `se` (client.rs:40-42), add:
 
@@ -1328,13 +1328,13 @@ Also add the spec's warning comment on `be` (`client.rs:15`):
 pub(crate) fn be<E: std::fmt::Display>(e: E) -> ControlPlaneError {
 ```
 
-- [ ] **Step 3: Run to green**
+- [x] **Step 3: Run to green**
 
 Run: `buck2 test -j 8 //src/services/engine-wire/... //src/services/query-api:wire-governance-e2e //src/services/query-api:wire-governed-read-e2e //src/services/query-api:wire-lineage-e2e //src/services/engine:wire > /tmp/t5b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5b.log`
 Expected: PASS.
 Run: `buck2 build '//src/services/engine-wire:engine-wire[clippy.txt]' > /tmp/c5.log 2>&1; cat /tmp/c5.log` — artifact empty.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p5.log 2>&1; grep -c Failed /tmp/p5.log` — expected `0`.
 
