@@ -1004,3 +1004,15 @@ fn acl_row_filter_stays_anded_above_or_group() {
         ]
     );
 }
+
+#[test]
+fn empty_inner_or_group_is_skipped_not_rendered_as_parens() {
+    // Defense-in-depth for the pub API: an empty group must never emit the invalid `()`
+    // fragment. The handler guarantees >=2 members via split_or_members, but a direct
+    // caller could pass an empty inner group — it is skipped, leaving a bare SELECT.
+    let empty: Vec<Vec<CallerPredicate>> = vec![vec![]];
+    let (sql, params) =
+        compile_select(&t(), &["id".into()], &[], &[], &[], &empty, &[], 10).unwrap();
+    assert_eq!(sql, r#"SELECT "id" FROM "main"."orders" LIMIT 10"#);
+    assert!(params.is_empty());
+}

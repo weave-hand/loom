@@ -429,6 +429,12 @@ fn select_where_conjuncts(
         conjuncts.push(caller_predicate_sql(dialect, p, "", params));
     }
     for group in or_groups {
+        // Skip an empty group so a `pub` caller passing `vec![vec![]]` can never emit the
+        // invalid `()` fragment; the handler already guarantees >=2 members per group via
+        // `filter::split_or_members`, so this is defense-in-depth for the public API.
+        if group.is_empty() {
+            continue;
+        }
         let members: Vec<String> = group
             .iter()
             .map(|m| caller_predicate_sql(dialect, m, "", params))
