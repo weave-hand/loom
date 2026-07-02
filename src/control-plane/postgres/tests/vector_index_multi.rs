@@ -93,7 +93,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_named_indexes_on_one_property_build_and_search_independently() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

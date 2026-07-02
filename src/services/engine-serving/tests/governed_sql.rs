@@ -32,7 +32,7 @@ async fn run(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn row_filter_composes_with_client_predicate() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -75,7 +75,7 @@ async fn row_filter_composes_with_client_predicate() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn row_filter_holds_through_self_join() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -149,7 +149,7 @@ fn collect_str(batches: &[arrow::record_batch::RecordBatch], col: usize) -> Vec<
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn denied_column_is_absent() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -184,7 +184,7 @@ async fn denied_column_is_absent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn row_filter_over_denied_column_still_filters() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -234,7 +234,7 @@ async fn row_filter_over_denied_column_still_filters() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn masked_column_redacted_through_group_by() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -273,7 +273,7 @@ async fn masked_column_redacted_through_group_by() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn empty_policy_is_full_visibility() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -294,7 +294,7 @@ async fn empty_policy_is_full_visibility() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parity_with_compiled_governed_sql() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

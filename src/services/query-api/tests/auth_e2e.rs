@@ -47,8 +47,8 @@ fn app(cp: Arc<PgControlPlane>, eng: Arc<dyn query_api::serving::ServingEngine>)
 /// Case 1: valid session token → governed GET /objects/Customer → 200.
 #[tokio::test]
 async fn valid_token_read_200() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup_iceberg(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup_iceberg(fx).await;
     let cp = Arc::new(cp);
 
     // Give "alice" a read grant on Customer and mint a session.
@@ -73,8 +73,8 @@ async fn valid_token_read_200() {
 /// Case 2: missing Authorization header → 401.
 #[tokio::test]
 async fn missing_token_401() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup_iceberg(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup_iceberg(fx).await;
     let cp = Arc::new(cp);
 
     let (_, role) = subject_with_role(&cp, "alice").await;
@@ -96,8 +96,8 @@ async fn missing_token_401() {
 /// Case 3: POST /auth/login with wrong password → 401.
 #[tokio::test]
 async fn bad_password_login_401() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup_iceberg(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup_iceberg(fx).await;
     let cp = Arc::new(cp);
 
     // Seed the user with a known password so there IS a user to authenticate.
@@ -132,8 +132,8 @@ async fn bad_password_login_401() {
 /// Case 4: session revoked → 401.
 #[tokio::test]
 async fn revoked_session_401() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup_iceberg(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup_iceberg(fx).await;
     let cp = Arc::new(cp);
 
     let (_, role) = subject_with_role(&cp, "carol").await;
@@ -174,8 +174,8 @@ async fn revoked_session_401() {
 /// Case 5: verified subject but NO ACL grant → 403.
 #[tokio::test]
 async fn authn_ok_acl_denied_403() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup_iceberg(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup_iceberg(fx).await;
     let cp = Arc::new(cp);
 
     // "dave" has a valid session (session_token also creates the ACL subject via

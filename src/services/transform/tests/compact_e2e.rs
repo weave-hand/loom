@@ -24,7 +24,7 @@ use transform_e2e_support::{
 
 #[tokio::test(flavor = "multi_thread")]
 async fn compact_coalesces_small_files_and_preserves_time_travel() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();
@@ -148,7 +148,7 @@ async fn compact_coalesces_small_files_and_preserves_time_travel() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn compact_leaves_large_files_untouched() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();

@@ -172,8 +172,8 @@ fn sorted_objects(rows: &query_api::handler::ObjectRows) -> Vec<serde_json::Valu
 
 #[tokio::test(flavor = "multi_thread")]
 async fn derived_aggregates_are_served_and_governed() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,

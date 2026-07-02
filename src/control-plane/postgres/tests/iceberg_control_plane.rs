@@ -77,8 +77,8 @@ fn t() -> TableRef {
 /// overwrite primitive through the polymorphic seam.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn append_then_overwrite_preserves_time_travel() {
-    let fx = PgFixture::start();
-    let (cp, _wh) = iceberg_cp(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, _wh) = iceberg_cp(fx).await;
     let t = t();
 
     // append a.parquet (10 rows).
@@ -131,8 +131,8 @@ async fn append_then_overwrite_preserves_time_travel() {
 /// have no prior mirror rows return None from commit).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_files_stages_without_error() {
-    let fx = PgFixture::start();
-    let (cp, _wh) = iceberg_cp(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, _wh) = iceberg_cp(fx).await;
     let mut tx = cp.begin().await.unwrap();
     // Staging never fails — even with empty slices.
     tx.compact_files(&t(), &[], &[]).await.unwrap();
@@ -143,8 +143,8 @@ async fn compact_files_stages_without_error() {
 /// so the table has no live state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_commit_leaves_no_snapshot() {
-    let fx = PgFixture::start();
-    let (cp, _wh) = iceberg_cp(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, _wh) = iceberg_cp(fx).await;
     let t = t();
 
     let mut tx = cp.begin().await.unwrap();

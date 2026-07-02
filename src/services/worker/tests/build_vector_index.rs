@@ -186,7 +186,7 @@ fn make_build_vector_index_job(schema: &str, name: &str, index_name: &str) -> Jo
 async fn worker_builds_vector_index_over_the_wire() {
     use control_plane_postgres::PgControlPlane;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let cp = PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
@@ -271,7 +271,7 @@ async fn worker_builds_vector_index_over_the_wire() {
     .expect("land");
 
     // Spawn engine (EngineControl + Flight on the same UDS).
-    let (_sock_dir, sock) = spawn_server(&fx, &db, &wh_str).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db, &wh_str).await;
 
     // Connect the GrpcQueueClient (the handler's engine-wire client).
     let client = GrpcQueueClient::connect(&sock)
@@ -367,7 +367,7 @@ async fn worker_builds_vector_index_over_the_wire() {
 async fn build_with_unknown_index_name_fails() {
     use control_plane_postgres::PgControlPlane;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let cp = PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
@@ -421,7 +421,7 @@ async fn build_with_unknown_index_name_fails() {
     .await
     .expect("land");
 
-    let (_sock_dir, sock) = spawn_server(&fx, &db, &wh_str).await;
+    let (_sock_dir, sock) = spawn_server(fx, &db, &wh_str).await;
     let client = GrpcQueueClient::connect(&sock)
         .await
         .expect("connect control");

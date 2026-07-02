@@ -191,7 +191,7 @@ async fn read_widget(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_merges_named_columns() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -200,7 +200,7 @@ async fn update_merges_named_columns() {
     let subj = grant_writer(&cp, &widget).await;
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -247,7 +247,7 @@ async fn update_merges_named_columns() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_removes_row() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -256,7 +256,7 @@ async fn delete_removes_row() {
     let subj = grant_writer(&cp, &widget).await;
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -318,7 +318,7 @@ async fn delete_removes_row() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn not_found() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -327,7 +327,7 @@ async fn not_found() {
     let subj = grant_writer(&cp, &widget).await;
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {

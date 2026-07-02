@@ -49,7 +49,7 @@ fn ipc_bytes() -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lands_through_real_runtime_wiring() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     // Creates + migrates a fresh db; we rebuild our own pool through the runtime below.
     let (_seed, db) = fixture.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");

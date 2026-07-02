@@ -36,7 +36,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 /// catching the swallowed-commit bug.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_failure_rolls_back_and_errors() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -85,7 +85,7 @@ async fn statement_failure_rolls_back_and_errors() {
 /// `Err`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commit_failure_propagates_as_error() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

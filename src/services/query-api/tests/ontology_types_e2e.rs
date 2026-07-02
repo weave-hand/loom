@@ -43,8 +43,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lists_ontology_type_names() {
-    let fx = PgFixture::start();
-    let (cp, eng) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

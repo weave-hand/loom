@@ -13,7 +13,7 @@ use query_api::sql::{DataFusionDialect, GraphStep, compile_graph_tree};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tree_sql_executes_on_datafusion() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

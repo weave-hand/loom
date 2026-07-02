@@ -98,7 +98,7 @@ fn nullable_batch() -> RecordBatch {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inline_vector_null_row_round_trips() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
@@ -156,7 +156,7 @@ async fn inline_vector_null_row_round_trips() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inline_vector_round_trips_bit_exact() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 

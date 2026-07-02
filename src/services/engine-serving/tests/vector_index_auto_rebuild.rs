@@ -210,7 +210,7 @@ async fn flushed_vector_is_missing_then_restored_by_auto_rebuild() {
     use control_plane_postgres::iceberg_flush::flush_table;
     use control_plane_postgres::vector_index::build_vector_index;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
@@ -218,7 +218,7 @@ async fn flushed_vector_is_missing_then_restored_by_auto_rebuild() {
     };
 
     // 1. Cold rows 1-4 + flat index built at covered_snapshot S.
-    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(fx, &db, Metric::Cosine).await;
 
     // 2. Land row 5 INLINE (born after S) — the strictly-nearest vector to the query,
     //    living only in the hot delta. (Mirrors knn_cold_hot_merge_cosine.)

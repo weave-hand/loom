@@ -140,7 +140,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn additive_land_evolves_mirror_and_bumps_schema_version() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -234,7 +234,7 @@ async fn additive_land_evolves_mirror_and_bumps_schema_version() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_additive_land_is_rejected_and_mirror_unchanged() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -338,7 +338,7 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
 /// must let the flush job run first. Guards the cross-task seam find-1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn additive_land_rejected_while_live_inline_rows_exist() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

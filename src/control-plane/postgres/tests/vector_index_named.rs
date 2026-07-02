@@ -26,7 +26,7 @@ async fn seed_live_table(pool: &PgPool, namespace: &str, name: &str) -> i64 {
 
 #[tokio::test]
 async fn lookup_resolves_by_index_name() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, _db) = fx.fresh_db().await;
     let pool = fx.pool_for(&_db).await;
     let table_id = seed_live_table(&pool, "main", "document").await;

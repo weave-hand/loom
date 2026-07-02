@@ -32,14 +32,14 @@ fn edge(inp: DatasetRef, out: DatasetRef) -> LineageEvent {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn wire_lineage_reads_delegate_to_direct() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let cp = Arc::new(cp);
     let warehouse = tempfile::tempdir().expect("warehouse");
 
     // A spawned engine gives us a real gov client for WireControlPlane::new; the
     // warehouse/engine are unused by lineage reads (they go through `direct`).
-    let (sock, _guard) = spawn_engine(&fx, &db, warehouse.path(), 0, i64::MAX).await;
+    let (sock, _guard) = spawn_engine(fx, &db, warehouse.path(), 0, i64::MAX).await;
     let client = connect_gov_client(&sock).await;
     let wire = WireControlPlane::new(client, cp.clone() as Arc<dyn ControlPlane>);
 

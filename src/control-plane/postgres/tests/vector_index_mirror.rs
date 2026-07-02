@@ -9,7 +9,7 @@ use sqlx::AssertSqlSafe;
 
 #[tokio::test]
 async fn insert_then_lookup_latest_le_q() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, _db) = fx.fresh_db().await;
     let pool = cp.pool().clone();
 

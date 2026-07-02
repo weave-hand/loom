@@ -18,7 +18,7 @@ use query_api::serving_datafusion::batches_to_rows;
 /// the pruning path: correctness, an actual file skip, and governance invariance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pruning_skips_files_and_preserves_governed_results() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

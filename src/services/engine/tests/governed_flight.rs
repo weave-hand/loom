@@ -36,7 +36,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn do_get_governed_applies_policy() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

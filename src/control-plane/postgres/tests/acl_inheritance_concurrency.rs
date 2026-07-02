@@ -12,7 +12,7 @@ fn rid(s: &str) -> RoleId {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_opposite_edges_cannot_both_commit() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let cp = fx.fresh_control_plane().await;
 
     // Many fresh role pairs: pre-fix the check/insert race fires intermittently

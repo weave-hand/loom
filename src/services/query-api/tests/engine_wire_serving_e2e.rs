@@ -61,7 +61,7 @@ async fn spawn_flight(fx: &PgFixture, db: &str, warehouse: &str) -> (tempfile::T
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn engine_wire_unions_file_and_inline() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -83,7 +83,7 @@ async fn engine_wire_unions_file_and_inline() {
         )
         .await;
 
-    let (_sock_dir, sock) = spawn_flight(&fx, &db, &wh.path().display().to_string()).await;
+    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
     let client = EngineServingClient::connect(&sock).await.expect("connect");
 
     let rows = client
@@ -113,7 +113,7 @@ async fn engine_wire_unions_file_and_inline() {
 /// default 4 MB decode limit and failed; per-batch Flight messages do not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn large_result_streams_past_unary_cap() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -123,7 +123,7 @@ async fn large_result_streams_past_unary_cap() {
     let writer = IcebergWriter::new(pool.clone(), dsn);
     writer.seed("big", "rows", &cols, &[600_000]).await;
 
-    let (_sock_dir, sock) = spawn_flight(&fx, &db, &wh.path().display().to_string()).await;
+    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
     let client = EngineServingClient::connect(&sock).await.expect("connect");
 
     let rows = client

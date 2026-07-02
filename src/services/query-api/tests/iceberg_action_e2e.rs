@@ -104,7 +104,7 @@ async fn grant_writer(cp: &PgControlPlane, widget: &TypeName) -> SubjectId {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn action_inserts_typed_object_readable_with_atomic_lineage() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -114,7 +114,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
 
     // Large flush threshold so the single inline row never enqueues a flush job.
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -178,14 +178,14 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ungranted_subject_is_forbidden_and_writes_nothing() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
 
     let _widget = define_widget(&cp).await; // type + action defined, NO grant.
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -221,13 +221,13 @@ async fn ungranted_subject_is_forbidden_and_writes_nothing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_write_commits_neither_row_nor_lineage() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let table = TableRef {
         schema: "main".into(),

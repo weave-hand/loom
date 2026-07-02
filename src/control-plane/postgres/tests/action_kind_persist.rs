@@ -6,7 +6,7 @@ use control_plane_postgres::fixture::PgFixture;
 
 #[tokio::test]
 async fn action_kind_round_trips() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
 
     // A target type must exist before an action can reference it.

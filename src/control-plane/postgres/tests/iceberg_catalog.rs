@@ -44,7 +44,7 @@ impl CatalogSeed for IcebergSeeder {
 
 #[tokio::test]
 async fn iceberg_passes_catalog_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let (cp, db) = fixture.fresh_db().await;
     let catalog = IcebergCatalog::new(cp.pool().clone());
     let seeder = IcebergSeeder {
@@ -55,7 +55,7 @@ async fn iceberg_passes_catalog_contract() {
 
 #[tokio::test]
 async fn iceberg_passes_catalog_delete_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let (cp, db) = fixture.fresh_db().await;
     let catalog = IcebergCatalog::new(cp.pool().clone());
     let seeder = IcebergSeeder {

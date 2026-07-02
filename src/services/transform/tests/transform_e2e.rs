@@ -27,7 +27,7 @@ use transform_e2e_support::{cols, lineage, make_catalog, scalar_i64, seed_table,
 
 #[tokio::test(flavor = "multi_thread")]
 async fn transform_joins_two_inputs_into_a_new_snapshot() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();
@@ -206,7 +206,7 @@ fn empty_input_lineage(input: &TableRef, output: &TableRef) -> LineageEvent {
 /// error (which is what an empty file list passed to `scan_table` would produce).
 #[tokio::test(flavor = "multi_thread")]
 async fn empty_input_runs_transform_count_is_zero() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();
@@ -258,7 +258,7 @@ async fn empty_input_runs_transform_count_is_zero() {
 /// zero files, so the output table is a row-less snapshot.
 #[tokio::test(flavor = "multi_thread")]
 async fn empty_input_select_star_commits_empty_output() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();
@@ -317,7 +317,7 @@ async fn empty_input_select_star_commits_empty_output() {
 /// default before `road-transform-write-tuning`.
 #[tokio::test(flavor = "multi_thread")]
 async fn write_config_controls_transform_output_file_count() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();

@@ -166,7 +166,7 @@ async fn widget_count(cp: &PgControlPlane, pool: &sqlx::PgPool, subj: &SubjectId
 
 #[tokio::test(flavor = "multi_thread")]
 async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let WidgetWriter {
         cp,
         pool,
@@ -176,7 +176,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
         role: _,
         _eg,
         warehouse: _,
-    } = setup_widget_writer(&fx).await;
+    } = setup_widget_writer(fx).await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
@@ -243,7 +243,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ungranted_subject_is_forbidden() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
@@ -284,7 +284,7 @@ async fn ungranted_subject_is_forbidden() {
         .unwrap();
 
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
             .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
@@ -317,7 +317,7 @@ async fn ungranted_subject_is_forbidden() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn write_policy_enforces_row_filter_and_deny_column() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let WidgetWriter {
         cp,
         pool,
@@ -329,7 +329,7 @@ async fn write_policy_enforces_row_filter_and_deny_column() {
         // Keep the `file://` warehouse TempDir alive for the whole test: the
         // engine writes Parquet into it and the read-back resolves those files.
         warehouse,
-    } = setup_widget_writer(&fx).await;
+    } = setup_widget_writer(fx).await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,

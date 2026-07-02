@@ -75,8 +75,8 @@ async fn fresh(fx: &PgFixture) -> Arc<PgControlPlane> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn upstream_downstream_traversal() {
-    let fx = PgFixture::start();
-    let cp = fresh(&fx).await;
+    let fx = PgFixture::shared();
+    let cp = fresh(fx).await;
     // A -> B -> C
     cp.lineage()
         .emit(edge(ds("w", "a"), ds("w", "b")))
@@ -135,8 +135,8 @@ async fn upstream_downstream_traversal() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn depth_over_cap_is_400() {
-    let fx = PgFixture::start();
-    let cp = fresh(&fx).await;
+    let fx = PgFixture::shared();
+    let cp = fresh(fx).await;
     cp.lineage()
         .emit(edge(ds("w", "a"), ds("w", "b")))
         .await
@@ -155,8 +155,8 @@ async fn depth_over_cap_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pagination_pages_every_dataset_once() {
-    let fx = PgFixture::start();
-    let cp = fresh(&fx).await;
+    let fx = PgFixture::shared();
+    let cp = fresh(fx).await;
     // fan-out: 7 inputs each feeding Z
     for i in 0..7 {
         cp.lineage()
@@ -197,8 +197,8 @@ async fn pagination_pages_every_dataset_once() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_events_returns_the_runs_events() {
-    let fx = PgFixture::start();
-    let cp = fresh(&fx).await;
+    let fx = PgFixture::shared();
+    let cp = fresh(fx).await;
     let run = RunId(uuid::Uuid::new_v4());
     for i in 0..3 {
         cp.lineage()
@@ -222,8 +222,8 @@ async fn run_events_returns_the_runs_events() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unauthenticated_is_401_authenticated_is_200() {
-    let fx = PgFixture::start();
-    let cp = fresh(&fx).await;
+    let fx = PgFixture::shared();
+    let cp = fresh(fx).await;
     cp.lineage()
         .emit(edge(ds("w", "a"), ds("w", "b")))
         .await
@@ -249,8 +249,8 @@ async fn unauthenticated_is_401_authenticated_is_200() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_run_id_is_400_unknown_dataset_is_empty() {
-    let fx = PgFixture::start();
-    let cp = fresh(&fx).await;
+    let fx = PgFixture::shared();
+    let cp = fresh(fx).await;
 
     // malformed run id UUID -> 400
     let (status, _body) = get(

@@ -89,9 +89,9 @@ async fn app_state(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unmodeled_land_succeeds_end_to_end() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (_cp, pool, _wh, state) = app_state(&fx, &db).await;
+    let (_cp, pool, _wh, state) = app_state(fx, &db).await;
     let res = router(state)
         .oneshot(
             Request::builder()
@@ -136,9 +136,9 @@ fn model_header(json: &str) -> (axum::http::HeaderName, axum::http::HeaderValue)
 
 #[tokio::test(flavor = "multi_thread")]
 async fn modeled_land_succeeds() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (_cp, _pool, _wh, state) = app_state(&fx, &db).await;
+    let (_cp, _pool, _wh, state) = app_state(fx, &db).await;
     let model = r#"{"columns":[{"name":"id","ty":"long","required":true},{"name":"name","ty":"string","required":false}]}"#;
     let (hn, hv) = model_header(model);
     let res = router(state)
@@ -157,9 +157,9 @@ async fn modeled_land_succeeds() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn nonconforming_model_is_422_with_violations() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (_cp, pool, _wh, state) = app_state(&fx, &db).await;
+    let (_cp, pool, _wh, state) = app_state(fx, &db).await;
     // Requires a column the batch does not have.
     let model = r#"{"columns":[{"name":"missing","ty":"long","required":true}]}"#;
     let (hn, hv) = model_header(model);
@@ -196,9 +196,9 @@ async fn nonconforming_model_is_422_with_violations() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn garbage_body_is_400() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (_cp, _pool, _wh, state) = app_state(&fx, &db).await;
+    let (_cp, _pool, _wh, state) = app_state(fx, &db).await;
     let res = router(state)
         .oneshot(
             Request::builder()
@@ -214,9 +214,9 @@ async fn garbage_body_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_model_header_is_400() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (_cp, _pool, _wh, state) = app_state(&fx, &db).await;
+    let (_cp, _pool, _wh, state) = app_state(fx, &db).await;
     let (hn, hv) = model_header("not json");
     let res = router(state)
         .oneshot(

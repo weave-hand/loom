@@ -20,7 +20,7 @@ use sqlx::postgres::PgPoolOptions;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn s3_write_and_read_roundtrip() {
     // Boot Postgres and create a fresh migrated database.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pg_dsn = fx.pg_dsn(&db);
 

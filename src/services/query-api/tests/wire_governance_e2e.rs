@@ -120,9 +120,9 @@ async fn seed(
 
 #[tokio::test]
 async fn rpc_roundtrips_match_direct_reads() {
-    let fx = PgFixture::start();
-    let (cp, db, warehouse) = seed(&fx).await;
-    let (sock, _guard) = spawn_engine(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+    let fx = PgFixture::shared();
+    let (cp, db, warehouse) = seed(fx).await;
+    let (sock, _guard) = spawn_engine(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
     let client = connect_gov_client(&sock).await;
 
     // get_type parity
@@ -263,9 +263,9 @@ async fn rpc_roundtrips_match_direct_reads() {
 
 #[tokio::test]
 async fn wire_acl_is_read_only() {
-    let fx = PgFixture::start();
-    let (cp, db, warehouse) = seed(&fx).await;
-    let (sock, _guard) = spawn_engine(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+    let fx = PgFixture::shared();
+    let (cp, db, warehouse) = seed(fx).await;
+    let (sock, _guard) = spawn_engine(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
     let client = connect_gov_client(&sock).await;
     let cp = Arc::new(cp);
     let wire = WireControlPlane::new(client, cp.clone() as Arc<dyn ControlPlane>);
@@ -304,9 +304,9 @@ async fn wire_acl_is_read_only() {
 #[tokio::test]
 #[should_panic(expected = "read-only")]
 async fn wire_catalog_is_guarded() {
-    let fx = PgFixture::start();
-    let (cp, db, warehouse) = seed(&fx).await;
-    let (sock, _guard) = spawn_engine(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+    let fx = PgFixture::shared();
+    let (cp, db, warehouse) = seed(fx).await;
+    let (sock, _guard) = spawn_engine(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
     let client = connect_gov_client(&sock).await;
     let wire = WireControlPlane::new(client, Arc::new(cp) as Arc<dyn ControlPlane>);
     let _ = wire.catalog(); // must panic: query-api never reads catalog over this plane

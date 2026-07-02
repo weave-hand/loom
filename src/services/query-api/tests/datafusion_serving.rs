@@ -9,7 +9,7 @@ use query_api::serving_datafusion::batches_to_rows;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fetch_rows_over_iceberg() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -47,7 +47,7 @@ async fn fetch_rows_over_iceberg() {
 /// test above can't exercise.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fetch_rows_joins_two_tables() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

@@ -66,9 +66,9 @@ async fn seed_customer(writer: &IcebergWriter) {
 
 #[tokio::test]
 async fn bind_accepts_conforming_type_and_persists_it() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
@@ -90,9 +90,9 @@ async fn bind_accepts_conforming_type_and_persists_it() {
 
 #[tokio::test]
 async fn bind_collects_all_violations_and_persists_nothing() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
@@ -153,9 +153,9 @@ async fn bind_collects_all_violations_and_persists_nothing() {
 
 #[tokio::test]
 async fn bind_accepts_identity_naming_a_required_property() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
@@ -175,9 +175,9 @@ async fn bind_accepts_identity_naming_a_required_property() {
 
 #[tokio::test]
 async fn bind_rejects_identity_naming_unknown_property() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
@@ -202,9 +202,9 @@ async fn bind_rejects_identity_naming_unknown_property() {
 
 #[tokio::test]
 async fn bind_rejects_identity_naming_non_required_property() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
@@ -233,7 +233,7 @@ async fn bind_rejects_identity_naming_non_required_property() {
 
 #[tokio::test]
 async fn bind_rejects_an_unknown_table() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     // No seeding: empty catalog, no tables.
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
@@ -277,9 +277,9 @@ fn reserved_table() -> TableRef {
 
 #[tokio::test]
 async fn bind_rejects_a_property_name_starting_with_underscore() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_reserved(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
@@ -304,9 +304,9 @@ async fn bind_rejects_a_property_name_starting_with_underscore() {
 
 #[tokio::test]
 async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
@@ -407,9 +407,9 @@ async fn define_purchase_graph(cp: &impl Ontology) {
 
 #[tokio::test]
 async fn bind_accepts_valid_derived_properties_over_the_real_catalog() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     seed_purchase(&writer).await;
     define_purchase_graph(&cp).await;
@@ -446,9 +446,9 @@ async fn bind_accepts_valid_derived_properties_over_the_real_catalog() {
 
 #[tokio::test]
 async fn bind_rejects_a_bad_derived_reference_over_the_real_catalog() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     seed_purchase(&writer).await;
     define_purchase_graph(&cp).await;
@@ -490,9 +490,9 @@ async fn bind_rejects_a_bad_derived_reference_over_the_real_catalog() {
 
 #[tokio::test]
 async fn bind_link_validates_backing_columns_over_the_real_catalog() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
-    let writer = writer_for(&fx, &db).await;
+    let writer = writer_for(fx, &db).await;
     seed_customer(&writer).await;
     seed_purchase(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);

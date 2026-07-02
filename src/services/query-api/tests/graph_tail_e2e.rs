@@ -185,8 +185,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
 
 #[tokio::test(flavor = "multi_thread")]
 async fn core_then_tail_projects_companies_of_reachable_people() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -213,8 +213,8 @@ async fn core_then_tail_projects_companies_of_reachable_people() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn multi_hop_tail_projects_cities_and_dedups() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -243,8 +243,8 @@ async fn multi_hop_tail_projects_cities_and_dedups() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn row_filter_prunes_the_recursive_core() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -287,8 +287,8 @@ async fn row_filter_prunes_the_recursive_core() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn star_not_on_first_segment_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -314,8 +314,8 @@ async fn star_not_on_first_segment_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn empty_tail_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -339,8 +339,8 @@ async fn empty_tail_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bare_star_core_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

@@ -82,7 +82,7 @@ async fn enqueue_overwrite(pg: &PgControlPlane, src: &str, out: &str) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn overwrite_replaces_contents_and_preserves_time_travel() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();
@@ -138,7 +138,7 @@ async fn overwrite_replaces_contents_and_preserves_time_travel() {
 
     // First overwrite: out := src_a (2 rows). (Output table is new -> create + replace.)
     enqueue_overwrite(&pg, "src_a", "out").await;
-    drain_transforms(&pg, &fx, &db, &warehouse, &store, &root_url).await;
+    drain_transforms(&pg, fx, &db, &warehouse, &store, &root_url).await;
     let out = tref("main", "out");
     let snap_after_a = cp.catalog().current_snapshot(&out).await.unwrap().id;
 
@@ -163,7 +163,7 @@ async fn overwrite_replaces_contents_and_preserves_time_travel() {
 
     // Second overwrite: out := src_b (1 row). Replaces, not appends.
     enqueue_overwrite(&pg, "src_b", "out").await;
-    drain_transforms(&pg, &fx, &db, &warehouse, &store, &root_url).await;
+    drain_transforms(&pg, fx, &db, &warehouse, &store, &root_url).await;
     let serving = IcebergCatalog::new(fx.pool_for(&db).await);
     let count_b =
         engine_serving::execute_query(&serving, "SELECT count(*) FROM \"main\".\"out\"", None)

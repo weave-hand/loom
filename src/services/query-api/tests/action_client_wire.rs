@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn write_object_through_wire_client() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
@@ -28,7 +28,7 @@ async fn write_object_through_wire_client() {
 
     let warehouse = tempfile::tempdir().expect("warehouse");
     let (engine, _guard) =
-        spawn_engine_writer(&fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+        spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
 
     let table = TableRef {
         schema: "main".into(),

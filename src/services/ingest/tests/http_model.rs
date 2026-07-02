@@ -218,9 +218,9 @@ fn thing_table() -> TableRef {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn conforming_land_into_model_round_trips() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     define_thing(&pg, "Thing", thing_table()).await;
     grant_write(&pg, "alice", "Thing").await;
     let token = session_token(&pg, "alice").await;
@@ -255,9 +255,9 @@ async fn conforming_land_into_model_round_trips() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn nonconforming_is_422_and_nothing_lands() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     define_thing(&pg, "Thing", thing_table()).await;
     grant_write(&pg, "alice", "Thing").await;
     let token = session_token(&pg, "alice").await;
@@ -284,9 +284,9 @@ async fn nonconforming_is_422_and_nothing_lands() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn constraint_violation_is_422_and_nothing_lands() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     // A `CThing(id long identity, code string [^[A-Z]+$])`.
     let ctable = TableRef {
         schema: "main".into(),
@@ -353,9 +353,9 @@ async fn constraint_violation_is_422_and_nothing_lands() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn acl_deny_is_403_and_nothing_lands() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     define_thing(&pg, "Thing", thing_table()).await;
     // `session_token` creates the user (a real ACL subject), so mallory is a valid
     // authenticated principal — but with NO Write grant, so `Acl::check` denies → 403.
@@ -376,9 +376,9 @@ async fn acl_deny_is_403_and_nothing_lands() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unknown_type_is_403_no_leak() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, _pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, _pool, _wh, state) = app_state(fx, &db).await;
     // alice is a legitimately Write-granted user — but on an *existing* type. (ACL
     // grants validate the target type exists, so you cannot grant on a non-existent
     // type; the no-leak guarantee therefore comes from the coarse gate returning
@@ -459,9 +459,9 @@ async fn post_model_q(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn infer_and_create_lands_and_records_the_type() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     // Absent type "gadget"; alice is Write-granted on it via the direct seed.
     grant_write_absent_type(&pg, &pool, "alice", "gadget").await;
     let token = session_token(&pg, "alice").await;
@@ -513,9 +513,9 @@ async fn infer_and_create_lands_and_records_the_type() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn identity_query_param_is_honored() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     grant_write_absent_type(&pg, &pool, "alice", "keyed").await;
     let token = session_token(&pg, "alice").await;
 
@@ -557,9 +557,9 @@ async fn identity_query_param_is_honored() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn identity_naming_absent_column_is_rejected_and_nothing_created() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     grant_write_absent_type(&pg, &pool, "alice", "badid").await;
     let token = session_token(&pg, "alice").await;
 
@@ -588,9 +588,9 @@ async fn identity_naming_absent_column_is_rejected_and_nothing_created() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn re_post_conforms_then_rejects_a_differing_batch() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     grant_write_absent_type(&pg, &pool, "alice", "again").await;
     let token = session_token(&pg, "alice").await;
 
@@ -636,9 +636,9 @@ async fn unmappable_column_is_422_and_nothing_created() {
     use arrow::array::Date32Array;
     use arrow::datatypes::DataType;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pg, pool, _wh, state) = app_state(&fx, &db).await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
     grant_write_absent_type(&pg, &pool, "alice", "evt").await;
     let token = session_token(&pg, "alice").await;
 

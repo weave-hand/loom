@@ -63,7 +63,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 /// rows were end-capped). That pair proves exactly-once delivery at current.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_inline_only_makes_rows_file_backed_exactly_once() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -124,7 +124,7 @@ async fn flush_inline_only_makes_rows_file_backed_exactly_once() {
 /// snapshot or data file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_with_no_live_rows_is_a_noop() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -146,7 +146,7 @@ async fn flush_with_no_live_rows_is_a_noop() {
 /// event where inputs[0].name == outputs[0].name == "wh.t" (the table's dataset ref).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_emits_compaction_lineage() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -193,7 +193,7 @@ async fn flush_emits_compaction_lineage() {
 /// live inline, while the flush snapshot sees them as a Parquet file and no inline.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_preserves_time_travel() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -270,7 +270,7 @@ async fn flush_preserves_time_travel() {
 /// A second flush drains those too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flush_leaves_later_inline_rows_live() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

@@ -6,11 +6,11 @@ use control_plane_postgres::iceberg_mirror::{
     arm_inline_trigger, bump_inline_trigger, reset_inline_trigger,
 };
 
-// Fixture API (verified against tests/iceberg_flush.rs): `PgFixture::start()` is
+// Fixture API (verified against tests/iceberg_flush.rs): `PgFixture::shared()` is
 // NOT async; `fresh_db()` and `pool_for()` are.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bump_accrues_and_reports_effective_threshold() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let mut conn = pool.acquire().await.unwrap();
@@ -44,7 +44,7 @@ async fn bump_accrues_and_reports_effective_threshold() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn per_table_threshold_overrides_global() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let mut conn = pool.acquire().await.unwrap();

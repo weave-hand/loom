@@ -100,7 +100,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 /// namespace "loom-vector-index".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn build_covers_all_rows_live_at_s() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

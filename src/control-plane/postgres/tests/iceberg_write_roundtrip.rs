@@ -82,7 +82,7 @@ fn batch(catalog_schema: &iceberg::spec::Schema, ids: Vec<i64>) -> RecordBatch {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn append_round_trips_through_the_mirror() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let whs = wh.path().display().to_string();
@@ -123,7 +123,7 @@ async fn append_round_trips_through_the_mirror() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_unappended_table_succeeds_without_orphan_snapshot() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let whs = wh.path().display().to_string();
@@ -154,7 +154,7 @@ async fn drop_unappended_table_succeeds_without_orphan_snapshot() {
 /// (none dropped, none duplicated). With the CAS-conflict retry in place this
 /// holds even when writers collide on the pointer CAS.
 async fn concurrent_appends_consistent(n: i64) {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let whs = wh.path().display().to_string();

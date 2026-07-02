@@ -218,7 +218,7 @@ async fn seed_and_build(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn knn_cold_exact_cosine() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
 
     let table = TableRef {
@@ -226,7 +226,7 @@ async fn knn_cold_exact_cosine() {
         name: "docs".into(),
     };
 
-    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(fx, &db, Metric::Cosine).await;
 
     // Query: nearest to id=1's embedding [1,0,0,0] with cosine, k=2.
     let batch = engine_serving::vector_search(
@@ -253,7 +253,7 @@ async fn knn_cold_exact_cosine() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn knn_cold_exact_l2() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
 
     let table = TableRef {
@@ -261,7 +261,7 @@ async fn knn_cold_exact_l2() {
         name: "docs".into(),
     };
 
-    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::L2).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(fx, &db, Metric::L2).await;
 
     // Query: nearest to id=2's embedding [0,1,0,0] with L2, k=2.
     let batch = engine_serving::vector_search(
@@ -293,7 +293,7 @@ async fn no_bound_index_is_deterministic_error() {
     use control_plane_postgres::PgControlPlane;
     use std::time::Duration;
 
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
 
     let wh = tempfile::tempdir().expect("wh");
@@ -369,7 +369,7 @@ async fn no_bound_index_is_deterministic_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn knn_cold_hot_merge_cosine() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
@@ -377,7 +377,7 @@ async fn knn_cold_hot_merge_cosine() {
     };
 
     // Cold rows 1-4 + index built at S (covered_snapshot = S).
-    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(fx, &db, Metric::Cosine).await;
 
     // Land row 5 INLINE (born after S): the unique nearest to the query, living
     // only in the hot delta. inline_byte_limit = usize::MAX forces the inline path.
@@ -428,14 +428,14 @@ async fn knn_cold_hot_merge_cosine() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn knn_cold_hot_merge_l2() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
 
-    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::L2).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(fx, &db, Metric::L2).await;
 
     let run = RunId(uuid::Uuid::new_v4());
     let inline: &[(i64, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
@@ -574,13 +574,13 @@ async fn seed_and_build_ivf(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ivf_cold_search_returns_exact_match() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
-    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(fx, &db, Metric::Cosine).await;
 
     // Query id=1's own embedding: its centroid is always probed (nearest), so the
     // exact match is found even though the index is approximate.
@@ -603,13 +603,13 @@ async fn ivf_cold_search_returns_exact_match() {
 async fn ivf_hot_delta_row_is_never_pruned_cosine() {
     // The freshness invariant: a row landed inline after S is scored EXACTLY and
     // wins, regardless of IVF cluster pruning on the cold side.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
-    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(fx, &db, Metric::Cosine).await;
 
     // Row 5 inline (born after S): the unique nearest to the query.
     let run = RunId(uuid::Uuid::new_v4());
@@ -655,13 +655,13 @@ async fn ivf_hot_delta_row_is_never_pruned_cosine() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ivf_hot_delta_row_is_never_pruned_l2() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
-    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(&fx, &db, Metric::L2).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(fx, &db, Metric::L2).await;
 
     let run = RunId(uuid::Uuid::new_v4());
     let inline: &[(i64, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
@@ -803,13 +803,13 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_cosine() {
     // The freshness invariant: a row landed inline after the HNSW cold index's covered
     // snapshot S is scored EXACTLY via the hot path and merged, never dropped by graph
     // approximation.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
-    let (catalog, pool, _cp, _wh) = seed_and_build_hnsw(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build_hnsw(fx, &db, Metric::Cosine).await;
 
     // Row 5 inline (born after S): the unique nearest to the query, living only in the
     // hot delta — it is NOT in the cold HNSW graph.
@@ -859,13 +859,13 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_cosine() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hnsw_cold_hot_merge_counts_fresh_row_once_l2() {
     // L2 variant of the HNSW freshness invariant.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
-    let (catalog, pool, _cp, _wh) = seed_and_build_hnsw(&fx, &db, Metric::L2).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build_hnsw(fx, &db, Metric::L2).await;
 
     let run = RunId(uuid::Uuid::new_v4());
     let inline: &[(i64, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
@@ -912,13 +912,13 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_l2() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ivf_nprobe_full_reproduces_exact_match() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
-    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build_ivf(fx, &db, Metric::Cosine).await;
 
     // nprobe = nlist (2) probes every cluster → the exact nearest is always found.
     let batch = engine_serving::vector_search(
@@ -938,13 +938,13 @@ async fn ivf_nprobe_full_reproduces_exact_match() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flat_ignores_both_knobs() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
-    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(fx, &db, Metric::Cosine).await;
 
     // Flat: nprobe/ef_search must not change results.
     let plain = engine_serving::vector_search(
@@ -976,13 +976,13 @@ async fn flat_ignores_both_knobs() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_dim_mismatch_is_error() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp_init, db) = fx.fresh_db().await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
     };
-    let (catalog, pool, _cp, _wh) = seed_and_build(&fx, &db, Metric::Cosine).await;
+    let (catalog, pool, _cp, _wh) = seed_and_build(fx, &db, Metric::Cosine).await;
 
     // Index dim is 4; a length-3 query must be a deterministic DimMismatch, never a panic.
     let err = engine_serving::vector_search(

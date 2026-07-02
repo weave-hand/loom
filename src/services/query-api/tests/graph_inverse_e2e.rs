@@ -161,8 +161,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mixed_cycle_matches_part_two_reach_and_depths_differ() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -227,8 +227,8 @@ async fn mixed_cycle_matches_part_two_reach_and_depths_differ() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cycle_terminates_and_dedups_at_depth_three() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -264,8 +264,8 @@ async fn cycle_terminates_and_dedups_at_depth_three() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn intermediate_team_filter_prunes_reach_through_inactive_team() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -309,8 +309,8 @@ async fn intermediate_team_filter_prunes_reach_through_inactive_team() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn single_inverse_hop_on_team_is_non_cyclic_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -337,8 +337,8 @@ async fn single_inverse_hop_on_team_is_non_cyclic_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unknown_inverse_link_is_404() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -363,8 +363,8 @@ async fn unknown_inverse_link_is_404() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn starred_inverse_hop_is_404_not_recursive_tail() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

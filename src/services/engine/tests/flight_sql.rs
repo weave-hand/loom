@@ -65,7 +65,7 @@ async fn spawn_flight(fx: &PgFixture, db: &str, warehouse: &str) -> (tempfile::T
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_streams_unioned_result() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -87,7 +87,7 @@ async fn flight_sql_streams_unioned_result() {
         )
         .await;
 
-    let (_sock_dir, sock) = spawn_flight(&fx, &db, &wh.path().display().to_string()).await;
+    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
     let client = FlightSqlClient::connect(&sock).await.expect("connect");
 
     let batches = client

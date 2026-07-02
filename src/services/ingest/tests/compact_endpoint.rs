@@ -27,7 +27,7 @@ fn stub_materializer() -> Arc<dyn LandingMaterializer> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn compact_endpoint_enqueues_job() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, _db) = fx.fresh_db().await;
     let cp = Arc::new(cp);
 

@@ -77,7 +77,7 @@ async fn live_inline_count(pool: &sqlx::PgPool, tid: i64, at: SnapshotId) -> i64
 /// read as-of S1: inline row {id:1} must still be visible (time travel, count = 1)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overwrite_end_caps_stale_inline_row() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

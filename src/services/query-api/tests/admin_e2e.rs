@@ -58,7 +58,7 @@ async fn status(app: axum::Router, req: Request) -> StatusCode {
 
 #[tokio::test]
 async fn gate_admin_ok_nonadmin_403_unauth_401() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let cp = Arc::new(fx.fresh_control_plane().await);
 
     // admin session (subject id == "root" matches the gate)
@@ -107,7 +107,7 @@ async fn gate_admin_ok_nonadmin_403_unauth_401() {
 
 #[tokio::test]
 async fn create_with_role_then_disable_blocks_login() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let cp = Arc::new(fx.fresh_control_plane().await);
     let admin_token = seed_session(&cp, ADMIN).await;
 

@@ -148,8 +148,8 @@ fn pairs(body: &serde_json::Value) -> Vec<(String, String)> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ids_scopes_a_plain_read() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -174,8 +174,8 @@ async fn ids_scopes_a_plain_read() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ids_scopes_a_traversal_source() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -201,8 +201,8 @@ async fn ids_scopes_a_traversal_source() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ids_scopes_an_association_source() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -228,8 +228,8 @@ async fn ids_scopes_an_association_source() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ids_on_a_no_identity_type_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -247,8 +247,8 @@ async fn ids_on_a_no_identity_type_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn present_but_empty_ids_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

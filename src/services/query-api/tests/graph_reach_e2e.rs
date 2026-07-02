@@ -155,8 +155,8 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
 
 #[tokio::test(flavor = "multi_thread")]
 async fn depth_bounds_and_cycle_termination() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -204,8 +204,8 @@ async fn depth_bounds_and_cycle_termination() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn row_filter_prunes_reachability_through_blocked_node() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -248,8 +248,8 @@ async fn row_filter_prunes_reachability_through_blocked_node() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn non_self_link_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -274,8 +274,8 @@ async fn non_self_link_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn out_of_range_depth_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

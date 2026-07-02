@@ -21,7 +21,7 @@ const KIND: &str = "t";
 // N enqueued jobs are all completed by a worker running against real Postgres.
 #[tokio::test]
 async fn worker_drains_postgres_jobs() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     for _ in 0..5 {
         cp.enqueue(job(KIND)).await.unwrap();
@@ -60,7 +60,7 @@ async fn worker_drains_postgres_jobs() {
 // enqueued after the worker is idle still completes quickly.
 #[tokio::test]
 async fn notify_delivers_before_poll_timeout() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     let done = Arc::new(AtomicU32::new(0));
     let d = done.clone();

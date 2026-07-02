@@ -112,7 +112,7 @@ fn spawn_worker(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn typed_transform_materializes_and_governs_the_output_model() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();
@@ -372,7 +372,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn non_conforming_typed_transform_commits_nothing() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let warehouse = wh.path().display().to_string();

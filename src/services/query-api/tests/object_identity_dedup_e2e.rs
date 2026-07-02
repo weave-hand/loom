@@ -188,8 +188,8 @@ fn chain() -> ChainQuery {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn masked_or_denied_identity_preserves_object_cardinality() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,

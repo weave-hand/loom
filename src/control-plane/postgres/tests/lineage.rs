@@ -2,28 +2,28 @@ use control_plane_postgres::fixture::PgFixture;
 
 #[tokio::test]
 async fn postgres_passes_lineage_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::lineage_contract(&cp).await;
 }
 
 #[tokio::test]
 async fn postgres_passes_lineage_closure_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::lineage_closure_contract(&cp).await;
 }
 
 #[tokio::test]
 async fn postgres_passes_lineage_pagination_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::lineage_pagination_contract(&cp).await;
 }
 
 #[tokio::test]
 async fn postgres_passes_type_table_binding_contract() {
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::type_table_binding_contract(&cp).await;
 }
@@ -32,7 +32,7 @@ async fn postgres_passes_type_table_binding_contract() {
 async fn postgres_binding_edge_is_source_guarded() {
     use control_plane_core::{ObjectType, Ontology, TableRef, TypeName};
 
-    let fixture = PgFixture::start();
+    let fixture = PgFixture::shared();
     let (cp, db) = fixture.fresh_db().await;
     let pool = fixture.pool_for(&db).await;
 

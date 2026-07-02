@@ -244,8 +244,8 @@ fn pairs(body: &serde_json::Value) -> Vec<(String, String)> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn single_hop_returns_exact_pairs() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -276,8 +276,8 @@ async fn single_hop_returns_exact_pairs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn multi_hop_pairs_source_to_final_target() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -311,8 +311,8 @@ async fn multi_hop_pairs_source_to_final_target() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn intermediate_filter_drops_routed_pairs() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -361,8 +361,8 @@ async fn intermediate_filter_drops_routed_pairs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dedup_collapses_same_pair_distinct_sources_kept() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -405,8 +405,8 @@ async fn dedup_collapses_same_pair_distinct_sources_kept() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn no_identity_source_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -431,8 +431,8 @@ async fn no_identity_source_is_400() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn no_identity_target_is_400() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -458,8 +458,8 @@ async fn no_identity_target_is_400() {
 /// Default shape (no flag) still returns objects, not associations — regression guard.
 #[tokio::test(flavor = "multi_thread")]
 async fn default_shape_unchanged() {
-    let fx = PgFixture::start();
-    let (cp, eng, _writer) = setup(&fx).await;
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

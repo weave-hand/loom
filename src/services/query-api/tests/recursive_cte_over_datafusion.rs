@@ -45,7 +45,7 @@ fn person() -> TableRef {
 // "cycle terminates + dedups" property graph-reach-e2e asserts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fk_self_link_recursive_reach_over_datafusion() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -126,7 +126,7 @@ async fn fk_self_link_recursive_reach_over_datafusion() {
 // graph-union-e2e asserts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn union_self_links_recursive_reach_over_datafusion() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);

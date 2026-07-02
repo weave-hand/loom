@@ -121,7 +121,7 @@ async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
 /// object-storage Parquet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn small_request_inlines_and_emits_lineage() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -164,7 +164,7 @@ async fn small_request_inlines_and_emits_lineage() {
 /// namespace + table, append, atomic lineage, returns the mirror snapshot id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn large_request_writes_parquet_and_emits_lineage() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -207,7 +207,7 @@ async fn large_request_writes_parquet_and_emits_lineage() {
 /// asserts the landing succeeds (the columns are reordered to match `columns`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reordered_columns_inline_align_by_name() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
@@ -238,7 +238,7 @@ async fn reordered_columns_inline_align_by_name() {
 /// landing succeeds and returns the mirror snapshot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reordered_columns_parquet_align_by_name() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;

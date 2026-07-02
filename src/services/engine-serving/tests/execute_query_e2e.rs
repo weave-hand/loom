@@ -8,7 +8,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn execute_query_unions_file_and_inline() {
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
@@ -59,7 +59,7 @@ async fn execute_query_unions_file_and_inline() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn execute_query_inline_only() {
     // A table that only ever had inline writes (no Parquet files) still reads back.
-    let fx = PgFixture::start();
+    let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
