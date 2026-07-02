@@ -90,7 +90,11 @@ impl BootThrottle {
     /// conflicts even within one process. Marker files are never deleted (empty,
     /// reused across runs), which avoids a create/unlink race.
     pub fn acquire(&self) -> SlotGuard {
-        let deadline = Instant::now() + Duration::from_secs(120);
+        // Under `PgFixture::shared()` a slot is held for a whole test binary's
+        // lifetime, so ninth-and-later concurrent binaries legitimately wait
+        // for a binary to finish, not just for a boot; 300s stays a backstop
+        // against a wedged holder, not a scheduler.
+        let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             for i in 0..self.slots {
                 let path = self.dir.join(format!("slot-{i}"));
@@ -110,7 +114,7 @@ impl BootThrottle {
             }
             if Instant::now() >= deadline {
                 panic!(
-                    "could not acquire a pg fixture boot slot within 120s \
+                    "could not acquire a pg fixture boot slot within 300s \
                      (LOOM_PG_FIXTURE_SLOTS too low, or slots leaked?)"
                 );
             }
@@ -217,6 +221,12 @@ impl PgFixture {
             // flake). `mmap` places DSM in $PGDATA/pg_dynshmem/ — inside the per-cluster
             // data tempdir, which self-cleans on Drop and lives on disk, not the tmpfs.
             .args(["-c", "dynamic_shared_memory_type=mmap"])
+            // One cluster now serves a whole test binary's concurrently-running
+            // tests (PgFixture::shared): N libtest threads × ~15 pooled conns
+            // exceeds the default 100. Live clusters stay throttle-bounded, so
+            // the SysV-semaphore cost is a bounded per-cluster 2x, not a
+            // cluster-count increase.
+            .args(["-c", "max_connections=200"])
             .spawn()
             .expect("spawn postgres");
 
