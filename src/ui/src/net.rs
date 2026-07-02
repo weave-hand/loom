@@ -1,7 +1,7 @@
 //! Runtime API base resolution + the login/logout HTTP calls (gloo-net fetch).
 
 use gloo_net::http::Request;
-use loom_ui_core::{AuthError, status_to_error, url};
+use loom_ui_core::{AuthError, ObjectsPage, parse_objects_page, status_to_error, url};
 use wasm_bindgen::JsValue;
 
 /// Read `window.LOOM_CONFIG.apiBase` (shipped default ""), so the same bundle is
@@ -49,4 +49,85 @@ pub async fn logout(base: &str, token: &str) {
         .header("Authorization", &format!("Bearer {token}"))
         .send()
         .await;
+}
+
+/// Why a governed `GET` failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchError {
+    /// The bearer token is missing/expired (HTTP 401) — the caller should log out.
+    Unauthorized,
+    /// The request never completed (transport / decode failure).
+    Network,
+    /// The server responded with an unexpected non-401 status.
+    Server(u16),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => write!(f, "your session has expired — please sign in again"),
+            Self::Server(c) => write!(f, "server error ({c})"),
+            Self::Network => write!(f, "could not reach the server"),
+        }
+    }
+}
+
+fn fetch_status_err(status: u16) -> FetchError {
+    if status == 401 {
+        FetchError::Unauthorized
+    } else {
+        FetchError::Server(status)
+    }
+}
+
+/// Percent-encode a cursor value for use in a query string.
+fn encode_cursor(c: &str) -> String {
+    js_sys::encode_uri_component(c).into()
+}
+
+/// GET /ontology/types with the bearer token. Decodes `{"types": [...]}`.
+pub async fn fetch_types(base: &str, token: &str) -> Result<Vec<String>, FetchError> {
+    let resp = Request::get(&url(base, "/ontology/types"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(body
+        .get("types")
+        .and_then(|t| t.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// GET /objects/{type_name}?limit=&cursor= with the bearer token. `cursor` is
+/// percent-encoded when present; `limit` is always sent.
+pub async fn fetch_page(
+    base: &str,
+    token: &str,
+    type_name: &str,
+    cursor: Option<&str>,
+    limit: u32,
+) -> Result<ObjectsPage, FetchError> {
+    let mut path = format!("/objects/{type_name}?limit={limit}");
+    if let Some(c) = cursor {
+        path.push_str(&format!("&cursor={}", encode_cursor(c)));
+    }
+    let resp = Request::get(&url(base, &path))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_objects_page(&body))
 }

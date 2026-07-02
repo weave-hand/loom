@@ -3,6 +3,17 @@
 A [Yew](https://yew.rs) app that cross-compiles to `wasm32-unknown-unknown` and
 bundles to browser-loadable JS via wasm-bindgen.
 
+Once authenticated, the `app` renders the **`Explorer`** (`src/explorer.rs`): a
+three-pane object browser — type sidebar (`GET /ontology/types`) → paginated object
+`DataTable` with a **"Load more"** button appending the next cursor page
+(`GET /objects/{type}?limit=&cursor=`) → detail drawer (Object tab) — composed from
+the `loom_ui_components` primitives. Response parsing is pure in `loom_ui_core`
+(`parse_objects_page`/`columns_from_objects`/`cell_to_string`, `rust_test`'d); `net.rs`
+holds the Bearer-auth `fetch_types`/`fetch_page` (a 401 fails closed to logout).
+Rendering is verified against a live backend (no DOM in buck2 `rust_test`; browser e2e
+deferred → `fut-ui-browser-test-fixture`). Spec/plan:
+`docs/superpowers/{specs,plans}/2026-07-02-object-explorer-ui*`.
+
 - `buck2 build //src/ui:bundle` → `dist/{app.js, app_bg.wasm, index.html}`
 - `buck2 run //src/ui:serve` serves `dist/` over HTTP — the `--target web` glue
   `fetch()`es the wasm, so `file://` will **not** load it; it must be served over HTTP.

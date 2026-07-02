@@ -7,9 +7,11 @@
     reason = "yew html! macro expansion is not lint-clean under loom's strict gate"
 )]
 
+mod explorer;
 mod net;
 mod session;
 
+use explorer::Explorer;
 use loom_ui_core::AuthError;
 use yew::prelude::*;
 
@@ -17,9 +19,9 @@ use yew::prelude::*;
 fn app() -> Html {
     let token = use_state(session::load);
     if token.is_some() {
-        let on_logout = {
+        let on_logout: Callback<()> = {
             let token = token.clone();
-            Callback::from(move |_| {
+            Callback::from(move |()| {
                 let token = token.clone();
                 if let Some(t) = (*token).clone() {
                     wasm_bindgen_futures::spawn_local(async move {
@@ -31,11 +33,7 @@ fn app() -> Html {
             })
         };
         return html! {
-            <main>
-                <h1>{ "loom" }</h1>
-                <p>{ "You are logged in." }</p>
-                <button onclick={on_logout}>{ "Log out" }</button>
-            </main>
+            <Explorer token={(*token).clone().unwrap_or_default()} on_logout={on_logout.clone()} />
         };
     }
     html! { <Login on_login={Callback::from({ let token = token.clone(); move |t: String| { session::store(&t); token.set(Some(t)); } })} /> }
