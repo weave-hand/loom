@@ -23,7 +23,7 @@ use super::error::from_sqlx_error;
 
 /// Side-effects to run inside the one `do_update_table` commit tx, alongside the
 /// pointer-CAS + mirror projection. Both are optional and independent.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CommitExtras<'a> {
     /// Emit this lineage event in the commit tx (landing / flush provenance).
     pub lineage: Option<&'a LineageEvent>,
@@ -42,6 +42,7 @@ pub struct CommitExtras<'a> {
 
 /// Mark inline rows `loom_row_id = ANY(row_ids)` of `iceberg_mirror.inline_<table_id>`
 /// as ended at the commit's snapshot.
+#[derive(Clone)]
 pub struct InlineEndCap<'a> {
     /// The `iceberg_mirror` table id (from `inline_<table_id>`).
     pub table_id: i64,

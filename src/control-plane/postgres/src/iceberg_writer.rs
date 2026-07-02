@@ -27,7 +27,7 @@ use parquet::file::properties::WriterProperties;
 
 use control_plane_core::LineageEvent;
 
-use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
+use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
 
 /// Bound on commit retries after a lost pointer CAS. A conflict at the cap
 /// propagates the original (still retryable-flagged) error so a higher layer
@@ -143,19 +143,16 @@ fn commit_backoff(ident: &TableIdent, attempt: u32, writer_path: Option<&str>) -
 /// borrows), so there is no shared mutable state across concurrent commits.
 struct CommitExtrasCatalog<'a> {
     inner: &'a SqlCatalog,
-    lineage: Option<&'a LineageEvent>,
-    end_cap: Option<InlineEndCap<'a>>,
-    overwrite: bool,
-    jobs: &'a [control_plane_core::NewJob],
+    extras: CommitExtras<'a>,
 }
 
 impl std::fmt::Debug for CommitExtrasCatalog<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CommitExtrasCatalog")
-            .field("lineage", &self.lineage.is_some())
-            .field("end_cap", &self.end_cap.is_some())
-            .field("overwrite", &self.overwrite)
-            .field("jobs", &self.jobs.len())
+            .field("lineage", &self.extras.lineage.is_some())
+            .field("end_cap", &self.extras.end_cap.is_some())
+            .field("overwrite", &self.extras.overwrite)
+            .field("jobs", &self.extras.jobs.len())
             .finish()
     }
 }
@@ -166,18 +163,7 @@ impl Catalog for CommitExtrasCatalog<'_> {
     /// with the extras so they commit/roll back atomically with the snapshot.
     async fn update_table(&self, commit: TableCommit) -> Result<Table> {
         self.inner
-            .do_update_table(
-                commit,
-                CommitExtras {
-                    lineage: self.lineage,
-                    end_cap: self.end_cap.as_ref().map(|c| InlineEndCap {
-                        table_id: c.table_id,
-                        row_ids: c.row_ids,
-                    }),
-                    overwrite: self.overwrite,
-                    jobs: self.jobs,
-                },
-            )
+            .do_update_table(commit, self.extras.clone())
             .await
     }
 
@@ -249,10 +235,7 @@ pub async fn append_batches_with_extras(
     catalog: &SqlCatalog,
     table: &Table,
     batches: Vec<RecordBatch>,
-    lineage: Option<&LineageEvent>,
-    end_cap: Option<InlineEndCap<'_>>,
-    overwrite: bool,
-    jobs: &[control_plane_core::NewJob],
+    extras: CommitExtras<'_>,
 ) -> Result<Vec<WrittenFile>> {
     let data_files = write_parquet(table, batches).await?;
     let summaries: Vec<WrittenFile> = data_files
@@ -266,10 +249,7 @@ pub async fn append_batches_with_extras(
 
     let wrapper = CommitExtrasCatalog {
         inner: catalog,
-        lineage,
-        end_cap,
-        overwrite,
-        jobs,
+        extras,
     };
     commit_append_with_retry(&wrapper, table.identifier(), table.clone(), data_files).await?;
     Ok(summaries)
@@ -287,7 +267,16 @@ pub async fn append_batches_with_lineage(
     batches: Vec<RecordBatch>,
     lineage: &LineageEvent,
 ) -> Result<Vec<WrittenFile>> {
-    append_batches_with_extras(catalog, table, batches, Some(lineage), None, false, &[]).await
+    append_batches_with_extras(
+        catalog,
+        table,
+        batches,
+        CommitExtras {
+            lineage: Some(lineage),
+            ..CommitExtras::default()
+        },
+    )
+    .await
 }
 
 async fn write_parquet(table: &Table, batches: Vec<RecordBatch>) -> Result<Vec<DataFile>> {

@@ -30,7 +30,7 @@ use crate::iceberg_mirror::{
     live_columns_for, next_snapshot, project_files, reconcile_and_project, stamp_schema_version,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
-use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
+use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
 
@@ -227,7 +227,15 @@ pub(crate) async fn append_parquet_snapshot(
         .collect::<Result<Vec<_>>>()?;
 
     append_batches_with_extras(
-        catalog, &ice_table, batches, lineage, end_cap, overwrite, jobs,
+        catalog,
+        &ice_table,
+        batches,
+        CommitExtras {
+            lineage,
+            end_cap,
+            overwrite,
+            jobs,
+        },
     )
     .await
     .map_err(be)?;
