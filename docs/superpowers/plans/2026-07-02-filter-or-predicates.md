@@ -104,6 +104,12 @@ Expected: FAIL — `split_or_members`/`split_member` unresolved.
 /// the escape is consumed here, leaving a plain comma the member's `coerce_predicate`
 /// re-splits for the `in` list. Fewer than two members is rejected: an OR of one is just a
 /// plain predicate and an empty `_or` is meaningless, so requiring >=2 keeps intent explicit.
+///
+/// Caveat: because escapes are consumed once here, a `set`-operand carrying a *literal*
+/// backslash-escape inside an OR member (e.g. `region:in:a\\b`) is unescaped to `a\b` and
+/// then rejected by the inner `split_set_operands` as an invalid escape — a clean 400, never
+/// a crash or a leak. Cross-column OR of a set with escaped operands is a fringe case; the
+/// plain (`?region=in:a\\b`) path still supports it. See FUTURE `fut-or-set-operand-escaping`.
 pub fn split_or_members(raw: &str) -> Result<Vec<String>, FilterError> {
     let bad = |m: String| FilterError::BadValue("_or".to_string(), m);
     let members = split_set_operands(raw).map_err(|e| bad(format!("OR-group: {e}")))?;
@@ -153,6 +159,7 @@ Add the `or_groups` parameter to the compile functions and render each group as 
 - Modify: `src/services/query-api/src/sql.rs` (`select_where_conjuncts` ~373, `compile_select_with` ~397, `compile_select` ~445)
 - Modify: `src/services/query-api/src/handler.rs` (two `compile_select_with` call sites: ~336 and ~520 — pass `&[]`)
 - Test: `src/services/query-api/tests/sql_compile.rs`
+- Test (widen existing calls — these ALSO call the compile fns and will break arity otherwise): `src/services/query-api/tests/sql_dialect.rs` (`compile_select` at 47, 105; `compile_select_with` at 57, 81, 142) and `src/services/query-api/tests/vector_search_filter.rs` (`compile_select` at 86)
 
 **Interfaces:**
 - Consumes: `caller_predicate_sql(dialect, &CallerPredicate, alias, &mut Vec<SqlValue>) -> String` (existing, `sql.rs:269`).
@@ -257,6 +264,49 @@ fn or_group_member_in_expands_placeholders() {
         vec![
             SqlValue::Text("EU".into()),
             SqlValue::Text("UK".into()),
+            SqlValue::Text("vip".into())
+        ]
+    );
+}
+
+#[test]
+fn acl_row_filter_stays_anded_above_or_group() {
+    // Governance gate (spec Testing #5, structural half): an ACL RowFilter is a top-level
+    // conjunct ANDed ABOVE the OR-group — an OR-group can never disjoin it away. Uses a
+    // non-empty row_filters (not just a plain caller predicate) to prove the ACL leg holds.
+    let acl = RowFilter::Compare {
+        property: "tenant".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Text("acme".into()),
+    };
+    let group = vec![
+        CallerPredicate {
+            column: "amount".into(),
+            op: CompareOp::Gt,
+            values: vec![SqlValue::Int(100)],
+        },
+        eqp("status", SqlValue::Text("vip".into())),
+    ];
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        std::slice::from_ref(&acl),
+        &[],
+        std::slice::from_ref(&group),
+        &[],
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("tenant" = ?) AND (("amount" > ?) OR ("status" = ?)) LIMIT 10"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("acme".into()),
+            SqlValue::Int(100),
             SqlValue::Text("vip".into())
         ]
     );
@@ -385,10 +435,16 @@ At `handler.rs:520` (vector-search post-filter — no caller OR) insert `&[]` af
 
 Tip to find them: `grep -n "compile_select(" src/services/query-api/tests/sql_compile.rs`. The new tests from Step 1 already pass the extra arg — leave them.
 
-- [ ] **Step 4: Run the sql-compile suite to verify pass**
+- [ ] **Step 3f: Widen the compile calls in the two OTHER test files that use them.** Adding `or_groups` to `compile_select`/`compile_select_with` breaks their arity too:
+  - `tests/sql_dialect.rs`: `compile_select` at lines 47 and 105 (insert `&[]` between predicates and derived); `compile_select_with` at lines 57, 81, 142 (insert `&[]` between the `predicates` arg and the `derived` arg — note this fn takes the leading `dialect` arg).
+  - `tests/vector_search_filter.rs`: `compile_select` at line 86 (insert `&[]` between predicates and derived).
 
-Run: `buck2 test //src/services/query-api:sql-compile > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
-Expected: PASS (all existing shape tests plus the three new OR-group tests).
+  Confirm none remain at the old arity: `grep -rn "compile_select" src/services/query-api/tests/sql_dialect.rs src/services/query-api/tests/vector_search_filter.rs`.
+
+- [ ] **Step 4: Run the affected compile-shape suites to verify pass**
+
+Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:sql-dialect //src/services/query-api:vector_search_filter > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
+Expected: PASS (all existing shape tests plus the four new OR-group tests; sql-dialect and vector_search_filter compile with the widened arity).
 
 - [ ] **Step 5: Confirm the crate still builds and is clippy-clean**
 
@@ -398,7 +454,9 @@ Expected: build succeeds; clippy output empty.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/services/query-api/src/sql.rs src/services/query-api/src/handler.rs src/services/query-api/tests/sql_compile.rs
+git add src/services/query-api/src/sql.rs src/services/query-api/src/handler.rs \
+  src/services/query-api/tests/sql_compile.rs src/services/query-api/tests/sql_dialect.rs \
+  src/services/query-api/tests/vector_search_filter.rs
 git commit -m "feat(query-api): render OR-groups as a parenthesized conjunct in select compile"
 ```
 
@@ -413,6 +471,7 @@ Mechanical widening: `ObjectQuery` grows an `or_raw: Vec<String>` field carrying
 - Modify: `src/services/query-api/src/http.rs` (`get_object`, ~136-167)
 - Modify: `src/services/query-api/src/flight_export.rs` (constructions at ~212 and ~253)
 - Modify (add `or_raw: Vec::new()` to each `ObjectQuery { … }`): `tests/update_delete_tiers_e2e.rs`, `tests/action_client_wire.rs`, `tests/derived_properties_e2e.rs`, `tests/update_delete_e2e.rs`, `tests/action_mapping_e2e.rs`, `tests/bind_read_e2e.rs`, `tests/overwrite_table_e2e.rs`, `tests/wire_governed_read_e2e.rs`, `tests/action_e2e.rs`, `tests/typed_filter_e2e.rs`, `tests/iceberg_action_e2e.rs`, `tests/governed_read.rs`
+- Modify (CROSS-CRATE — the transform crate depends on query-api and constructs `ObjectQuery`): `src/services/transform/tests/typed_transform_e2e.rs` (`ObjectQuery { … }` at ~line 328). Missing this breaks the transform crate's build and CI's `affected` job.
 
 **Interfaces:**
 - Produces: `ObjectQuery` with a new public field `pub or_raw: Vec<String>` (raw `_or` param values, one entry per `_or` occurrence).
@@ -474,25 +533,27 @@ and add `or_raw,` to the `ObjectQuery { type_name, eq_filters, ids }` literal:
 
 Add `or_raw: Vec::new(),` to each `ObjectQuery { … }` literal there (alongside the existing `eq_filters` / `ids` fields).
 
-- [ ] **Step 4: Fix every test `ObjectQuery` construction.** For each of the 12 test files listed under Files, add `or_raw: Vec::new(),` to each `ObjectQuery { … }` literal. Find them with:
+- [ ] **Step 4: Fix every `ObjectQuery` construction across BOTH crates.** Add `or_raw: Vec::new(),` to each `ObjectQuery { … }` literal. Find them ALL with a tree-wide grep (do NOT scope to the query-api tests dir — the transform crate has one too):
 
-Run: `grep -rn "ObjectQuery {" src/services/query-api/tests/`
+Run: `grep -rn "ObjectQuery {" src/services/`
 
-Each literal currently has `type_name`, `eq_filters`, `ids` (and nothing else) — append `or_raw: Vec::new(),`.
+That returns the src sites already handled (Steps 1-3) plus the 12 query-api test files AND `src/services/transform/tests/typed_transform_e2e.rs`. Each test literal currently has `type_name`, `eq_filters`, `ids` (and nothing else) — append `or_raw: Vec::new(),`.
 
-- [ ] **Step 5: Build the crate and run a representative subset to confirm green (no behavior change)**
+- [ ] **Step 5: Build BOTH crates and run a representative subset to confirm green (no behavior change)**
 
 Run:
 ```
-buck2 build -M none //src/services/query-api:query-api //src/services/query-api:query-api-bin > /tmp/b3.log 2>&1; grep -E "BUILD SUCCEEDED|error\[|error:" /tmp/b3.log
-buck2 test //src/services/query-api:typed-filter-e2e //src/services/query-api:governed-read > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log
+buck2 build -M none //src/services/query-api:query-api //src/services/query-api:query-api-bin //src/services/transform:transform > /tmp/b3.log 2>&1; grep -E "BUILD SUCCEEDED|error\[|error:" /tmp/b3.log
+buck2 test //src/services/query-api:typed-filter-e2e //src/services/query-api:governed-read //src/services/transform:typed-transform-e2e > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log
 ```
-Expected: build succeeds; both fixture tests PASS unchanged (the `_or` field is inert until Task 4).
+Expected: both crates build; the fixture tests PASS unchanged (the `_or` field is inert until Task 4). The transform e2e proves the cross-crate `ObjectQuery` widening compiles and runs.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/services/query-api/src/handler.rs src/services/query-api/src/http.rs src/services/query-api/src/flight_export.rs src/services/query-api/tests/
+git add src/services/query-api/src/handler.rs src/services/query-api/src/http.rs \
+  src/services/query-api/src/flight_export.rs src/services/query-api/tests/ \
+  src/services/transform/tests/typed_transform_e2e.rs
 git commit -m "feat(query-api): carry _or group values on ObjectQuery and route them in get_object"
 ```
 
@@ -508,7 +569,7 @@ The handler turns `q.or_raw` into `Vec<Vec<CallerPredicate>>`, reusing the plain
 
 **Interfaces:**
 - Consumes: `filter::split_or_members`, `filter::split_member` (Task 1); `filter::coerce_predicate`; `compile_select_with(..., or_groups, ...)` (Task 2); `ObjectQuery::or_raw` (Task 3).
-- Produces: a private `fn coerce_visible_predicate(col: &str, raw: &str, object_type: &ObjectType, allowed: &[String], masked: &[String]) -> Result<crate::filter::CallerPredicate, QueryError>` used by both the plain-filter loop and OR members.
+- Produces: a private `fn coerce_visible_predicate(col: &str, raw: &str, object_type: &ObjectType, allowed: &[String], masked: &std::collections::HashSet<String>) -> Result<crate::filter::CallerPredicate, QueryError>` used by both the plain-filter loop and OR members. NOTE `masked` (and `denied`) are `HashSet<String>` in `read_object` (`load_policy` returns `(Vec<RowFilter>, HashSet<String>, HashSet<String>)`, handler.rs:109-126); `allowed` is a `Vec<String>`. The helper takes `masked` as `&HashSet<String>` so `masked.contains(col)` works with `col: &str` via `Borrow<str>`; `allowed` is a slice checked with `.iter().any(...)`.
 
 - [ ] **Step 1: Write the failing e2e tests** in `tests/typed_filter_e2e.rs`. Add a new `#[tokio::test(flavor = "multi_thread")]` function. It reuses the existing `setup` (Orders: id/amount/active; rows (1,10.5,true) (2,20.0,false) (3,10.5,true) (4,NULL,NULL) (5,30.0,NULL)) and the `ids`/`Subject`/`read_object` pattern already in the file:
 
@@ -567,11 +628,13 @@ async fn or_groups_union_and_governance() {
     assert_eq!(ids(&r2), vec!["1".to_string(), "3".to_string()]);
 
     // Two OR-groups are ANDed: (amount>=20 OR active=false) AND (amount<=20 OR active=true).
-    // g1 -> {2,5}; g2 -> {1,2,3,4? no active null,...}. Intersection reasoning:
-    //   row2: g1 true(20>=20), g2 true(20<=20) -> in
-    //   row5: g1 true(30>=20), g2 false(30>20 & active null) -> out
-    //   row1: g1 true(active? no; 10.5>=20 no) -> actually g1: 10.5>=20 false, active=true not false -> g1 false -> out
-    // So only row 2.
+    // Per-row (amount, active):
+    //   row1 (10.5,T): g1 = 10.5>=20 F | active=false F  -> F  => out
+    //   row2 (20.0,F): g1 = 20>=20 T                     -> T ; g2 = 20<=20 T -> T => in
+    //   row3 (10.5,T): g1 = 10.5>=20 F | active=false F  -> F  => out
+    //   row4 (NULL,NULL): all comparisons on NULL are F  -> F  => out
+    //   row5 (30.0,NULL): g1 = 30>=20 T -> T ; g2 = 30<=20 F | active=true F -> F => out
+    // Intersection -> only row 2.
     let r3 = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
@@ -663,9 +726,9 @@ fn coerce_visible_predicate(
     raw: &str,
     object_type: &ObjectType,
     allowed: &[String],
-    masked: &[String],
+    masked: &std::collections::HashSet<String>,
 ) -> Result<crate::filter::CallerPredicate, QueryError> {
-    if !allowed.iter().any(|c| c.as_str() == col) || masked.iter().any(|c| c.as_str() == col) {
+    if !allowed.iter().any(|c| c.as_str() == col) || masked.contains(col) {
         return Err(QueryError::BadFilter(col.to_string()));
     }
     let ty = object_type
@@ -733,15 +796,15 @@ fn coerce_visible_predicate(
 Run: `buck2 test //src/services/query-api:typed-filter-e2e > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
 Expected: PASS (existing filter e2es plus the two new OR functions).
 
-- [ ] **Step 5: Full crate build + clippy + broader regression**
+- [ ] **Step 5: Full crate build + clippy + broader regression across BOTH crates**
 
 Run:
 ```
-buck2 build -M none //src/services/query-api:query-api //src/services/query-api:query-api-bin > /tmp/b4.log 2>&1; grep -E "BUILD SUCCEEDED|error" /tmp/b4.log
+buck2 build -M none //src/services/query-api:query-api //src/services/query-api:query-api-bin //src/services/transform:transform > /tmp/b4.log 2>&1; grep -E "BUILD SUCCEEDED|error" /tmp/b4.log
 buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c4.log 2>&1; cat /tmp/c4.log
-buck2 test //src/services/query-api:sql-compile //src/services/query-api:filter-coerce //src/services/query-api:governed-read > /tmp/r4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/r4.log
+buck2 test //src/services/query-api:sql-compile //src/services/query-api:sql-dialect //src/services/query-api:vector_search_filter //src/services/query-api:filter-coerce //src/services/query-api:typed-filter-e2e //src/services/query-api:governed-read //src/services/transform:typed-transform-e2e > /tmp/r4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/r4.log
 ```
-Expected: build succeeds; clippy empty; all listed tests PASS.
+Expected: both crates build; clippy empty; every listed test PASS. (This set is the union of every target whose sources this plan touches — it is the completion gate that would otherwise report false-green if scoped only to the query-api library.)
 
 - [ ] **Step 6: Commit**
 
@@ -754,7 +817,7 @@ git commit -m "feat(query-api): parse _or groups and thread OR-disjunctions into
 
 ## Post-implementation (handled by the finishing step, not a plan task)
 
-- Run `loom-docs-update` to close [[road-filter-or-predicates]] in `docs/ROADMAP.md` (`- [ ]`→`- [x]`, `status:done`, add `pr:#N`) and record any newly-deferred follow-up (e.g. `_or` on link-traversal/graph endpoints; between/text-pattern composition once [[road-filter-operators]] lands) in `docs/FUTURE.md`.
+- Run `loom-docs-update` to close [[road-filter-or-predicates]] in `docs/ROADMAP.md` (`- [ ]`→`- [x]`, `status:done`, add `pr:#N`) and record the newly-deferred follow-ups in `docs/FUTURE.md`: `_or` on link-traversal/graph endpoints; between/text-pattern composition once [[road-filter-operators]] lands; and `fut-or-set-operand-escaping` (a `set`-operand with an escaped backslash/comma inside an OR member currently 400s — the plain path supports it).
 - Open the PR with head `work/road-filter-or-predicates`; ensure the BuildBuddy `affected` + `lint` checks are green.
 
 ## Self-Review
@@ -766,9 +829,10 @@ git commit -m "feat(query-api): parse _or groups and thread OR-disjunctions into
 - OR-group rendering in `select_where_conjuncts` → Task 2.
 - ≥2-member validation → `split_or_members` (Task 1), tested in Task 1 + Task 4.
 - Members reuse `coerce_predicate` + `caller_predicate_sql` → Tasks 1/2/4.
-- Governance never weakened (row-filter/`_ids`/ACL stay ANDed; denied member fails) → Task 2 shape test + Task 4 deny test.
-- Tests 1-5 from the spec covered; test 6 (between/contains composition) intentionally replaced by an `in`-inside-group test because [[road-filter-operators]] has not landed (documented in Scope).
+- Governance never weakened (row-filter/`_ids`/ACL stay ANDed; denied member fails) → Task 2 `acl_row_filter_stays_anded_above_or_group` shape test (non-empty `RowFilter` above an OR-group) + Task 4 deny e2e.
+- Tests 1-5 from the spec covered (test 5's row-filter-not-disjoined half is proved by the Task 2 shape test that passes a real ACL `RowFilter` alongside an OR-group, plus the Task 4 denied-member e2e); test 6 (between/contains composition) intentionally replaced by an `in`-inside-group test because [[road-filter-operators]] has not landed (documented in Scope).
+- CROSS-CRATE impact accounted for: adding a field to `ObjectQuery` and a param to `compile_select`/`compile_select_with` breaks `transform`'s `typed_transform_e2e.rs` and query-api's `sql_dialect.rs`/`vector_search_filter.rs` — all three are in the task file-lists and the completion gate builds/tests both crates (Task 4 Step 5).
 
-**2. Placeholder scan:** every step has concrete code/commands; no TBD/"handle errors"/"similar to". The one soft spot — the optional row-filtered-subject e2e in Task 4 Step 1 — is explicitly conditioned on an existing helper and given a concrete fallback (rely on the deny test + SQL-shape AND-spine guarantee), not left open.
+**2. Placeholder scan:** every step has concrete code/commands; no TBD/"handle errors"/"similar to". The governance property (spec Testing #5) is now proved by a concrete non-empty-`RowFilter` shape test (Task 2) plus the Task 4 denied-member e2e — no conditional/optional test left dangling.
 
-**3. Type consistency:** `split_or_members(&str) -> Result<Vec<String>, FilterError>`, `split_member(&str) -> Result<(&str,&str), FilterError>`, `coerce_visible_predicate(&str,&str,&ObjectType,&[String],&[String]) -> Result<CallerPredicate, QueryError>`, and `or_groups: &[Vec<CallerPredicate>]` are used identically across Tasks 1/2/4. `ObjectQuery::or_raw: Vec<String>` is consistent between the struct (Task 3), the http populate (Task 3), and the handler parse (Task 4). `FilterError` → `QueryError::BadFilterValue` via the existing `#[from]`; the deny path uses `QueryError::BadFilter`.
+**3. Type consistency:** `split_or_members(&str) -> Result<Vec<String>, FilterError>`, `split_member(&str) -> Result<(&str,&str), FilterError>`, `coerce_visible_predicate(&str,&str,&ObjectType,&[String],&std::collections::HashSet<String>) -> Result<CallerPredicate, QueryError>` (`masked`/`denied` are `HashSet<String>` from `load_policy`; `allowed` is a `Vec<String>` → `&[String]`), and `or_groups: &[Vec<CallerPredicate>]` are used identically across Tasks 1/2/4. `ObjectQuery::or_raw: Vec<String>` is consistent between the struct (Task 3), the http populate (Task 3), and the handler parse (Task 4). `FilterError` → `QueryError::BadFilterValue` via the existing `#[from]`; the deny path uses `QueryError::BadFilter`.
