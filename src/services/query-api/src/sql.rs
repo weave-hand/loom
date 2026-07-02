@@ -914,8 +914,10 @@ fn reach_projection_where(
 /// `table`) up to `depth` times. Each recursive step joins `cur` through the whole path to
 /// `nxt` (both `table`), governing each intermediate landing with its `next_filters` and the
 /// final node `nxt` with the start `row_filters`. A 1-step path is the single-self-link case
-/// (byte-identical SQL). Termination by the inlined `depth` bound; `DISTINCT` dedups. Every
-/// caller value is a bound param.
+/// (byte-identical SQL). Termination by the inlined `depth` bound; the recursive `UNION` dedups
+/// the reachable id set, and the `p` projection is keyed by `p.id IN (SELECT id FROM reach)` so it
+/// is already object-unique (no projection `DISTINCT` — that would collapse masked identities).
+/// Every caller value is a bound param.
 #[allow(
     clippy::too_many_arguments,
     reason = "SQL compile functions require all builder parameters"
@@ -955,7 +957,7 @@ pub fn compile_graph_reach(
            UNION \
            SELECT nxt.{id} AS id, r.depth + 1 AS depth FROM reach r JOIN {tbl} cur ON cur.{id} = r.id{joins} WHERE {rec_where}\
          ) \
-         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
+         SELECT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
     );
     Ok((sql, params))
 }
@@ -1050,7 +1052,7 @@ pub fn compile_graph_tree(
 ///   JOIN tbl nxt ON e.to_id = nxt.id
 ///   WHERE r.depth < {depth} AND {row_filters_at_nxt}
 /// )
-/// SELECT DISTINCT {cols} FROM tbl p WHERE p.id IN (SELECT id FROM reach WHERE depth >= 1)
+/// SELECT {cols} FROM tbl p WHERE p.id IN (SELECT id FROM reach WHERE depth >= 1)
 ///   AND {row_filters_at_p} LIMIT {limit}
 /// ```
 ///
@@ -1149,7 +1151,7 @@ pub fn compile_graph_reach_union(
            UNION \
            {recursive}\
          ) \
-         SELECT DISTINCT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
+         SELECT {cols} FROM {tbl} p WHERE {proj_where} {limit_clause}"
     );
     Ok((sql, params))
 }

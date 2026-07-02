@@ -56,8 +56,8 @@ fn fk_self_link_recursive_reach() {
     // reachable in >= 1 hop, projected from p.
     assert!(sql.contains("depth >= 1"), "reachability bound: {sql}");
     assert!(
-        sql.contains("SELECT DISTINCT") && sql.contains(r#"p."name""#),
-        "projection: {sql}"
+        sql.contains(r#"p."name""#) && !sql.contains("SELECT DISTINCT"),
+        "projection (no DISTINCT — p rows already PK-unique via IN reach): {sql}"
     );
 }
 

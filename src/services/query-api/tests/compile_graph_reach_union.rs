@@ -96,11 +96,11 @@ fn two_self_links_union_with_row_filter() {
         "1 seed + 1 shared-nxt + 1 projection; got {params:?}"
     );
     assert_eq!(params, vec![SqlValue::Bool(true); 3]);
-    // Reachable in >= 1 hop, projected distinct.
+    // Reachable in >= 1 hop, projected from p (no DISTINCT — p rows already PK-unique).
     assert!(sql.contains("depth >= 1"), "reachability bound: {sql}");
     assert!(
-        sql.contains("SELECT DISTINCT") && sql.contains(r#"p."name""#),
-        "projection: {sql}"
+        sql.contains(r#"p."name""#) && !sql.contains("SELECT DISTINCT"),
+        "projection (no DISTINCT): {sql}"
     );
 }
 
