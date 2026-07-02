@@ -937,12 +937,12 @@ tails collapse into one inherent helper.
 - Produces: private `FlightDataService::{encode_response, do_get_files}`;
   `FlightTicketReq` deleted. No public-surface change.
 
-- [ ] **Step 1: Run the pinning suite BEFORE (baseline green)**
+- [x] **Step 1: Run the pinning suite BEFORE (baseline green)**
 
 Run: `buck2 test -j 8 //src/services/engine/... > /tmp/t3a.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3a.log`
 Expected: PASS.
 
-- [ ] **Step 2: Refactor `engine/src/flight.rs`**
+- [x] **Step 2: Refactor `engine/src/flight.rs`**
 
 Imports: add `use arrow_array::RecordBatch;` and
 `use engine_wire::flight::EngineTicket;` (keep the `arrow_flight::sql`
@@ -1036,7 +1036,7 @@ comments verbatim) into:
 Delete `FlightTicketReq` (`:311-328`) and the now-unused
 `engine_wire::flight::FlightTicket` decode path in this file.
 
-- [ ] **Step 3: Run to green (dispatch + all four planes pinned)**
+- [x] **Step 3: Run to green (dispatch + all four planes pinned)**
 
 Run: `buck2 test -j 8 //src/services/engine/... > /tmp/t3b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3b.log`
 Expected: PASS — Task 1's `ticket-errors` pins the decode-error contract;
@@ -1044,7 +1044,7 @@ Expected: PASS — Task 1's `ticket-errors` pins the decode-error contract;
 `write-wire`/`flight-ticket-membership` pin the four planes.
 Run: `buck2 build '//src/services/engine:engine[clippy.txt]' > /tmp/c3.log 2>&1; cat /tmp/c3.log` — artifact empty.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p3.log 2>&1; grep -c Failed /tmp/p3.log` — expected `0`.
 

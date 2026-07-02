@@ -67,8 +67,14 @@ fn file_ticket_decodes_to_files() {
 #[test]
 fn garbage_is_the_terminal_file_ticket_error() {
     let err = EngineTicket::decode(b"not json").expect_err("garbage must fail");
-    assert!(matches!(&err, TicketError::BadFileTicket(_)), "got: {err:?}");
-    assert!(err.to_string().starts_with("bad flight ticket: "), "got: {err}");
+    assert!(
+        matches!(&err, TicketError::BadFileTicket(_)),
+        "got: {err:?}"
+    );
+    assert!(
+        err.to_string().starts_with("bad flight ticket: "),
+        "got: {err}"
+    );
     let s = tonic::Status::from(err);
     assert_eq!(s.code(), tonic::Code::InvalidArgument);
     assert!(s.message().starts_with("bad flight ticket: "));
@@ -96,7 +102,10 @@ fn wrong_any_type_falls_through_to_the_file_plane() {
     };
     let err = EngineTicket::decode(&cmd.as_any().encode_to_vec())
         .expect_err("wrong Any type must fall through and fail");
-    assert!(matches!(&err, TicketError::BadFileTicket(_)), "got: {err:?}");
+    assert!(
+        matches!(&err, TicketError::BadFileTicket(_)),
+        "got: {err:?}"
+    );
 }
 
 #[test]
