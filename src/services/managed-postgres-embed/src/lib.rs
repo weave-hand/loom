@@ -43,43 +43,63 @@ pub enum EmbedError {
 /// goes to a per-pid temp dir and is published with an atomic `rename`.
 pub fn extract_pg(cache_root: &Path) -> Result<ExtractedPg, EmbedError> {
     let final_dir = cache_root.join(format!("pg-{PG_VERSION}"));
-    if !final_dir.exists() {
-        std::fs::create_dir_all(cache_root)?;
-        let tmp = cache_root.join(format!("pg-{}.tmp.{}", PG_VERSION, std::process::id()));
-        // Re-run-safe: clear any stale temp from a previous crashed pid-reuse.
-        if tmp.exists() {
-            std::fs::remove_dir_all(&tmp)?;
-        }
-        std::fs::create_dir_all(&tmp)?;
-
-        let gz = flate2::read::GzDecoder::new(PG_TARBALL);
-        let mut archive = tar::Archive::new(gz);
-        archive.set_preserve_permissions(true);
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?.into_owned();
-            // Strip the single wrapping `postgresql-<ver>-<triple>/` component.
-            let stripped: PathBuf = path.components().skip(1).collect();
-            if stripped.as_os_str().is_empty() {
-                continue;
-            }
-            // Trusted input: the tarball is sha256-pinned and compile-time-embedded, so
-            // the per-entry unpack (which does not sanitize `..`) is safe here.
-            entry.unpack(tmp.join(stripped))?;
-        }
-
-        // Publish atomically. If we lost a race, another process already
-        // published a complete dir — discard ours and use theirs.
-        match std::fs::rename(&tmp, &final_dir) {
-            Ok(()) => {}
-            Err(_) if final_dir.exists() => {
-                drop(std::fs::remove_dir_all(&tmp));
-            }
-            Err(e) => return Err(EmbedError::Io(e)),
-        }
+    // Already extracted (the common path): reuse it, no unpack.
+    if final_dir.exists() {
+        return Ok(extracted(&final_dir));
     }
-    Ok(ExtractedPg {
+
+    let tmp = unpack_to_temp(cache_root)?;
+    publish(&tmp, &final_dir)?;
+
+    Ok(extracted(&final_dir))
+}
+
+/// Unpack the embedded PG distribution into a fresh per-pid temp dir under
+/// `cache_root`, stripping the single wrapping `postgresql-<ver>-<triple>/`
+/// component. Returns the temp dir; the caller publishes it atomically.
+fn unpack_to_temp(cache_root: &Path) -> Result<PathBuf, EmbedError> {
+    std::fs::create_dir_all(cache_root)?;
+    let tmp = cache_root.join(format!("pg-{}.tmp.{}", PG_VERSION, std::process::id()));
+    // Re-run-safe: clear any stale temp from a previous crashed pid-reuse.
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp)?;
+    }
+    std::fs::create_dir_all(&tmp)?;
+
+    let gz = flate2::read::GzDecoder::new(PG_TARBALL);
+    let mut archive = tar::Archive::new(gz);
+    archive.set_preserve_permissions(true);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        // Strip the single wrapping `postgresql-<ver>-<triple>/` component.
+        let stripped: PathBuf = path.components().skip(1).collect();
+        if stripped.as_os_str().is_empty() {
+            continue;
+        }
+        // Trusted input: the tarball is sha256-pinned and compile-time-embedded, so the
+        // per-entry unpack (which does not sanitize `..`) is safe here.
+        entry.unpack(tmp.join(stripped))?;
+    }
+    Ok(tmp)
+}
+
+/// Publish `tmp` to `final_dir` atomically. If we lost a race (another process
+/// already published a complete dir), discard ours and use theirs.
+fn publish(tmp: &Path, final_dir: &Path) -> Result<(), EmbedError> {
+    match std::fs::rename(tmp, final_dir) {
+        Ok(()) => Ok(()),
+        Err(_) if final_dir.exists() => {
+            drop(std::fs::remove_dir_all(tmp));
+            Ok(())
+        }
+        Err(e) => Err(EmbedError::Io(e)),
+    }
+}
+
+fn extracted(final_dir: &Path) -> ExtractedPg {
+    ExtractedPg {
         bin_dir: final_dir.join("bin"),
         lib_dir: final_dir.join("lib"),
-    })
+    }
 }
