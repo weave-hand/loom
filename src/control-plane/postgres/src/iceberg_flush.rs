@@ -14,7 +14,7 @@ use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_landing::append_parquet_snapshot;
 use crate::iceberg_mirror::{live_table_id, reset_inline_trigger};
-use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
+use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
 
 /// Flush `table`'s live inline rows into a real Iceberg Parquet snapshot, retiring
 /// the inline rows at the same snapshot. Returns the new mirror snapshot id, or
@@ -126,10 +126,12 @@ async fn flush_locked(
         table,
         &columns,
         vec![batch],
-        Some(&lineage),
-        Some(end_cap),
-        false,
-        &rebuild_jobs,
+        CommitExtras {
+            lineage: Some(&lineage),
+            end_cap: Some(end_cap),
+            jobs: &rebuild_jobs,
+            ..CommitExtras::default()
+        },
     )
     .await?;
 

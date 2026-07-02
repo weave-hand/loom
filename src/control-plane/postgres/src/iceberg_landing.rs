@@ -30,7 +30,7 @@ use crate::iceberg_mirror::{
     live_columns_for, next_snapshot, project_files, reconcile_and_project, stamp_schema_version,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
-use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
+use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
 
@@ -142,20 +142,13 @@ fn align_to_columns(
 /// `batches` (bare arrow — re-wrapped under the table's field-id schema) as a
 /// real Parquet snapshot running `extras` in the commit tx, and return the mirror
 /// snapshot id. Shared by the landing Parquet path and the flush path.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "iceberg landing functions have many required parameters with no sensible grouping"
-)]
 pub(crate) async fn append_parquet_snapshot(
     pool: &PgPool,
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
-    lineage: Option<&LineageEvent>,
-    end_cap: Option<InlineEndCap<'_>>,
-    overwrite: bool,
-    jobs: &[control_plane_core::NewJob],
+    extras: CommitExtras<'_>,
 ) -> Result<SnapshotId> {
     ensure_iceberg_table(catalog, table, columns).await?;
 
@@ -198,10 +191,7 @@ pub(crate) async fn append_parquet_snapshot(
                         ));
                     }
                 }
-                return land_additive(
-                    pool, catalog, table, columns, batches, lineage, end_cap, jobs,
-                )
-                .await;
+                return land_additive(pool, catalog, table, columns, batches, extras).await;
             }
             Err(e) => return Err(ControlPlaneError::Validation(e.to_string())),
         }
@@ -226,19 +216,9 @@ pub(crate) async fn append_parquet_snapshot(
         .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
         .collect::<Result<Vec<_>>>()?;
 
-    append_batches_with_extras(
-        catalog,
-        &ice_table,
-        batches,
-        CommitExtras {
-            lineage,
-            end_cap,
-            overwrite,
-            jobs,
-        },
-    )
-    .await
-    .map_err(be)?;
+    append_batches_with_extras(catalog, &ice_table, batches, extras)
+        .await
+        .map_err(be)?;
 
     Ok(IcebergCatalog::new(pool.clone())
         .current_snapshot(table)
@@ -314,19 +294,17 @@ fn coerce_batch_to_ice(
 /// clients not seeing the new column is the accepted `iss-iceberg-inline-visibility` gap).
 /// loom-governed reads resolve entirely through the mirror, so the new columns/files are
 /// immediately visible. Returns the mirror snapshot id.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "iceberg landing functions have many required parameters with no sensible grouping"
-)]
+///
+/// `extras.overwrite` is deliberately NOT applied here: an additive land is
+/// always an append (`WriteMode::Append`, prior files stay live) — faithful to
+/// the pre-`CommitExtras` chain, which never forwarded the flag to this path.
 async fn land_additive(
     pool: &PgPool,
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
-    lineage: Option<&LineageEvent>,
-    end_cap: Option<InlineEndCap<'_>>,
-    jobs: &[control_plane_core::NewJob],
+    extras: CommitExtras<'_>,
 ) -> Result<SnapshotId> {
     use crate::lineage::pg_emit;
 
@@ -379,16 +357,16 @@ async fn land_additive(
     let mut tx = pool.begin().await.map_err(be)?;
     let at = next_snapshot(&mut tx, None).await?;
     register_files(&mut tx, table, columns, &loom_files, WriteMode::Append, at).await?;
-    if let Some(cap) = end_cap {
+    if let Some(cap) = &extras.end_cap {
         // Retire the flushed inline rows at the same snapshot the new files become live
         // (faithful to `do_update_table`'s inline end-cap).
         crate::iceberg_inline::end_cap_inline_rows_by_id(&mut tx, cap.table_id, cap.row_ids, at)
             .await?;
     }
-    if let Some(ev) = lineage {
+    if let Some(ev) = extras.lineage {
         pg_emit(&mut *tx, ev).await?;
     }
-    for job in jobs {
+    for job in extras.jobs {
         crate::queue::pg_insert_if_absent(&mut *tx, job).await?;
     }
     tx.commit().await.map_err(be)?;
@@ -548,10 +526,10 @@ async fn land_parquet(
         table,
         columns,
         batches,
-        Some(&lineage),
-        None,
-        false,
-        &[],
+        CommitExtras {
+            lineage: Some(&lineage),
+            ..CommitExtras::default()
+        },
     )
     .await
 }
@@ -588,10 +566,11 @@ pub async fn overwrite_parquet_snapshot(
         table,
         columns,
         batches,
-        lineage,
-        None,
-        true,
-        &[],
+        CommitExtras {
+            lineage,
+            overwrite: true,
+            ..CommitExtras::default()
+        },
     )
     .await
 }
