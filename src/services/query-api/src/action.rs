@@ -775,6 +775,23 @@ async fn run_mutate(
         action_name,
     )?;
 
+    // Per-value constraint validation on the SET values — the same rules INSERT
+    // enforces, so an UPDATE can no longer write a value the equivalent INSERT
+    // rejects (whitelisted change, road-qa-action-decomposition). Ordered after the
+    // policy legs (403 before 422, mirroring INSERT) and after the locate phase (a
+    // missing identity stays NotFound). DELETE sets nothing (`set_pairs` is empty),
+    // so it is structurally unaffected; the identity is a locator, not a written
+    // value, and is not re-validated.
+    let cviol = value_constraint_violations(target, &set_pairs)?;
+    if !cviol.is_empty() {
+        tracing::info!(
+            action = action_name,
+            count = cviol.len(),
+            "update rejected: constraint violation"
+        );
+        return Err(ActionError::ConstraintViolation(cviol));
+    }
+
     // Build the new full live set: existing rows minus the target (DELETE) or with the
     // target replaced by its new version (UPDATE).
     let mut rows: Vec<Vec<SqlValue>> = live.rows.clone();

@@ -1525,7 +1525,7 @@ the old bypass. TDD: the e2e lands RED against the current code first.
 - Consumes: `value_constraint_violations` (Task 5).
 - Produces: no new symbols; `run_mutate` gains one phase call.
 
-- [ ] **Step 1: Write the failing e2e**
+- [x] **Step 1: Write the failing e2e**
 
 Append to `src/services/query-api/tests/update_delete_governance_e2e.rs`
 (extend the `control_plane_core` import with `PropertyConstraints,
@@ -1641,14 +1641,14 @@ async fn update_constraint_violation_is_rejected() {
 }
 ```
 
-- [ ] **Step 2: Run to see it fail (RED — the current mutate path writes 999)**
+- [x] **Step 2: Run to see it fail (RED — the current mutate path writes 999)**
 
 Run: `buck2 test -j 8 //src/services/query-api:update-delete-governance-e2e > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7.log`
 Expected: FAIL — `update_constraint_violation_is_rejected` panics at
 `unwrap_err()` (the update currently succeeds). Every other test in the file
 stays green.
 
-- [ ] **Step 3: Wire the phase into `run_mutate`**
+- [x] **Step 3: Wire the phase into `run_mutate`**
 
 In `action.rs`, directly after the `enforce_mutate_policy(...)` call (Task 4)
 and before the `// Build the new full live set` block, insert:
@@ -1672,7 +1672,7 @@ and before the `// Build the new full live set` block, insert:
     }
 ```
 
-- [ ] **Step 4: Run to green (the whole mutate family + the insert 422 pins)**
+- [x] **Step 4: Run to green (the whole mutate family + the insert 422 pins)**
 
 Run: `buck2 test -j 8 //src/services/query-api:update-delete-governance-e2e //src/services/query-api:update-delete-e2e //src/services/query-api:update-delete-tiers-e2e //src/services/query-api:mutate-phases //src/services/query-api:constraints-action-http > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7.log`
 Expected: PASS — the new e2e goes green; every pre-existing mutate e2e
@@ -1680,7 +1680,7 @@ Expected: PASS — the new e2e goes green; every pre-existing mutate e2e
 pins are untouched.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c7.log 2>&1; cat /tmp/c7.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p7.log 2>&1; grep -c Failed /tmp/p7.log` — expected `0`.
 

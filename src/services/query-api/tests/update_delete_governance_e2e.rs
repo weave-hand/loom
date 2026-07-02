@@ -6,7 +6,8 @@
 
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, CompareOp, ControlPlane, Effect, ObjectType, Policy,
-    PolicyTarget, RoleId, RowFilter, ScalarValue, SubjectId, TypeName,
+    PolicyTarget, PropertyConstraints, RangeConstraint, RoleId, RowFilter, ScalarValue, SubjectId,
+    TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -523,6 +524,113 @@ async fn update_order_deny_column_beats_resulting_row_filter() {
         ),
         "deny-column leg runs before the resulting-row filter, got: {err:?}"
     );
+
+    drop(warehouse);
+}
+
+// ---------------------------------------------------------------------------
+// WHITELISTED CHANGE (road-qa-action-decomposition): UPDATE enforces declared
+// per-value constraints on the SET values — previously the mutate path skipped
+// them, so an UPDATE could write a value the equivalent INSERT rejects.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_constraint_violation_is_rejected() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    // Gauge(id Long identity, qty Long [0..=100]) + insert/update actions.
+    let gauge = TypeName("Gauge".into());
+    cp.ontology()
+        .define_type(
+            ObjectType::build("Gauge", ("main", "gauge"))
+                .prop_req("id", "Long")
+                .prop_with(
+                    "qty",
+                    "Long",
+                    false,
+                    PropertyConstraints {
+                        range: Some(RangeConstraint {
+                            min: Some(0.0),
+                            max: Some(100.0),
+                        }),
+                        ..PropertyConstraints::default()
+                    },
+                )
+                .identity("id")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("createGauge", "Gauge", ActionKind::Insert)
+                .param_req("id", "Long")
+                .param("qty", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("updateGauge", "Gauge", ActionKind::Update)
+                .param_req("id", "Long")
+                .param_req("qty", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    let (subj, _role) = grant_writer_role(&cp, &gauge).await;
+
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+
+    // Seed {id:1, qty:50} — in range.
+    run_action(
+        "createGauge",
+        json!({ "id": "1", "qty": "50" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("seed insert (in range)");
+
+    // UPDATE {id:1, qty:999}: violates qty <= 100 -> ConstraintViolation
+    // (INSERT of the same value is already rejected; UPDATE now matches it).
+    let err = run_action(
+        "updateGauge",
+        json!({ "id": "1", "qty": "999" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            ActionError::ConstraintViolation(v) if v.len() == 1 && v[0].property == "qty"
+        ),
+        "expected ConstraintViolation on qty, got: {err:?}"
+    );
+
+    // A conforming UPDATE still runs.
+    run_action(
+        "updateGauge",
+        json!({ "id": "1", "qty": "60" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("in-range update runs");
 
     drop(warehouse);
 }
