@@ -188,7 +188,7 @@ async fn derived_aggregates_are_served_and_governed() {
     let rows = read_object(
         &ObjectQuery {
             type_name: "Customer".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(a),
@@ -214,7 +214,7 @@ async fn derived_aggregates_are_served_and_governed() {
     let rows_b = read_object(
         &ObjectQuery {
             type_name: "Customer".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(b),
@@ -251,7 +251,7 @@ async fn derived_aggregates_are_served_and_governed() {
     let rows_c = read_object(
         &ObjectQuery {
             type_name: "Customer".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(c),

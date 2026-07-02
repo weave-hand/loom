@@ -127,6 +127,22 @@ fn split_set_operands(rest: &str) -> Result<Vec<String>, &'static str> {
     Ok(out)
 }
 
+/// Escape LIKE/ILIKE metacharacters in a text-pattern operand: each `\`, `%`, or
+/// `_` is prefixed with the SQL escape char `\` so a literal metacharacter in the
+/// caller's operand matches the character itself (not a wildcard). The caller wraps
+/// the result with unescaped `%` sentinels for the chosen anchor. The escaped string
+/// is bound as a parameter; the SQL is rendered with an explicit `ESCAPE '\'` clause.
+fn escape_like(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 2);
+    for c in raw.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Parse a query-param value into a typed predicate. Grammar: split at the FIRST `:` into
 /// `head`/`rest`; if `head` is a known op token it is that operator (null ops take no
 /// operand; scalar ops take `rest` as one operand; set ops split `rest` on UNESCAPED `,`,
@@ -161,6 +177,10 @@ pub fn coerce_predicate(
         "nin" => Some(NotIn),
         "isnull" => Some(IsNull),
         "isnotnull" => Some(IsNotNull),
+        "between" => Some(Between),
+        "contains" => Some(Contains),
+        "startswith" => Some(StartsWith),
+        "endswith" => Some(EndsWith),
         _ => None,
     };
 
@@ -184,6 +204,41 @@ pub fn coerce_predicate(
                 values.push(coerce_filter(column, logical_ty, &part)?);
             }
             Ok(mk(o, values))
+        }
+        Some(Between) => {
+            let r = rest.ok_or_else(|| bad("between requires two operands"))?;
+            let parts = split_set_operands(r).map_err(bad)?;
+            if parts.len() != 2 {
+                return Err(bad("between requires exactly two operands (lo,hi)"));
+            }
+            let mut values = Vec::with_capacity(2);
+            for part in parts {
+                values.push(coerce_filter(column, logical_ty, &part)?);
+            }
+            Ok(mk(Between, values))
+        }
+        Some(o @ (Contains | StartsWith | EndsWith)) => {
+            let r = rest.ok_or_else(|| bad("text-pattern operator requires an operand"))?;
+            // Carry the source error — `clippy::map_err_ignore` is enforced; a bare
+            // `|_|` that drops `e` fails the lint gate (mirror `coerce_filter`'s style).
+            let repr = json_repr_of(logical_ty).map_err(|e| {
+                FilterError::BadValue(column.to_string(), format!("unknown logical type: {}", e.0))
+            })?;
+            if !matches!(repr, JsonRepr::PlainString) {
+                return Err(bad(
+                    "text-pattern operators apply to string properties only",
+                ));
+            }
+            let esc = escape_like(r);
+            let pattern = match o {
+                Contains => format!("%{esc}%"),
+                StartsWith => format!("{esc}%"),
+                EndsWith => format!("%{esc}"),
+                // The outer pattern guarantees o ∈ {Contains,StartsWith,EndsWith};
+                // keep the build total without a panic per the panic-safety lints.
+                _ => format!("%{esc}%"),
+            };
+            Ok(mk(o, vec![SqlValue::Text(pattern)]))
         }
         // Scalar ops (eq/ne/lt/le/gt/ge): exactly one operand = `rest`.
         Some(o) => {

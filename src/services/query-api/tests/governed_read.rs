@@ -121,7 +121,7 @@ async fn governed_object_read() {
     let rows = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),
@@ -146,7 +146,7 @@ async fn governed_object_read() {
     let rows2 = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("id".into(), "1".into())],
+            filters: vec![("id".into(), "1".into())],
             ids: vec![],
         },
         &Subject(subj.clone()),
@@ -162,7 +162,7 @@ async fn governed_object_read() {
     let err = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(stranger),
@@ -191,7 +191,7 @@ async fn governed_object_read() {
     let denied = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),
@@ -234,7 +234,7 @@ async fn governed_object_read() {
     let masked_rows = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(masker.clone()),
@@ -264,7 +264,7 @@ async fn governed_object_read() {
     let bad = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("secret".into(), "s1".into())],
+            filters: vec![("secret".into(), "s1".into())],
             ids: vec![],
         },
         &Subject(masker),

@@ -286,6 +286,41 @@ fn caller_predicate_sql(
         }
         IsNull => format!("({col} IS NULL)"),
         IsNotNull => format!("({col} IS NOT NULL)"),
+        Between => {
+            debug_assert_eq!(
+                p.values.len(),
+                2,
+                "between predicate must have two operands"
+            );
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "between caller-predicate invariant: exactly two operands (enforced upstream by filter::coerce_predicate). Fail closed on violation rather than emit placeholders bound to stale params on this ACL/caller-predicate path."
+            )]
+            let (lo, hi) = {
+                params.push(p.values[0].clone());
+                let lo = dialect.placeholder(params.len());
+                params.push(p.values[1].clone());
+                let hi = dialect.placeholder(params.len());
+                (lo, hi)
+            };
+            format!("({col} BETWEEN {lo} AND {hi})")
+        }
+        Contains | StartsWith | EndsWith => {
+            debug_assert_eq!(
+                p.values.len(),
+                1,
+                "text-pattern predicate must have one operand"
+            );
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "text-pattern caller-predicate invariant: exactly one operand (enforced upstream by filter::coerce_predicate). Fail closed on violation rather than emit a placeholder bound to a stale param on this ACL/caller-predicate path."
+            )]
+            params.push(p.values[0].clone());
+            format!(
+                "({col} ILIKE {} ESCAPE '\\')",
+                dialect.placeholder(params.len())
+            )
+        }
         _ => {
             debug_assert_eq!(p.values.len(), 1, "scalar predicate must have one operand");
             #[expect(

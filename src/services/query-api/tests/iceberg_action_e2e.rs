@@ -142,7 +142,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     let rows = read_object(
         &ObjectQuery {
             type_name: "Widget".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),

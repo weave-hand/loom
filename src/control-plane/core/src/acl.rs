@@ -72,6 +72,15 @@ pub enum CompareOp {
     IsNull,
     /// `value` is ignored.
     IsNotNull,
+    /// Caller-predicate-only: `col BETWEEN lo AND hi`. Two operands live on the
+    /// query-api `CallerPredicate`, not on `ScalarValue`; rejected in ACL row filters.
+    Between,
+    /// Caller-predicate-only: case-insensitive `col ILIKE '%operand%'`. Rejected in ACL row filters.
+    Contains,
+    /// Caller-predicate-only: case-insensitive `col ILIKE 'operand%'`. Rejected in ACL row filters.
+    StartsWith,
+    /// Caller-predicate-only: case-insensitive `col ILIKE '%operand'`. Rejected in ACL row filters.
+    EndsWith,
 }
 
 /// A literal on the right-hand side of a comparison. Float and temporal variants
@@ -144,6 +153,15 @@ pub fn validate_row_filter(
                     }
                 }
                 CompareOp::IsNull | CompareOp::IsNotNull => {}
+                // Caller-predicate-only operators: not part of the ACL policy
+                // grammar (Between needs two operands; text-pattern needs ILIKE).
+                // Reject so op_sql's `unreachable!` arm stays unreachable.
+                CompareOp::Between
+                | CompareOp::Contains
+                | CompareOp::StartsWith
+                | CompareOp::EndsWith => {
+                    return Err(format!("{op:?} is not valid in an ACL row filter"));
+                }
                 // Listed exhaustively (no `_`) so a future CompareOp variant is a
                 // compile error here, forcing a deliberate structural-rule decision
                 // rather than silently getting scalar treatment.

@@ -112,6 +112,27 @@ fn invariant_violation_fails_closed() {
 }
 
 #[test]
+fn caller_only_ops_are_rejected_when_lowering_to_expr() {
+    // `row_filter_to_expr` runs `validate_row_filter` before `build_expr`, so a
+    // caller-predicate-only op is rejected there first (Task 1's ACL-side check) —
+    // `build_expr`'s own arm for these ops is unreachable through this public entry
+    // point but still required so the exhaustive `match op` compiles.
+    for op in [
+        CompareOp::Between,
+        CompareOp::Contains,
+        CompareOp::StartsWith,
+        CompareOp::EndsWith,
+    ] {
+        let f = cmp("name", op, ScalarValue::Text("x".into()));
+        let err = row_filter_to_expr(&f).unwrap_err();
+        assert!(
+            format!("{err}").contains("not valid in an ACL row filter"),
+            "op {op:?} should be rejected, got: {err}"
+        );
+    }
+}
+
+#[test]
 fn policy_for_absent_is_empty_present_is_set_backed() {
     let t = TableRef {
         schema: "s".into(),

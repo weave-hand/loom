@@ -26,7 +26,7 @@ fn export_command_decodes_minimal() {
 fn export_command_wire_shape_is_array_of_pairs() {
     // Pin the exact external wire contract (the Grimoire A4 consumer builds this JSON):
     // `filters` is an ARRAY of [column, value] pairs, NOT a JSON object — so repeated-key
-    // predicates (e.g. a range on one column) are expressible, matching `eq_filters`.
+    // predicates (e.g. a range on one column) are expressible, matching `filters`.
     let json = r#"{"type":"Chunk","filters":[["sourcebook","PHB"],["page",">10"]],"ids":["c1"]}"#;
     let cmd = ExportCommand::decode(json.as_bytes()).expect("decode wire shape");
     assert_eq!(cmd.type_name, "Chunk");

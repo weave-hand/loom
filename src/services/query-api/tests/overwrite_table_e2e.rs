@@ -149,7 +149,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
     let rows_before = read_object(
         &ObjectQuery {
             type_name: "Widget".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),
@@ -203,7 +203,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
     let rows_after = read_object(
         &ObjectQuery {
             type_name: "Widget".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj.clone()),

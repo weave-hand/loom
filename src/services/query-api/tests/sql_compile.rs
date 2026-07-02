@@ -773,6 +773,54 @@ fn caller_predicate_range_two_same_column_ands() {
 }
 
 #[test]
+fn compiles_between_as_two_bound_params() {
+    let p = CallerPredicate {
+        column: "amount".into(),
+        op: CompareOp::Between,
+        values: vec![SqlValue::Int(11), SqlValue::Int(25)],
+    };
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &[],
+        std::slice::from_ref(&p),
+        &[],
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("amount" BETWEEN ? AND ?) LIMIT 100"#
+    );
+    assert_eq!(params, vec![SqlValue::Int(11), SqlValue::Int(25)]);
+}
+
+#[test]
+fn compiles_contains_as_ilike_with_escape_and_bound_param() {
+    let p = CallerPredicate {
+        column: "name".into(),
+        op: CompareOp::Contains,
+        values: vec![SqlValue::Text("%AC%".into())],
+    };
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &[],
+        std::slice::from_ref(&p),
+        &[],
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"SELECT "id" FROM "main"."orders" WHERE ("name" ILIKE ? ESCAPE '\') LIMIT 100"#
+    );
+    assert_eq!(params, vec![SqlValue::Text("%AC%".into())]);
+}
+
+#[test]
 fn caller_predicate_binds_at_chain_alias() {
     let types = vec![
         ChainType {

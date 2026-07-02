@@ -1,6 +1,10 @@
 //! Typed input filters e2e: filter a Double and a Boolean column through read_object.
 //! A Text bind would match nothing; coercion to the column's logical type makes it work.
 //! An uncoercible value is a 400 (BadFilterValue, carrying the parse fault).
+//! Also covers `between` (against the real engine, proving it matches `ge`+`le`) and the
+//! text-pattern operators `contains`/`startswith`/`endswith` (case-insensitive anchors,
+//! plus literal `%` escaping; `_` escaping is unit-covered in `filter_coerce.rs`) — the
+//! first exercise of the rendered `ILIKE ... ESCAPE '\'` SQL against DataFusion.
 
 use control_plane_core::{
     Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId,
@@ -130,7 +134,7 @@ async fn typed_filters_match_and_reject() {
     let r = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("amount".into(), "10.5".into())],
+            filters: vec![("amount".into(), "10.5".into())],
             ids: vec![],
         },
         &Subject(a.clone()),
@@ -144,7 +148,7 @@ async fn typed_filters_match_and_reject() {
     let r_true = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("active".into(), "true".into())],
+            filters: vec![("active".into(), "true".into())],
             ids: vec![],
         },
         &Subject(a.clone()),
@@ -156,7 +160,7 @@ async fn typed_filters_match_and_reject() {
     let r_false = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("active".into(), "false".into())],
+            filters: vec![("active".into(), "false".into())],
             ids: vec![],
         },
         &Subject(a.clone()),
@@ -170,7 +174,7 @@ async fn typed_filters_match_and_reject() {
     let err = read_object(
         &ObjectQuery {
             type_name: "Order".into(),
-            eq_filters: vec![("amount".into(), "abc".into())],
+            filters: vec![("amount".into(), "abc".into())],
             ids: vec![],
         },
         &Subject(a.clone()),
@@ -212,7 +216,7 @@ async fn comparison_set_and_null_operators() {
             read_object(
                 &ObjectQuery {
                     type_name: "Order".into(),
-                    eq_filters: filters,
+                    filters,
                     ids: vec![],
                 },
                 &Subject(a),
@@ -264,4 +268,259 @@ async fn comparison_set_and_null_operators() {
         matches!(err, QueryError::BadFilterValue(_)),
         "bad arity -> BadFilterValue, got {err:?}"
     );
+}
+
+/// Seed an Order table with a ranged Double and a text `name`: id Long, amount Double,
+/// name String. Rows: (1, 5.0, "50 off"), (2, 11.0, "ACME"), (3, 20.0, "Tacme"),
+/// (4, 25.0, "beacon"), (5, 30.0, "50% off").
+async fn setup_ranges_and_text(
+    fx: &PgFixture,
+) -> (
+    PgControlPlane,
+    InProcessServingEngine,
+    SubjectId,
+    IcebergWriter,
+) {
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+
+    let ord = tref("main", "orders");
+    writer
+        .seed_arrays(
+            "main",
+            "orders",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("amount".to_string(), "double".to_string(), true),
+                ("name".to_string(), "string".to_string(), false),
+            ],
+            &[
+                SeedCol::Long(vec![1, 2, 3, 4, 5]),
+                SeedCol::NullableDouble(vec![
+                    Some(5.0),
+                    Some(11.0),
+                    Some(20.0),
+                    Some(25.0),
+                    Some(30.0),
+                ]),
+                SeedCol::Str(vec!["50 off", "ACME", "Tacme", "beacon", "50% off"]),
+            ],
+        )
+        .await;
+
+    cp.define_type(ObjectType {
+        name: TypeName("Order".into()),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "amount".into(),
+                ty: "Double".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "name".into(),
+                ty: "String".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+        table: ord.clone(),
+        identity: None,
+    })
+    .await
+    .unwrap();
+
+    // Subject `a` (alice) with a role granted Read on Order.
+    let subj = SubjectId("alice".into());
+    let role = RoleId("alice-role".into());
+    cp.define_subject(&subj).await.unwrap();
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subj, &role).await.unwrap();
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Order".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
+    // Return the writer: it owns the `file://` warehouse TempDir, removed on drop.
+    // Keeping it alive keeps the seeded Parquet on disk for the test's reads.
+    (cp, eng, subj, writer)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn between_matches_ge_and_le() {
+    let fx = PgFixture::start();
+    let (cp, eng, a, _writer) = setup_ranges_and_text(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+        default_limit: 1000,
+    };
+    let ids = |rows: &query_api::handler::ObjectRows| {
+        let body = objects_to_json(rows);
+        let mut v: Vec<String> = body["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    let run = |filters: Vec<(String, String)>| {
+        let deps = &deps;
+        let a = a.clone();
+        async move {
+            read_object(
+                &ObjectQuery {
+                    type_name: "Order".into(),
+                    filters,
+                    ids: vec![],
+                },
+                &Subject(a),
+                deps,
+            )
+            .await
+        }
+    };
+
+    // amount rows: 5.0, 11.0, 20.0, 25.0, 30.0 (ids 1..5). between:11,25 must return exactly
+    // the same rows as ge:11 AND le:25 -> ids 2, 3, 4.
+    let via_between = ids(&run(vec![("amount".into(), "between:11,25".into())])
+        .await
+        .unwrap());
+    let via_ge_le = ids(&run(vec![
+        ("amount".into(), "ge:11".into()),
+        ("amount".into(), "le:25".into()),
+    ])
+    .await
+    .unwrap());
+    assert_eq!(via_between, via_ge_le);
+    assert_eq!(
+        via_between,
+        vec!["2".to_string(), "3".to_string(), "4".to_string()]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn contains_is_case_insensitive_and_anchors() {
+    let fx = PgFixture::start();
+    let (cp, eng, a, _writer) = setup_ranges_and_text(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+        default_limit: 1000,
+    };
+    let ids = |rows: &query_api::handler::ObjectRows| {
+        let body = objects_to_json(rows);
+        let mut v: Vec<String> = body["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    let run = |filters: Vec<(String, String)>| {
+        let deps = &deps;
+        let a = a.clone();
+        async move {
+            read_object(
+                &ObjectQuery {
+                    type_name: "Order".into(),
+                    filters,
+                    ids: vec![],
+                },
+                &Subject(a),
+                deps,
+            )
+            .await
+        }
+    };
+
+    // name rows: "50 off"(1), "ACME"(2), "Tacme"(3), "beacon"(4), "50% off"(5).
+    // contains:ac matches case-insensitively wherever "ac" appears: ACME, Tacme, beacon.
+    let r = run(vec![("name".into(), "contains:ac".into())])
+        .await
+        .unwrap();
+    assert_eq!(
+        ids(&r),
+        vec!["2".to_string(), "3".to_string(), "4".to_string()]
+    );
+
+    // startswith:ac anchors at the start: only ACME.
+    let r = run(vec![("name".into(), "startswith:ac".into())])
+        .await
+        .unwrap();
+    assert_eq!(ids(&r), vec!["2".to_string()]);
+
+    // endswith:me anchors at the end: ACME and Tacme (both end "me"), not beacon.
+    let r = run(vec![("name".into(), "endswith:me".into())])
+        .await
+        .unwrap();
+    assert_eq!(ids(&r), vec!["2".to_string(), "3".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn contains_literal_percent_matches_the_character() {
+    let fx = PgFixture::start();
+    let (cp, eng, a, _writer) = setup_ranges_and_text(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+        default_limit: 1000,
+    };
+    let ids = |rows: &query_api::handler::ObjectRows| {
+        let body = objects_to_json(rows);
+        let mut v: Vec<String> = body["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    let run = |filters: Vec<(String, String)>| {
+        let deps = &deps;
+        let a = a.clone();
+        async move {
+            read_object(
+                &ObjectQuery {
+                    type_name: "Order".into(),
+                    filters,
+                    ids: vec![],
+                },
+                &Subject(a),
+                deps,
+            )
+            .await
+        }
+    };
+
+    // "50% off"(5) vs "50 off"(1): a literal '%' in the operand must match only the
+    // character, not act as a wildcard -- proves `escape_like` + `ESCAPE '\'` round-trip
+    // through the real engine's SQL parser/executor.
+    let r = run(vec![("name".into(), "contains:50%".into())])
+        .await
+        .unwrap();
+    assert_eq!(ids(&r), vec!["5".to_string()]);
 }

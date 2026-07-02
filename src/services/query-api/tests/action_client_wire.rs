@@ -76,7 +76,7 @@ async fn write_object_through_wire_client() {
     let rows = read_object(
         &ObjectQuery {
             type_name: "Widget".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj),

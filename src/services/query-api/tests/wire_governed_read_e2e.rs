@@ -124,7 +124,7 @@ async fn governed_read_parity_over_wire() {
     // 6. Same query + subject, governance direct vs over the wire.
     let q = ObjectQuery {
         type_name: "Order".into(),
-        eq_filters: vec![],
+        filters: vec![],
         ids: vec![],
     };
     let s = Subject(subj.clone());
@@ -197,7 +197,7 @@ async fn governed_read_parity_over_wire() {
 
     let mq = ObjectQuery {
         type_name: "Order".into(),
-        eq_filters: vec![],
+        filters: vec![],
         ids: vec![],
     };
     let ms = Subject(masker.clone());

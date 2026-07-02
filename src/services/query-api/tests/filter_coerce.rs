@@ -226,6 +226,65 @@ fn scalar_op_does_not_unescape() {
 }
 
 #[test]
+fn between_parses_two_operands() {
+    let p = coerce_predicate("amount", "Integer", "between:11,25").unwrap();
+    assert_eq!(p.op, CompareOp::Between);
+    assert_eq!(p.values, vec![SqlValue::Int(11), SqlValue::Int(25)]);
+}
+
+#[test]
+fn between_wrong_arity_is_rejected() {
+    assert!(matches!(
+        coerce_predicate("amount", "Integer", "between:11"),
+        Err(FilterError::BadValue(_, _))
+    ));
+    assert!(matches!(
+        coerce_predicate("amount", "Integer", "between:1,2,3"),
+        Err(FilterError::BadValue(_, _))
+    ));
+}
+
+#[test]
+fn between_type_mismatch_is_rejected_like_ge() {
+    assert!(matches!(
+        coerce_predicate("amount", "Integer", "between:foo,25"),
+        Err(FilterError::Coerce { .. })
+    ));
+}
+
+#[test]
+fn contains_wraps_and_is_case_insensitive_op() {
+    let p = coerce_predicate("name", "String", "contains:AC").unwrap();
+    assert_eq!(p.op, CompareOp::Contains);
+    assert_eq!(p.values, vec![SqlValue::Text("%AC%".into())]);
+}
+
+#[test]
+fn startswith_and_endswith_anchor() {
+    let s = coerce_predicate("name", "String", "startswith:AC").unwrap();
+    assert_eq!(s.op, CompareOp::StartsWith);
+    assert_eq!(s.values, vec![SqlValue::Text("AC%".into())]);
+    let e = coerce_predicate("name", "String", "endswith:AC").unwrap();
+    assert_eq!(e.op, CompareOp::EndsWith);
+    assert_eq!(e.values, vec![SqlValue::Text("%AC".into())]);
+}
+
+#[test]
+fn text_pattern_escapes_like_metacharacters() {
+    // A literal % / _ / \ in the operand is escaped so it matches the character.
+    let p = coerce_predicate("name", "String", r"contains:50%_\x").unwrap();
+    assert_eq!(p.values, vec![SqlValue::Text(r"%50\%\_\\x%".into())]);
+}
+
+#[test]
+fn text_pattern_on_non_string_is_rejected() {
+    assert!(matches!(
+        coerce_predicate("amount", "Integer", "contains:5"),
+        Err(FilterError::BadValue(_, _))
+    ));
+}
+
+#[test]
 fn predicate_edge_cases_are_pinned() {
     // Single-operand `in` stays a set op (In with a 1-element Vec), not collapsed to Eq.
     let one = coerce_predicate("id", "Long", "in:5").unwrap();

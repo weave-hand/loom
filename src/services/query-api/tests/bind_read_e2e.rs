@@ -110,7 +110,7 @@ async fn landed_then_bound_dataset_is_queryable() {
     let rows = read_object(
         &ObjectQuery {
             type_name: "Customer".into(),
-            eq_filters: vec![],
+            filters: vec![],
             ids: vec![],
         },
         &Subject(subj),

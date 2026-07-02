@@ -137,7 +137,7 @@ async fn get_object(
     // filter keys are preserved (a column may carry several predicates, e.g. a range); the
     // handler parses each value's operator and coerces it.
     let mut ids: Vec<String> = Vec::new();
-    let mut eq_filters: Vec<(String, String)> = Vec::with_capacity(params.len());
+    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         if k == "_ids" {
             ids = v
@@ -150,7 +150,7 @@ async fn get_object(
                     .into_response();
             }
         } else {
-            eq_filters.push((k, v));
+            filters.push((k, v));
         }
     }
     let deps = QueryDeps {
@@ -162,7 +162,7 @@ async fn get_object(
     match read_object(
         &ObjectQuery {
             type_name,
-            eq_filters,
+            filters,
             ids,
         },
         &subject,
