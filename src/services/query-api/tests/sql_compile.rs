@@ -457,6 +457,7 @@ fn chain_two_hop_fk_compiles_to_nested_joins() {
         &hops,
         &["id".to_string(), "sku".to_string()],
         &[],
+        None,
         100,
     )
     .unwrap();
@@ -502,7 +503,7 @@ fn chain_fk_then_jointable_adds_mapping_join_for_that_hop_only() {
             to_key: "id".into(),
         },
     ];
-    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], 100).unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], None, 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_2.\"name\" FROM \"main\".\"tags\" t_2 \
@@ -547,7 +548,7 @@ fn chain_params_source_eq_precedes_hop_row_filters_in_chain_order() {
             to_column: "order_id".into(),
         },
     ];
-    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], 100).unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], None, 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
@@ -586,7 +587,7 @@ fn chain_single_hop_jointable_renders_j1_mapping() {
         to_column: "tag_id".into(),
         to_key: "id".into(),
     }];
-    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], 100).unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["name".to_string()], &[], None, 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_1.\"name\" FROM \"main\".\"tags\" t_1 \
@@ -624,6 +625,7 @@ fn chain_single_hop_reproduces_traversal_semantics() {
         &hops,
         &["id".to_string(), "secret".to_string()],
         &["secret".to_string()],
+        None,
         100,
     )
     .unwrap();
@@ -665,7 +667,7 @@ fn chain_eq_filter_on_final_target_binds_at_t_k() {
             to_column: "order_id".into(),
         },
     ];
-    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], 100).unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], None, 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
@@ -705,7 +707,7 @@ fn chain_eq_filters_bind_per_position_in_chain_order() {
             to_column: "order_id".into(),
         },
     ];
-    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], 100).unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], None, 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_2.\"id\" FROM \"main\".\"line_items\" t_2 \
@@ -862,7 +864,7 @@ fn caller_predicate_binds_at_chain_alias() {
         from_column: "id".into(),
         to_column: "customer_id".into(),
     }];
-    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], 100).unwrap();
+    let (sql, params) = compile_chain(&types, &hops, &["id".to_string()], &[], None, 100).unwrap();
     assert_eq!(
         sql,
         "SELECT DISTINCT t_1.\"id\" FROM \"main\".\"orders\" t_1 \
@@ -1017,4 +1019,106 @@ fn empty_inner_or_group_is_skipped_not_rendered_as_parens() {
         compile_select(&t(), &["id".into()], &[], &[], &[], &empty, &[], 10).unwrap();
     assert_eq!(sql, r#"SELECT "id" FROM "main"."orders" LIMIT 10"#);
     assert!(params.is_empty());
+}
+
+// --- Object-identity dedup (windowed ROW_NUMBER) -------------------------------------------
+
+fn two_hop_types() -> Vec<ChainType> {
+    vec![
+        ChainType {
+            table: tr("main", "customer"),
+            row_filters: vec![],
+            predicates: vec![],
+        },
+        ChainType {
+            table: tr("main", "orders"),
+            row_filters: vec![],
+            predicates: vec![],
+        },
+        ChainType {
+            table: tr("main", "person"),
+            row_filters: vec![],
+            predicates: vec![],
+        },
+    ]
+}
+
+fn two_hop_hops() -> Vec<LinkBacking> {
+    vec![
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "customer_id".into(),
+        },
+        LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "person_id".into(),
+        },
+    ]
+}
+
+#[test]
+fn identity_masked_dedups_on_raw_identity_via_window() {
+    let (sql, params) = compile_chain(
+        &two_hop_types(),
+        &two_hop_hops(),
+        &["name".to_string(), "ssn".to_string(), "city".to_string()],
+        &["ssn".to_string()],
+        Some("ssn"),
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        "SELECT \"name\", \"ssn\", \"city\" FROM (\
+           SELECT t_2.\"name\", '***' AS \"ssn\", t_2.\"city\", \
+           ROW_NUMBER() OVER (PARTITION BY t_2.\"ssn\") AS _loom_rn \
+           FROM \"main\".\"person\" t_2 \
+           JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"person_id\" \
+           JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\"\
+         ) _dedup WHERE _loom_rn = 1 LIMIT 100"
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn identity_visible_uses_same_windowed_shape() {
+    let (sql, _params) = compile_chain(
+        &two_hop_types(),
+        &two_hop_hops(),
+        &["ssn".to_string(), "name".to_string()],
+        &[],
+        Some("ssn"),
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        "SELECT \"ssn\", \"name\" FROM (\
+           SELECT t_2.\"ssn\", t_2.\"name\", \
+           ROW_NUMBER() OVER (PARTITION BY t_2.\"ssn\") AS _loom_rn \
+           FROM \"main\".\"person\" t_2 \
+           JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"person_id\" \
+           JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\"\
+         ) _dedup WHERE _loom_rn = 1 LIMIT 100"
+    );
+}
+
+#[test]
+fn identity_none_is_byte_identical_to_distinct_fallback() {
+    let (sql, _params) = compile_chain(
+        &two_hop_types(),
+        &two_hop_hops(),
+        &["name".to_string()],
+        &[],
+        None,
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        "SELECT DISTINCT t_2.\"name\" FROM \"main\".\"person\" t_2 \
+         JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"person_id\" \
+         JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
+         LIMIT 100"
+    );
 }

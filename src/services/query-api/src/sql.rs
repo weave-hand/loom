@@ -649,11 +649,12 @@ pub fn compile_chain_with(
     hops: &[LinkBacking],
     allowed_cols: &[String],
     mask_cols: &[String],
+    identity: Option<&str>,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     let k = hops.len();
     let final_alias = format!("t_{k}");
-    let cols = allowed_cols
+    let col_exprs: Vec<String> = allowed_cols
         .iter()
         .map(|c| {
             if mask_cols.iter().any(|m| m == c) {
@@ -662,15 +663,41 @@ pub fn compile_chain_with(
                 format!("{final_alias}.{}", dialect.quote_ident(c))
             }
         })
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect();
     let (from, conjuncts, params) = chain_from_where(dialect, types, hops)?;
-    let mut sql = format!("SELECT DISTINCT {cols} FROM {from}");
-    if !conjuncts.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&conjuncts.join(" AND "));
-    }
-    let _write = write!(sql, " {}", dialect.limit_clause(limit));
+    let where_sql = if conjuncts.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conjuncts.join(" AND "))
+    };
+    let limit_clause = dialect.limit_clause(limit);
+    let sql = match identity {
+        // Identity-keyed dedup: partition on the RAW identity (below the masking layer) so
+        // distinct objects are never collapsed when the identity column is masked/denied. The
+        // raw identity appears only in PARTITION BY inside the subquery; the outer select
+        // projects the masked/visible columns verbatim, so it never leaks.
+        Some(id) => {
+            let inner_cols = col_exprs.join(", ");
+            let partition = format!("{final_alias}.{}", dialect.quote_ident(id));
+            let outer_cols = allowed_cols
+                .iter()
+                .map(|c| dialect.quote_ident(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "SELECT {outer_cols} FROM (\
+                   SELECT {inner_cols}, \
+                   ROW_NUMBER() OVER (PARTITION BY {partition}) AS _loom_rn \
+                   FROM {from}{where_sql}\
+                 ) _dedup WHERE _loom_rn = 1 {limit_clause}"
+            )
+        }
+        // No declared identity: back-compatible DISTINCT over the visible projection.
+        None => {
+            let cols = col_exprs.join(", ");
+            format!("SELECT DISTINCT {cols} FROM {from}{where_sql} {limit_clause}")
+        }
+    };
     Ok((sql, params))
 }
 
@@ -1286,6 +1313,7 @@ pub fn compile_chain(
     hops: &[LinkBacking],
     allowed_cols: &[String],
     mask_cols: &[String],
+    identity: Option<&str>,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     compile_chain_with(
@@ -1294,6 +1322,7 @@ pub fn compile_chain(
         hops,
         allowed_cols,
         mask_cols,
+        identity,
         limit,
     )
 }
