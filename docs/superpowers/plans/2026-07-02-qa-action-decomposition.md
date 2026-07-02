@@ -705,7 +705,7 @@ pub fn locate_unique_row(
 
   Task 4 appends to the same test file; `run_mutate`'s signature is unchanged.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/services/query-api/tests/mutate_phases.rs`:
 
@@ -779,12 +779,12 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run to see it fail**
+- [x] **Step 2: Run to see it fail**
 
 Run: `buck2 test //src/services/query-api:mutate-phases > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t3.log`
 Expected: FAIL — compile error, `locate_unique_row` not found.
 
-- [ ] **Step 3: Extract the fn and rewire `run_mutate`**
+- [x] **Step 3: Extract the fn and rewire `run_mutate`**
 
 In `src/services/query-api/src/action.rs`, add above `run_mutate` (below
 `row_filter_admits`, :583):
@@ -831,14 +831,14 @@ Replace `run_mutate`'s locate block (:632-651 — from
 (The old defensive re-index `live.rows.get(target_idx).cloned().ok_or_else(…)`
 disappears — unreachable, the index came from the same iteration.)
 
-- [ ] **Step 4: Run to green (unit + the e2e pins)**
+- [x] **Step 4: Run to green (unit + the e2e pins)**
 
 Run: `buck2 test -j 8 //src/services/query-api:mutate-phases //src/services/query-api:update-delete-e2e //src/services/query-api:update-delete-governance-e2e //src/services/query-api:update-delete-tiers-e2e > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
 Expected: PASS — Task 1's `duplicate_identity_is_a_backend_fault` +
 `not_found` pin the extraction; the tiers e2e pins COW semantics.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c3.log 2>&1; cat /tmp/c3.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p3.log 2>&1; grep -c Failed /tmp/p3.log` — expected `0`.
 

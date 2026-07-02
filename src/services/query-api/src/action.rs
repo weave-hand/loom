@@ -582,6 +582,35 @@ fn row_filter_admits(policies: &[Policy], columns: &[String], values: &[SqlValue
     })
 }
 
+/// Locate the single live row whose `id_idx` cell equals `id_value` (the supplied,
+/// already-typed identity). The identity is a primary key, so at most one live match:
+/// no match is `NotFound` (the caller's 404); more than one is a corrupt invariant —
+/// surfaced as a `Backend` fault (500), never a client error and never a silent
+/// pick-one mutate. Returns the matched row's index and a clone of the row. Pure;
+/// the unit-test seam for the mutate locate phase.
+pub fn locate_unique_row(
+    rows: &[Vec<SqlValue>],
+    id_idx: usize,
+    id_value: &SqlValue,
+    idprop: &str,
+) -> Result<(usize, Vec<SqlValue>), ActionError> {
+    let mut matches = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.get(id_idx) == Some(id_value));
+    let (target_idx, existing) = match matches.next() {
+        None => return Err(ActionError::NotFound),
+        Some((i, r)) => (i, r.clone()),
+    };
+    if matches.next().is_some() {
+        // >1 live row for a primary key is a corrupt invariant, not a client error.
+        return Err(ActionError::ControlPlane(ControlPlaneError::Backend(
+            format!("identity `{idprop}` matches more than one live row").into(),
+        )));
+    }
+    Ok((target_idx, existing))
+}
+
 /// UPDATE/DELETE via whole-table copy-on-write. Locates the row by the target type's
 /// declared identity through a privileged (ACL-unfiltered) full-table read, applies the
 /// mutation in memory (DELETE drops the row; UPDATE PATCHes the named non-identity columns),
@@ -628,27 +657,7 @@ async fn run_mutate(
         .await?;
 
     // Locate the target row. The identity is a primary key, so at most one live match.
-    let mut matches = live
-        .rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.get(id_idx) == Some(&id_value))
-        .map(|(i, _)| i);
-    let target_idx = match matches.next() {
-        None => return Err(ActionError::NotFound),
-        Some(i) => i,
-    };
-    if matches.next().is_some() {
-        // >1 live row for a primary key is a corrupt invariant, not a client error.
-        return Err(ActionError::ControlPlane(ControlPlaneError::Backend(
-            format!("identity `{idprop}` matches more than one live row").into(),
-        )));
-    }
-    let existing = live
-        .rows
-        .get(target_idx)
-        .cloned()
-        .ok_or_else(|| ActionError::NotFound)?;
+    let (target_idx, existing) = locate_unique_row(&live.rows, id_idx, &id_value, &idprop)?;
 
     // The PATCH columns the caller actually SET (non-identity, non-null). An omitted optional
     // param materializes as `SqlValue::Null`; PATCH semantics leave it untouched, so it is
