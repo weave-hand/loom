@@ -13,6 +13,7 @@ use control_plane_core::{
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::governed::Projection;
 use crate::handler::ObjectRows;
 use crate::params::ParamError;
 use crate::serving::{ActionEngine, SqlValue};
@@ -432,6 +433,19 @@ pub fn expand_to_full_row(
     (full_columns, full_values, full_logical)
 }
 
+/// The shared response epilogue of both write paths: the affected object as a
+/// single-row `ObjectRows`, its logical types zipped per column via the governance
+/// layer's [`Projection`] (`of_columns` reuses `prop_ty`; an unknown column zips to
+/// `""` exactly as the old inline lookups did). INSERT echoes the action-provided
+/// columns; UPDATE/DELETE echo the full property set.
+pub fn affected_object(
+    target: &ObjectType,
+    columns: Vec<String>,
+    row: Vec<SqlValue>,
+) -> ObjectRows {
+    Projection::of_columns(target, columns).object_rows(vec![row])
+}
+
 /// INSERT: parse the body into a new row, gate it through the fine-grained Write policy
 /// (deny-column over the set columns + row-filter on the inserted row), then atomically
 /// commit the row and its lineage event via `write_object`.
@@ -536,25 +550,7 @@ async fn run_insert(
 
     // 8. Return the created object (action-provided columns only, as part-1 returns)
     //    plus the run_id so the caller can locate the action's lineage.
-    let logical_types = columns
-        .iter()
-        .map(|c| {
-            target
-                .properties
-                .iter()
-                .find(|p| &p.name == c)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    Ok((
-        ObjectRows {
-            columns,
-            logical_types,
-            rows: vec![values],
-        },
-        run_id,
-    ))
+    Ok((affected_object(target, columns, values), run_id))
 }
 
 /// Reject UPDATE/DELETE on a type with any vector property: the scalar copy-on-write
@@ -812,12 +808,5 @@ async fn run_mutate(
 
     // Return the affected object (UPDATE: the new version; DELETE: the removed values).
     let returned = new_row.unwrap_or(existing);
-    Ok((
-        ObjectRows {
-            columns,
-            logical_types: logical,
-            rows: vec![returned],
-        },
-        run_id,
-    ))
+    Ok((affected_object(target, columns, returned), run_id))
 }

@@ -1410,7 +1410,7 @@ pub fn affected_object(
 ) -> ObjectRows
 ```
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/services/query-api/tests/insert_phases.rs` (add
 `affected_object` to the `query_api::action` import):
@@ -1432,12 +1432,12 @@ fn affected_object_zips_logical_types_per_column() {
 }
 ```
 
-- [ ] **Step 2: Run to see it fail**
+- [x] **Step 2: Run to see it fail**
 
 Run: `buck2 test //src/services/query-api:insert-phases > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t6.log`
 Expected: FAIL — compile error, `affected_object` not found.
 
-- [ ] **Step 3: Implement and rewire both epilogues**
+- [x] **Step 3: Implement and rewire both epilogues**
 
 Add to `action.rs` (below `expand_to_full_row`), plus
 `use crate::governed::Projection;` in the file's imports:
@@ -1479,7 +1479,7 @@ here; `logical` remains a local for `overwrite_table` only — the epilogue now
 recomputes types per column, which for the full property set yields the
 identical vector, pinned by the update/delete e2e body assertions.)
 
-- [ ] **Step 4: Run to green (unit + every response-body pin)**
+- [x] **Step 4: Run to green (unit + every response-body pin)**
 
 Run: `buck2 test -j 8 //src/services/query-api:insert-phases //src/services/query-api:action-e2e //src/services/query-api:action-mapping-e2e //src/services/query-api:update-delete-e2e //src/services/query-api:update-delete-tiers-e2e //src/services/query-api:action-run-id-http //src/services/query-api:write-denial-http > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log`
 Expected: PASS — `action_mapping_e2e` pins the property-keyed (not
@@ -1489,7 +1489,7 @@ UPDATE/DELETE echo (`objects_to_json` renders `qty`/`name` from the returned
 assertions); `action_run_id_http` pins the 201 body shape + header.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c6.log 2>&1; cat /tmp/c6.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p6.log 2>&1; grep -c Failed /tmp/p6.log` — expected `0`.
 

@@ -6,7 +6,7 @@
 //! action_e2e.
 
 use control_plane_core::{ConstraintRule, ObjectType, PropertyConstraints, RangeConstraint};
-use query_api::action::{expand_to_full_row, value_constraint_violations};
+use query_api::action::{affected_object, expand_to_full_row, value_constraint_violations};
 use query_api::serving::SqlValue;
 
 /// Gauge(id Long required, qty Long [0..=100], note String) — one constrained
@@ -56,7 +56,11 @@ fn out_of_range_value_is_collected() {
 #[test]
 fn empty_null_and_unconstrained_cells_are_skipped() {
     // Empty pair set: trivially clean (the DELETE path's shape after Task 7).
-    assert!(value_constraint_violations(&gauge(), &[]).unwrap().is_empty());
+    assert!(
+        value_constraint_violations(&gauge(), &[])
+            .unwrap()
+            .is_empty()
+    );
     let pairs = vec![
         // Omitted optional (NULL): no value to check.
         ("qty".to_string(), SqlValue::Null),
@@ -77,9 +81,21 @@ fn expand_fills_unset_properties_with_null_in_declared_order() {
     let pairs = vec![("qty".to_string(), SqlValue::Int(7))];
     let (cols, vals, logical) = expand_to_full_row(&gauge(), &pairs);
     assert_eq!(cols, vec!["id", "qty", "note"]);
-    assert_eq!(
-        vals,
-        vec![SqlValue::Null, SqlValue::Int(7), SqlValue::Null]
-    );
+    assert_eq!(vals, vec![SqlValue::Null, SqlValue::Int(7), SqlValue::Null]);
     assert_eq!(logical, vec!["Long", "Long", "String"]);
+}
+
+#[test]
+fn affected_object_zips_logical_types_per_column() {
+    // Caller column order is preserved; each type is looked up per property —
+    // the shared epilogue of run_insert (action-provided columns) and
+    // run_mutate (full property columns).
+    let rows = affected_object(
+        &gauge(),
+        vec!["qty".to_string(), "id".to_string()],
+        vec![SqlValue::Int(7), SqlValue::Int(1)],
+    );
+    assert_eq!(rows.columns, vec!["qty", "id"]);
+    assert_eq!(rows.logical_types, vec!["Long", "Long"]);
+    assert_eq!(rows.rows, vec![vec![SqlValue::Int(7), SqlValue::Int(1)]]);
 }
