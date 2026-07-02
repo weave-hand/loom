@@ -364,6 +364,7 @@ pub async fn compile_object_read(
         &mask_cols,
         &row_filters,
         &predicates,
+        &[],
         &derived_selects,
         limit,
     )?;
@@ -548,6 +549,7 @@ pub async fn vector_search(
         &[],
         &row_filters,
         std::slice::from_ref(&pred),
+        &[],
         &[],
         limit,
     )?;

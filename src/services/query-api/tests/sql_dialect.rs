@@ -51,6 +51,7 @@ fn default_compile_select_equals_explicit_datafusion() {
         std::slice::from_ref(&f),
         &[],
         &[],
+        &[],
         100,
     )
     .unwrap();
@@ -60,6 +61,7 @@ fn default_compile_select_equals_explicit_datafusion() {
         &["id".into()],
         &[],
         std::slice::from_ref(&f),
+        &[],
         &[],
         &[],
         100,
@@ -86,6 +88,7 @@ fn dialect_controls_quoting_and_placeholders() {
         std::slice::from_ref(&f),
         &[],
         &[],
+        &[],
         100,
     )
     .unwrap();
@@ -102,7 +105,8 @@ fn datafusion_dialect_emits_bare_limit() {
     // has no multi-file `LIMIT` corruption bug (iss-multi-file-limit-misread).
     let df = DataFusionDialect;
     assert_eq!(df.limit_clause(1000), "LIMIT 1000");
-    let (sql, _params) = compile_select(&t(), &["id".into()], &[], &[], &[], &[], 1000).unwrap();
+    let (sql, _params) =
+        compile_select(&t(), &["id".into()], &[], &[], &[], &[], &[], 1000).unwrap();
     assert_eq!(
         sql, r#"SELECT "id" FROM "main"."orders" LIMIT 1000"#,
         "bare LIMIT, no ORDER BY barrier: {sql}"
@@ -149,6 +153,7 @@ fn positional_indices_span_select_derived_then_where() {
         &[],
         &[],
         &predicates,
+        &[],
         &derived,
         100,
     )

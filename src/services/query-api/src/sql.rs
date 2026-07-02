@@ -410,12 +410,15 @@ fn select_col_exprs(
     col_exprs
 }
 
-/// WHERE conjuncts for a flat SELECT: `row_filters` then caller `predicates`, all at the
-/// unaliased table (`""`). Params are pushed in that order.
+/// WHERE conjuncts for a flat SELECT: `row_filters`, then caller `predicates`, then each
+/// `or_groups` disjunction — all ANDed at the unaliased table (`""`). Params are pushed in
+/// that order. An OR-group renders `(m1 OR m2 …)`, each member through `caller_predicate_sql`
+/// (so members carry their own bound params); governance conjuncts stay ANDed above them.
 fn select_where_conjuncts(
     dialect: &dyn SqlDialect,
     row_filters: &[RowFilter],
     predicates: &[CallerPredicate],
+    or_groups: &[Vec<CallerPredicate>],
     params: &mut Vec<SqlValue>,
 ) -> Vec<String> {
     let mut conjuncts: Vec<String> = Vec::new();
@@ -424,6 +427,13 @@ fn select_where_conjuncts(
     }
     for p in predicates {
         conjuncts.push(caller_predicate_sql(dialect, p, "", params));
+    }
+    for group in or_groups {
+        let members: Vec<String> = group
+            .iter()
+            .map(|m| caller_predicate_sql(dialect, m, "", params))
+            .collect();
+        conjuncts.push(format!("({})", members.join(" OR ")));
     }
     conjuncts
 }
@@ -443,6 +453,7 @@ pub fn compile_select_with(
     mask_cols: &[String],
     row_filters: &[RowFilter],
     predicates: &[CallerPredicate],
+    or_groups: &[Vec<CallerPredicate>],
     derived: &[DerivedSelect],
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
@@ -466,7 +477,8 @@ pub fn compile_select_with(
         from
     };
 
-    let conjuncts = select_where_conjuncts(dialect, row_filters, predicates, &mut params);
+    let conjuncts =
+        select_where_conjuncts(dialect, row_filters, predicates, or_groups, &mut params);
 
     let mut sql = format!("SELECT {cols} FROM {from_clause}");
     if !conjuncts.is_empty() {
@@ -490,6 +502,7 @@ pub fn compile_select(
     mask_cols: &[String],
     row_filters: &[RowFilter],
     predicates: &[CallerPredicate],
+    or_groups: &[Vec<CallerPredicate>],
     derived: &[DerivedSelect],
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
@@ -500,6 +513,7 @@ pub fn compile_select(
         mask_cols,
         row_filters,
         predicates,
+        or_groups,
         derived,
         limit,
     )
