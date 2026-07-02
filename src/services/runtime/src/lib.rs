@@ -238,6 +238,8 @@ pub enum RuntimeError {
     Embedded(managed_postgres::EmbeddedPgError),
     #[error("migrate: {0}")]
     Migrate(control_plane_core::ControlPlaneError),
+    #[error("config: {0}")]
+    Config(#[from] ConfigError),
 }
 
 /// Build the Iceberg `StorageFactory` the SQL catalog uses for metadata/data I/O.
@@ -308,11 +310,76 @@ pub async fn build_pool_managed(
     }
 }
 
-/// `true` when the process was started in migrate-and-exit mode (`LOOM_MIGRATE=apply`).
-/// The service binaries check this before normal startup: they apply the migrations
-/// and exit 0, so a chart hook Job can run any service image as a one-shot migrator.
-pub fn migrate_requested() -> bool {
-    std::env::var("LOOM_MIGRATE").as_deref() == Ok("apply")
+/// `true` when the process was started in migrate-and-exit mode
+/// (`LOOM_MIGRATE=apply`, read from the caller's env snapshot). [`bootstrap`]
+/// checks this before normal startup — and the standalone main before its
+/// embedded self-extract — so a chart hook Job can run any service image as a
+/// one-shot migrator.
+pub fn migrate_requested(vars: &HashMap<String, String>) -> bool {
+    vars.get("LOOM_MIGRATE").map(String::as_str) == Some("apply")
+}
+
+/// Outcome of [`bootstrap`]: migrate-and-exit mode completed, or the full
+/// service context is ready to serve.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one value per process at startup; boxing buys nothing"
+)]
+pub enum Boot {
+    /// `LOOM_MIGRATE=apply`: migrations applied; the caller should exit 0.
+    Migrated,
+    /// Normal startup: everything a service main needs to serve.
+    Ready(ServiceContext),
+}
+
+/// The shared startup product: config, control-plane pool, concrete
+/// `PgControlPlane`, auth state, and the service-token TTL cap. Owns the
+/// embedded-PG handle so the keep-alive is structural — the cluster lives
+/// exactly as long as the context, replacing the per-main `_pg` binding every
+/// caller had to remember. Mains deliberately do NOT gracefully stop the
+/// embedded cluster (parity with the previous behavior); the standalone
+/// composite keeps its own `build_pool_managed` + `stop_pg` for the graceful
+/// path and does not use `bootstrap`.
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "_embedded is a keep-alive guard, not API — private so callers cannot detach the cluster's lifetime from the context"
+)]
+pub struct ServiceContext {
+    pub cfg: Config,
+    pub pool: PgPool,
+    pub pg: Arc<PgControlPlane>,
+    pub auth: AuthState,
+    pub max_ttl: Duration,
+    _embedded: Option<managed_postgres::EmbeddedPg>,
+}
+
+/// One startup path for the service mains: parse config from the env snapshot,
+/// honor migrate-and-exit mode, then build pool → control plane → auth. The
+/// fail-loud TTL reads happen BEFORE the pool boots (a typo'd TTL should not
+/// cost an embedded initdb). The full config is parsed before the migrate gate,
+/// exactly as every main did.
+pub async fn bootstrap(vars: &HashMap<String, String>) -> Result<Boot, RuntimeError> {
+    let cfg = Config::from_map(vars)?;
+    if migrate_requested(vars) {
+        run_migrations(&cfg.db).await?;
+        return Ok(Boot::Migrated);
+    }
+    let session_ttl = auth::session_ttl(vars)?;
+    let max_ttl = auth::service_token_max_ttl(vars)?;
+    let (pool, embedded) = build_pool_managed(&cfg).await?;
+    let pg = Arc::new(control_plane(pool.clone(), cfg.lock_timeout));
+    let auth = AuthState {
+        auth: pg.clone(),
+        session_ttl,
+    };
+    Ok(Boot::Ready(ServiceContext {
+        cfg,
+        pool,
+        pg,
+        auth,
+        max_ttl,
+        _embedded: embedded,
+    }))
 }
 
 /// Connect an external control-plane pool from `db` and apply the embedded

@@ -1315,7 +1315,7 @@ pub fn migrate_requested(vars: &HashMap<String, String>) -> bool;  // was ()
 - Consumed by: the three mains. **NOT** standalone's `run` (see rescope).
 - No `admin_subject` field — see rescope.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `src/services/runtime/tests/config.rs`:
 
@@ -1480,12 +1480,12 @@ loom_fixture_test(
 )
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test -j 8 //src/services/runtime:bootstrap //src/services/runtime:config > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t6.log`
 Expected: FAIL — `Boot`/`bootstrap` unresolved; `migrate_requested(&v)` takes 0 args.
 
-- [ ] **Step 3: Implement in `service_runtime`**
+- [x] **Step 3: Implement in `service_runtime`**
 
 In `src/services/runtime/src/lib.rs`:
 
@@ -1575,7 +1575,7 @@ allowlist was checked — neither lint is pre-allowed):**
 - `clippy::large_enum_variant` on `Boot` →
   `#[expect(clippy::large_enum_variant, reason = "one value per process at startup; boxing buys nothing")]`
 
-- [ ] **Step 4: The three mains adopt it; standalone main takes the snapshot**
+- [x] **Step 4: The three mains adopt it; standalone main takes the snapshot**
 
 `src/services/query-api/src/main.rs` — full replacement:
 
@@ -1682,7 +1682,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 (The surrounding lines are unchanged — `env` is already in scope at line 23.)
 
-- [ ] **Step 5: Run to green**
+- [x] **Step 5: Run to green**
 
 Run: `buck2 test -j 8 //src/services/runtime:bootstrap //src/services/runtime:config //src/services/runtime:migrate-managed > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log`
 Expected: PASS.
@@ -1690,7 +1690,7 @@ Run: `buck2 build -M none //src/services/query-api:query-api-bin //src/services/
 Expected: build success (binary target names verified against each BUCK file).
 Run: `buck2 build '//src/services/runtime:runtime[clippy.txt]' > /tmp/c6.log 2>&1` — artifact empty (apply the Step 3 contingency if not).
 
-- [ ] **Step 6: prek + commit**
+- [x] **Step 6: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p6.log 2>&1; grep -c Failed /tmp/p6.log` — expected `0`.
 

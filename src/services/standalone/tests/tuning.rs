@@ -19,6 +19,8 @@ fn malformed_ttl_is_startup_error() {
     let mut vars: HashMap<String, String> = HashMap::new();
     vars.insert("LOOM_SESSION_TTL_SECS".into(), "soon".into());
     let err = StandaloneTuning::from_map(&vars).unwrap_err();
-    assert!(matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
-        if var == "LOOM_SESSION_TTL_SECS"));
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_SESSION_TTL_SECS")
+    );
 }

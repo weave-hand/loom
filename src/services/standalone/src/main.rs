@@ -25,7 +25,7 @@ async fn main() -> Result<(), BoxErr> {
     // Migrate-and-exit works for the loom image too (chart one-shot migrator).
     // This path targets an EXTERNAL/managed PG (it connects to `cfg.db`), so it runs
     // before any embedded `extract_pg` and does not set `LOOM_PG_MODE=embedded`.
-    if service_runtime::migrate_requested() {
+    if service_runtime::migrate_requested(&env) {
         let cfg = service_runtime::Config::from_map(&env)?;
         service_runtime::run_migrations(&cfg.db).await?;
         return Ok(());

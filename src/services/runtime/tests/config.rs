@@ -220,3 +220,13 @@ fn parse_migrate_on_boot_keeps_from_map_semantics() {
     assert!(matches!(parse_migrate_on_boot(&v),
         Err(ConfigError::Invalid { ref var, .. }) if var == "LOOM_DB_MIGRATE_ON_BOOT"));
 }
+
+#[test]
+fn migrate_requested_reads_the_snapshot() {
+    let mut v = full();
+    assert!(!service_runtime::migrate_requested(&v));
+    v.insert("LOOM_MIGRATE".into(), "apply".into());
+    assert!(service_runtime::migrate_requested(&v));
+    v.insert("LOOM_MIGRATE".into(), "yes".into());
+    assert!(!service_runtime::migrate_requested(&v));
+}

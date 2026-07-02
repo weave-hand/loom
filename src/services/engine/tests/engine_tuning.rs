@@ -33,6 +33,8 @@ fn overrides_parse() {
 #[test]
 fn malformed_value_is_startup_error_naming_key() {
     let err = EngineTuning::from_map(&map(&[("LOOM_INLINE_BYTE_LIMIT", "lots")])).unwrap_err();
-    assert!(matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
-        if var == "LOOM_INLINE_BYTE_LIMIT"));
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_INLINE_BYTE_LIMIT")
+    );
 }
