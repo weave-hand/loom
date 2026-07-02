@@ -300,7 +300,16 @@ git commit -m "feat(query): read_linked_chain dedups on final-target identity"
 Run: `grep -rln "SELECT DISTINCT" src/services/query-api/tests/ | xargs grep -ln "reach" `
 Also inspect `compile_graph_reach.rs`, `compile_graph_reach_union.rs`, `graph_reach.rs`, `recursive_cte_over_datafusion.rs` for `SELECT DISTINCT {cols} FROM {tbl} p`. Note which assert the reachability projection (they change) vs. the CTE-internal `UNION` (unchanged — the recursive CTE's own dedup stays).
 
-- [ ] **Step 2: Update the failing assertions** in those test files: change the expected terminal `SELECT DISTINCT {cols} FROM … p WHERE …` to `SELECT {cols} FROM … p WHERE …` (drop only the leading `DISTINCT ` on the **projection** select; leave the CTE's internal `UNION`/`SELECT` text untouched). Leave all params/other assertions unchanged.
+- [ ] **Step 2: Update the failing assertions** in those test files. Note the assertion style is `sql.contains(...)`, **not** a full-string `assert_eq!`: `compile_graph_reach.rs:59` and `compile_graph_reach_union.rs:102` assert `sql.contains("SELECT DISTINCT") && sql.contains(r#"p."name""#)`. After the DISTINCT-drop the projection becomes `SELECT p."name" FROM … p`, so replace the `contains("SELECT DISTINCT")` predicate with an un-DISTINCT projection check, e.g.:
+
+```rust
+    assert!(
+        sql.contains(r#"SELECT p."name" FROM"#) && !sql.contains("SELECT DISTINCT"),
+        "projection (no DISTINCT): {sql}"
+    );
+```
+
+`DISTINCT` appears nowhere else in these two compilers (the CTE dedups via `UNION`, not `SELECT DISTINCT`), so the `!sql.contains("SELECT DISTINCT")` guard is safe. Leave all params/CTE/other assertions unchanged.
 
 - [ ] **Step 3: Run tests to verify they fail** against the current (still-`DISTINCT`) implementation.
 
@@ -347,7 +356,7 @@ git commit -m "fix(query): drop redundant DISTINCT in reachability projection"
 - Produces: `compile_graph_reach_tail` gains `final_identity: Option<&str>` inserted **immediately before `depth`** (the last two params become `final_identity, depth, limit`). `None` ⇒ today's `{cte} SELECT DISTINCT …`. The existing `identity` param (core self-link) is unchanged.
 - Consumes: `final_type.identity.as_deref()` at the handler call site (`final_type` in scope at `handler.rs:1375`).
 
-- [ ] **Step 1: Write/adjust the failing compiler tests** in `compile_graph_reach_tail.rs`. Update existing `compile_graph_reach_tail(...)` call sites to insert `None` before the `depth` argument (keeps existing `SELECT DISTINCT` assertions valid as the `final_identity: None` regression guard). Add one test asserting the windowed shape when `final_identity = Some(...)`. Mirror the file's existing setup for `tail_types`/`tail_hops`/`cte`. The expected outer form is:
+- [ ] **Step 1: Write/adjust the failing compiler tests** in `compile_graph_reach_tail.rs`. The existing tests use `sql.contains(...)` predicates (3 call sites at lines ~44, ~132, ~206; a `contains("SELECT DISTINCT")` at line ~85), **not** full-string `assert_eq!`. Insert `None` before the `depth` argument at each existing call site — that keeps their `contains("SELECT DISTINCT")` guards valid as the `final_identity: None` regression guard (the `None` branch still emits `SELECT DISTINCT`). Then add one NEW test that passes `final_identity = Some(...)` and asserts the windowed shape with an exact `assert_eq!`. Mirror the file's existing setup for `tail_types`/`tail_hops`/`cte`. The expected outer form is:
 
 ```
 {cte} SELECT <outer cols> FROM (SELECT <inner masked/visible cols>, ROW_NUMBER() OVER (PARTITION BY t_k.<identity>) AS _loom_rn FROM <from> WHERE <where_sql>) _dedup WHERE _loom_rn = 1 <limit>
@@ -377,6 +386,9 @@ Expected: FAIL/compile error (arity).
     let where_sql = where_conj.join(" AND ");
     let limit_clause = dialect.limit_clause(limit);
     let sql = match final_identity {
+        // NB: `id` here shadows the outer `let id = q(identity)` (the CORE self-link PK).
+        // Safe: `where_sql` was built from the outer `id` above; this arm uses `id` only
+        // for the final-target PARTITION BY. Keep the shadow scoped to the arm.
         Some(id) => {
             let inner_cols = col_exprs.join(", ");
             let partition = format!("{final_alias}.{}", q(id));
@@ -425,8 +437,10 @@ Expected: FAIL/compile error (arity).
 
 - [ ] **Step 5: Run to verify pass.**
 
-Run: `buck2 test //src/services/query-api:compile-graph-reach-tail //src/services/query-api:graph-reach-tail > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
+Run: `buck2 test //src/services/query-api:compile-graph-reach-tail //src/services/query-api:graph-reach-tail //src/services/query-api:graph-tail-e2e > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
 Expected: PASS. Also `buck2 build //src/services/query-api:query-api` to confirm the handler compiles.
+
+> **`graph-tail-e2e` is Task 4's runtime gate.** `tests/graph_tail_e2e.rs` seeds Company/City types with `identity: Some("id")`, so after this change both its tail tests execute the **new windowed graph-tail SQL against real DataFusion** (Task 4's unit tests only assert SQL text). They pass behaviorally — the `ids`/`ids_i64` helpers `sort_unstable`, normalizing the window's ORDER-BY-free row order, and same-object dedup is preserved. Its header comment (`:6`) and inline comments (`~:226–227`) attribute the old collapse to "SELECT DISTINCT" — update them to reference the windowed identity dedup (fold into this task's commit).
 
 - [ ] **Step 6: Commit.**
 
