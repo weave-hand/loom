@@ -86,3 +86,94 @@ fn forward_non_default_schema_round_trips_name() {
         "analytics.report"
     );
 }
+
+fn dr(namespace: &str, name: &str) -> DatasetRef {
+    DatasetRef {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    }
+}
+
+#[test]
+fn reverse_logical_table_resolves_regardless_of_warehouse() {
+    // Logical "loom" refs are emitted by control-plane producers with no storage
+    // context, so they must resolve under ANY deployment's warehouse.
+    for n in [s3_naming(), file_naming()] {
+        assert_eq!(
+            n.resolve(&dr("loom", "main.orders")),
+            ResolvedDataset::Table(table("main", "orders"))
+        );
+    }
+}
+
+#[test]
+fn reverse_logical_type_resolves_regardless_of_warehouse() {
+    for n in [s3_naming(), file_naming()] {
+        assert_eq!(
+            n.resolve(&dr("loom:type", "Customer")),
+            ResolvedDataset::Type(TypeName("Customer".to_string()))
+        );
+    }
+}
+
+#[test]
+fn reverse_storage_derived_table_resolves_for_this_warehouse() {
+    let n = s3_naming();
+    assert_eq!(
+        n.resolve(&dr("s3://bucket", "main.orders")),
+        ResolvedDataset::Table(table("main", "orders"))
+    );
+}
+
+#[test]
+fn reverse_external_datasources_are_not_rejected() {
+    let n = s3_naming();
+    for ext in [
+        dr("s3://other-bucket", "main.orders"),
+        dr("postgres://h", "public.t"),
+        dr("kafka://broker", "topic"),
+    ] {
+        assert_eq!(n.resolve(&ext), ResolvedDataset::External(ext.clone()));
+    }
+}
+
+#[test]
+fn reverse_malformed_under_loom_namespace_degrades_to_external() {
+    let n = s3_naming();
+    for bad in [
+        dr("loom", "nodot"),        // no schema separator
+        dr("loom", ".x"),           // empty schema
+        dr("loom", "x."),           // empty table
+        dr("s3://bucket", "a.b.c"), // ambiguous multi-dot under storage namespace
+    ] {
+        assert_eq!(n.resolve(&bad), ResolvedDataset::External(bad.clone()));
+    }
+}
+
+#[test]
+fn reverse_storage_namespace_with_type_shaped_name_is_external() {
+    // The storage namespace only carries tables; a bare identifier (no dot) does not
+    // parse as schema.table, and types live on the logical namespace, so this is
+    // External, not Type.
+    let n = s3_naming();
+    assert_eq!(
+        n.resolve(&dr("s3://bucket", "Customer")),
+        ResolvedDataset::External(dr("s3://bucket", "Customer"))
+    );
+}
+
+#[test]
+fn round_trip_table_and_type() {
+    let n = s3_naming();
+    let t = table("main", "orders");
+    assert_eq!(
+        n.resolve(&n.dataset_ref(&t)),
+        ResolvedDataset::Table(t.clone())
+    );
+
+    let ty = TypeName("Customer".to_string());
+    assert_eq!(
+        n.resolve(&n.type_ref(&ty)),
+        ResolvedDataset::Type(ty.clone())
+    );
+}

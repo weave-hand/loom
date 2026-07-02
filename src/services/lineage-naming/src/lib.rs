@@ -4,7 +4,9 @@
 //! the OpenLineage namespace. Postgres-free, pure logic over config. See
 //! docs/superpowers/specs/2026-07-01-dataset-naming-bridge-design.md.
 
-use control_plane_core::{DatasetId, DatasetRef, TableRef, TypeId, TypeName};
+use control_plane_core::{
+    DatasetId, DatasetRef, LOOM_DATASET_NAMESPACE, TableRef, TypeId, TypeName,
+};
 use store_config::{ObjectStoreBackend, ObjectStoreConfig};
 
 /// Deployment-aware bridge between loom's typed identities (`TableRef`/`TypeName`)
@@ -66,5 +68,36 @@ impl LineageNaming {
     /// (`"loom:type"`), delegating entirely to `core`.
     pub fn type_ref(&self, ty: &TypeName) -> DatasetRef {
         TypeId::from(ty).dataset_ref()
+    }
+
+    /// Resolve any `DatasetRef` back to the governed object it names, or `External`.
+    /// Total; never errors. Recognizes, in order:
+    ///   1. the logical loom namespaces (`"loom"` / `"loom:type"`), via `core`'s
+    ///      `DatasetId`/`TypeId::from_dataset_ref` — back-compat with the refs
+    ///      control-plane producers emit with no storage context;
+    ///   2. this deployment's `site_namespace` with a well-formed `schema.table`
+    ///      name — reusing the same `core` parse guards by re-namespacing to the
+    ///      logical form;
+    ///   3. everything else — a different datasource, or a malformed name under a
+    ///      loom namespace — `External(raw ref)`.
+    pub fn resolve(&self, dr: &DatasetRef) -> ResolvedDataset {
+        if let Some(id) = DatasetId::from_dataset_ref(dr) {
+            return ResolvedDataset::Table(id.table().clone());
+        }
+        if let Some(ty) = TypeId::from_dataset_ref(dr) {
+            return ResolvedDataset::Type(ty.type_name().clone());
+        }
+        if dr.namespace == self.site_namespace {
+            // Same `schema.table` name shape as the logical form; delegate to core's
+            // parse guards by re-namespacing, so malformed names degrade to External.
+            let logical = DatasetRef {
+                namespace: LOOM_DATASET_NAMESPACE.to_string(),
+                name: dr.name.clone(),
+            };
+            if let Some(id) = DatasetId::from_dataset_ref(&logical) {
+                return ResolvedDataset::Table(id.table().clone());
+            }
+        }
+        ResolvedDataset::External(dr.clone())
     }
 }
