@@ -436,26 +436,37 @@ fn select_where_conjuncts(
     Ok(conjuncts)
 }
 
+/// The WHERE/SELECT inputs of a governed flat SELECT, grouped: ACL row-filters, caller
+/// predicates, OR-groups, and derived (aggregate-over-link) SELECT columns. All borrowed;
+/// `Default` is the empty read so call sites name only what they bind:
+/// `SelectInputs { row_filters: &g.row_filters, ..SelectInputs::default() }`.
+#[derive(Default)]
+pub struct SelectInputs<'a> {
+    pub row_filters: &'a [RowFilter],
+    pub predicates: &'a [CallerPredicate],
+    pub or_groups: &'a [Vec<CallerPredicate>],
+    pub derived: &'a [DerivedSelect],
+}
+
 /// `allowed_cols` must be non-empty (caller enforces). `row_filters` and `predicates`
 /// are ANDed together as conjuncts. `derived` aggregate subqueries (if any) are appended
 /// to the SELECT list; their params precede the WHERE params. The outer table is aliased
 /// `o` only when at least one aggregate is present (so the no-derived output is unchanged).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "SQL compile functions require all builder parameters"
-)]
 pub fn compile_select_with(
     dialect: &dyn SqlDialect,
     table: &TableRef,
     allowed_cols: &[String],
     mask_cols: &[String],
-    row_filters: &[RowFilter],
-    predicates: &[CallerPredicate],
-    or_groups: &[Vec<CallerPredicate>],
-    derived: &[DerivedSelect],
+    inputs: &SelectInputs<'_>,
     order_by: Option<&str>,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
+    let &SelectInputs {
+        row_filters,
+        predicates,
+        or_groups,
+        derived,
+    } = inputs;
     validate_select_filters(row_filters, derived)?;
 
     let mut params = Vec::new();
@@ -494,18 +505,11 @@ pub fn compile_select_with(
 /// Compile a governed SELECT for loom's default (`DataFusionDialect`) dialect.
 /// Convenience wrapper for tests; production read paths use [`compile_select_with`]
 /// with the serving engine's dialect so the engine selects it.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "SQL compile functions require all builder parameters"
-)]
 pub fn compile_select(
     table: &TableRef,
     allowed_cols: &[String],
     mask_cols: &[String],
-    row_filters: &[RowFilter],
-    predicates: &[CallerPredicate],
-    or_groups: &[Vec<CallerPredicate>],
-    derived: &[DerivedSelect],
+    inputs: &SelectInputs<'_>,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     compile_select_with(
@@ -513,10 +517,7 @@ pub fn compile_select(
         table,
         allowed_cols,
         mask_cols,
-        row_filters,
-        predicates,
-        or_groups,
-        derived,
+        inputs,
         None,
         limit,
     )

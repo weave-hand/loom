@@ -332,10 +332,12 @@ pub async fn compile_object_read_with(
         &g.otype.table,
         &proj.columns,
         &proj.masked,
-        &g.row_filters,
-        &predicates,
-        &or_groups,
-        &derived_selects,
+        &crate::sql::SelectInputs {
+            row_filters: &g.row_filters,
+            predicates: &predicates,
+            or_groups: &or_groups,
+            derived: &derived_selects,
+        },
         order_by,
         limit,
     )?;
@@ -620,10 +622,11 @@ pub async fn vector_search(
         &g.otype.table,
         std::slice::from_ref(&identity),
         &[],
-        &g.row_filters,
-        std::slice::from_ref(&pred),
-        &[],
-        &[],
+        &crate::sql::SelectInputs {
+            row_filters: &g.row_filters,
+            predicates: std::slice::from_ref(&pred),
+            ..crate::sql::SelectInputs::default()
+        },
         None,
         limit,
     )?;

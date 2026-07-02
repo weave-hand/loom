@@ -1,7 +1,9 @@
 use control_plane_core::{Aggregation, CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{ChainType, DerivedAggregate, DerivedSelect, compile_chain, compile_select};
+use query_api::sql::{
+    ChainType, DerivedAggregate, DerivedSelect, SelectInputs, compile_chain, compile_select,
+};
 
 fn t() -> TableRef {
     TableRef {
@@ -24,10 +26,7 @@ fn projects_allowed_columns_and_quotes_identifiers() {
         &t(),
         &["id".into(), "status".into()],
         &[],
-        &[],
-        &[],
-        &[],
-        &[],
+        &SelectInputs::default(),
         100,
     )
     .unwrap();
@@ -49,10 +48,10 @@ fn compiles_acl_compare_leaf_as_bound_param() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&f),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&f),
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap();
@@ -88,10 +87,10 @@ fn compiles_and_or_not_tree() {
         &t(),
         &["a".into()],
         &[],
-        std::slice::from_ref(&f),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&f),
+            ..SelectInputs::default()
+        },
         10,
     )
     .unwrap();
@@ -116,10 +115,10 @@ fn expands_in_list_into_placeholders() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&f),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&f),
+            ..SelectInputs::default()
+        },
         10,
     )
     .unwrap();
@@ -145,10 +144,11 @@ fn ands_acl_filter_with_request_equality_filter() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&acl),
-        &preds,
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&acl),
+            predicates: &preds,
+            ..SelectInputs::default()
+        },
         10,
     )
     .unwrap();
@@ -176,10 +176,10 @@ fn expands_not_in_list_into_placeholders() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&f),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&f),
+            ..SelectInputs::default()
+        },
         10,
     )
     .unwrap();
@@ -205,10 +205,10 @@ fn compiles_is_not_null_without_a_param() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&f),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&f),
+            ..SelectInputs::default()
+        },
         10,
     )
     .unwrap();
@@ -224,8 +224,17 @@ fn eq_filters_only_form_the_where_clause() {
     // No ACL row filter, only a request equality filter: the WHERE prefix and
     // conjunct-joining must still be correct (no leading/trailing AND).
     let preds = vec![eqp("status", SqlValue::Text("open".into()))];
-    let (sql, params) =
-        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &SelectInputs {
+            predicates: &preds,
+            ..SelectInputs::default()
+        },
+        10,
+    )
+    .unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("status" = ?) LIMIT 10"#
@@ -239,10 +248,7 @@ fn masks_a_column_with_marker() {
         &t(),
         &["id".into(), "secret".into()],
         &["secret".into()],
-        &[],
-        &[],
-        &[],
-        &[],
+        &SelectInputs::default(),
         100,
     )
     .unwrap();
@@ -262,10 +268,7 @@ fn masking_preserves_projection_order_and_other_columns() {
         &t(),
         &["a".into(), "b".into(), "c".into()],
         &["b".into()],
-        &[],
-        &[],
-        &[],
-        &[],
+        &SelectInputs::default(),
         10,
     )
     .unwrap();
@@ -287,10 +290,10 @@ fn malformed_filter_is_an_error_not_a_panic() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&bad),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&bad),
+            ..SelectInputs::default()
+        },
         10,
     );
     assert!(
@@ -321,10 +324,10 @@ fn derived_fk_count_compiles_to_a_correlated_subquery() {
         },
         &["id".to_string()],
         &[],
-        &[],
-        &[],
-        &[],
-        &derived,
+        &SelectInputs {
+            derived: &derived,
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap();
@@ -369,10 +372,11 @@ fn derived_jointable_sum_with_target_filter_orders_params_first() {
         },
         &["id".to_string()],
         &[],
-        &[],
-        &[eqp("region", SqlValue::Text("CA".into()))],
-        &[],
-        &derived,
+        &SelectInputs {
+            predicates: &[eqp("region", SqlValue::Text("CA".into()))],
+            derived: &derived,
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap();
@@ -402,10 +406,10 @@ fn masked_derived_emits_marker_no_subquery_no_alias() {
         },
         &["id".to_string()],
         &[],
-        &[],
-        &[],
-        &[],
-        &derived,
+        &SelectInputs {
+            derived: &derived,
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap();
@@ -727,8 +731,17 @@ fn caller_predicate_gt_renders_with_param() {
         op: CompareOp::Gt,
         values: vec![SqlValue::Int(100)],
     }];
-    let (sql, params) =
-        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &SelectInputs {
+            predicates: &preds,
+            ..SelectInputs::default()
+        },
+        10,
+    )
+    .unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("amount" > ?) LIMIT 10"#
@@ -743,8 +756,17 @@ fn caller_predicate_in_expands_placeholders() {
         op: CompareOp::In,
         values: vec![SqlValue::Text("open".into()), SqlValue::Text("paid".into())],
     }];
-    let (sql, params) =
-        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &SelectInputs {
+            predicates: &preds,
+            ..SelectInputs::default()
+        },
+        10,
+    )
+    .unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("status" IN (?, ?)) LIMIT 10"#
@@ -762,8 +784,17 @@ fn caller_predicate_isnotnull_no_param() {
         op: CompareOp::IsNotNull,
         values: vec![],
     }];
-    let (sql, params) =
-        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &SelectInputs {
+            predicates: &preds,
+            ..SelectInputs::default()
+        },
+        10,
+    )
+    .unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("closed_at" IS NOT NULL) LIMIT 10"#
@@ -785,8 +816,17 @@ fn caller_predicate_range_two_same_column_ands() {
             values: vec![SqlValue::Int(200)],
         },
     ];
-    let (sql, params) =
-        compile_select(&t(), &["id".into()], &[], &[], &preds, &[], &[], 10).unwrap();
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &SelectInputs {
+            predicates: &preds,
+            ..SelectInputs::default()
+        },
+        10,
+    )
+    .unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE ("amount" >= ?) AND ("amount" <= ?) LIMIT 10"#
@@ -805,10 +845,10 @@ fn compiles_between_as_two_bound_params() {
         &t(),
         &["id".into()],
         &[],
-        &[],
-        std::slice::from_ref(&p),
-        &[],
-        &[],
+        &SelectInputs {
+            predicates: std::slice::from_ref(&p),
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap();
@@ -830,10 +870,10 @@ fn compiles_contains_as_ilike_with_escape_and_bound_param() {
         &t(),
         &["id".into()],
         &[],
-        &[],
-        std::slice::from_ref(&p),
-        &[],
-        &[],
+        &SelectInputs {
+            predicates: std::slice::from_ref(&p),
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap();
@@ -890,10 +930,11 @@ fn or_group_renders_as_parenthesized_disjunction_after_plain_preds() {
         &t(),
         &["id".into()],
         &[],
-        &[],
-        &[eqp("region", SqlValue::Text("CA".into()))],
-        std::slice::from_ref(&group),
-        &[],
+        &SelectInputs {
+            predicates: &[eqp("region", SqlValue::Text("CA".into()))],
+            or_groups: std::slice::from_ref(&group),
+            ..SelectInputs::default()
+        },
         10,
     )
     .unwrap();
@@ -915,8 +956,17 @@ fn or_group_renders_as_parenthesized_disjunction_after_plain_preds() {
 fn two_or_groups_render_as_two_anded_disjunctions() {
     let g1 = vec![eqp("a", SqlValue::Int(1)), eqp("b", SqlValue::Int(2))];
     let g2 = vec![eqp("c", SqlValue::Int(3)), eqp("d", SqlValue::Int(4))];
-    let (sql, params) =
-        compile_select(&t(), &["id".into()], &[], &[], &[], &[g1, g2], &[], 10).unwrap();
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &SelectInputs {
+            or_groups: &[g1, g2],
+            ..SelectInputs::default()
+        },
+        10,
+    )
+    .unwrap();
     assert_eq!(
         sql,
         r#"SELECT "id" FROM "main"."orders" WHERE (("a" = ?) OR ("b" = ?)) AND (("c" = ?) OR ("d" = ?)) LIMIT 10"#
@@ -947,10 +997,10 @@ fn or_group_member_in_expands_placeholders() {
         &t(),
         &["id".into()],
         &[],
-        &[],
-        &[],
-        std::slice::from_ref(&group),
-        &[],
+        &SelectInputs {
+            or_groups: std::slice::from_ref(&group),
+            ..SelectInputs::default()
+        },
         10,
     )
     .unwrap();
@@ -990,10 +1040,11 @@ fn acl_row_filter_stays_anded_above_or_group() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&acl),
-        &[],
-        std::slice::from_ref(&group),
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&acl),
+            or_groups: std::slice::from_ref(&group),
+            ..SelectInputs::default()
+        },
         10,
     )
     .unwrap();
@@ -1017,8 +1068,17 @@ fn empty_inner_or_group_is_skipped_not_rendered_as_parens() {
     // fragment. The handler guarantees >=2 members via split_or_members, but a direct
     // caller could pass an empty inner group — it is skipped, leaving a bare SELECT.
     let empty: Vec<Vec<CallerPredicate>> = vec![vec![]];
-    let (sql, params) =
-        compile_select(&t(), &["id".into()], &[], &[], &[], &empty, &[], 10).unwrap();
+    let (sql, params) = compile_select(
+        &t(),
+        &["id".into()],
+        &[],
+        &SelectInputs {
+            or_groups: &empty,
+            ..SelectInputs::default()
+        },
+        10,
+    )
+    .unwrap();
     assert_eq!(sql, r#"SELECT "id" FROM "main"."orders" LIMIT 10"#);
     assert!(params.is_empty());
 }
@@ -1136,10 +1196,10 @@ fn between_predicate_with_wrong_arity_is_malformed_not_panic() {
         &t(),
         &["id".into()],
         &[],
-        &[],
-        std::slice::from_ref(&p),
-        &[],
-        &[],
+        &SelectInputs {
+            predicates: std::slice::from_ref(&p),
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap_err();
@@ -1157,10 +1217,10 @@ fn scalar_predicate_with_no_operand_is_malformed_not_panic() {
         &t(),
         &["id".into()],
         &[],
-        &[],
-        std::slice::from_ref(&p),
-        &[],
-        &[],
+        &SelectInputs {
+            predicates: std::slice::from_ref(&p),
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap_err();
@@ -1178,10 +1238,10 @@ fn text_pattern_predicate_with_no_operand_is_malformed_not_panic() {
         &t(),
         &["id".into()],
         &[],
-        &[],
-        std::slice::from_ref(&p),
-        &[],
-        &[],
+        &SelectInputs {
+            predicates: std::slice::from_ref(&p),
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap_err();
