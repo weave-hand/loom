@@ -120,32 +120,59 @@ pub(crate) enum Cell {
 }
 
 /// Pull cell `(col, row)` out of an arrow batch, typed per the logical column.
+/// A batch whose arrow type mismatches the declared logical column is rejected
+/// with `Validation` (caller-shaped wire data), never a panic.
 fn cell_from_arrow(batch: &RecordBatch, col: usize, row: usize, logical: &str) -> Result<Cell> {
     let a = batch.column(col);
     let null = a.is_null(row);
     macro_rules! dc {
         ($ty:ty) => {
-            a.as_any()
-                .downcast_ref::<$ty>()
-                .expect("inline arrow downcast")
+            a.as_any().downcast_ref::<$ty>().ok_or_else(|| {
+                ControlPlaneError::Validation(format!(
+                    "inline: column {col} is not the declared {logical} (expected {})",
+                    stringify!($ty)
+                ))
+            })?
         };
     }
     Ok(match logical {
-        "integer" => Cell::I32((!null).then(|| dc!(Int32Array).value(row))),
-        "long" => Cell::I64((!null).then(|| dc!(Int64Array).value(row))),
-        "double" => Cell::F64((!null).then(|| dc!(Float64Array).value(row))),
-        "boolean" => Cell::Bool((!null).then(|| dc!(BooleanArray).value(row))),
-        "string" => Cell::Str((!null).then(|| dc!(StringArray).value(row).to_string())),
-        "date" => Cell::Date((!null).then(|| {
-            time::macros::date!(1970 - 01 - 01)
-                + time::Duration::days(dc!(Date32Array).value(row) as i64)
-        })),
-        "timestamp" => Cell::Ts((!null).then(|| {
-            let micros = dc!(TimestampMicrosecondArray).value(row);
-            let odt = time::OffsetDateTime::from_unix_timestamp_nanos(micros as i128 * 1_000)
-                .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
-            time::PrimitiveDateTime::new(odt.date(), odt.time())
-        })),
+        "integer" => {
+            let arr = dc!(Int32Array);
+            Cell::I32((!null).then(|| arr.value(row)))
+        }
+        "long" => {
+            let arr = dc!(Int64Array);
+            Cell::I64((!null).then(|| arr.value(row)))
+        }
+        "double" => {
+            let arr = dc!(Float64Array);
+            Cell::F64((!null).then(|| arr.value(row)))
+        }
+        "boolean" => {
+            let arr = dc!(BooleanArray);
+            Cell::Bool((!null).then(|| arr.value(row)))
+        }
+        "string" => {
+            let arr = dc!(StringArray);
+            Cell::Str((!null).then(|| arr.value(row).to_string()))
+        }
+        "date" => {
+            let arr = dc!(Date32Array);
+            Cell::Date((!null).then(|| {
+                time::macros::date!(1970 - 01 - 01)
+                    + time::Duration::days(arr.value(row) as i64)
+            }))
+        }
+        "timestamp" => {
+            let arr = dc!(TimestampMicrosecondArray);
+            Cell::Ts((!null).then(|| {
+                let micros = arr.value(row);
+                let odt =
+                    time::OffsetDateTime::from_unix_timestamp_nanos(micros as i128 * 1_000)
+                        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+                time::PrimitiveDateTime::new(odt.date(), odt.time())
+            }))
+        }
         v if v.starts_with("vector(") => {
             if null {
                 Cell::Vec(None)
@@ -214,7 +241,9 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
 ///
 /// CONTRACT: `batch`'s columns must align **positionally** with `columns` (same
 /// order, same logical types) — `batch.column(i)` is read as `columns[i]`. Both
-/// come from the landing's schema, so they agree by construction.
+/// come from the landing's schema, so they agree by construction; a batch that
+/// violates the contract (arrow type != declared logical type) is rejected with
+/// `Validation`, never a panic.
 pub async fn inline_append(
     pool: &PgPool,
     table: &TableRef,

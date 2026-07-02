@@ -106,3 +106,61 @@ async fn inline_live_batch_reconstructs_live_rows() {
         .expect("inline_live_batch at snapshot 1");
     assert!(none.is_none(), "no inline rows live at the seed snapshot");
 }
+
+/// A wire batch whose arrow type mismatches the declared logical column must be
+/// rejected with Validation — NOT panic the write path. Guards
+/// iss-inline-downcast-panic (the dc! macro's .expect on caller-shaped data).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_append_rejects_mistyped_batch_without_panicking() {
+    use control_plane_core::{ColumnSpec, ControlPlaneError, EventType, LineageEvent, RunId, TableRef};
+    use std::sync::Arc;
+
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    // Declared logical schema says "long" (Int64), but the batch carries Int32.
+    // Nothing in inline_append inspects the batch's arrow types before the
+    // per-row cell loop, so the mismatch reaches cell_from_arrow.
+    let columns = vec![ColumnSpec {
+        name: "id".to_string(),
+        ty: "long".to_string(),
+        nullable: false,
+    }];
+    let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+        "id",
+        arrow_schema::DataType::Int32,
+        false,
+    )]));
+    let batch = arrow_array::RecordBatch::try_new(
+        schema,
+        vec![Arc::new(arrow_array::Int32Array::from(vec![1, 2]))],
+    )
+    .expect("test batch");
+    let lineage = LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![],
+        payload: serde_json::json!({ "source": "test" }),
+    };
+
+    let err = control_plane_postgres::iceberg_inline::inline_append(
+        &pool,
+        &TableRef {
+            schema: "sales".to_string(),
+            name: "orders".to_string(),
+        },
+        &columns,
+        &batch,
+        lineage,
+        None,
+    )
+    .await
+    .expect_err("mistyped batch must be rejected, not landed");
+    assert!(
+        matches!(err, ControlPlaneError::Validation(_)),
+        "expected Validation, got: {err:?}"
+    );
+}
