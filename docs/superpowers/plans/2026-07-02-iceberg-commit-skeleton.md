@@ -96,7 +96,7 @@ respectively.
   `src/control-plane/postgres/src/iceberg_landing.rs` (signatures + `InlineLimits`),
   `src/control-plane/postgres/src/iceberg_flush.rs` (call site),
   `src/services/ingest/src/landing.rs`, `src/services/engine-serving/src/action_writer.rs`
-  (external `land` call sites), plus ~23 test files' `land(...)` calls.
+  (external `land` call sites), plus 24 test files' `land(...)` calls.
 - Test (existing targets, no new files): `//src/control-plane/postgres:` →
   `iceberg-landing`, `iceberg-flush`, `inline-flush-trigger`, `iceberg-overwrite`,
   `overwrite-end-caps-inline`, `iceberg-schema-evolution-land`, `iceberg-writer`,
@@ -272,6 +272,11 @@ use super::commit_mirror::CommitExtras;
    etc. stay if still used elsewhere in the file).
 
 - [ ] **Step 4: Wire the module in `mod.rs`**
+
+Insert the `mod commit_mirror;` and `pub use commit_mirror::*;` lines into the
+EXISTING file — keep the Apache license header, the module doc comment, and the
+`#![deny(missing_docs)]` inner attribute exactly as they are. The module/use
+section becomes:
 
 ```rust
 mod catalog;
@@ -789,6 +794,13 @@ async fn land_parquet(
 and change its import to
 `use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};`.
 
+Also in `iceberg_landing.rs`: after this task nothing in the file references
+`InlineEndCap` anymore (the end-cap block only reads `cap.table_id`/`cap.row_ids`
+through `&extras.end_cap`), so drop `InlineEndCap` from its
+`use crate::iceberg_sql_catalog::{...}` import — keeping it would fail this
+task's empty-clippy gate. (`iceberg_flush.rs` still constructs one; it keeps
+the import.)
+
 - [ ] **Step 4: Build + clippy + run covering suites**
 
 ```bash
@@ -824,7 +836,7 @@ lineage/end_cap/overwrite/jobs loose; both too_many_arguments allows deleted."
 
 `land`'s two routing limits group into one `InlineLimits` struct, bringing it to
 7 params — the last `too_many_arguments` allow in the file goes. This is the
-wide-but-mechanical task: 2 production call sites + ~23 test files.
+wide-but-mechanical task: 2 production call sites + 24 test files.
 
 **Files:**
 - Modify: `src/control-plane/postgres/src/iceberg_landing.rs` (`land` + new struct)
@@ -952,7 +964,7 @@ import shape, it uses `iceberg_landing::land(...)` qualified, so either import
 
 - [ ] **Step 3: Sweep the test call sites**
 
-Every `land(` call in the ~23 test files replaces its two positional limit args
+Every `land(` call in the 24 test files replaces its two positional limit args
 (6th and 7th) with one `InlineLimits { inline_byte_limit: <old 6th>,
 flush_byte_threshold: <old 7th> }` literal, and each file's import gains
 `InlineLimits`, e.g.:
