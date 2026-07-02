@@ -261,7 +261,7 @@ rust_test(
     ],
 )
 
-# ApiError status mapping + IngestError::into_api — pure logic, RE-eligible.
+# ApiError status mapping + IngestError::into_api + fault-logging — pure logic, RE-eligible.
 rust_test(
     name = "api-error",
     crate = "api_error",
@@ -271,6 +271,10 @@ rust_test(
     deps = [
         ":ingest",
         "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:tokio",
+        "//third-party:tracing",
+        "//third-party:tracing-test",
     ],
 )
 
