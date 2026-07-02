@@ -434,9 +434,13 @@ async fn inverse_hop_absent_inbound_is_unknown_link() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(&graph_query_hops(vec![inv("employer")]), &Subject(subj), &deps)
-        .await
-        .unwrap_err();
+    let err = read_graph_reach(
+        &graph_query_hops(vec![inv("employer")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(&err, QueryError::UnknownLink(l) if l == "employer"),
         "expected UnknownLink(employer), got {err:?}"
@@ -458,9 +462,13 @@ async fn non_cyclic_mixed_path_reserializes_with_tilde() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(&graph_query_hops(vec![inv("hasMember")]), &Subject(subj), &deps)
-        .await
-        .unwrap_err();
+    let err = read_graph_reach(
+        &graph_query_hops(vec![inv("hasMember")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(&err, QueryError::NotCyclicPath(p) if p == "~hasMember"),
         "expected NotCyclicPath(~hasMember), got {err:?}"
@@ -495,9 +503,13 @@ async fn inverse_hop_matching_two_inbound_links_is_ambiguous() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(&graph_query_hops(vec![inv("sharesWith")]), &Subject(subj), &deps)
-        .await
-        .unwrap_err();
+    let err = read_graph_reach(
+        &graph_query_hops(vec![inv("sharesWith")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(&err, QueryError::AmbiguousLink(l) if l == "sharesWith"),
         "expected AmbiguousLink(sharesWith), got {err:?}"
@@ -530,8 +542,15 @@ async fn forbidden_inverse_landing_type() {
         serving: &serving,
         default_limit: 1000,
     };
-    let err = read_graph_reach(&graph_query_hops(vec![inv("watches")]), &Subject(subj), &deps)
-        .await
-        .unwrap_err();
-    assert!(matches!(&err, QueryError::Forbidden), "expected Forbidden, got {err:?}");
+    let err = read_graph_reach(
+        &graph_query_hops(vec![inv("watches")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, QueryError::Forbidden),
+        "expected Forbidden, got {err:?}"
+    );
 }
