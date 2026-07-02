@@ -13,6 +13,7 @@ use control_plane_core::{
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::governed::Projection;
 use crate::handler::ObjectRows;
 use crate::params::ParamError;
 use crate::serving::{ActionEngine, SqlValue};
@@ -367,6 +368,84 @@ pub async fn run_action(
     }
 }
 
+/// Collect every declared-constraint violation over resolved `(property, value)` write
+/// pairs, using the same `core` [`PropertyValidator`] that gates the ingest land path —
+/// both write paths enforce identical rules. A NULL cell carries no value to check
+/// (omitted optionals pass); a pair naming no property is skipped (conformance rejects
+/// that shape upstream); a property with no declared constraints is skipped. Pure; the
+/// unit-test seam for the constraint phase.
+///
+/// NOTE: named `value_constraint_violations`, not the register's `validate_constraints` —
+/// that name is `control_plane_core::validate_constraints`, the define-time *declaration*
+/// validator, and shadowing it here would invite exactly the wrong import.
+pub fn value_constraint_violations(
+    target: &ObjectType,
+    pairs: &[(String, SqlValue)],
+) -> Result<Vec<ConstraintViolation>, ActionError> {
+    let mut cviol: Vec<ConstraintViolation> = Vec::new();
+    for (col, val) in pairs {
+        let Some(prop) = target.properties.iter().find(|p| &p.name == col) else {
+            continue;
+        };
+        if prop.constraints.is_empty() {
+            continue;
+        }
+        let validator = PropertyValidator::new(prop)?;
+        match val {
+            SqlValue::Text(s) => validator.check_str(s, &mut cviol),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "range bounds are f64; i64->f64 is acceptable for validation"
+            )]
+            SqlValue::Int(i) => validator.check_num(*i as f64, &mut cviol),
+            SqlValue::Double(d) => validator.check_num(*d, &mut cviol),
+            SqlValue::Bool(_) | SqlValue::Date(_) | SqlValue::Timestamp(_) | SqlValue::Null => {}
+        }
+    }
+    Ok(cviol)
+}
+
+/// Expand resolved write pairs to the target type's FULL property set (declared order):
+/// the parsed value when the action set the column, else NULL. The loom-owned Parquet
+/// write must carry every column so the file schema matches the table (part-1
+/// unspecified columns default to NULL). Returns the parallel
+/// `(columns, values, logical_types)`. Pure; the unit-test seam for the expansion phase.
+pub fn expand_to_full_row(
+    target: &ObjectType,
+    pairs: &[(String, SqlValue)],
+) -> (Vec<String>, Vec<SqlValue>, Vec<String>) {
+    use std::collections::HashMap;
+    let parsed: HashMap<&str, &SqlValue> = pairs.iter().map(|(c, v)| (c.as_str(), v)).collect();
+    let mut full_columns: Vec<String> = Vec::with_capacity(target.properties.len());
+    let mut full_values: Vec<SqlValue> = Vec::with_capacity(target.properties.len());
+    let mut full_logical: Vec<String> = Vec::with_capacity(target.properties.len());
+    for p in &target.properties {
+        full_columns.push(p.name.clone());
+        full_values.push(
+            parsed
+                .get(p.name.as_str())
+                .copied()
+                .cloned()
+                .unwrap_or(SqlValue::Null),
+        );
+        full_logical.push(p.ty.clone());
+    }
+    (full_columns, full_values, full_logical)
+}
+
+/// The shared response epilogue of both write paths: the affected object as a
+/// single-row `ObjectRows`, its logical types zipped per column via the governance
+/// layer's [`Projection`] (`of_columns` reuses `prop_ty`; an unknown column zips to
+/// `""` exactly as the old inline lookups did). INSERT echoes the action-provided
+/// columns; UPDATE/DELETE echo the full property set.
+pub fn affected_object(
+    target: &ObjectType,
+    columns: Vec<String>,
+    row: Vec<SqlValue>,
+) -> ObjectRows {
+    Projection::of_columns(target, columns).object_rows(vec![row])
+}
+
 /// INSERT: parse the body into a new row, gate it through the fine-grained Write policy
 /// (deny-column over the set columns + row-filter on the inserted row), then atomically
 /// commit the row and its lineage event via `write_object`.
@@ -429,26 +508,7 @@ async fn run_insert(
     //     declared constraints with a structured 422 (distinct from the 403 ACL denial).
     //     An omitted optional (NULL) carries no value to check. The same `core` validator
     //     drives the ingest land path, so both write paths enforce identical rules.
-    let mut cviol: Vec<ConstraintViolation> = Vec::new();
-    for (col, val) in &pairs {
-        let Some(prop) = target.properties.iter().find(|p| &p.name == col) else {
-            continue;
-        };
-        if prop.constraints.is_empty() {
-            continue;
-        }
-        let validator = PropertyValidator::new(prop)?;
-        match val {
-            SqlValue::Text(s) => validator.check_str(s, &mut cviol),
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "range bounds are f64; i64->f64 is acceptable for validation"
-            )]
-            SqlValue::Int(i) => validator.check_num(*i as f64, &mut cviol),
-            SqlValue::Double(d) => validator.check_num(*d, &mut cviol),
-            SqlValue::Bool(_) | SqlValue::Date(_) | SqlValue::Timestamp(_) | SqlValue::Null => {}
-        }
-    }
+    let cviol = value_constraint_violations(target, &pairs)?;
     if !cviol.is_empty() {
         tracing::info!(
             action = action_name,
@@ -458,26 +518,8 @@ async fn run_insert(
         return Err(ActionError::ConstraintViolation(cviol));
     }
 
-    // 5. Expand to the target type's FULL property set (declared order): the parsed
-    //    value when the action set the column, else NULL. The loom-owned Parquet
-    //    write must carry every column so the file schema matches the table (part-1
-    //    unspecified columns default to NULL).
-    use std::collections::HashMap;
-    let parsed: HashMap<&str, &SqlValue> = pairs.iter().map(|(c, v)| (c.as_str(), v)).collect();
-    let mut full_columns: Vec<String> = Vec::with_capacity(target.properties.len());
-    let mut full_values: Vec<SqlValue> = Vec::with_capacity(target.properties.len());
-    let mut full_logical: Vec<String> = Vec::with_capacity(target.properties.len());
-    for p in &target.properties {
-        full_columns.push(p.name.clone());
-        full_values.push(
-            parsed
-                .get(p.name.as_str())
-                .copied()
-                .cloned()
-                .unwrap_or(SqlValue::Null),
-        );
-        full_logical.push(p.ty.clone());
-    }
+    // 5. Expand to the target type's FULL property set (declared order).
+    let (full_columns, full_values, full_logical) = expand_to_full_row(target, &pairs);
 
     // 6. Mint the run id and build the lineage event UP FRONT, so the caller owns the
     //    run_id and hands it to the engine, which commits row + event atomically.
@@ -508,25 +550,7 @@ async fn run_insert(
 
     // 8. Return the created object (action-provided columns only, as part-1 returns)
     //    plus the run_id so the caller can locate the action's lineage.
-    let logical_types = columns
-        .iter()
-        .map(|c| {
-            target
-                .properties
-                .iter()
-                .find(|p| &p.name == c)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    Ok((
-        ObjectRows {
-            columns,
-            logical_types,
-            rows: vec![values],
-        },
-        run_id,
-    ))
+    Ok((affected_object(target, columns, values), run_id))
 }
 
 /// Reject UPDATE/DELETE on a type with any vector property: the scalar copy-on-write
@@ -582,6 +606,89 @@ fn row_filter_admits(policies: &[Policy], columns: &[String], values: &[SqlValue
     })
 }
 
+/// Locate the single live row whose `id_idx` cell equals `id_value` (the supplied,
+/// already-typed identity). The identity is a primary key, so at most one live match:
+/// no match is `NotFound` (the caller's 404); more than one is a corrupt invariant —
+/// surfaced as a `Backend` fault (500), never a client error and never a silent
+/// pick-one mutate. Returns the matched row's index and a clone of the row. Pure;
+/// the unit-test seam for the mutate locate phase.
+pub fn locate_unique_row(
+    rows: &[Vec<SqlValue>],
+    id_idx: usize,
+    id_value: &SqlValue,
+    idprop: &str,
+) -> Result<(usize, Vec<SqlValue>), ActionError> {
+    let mut matches = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.get(id_idx) == Some(id_value));
+    let (target_idx, existing) = match matches.next() {
+        None => return Err(ActionError::NotFound),
+        Some((i, r)) => (i, r.clone()),
+    };
+    if matches.next().is_some() {
+        // >1 live row for a primary key is a corrupt invariant, not a client error.
+        return Err(ActionError::ControlPlane(ControlPlaneError::Backend(
+            format!("identity `{idprop}` matches more than one live row").into(),
+        )));
+    }
+    Ok((target_idx, existing))
+}
+
+/// The three ordered fine-grained Write-policy legs of a mutate — a whole-row verdict,
+/// deliberately NOT the INSERT gate (`write_filter::check_write_policy`), whose
+/// deny-column-over-ALL-columns order is wrong for a PATCH. The order is
+/// security-relevant and pinned by e2e + unit tests:
+///   1. the EXISTING row must pass every policy `row_filter` (UPDATE and DELETE) —
+///      a subject may not touch a row it cannot address, and learns nothing about
+///      column policies when it cannot;
+///   2. UPDATE only: no SET column may be policy-denied;
+///   3. UPDATE only: the RESULTING row must pass every `row_filter` — a PATCH may
+///      not move a row out of the subject's writable region.
+///
+/// Fail-closed (an UNKNOWN filter truth denies). Denials are logged server-side; the
+/// returned `WriteDenied` reason is caller-scoped (column name only, never the
+/// predicate). Pure; the unit-test seam for the mutate policy phase.
+pub fn enforce_mutate_policy(
+    policies: &[Policy],
+    columns: &[String],
+    existing: &[SqlValue],
+    set_pairs: &[(String, SqlValue)],
+    new_row: Option<&[SqlValue]>,
+    action_name: &str,
+) -> Result<(), ActionError> {
+    // The existing row must pass every row-filter (both UPDATE and DELETE).
+    if !row_filter_admits(policies, columns, existing) {
+        tracing::info!(
+            action = action_name,
+            "mutate denied: existing row fails write policy filter"
+        );
+        return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
+    }
+    if let Some(row) = new_row {
+        // Deny-column over the SET columns only (UPDATE writes those columns).
+        if let Some(col) = set_pairs.iter().map(|(c, _)| c).find(|c| {
+            policies
+                .iter()
+                .any(|p| p.deny_columns.iter().any(|d| d == *c))
+        }) {
+            tracing::info!(action = action_name, column = %col, "update write denied: policy denies column");
+            return Err(ActionError::WriteDenied(WriteDenialReason::Column(
+                col.clone(),
+            )));
+        }
+        // The resulting row must also pass every row-filter.
+        if !row_filter_admits(policies, columns, row) {
+            tracing::info!(
+                action = action_name,
+                "update denied: resulting row fails write policy filter"
+            );
+            return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
+        }
+    }
+    Ok(())
+}
+
 /// UPDATE/DELETE via whole-table copy-on-write. Locates the row by the target type's
 /// declared identity through a privileged (ACL-unfiltered) full-table read, applies the
 /// mutation in memory (DELETE drops the row; UPDATE PATCHes the named non-identity columns),
@@ -628,27 +735,7 @@ async fn run_mutate(
         .await?;
 
     // Locate the target row. The identity is a primary key, so at most one live match.
-    let mut matches = live
-        .rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.get(id_idx) == Some(&id_value))
-        .map(|(i, _)| i);
-    let target_idx = match matches.next() {
-        None => return Err(ActionError::NotFound),
-        Some(i) => i,
-    };
-    if matches.next().is_some() {
-        // >1 live row for a primary key is a corrupt invariant, not a client error.
-        return Err(ActionError::ControlPlane(ControlPlaneError::Backend(
-            format!("identity `{idprop}` matches more than one live row").into(),
-        )));
-    }
-    let existing = live
-        .rows
-        .get(target_idx)
-        .cloned()
-        .ok_or_else(|| ActionError::NotFound)?;
+    let (target_idx, existing) = locate_unique_row(&live.rows, id_idx, &id_value, &idprop)?;
 
     // The PATCH columns the caller actually SET (non-identity, non-null). An omitted optional
     // param materializes as `SqlValue::Null`; PATCH semantics leave it untouched, so it is
@@ -679,36 +766,30 @@ async fn run_mutate(
         .acl()
         .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
         .await?;
-    let policies = &write_policies.items;
+    enforce_mutate_policy(
+        &write_policies.items,
+        &columns,
+        &existing,
+        &set_pairs,
+        new_row.as_deref(),
+        action_name,
+    )?;
 
-    // The existing row must pass every row-filter (both UPDATE and DELETE).
-    if !row_filter_admits(policies, &columns, &existing) {
+    // Per-value constraint validation on the SET values — the same rules INSERT
+    // enforces, so an UPDATE can no longer write a value the equivalent INSERT
+    // rejects (whitelisted change, road-qa-action-decomposition). Ordered after the
+    // policy legs (403 before 422, mirroring INSERT) and after the locate phase (a
+    // missing identity stays NotFound). DELETE sets nothing (`set_pairs` is empty),
+    // so it is structurally unaffected; the identity is a locator, not a written
+    // value, and is not re-validated.
+    let cviol = value_constraint_violations(target, &set_pairs)?;
+    if !cviol.is_empty() {
         tracing::info!(
             action = action_name,
-            "mutate denied: existing row fails write policy filter"
+            count = cviol.len(),
+            "update rejected: constraint violation"
         );
-        return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
-    }
-    if let Some(row) = &new_row {
-        // Deny-column over the SET columns only (UPDATE writes those columns).
-        if let Some(col) = set_pairs.iter().map(|(c, _)| c).find(|c| {
-            policies
-                .iter()
-                .any(|p| p.deny_columns.iter().any(|d| d == *c))
-        }) {
-            tracing::info!(action = action_name, column = %col, "update write denied: policy denies column");
-            return Err(ActionError::WriteDenied(WriteDenialReason::Column(
-                col.clone(),
-            )));
-        }
-        // The resulting row must also pass every row-filter.
-        if !row_filter_admits(policies, &columns, row) {
-            tracing::info!(
-                action = action_name,
-                "update denied: resulting row fails write policy filter"
-            );
-            return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
-        }
+        return Err(ActionError::ConstraintViolation(cviol));
     }
 
     // Build the new full live set: existing rows minus the target (DELETE) or with the
@@ -744,12 +825,5 @@ async fn run_mutate(
 
     // Return the affected object (UPDATE: the new version; DELETE: the removed values).
     let returned = new_row.unwrap_or(existing);
-    Ok((
-        ObjectRows {
-            columns,
-            logical_types: logical,
-            rows: vec![returned],
-        },
-        run_id,
-    ))
+    Ok((affected_object(target, columns, returned), run_id))
 }
