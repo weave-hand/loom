@@ -283,22 +283,32 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
         "join produced the right regions"
     );
 
-    // 5b. First-class TYPE-named lineage: upstream(OrderEnriched) == {Customer, Order}.
+    // 5b. TYPE-named lineage plus the type↔table binding edge. The typed transform gives
+    //     the type-layer ancestry (Customer, Order); `define_type(OrderEnriched)` emits a
+    //     binding edge so the backing table is now a one-hop upstream of the type too.
     let out_ds: DatasetRef = (&TypeName("OrderEnriched".into())).into();
     let ups = pg
         .lineage()
         .upstream(&out_ds, 1, PageReq::unbounded())
         .await
         .unwrap();
-    let up: std::collections::HashSet<String> = ups.items.iter().map(|d| d.name.clone()).collect();
+    let type_up: std::collections::HashSet<String> = ups
+        .items
+        .iter()
+        .filter(|d| d.namespace == "loom:type")
+        .map(|d| d.name.clone())
+        .collect();
     assert_eq!(
-        up,
+        type_up,
         std::collections::HashSet::from(["Customer".to_string(), "Order".to_string()]),
-        "type-named lineage upstream, got {up:?}"
+        "type-named transform ancestry, got {type_up:?}"
     );
     assert!(
-        ups.items.iter().all(|d| d.namespace == "loom:type"),
-        "lineage nodes are type-namespaced"
+        ups.items
+            .iter()
+            .any(|d| d.namespace == "loom" && d.name == "main.order_enriched"),
+        "binding edge: the backing table is upstream of the type, got {:?}",
+        ups.items
     );
 
     // 5c. The Object Model round-trips: read OrderEnriched through query-api over the
