@@ -15,7 +15,7 @@
 - **Tests are `rust_test` integration targets only** — never inline `#[cfg(test)]` modules (buck2 never runs them; the `no-inline-tests` prek hook rejects them). New test files go in `src/services/query-api/tests/` with their own target in `src/services/query-api/BUCK`, using the `rust_test` loaded from `//src:loom_test.bzl` (already loaded at the top of that BUCK file).
 - **Strict clippy on production code**: no `.unwrap()`/`.expect()`/indexing/`panic!` in `src/**`; local silences need `#[expect(lint, reason = "…")]`. Test files are exempt (the `loom_rust_test` wrapper injects the allows).
 - **Behavior-preserving**: no public HTTP semantic changes. `QueryError` variants, the deny-before-existence-leak ordering (`acl.check` BEFORE `get_type`), the fail-closed empty-projection `Forbidden`, the 404-vs-403 split (`UnknownType` for reads, `Forbidden` for `vector_search`), and the mask-marker contract all stay exactly as-is.
-- **Known, accepted micro-divergence** (call out in the PR description): unifying the hop-resolution copies means `resolve_graph`'s and the tail walk's `links()`/`links_to()` `NotFound` now maps to `UnknownType` (the `resolve_chain` behavior) instead of propagating as `ControlPlane(NotFound)`. This branch is unreachable in practice (the current type was just fetched via `get_type`), and the defensive 404 is strictly safer than a 500. Similarly `vector_search` now loads policy up front (inside `resolve_governed`) instead of lazily after the engine call — one extra `policies_for` on the empty-hits path, identical observable behavior.
+- **Known, accepted micro-divergence** (call out in the PR description): unifying the hop-resolution copies means `resolve_graph`'s and the tail walk's `links()`/`links_to()` `NotFound` now maps to `UnknownType` (the `resolve_chain` behavior) instead of propagating as `ControlPlane(NotFound)`. This branch is unreachable in practice (the current type was just fetched via `get_type`), and the defensive 404 is strictly safer than a 500. Similarly `vector_search` now loads policy up front (inside `resolve_governed`) instead of lazily after the engine call — one extra `policies_for` on the empty-hits path, and if `policies_for` itself fails, that `ControlPlane` error (500) now pre-empts any engine `ServingError` (e.g. `NoIndex` → 404) that would previously have surfaced first. State this precisely in the PR.
 - **Cloud/disk discipline**: never a bare whole-tree `buck2 build`/`test //src/...`. Build with `-M none`; scope tests to `//src/services/query-api:` targets (plus the final full-crate sweep `buck2 test //src/services/query-api/...`). Don't pipe `buck2 test` through `head`/`tail` — redirect to a file and grep.
 - **Formatting/lint**: `buck2 run //tools:rustfmt -- <files>` after each task; `buck2 run //tools:prek -- run --all-files` before push. Markdown files end with exactly one trailing newline, no trailing whitespace.
 - **Conventional Commits** for every commit message (commit-msg hook enforces).
@@ -358,7 +358,7 @@ pub fn prop_ty<'a>(otype: &'a ObjectType, name: &str) -> Option<&'a str> {
 
 (If `ControlPlaneError::NotFound`'s payload isn't a single field named by position — check its definition in `control_plane_core` — adjust the destructuring; the intent is: re-wrap the same NotFound for `Internal`, matching how a bare `?` would convert it via `#[from]`.)
 
-The moved helpers keep their exact current bodies and doc comments (`handler.rs:144-260`): `load_policy` (returns `(Vec<RowFilter>, HashSet<String>, HashSet<String>)`), `project_allowed(properties: &[PropertyDef], denied: &HashSet<String>) -> Vec<String>`, `identity_is_governed(otype, denied, masked) -> bool`, `identity_in_predicate(otype, denied, masked, ids) -> Result<Option<CallerPredicate>, QueryError>`, `coerce_visible_predicate(col, raw, object_type, allowed, masked) -> Result<CallerPredicate, QueryError>`. Their `crate::filter::…` references work unchanged from the new module.
+The moved helpers keep their exact current bodies and doc comments (`handler.rs:144-260`), with one behavior-identical cleanup: the internal `properties.iter().find(…).map(|p| p.ty.as_str()).unwrap_or("")` sentinel chains inside `identity_in_predicate` and `coerce_visible_predicate` become `prop_ty(otype, col).unwrap_or("")` (same lookup, one copy): `load_policy` (returns `(Vec<RowFilter>, HashSet<String>, HashSet<String>)`), `project_allowed(properties: &[PropertyDef], denied: &HashSet<String>) -> Vec<String>`, `identity_is_governed(otype, denied, masked) -> bool`, `identity_in_predicate(otype, denied, masked, ids) -> Result<Option<CallerPredicate>, QueryError>`, `coerce_visible_predicate(col, raw, object_type, allowed, masked) -> Result<CallerPredicate, QueryError>`. Their `crate::filter::…` references work unchanged from the new module.
 
 - [ ] **Step 5: Wire the module and re-exports**
 
@@ -1401,7 +1401,7 @@ pub async fn read_object(
 }
 ```
 
-- [ ] **Step 5: Rewire `read_object_page`** — single resolution. Replace the prologue + `compile_object_read` call (`handler.rs:542-633`); everything from the `id_idx` extraction down is unchanged:
+- [ ] **Step 5: Rewire `read_object_page`** — single resolution. Replace the prologue + `compile_object_read` call + fetch/assert (`handler.rs:542-638`); everything from the `id_idx` extraction down is unchanged (over `gr`):
 
 ```rust
     let type_name = TypeName(q.type_name.clone());
@@ -1522,7 +1522,8 @@ Delete the now-dead "Row filters aren't needed here…" comment and the discarde
 
 - [ ] **Step 7: Run the new test + the read-path regression targets**
 
-Run: `buck2 test //src/services/query-api:read-page-single-resolve //src/services/query-api:sql-compile //src/services/query-api:identity-in-predicate //src/services/query-api:vector-search-filter > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
+Run: `buck2 test //src/services/query-api:read-page-single-resolve //src/services/query-api:sql-compile //src/services/query-api:identity-in-predicate //src/services/query-api:vector_search_filter > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
+(Note `vector_search_filter` really is underscored in the BUCK file — the one naming outlier.)
 Expected: PASS (all listed; check the exact target names with `grep 'name = ' src/services/query-api/BUCK` and substitute if they differ — the intent is: the new counting test, the SQL compile suite, and the vector-search post-filter suite).
 
 - [ ] **Step 8: Format and commit**
@@ -2050,12 +2051,16 @@ pub async fn read_graph_reach_union(
     Ok(proj.into_object_rows(served))
 ```
 
-- [ ] **Step 7: Re-run the pinning targets**
+- [ ] **Step 7: Prune now-unused handler imports**
+
+After this task `project_allowed` (and possibly `ObjectType`, `PropertyDef`, `RowFilter`, `SubjectId` from `control_plane_core`) are no longer referenced in `handler.rs` — delete every import the compiler flags as unused (`buck2 build //src/services/query-api:query-api > /tmp/b6.log 2>&1; grep -E "unused|warning" /tmp/b6.log`), or the prek clippy hook will fail the commit.
+
+- [ ] **Step 8: Re-run the pinning targets**
 
 Run: the same target list as Step 1 → `/tmp/t6.log`.
 Expected: PASS, same test counts as the baseline.
 
-- [ ] **Step 8: Format and commit**
+- [ ] **Step 9: Format and commit**
 
 ```bash
 buck2 run //tools:rustfmt -- src/services/query-api/src/handler.rs
