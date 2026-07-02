@@ -17,8 +17,8 @@ use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
+use control_plane_core::resolve_logical;
 use control_plane_core::{Auth, ControlPlane, SubjectId};
-use control_plane_core::{BaseType, resolve_logical};
 use engine_wire::flight::FlightSqlClient;
 use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
@@ -61,24 +61,9 @@ impl ExportCommand {
     }
 }
 
-/// Map a loom logical `BaseType` to the canonical Arrow `DataType` — an exact mirror of
-/// `engine-serving`'s `base_to_arrow`, reproduced here because query-api must not depend on
-/// the DataFusion serving crate. Keeping the two in lockstep ensures the schema advertised
-/// by `get_flight_info` matches the schema the engine streams in `do_get`.
-fn base_to_arrow(b: BaseType) -> DataType {
-    match b {
-        BaseType::Integer => DataType::Int32,
-        BaseType::Long => DataType::Int64,
-        BaseType::Double => DataType::Float64,
-        BaseType::Boolean => DataType::Boolean,
-        BaseType::String => DataType::Utf8,
-        BaseType::Date => DataType::Date32,
-        BaseType::Timestamp => DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None),
-        BaseType::Vector(_) => {
-            DataType::List(Arc::new(Field::new("element", DataType::Float32, false)))
-        }
-    }
-}
+// BaseType → DataType now lives in core (BaseType::arrow_data_type) — the single
+// map shared with the engine's serving schema, so get_flight_info's advertised
+// schema and the do_get data schema agree by construction.
 
 /// Build the projected Arrow schema for an export from the governed output columns, their loom
 /// logical types (positionally aligned, in SELECT order), and the set of **masked** output
@@ -105,7 +90,7 @@ pub fn export_arrow_schema(
             DataType::Utf8 // masked → '***' constant streams as Utf8
         } else {
             let base = resolve_logical(lt).ok_or_else(|| format!("unknown logical type `{lt}`"))?;
-            base_to_arrow(base)
+            base.arrow_data_type()
         };
         fields.push(Field::new(name, dt, true));
     }

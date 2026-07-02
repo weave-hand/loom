@@ -16,9 +16,10 @@ use arrow_array::{
     Array, ArrayRef, BooleanArray, Date32Array, Float32Array, Float64Array, Int32Array, Int64Array,
     ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
 };
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlaneError, LineageEvent, NewJob, Result, SnapshotId, TableRef,
+    BaseType, ColumnSpec, ControlPlaneError, LineageEvent, NewJob, Result, SnapshotId, TableRef,
+    resolve_logical,
 };
 use sqlx::postgres::PgArguments;
 use sqlx::query::Query;
@@ -375,31 +376,20 @@ pub async fn inline_append(
     Ok(at)
 }
 
-/// Arrow field for a logical column (canonical, non-`*View` so it matches the
-/// file-Parquet side the slice-3 engine reads).
-fn arrow_field(name: &str, logical: &str, nullable: bool) -> Result<Field> {
-    let dt = match logical {
-        "integer" => DataType::Int32,
-        "long" => DataType::Int64,
-        "double" => DataType::Float64,
-        "boolean" => DataType::Boolean,
-        "string" => DataType::Utf8,
-        "date" => DataType::Date32,
-        "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, None),
-        v if v.starts_with("vector(") => {
-            DataType::List(Arc::new(Field::new("item", DataType::Float32, false)))
-        }
-        other => {
-            return Err(ControlPlaneError::Backend(
-                format!("inline read: unsupported type {other:?}").into(),
-            ));
-        }
-    };
-    Ok(Field::new(name, dt, nullable))
+/// Arrow field for a logical column. Delegates to core's authoritative
+/// `BaseType::arrow_data_type` map (canonical, non-`*View`, vector list child
+/// `"item"`), so the inline read schema can never drift from the serving path.
+fn arrow_field(name: &str, ty: BaseType, nullable: bool) -> Field {
+    Field::new(name, ty.arrow_data_type(), nullable)
 }
 
-/// Build an arrow array for column `i` (typed `logical`) from PG rows.
-fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Result<ArrayRef> {
+/// Build an arrow array for positional column `i` (typed `ty`) from PG rows.
+///
+/// THE single PG-row → Arrow decode: the inline read path (`inline_live_batch`)
+/// and engine-serving's `PgTableProvider` both call this, so a new `BaseType`
+/// member is a compile error here — never a silent "unsupported logical type"
+/// at scan time (iss-pg-provider-vector-drift).
+pub fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, ty: BaseType) -> Result<ArrayRef> {
     macro_rules! get {
         ($ty:ty) => {
             rows.iter()
@@ -408,43 +398,43 @@ fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Resu
                 .map_err(backend)?
         };
     }
-    Ok(match logical {
-        "integer" => {
+    Ok(match ty {
+        BaseType::Integer => {
             let mut b = Int32Builder::new();
             for v in get!(i32) {
                 b.append_option(v);
             }
             Arc::new(b.finish())
         }
-        "long" => {
+        BaseType::Long => {
             let mut b = Int64Builder::new();
             for v in get!(i64) {
                 b.append_option(v);
             }
             Arc::new(b.finish())
         }
-        "double" => {
+        BaseType::Double => {
             let mut b = Float64Builder::new();
             for v in get!(f64) {
                 b.append_option(v);
             }
             Arc::new(b.finish())
         }
-        "boolean" => {
+        BaseType::Boolean => {
             let mut b = BooleanBuilder::new();
             for v in get!(bool) {
                 b.append_option(v);
             }
             Arc::new(b.finish())
         }
-        "string" => {
+        BaseType::String => {
             let mut b = StringBuilder::new();
             for v in get!(String) {
                 b.append_option(v);
             }
             Arc::new(b.finish())
         }
-        "date" => {
+        BaseType::Date => {
             let mut b = Date32Builder::new();
             let epoch = time::macros::date!(1970 - 01 - 01);
             for v in get!(time::Date) {
@@ -452,7 +442,7 @@ fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Resu
             }
             Arc::new(b.finish())
         }
-        "timestamp" => {
+        BaseType::Timestamp => {
             let mut b = TimestampMicrosecondBuilder::new();
             for v in get!(time::PrimitiveDateTime) {
                 b.append_option(v.map(|t| {
@@ -464,9 +454,9 @@ fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Resu
             }
             Arc::new(b.finish())
         }
-        v if v.starts_with("vector(") => {
+        BaseType::Vector(_) => {
             use arrow_array::builder::{Float32Builder, ListBuilder};
-            let item = Arc::new(Field::new("item", DataType::Float32, false));
+            let item = Arc::new(control_plane_core::vector_list_field());
             let mut b = ListBuilder::new(Float32Builder::new()).with_field(item);
             for xs in get!(Vec<f32>) {
                 match xs {
@@ -478,11 +468,6 @@ fn column_array(rows: &[sqlx::postgres::PgRow], i: usize, logical: &str) -> Resu
                 }
             }
             Arc::new(b.finish())
-        }
-        other => {
-            return Err(ControlPlaneError::Backend(
-                format!("inline read: unsupported type {other:?}").into(),
-            ));
         }
     })
 }
@@ -542,17 +527,31 @@ impl IcebergCatalog {
             .map(|r| r.try_get::<i64, _>("loom_row_id").map_err(backend))
             .collect::<Result<Vec<_>>>()?;
 
-        // Build arrow arrays per column. `column_array` indexes positional columns;
-        // the data columns now start at index 1 (loom_row_id is column 0), so pass
-        // `i + 1`.
-        let fields = schema
+        // Resolve every column's logical type ONCE (the mirror should never hold
+        // an unrecognized one) — same failure text the per-column arms used to emit.
+        let types: Vec<BaseType> = schema
             .columns
             .iter()
-            .map(|c| arrow_field(&c.name, &c.ty, c.nullable))
+            .map(|c| {
+                resolve_logical(&c.ty).ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        format!("inline read: unsupported type {:?}", c.ty).into(),
+                    )
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
+
+        // Build arrow arrays per column. `column_array` indexes positional columns;
+        // the data columns start at index 1 (loom_row_id is column 0), so pass `i + 1`.
+        let fields: Vec<Field> = schema
+            .columns
+            .iter()
+            .zip(&types)
+            .map(|(c, ty)| arrow_field(&c.name, *ty, c.nullable))
+            .collect();
         let mut arrays: Vec<ArrayRef> = Vec::with_capacity(fields.len());
-        for (i, c) in schema.columns.iter().enumerate() {
-            arrays.push(column_array(&rows, i + 1, &c.ty)?);
+        for (i, ty) in types.iter().enumerate() {
+            arrays.push(column_array(&rows, i + 1, *ty)?);
         }
         let arrow_schema = Arc::new(Schema::new(fields));
         let batch = RecordBatch::try_new(arrow_schema, arrays)
