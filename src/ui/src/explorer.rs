@@ -64,6 +64,8 @@ pub fn explorer(props: &ExplorerProps) -> Html {
     let next = use_state(|| Option::<String>::None);
     let selected_row = use_state(|| Option::<usize>::None);
     let status = use_state(|| LoadStatus::Idle);
+    let load_more_error = use_state(|| Option::<String>::None);
+    let loading_more = use_state(|| false);
 
     // On mount: load the ontology's type list.
     {
@@ -90,6 +92,8 @@ pub fn explorer(props: &ExplorerProps) -> Html {
         let next = next.clone();
         let selected_row = selected_row.clone();
         let status = status.clone();
+        let load_more_error = load_more_error.clone();
+        let loading_more = loading_more.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
         let selected_type_dep = (*selected_type).clone();
@@ -102,6 +106,8 @@ pub fn explorer(props: &ExplorerProps) -> Html {
             next.set(None);
             selected_row.set(None);
             status.set(LoadStatus::Loading);
+            load_more_error.set(None);
+            loading_more.set(false);
             wasm_bindgen_futures::spawn_local(async move {
                 match net::fetch_page(&net::api_base(), &token, &ty, None, 50).await {
                     Ok(page) => {
@@ -126,23 +132,29 @@ pub fn explorer(props: &ExplorerProps) -> Html {
         let objs = objs.clone();
         let columns = columns.clone();
         let next = next.clone();
-        let status = status.clone();
+        let load_more_error = load_more_error.clone();
+        let loading_more = loading_more.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
         let selected_type = selected_type.clone();
         Callback::from(move |_: MouseEvent| {
+            if *loading_more {
+                return;
+            }
             let Some(ty) = (*selected_type).clone() else {
                 return;
             };
             let cursor = (*next).clone();
-            let (objs, columns, next, status, on_logout) = (
+            let (objs, columns, next, load_more_error, loading_more, on_logout) = (
                 objs.clone(),
                 columns.clone(),
                 next.clone(),
-                status.clone(),
+                load_more_error.clone(),
+                loading_more.clone(),
                 on_logout.clone(),
             );
             let token = token.clone();
+            loading_more.set(true);
             wasm_bindgen_futures::spawn_local(async move {
                 match net::fetch_page(&net::api_base(), &token, &ty, cursor.as_deref(), 50).await {
                     Ok(page) => {
@@ -151,9 +163,17 @@ pub fn explorer(props: &ExplorerProps) -> Html {
                         columns.set(columns_from_objects(&merged));
                         objs.set(merged);
                         next.set(page.next);
+                        load_more_error.set(None);
+                        loading_more.set(false);
                     }
-                    Err(FetchError::Unauthorized) => on_logout.emit(()),
-                    Err(e) => status.set(LoadStatus::Error(e.to_string())),
+                    Err(FetchError::Unauthorized) => {
+                        loading_more.set(false);
+                        on_logout.emit(());
+                    }
+                    Err(e) => {
+                        load_more_error.set(Some(e.to_string()));
+                        loading_more.set(false);
+                    }
                 }
             });
         })
@@ -192,7 +212,12 @@ pub fn explorer(props: &ExplorerProps) -> Html {
                     onrow={on_row}
                 />
                 if next.is_some() {
-                    <Button variant={ButtonVariant::Secondary} onclick={on_load_more}>{ "Load more" }</Button>
+                    <div>
+                        <Button variant={ButtonVariant::Secondary} disabled={*loading_more} onclick={on_load_more}>{ "Load more" }</Button>
+                        if let Some(m) = &*load_more_error {
+                            <p class="error">{ m.clone() }</p>
+                        }
+                    </div>
                 }
             </>
         }
