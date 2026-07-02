@@ -13,7 +13,9 @@ use control_plane_core::{
     PropertyDef, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
-use query_api::handler::{GraphQuery, QueryDeps, QueryError, Subject, read_graph_reach};
+use query_api::handler::{
+    Direction, GraphQuery, Hop, QueryDeps, QueryError, Subject, read_graph_reach,
+};
 use query_api::serving::{Rows, ServingEngine, ServingError, SqlValue};
 
 /// A serving stub that returns canned object rows in the order compile_graph_reach
@@ -93,6 +95,24 @@ fn team_type() -> ObjectType {
         table: TableRef {
             schema: "main".into(),
             name: "team".into(),
+        },
+        identity: Some("id".into()),
+    }
+}
+
+fn secret_type() -> ObjectType {
+    ObjectType {
+        name: TypeName("Secret".into()),
+        properties: vec![PropertyDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
+        }],
+        derived: vec![],
+        table: TableRef {
+            schema: "main".into(),
+            name: "secret".into(),
         },
         identity: Some("id".into()),
     }
@@ -209,10 +229,34 @@ async fn seeded(person: ObjectType) -> (MemoryControlPlane, SubjectId) {
 fn graph_query(path: &[&str]) -> GraphQuery {
     GraphQuery {
         type_name: "Person".into(),
-        path: path.iter().map(|s| s.to_string()).collect(),
+        path: path.iter().map(|s| (*s).into()).collect(),
         depth: 3,
         filters: vec![],
         ids: vec![],
+    }
+}
+
+/// Build a GraphQuery from explicit (name, direction) hops.
+fn graph_query_hops(hops: Vec<Hop>) -> GraphQuery {
+    GraphQuery {
+        type_name: "Person".into(),
+        path: hops,
+        depth: 3,
+        filters: vec![],
+        ids: vec![],
+    }
+}
+
+fn fwd(name: &str) -> Hop {
+    Hop {
+        link: name.into(),
+        direction: Direction::Forward,
+    }
+}
+fn inv(name: &str) -> Hop {
+    Hop {
+        link: name.into(),
+        direction: Direction::Inverse,
     }
 }
 
@@ -342,5 +386,171 @@ async fn returns_reachable_objects_for_a_cyclic_path() {
             vec![SqlValue::Int(2), SqlValue::Text("Bob".into())],
             vec![SqlValue::Int(4), SqlValue::Text("Dana".into())],
         ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resolves_a_mixed_forward_inverse_cycle() {
+    // Person --memberOf--> Team --~memberOf--> Person: hop 2 is memberOf reversed,
+    // landing back on Person => a valid cycle with only `memberOf` declared.
+    let (cp, subj) = seeded(person_type(Some("id".into()))).await;
+    let serving = GraphServing {
+        rows: vec![
+            vec![SqlValue::Int(2), SqlValue::Text("Bob".into())],
+            vec![SqlValue::Int(4), SqlValue::Text("Dana".into())],
+        ],
+    };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+        default_limit: 1000,
+    };
+    let rows = read_graph_reach(
+        &graph_query_hops(vec![fwd("memberOf"), inv("memberOf")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.columns, vec!["id".to_string(), "name".to_string()]);
+    assert_eq!(
+        rows.rows,
+        vec![
+            vec![SqlValue::Int(2), SqlValue::Text("Bob".into())],
+            vec![SqlValue::Int(4), SqlValue::Text("Dana".into())],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inverse_hop_absent_inbound_is_unknown_link() {
+    // `~employer` on Person: links_to(Person) has no `employer` (employer targets Company).
+    let (cp, subj) = seeded(person_type(Some("id".into()))).await;
+    let serving = GraphServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+        default_limit: 1000,
+    };
+    let err = read_graph_reach(
+        &graph_query_hops(vec![inv("employer")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, QueryError::UnknownLink(l) if l == "employer"),
+        "expected UnknownLink(employer), got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_cyclic_mixed_path_reserializes_with_tilde() {
+    // `memberOf,~worksAt`: hop 1 Person->Team; hop 2 ~worksAt resolves via links_to(Team)?
+    // worksAt is Team->Company, so its `to` is Company, NOT Team => ~worksAt is not inbound
+    // to Team => UnknownLink. To exercise NotCyclicPath re-serialization instead, use a path
+    // that resolves but does not close: `~hasMember` on Person lands (hasMember: Team->Person,
+    // to==Person) on Team; Team != Person => NotCyclicPath("~hasMember").
+    let (cp, subj) = seeded(person_type(Some("id".into()))).await;
+    let serving = GraphServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+        default_limit: 1000,
+    };
+    let err = read_graph_reach(
+        &graph_query_hops(vec![inv("hasMember")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, QueryError::NotCyclicPath(p) if p == "~hasMember"),
+        "expected NotCyclicPath(~hasMember), got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inverse_hop_matching_two_inbound_links_is_ambiguous() {
+    // Two links share the name `sharesWith`, both inbound to Person (Team->Person and
+    // Company->Person). The link key is (name, from), so this is legal to declare, but an
+    // inverse hop resolving via links_to(Person) matches BOTH => AmbiguousLink (before any
+    // Read gate). Added on the `cp` in-test so the shared `seeded` fixture is not perturbed.
+    let (cp, subj) = seeded(person_type(Some("id".into()))).await;
+    for from in ["Team", "Company"] {
+        cp.define_link(LinkDef {
+            name: "sharesWith".into(),
+            from: TypeName(from.into()),
+            to: TypeName("Person".into()),
+            cardinality: Cardinality::Many,
+            backing: LinkBacking::ForeignKey {
+                from_column: "id".into(),
+                to_column: "shares_id".into(),
+            },
+        })
+        .await
+        .unwrap();
+    }
+    let serving = GraphServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+        default_limit: 1000,
+    };
+    let err = read_graph_reach(
+        &graph_query_hops(vec![inv("sharesWith")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, QueryError::AmbiguousLink(l) if l == "sharesWith"),
+        "expected AmbiguousLink(sharesWith), got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forbidden_inverse_landing_type() {
+    // An inverse hop that lands on a Read-denied type => Forbidden. `Secret --watches--> Person`
+    // is inbound to Person, so `~watches` lands on Secret; the `reader` role has no Read grant
+    // on Secret (deny-by-default). Type + link defined in-test to leave `seeded` untouched.
+    let (cp, subj) = seeded(person_type(Some("id".into()))).await;
+    cp.define_type(secret_type()).await.unwrap();
+    cp.define_link(LinkDef {
+        name: "watches".into(),
+        from: TypeName("Secret".into()),
+        to: TypeName("Person".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "watches_id".into(),
+        },
+    })
+    .await
+    .unwrap();
+    let serving = GraphServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+        default_limit: 1000,
+    };
+    let err = read_graph_reach(
+        &graph_query_hops(vec![inv("watches")]),
+        &Subject(subj),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, QueryError::Forbidden),
+        "expected Forbidden, got {err:?}"
     );
 }

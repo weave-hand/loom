@@ -5,9 +5,9 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use crate::handler::{
-    Associations, ChainQuery, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop, ObjectQuery,
-    QueryDeps, QueryError, read_associations, read_graph_reach, read_graph_reach_union,
-    read_graph_reach_with_tail, read_linked_chain, read_object,
+    Associations, ChainQuery, Direction, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop,
+    ObjectQuery, QueryDeps, QueryError, read_associations, read_graph_reach,
+    read_graph_reach_union, read_graph_reach_with_tail, read_linked_chain, read_object,
 };
 use crate::openapi::{JobAck, ObjectsResponse, VectorSearchResponse, WriteDeniedBody};
 use crate::path_parse::{parse_direction, parse_path_hops};
@@ -466,7 +466,7 @@ async fn get_graph(
     graph_respond(
         &st,
         type_name,
-        vec![link_name],
+        vec![link_name.into()],
         depth,
         filters,
         ids,
@@ -475,9 +475,11 @@ async fn get_graph(
     .await
 }
 
-/// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` (comma-split; empty/absent ->
-/// 400) plus the same `depth`/`_ids`/filter handling as `get_graph`, then shares the
-/// `read_graph_reach` call + error mapping via `graph_respond`.
+/// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` via `parse_path_hops`
+/// (comma-split; empty/absent -> 400), where a `~`-prefixed element is followed backward
+/// (an inverse hop, same grammar as the `/links` chain), plus the same `depth`/`_ids`/filter
+/// handling as `get_graph`, then shares the `read_graph_reach` call + error mapping via
+/// `graph_respond`.
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph",
     params(("type_name" = String, Path, description = "Seed object type")),
@@ -499,18 +501,12 @@ async fn get_graph_path(
     let mut depth = DEFAULT_GRAPH_DEPTH;
     let mut ids: Vec<String> = Vec::new();
     let mut ids_present = false;
-    let mut path: Vec<String> = Vec::new();
+    let mut path: Vec<Hop> = Vec::new();
     let mut links: Vec<String> = Vec::new();
     let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
     for (k, v) in params {
         match k.as_str() {
-            "path" => {
-                path = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect()
-            }
+            "path" => path = parse_path_hops(&v),
             "links" => {
                 links = v
                     .split(',')
@@ -565,12 +561,12 @@ async fn get_graph_path(
         )
             .into_response();
     }
-    // Part B: a `*`-suffixed segment marks a recursive core followed by a relational tail. The
-    // `*` MUST be on exactly one segment, and that segment MUST be the path prefix (index 0).
+    // Part B: a `*`-suffixed FORWARD segment marks a recursive core + relational tail. `~foo*`
+    // is NOT a tail — it stays a path-cycle inverse hop whose name ends in `*` (=> UnknownLink).
     let starred: Vec<usize> = path
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.ends_with('*'))
+        .filter(|(_, h)| h.direction == Direction::Forward && h.link.ends_with('*'))
         .map(|(i, _)| i)
         .collect();
     if !starred.is_empty() {
@@ -588,10 +584,10 @@ async fn get_graph_path(
             )
                 .into_response();
         }
-        let Some(first_path) = path.first() else {
+        let Some(first_hop) = path.first() else {
             return (StatusCode::BAD_REQUEST, "empty path").into_response();
         };
-        let core_link = first_path.trim_end_matches('*').to_string();
+        let core_link = first_hop.link.trim_end_matches('*').to_string();
         if core_link.is_empty() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -599,7 +595,18 @@ async fn get_graph_path(
             )
                 .into_response();
         }
-        let tail_links: Vec<String> = path.get(1..).unwrap_or_default().to_vec();
+        // Tail is forward-only (part-B non-goal defers inverse tails); re-emit each remaining
+        // hop's name, re-attaching `~` for any inverse hop so it resolves as an (absent)
+        // forward link rather than silently dropping the sigil.
+        let tail_links: Vec<String> = path
+            .get(1..)
+            .unwrap_or_default()
+            .iter()
+            .map(|h| match h.direction {
+                Direction::Forward => h.link.clone(),
+                Direction::Inverse => format!("~{}", h.link),
+            })
+            .collect();
         return graph_tail_respond(
             &st, type_name, core_link, tail_links, depth, filters, ids, &subject,
         )
@@ -613,6 +620,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
+        QueryError::AmbiguousLink(l) => (StatusCode::BAD_REQUEST, l).into_response(),
         QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
         QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
@@ -628,7 +636,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
 async fn graph_respond(
     st: &AppState,
     type_name: String,
-    path: Vec<String>,
+    path: Vec<Hop>,
     depth: u32,
     filters: Vec<(String, String)>,
     ids: Vec<String>,

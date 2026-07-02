@@ -329,6 +329,22 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "graph-inverse-e2e",
+    crate = "graph_inverse_e2e",
+    srcs = ["tests/graph_inverse_e2e.rs"],
+    crate_root = "tests/graph_inverse_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "graph-union-e2e",
     crate = "graph_union_e2e",
     srcs = ["tests/graph_union_e2e.rs"],
