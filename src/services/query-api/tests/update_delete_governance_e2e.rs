@@ -634,3 +634,118 @@ async fn update_constraint_violation_is_rejected() {
 
     drop(warehouse);
 }
+
+// ---------------------------------------------------------------------------
+// ORDER PIN — policy denial before constraint validation. UPDATE runs the three
+// policy legs strictly BEFORE the per-value constraint check (403 before 422,
+// mirroring INSERT): a subject who cannot address the row learns nothing about
+// the value's constraint validity.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_policy_denial_beats_constraint_violation() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    // Gauge(id Long identity, qty Long [0..=100]) + insert/update actions —
+    // the same constrained type as update_constraint_violation_is_rejected.
+    let gauge = TypeName("Gauge".into());
+    cp.ontology()
+        .define_type(
+            ObjectType::build("Gauge", ("main", "gauge"))
+                .prop_req("id", "Long")
+                .prop_with(
+                    "qty",
+                    "Long",
+                    false,
+                    PropertyConstraints {
+                        range: Some(RangeConstraint {
+                            min: Some(0.0),
+                            max: Some(100.0),
+                        }),
+                        ..PropertyConstraints::default()
+                    },
+                )
+                .identity("id")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("createGauge", "Gauge", ActionKind::Insert)
+                .param_req("id", "Long")
+                .param("qty", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("updateGauge", "Gauge", ActionKind::Update)
+                .param_req("id", "Long")
+                .param_req("qty", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    let (subj, role) = grant_writer_role(&cp, &gauge).await;
+
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+
+    // Seed {id:1, qty:50} — in range — BEFORE the policy (qty=50 will fail it).
+    run_action(
+        "createGauge",
+        json!({ "id": "1", "qty": "50" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("seed insert (in range, no policy yet)");
+
+    // Now a row_filter `qty < 5`: the existing row (qty=50) fails it.
+    cp.set_policy(
+        &role,
+        Action::Write,
+        Policy {
+            target: PolicyTarget::Type(gauge.clone()),
+            row_filter: Some(RowFilter::Compare {
+                property: "qty".into(),
+                op: CompareOp::Lt,
+                value: ScalarValue::Int(5),
+            }),
+            deny_columns: vec![],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    // UPDATE {id:1, qty:999}: the existing row is policy-denied AND 999 violates
+    // qty <= 100. The policy leg must win: WriteDenied(RowFilter), the 403 shape —
+    // NOT ConstraintViolation (422).
+    let err = run_action(
+        "updateGauge",
+        json!({ "id": "1", "qty": "999" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, ActionError::WriteDenied(WriteDenialReason::RowFilter)),
+        "policy denial runs before constraint validation, got: {err:?}"
+    );
+
+    drop(warehouse);
+}
