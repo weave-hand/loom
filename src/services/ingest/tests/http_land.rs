@@ -231,3 +231,22 @@ async fn bad_model_header_is_400() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bad_run_id_is_400() {
+    let fx = PgFixture::shared();
+    let (_seed, db) = fx.fresh_db().await;
+    let (_cp, _pool, _wh, state) = app_state(fx, &db).await;
+    let res = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/datasets/main/customer")
+                .header("x-loom-run-id", "not-a-uuid")
+                .body(Body::from(ipc_bytes(&sample_batch())))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}

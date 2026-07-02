@@ -24,6 +24,7 @@ rust_library(
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:tracing",
         "//third-party:utoipa",
         "//third-party:uuid",
     ],
@@ -244,6 +245,32 @@ rust_test(
         ":ingest",
         "//third-party:serde_json",
         "//third-party:utoipa",
+    ],
+)
+
+# WireViolation byte-identical wire shape — pure logic, RE-eligible (no fixture).
+rust_test(
+    name = "wire-violation",
+    crate = "wire_violation",
+    srcs = ["tests/wire_violation.rs"],
+    crate_root = "tests/wire_violation.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//third-party:serde_json",
+    ],
+)
+
+# ApiError status mapping + IngestError::into_api — pure logic, RE-eligible.
+rust_test(
+    name = "api-error",
+    crate = "api_error",
+    srcs = ["tests/api_error.rs"],
+    crate_root = "tests/api_error.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//third-party:axum",
     ],
 )
 
