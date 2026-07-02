@@ -174,9 +174,7 @@ async fn get_object(
         Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
         Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
         Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(QueryError::BadFilterValue(e)) => {
-            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
-        }
+        Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
         Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
         Err(e) => internal_error("object read serving fault", e),
     }
@@ -351,6 +349,33 @@ fn respond_associations(res: Result<Associations, QueryError>) -> axum::response
     }
 }
 
+/// Render an uncoercible filter value (`QueryError::BadFilterValue`) as a structured `400`
+/// body. A coercion failure (`FilterError::Coerce`) echoes `{error, column, expected, value}`;
+/// a grammar/arity failure (`FilterError::BadValue`) carries `{error, column}` only. A
+/// *visibility* denial is a separate `QueryError::BadFilter` (bare column, no value echo) and
+/// never reaches here.
+fn bad_filter_value_response(e: &crate::filter::FilterError) -> axum::response::Response {
+    use crate::filter::FilterError;
+    let body = match e {
+        FilterError::Coerce {
+            column,
+            expected,
+            value,
+            ..
+        } => serde_json::json!({
+            "error": "bad_filter_value",
+            "column": column,
+            "expected": expected,
+            "value": value,
+        }),
+        FilterError::BadValue(column, _) => serde_json::json!({
+            "error": "bad_filter_value",
+            "column": column,
+        }),
+    };
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
+}
+
 /// Shared HTTP mapping for chain/association read errors.
 fn chain_error(e: QueryError) -> axum::response::Response {
     match e {
@@ -361,7 +386,7 @@ fn chain_error(e: QueryError) -> axum::response::Response {
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        QueryError::BadFilterValue(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
         other => internal_error("chain/association read serving fault", other),
     }
 }
@@ -583,7 +608,7 @@ fn graph_error(e: QueryError) -> axum::response::Response {
         QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        QueryError::BadFilterValue(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         other => internal_error("graph read serving fault", other),
     }
@@ -706,10 +731,10 @@ async fn graph_tail_respond(
     request_body = serde_json::Value,
     responses(
         (status = 201, description = "Action applied; created/affected object"),
-        (status = 400, description = "Bad params"),
+        (status = 400, description = "Malformed or undecodable request body (not a JSON action envelope)"),
         (status = 403, description = "Write denied by ACL policy", body = WriteDeniedBody),
         (status = 404, description = "Unknown action"),
-        (status = 422, description = "A value violates a property constraint, or an unsupported action shape", body = crate::openapi::ConstraintViolationsBody),
+        (status = 422, description = "Semantic validation failure: bad or missing action params, a property-constraint violation, or an unsupported action shape", body = crate::openapi::ConstraintViolationsBody),
     ),
     security(("bearer_auth" = [])),
     tag = "actions",
@@ -770,8 +795,13 @@ async fn post_action(
         }
         // Coarse Write-gate denial (and other unit forbiddens): bodyless 403, unchanged.
         Err(crate::action::ActionError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
+        // A well-formed body whose params fail SEMANTIC validation (missing required param,
+        // type mismatch, uncoercible value) is 422 — understood, but unprocessable. Malformed
+        // / undecodable bodies never reach here: axum's `Json` extractor 400s invalid JSON,
+        // and the non-object envelope guard above returns 400. Aligns with the
+        // ConstraintViolation 422 on this same write path.
         Err(crate::action::ActionError::BadParams(e)) => {
-            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+            (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
         }
         // A misconfigured action is a server-side config fault, surfaced with detail (distinct
         // from the opaque catch-all 500 below) so the operator can fix the ActionDef.

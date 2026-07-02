@@ -154,6 +154,24 @@ async fn post_json(
     subject: &str,
     body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {
+    let (status, text) = post_json_raw(cp, writes, subject, body).await;
+    let json = if text.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)
+    };
+    (status, json)
+}
+
+/// Like `post_json`, but returns the raw response body text. `BadParams` renders a
+/// plain-text `ParamError` `Display` (not JSON), which `post_json`'s `serde_json` parse
+/// would collapse to `Null`; this surfaces it so a test can assert the offending param name.
+async fn post_json_raw(
+    cp: MemoryControlPlane,
+    writes: Arc<AtomicUsize>,
+    subject: &str,
+    body: serde_json::Value,
+) -> (StatusCode, String) {
     let state = AppState {
         cp: Arc::new(cp) as Arc<dyn ControlPlane>,
         serving: Arc::new(StubServing),
@@ -172,12 +190,7 @@ async fn post_json(
     let res = app.oneshot(req).await.unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
+    (status, String::from_utf8_lossy(&bytes).to_string())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -263,5 +276,47 @@ async fn acl_denial_is_403_distinct_from_constraint_422() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_required_param_is_422() {
+    // A well-formed JSON body that omits the required `code` param fails SEMANTIC
+    // validation → 422 (was 400), aligning with the constraint-violation 422 above. The
+    // plain-text body names the offending param.
+    let cp = seed().await;
+    let writes = Arc::new(AtomicUsize::new(0));
+    let (status, body) = post_json_raw(cp, writes.clone(), "analyst", json!({"id": "5"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+    assert!(
+        body.contains("code"),
+        "expected the body to name the missing `code` param, got {body}"
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mistyped_param_is_422() {
+    // `id` must be a Long (JSON string); passing a JSON number is a semantic type mismatch.
+    let cp = seed().await;
+    let writes = Arc::new(AtomicUsize::new(0));
+    let (status, body) = post_json(
+        cp,
+        writes.clone(),
+        "analyst",
+        json!({"id": 5, "code": "AB"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_body_is_400() {
+    // A JSON array is not an action-envelope object → the request itself is malformed → 400.
+    let cp = seed().await;
+    let writes = Arc::new(AtomicUsize::new(0));
+    let (status, _body) = post_json(cp, writes.clone(), "analyst", json!([1, 2, 3])).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(writes.load(Ordering::SeqCst), 0);
 }

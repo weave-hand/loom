@@ -61,3 +61,18 @@ fn documents_exactly_the_expected_routes() {
     let doc = query_api::build_openapi();
     assert_eq!(documented(&doc), expected());
 }
+
+#[test]
+fn post_action_documents_422_and_400() {
+    let doc = query_api::build_openapi();
+    let json = serde_json::to_value(&doc).unwrap();
+    let responses = &json["paths"]["/actions/{action_name}"]["post"]["responses"];
+    assert!(
+        responses.get("422").is_some(),
+        "POST /actions must document 422 (semantic failure), got {responses}"
+    );
+    assert!(
+        responses.get("400").is_some(),
+        "POST /actions must document 400 (malformed body), got {responses}"
+    );
+}

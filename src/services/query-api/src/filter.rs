@@ -8,6 +8,21 @@ use crate::serving::SqlValue;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum FilterError {
+    /// A value could not be coerced to its column's declared logical type. Carries the
+    /// structured triple echoed to the caller in a `400` body — `column`, `expected` (the
+    /// property's declared logical type name), `value` (the caller's own offending operand)
+    /// — plus a human `detail` kept for the `Display`/logs. The value echo is safe: it is
+    /// the caller's own input, and this variant is a *coercion* fault, never a permission
+    /// signal (that is `handler::QueryError::BadFilter`).
+    #[error("filter {column}: {detail}")]
+    Coerce {
+        column: String,
+        expected: String,
+        value: String,
+        detail: String,
+    },
+    /// A malformed predicate grammar (bad operator arity, bad set-operand escape). Column +
+    /// message only — there is no single offending value/type to echo.
     #[error("filter {0}: {1}")]
     BadValue(String, String),
 }
@@ -28,11 +43,17 @@ pub struct CallerPredicate {
 /// `Number` repr (Integer/Double) resolves to `Int` when `raw` is a clean integer, else
 /// `Double` — equality-correct under the engine's numeric coercion.
 pub fn coerce_filter(name: &str, logical_ty: &str, raw: &str) -> Result<SqlValue, FilterError> {
-    let bad = |m: &str| FilterError::BadValue(name.to_string(), m.to_string());
-    // Like `bad`, but folds the discarded source error into the message for diagnostics.
-    let bad_src = |m: &str, e: &dyn std::fmt::Display| {
-        FilterError::BadValue(name.to_string(), format!("{m}: {e}"))
+    // Every `coerce_filter` failure is a value-coercion fault: carry the structured triple
+    // {column, expected, value} for the HTTP body plus a `detail` for the Display/logs.
+    let coerce = |detail: String| FilterError::Coerce {
+        column: name.to_string(),
+        expected: logical_ty.to_string(),
+        value: raw.to_string(),
+        detail,
     };
+    let bad = |m: &str| coerce(m.to_string());
+    // Like `bad`, but folds the discarded source error into the `detail` for diagnostics.
+    let bad_src = |m: &str, e: &dyn std::fmt::Display| coerce(format!("{m}: {e}"));
     let repr = json_repr_of(logical_ty).map_err(|e| bad_src("unknown logical type", &e.0))?;
     match repr {
         JsonRepr::Number => {
