@@ -989,6 +989,71 @@ pub async fn read_graph_reach(
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
+    let r = resolve_graph(q, subject, deps).await?;
+
+    let (sql, params) = crate::sql::compile_graph_reach(
+        deps.serving.dialect(),
+        &r.object_type.table,
+        &r.identity,
+        &r.steps,
+        &r.seed_predicates,
+        &r.row_filters,
+        &r.allowed,
+        &r.mask_cols,
+        q.depth,
+        deps.default_limit,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let logical_types: Vec<String> = r
+        .allowed
+        .iter()
+        .map(|name| {
+            r.object_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    debug_assert_eq!(
+        served.columns, r.allowed,
+        "serving engine returned columns out of the projected order"
+    );
+    Ok(ObjectRows {
+        columns: r.allowed,
+        logical_types,
+        rows: served.rows,
+    })
+}
+
+/// Everything the two graph reads (reachable-set and shortest-path-tree) need after resolving
+/// the queried type, ACL policy, and the path-cycle: the resolved object type + declared
+/// identity, the compiler `GraphStep`s (per-intermediate governance already folded in), the
+/// start row-filters, the visible/masked projection, the raw denied/masked column sets (so a
+/// caller can additionally require identity visibility), and the coerced seed predicates.
+struct GraphResolved {
+    object_type: ObjectType,
+    identity: String,
+    steps: Vec<crate::sql::GraphStep>,
+    row_filters: Vec<RowFilter>,
+    allowed: Vec<String>,
+    mask_cols: Vec<String>,
+    denied: std::collections::HashSet<String>,
+    masked: std::collections::HashSet<String>,
+    seed_predicates: Vec<crate::filter::CallerPredicate>,
+}
+
+/// Resolve + govern a graph read: Read-gate the queried type, resolve the path-cycle (Read on
+/// every intermediate type, its row-filters folded into the step), require a declared identity
+/// (the recursion's dedup key), project the visible columns, and coerce/visibility-check the
+/// seed predicates + `?_ids=`. Shared verbatim by `read_graph_reach` (reachable set) and
+/// `read_graph_tree` (shortest-path tree) so governance lives in one place.
+async fn resolve_graph(
+    q: &GraphQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<GraphResolved, QueryError> {
     let type_name = TypeName(q.type_name.clone());
     let target = PolicyTarget::Type(type_name.clone());
 
@@ -1108,38 +1173,16 @@ pub async fn read_graph_reach(
         seed_predicates.push(p);
     }
 
-    let (sql, params) = crate::sql::compile_graph_reach(
-        deps.serving.dialect(),
-        &object_type.table,
-        &identity,
-        &steps,
-        &seed_predicates,
-        &row_filters,
-        &allowed,
-        &mask_cols,
-        q.depth,
-        deps.default_limit,
-    )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
-    let logical_types: Vec<String> = allowed
-        .iter()
-        .map(|name| {
-            object_type
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    debug_assert_eq!(
-        served.columns, allowed,
-        "serving engine returned columns out of the projected order"
-    );
-    Ok(ObjectRows {
-        columns: allowed,
-        logical_types,
-        rows: served.rows,
+    Ok(GraphResolved {
+        object_type,
+        identity,
+        steps,
+        row_filters,
+        allowed,
+        mask_cols,
+        denied,
+        masked,
+        seed_predicates,
     })
 }
 
