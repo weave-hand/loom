@@ -1780,7 +1780,7 @@ Part of road-engine-wire-dedup."
 **Files:**
 - Modify: `docs/ROADMAP.md` (`road-engine-wire-dedup` — locate by id)
 
-- [ ] **Step 1: Affected-package suites + whole-tree build check**
+- [x] **Step 1: Affected-package suites + whole-tree build check**
 
 Run: `buck2 build -M none //src/... > /tmp/b8.log 2>&1; grep -E "BUILD (SUCCEEDED|FAILED)" /tmp/b8.log`
 Expected: `BUILD SUCCEEDED`.
@@ -1789,7 +1789,7 @@ Expected: PASS (fixture-heavy — keep `-j 8`; if an unrelated fixture test
 flakes on a boot-slot timeout, re-run that target alone before
 investigating).
 
-- [ ] **Step 2: Prove the metric drops**
+- [x] **Step 2: Prove the metric drops**
 
 Invoke the `loom-duplication` skill with args `diff` — expected: census pair
 `duplication.md:92` (`engine-wire/src/flight.rs` execute ≈ execute_stream)
@@ -1800,7 +1800,7 @@ drops from cc 21 (census `complexity.md:64`) to low single digits; no new fn
 at cc ≥ 15. Record observed numbers for the register prose (do NOT edit the
 census files — the scheduled routines refresh them).
 
-- [ ] **Step 3: Close the register item**
+- [x] **Step 3: Close the register item**
 
 In `docs/ROADMAP.md`, flip `road-engine-wire-dedup` to `[x] … status:done`
 (keep `pr:-` until the PR number exists) and replace the prose:
@@ -1813,7 +1813,7 @@ In `docs/ROADMAP.md`, flip `road-engine-wire-dedup` to `[x] … status:done`
 Run: `bash tools/docs.sh validate`
 Expected: exit 0.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p8.log 2>&1; grep -c Failed /tmp/p8.log` — expected `0`.
 
