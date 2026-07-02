@@ -60,27 +60,42 @@ pub async fn bind(
     ontology: &dyn Ontology,
     type_def: ObjectType,
 ) -> Result<(), BindError> {
-    // 1. The table must be live in the catalog.
-    let snap = match catalog.current_snapshot(&type_def.table).await {
-        Ok(s) => s,
-        Err(ControlPlaneError::NotFound(_)) => {
-            return Err(BindError::TableNotFound(type_def.table.clone()));
+    // 1-2. The table must be live; take its physical schema at the current snapshot.
+    let schema = schema_of_table(catalog, &type_def.table).await?;
+
+    // 3. Pure structural validation (property type/nullability, identity, reserved
+    //    names). Extra physical columns are fine — a type is a view over the table.
+    let mut violations = structural_violations(&type_def, &schema);
+
+    // 4. Derived properties: validate each against the ontology + the link target's
+    //    physical schema (async — front-runs the read-time omission in query-api).
+    if !type_def.derived.is_empty() {
+        let links = match ontology.links(&type_def.name, PageReq::unbounded()).await {
+            Ok(p) => p.items,
+            Err(ControlPlaneError::NotFound(_)) => Vec::new(),
+            Err(e) => return Err(BindError::ControlPlane(e)),
+        };
+        for d in &type_def.derived {
+            validate_derived(catalog, ontology, &links, d, &mut violations).await?;
         }
-        Err(e) => return Err(BindError::ControlPlane(e)),
-    };
+    }
 
-    // 2. Its physical columns at that snapshot.
-    let schema = catalog.schema(&type_def.table, snap.id).await?;
+    if !violations.is_empty() {
+        return Err(BindError::DoesNotConform(violations));
+    }
 
-    // 3. Validate every declared property against its same-named physical column.
-    //    Extra physical columns are fine — a type is a view over the table.
-    // The type check and the nullability check are INDEPENDENT: a single property
-    // may yield up to two violations (e.g. a type mismatch AND a required-but-nullable
-    // column). We report both so the caller fixes everything in one pass rather than
-    // discovering problems one round-trip at a time. (A MissingColumn short-circuits —
-    // there's nothing to type/nullability-check.)
+    // 5. Persist — the type is now serveable by the governed read path.
+    ontology.define_type(type_def).await?;
+    Ok(())
+}
+
+/// Per-property structural checks against the physical schema: a `MissingColumn`
+/// (short-circuits), else an independent type check (`satisfies`) and nullability
+/// check. A single property may yield up to two violations. Pure — no catalog.
+#[must_use]
+pub fn property_violations(ty: &ObjectType, schema: &TableSchema) -> Vec<BindViolation> {
     let mut violations = Vec::new();
-    for p in &type_def.properties {
+    for p in &ty.properties {
         let Some(col) = schema.columns.iter().find(|c| c.name == p.name) else {
             violations.push(BindViolation {
                 property: p.name.clone(),
@@ -109,68 +124,52 @@ pub async fn bind(
             });
         }
     }
+    violations
+}
 
-    // Identity (if declared) must name a declared, required property — a primary key
-    // cannot be nullable. The violation's `property` is the named identity column.
-    if let Some(id) = &type_def.identity {
-        match type_def.properties.iter().find(|p| &p.name == id) {
-            None => violations.push(BindViolation {
-                property: id.clone(),
-                reason: BindViolationReason::BadIdentity("names no declared property".into()),
-            }),
-            Some(p) if !p.required => violations.push(BindViolation {
-                property: id.clone(),
-                reason: BindViolationReason::BadIdentity("names a non-required property".into()),
-            }),
-            Some(_) => {}
-        }
+/// The identity check: a declared identity must name a declared, required property
+/// (a primary key cannot be nullable). `None` if there is no identity or it is valid.
+#[must_use]
+pub fn identity_violation(ty: &ObjectType) -> Option<BindViolation> {
+    let id = ty.identity.as_ref()?;
+    match ty.properties.iter().find(|p| &p.name == id) {
+        None => Some(BindViolation {
+            property: id.clone(),
+            reason: BindViolationReason::BadIdentity("names no declared property".into()),
+        }),
+        Some(p) if !p.required => Some(BindViolation {
+            property: id.clone(),
+            reason: BindViolationReason::BadIdentity("names a non-required property".into()),
+        }),
+        Some(_) => None,
     }
+}
 
-    // Property and derived-property names beginning with `_` are reserved: the query
-    // surface prefixes control params with `_` (e.g. `_ids`, `_path`), so a `_`-named
-    // property would be unaddressable as a filter and could shadow a control param.
-    for p in &type_def.properties {
-        if p.name.starts_with('_') {
-            violations.push(BindViolation {
-                property: p.name.clone(),
-                reason: BindViolationReason::ReservedName,
-            });
-        }
-    }
-    for d in &type_def.derived {
-        if d.name.starts_with('_') {
-            violations.push(BindViolation {
-                property: d.name.clone(),
-                reason: BindViolationReason::ReservedName,
-            });
-        }
-    }
+/// Property and derived-property names beginning with `_` are reserved (the query
+/// surface prefixes control params with `_`). Properties first, then derived — the
+/// original push order.
+#[must_use]
+pub fn reserved_name_violations(ty: &ObjectType) -> Vec<BindViolation> {
+    ty.properties
+        .iter()
+        .map(|p| p.name.as_str())
+        .chain(ty.derived.iter().map(|d| d.name.as_str()))
+        .filter(|name| name.starts_with('_'))
+        .map(|name| BindViolation {
+            property: name.to_string(),
+            reason: BindViolationReason::ReservedName,
+        })
+        .collect()
+}
 
-    // Derived properties: validate each against the ontology + the link target's
-    // physical schema. This front-runs the read-time omission in query-api's
-    // handler (a missing link / target / agg column there silently drops the
-    // property — see `handler.rs`). The link must be defined on THIS type; if the
-    // type is not yet defined it has no links (`NotFound` -> empty), so every
-    // derived link is unknown, encoding the authoring order (types -> links ->
-    // bind-with-derived).
-    if !type_def.derived.is_empty() {
-        let links = match ontology.links(&type_def.name, PageReq::unbounded()).await {
-            Ok(p) => p.items,
-            Err(ControlPlaneError::NotFound(_)) => Vec::new(),
-            Err(e) => return Err(BindError::ControlPlane(e)),
-        };
-        for d in &type_def.derived {
-            validate_derived(catalog, ontology, &links, d, &mut violations).await?;
-        }
-    }
-
-    if !violations.is_empty() {
-        return Err(BindError::DoesNotConform(violations));
-    }
-
-    // 4. Persist — the type is now serveable by the governed read path.
-    ontology.define_type(type_def).await?;
-    Ok(())
+/// The three pure structural passes composed, in the original bind push order:
+/// property checks, then identity, then reserved names.
+#[must_use]
+pub fn structural_violations(ty: &ObjectType, schema: &TableSchema) -> Vec<BindViolation> {
+    let mut violations = property_violations(ty, schema);
+    violations.extend(identity_violation(ty));
+    violations.extend(reserved_name_violations(ty));
+    violations
 }
 
 /// The result of resolving an aggregation's target column. `Missing` is the three
