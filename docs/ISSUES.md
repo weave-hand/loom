@@ -78,7 +78,7 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 ## ingest
 
-- [ ] **Ingest model handler's opaque-500 arms log nothing server-side** `{#iss-ingest-model-500-unlogged area:ingest status:open from:2026-06-30-ingest-model-inference-design pr:- spec:2026-07-01-ingest-fault-logging-design}`
+- [x] **Ingest model handler's opaque-500 arms log nothing server-side** `{#iss-ingest-model-500-unlogged area:ingest status:fixed from:2026-06-30-ingest-model-inference-design pr:#313 spec:2026-07-01-ingest-fault-logging-design}`
   `land_model` (`ingest/src/http.rs`) returns an opaque `"internal error"` 500 at several arms (the ACL-check `Err`, the absent-branch `define_type` failure, the re-resolve failure, and the `materializer.land` catch-all) without a `tracing::error!`, so an operator has nothing to diagnose from when one fires. The infer-and-create `define_type` arm is the highest-value one to instrument — a brand-new write to `ontology.object_type` under contention is the path most likely to hit a transient fault. Mirror the query-api fix [[iss-serving-faults-not-logged]] (a shared `internal_error(context, e)` helper that logs the fault detail server-side and returns the opaque body unchanged) across the handler's opaque-500 arms. Surfaced by the slice-2 final review; consistent with the handler's existing posture, so non-blocking for [[road-ingest-model-inference]].
 
 ## deploy

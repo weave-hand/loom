@@ -22,13 +22,82 @@ use serde::Deserialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use std::borrow::Cow;
+
 use crate::IngestError;
-use crate::gate::{ColumnShape, ModelShape, Violation, ViolationReason, validate_values};
+use crate::gate::{ColumnShape, ModelShape, validate_values};
 use crate::landing::{LandRequest, LandingMaterializer};
 use crate::materialize::resolve_columns;
 use crate::model::{InferTypeError, infer_object_type, model_shape_from_type};
-use crate::openapi::{JobAck, LandAck, ModelLandAck, ViolationsBody};
+use crate::openapi::{JobAck, LandAck, ModelLandAck, ViolationsBody, WireViolation};
 use service_runtime::Subject;
+
+/// The HTTP error surface for ingest handlers. Handlers return
+/// `Result<Response, ApiError>`; `IntoResponse` renders each variant, and for
+/// `Internal` it logs the fault detail server-side — so fault logging is
+/// structural (one place), not a per-arm chore. The client-facing bytes match
+/// the former hand-rolled responses exactly (opaque `"internal error"` for 500,
+/// empty 403, the message for 400, the `ViolationsBody` JSON for 422).
+pub enum ApiError {
+    /// A deterministic client error with a safe, client-visible message (bad IPC,
+    /// bad header, unsupported column type, identity names an absent column).
+    BadRequest(Cow<'static, str>),
+    /// ACL deny — 403 with an empty body (no existence leak).
+    Forbidden,
+    /// Model-gate / conformance failures — the 422 body listing the violations.
+    Violations(Vec<crate::gate::Violation>),
+    /// A backend/internal fault. `detail` is logged server-side (operator-only);
+    /// the response body stays the opaque `"internal error"`.
+    Internal {
+        context: &'static str,
+        detail: String,
+    },
+}
+
+impl ApiError {
+    /// Build an `Internal` fault, capturing `e`'s `Display` for the server-side log.
+    pub fn internal(context: &'static str, e: impl std::fmt::Display) -> Self {
+        ApiError::Internal {
+            context,
+            detail: e.to_string(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        match self {
+            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
+            ApiError::Forbidden => StatusCode::FORBIDDEN.into_response(),
+            ApiError::Violations(violations) => {
+                let body = ViolationsBody {
+                    violations: violations.iter().map(WireViolation::from).collect(),
+                };
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
+            }
+            ApiError::Internal { context, detail } => {
+                // The single place ingest logs a backend fault: opaque to the
+                // client, diagnosable for the operator. Closes the class of
+                // unlogged opaque-500 arms (iss-ingest-model-500-unlogged).
+                tracing::error!(error = %detail, "{context}");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+            }
+        }
+    }
+}
+
+impl IngestError {
+    /// Map a landing fault onto the HTTP surface: a conformance failure is the
+    /// 422 body, an unsupported-column-type infer error is a 400 (client data),
+    /// and any backend fault is an opaque 500 logged with `context`.
+    pub fn into_api(self, context: &'static str) -> ApiError {
+        match self {
+            IngestError::DoesNotConform(violations) => ApiError::Violations(violations),
+            IngestError::Infer(_) => ApiError::BadRequest(Cow::Borrowed("unsupported column type")),
+            other => ApiError::internal(context, other),
+        }
+    }
+}
 
 /// Shared, owned dependencies: the configured landing backend (Iceberg),
 /// chosen at boot. Gate + schema resolution + lineage are backend-agnostic
@@ -65,31 +134,30 @@ pub fn router(state: AppState) -> Router {
 pub(crate) async fn compact(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
-) -> Response {
-    let payload = match serde_json::to_value(CompactJob {
+) -> Result<Response, ApiError> {
+    let payload = serde_json::to_value(CompactJob {
         schema,
         name: table,
-    }) {
-        Ok(v) => v,
-        Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
-    };
+    })
+    .map_err(|e| ApiError::internal("ingest compact: serialize job payload", e))?;
     let job = NewJob {
         kind: COMPACT_JOB_KIND.to_string(),
         payload,
         run_at: None,
         priority: 0,
     };
-    match st.cp.queue().enqueue(job).await {
-        Ok(id) => (
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "job_id": id.0.to_string() })),
-        )
-            .into_response(),
-        // Opaque on backend faults (governance-fronted service).
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
-    }
+    // Opaque on backend faults (governance-fronted service), logged server-side.
+    let id = st
+        .cp
+        .queue()
+        .enqueue(job)
+        .await
+        .map_err(|e| ApiError::internal("ingest compact: enqueue job", e))?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "job_id": id.0.to_string() })),
+    )
+        .into_response())
 }
 
 /// Decode an Arrow IPC stream into its schema and record batches.
@@ -98,6 +166,24 @@ fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>), arrow::err
     let schema = reader.schema();
     let batches = reader.collect::<Result<Vec<_>, _>>()?;
     Ok((schema, batches))
+}
+
+/// Parse an optional request header via `parse`: absent → `Ok(None)`, present and
+/// parseable → `Ok(Some(_))`, present but unparseable → `Err(ApiError::BadRequest(err))`.
+/// Collapses the per-header `match headers.get(..)` ladders into one shape.
+fn parse_header<T>(
+    headers: &HeaderMap,
+    name: &str,
+    err: &'static str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<T>, ApiError> {
+    match headers.get(name) {
+        None => Ok(None),
+        Some(v) => match v.to_str().ok().and_then(parse) {
+            Some(t) => Ok(Some(t)),
+            None => Err(ApiError::BadRequest(Cow::Borrowed(err))),
+        },
+    }
 }
 
 /// Inbound model wire DTO. The gate types are serde-free domain types, so the
@@ -139,31 +225,6 @@ impl From<LandModel> for ModelShape {
     }
 }
 
-/// Build the 422 body from gate violations (the domain enum is serde-free).
-fn violations_json(violations: &[Violation]) -> serde_json::Value {
-    let items: Vec<serde_json::Value> = violations
-        .iter()
-        .map(|v| match &v.reason {
-            ViolationReason::MissingRequired => {
-                serde_json::json!({ "column": v.column, "reason": "missing_required" })
-            }
-            ViolationReason::TypeMismatch { expected, found } => serde_json::json!({
-                "column": v.column,
-                "reason": "type_mismatch",
-                "expected": expected,
-                "found": found,
-            }),
-            ViolationReason::Unsupported => {
-                serde_json::json!({ "column": v.column, "reason": "unsupported" })
-            }
-            ViolationReason::Constraint { rule } => {
-                serde_json::json!({ "column": v.column, "reason": "constraint", "rule": rule })
-            }
-        })
-        .collect();
-    serde_json::json!({ "violations": items })
-}
-
 /// Governed model ingest. With a pre-existing type, conform the Arrow batch to it and
 /// land it (slice 1). With an absent type, an authorized subject's batch *infers* an
 /// `ObjectType` from the batch schema (optionally keyed by `?identity=<col>`),
@@ -196,7 +257,7 @@ pub(crate) async fn land_model(
     Query(q): Query<ModelQuery>,
     subject: Subject,
     body: Bytes,
-) -> Response {
+) -> Result<Response, ApiError> {
     let type_name = TypeName(type_name);
 
     // 1. Coarse ACL gate BEFORE anything is revealed: an authenticated subject without a
@@ -213,14 +274,20 @@ pub(crate) async fn land_model(
         .await
     {
         Ok(Decision::Allow) => {}
-        Ok(Decision::Deny) => return StatusCode::FORBIDDEN.into_response(),
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+        Ok(Decision::Deny) => return Err(ApiError::Forbidden),
+        Err(e) => return Err(ApiError::internal("ingest model: acl check", e)),
     }
 
     // 2. Decode the Arrow IPC body. Needed by both branches (inference reads the schema).
     let (schema, batches) = match decode_ipc(&body) {
         Ok(sb) => sb,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid arrow ipc stream").into_response(),
+        // Bad IPC is a client error (malformed request body), not a backend fault;
+        // 400 without logging, exactly as before.
+        Err(_) => {
+            return Err(ApiError::BadRequest(Cow::Borrowed(
+                "invalid arrow ipc stream",
+            )));
+        }
     };
 
     // 3. Resolve the type, or — when absent and authorized — infer it from the batch
@@ -231,65 +298,37 @@ pub(crate) async fn land_model(
     let otype = match st.cp.ontology().get_type(&type_name).await {
         Ok(t) => t,
         Err(ControlPlaneError::NotFound(_)) => {
-            let inferred = match infer_object_type(&type_name, &schema, q.identity.as_deref()) {
-                Ok(t) => t,
-                Err(InferTypeError::UnsupportedColumns(violations)) => {
-                    return (
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        Json(violations_json(&violations)),
-                    )
-                        .into_response();
-                }
-                Err(InferTypeError::IdentityNotFound(col)) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
+            let inferred = infer_object_type(&type_name, &schema, q.identity.as_deref()).map_err(
+                |e| match e {
+                    InferTypeError::UnsupportedColumns(violations) => {
+                        ApiError::Violations(violations)
+                    }
+                    InferTypeError::IdentityNotFound(col) => ApiError::BadRequest(Cow::Owned(
                         format!("identity column `{col}` is not present in the batch"),
-                    )
-                        .into_response();
-                }
-            };
-            if st.cp.ontology().define_type(inferred).await.is_err() {
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-            }
-            match st.cp.ontology().get_type(&type_name).await {
-                Ok(t) => t,
-                Err(_) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-                }
-            }
+                    )),
+                },
+            )?;
+            st.cp.ontology().define_type(inferred).await.map_err(|e| {
+                ApiError::internal("ingest model: define_type (infer-and-create)", e)
+            })?;
+            st.cp.ontology().get_type(&type_name).await.map_err(|e| {
+                ApiError::internal("ingest model: re-resolve type after define_type", e)
+            })?
         }
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+        Err(e) => return Err(ApiError::internal("ingest model: get_type", e)),
     };
 
     // 4. Derive the conformance shape from the (resolved or just-created) type.
     let shape = model_shape_from_type(&otype);
 
     // 5. Gate + resolve the physical schema (422 + violations on mismatch).
-    let columns = match resolve_columns(&schema, Some(&shape)) {
-        Ok(c) => c,
-        Err(IngestError::DoesNotConform(violations)) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(violations_json(&violations)),
-            )
-                .into_response();
-        }
-        Err(IngestError::Infer(_)) => {
-            return (StatusCode::BAD_REQUEST, "unsupported column type").into_response();
-        }
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
-    };
+    let columns = resolve_columns(&schema, Some(&shape))
+        .map_err(|e| e.into_api("ingest model: resolve columns"))?;
 
     // 5b. Per-value constraint validation over the decoded batches (422 on violation),
     //     after the shape gate and before any write. The same `core` validator backs the
     //     query-api typed-insert action, so both write paths enforce identical rules.
-    if let Err(violations) = validate_values(&shape, &batches) {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(violations_json(&violations)),
-        )
-            .into_response();
-    }
+    validate_values(&shape, &batches).map_err(ApiError::Violations)?;
 
     // 6. Land into the type's table with type-named lineage (rows trace to the model).
     let table = otype.table.clone();
@@ -313,22 +352,16 @@ pub(crate) async fn land_model(
         lineage,
     };
 
-    match st.materializer.land(req).await {
-        Ok(snap) => Json(serde_json::json!({
-            "snapshot_id": snap.0,
-            "type": type_label,
-        }))
-        .into_response(),
-        Err(IngestError::DoesNotConform(violations)) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(violations_json(&violations)),
-        )
-            .into_response(),
-        Err(IngestError::Infer(_)) => {
-            (StatusCode::BAD_REQUEST, "unsupported column type").into_response()
-        }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
-    }
+    let snap = st
+        .materializer
+        .land(req)
+        .await
+        .map_err(|e| e.into_api("ingest model: materialize"))?;
+    Ok(Json(serde_json::json!({
+        "snapshot_id": snap.0,
+        "type": type_label,
+    }))
+    .into_response())
 }
 
 #[utoipa::path(
@@ -356,32 +389,28 @@ pub(crate) async fn land(
     Path((schema_name, table_name)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
-) -> Response {
-    // Optional model gate from X-Loom-Model (JSON).
-    let gate: Option<ModelShape> = match headers.get("X-Loom-Model") {
-        None => None,
-        Some(v) => match v
-            .to_str()
-            .ok()
-            .and_then(|s| serde_json::from_str::<LandModel>(s).ok())
-        {
-            Some(m) => Some(m.into()),
-            None => return (StatusCode::BAD_REQUEST, "invalid X-Loom-Model").into_response(),
-        },
-    };
-
-    // Optional run id from X-Loom-Run-Id.
-    let run_id = match headers.get("X-Loom-Run-Id") {
-        None => RunId(Uuid::new_v4()),
-        Some(v) => match v.to_str().ok().and_then(|s| Uuid::parse_str(s).ok()) {
-            Some(u) => RunId(u),
-            None => return (StatusCode::BAD_REQUEST, "invalid X-Loom-Run-Id").into_response(),
-        },
-    };
+) -> Result<Response, ApiError> {
+    // Optional model gate from X-Loom-Model (JSON) and run id from X-Loom-Run-Id.
+    let gate: Option<ModelShape> =
+        parse_header(&headers, "X-Loom-Model", "invalid X-Loom-Model", |s| {
+            serde_json::from_str::<LandModel>(s)
+                .ok()
+                .map(ModelShape::from)
+        })?;
+    let run_id = parse_header(&headers, "X-Loom-Run-Id", "invalid X-Loom-Run-Id", |s| {
+        Uuid::parse_str(s).ok().map(RunId)
+    })?
+    .unwrap_or_else(|| RunId(Uuid::new_v4()));
 
     let (schema, batches) = match decode_ipc(&body) {
         Ok(sb) => sb,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid arrow ipc stream").into_response(),
+        // Bad IPC is a client error (malformed request body), not a backend fault;
+        // 400 without logging, exactly as before.
+        Err(_) => {
+            return Err(ApiError::BadRequest(Cow::Borrowed(
+                "invalid arrow ipc stream",
+            )));
+        }
     };
 
     let table = TableRef {
@@ -399,20 +428,8 @@ pub(crate) async fn land(
     };
 
     // Gate + schema resolution: backend-agnostic, run once before dispatch.
-    let columns = match resolve_columns(&schema, gate.as_ref()) {
-        Ok(c) => c,
-        Err(IngestError::DoesNotConform(violations)) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(violations_json(&violations)),
-            )
-                .into_response();
-        }
-        Err(IngestError::Infer(_)) => {
-            return (StatusCode::BAD_REQUEST, "unsupported column type").into_response();
-        }
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
-    };
+    let columns = resolve_columns(&schema, gate.as_ref())
+        .map_err(|e| e.into_api("ingest land: resolve columns"))?;
 
     let req = LandRequest {
         table: &table,
@@ -424,22 +441,16 @@ pub(crate) async fn land(
         lineage,
     };
 
-    match st.materializer.land(req).await {
-        Ok(snap) => Json(serde_json::json!({
-            "snapshot_id": snap.0,
-            "dataset": format!("{}.{}", table.schema, table.name),
-        }))
-        .into_response(),
-        Err(IngestError::DoesNotConform(violations)) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(violations_json(&violations)),
-        )
-            .into_response(),
-        Err(IngestError::Infer(_)) => {
-            (StatusCode::BAD_REQUEST, "unsupported column type").into_response()
-        }
-        // Opaque for backend faults: a governance-fronted service must not echo
-        // internal detail (SQL, paths) to the client.
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
-    }
+    // Opaque for backend faults: a governance-fronted service must not echo
+    // internal detail (SQL, paths) to the client. `into_api` logs them server-side.
+    let snap = st
+        .materializer
+        .land(req)
+        .await
+        .map_err(|e| e.into_api("ingest land: materialize"))?;
+    Ok(Json(serde_json::json!({
+        "snapshot_id": snap.0,
+        "dataset": format!("{}.{}", table.schema, table.name),
+    }))
+    .into_response())
 }
