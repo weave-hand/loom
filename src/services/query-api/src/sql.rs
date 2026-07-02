@@ -654,16 +654,7 @@ pub fn compile_chain_with(
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
     let k = hops.len();
     let final_alias = format!("t_{k}");
-    let col_exprs: Vec<String> = allowed_cols
-        .iter()
-        .map(|c| {
-            if mask_cols.iter().any(|m| m == c) {
-                format!("'{MASK_MARKER}' AS {}", dialect.quote_ident(c))
-            } else {
-                format!("{final_alias}.{}", dialect.quote_ident(c))
-            }
-        })
-        .collect();
+    let col_exprs = masked_col_exprs(dialect, allowed_cols, mask_cols, &format!("{final_alias}."));
     let (from, conjuncts, params) = chain_from_where(dialect, types, hops)?;
     let where_sql = if conjuncts.is_empty() {
         String::new()
@@ -1075,27 +1066,13 @@ pub fn compile_graph_reach_union(
     depth: u32,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
-    for f in row_filters {
-        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
-    }
+    validate_reach_filters(row_filters, &[])?;
     let q = |id: &str| dialect.quote_ident(id);
     let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
     let id = q(identity);
     let mut params: Vec<SqlValue> = Vec::new();
 
-    // Anchor (seed) WHERE at alias `s`: caller seed predicates, then the start ACL row-filters.
-    let mut seed_conj: Vec<String> = Vec::new();
-    for p in seed_predicates {
-        seed_conj.push(caller_predicate_sql(dialect, p, "s", &mut params));
-    }
-    for f in row_filters {
-        seed_conj.push(filter_sql(dialect, f, "s", &mut params));
-    }
-    let seed_where = if seed_conj.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", seed_conj.join(" AND "))
-    };
+    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params);
 
     // Edge subquery: each backing contributes one non-recursive arm that emits (from_id, to_id)
     // pairs. Arms are joined with UNION ALL (duplicates acceptable here; the outer CTE dedupes).
@@ -1114,34 +1091,15 @@ pub fn compile_graph_reach_union(
     // Recursive step: single join of `reach r` to the edge subquery, then to `nxt` for filter.
     // Row-filters are applied at `nxt` (the landing node). This single `reach` reference avoids
     // a "Circular reference to CTE" planner error that arises from multiple arms each referencing
-    // the CTE name.
-    let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
-    for f in row_filters {
-        rec_conj.push(filter_sql(dialect, f, "nxt", &mut params));
-    }
-    let rec_where = rec_conj.join(" AND ");
+    // the CTE name. The empty path renders exactly the depth bound + row-filters at `nxt`.
+    let rec_where = reach_recursive_where(dialect, &[], row_filters, depth, &mut params);
     let recursive = format!(
         "SELECT e.to_id AS id, r.depth + 1 AS depth FROM reach r JOIN ({edges_sql}) e ON r.id = e.from_id JOIN {tbl} nxt ON e.to_id = nxt.{id} WHERE {rec_where}"
     );
 
     // Projection of `p`: visible columns (masked -> marker), reachable in >= 1 hop, governed.
-    let cols = allowed_cols
-        .iter()
-        .map(|c| {
-            if mask_cols.iter().any(|m| m == c) {
-                format!("'{MASK_MARKER}' AS {}", q(c))
-            } else {
-                format!("p.{}", q(c))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut proj_conj: Vec<String> =
-        vec![format!("p.{id} IN (SELECT id FROM reach WHERE depth >= 1)")];
-    for f in row_filters {
-        proj_conj.push(filter_sql(dialect, f, "p", &mut params));
-    }
-    let proj_where = proj_conj.join(" AND ");
+    let cols = masked_col_exprs(dialect, allowed_cols, mask_cols, "p.").join(", ");
+    let proj_where = reach_projection_where(dialect, &id, row_filters, &mut params);
 
     let limit_clause = dialect.limit_clause(limit);
 
@@ -1181,33 +1139,16 @@ fn recursive_reach_cte(
     depth: u32,
     params: &mut Vec<SqlValue>,
 ) -> Result<String, CompileError> {
-    for f in row_filters {
-        validate_row_filter(f, None).map_err(CompileError::MalformedFilter)?;
-    }
+    validate_reach_filters(row_filters, &[])?;
     let q = |id: &str| dialect.quote_ident(id);
     let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
     let id = q(identity);
 
-    let mut seed_conj: Vec<String> = Vec::new();
-    for p in seed_predicates {
-        seed_conj.push(caller_predicate_sql(dialect, p, "s", params));
-    }
-    for f in row_filters {
-        seed_conj.push(filter_sql(dialect, f, "s", params));
-    }
-    let seed_where = if seed_conj.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", seed_conj.join(" AND "))
-    };
+    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, params);
 
     let joins = link_join(dialect, backing, "cur", "nxt", &tbl, "j");
 
-    let mut rec_conj: Vec<String> = vec![format!("r.depth < {depth}")];
-    for f in row_filters {
-        rec_conj.push(filter_sql(dialect, f, "nxt", params));
-    }
-    let rec_where = rec_conj.join(" AND ");
+    let rec_where = reach_recursive_where(dialect, &[], row_filters, depth, params);
 
     Ok(format!(
         "WITH RECURSIVE reach(id, depth) AS (\
@@ -1286,16 +1227,7 @@ pub fn compile_graph_reach_tail(
 
     let k = tail_hops.len();
     let final_alias = format!("t_{k}");
-    let col_exprs: Vec<String> = allowed_cols
-        .iter()
-        .map(|c| {
-            if mask_cols.iter().any(|m| m == c) {
-                format!("'{MASK_MARKER}' AS {}", q(c))
-            } else {
-                format!("{final_alias}.{}", q(c))
-            }
-        })
-        .collect();
+    let col_exprs = masked_col_exprs(dialect, allowed_cols, mask_cols, &format!("{final_alias}."));
 
     // Glue: t_0 (the queried type at the tail's source) is constrained to the depth>=1 reach set.
     let mut where_conj = vec![format!(
