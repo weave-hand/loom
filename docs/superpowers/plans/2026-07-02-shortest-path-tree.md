@@ -19,7 +19,7 @@
 - **Slice 1 scope:** tree over the **single self-link** and the **repeated path-cycle** only. `?tree=true` combined with `?links=` (union) or a `*`-starred path segment (recursive-core+tail) → 400. Weighted edges, materialized full paths, target-scoped queries, and the union/tail tree are non-goals.
 - **No `LIMIT` on the tree** (open question #2 resolved): the depth cap bounds the result; a `LIMIT` could drop a parent and leave a dangling pointer. Reachability keeps its `LIMIT`; the tree compiler omits it.
 - **Determinism** (open question #3 resolved): tie-break is minimum predecessor **identity** (`pred ASC NULLS FIRST`), the only stable caller-independent key.
-- **Typed null anchor** (open question #4): the anchor's `pred` uses `NULLIF(s.<id>, s.<id>)` so it is NULL typed as the identity column's type — union-compatible with the recursive term's `r.id` without the compiler needing to know the SQL type. The determinism e2e (Task 5) verifies the window form runs on the DataFusion serving path.
+- **Typed null anchor** (open question #4): the anchor's `pred` uses `NULLIF(s.<id>, s.<id>)` so it is NULL typed as the identity column's type — union-compatible with the recursive term's `r.id` without the compiler needing to know the SQL type. **Task 1b is an early execution smoke** that runs the compiled SQL through the DataFusion serving engine directly (before any handler/HTTP work) to prove the window-over-recursive-CTE + `NULLIF`-anchor combination executes on DataFusion 54 — the risk spec Open Question #4 flags. **Fallback if Task 1b fails at planning/execution:** replace the `ROW_NUMBER() … WHERE rn = 1` settle with a portable correlated aggregate — `settled AS (SELECT id, MIN(depth) AS depth FROM reach GROUP BY id)` to pick min depth, then a second CTE picking `MIN(pred)` among rows at that min depth (`JOIN reach r2 ON r2.id = settled.id AND r2.depth = settled.depth GROUP BY id`), then join back to the table. Keep the same output columns/param order; only the settle mechanism changes. Do NOT proceed past Task 1b until the tree SQL provably executes.
 - **After any `.md` edit**, ensure exactly one trailing newline and no trailing whitespace (the `end-of-file-fixer`/`trim trailing whitespace` prek hooks police markdown). Run `buck2 run //tools:prek -- run --all-files` before pushing.
 
 ---
@@ -391,6 +391,164 @@ Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c.log 
 ```bash
 git add src/services/query-api/src/sql.rs src/services/query-api/tests/compile_graph_tree.rs src/services/query-api/BUCK
 git commit -m "feat(query-api): compile_graph_tree — shortest-path-tree SQL compiler"
+```
+
+---
+
+## Task 1b: DataFusion execution smoke (de-risk the window + typed-null form)
+
+**Files:**
+- Test: `src/services/query-api/tests/compile_graph_tree_exec.rs` (create)
+- Modify: `src/services/query-api/BUCK` (add `compile-graph-tree-exec` target)
+
+**Why:** The reachability compiler is proven against DataFusion, but the tree adds a `settled` window (`ROW_NUMBER() OVER (… NULLS FIRST)`) over a 3-column recursive CTE whose anchor `pred` is a `NULLIF` typed-null — a combination not yet exercised on the serving path (spec Open Question #4). This test runs the compiled SQL straight through `InProcessServingEngine::fetch_rows` (no handler, no HTTP) so a planner incompatibility surfaces here, before the handler/HTTP layers are built. If it fails, apply the self-join fallback documented in Global Constraints and re-run.
+
+**Interfaces:**
+- Consumes: `compile_graph_tree` (Task 1); `InProcessServingEngine`, `tref` (e2e-support); `IcebergWriter`/`PgFixture`/`SeedCol`/`IcebergCatalog` (postgres fixture); `DataFusionDialect`/`GraphStep` (sql); `CallerPredicate` (filter); `ServingEngine::fetch_rows`.
+
+- [ ] **Step 1: Write the failing execution smoke**
+
+Create `src/services/query-api/tests/compile_graph_tree_exec.rs`:
+
+```rust
+//! Execution smoke: run compile_graph_tree's SQL directly through the in-process
+//! Iceberg/DataFusion serving engine (no handler/HTTP) to prove the window-over-recursive-CTE
+//! + NULLIF typed-null anchor executes on DataFusion 54. Seeds person(id,name) + a knows(a,b)
+//! self-link 1->2->3 and asserts the served columns/rows carry __depth/__parent/__id.
+
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_core::{LinkBacking, TableRef};
+use e2e_support::{InProcessServingEngine, tref};
+use query_api::filter::CallerPredicate;
+use query_api::serving::{ServingEngine, SqlValue};
+use query_api::sql::{DataFusionDialect, GraphStep, compile_graph_tree};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tree_sql_executes_on_datafusion() {
+    let fx = PgFixture::start();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+
+    // person(id, name): nodes 1, 2, 3.
+    writer
+        .seed_arrays(
+            "main",
+            "person",
+            &[
+                ("id".to_string(), "long".to_string(), false),
+                ("name".to_string(), "string".to_string(), true),
+            ],
+            &[SeedCol::Long(vec![1, 2, 3]), SeedCol::Str(vec!["a", "b", "c"])],
+        )
+        .await;
+    // knows(a, b): 1->2, 2->3.
+    writer
+        .seed_arrays(
+            "main",
+            "knows",
+            &[
+                ("a".to_string(), "long".to_string(), false),
+                ("b".to_string(), "long".to_string(), false),
+            ],
+            &[SeedCol::Long(vec![1, 2]), SeedCol::Long(vec![2, 3])],
+        )
+        .await;
+
+    let person: TableRef = tref("main", "person");
+    let knows: TableRef = tref("main", "knows");
+    let steps = vec![GraphStep {
+        backing: LinkBacking::JoinTable {
+            table: knows,
+            from_key: "id".into(),
+            from_column: "a".into(),
+            to_column: "b".into(),
+            to_key: "id".into(),
+        },
+        next_table: person.clone(),
+        next_filters: vec![],
+    }];
+    // Seed the read at {1}.
+    let seed = vec![CallerPredicate {
+        column: "id".into(),
+        op: control_plane_core::CompareOp::In,
+        values: vec![SqlValue::Int(1)],
+    }];
+    let (sql, params) = compile_graph_tree(
+        &DataFusionDialect,
+        &person,
+        "id",
+        &steps,
+        &seed,
+        &[],
+        &["id".to_string(), "name".to_string()],
+        &[],
+        3,
+    )
+    .unwrap();
+
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
+    // The point of the test: this must not error on the DataFusion planner.
+    let served = eng.fetch_rows(&sql, &params).await.unwrap();
+
+    assert_eq!(
+        served.columns,
+        vec![
+            "id".to_string(),
+            "name".to_string(),
+            "__depth".to_string(),
+            "__parent".to_string(),
+            "__id".to_string()
+        ],
+        "tree projection columns"
+    );
+    // Tree over 1->2->3 from {1}: root 1 + nodes 2, 3 => 3 rows.
+    assert_eq!(served.rows.len(), 3, "root + two descendants: {:?}", served.rows);
+    // The first row (ORDER BY depth, id) is the root 1 at depth 0 with NULL parent.
+    let root = &served.rows[0];
+    assert_eq!(root.first(), Some(&SqlValue::Int(1)), "root id: {root:?}");
+    // __depth is index 2, __parent index 3 (NULL for root), __id index 4.
+    assert_eq!(root.get(2), Some(&SqlValue::Int(0)), "root depth 0: {root:?}");
+    assert_eq!(root.get(3), Some(&SqlValue::Null), "root parent NULL: {root:?}");
+    assert_eq!(root.get(4), Some(&SqlValue::Int(1)), "root __id: {root:?}");
+    // Keep the writer alive until here (its TempDir holds the Parquet).
+    drop(writer);
+}
+```
+
+- [ ] **Step 2: Add the `compile-graph-tree-exec` BUCK target**
+
+In `src/services/query-api/BUCK`, after the `graph-tree-e2e` (or `graph-tail-e2e`) fixture targets:
+
+```python
+loom_fixture_test(
+    name = "compile-graph-tree-exec",
+    crate = "compile_graph_tree_exec",
+    srcs = ["tests/compile_graph_tree_exec.rs"],
+    crate_root = "tests/compile_graph_tree_exec.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+```
+
+- [ ] **Step 3: Run the smoke to verify it fails (compiler not yet wired) then passes**
+
+Run: `buck2 test //src/services/query-api:compile-graph-tree-exec > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|error\[|Error|panicked" /tmp/t.log`
+Expected: PASS. **If it FAILS at `fetch_rows` with a DataFusion planner error**, apply the self-join fallback from Global Constraints to `compile_graph_tree`, update the `compile_graph_tree` assertions in Task 1 to match the new settle form, and re-run both this and Task 1's test until green. Do not continue to Task 2 until this passes.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/services/query-api/tests/compile_graph_tree_exec.rs src/services/query-api/BUCK
+git commit -m "test(query-api): execution smoke — tree SQL runs on DataFusion"
 ```
 
 ---
@@ -845,6 +1003,39 @@ async fn masked_identity_is_forbidden() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn denied_identity_is_forbidden() {
+    // The spec names masked OR denied identity -> Forbidden. Denying the id column removes it
+    // from the projection; the tree still needs to project id/parent, so -> Forbidden.
+    let (cp, subj, role) = seeded(person_type(Some("id".into()))).await;
+    cp.set_policy(
+        &role,
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(TypeName("Person".into())),
+            row_filter: None,
+            deny_columns: vec!["id".into()],
+            mask_columns: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    let serving = TreeServing { rows: vec![] };
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &serving,
+        default_limit: 1000,
+    };
+    let err = read_graph_tree(&graph_query(), &Subject(subj), &deps)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, QueryError::Forbidden),
+        "denied identity -> Forbidden, got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn builds_tree_with_root_and_parent_pointers() {
     let (cp, subj, _role) = seeded(person_type(Some("id".into()))).await;
     // A linear tree 5 -> 7 -> 9: 5 is the root (parent NULL), 7's parent is 5, 9's parent is 7.
@@ -1105,7 +1296,7 @@ pub fn tree_to_json(tree: &ObjectTree) -> Value {
 - [ ] **Step 6: Run the test to verify it passes**
 
 Run: `buck2 test //src/services/query-api:graph-tree > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
-Expected: PASS (3 tests).
+Expected: PASS (4 tests: NoIdentity, masked-Forbidden, denied-Forbidden, happy-path).
 
 - [ ] **Step 7: Clippy + commit**
 
@@ -1612,6 +1803,19 @@ Register it in `components(schemas(...))` (add the line beside `ObjectsResponse`
         ObjectTreeResponse,
 ```
 
+Document the flag on both graph routes so the generated OpenAPI mentions the tree surface. In `http.rs`, add a `tree` query param to the `params(...)` of both `get_graph` (~line 379) and `get_graph_path` (~line 449) `#[utoipa::path(...)]` blocks, and note the alternate body in the 200 description:
+
+```rust
+    params(
+        // ... existing path params ...
+        ("tree" = Option<bool>, Query, description = "Return a shortest-path tree ({roots, nodes}) instead of the flat reachable set"),
+    ),
+    responses(
+        (status = 200, description = "Reachable objects (or a shortest-path tree when ?tree=true; see ObjectTreeResponse)", body = ObjectsResponse),
+        // ... existing error responses unchanged ...
+    ),
+```
+
 - [ ] **Step 7: Run the e2e to verify it passes**
 
 Run: `buck2 test //src/services/query-api:graph-tree-e2e > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
@@ -1860,15 +2064,16 @@ async fn setup_active(
 #[tokio::test(flavor = "multi_thread")]
 async fn row_filter_prunes_and_no_node_reports_a_blocked_parent() {
     let fx = PgFixture::start();
-    // Chain 1->2->3->4; node 2 is INACTIVE. A Read row-filter active=true removes 2 from the
-    // permitted subgraph, so 2 is unreachable and everything reachable ONLY through 2 (3, 4)
-    // is pruned. No surviving node may report 2 as its parent.
+    // Branch graph 1->2, 1->3, 3->4; node 2 is INACTIVE. A Read row-filter active=true removes
+    // 2 from the permitted subgraph. The 1->3->4 branch stays permitted, so 3 and 4 SURVIVE
+    // (pruning-with-survivors, not a degenerate root-only result), while 2 is absent entirely
+    // and no surviving node reports 2 as its parent.
     let (cp, eng, _writer) = setup_active(
         &fx,
         vec![1, 2, 3, 4],
         vec!["a", "b", "c", "d"],
         vec![true, false, true, true],
-        &[(1, 2), (2, 3), (3, 4)],
+        &[(1, 2), (1, 3), (3, 4)],
     )
     .await;
     let cp = Arc::new(cp);
@@ -1901,13 +2106,18 @@ async fn row_filter_prunes_and_no_node_reports_a_blocked_parent() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let nodes = tree_nodes(&body);
-    // Only the root 1 survives (its sole first hop 2 is filtered out).
-    assert_eq!(nodes, vec![(1, 0, None)], "reachability through inactive 2 is cut: {body}");
-    // No node reports the blocked node 2 as a parent.
+    let mut nodes = tree_nodes(&body);
+    nodes.sort_by_key(|(id, _, _)| *id);
+    // 1 (root), 3 (via the permitted branch), 4 (below 3) survive; the inactive 2 is pruned.
+    assert_eq!(
+        nodes,
+        vec![(1, 0, None), (3, 1, Some(1)), (4, 2, Some(3))],
+        "permitted branch survives; inactive 2 is cut: {body}"
+    );
+    // The denied node 2 is absent AND never reported as a parent (path edges don't leak it).
     assert!(
-        nodes.iter().all(|(_, _, parent)| *parent != Some(2)),
-        "no surviving node points at the denied intermediate 2: {body}"
+        nodes.iter().all(|(id, _, parent)| *id != 2 && *parent != Some(2)),
+        "denied intermediate 2 is absent as node and as parent: {body}"
     );
 }
 ```
@@ -1918,14 +2128,16 @@ Note: `PgControlPlane` implements `set_policy` (an `Acl` method); the `Acl` trai
 
 ```rust
 #[tokio::test(flavor = "multi_thread")]
-async fn two_seeds_produce_two_roots() {
+async fn forest_two_roots_and_shared_node_settles_to_min_depth() {
     let fx = PgFixture::start();
-    // Disjoint components 1->2 and 10->11. Seeding {1, 10} yields a forest with roots 1 and 10.
+    // Two seeds {1, 10} whose components OVERLAP at node 3: 1->2->3 (3 is depth 2 from seed 1)
+    // and 10->3 (3 is depth 1 from seed 10). Node 3 is reachable from both seeds; it must
+    // settle to the MIN depth (1) => parent 10, deterministically — the spec's forest property.
     let (cp, eng, _writer) = setup(
         &fx,
-        vec![1, 2, 10, 11],
-        vec!["a", "b", "x", "y"],
-        &[(1, 2), (10, 11)],
+        vec![1, 2, 3, 10],
+        vec!["a", "b", "c", "x"],
+        &[(1, 2), (2, 3), (10, 3)],
     )
     .await;
     let cp = Arc::new(cp);
@@ -1947,8 +2159,8 @@ async fn two_seeds_produce_two_roots() {
     nodes.sort_by_key(|(id, _, _)| *id);
     assert_eq!(
         nodes,
-        vec![(1, 0, None), (2, 1, Some(1)), (10, 0, None), (11, 1, Some(10))],
-        "each seed is a root of its component: {body}"
+        vec![(1, 0, None), (2, 1, Some(1)), (3, 1, Some(10)), (10, 0, None)],
+        "shared node 3 settles to the shorter path (depth 1 via 10), not depth 2 via 2: {body}"
     );
 }
 ```
@@ -2002,7 +2214,7 @@ git commit -m "docs: close road-shortest-path-tree; reconcile min-depth annotati
 
 - [ ] **All new + adjacent query-api tests green:**
 
-Run: `buck2 test //src/services/query-api:compile-graph-tree //src/services/query-api:graph-tree //src/services/query-api:graph-tree-e2e //src/services/query-api:graph-reach //src/services/query-api:graph-reach-e2e //src/services/query-api:graph-path-e2e //src/services/query-api:compile-graph-reach > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
+Run: `buck2 test //src/services/query-api:compile-graph-tree //src/services/query-api:compile-graph-tree-exec //src/services/query-api:graph-tree //src/services/query-api:graph-tree-e2e //src/services/query-api:graph-reach //src/services/query-api:graph-reach-e2e //src/services/query-api:graph-path-e2e //src/services/query-api:compile-graph-reach > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
 Expected: PASS across the board.
 
 - [ ] **Clippy clean on the crate:**
