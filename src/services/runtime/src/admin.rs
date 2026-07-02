@@ -1,8 +1,9 @@
-//! Admin-gated user provisioning: the `require_admin` gate (config-named
-//! bootstrap admin) plus shared `/admin/users` routes (create / list / disable /
-//! enable). Mounted by query-api, the governance surface. The gate is the single
-//! admin notion this slice introduces — a verified `Subject` whose id equals the
-//! configured bootstrap-admin username; anything else on `/admin/*` is 403.
+//! Admin-gated user provisioning: the `require_admin` gate (reserved `admin`
+//! role) plus shared `/admin/users` routes (create / list / disable / enable).
+//! Mounted by query-api, the governance surface. The gate is the single admin
+//! notion this slice introduces — a verified `Subject` holding the reserved
+//! `admin` role (`control_plane_core::ADMIN_ROLE`, the role `loom create-admin`
+//! assigns); anything else on `/admin/*` is 403.
 
 use std::sync::Arc;
 
@@ -13,7 +14,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use control_plane_core::{
-    Acl, Auth, ControlPlaneError, NewUser, PageReq, RoleId, SubjectId, UserSummary,
+    ADMIN_ROLE, Action, Auth, ControlPlane, ControlPlaneError, Effect, NewUser, ObjectType,
+    PageReq, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName, UserSummary,
 };
 
 use crate::auth::{AuthState, Subject, protect, status_for, unauthorized};
@@ -23,23 +25,31 @@ use crate::hash_password;
 #[derive(Clone)]
 pub struct AdminState {
     pub auth: Arc<dyn Auth + Send + Sync>,
-    pub acl: Arc<dyn Acl + Send + Sync>,
-    /// The configured bootstrap-admin username (`LOOM_BOOTSTRAP_ADMIN_USERNAME`).
-    pub admin_username: String,
+    /// The direct (postgres-backed) control plane. Supplies `acl()` for the gate
+    /// and role/grant writes, and `ontology()` for `define_type`.
+    pub cp: Arc<dyn ControlPlane>,
 }
 
 fn forbidden() -> Response {
     (StatusCode::FORBIDDEN, "forbidden").into_response()
 }
 
-/// Gate `/admin/*`: allow only a verified subject whose id equals the configured
-/// bootstrap admin. Layered AFTER `require_auth` (which injects [`Subject`]); a
-/// missing `Subject` (unauthenticated) is 401, a non-admin is 403.
+/// Gate `/admin/*`: allow only a verified subject holding the reserved `admin`
+/// role. Layered AFTER `require_auth` (which injects [`Subject`]); missing
+/// `Subject` → 401, a non-admin → 403, a lookup error → 403 (fail closed).
 pub async fn require_admin(State(st): State<AdminState>, req: Request, next: Next) -> Response {
-    match req.extensions().get::<Subject>() {
-        Some(Subject(sid)) if sid.0 == st.admin_username => next.run(req).await,
-        Some(_) => forbidden(),
-        None => unauthorized(),
+    let Some(Subject(sid)) = req.extensions().get::<Subject>().cloned() else {
+        return unauthorized();
+    };
+    match st
+        .cp
+        .acl()
+        .has_role(&sid, &RoleId(ADMIN_ROLE.to_string()))
+        .await
+    {
+        Ok(true) => next.run(req).await,
+        Ok(false) => forbidden(),
+        Err(_) => forbidden(),
     }
 }
 
@@ -86,12 +96,12 @@ async fn create_user(State(st): State<AdminState>, Json(req): Json<CreateUserReq
         Err(ControlPlaneError::Conflict(_)) => false,
         Err(e) => return status_for(&e).into_response(),
     };
-    if let Err(e) = st.acl.define_subject(&subject).await {
+    if let Err(e) = st.cp.acl().define_subject(&subject).await {
         return status_for(&e).into_response();
     }
     let mut assigned = Vec::new();
     for r in &req.roles {
-        match st.acl.assign_role(&subject, &RoleId(r.clone())).await {
+        match st.cp.acl().assign_role(&subject, &RoleId(r.clone())).await {
             Ok(()) => assigned.push(r.clone()),
             Err(ControlPlaneError::NotFound(_)) => {
                 return (
@@ -181,12 +191,133 @@ async fn enable_user(State(st): State<AdminState>, Path(username): Path<String>)
     }
 }
 
+#[derive(serde::Deserialize)]
+struct CreateRoleReq {
+    role: String,
+}
+
+/// `POST /admin/roles` — declare a new role (governance target for grants).
+async fn create_role(State(st): State<AdminState>, Json(req): Json<CreateRoleReq>) -> Response {
+    match st.cp.acl().define_role(&RoleId(req.role.clone())).await {
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "role": req.role })),
+        )
+            .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `GET /admin/roles` — list all declared role ids.
+async fn list_roles(State(st): State<AdminState>) -> Response {
+    match st.cp.acl().list_roles().await {
+        Ok(roles) => Json(serde_json::json!({
+            "roles": roles.into_iter().map(|r| r.0).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct GrantReq {
+    action: String,
+    r#type: String,
+}
+
+/// `POST /admin/roles/:role/grants` — grant a role coarse `Read`/`Write` Allow
+/// on a type. An unknown grant-target type surfaces as 400 (the control plane
+/// returns `Validation`, mapped by `status_for`).
+async fn grant(
+    State(st): State<AdminState>,
+    Path(role): Path<String>,
+    Json(req): Json<GrantReq>,
+) -> Response {
+    let action = match req.action.as_str() {
+        "read" => Action::Read,
+        "write" => Action::Write,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "action must be read|write" })),
+            )
+                .into_response();
+        }
+    };
+    let target = PolicyTarget::Type(TypeName(req.r#type.clone()));
+    match st
+        .cp
+        .acl()
+        .grant(&RoleId(role), action, target, Effect::Allow)
+        .await
+    {
+        Ok(()) => (StatusCode::CREATED, "granted").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PropReq {
+    name: String,
+    ty: String,
+    #[serde(default)]
+    required: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct TableReq {
+    schema: String,
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct DefineModelReq {
+    name: String,
+    table: TableReq,
+    identity: Option<String>,
+    properties: Vec<PropReq>,
+}
+
+/// `POST /admin/models` — define a model (ontology type) over an existing table.
+async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelReq>) -> Response {
+    let otype = ObjectType {
+        name: TypeName(req.name.clone()),
+        table: TableRef {
+            schema: req.table.schema,
+            name: req.table.name,
+        },
+        properties: req
+            .properties
+            .into_iter()
+            .map(|p| PropertyDef {
+                name: p.name,
+                ty: p.ty,
+                required: p.required,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            })
+            .collect(),
+        derived: vec![],
+        identity: req.identity,
+    };
+    match st.cp.ontology().define_type(otype).await {
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "name": req.name })),
+        )
+            .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
 /// Admin routes, behind `require_auth` (401) then [`require_admin`] (403).
 pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
     let inner = Router::new()
         .route("/admin/users", post(create_user).get(list_users))
         .route("/admin/users/:username/disable", post(disable_user))
         .route("/admin/users/:username/enable", post(enable_user))
+        .route("/admin/models", post(define_model))
+        .route("/admin/roles", post(create_role).get(list_roles))
+        .route("/admin/roles/:role/grants", post(grant))
         .with_state(admin.clone())
         .route_layer(axum::middleware::from_fn_with_state(admin, require_admin));
     protect(inner, auth)

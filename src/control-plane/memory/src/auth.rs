@@ -45,6 +45,8 @@ pub(crate) struct AuthState {
     service_accounts: HashMap<String, MemServiceAccount>,
     /// token sha-256 -> service token
     service_tokens: HashMap<[u8; 32], MemServiceToken>,
+    /// Set once by `seal_bootstrap`; the one-way bootstrap seal.
+    bootstrap_sealed: bool,
 }
 
 #[async_trait]
@@ -134,6 +136,23 @@ impl Auth for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn has_any_user(&self) -> Result<bool> {
         Ok(!self.auth.lock().users.is_empty())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn is_bootstrap_sealed(&self) -> Result<bool> {
+        Ok(self.auth.lock().bootstrap_sealed)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn seal_bootstrap(&self) -> Result<()> {
+        let mut auth = self.auth.lock();
+        if auth.bootstrap_sealed {
+            return Err(ControlPlaneError::Conflict(
+                "bootstrap already sealed".into(),
+            ));
+        }
+        auth.bootstrap_sealed = true;
+        Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]

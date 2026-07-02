@@ -109,6 +109,12 @@ pub trait Auth {
     /// user table is empty").
     async fn has_any_user(&self) -> Result<bool>;
 
+    /// `true` once the instance has been bootstrapped (an admin created + sealed).
+    /// Bootstrap is a one-way state machine: there is deliberately no unseal method.
+    async fn is_bootstrap_sealed(&self) -> Result<bool>;
+    /// Mark the instance sealed. Insert-once: a second call returns `Conflict`.
+    async fn seal_bootstrap(&self) -> Result<()>;
+
     /// List every user (identity + activation state + created-at), never the
     /// password verifier. `page` is accepted for signature stability; adapters
     /// return a single full page today.

@@ -22,15 +22,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         auth: pg.clone(),
         session_ttl: service_runtime::session_ttl_from_env(),
     };
-    if let (Ok(user), Ok(pass)) = (
-        std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME"),
-        std::env::var("LOOM_BOOTSTRAP_ADMIN_PASSWORD"),
-    ) {
-        service_runtime::bootstrap_admin(pg.as_ref(), &user, &pass).await?;
-    }
-    let admin_subject = std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME")
-        .ok()
-        .map(control_plane_core::SubjectId);
     let max_ttl = service_runtime::service_token_max_ttl_from_env();
 
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
@@ -39,7 +30,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pool,
         cp,
         auth,
-        admin_subject,
         max_ttl,
         listener,
         std::future::pending(),

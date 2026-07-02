@@ -103,13 +103,37 @@ fi
 
 echo "dev-up: starting loom on http://$QAPI_ADDR  (login: $ADMIN_USER / $ADMIN_PASS)"
 echo "dev-up: UI served from $UI_DIR"
-exec env "${common_env[@]}" \
+
+# Run the composite in the background so we can bootstrap the first admin once it is
+# listening. There is no LOOM_BOOTSTRAP_ADMIN_* env path anymore — the first admin is
+# created out-of-band via `loom create-admin`, the sole admin-creation path (and the
+# instance seals after the first one, so re-runs are refused, which is fine here).
+env "${common_env[@]}" \
   LOOM_PG_BIN_DIR="$PGROOT/bin" \
   LOOM_PG_LD_LIBRARY_PATH="$PGLD" \
   LOOM_ENGINE_SOCKET="$DATA_PATH/engine.sock" \
   LOOM_QUERY_API_BIND_ADDR="$QAPI_ADDR" \
   LOOM_INGEST_BIND_ADDR="$INGEST_ADDR" \
   LOOM_UI_DIR="$UI_DIR" \
-  LOOM_BOOTSTRAP_ADMIN_USERNAME="$ADMIN_USER" \
-  LOOM_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PASS" \
-  "$LOOM_BIN"
+  "$LOOM_BIN" &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null' EXIT INT TERM
+
+# Wait for the query-api port to accept connections, then create the first admin.
+# `create-admin` connects to the already-running embedded Postgres as a client via
+# the LOOM_DB_* socket in common_env (it does not boot its own PG); the PG bin/lib
+# vars are still required for `Config::from_map` to parse in embedded mode.
+host="${QAPI_ADDR%:*}"; port="${QAPI_ADDR##*:}"
+for _ in $(seq 1 120); do
+  (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null && { exec 3>&- 3<&-; break; }
+  sleep 0.5
+done
+if printf '%s' "$ADMIN_PASS" | env "${common_env[@]}" \
+     LOOM_PG_BIN_DIR="$PGROOT/bin" LOOM_PG_LD_LIBRARY_PATH="$PGLD" \
+     "$LOOM_BIN" create-admin --username "$ADMIN_USER" --password-stdin; then
+  echo "dev-up: created admin '$ADMIN_USER'"
+else
+  echo "dev-up: create-admin skipped (instance already sealed?)"
+fi
+
+wait "$server_pid"

@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{Acl, Auth, NewUser, RoleId, SubjectId};
+use control_plane_core::{ADMIN_ROLE, Acl, Auth, NewUser, RoleId, SubjectId};
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use service_runtime::{AdminState, AuthState, admin_routes, hash_password, token_sha256};
@@ -20,8 +20,7 @@ fn states(cp: Arc<MemoryControlPlane>) -> (AdminState, AuthState) {
     (
         AdminState {
             auth: cp.clone(),
-            acl: cp.clone(),
-            admin_username: ADMIN.into(),
+            cp: cp.clone(),
         },
         AuthState {
             auth: cp,
@@ -47,6 +46,17 @@ async fn seed_session(cp: &MemoryControlPlane, username: &str) -> String {
     )
     .await
     .unwrap();
+    token
+}
+
+/// Seed a user, define + grant the reserved admin role, and mint a session token.
+async fn seed_admin_session(cp: &MemoryControlPlane, username: &str) -> String {
+    let token = seed_session(cp, username).await;
+    let subject = SubjectId(username.into());
+    cp.define_subject(&subject).await.unwrap();
+    let role = RoleId(ADMIN_ROLE.to_string());
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subject, &role).await.unwrap();
     token
 }
 
@@ -105,7 +115,7 @@ async fn non_admin_is_403() {
 #[tokio::test]
 async fn admin_creates_user_who_can_login() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    let token = seed_session(&cp, ADMIN).await;
+    let token = seed_admin_session(&cp, ADMIN).await;
     let (status, _) = send(
         app(cp.clone()),
         post_json(
@@ -128,7 +138,7 @@ async fn admin_creates_user_who_can_login() {
 #[tokio::test]
 async fn bundled_roles_assigned_and_idempotent_retry() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    let token = seed_session(&cp, ADMIN).await;
+    let token = seed_admin_session(&cp, ADMIN).await;
     cp.define_role(&RoleId("reader".into())).await.unwrap();
 
     let body = r#"{"username":"carol","password":"pw","roles":["reader"]}"#;
@@ -149,7 +159,7 @@ async fn bundled_roles_assigned_and_idempotent_retry() {
 #[tokio::test]
 async fn unknown_role_is_400() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    let token = seed_session(&cp, ADMIN).await;
+    let token = seed_admin_session(&cp, ADMIN).await;
     let (status, resp) = send(
         app(cp),
         post_json(
@@ -168,7 +178,7 @@ async fn unknown_role_is_400() {
 #[tokio::test]
 async fn list_users_shows_state_no_verifier() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    let token = seed_session(&cp, ADMIN).await;
+    let token = seed_admin_session(&cp, ADMIN).await;
     let (status, resp) = send(
         app(cp),
         Request::builder()
@@ -188,7 +198,7 @@ async fn list_users_shows_state_no_verifier() {
 #[tokio::test]
 async fn disable_blocks_session_and_login_then_enable_restores() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    let admin_token = seed_session(&cp, ADMIN).await;
+    let admin_token = seed_admin_session(&cp, ADMIN).await;
     let victim_token = seed_session(&cp, "mallory").await;
 
     // disable mallory
@@ -234,7 +244,7 @@ async fn disable_blocks_session_and_login_then_enable_restores() {
 #[tokio::test]
 async fn disable_unknown_user_is_404() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    let token = seed_session(&cp, ADMIN).await;
+    let token = seed_admin_session(&cp, ADMIN).await;
     let (status, _) = send(app(cp), post_json("/admin/users/ghost/disable", &token, "")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

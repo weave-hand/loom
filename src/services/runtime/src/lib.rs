@@ -4,10 +4,11 @@
 
 mod auth;
 pub use auth::{
-    AuthState, BootstrapError, Subject, bootstrap_admin, login_routes, protect, require_auth,
-    service_account_routes, service_token_max_ttl_from_env, session_routes, session_ttl_from_env,
-    status_for,
+    AuthState, Subject, login_routes, protect, require_auth, service_account_routes,
+    service_token_max_ttl_from_env, session_routes, session_ttl_from_env, status_for,
 };
+
+pub mod create_admin;
 
 mod admin;
 pub use admin::{AdminState, admin_routes, require_admin};

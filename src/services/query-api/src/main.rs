@@ -16,19 +16,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // external, so it is discarded here but must stay alive for the embedded case.
     let (pool, _pg) = service_runtime::build_pool_managed(&cfg).await?;
 
-    // Concrete PgControlPlane: retained for Auth, bootstrap_admin, and the GC enqueue
-    // (via WireControlPlane::queue()). Governance reads (ACL + ontology) go over the wire.
+    // Concrete PgControlPlane: retained for Auth and the GC enqueue (via
+    // WireControlPlane::queue()). Governance reads (ACL + ontology) go over the wire.
     let pg = Arc::new(service_runtime::control_plane(pool, cfg.lock_timeout));
     let auth = service_runtime::AuthState {
         auth: pg.clone(),
         session_ttl: service_runtime::session_ttl_from_env(),
     };
-    if let (Ok(user), Ok(pass)) = (
-        std::env::var("LOOM_BOOTSTRAP_ADMIN_USERNAME"),
-        std::env::var("LOOM_BOOTSTRAP_ADMIN_PASSWORD"),
-    ) {
-        service_runtime::bootstrap_admin(pg.as_ref(), &user, &pass).await?;
-    }
 
     let engine_socket = std::env::var("LOOM_ENGINE_SOCKET").map_err(
         |e| -> Box<dyn std::error::Error + Send + Sync> {
@@ -39,7 +33,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(cfg.bind_addr).await?;
     query_api::serve(
         &cfg,
-        pg.clone(),
         pg,
         auth,
         engine_socket,

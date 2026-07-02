@@ -65,6 +65,19 @@ impl Acl for WireAcl {
         Err(read_only("assign_role"))
     }
 
+    // Errors by design: there is no `gov_has_role` wire RPC, and the admin HTTP
+    // gate (`require_admin`) reads through the direct/postgres control plane, not
+    // this wire client — so this is never reached from that path.
+    async fn has_role(&self, _s: &SubjectId, _r: &RoleId) -> Result<bool> {
+        Err(read_only("has_role"))
+    }
+
+    // Errors by design: there is no `gov_list_roles` wire RPC; unreached from the
+    // admin surface for the same reason as `has_role` above.
+    async fn list_roles(&self) -> Result<Vec<RoleId>> {
+        Err(read_only("list_roles"))
+    }
+
     async fn unassign_role(&self, _s: &SubjectId, _r: &RoleId) -> Result<()> {
         Err(read_only("unassign_role"))
     }

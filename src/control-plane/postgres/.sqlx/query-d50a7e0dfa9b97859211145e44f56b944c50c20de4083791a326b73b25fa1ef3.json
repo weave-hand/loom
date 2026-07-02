@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into acl.bootstrap (id) values (1) on conflict (id) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d50a7e0dfa9b97859211145e44f56b944c50c20de4083791a326b73b25fa1ef3"
+}

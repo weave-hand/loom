@@ -5,7 +5,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{Auth, SubjectId};
+use control_plane_core::{ADMIN_ROLE, Acl, Auth, ControlPlane, RoleId, SubjectId};
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use service_runtime::{AuthState, service_account_routes, token_sha256};
@@ -33,8 +33,21 @@ async fn session_for(cp: &MemoryControlPlane, subject: &str, token: &str) {
     .unwrap();
 }
 
+/// Seed a session for `subject` AND grant it the reserved `admin` role — the
+/// gate `service_account_routes` now checks (`ADMIN_ROLE`), mirroring
+/// `crate::admin::require_admin`.
+async fn admin_session_for(cp: &MemoryControlPlane, subject: &str, token: &str) {
+    session_for(cp, subject, token).await;
+    let sid = SubjectId(subject.into());
+    cp.define_subject(&sid).await.unwrap();
+    let role = RoleId(ADMIN_ROLE.to_string());
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&sid, &role).await.unwrap();
+}
+
 fn app(cp: Arc<MemoryControlPlane>) -> Router {
-    service_account_routes(state(cp), Some(SubjectId(ADMIN.into())), MAX_TTL)
+    let cp_dyn: Arc<dyn ControlPlane> = cp.clone();
+    service_account_routes(state(cp), cp_dyn, MAX_TTL)
 }
 
 async fn send(
@@ -63,7 +76,7 @@ async fn send(
 #[tokio::test]
 async fn admin_creates_account_and_mints_token_once() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    session_for(&cp, ADMIN, "admin-tok").await;
+    admin_session_for(&cp, ADMIN, "admin-tok").await;
 
     // create account
     let (st, _) = send(
@@ -145,7 +158,7 @@ async fn unauthenticated_is_401() {
 #[tokio::test]
 async fn mint_over_max_ttl_is_400() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    session_for(&cp, ADMIN, "admin-tok").await;
+    admin_session_for(&cp, ADMIN, "admin-tok").await;
     send(
         app(cp.clone()),
         "POST",
@@ -169,7 +182,7 @@ async fn mint_over_max_ttl_is_400() {
 #[tokio::test]
 async fn revoke_makes_token_stop_resolving() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
-    session_for(&cp, ADMIN, "admin-tok").await;
+    admin_session_for(&cp, ADMIN, "admin-tok").await;
     send(
         app(cp.clone()),
         "POST",
@@ -216,11 +229,18 @@ async fn revoke_makes_token_stop_resolving() {
 }
 
 #[tokio::test]
-async fn management_closed_when_no_admin_configured() {
+async fn management_closed_without_admin_role() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    // A verified session that does NOT hold the reserved `admin` role ⇒ 403, even
+    // for the subject named "root" — the gate checks the role, not the username.
     session_for(&cp, ADMIN, "admin-tok").await;
-    // admin_subject = None ⇒ nobody can manage, even the would-be admin.
-    let app = service_account_routes(state(cp), None, MAX_TTL);
-    let (st, _) = send(app, "GET", "/auth/service-accounts", Some("admin-tok"), "").await;
+    let (st, _) = send(
+        app(cp),
+        "GET",
+        "/auth/service-accounts",
+        Some("admin-tok"),
+        "",
+    )
+    .await;
     assert_eq!(st, StatusCode::FORBIDDEN);
 }
