@@ -882,7 +882,7 @@ pub fn enforce_mutate_policy(
 ) -> Result<(), ActionError>
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `src/services/query-api/tests/mutate_phases.rs` (extend the imports
 to
@@ -1010,12 +1010,12 @@ fn unknown_filter_truth_fails_closed() {
 }
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/query-api:mutate-phases > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t4.log`
 Expected: FAIL — compile error, `enforce_mutate_policy` not found.
 
-- [ ] **Step 3: Extract the fn and rewire `run_mutate`**
+- [x] **Step 3: Extract the fn and rewire `run_mutate`**
 
 Add to `action.rs` below `locate_unique_row` (the moved bodies are the
 verbatim leg blocks from `run_mutate`, tracing lines included):
@@ -1093,14 +1093,14 @@ through the close of `if let Some(row) = &new_row { … }` (:684-712) with:
 (keeping the preceding `policies_for` fetch and its comment; the local
 `let policies = &write_policies.items;` binding is deleted.)
 
-- [ ] **Step 4: Run to green (unit + the order-pinning e2es)**
+- [x] **Step 4: Run to green (unit + the order-pinning e2es)**
 
 Run: `buck2 test -j 8 //src/services/query-api:mutate-phases //src/services/query-api:update-delete-governance-e2e //src/services/query-api:update-delete-e2e > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
 Expected: PASS — the Task-1 order pins (`update_order_*`) and the four
 per-leg governance e2es prove the extraction byte-identical.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c4.log 2>&1; cat /tmp/c4.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p4.log 2>&1; grep -c Failed /tmp/p4.log` — expected `0`.
 

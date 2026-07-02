@@ -611,6 +611,60 @@ pub fn locate_unique_row(
     Ok((target_idx, existing))
 }
 
+/// The three ordered fine-grained Write-policy legs of a mutate — a whole-row verdict,
+/// deliberately NOT the INSERT gate (`write_filter::check_write_policy`), whose
+/// deny-column-over-ALL-columns order is wrong for a PATCH. The order is
+/// security-relevant and pinned by e2e + unit tests:
+///   1. the EXISTING row must pass every policy `row_filter` (UPDATE and DELETE) —
+///      a subject may not touch a row it cannot address, and learns nothing about
+///      column policies when it cannot;
+///   2. UPDATE only: no SET column may be policy-denied;
+///   3. UPDATE only: the RESULTING row must pass every `row_filter` — a PATCH may
+///      not move a row out of the subject's writable region.
+///
+/// Fail-closed (an UNKNOWN filter truth denies). Denials are logged server-side; the
+/// returned `WriteDenied` reason is caller-scoped (column name only, never the
+/// predicate). Pure; the unit-test seam for the mutate policy phase.
+pub fn enforce_mutate_policy(
+    policies: &[Policy],
+    columns: &[String],
+    existing: &[SqlValue],
+    set_pairs: &[(String, SqlValue)],
+    new_row: Option<&[SqlValue]>,
+    action_name: &str,
+) -> Result<(), ActionError> {
+    // The existing row must pass every row-filter (both UPDATE and DELETE).
+    if !row_filter_admits(policies, columns, existing) {
+        tracing::info!(
+            action = action_name,
+            "mutate denied: existing row fails write policy filter"
+        );
+        return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
+    }
+    if let Some(row) = new_row {
+        // Deny-column over the SET columns only (UPDATE writes those columns).
+        if let Some(col) = set_pairs.iter().map(|(c, _)| c).find(|c| {
+            policies
+                .iter()
+                .any(|p| p.deny_columns.iter().any(|d| d == *c))
+        }) {
+            tracing::info!(action = action_name, column = %col, "update write denied: policy denies column");
+            return Err(ActionError::WriteDenied(WriteDenialReason::Column(
+                col.clone(),
+            )));
+        }
+        // The resulting row must also pass every row-filter.
+        if !row_filter_admits(policies, columns, row) {
+            tracing::info!(
+                action = action_name,
+                "update denied: resulting row fails write policy filter"
+            );
+            return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
+        }
+    }
+    Ok(())
+}
+
 /// UPDATE/DELETE via whole-table copy-on-write. Locates the row by the target type's
 /// declared identity through a privileged (ACL-unfiltered) full-table read, applies the
 /// mutation in memory (DELETE drops the row; UPDATE PATCHes the named non-identity columns),
@@ -688,37 +742,14 @@ async fn run_mutate(
         .acl()
         .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
         .await?;
-    let policies = &write_policies.items;
-
-    // The existing row must pass every row-filter (both UPDATE and DELETE).
-    if !row_filter_admits(policies, &columns, &existing) {
-        tracing::info!(
-            action = action_name,
-            "mutate denied: existing row fails write policy filter"
-        );
-        return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
-    }
-    if let Some(row) = &new_row {
-        // Deny-column over the SET columns only (UPDATE writes those columns).
-        if let Some(col) = set_pairs.iter().map(|(c, _)| c).find(|c| {
-            policies
-                .iter()
-                .any(|p| p.deny_columns.iter().any(|d| d == *c))
-        }) {
-            tracing::info!(action = action_name, column = %col, "update write denied: policy denies column");
-            return Err(ActionError::WriteDenied(WriteDenialReason::Column(
-                col.clone(),
-            )));
-        }
-        // The resulting row must also pass every row-filter.
-        if !row_filter_admits(policies, &columns, row) {
-            tracing::info!(
-                action = action_name,
-                "update denied: resulting row fails write policy filter"
-            );
-            return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
-        }
-    }
+    enforce_mutate_policy(
+        &write_policies.items,
+        &columns,
+        &existing,
+        &set_pairs,
+        new_row.as_deref(),
+        action_name,
+    )?;
 
     // Build the new full live set: existing rows minus the target (DELETE) or with the
     // target replaced by its new version (UPDATE).
