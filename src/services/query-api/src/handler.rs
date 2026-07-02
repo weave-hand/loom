@@ -76,7 +76,7 @@ pub struct ObjectQuery {
     pub ids: Vec<String>,
     /// OR-group inputs: the raw value of each `_or` query param (a comma-separated list of
     /// `column:value` member predicates). Each entry becomes one parenthesized disjunction
-    /// ANDed into the WHERE. Empty = no OR-groups. Parsed in `read_object`.
+    /// ANDed into the WHERE. Empty = no OR-groups. Parsed in `compile_object_read`.
     pub or_raw: Vec<String>,
 }
 
