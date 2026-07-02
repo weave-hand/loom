@@ -155,13 +155,74 @@ async fn non_cyclic_mixed_path_reserializes_with_tilde() {
         "expected NotCyclicPath(~hasMember), got {err:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inverse_hop_matching_two_inbound_links_is_ambiguous() {
+    // Two links share the name `sharesWith`, both inbound to Person (Team->Person and
+    // Company->Person). The link key is (name, from), so this is legal to declare, but an
+    // inverse hop resolving via links_to(Person) matches BOTH => AmbiguousLink (before any
+    // Read gate). Added on the `cp` in-test so the shared `seeded` fixture is not perturbed.
+    let (cp, subj) = seeded(person_type(Some("id".into()))).await;
+    for from in ["Team", "Company"] {
+        cp.define_link(LinkDef {
+            name: "sharesWith".into(),
+            from: TypeName(from.into()),
+            to: TypeName("Person".into()),
+            cardinality: Cardinality::Many,
+            backing: LinkBacking::ForeignKey {
+                from_column: "id".into(),
+                to_column: "shares_id".into(),
+            },
+        })
+        .await
+        .unwrap();
+    }
+    let serving = GraphServing { rows: vec![] };
+    let deps = QueryDeps { ontology: &cp, acl: &cp, serving: &serving, default_limit: 1000 };
+    let err = read_graph_reach(&graph_query_hops(vec![inv("sharesWith")]), &Subject(subj), &deps)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, QueryError::AmbiguousLink(l) if l == "sharesWith"),
+        "expected AmbiguousLink(sharesWith), got {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forbidden_inverse_landing_type() {
+    // An inverse hop that lands on a Read-denied type => Forbidden. `Secret --watches--> Person`
+    // is inbound to Person, so `~watches` lands on Secret; the `reader` role has no Read grant
+    // on Secret (deny-by-default). Type + link defined in-test to leave `seeded` untouched.
+    let (cp, subj) = seeded(person_type(Some("id".into()))).await;
+    cp.define_type(secret_type()).await.unwrap();
+    cp.define_link(LinkDef {
+        name: "watches".into(),
+        from: TypeName("Secret".into()),
+        to: TypeName("Person".into()),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "watches_id".into(),
+        },
+    })
+    .await
+    .unwrap();
+    let serving = GraphServing { rows: vec![] };
+    let deps = QueryDeps { ontology: &cp, acl: &cp, serving: &serving, default_limit: 1000 };
+    let err = read_graph_reach(&graph_query_hops(vec![inv("watches")]), &Subject(subj), &deps)
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, QueryError::Forbidden), "expected Forbidden, got {err:?}");
+}
 ```
 
-Note for the implementer: `~hasMember` on Person — `hasMember` is `Team --hasMember--> Person` (its `to` is Person), so it is inbound to Person; the inverse hop lands on `link.from` = Team. `current` becomes Team ≠ Person ⇒ `NotCyclicPath`, and the message must re-serialize the inverse hop as `~hasMember`. This pins both inbound resolution and the `~`-re-serialized message.
+Also add a `secret_type()` helper alongside `company_type()`/`team_type()` in `graph_reach.rs` (a plain type with a `Long` `id`, table `main.secret`, identity `id`), and ensure `LinkDef`/`LinkBacking`/`Cardinality`/`TypeName` are imported (they already are — see the existing `use control_plane_core::{…}` at the top of the file).
+
+Note for the implementer: `~hasMember` on Person — `hasMember` is `Team --hasMember--> Person` (its `to` is Person), so it is inbound to Person; the inverse hop lands on `link.from` = Team. `current` becomes Team ≠ Person ⇒ `NotCyclicPath`, and the message must re-serialize the inverse hop as `~hasMember`. This pins both inbound resolution and the `~`-re-serialized message. These five inverse tests together match the spec's Task-1 breakdown (mixed cycle, unknown inverse, ambiguous inverse, non-cyclic mix, forbidden inverse landing).
 
 - [ ] **Step 3: Run the new tests to verify they fail to compile / fail**
 
-Run: `buck2 test //src/services/query-api:graph_reach > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|error\[|does not" /tmp/t.log`
+Run: `buck2 test //src/services/query-api:graph-reach > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|error\[|does not" /tmp/t.log`
 Expected: FAIL — `GraphQuery.path` is still `Vec<String>` so `graph_query_hops`/`fwd`/`inv` don't compile, and the inverse branch doesn't exist. (The BUCK target name mirrors the file stem; confirm with `grep -n graph_reach src/services/query-api/BUCK`.)
 
 - [ ] **Step 4: Change `GraphQuery.path` to `Vec<Hop>`**
@@ -268,7 +329,7 @@ Add `Hop` to the `use crate::handler::{…}` import if not already present (it i
 
 - [ ] **Step 8: Run the handler tests to verify they pass**
 
-Run: `buck2 test //src/services/query-api:graph_reach > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t.log`
+Run: `buck2 test //src/services/query-api:graph-reach > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t.log`
 Expected: PASS — the 5 pre-existing forward tests plus the 3 new inverse tests.
 
 - [ ] **Step 9: Confirm the crate + its immediate targets build (clippy clean)**
@@ -313,7 +374,7 @@ fn graph_path_inherits_the_inverse_grammar() {
 
 - [ ] **Step 2: Run it to verify it passes (parser already supports `~`)**
 
-Run: `buck2 test //src/services/query-api:path_parse > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
+Run: `buck2 test //src/services/query-api:path-parse > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
 Expected: PASS (this test documents inherited behavior; it should pass immediately since `parse_path_hops` already parses `~`). If the target name differs, `grep -n path_parse src/services/query-api/BUCK`.
 
 - [ ] **Step 3: Route `?path=` through `parse_path_hops` and gate `*` to forward hops**
@@ -408,7 +469,7 @@ Expected: BUILD SUCCEEDED, no clippy findings.
 
 - [ ] **Step 6: Re-run the handler + parse tests**
 
-Run: `buck2 test //src/services/query-api:graph_reach //src/services/query-api:path_parse > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
+Run: `buck2 test //src/services/query-api:graph-reach //src/services/query-api:path-parse > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -445,7 +506,7 @@ Create `src/services/query-api/tests/graph_inverse_e2e.rs`. Seed the identical `
 4. **Error arms:**
    - `?path=~memberOf` queried on a type where the single inverse hop does not close (e.g. `GET /objects/Team/graph?path=~memberOf` lands on Person ≠ Team) → 400 `NotCyclicPath`. (Confirm against the fixture which query type makes it non-cyclic; the spec bullet's "lands on Person from Team" describes querying **Team**.)
    - an unknown inverse link (`?path=~nope`) → 404.
-   - (Ambiguous inverse is exercised at the handler level in Task 1's follow-up if the fixture cannot cheaply declare two identically-named inbound links; if it can, add a `?path=~dup` → 400 `AmbiguousLink` case here. Otherwise add a handler test `inverse_hop_ambiguous_is_ambiguous_link` to `graph_reach.rs`: define a second link named `hasMember` from Company→Person so `links_to(Person)` matches two `hasMember`, and assert `AmbiguousLink`.)
+   - (Ambiguous-inverse is already a committed **handler** test in Task 1 — `inverse_hop_matching_two_inbound_links_is_ambiguous` — so it need NOT be re-asserted here. Only add an e2e `?path=~dup` → 400 case if it is trivial in this fixture; otherwise skip it, the handler test is authoritative.)
 
 Skeleton (fill in real column/id values from the fixture — no placeholders in the committed file):
 
@@ -460,11 +521,11 @@ Skeleton (fill in real column/id values from the fixture — no placeholders in 
 
 - [ ] **Step 3: Wire the BUCK target (mirror `graph_path_e2e`)**
 
-In `src/services/query-api/BUCK`, add a `loom_fixture_test` target for `graph_inverse_e2e` copying the `graph_path_e2e` block's `deps`/`env`/`srcs` (it needs `":e2e-support"`, the postgres fixture, iceberg, datafusion serving deps). Confirm the exact macro/deps by reading the `graph_path_e2e` block first.
+In `src/services/query-api/BUCK`, add a `loom_fixture_test` target **named `graph-inverse-e2e`** (buck2 resolves by `name`, which is hyphenated; `crate` uses underscores) by copying the `graph-path-e2e` block's `srcs`/`crate`/`crate_root`/`deps` fields (that block has **no `env`** — do not add one). It needs `":e2e-support"`, the postgres fixture, iceberg, and datafusion serving deps. Confirm the exact macro invocation + dep list by reading the `graph-path-e2e` block (BUCK:316) first.
 
 - [ ] **Step 4: Run the e2e (fixture routes local automatically via `loom_fixture_test`)**
 
-Run: `buck2 test //src/services/query-api:graph_inverse_e2e > /tmp/e.log 2>&1; grep -E "Tests finished|FAIL|error\[|panicked" /tmp/e.log`
+Run: `buck2 test //src/services/query-api:graph-inverse-e2e > /tmp/e.log 2>&1; grep -E "Tests finished|FAIL|error\[|panicked" /tmp/e.log`
 Expected: PASS. If it fails on the exact reachable-id sets, verify against `graph_path_e2e.rs`'s asserted sets (the two must agree by construction) rather than adjusting the fixture.
 
 - [ ] **Step 5: Commit**
@@ -488,7 +549,7 @@ git commit -m "test(query-api): e2e inverse hops in /graph over memberOf-only gr
 
 - [ ] **Step 1: Run `loom-docs-update` (or edit directly following its rules)**
 
-Flip `road-inverse-in-path` in `docs/ROADMAP.md` from `- [ ]`/`status:planned` to `- [x]`/`status:done`. The `pr:` field is set to `#N` once the PR number is known (in the finishing task). Add/confirm FUTURE entries (spec Non-goals): inverse hops in the union axis (`?links=`) and inverse hops in the recursive-core/relational-tail (`*`). Use existing `fut-…` ids if present; otherwise create per grammar.
+Flip `road-inverse-in-path` in `docs/ROADMAP.md` from `- [ ]`/`status:planned` to `- [x]`/`status:done`. The `pr:` field is set to `#N` once the PR number is known (in the finishing task). Add/confirm FUTURE entries (spec Non-goals): inverse hops in the union axis (`?links=`) and inverse hops in the recursive-core/relational-tail (`*`). Also record the deferred **Open Question 1** decision: the legacy single-hop route `GET /objects/:type/graph/:link` is left forward-only this slice (no `?direction=` wiring) — `~` in `?path=` is the sole graph inverse surface; note this so the deferral is explicit. Use existing `fut-…` ids if present; otherwise create per grammar.
 
 - [ ] **Step 2: Validate the registers**
 
