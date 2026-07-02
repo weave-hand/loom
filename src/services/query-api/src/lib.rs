@@ -11,6 +11,7 @@ pub mod engine_action_client;
 pub mod engine_client;
 pub mod filter;
 pub mod flight_export;
+pub mod governed;
 pub mod handler;
 pub mod http;
 pub mod lineage_read;
