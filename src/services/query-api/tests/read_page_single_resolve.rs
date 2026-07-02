@@ -34,6 +34,12 @@ impl Acl for CountingAcl<'_> {
     async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> CpResult<()> {
         self.inner.assign_role(subject, role).await
     }
+    async fn has_role(&self, subject: &SubjectId, role: &RoleId) -> CpResult<bool> {
+        self.inner.has_role(subject, role).await
+    }
+    async fn list_roles(&self) -> CpResult<Vec<RoleId>> {
+        self.inner.list_roles().await
+    }
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> CpResult<()> {
         self.inner.unassign_role(subject, role).await
     }

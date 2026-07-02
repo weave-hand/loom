@@ -119,6 +119,22 @@ impl Acl for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn has_role(&self, subject: &SubjectId, role: &RoleId) -> Result<bool> {
+        Ok(self
+            .acl
+            .lock()
+            .members
+            .contains(&(subject.0.clone(), role.0.clone())))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_roles(&self) -> Result<Vec<RoleId>> {
+        let mut roles: Vec<RoleId> = self.acl.lock().roles.iter().cloned().map(RoleId).collect();
+        roles.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(roles)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
         self.acl
             .lock()

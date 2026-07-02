@@ -17,6 +17,10 @@ use crate::error::Result;
 use crate::page::{Page, PageReq};
 use crate::{TableRef, TypeName};
 
+/// The reserved role that gates the admin HTTP surface (`/admin/*`). Assigned to
+/// the first admin by `loom create-admin`.
+pub const ADMIN_ROLE: &str = "admin";
+
 /// A user or service account.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SubjectId(pub String);
@@ -196,6 +200,11 @@ pub trait Acl {
     async fn define_role(&self, id: &RoleId) -> Result<()>;
     /// Assign a role to a subject. Both must already exist, else `NotFound`. Idempotent.
     async fn assign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()>;
+    /// `true` iff `subject` is directly assigned `role` (NOT inheritance-transitive).
+    /// Unknown subject or role → `Ok(false)`, never an error. Used by the admin gate.
+    async fn has_role(&self, subject: &SubjectId, role: &RoleId) -> Result<bool>;
+    /// All defined roles, sorted by id ascending. Used by the admin console.
+    async fn list_roles(&self) -> Result<Vec<RoleId>>;
     /// Remove a role assignment. Idempotent (no-op if absent).
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()>;
     /// `role` gains all grants + policies of `inherits` (transitively, via the

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from acl.role order by id asc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.role",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c731af674640fef88b26d11410a2215428e8faf9c734577bb133355e02882015"
+}

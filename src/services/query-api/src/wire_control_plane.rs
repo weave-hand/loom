@@ -65,6 +65,14 @@ impl Acl for WireAcl {
         Err(read_only("assign_role"))
     }
 
+    async fn has_role(&self, _s: &SubjectId, _r: &RoleId) -> Result<bool> {
+        Err(read_only("has_role"))
+    }
+
+    async fn list_roles(&self) -> Result<Vec<RoleId>> {
+        Err(read_only("list_roles"))
+    }
+
     async fn unassign_role(&self, _s: &SubjectId, _r: &RoleId) -> Result<()> {
         Err(read_only("unassign_role"))
     }

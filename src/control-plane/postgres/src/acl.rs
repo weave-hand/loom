@@ -78,6 +78,33 @@ impl Acl for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn has_role(&self, subject: &SubjectId, role: &RoleId) -> Result<bool> {
+        Ok(sqlx::query_scalar!(
+            "select exists (select 1 from acl.role_member \
+             where subject_id = $1 and role_id = $2)",
+            &subject.0,
+            &role.0,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?
+        .unwrap_or(false))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_roles(&self) -> Result<Vec<RoleId>> {
+        Ok(
+            sqlx::query_scalar!("select id from acl.role order by id asc")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(backend)?
+                .into_iter()
+                .map(RoleId)
+                .collect(),
+        )
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn unassign_role(&self, subject: &SubjectId, role: &RoleId) -> Result<()> {
         sqlx::query!(
             "delete from acl.role_member where subject_id = $1 and role_id = $2",

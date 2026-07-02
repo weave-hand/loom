@@ -1286,6 +1286,38 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     a.define_subject(&sid("alice")).await.unwrap();
     a.define_role(&rid("reader")).await.unwrap();
     a.assign_role(&sid("alice"), &rid("reader")).await.unwrap();
+
+    // --- has_role: direct membership only ---
+    assert!(
+        a.has_role(&sid("alice"), &rid("reader")).await.unwrap(),
+        "alice was assigned reader"
+    );
+    assert!(
+        !a.has_role(&sid("alice"), &rid("writer")).await.unwrap(),
+        "alice not assigned writer yet"
+    );
+    assert!(
+        !a.has_role(&sid("ghost"), &rid("reader")).await.unwrap(),
+        "unknown subject → false, not error"
+    );
+    assert!(
+        !a.has_role(&sid("alice"), &rid("no-such-role"))
+            .await
+            .unwrap(),
+        "unknown role → false, not error"
+    );
+
+    // --- list_roles: all defined roles, sorted ---
+    let roles = a.list_roles().await.unwrap();
+    assert!(
+        roles.contains(&rid("reader")),
+        "list_roles includes a defined role"
+    );
+    assert!(
+        roles.windows(2).all(|w| w[0].0 <= w[1].0),
+        "list_roles is sorted by id ascending"
+    );
+
     a.grant(
         &rid("reader"),
         Action::Read,
