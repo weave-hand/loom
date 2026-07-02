@@ -2171,7 +2171,7 @@ Part of road-qa-read-path-consolidation."
   private
   `async fn respond_shaped(st: &AppState, query: ChainQuery, shape: Option<&str>, subject: &Subject) -> axum::response::Response`.
 
-- [ ] **Step 1: Implement**
+- [x] **Step 1: Implement**
 
 ```rust
 impl AppState {
@@ -2244,7 +2244,7 @@ async fn respond_shaped(
     respond_shaped(&st, query, reserved.last("_shape"), &subject).await
 ```
 
-- [ ] **Step 2: Run the wire pins to green**
+- [x] **Step 2: Run the wire pins to green**
 
 Run: `buck2 test //src/services/query-api:http-smoke //src/services/query-api:query-params //src/services/query-api:query-error-http > /tmp/t8.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t8.log`
 Expected: PASS.
@@ -2252,7 +2252,7 @@ Run: `buck2 test -j 8 //src/services/query-api:link-traversal //src/services/que
 Expected: PASS — all unmodified.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c8.log 2>&1; cat /tmp/c8.log` — artifact empty.
 
-- [ ] **Step 3: prek + commit**
+- [x] **Step 3: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p8.log 2>&1; grep -c Failed /tmp/p8.log` — expected `0`.
 

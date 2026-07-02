@@ -70,6 +70,19 @@ pub struct AppState {
     pub default_limit: u32,
 }
 
+impl AppState {
+    /// The per-request borrowed dependency bundle every read handler passes down —
+    /// one construction point instead of a hand-built literal per route.
+    pub fn deps(&self) -> QueryDeps<'_> {
+        QueryDeps {
+            ontology: self.cp.ontology(),
+            acl: self.cp.acl(),
+            serving: self.serving.as_ref(),
+            default_limit: self.default_limit,
+        }
+    }
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/objects/:type_name", get(get_object))
@@ -184,12 +197,7 @@ async fn get_object(
     let or_raw: Vec<String> = reserved.all("_or").to_vec();
     let raw_limit = reserved.last("limit").map(String::from);
     let raw_cursor = reserved.last("cursor").map(String::from);
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     let paginated = raw_limit.is_some() || raw_cursor.is_some();
     if paginated {
         let limit = match raw_limit {
@@ -282,12 +290,6 @@ async fn get_linked(
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
     let query = ChainQuery {
         from_type,
         path: vec![Hop {
@@ -297,13 +299,7 @@ async fn get_linked(
         filters,
         ids,
     };
-    match reserved.last("_shape") {
-        None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
-        Some("association") => {
-            respond_associations(read_associations(&query, &subject, &deps).await)
-        }
-        Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
-    }
+    respond_shaped(&st, query, reserved.last("_shape"), &subject).await
 }
 
 #[utoipa::path(
@@ -342,22 +338,29 @@ async fn get_linked_chain(
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
     let query = ChainQuery {
         from_type,
         path: hops,
         filters,
         ids,
     };
-    match reserved.last("_shape") {
-        None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
+    respond_shaped(&st, query, reserved.last("_shape"), &subject).await
+}
+
+/// The shared single-hop/chain response tail: dispatch `_shape` (objects default,
+/// association pairs, unknown -> 400) over the governed chain read. The get_linked
+/// and get_linked_chain tails were verbatim copies of this.
+async fn respond_shaped(
+    st: &AppState,
+    query: ChainQuery,
+    shape: Option<&str>,
+    subject: &Subject,
+) -> axum::response::Response {
+    let deps = st.deps();
+    match shape {
+        None | Some("objects") => respond_objects(read_linked_chain(&query, subject, &deps).await),
         Some("association") => {
-            respond_associations(read_associations(&query, &subject, &deps).await)
+            respond_associations(read_associations(&query, subject, &deps).await)
         }
         Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
     }
@@ -618,12 +621,7 @@ async fn graph_respond(
     spec: GraphReadSpec<'_>,
     subject: &Subject,
 ) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     match read_graph_reach_spec(spec, subject, &deps).await {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => query_error_response(e, "graph read serving fault"),
@@ -637,12 +635,7 @@ async fn graph_tree_respond(
     q: GraphQuery,
     subject: &Subject,
 ) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     match read_graph_tree(&q, subject, &deps).await {
         Ok(tree) => Json(crate::render::tree_to_json(&tree)).into_response(),
         Err(e) => query_error_response(e, "graph read serving fault"),
@@ -782,12 +775,7 @@ async fn post_search(
     if let Err(msg) = validate_search_request(&req) {
         return (StatusCode::BAD_REQUEST, msg).into_response();
     }
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     let q = crate::handler::VectorSearchQuery {
         type_name,
         index_name,
