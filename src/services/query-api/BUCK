@@ -1324,6 +1324,8 @@ loom_fixture_test(
     srcs = ["tests/admin_e2e.rs"],
     crate_root = "tests/admin_e2e.rs",
     deps = [
+        ":query-api",
+        ":e2e-support",
         "//src/services/runtime:runtime",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
