@@ -60,9 +60,10 @@ Create `src/services/query-api/tests/wire_lineage_e2e.rs`:
 
 use std::sync::Arc;
 
-use control_plane_core::{
-    ControlPlane, DatasetRef, EventType, Lineage, LineageEvent, PageReq, RunId,
-};
+// `ControlPlane` in scope for `cp.lineage()`/`wire.lineage()`; `Lineage` is NOT
+// imported (its methods run on the returned `&dyn Lineage`, needing no trait in
+// scope — an unused import would fail clippy's `unused_imports` on this test target).
+use control_plane_core::{ControlPlane, DatasetRef, EventType, LineageEvent, PageReq, RunId};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use e2e_support::{connect_gov_client, spawn_engine};
@@ -378,7 +379,8 @@ pub struct LineageEventView {
     pub event_time: String,
     pub inputs: Vec<DatasetNode>,
     pub outputs: Vec<DatasetNode>,
-    #[schema(value_type = Object)]
+    // `serde_json::Value` derives `ToSchema` directly (see openapi.rs) — no
+    // `#[schema(value_type = ...)]` override needed.
     pub payload: serde_json::Value,
 }
 
@@ -412,7 +414,9 @@ pub fn parse_lineage_page(
     let limit = match limit {
         Some(s) => Some(
             s.parse::<u32>()
-                .map_err(|_| "limit must be a non-negative integer".to_string())?,
+                // Carry the parse error — a bare `.map_err(|_| ...)` trips the enforced
+                // `clippy::map_err_ignore` (restriction group) on production code.
+                .map_err(|e| format!("limit must be a non-negative integer: {e}"))?,
         ),
         None => None,
     };
@@ -490,7 +494,7 @@ rust_test(
 Run: `buck2 test //src/services/query-api:lineage-read > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log`
 Expected: PASS (8 tests).
 
-> Note on `#[schema(value_type = Object)]`: utoipa maps `serde_json::Value` to a free-form object schema. `openapi.rs` notes `serde_json::Value` derives `ToSchema` directly, so the `value_type` override may be unnecessary — if `buck2 build` reports it as redundant/erroring, drop the attribute. Verify with the clippy/build step.
+> Note: `serde_json::Value` derives `ToSchema` directly (per `openapi.rs`), so `LineageEventView.payload` needs no `#[schema(value_type = ...)]` override — omitted above.
 
 - [ ] **Step 5: Clippy-check**
 
@@ -850,7 +854,11 @@ Create `src/services/query-api/tests/lineage_http_e2e.rs`:
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use control_plane_core::{DatasetRef, EventType, Lineage, LineageEvent, RunId};
+// `ControlPlane` is in scope for `cp.lineage()` (a trait method on the concrete
+// `PgControlPlane`); `Lineage` is NOT imported — its methods are called on the
+// `&dyn Lineage` the accessor returns, which needs no trait in scope (an unused
+// `Lineage` import would fail the enforced clippy `unused_imports` on test targets).
+use control_plane_core::{ControlPlane, DatasetRef, EventType, LineageEvent, RunId};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use e2e_support::{get, get_unauth, NoServing};
