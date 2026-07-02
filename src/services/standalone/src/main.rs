@@ -49,8 +49,9 @@ async fn main() -> Result<(), BoxErr> {
 
     let cfg = service_runtime::Config::from_map(&env)?;
     let addrs = resolve_addrs(&env)?;
+    let tuning = standalone::StandaloneTuning::from_map(&env)?;
 
-    standalone::run(cfg, addrs, shutdown_signal(), ready_noop()).await
+    standalone::run(cfg, addrs, tuning, shutdown_signal(), ready_noop()).await
 }
 
 async fn create_admin_cli() -> Result<(), BoxErr> {

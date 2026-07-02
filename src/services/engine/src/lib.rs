@@ -4,4 +4,4 @@ pub mod flight;
 pub mod run;
 pub mod service;
 
-pub use run::run;
+pub use run::{EngineTuning, run};

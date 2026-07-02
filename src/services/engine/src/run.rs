@@ -21,12 +21,45 @@ use crate::service::EngineControlService;
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
+/// Engine write-path byte thresholds, parsed once from the caller's env snapshot
+/// (the engine main / the standalone composite) — `run` itself never reads the
+/// live environment (one-env-snapshot-per-main).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineTuning {
+    /// Row payloads at/below this size commit as inline PG rows
+    /// (`LOOM_INLINE_BYTE_LIMIT`, default 16 MiB).
+    pub inline_byte_limit: usize,
+    /// Inline-row bytes above which a flush-to-Parquet job is enqueued
+    /// (`LOOM_FLUSH_BYTE_THRESHOLD`, default 64 MiB).
+    pub flush_byte_threshold: i64,
+}
+
+impl EngineTuning {
+    /// Parse from the env snapshot: absent keys take the defaults, a
+    /// present-but-malformed value fails startup naming the key.
+    pub fn from_map(vars: &HashMap<String, String>) -> Result<Self, service_runtime::ConfigError> {
+        Ok(EngineTuning {
+            inline_byte_limit: service_runtime::parse_var(
+                vars,
+                "LOOM_INLINE_BYTE_LIMIT",
+                16 * 1024 * 1024,
+            )?,
+            flush_byte_threshold: service_runtime::parse_var(
+                vars,
+                "LOOM_FLUSH_BYTE_THRESHOLD",
+                64 * 1024 * 1024,
+            )?,
+        })
+    }
+}
+
 /// Build and serve the engine on `listener`. Fires `ready` once the services are
 /// built and the serve loop is about to run; returns when `shutdown` resolves.
 pub async fn run(
     listener: UnixListener,
     cfg: &service_runtime::Config,
     pool: sqlx::PgPool,
+    tuning: EngineTuning,
     ready: oneshot::Sender<()>,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<(), BoxErr> {
@@ -48,9 +81,6 @@ pub async fn run(
         .load("loom", props)
         .await?;
 
-    let inline_byte_limit: usize = parse_env_or("LOOM_INLINE_BYTE_LIMIT", 16 * 1024 * 1024)?;
-    let flush_byte_threshold: i64 = parse_env_or("LOOM_FLUSH_BYTE_THRESHOLD", 64 * 1024 * 1024)?;
-
     let writer_catalog = SqlCatalogBuilder::default()
         .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props_for_writer)
@@ -58,8 +88,8 @@ pub async fn run(
     let writer = engine_serving::IcebergActionWriter::new(
         std::sync::Arc::new(writer_catalog),
         pool.clone(),
-        inline_byte_limit,
-        flush_byte_threshold,
+        tuning.inline_byte_limit,
+        tuning.flush_byte_threshold,
     );
 
     let control = EngineControlService {
@@ -87,15 +117,4 @@ pub async fn run(
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
         .await?;
     Ok(())
-}
-
-fn parse_env_or<T>(key: &str, default: T) -> Result<T, BoxErr>
-where
-    T: std::str::FromStr,
-    <T as std::str::FromStr>::Err: std::fmt::Display,
-{
-    match std::env::var(key) {
-        Ok(v) => v.parse().map_err(|e| format!("{key}: {e}").into()),
-        Err(_) => Ok(default),
-    }
 }

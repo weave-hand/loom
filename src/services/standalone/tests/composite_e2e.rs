@@ -93,10 +93,13 @@ async fn composite_round_trips_and_shuts_down_cleanly() {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+    let tuning =
+        standalone::StandaloneTuning::from_map(&std::collections::HashMap::new()).expect("tuning");
     let handle = tokio::spawn(async move {
         standalone::run(
             cfg,
             addrs,
+            tuning,
             async move {
                 drop(shutdown_rx.await);
             },

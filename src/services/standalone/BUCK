@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
 
 rust_library(
@@ -32,6 +33,18 @@ rust_binary(
         "//third-party:tokio",
     ],
     visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "tuning",
+    crate = "tuning",
+    srcs = ["tests/tuning.rs"],
+    crate_root = "tests/tuning.rs",
+    deps = [
+        ":standalone",
+        "//src/services/engine:engine",
+        "//src/services/runtime:runtime",
+    ],
 )
 
 loom_fixture_test(

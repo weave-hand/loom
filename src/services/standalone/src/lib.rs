@@ -15,6 +15,31 @@ pub struct StandaloneAddrs {
     pub engine_socket: String,
 }
 
+/// Env-derived tunables the composite passes to its services: the auth TTLs and
+/// the engine write-path byte thresholds. Parsed once from the main's env
+/// snapshot (fail-loud on malformed values) and handed into [`run`]; the
+/// composite itself never reads the live environment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandaloneTuning {
+    pub session_ttl: std::time::Duration,
+    pub max_ttl: std::time::Duration,
+    pub engine: engine::EngineTuning,
+}
+
+impl StandaloneTuning {
+    /// Parse from the env snapshot. Absent keys take the documented defaults
+    /// (24h session TTL, 90-day token cap, 16 MiB inline / 64 MiB flush).
+    pub fn from_map(
+        vars: &std::collections::HashMap<String, String>,
+    ) -> Result<Self, service_runtime::ConfigError> {
+        Ok(StandaloneTuning {
+            session_ttl: service_runtime::session_ttl(vars)?,
+            max_ttl: service_runtime::service_token_max_ttl(vars)?,
+            engine: engine::EngineTuning::from_map(vars)?,
+        })
+    }
+}
+
 /// Boot the composite. Binds all listeners before spawning their serve loops so
 /// readiness is race-free; `ready` fires once every listener is bound. On
 /// `shutdown` — or as soon as any serve task exits — the servers are all stopped,
@@ -22,6 +47,7 @@ pub struct StandaloneAddrs {
 pub async fn run(
     cfg: service_runtime::Config,
     addrs: StandaloneAddrs,
+    tuning: StandaloneTuning,
     shutdown: impl Future<Output = ()> + Send + 'static,
     ready: tokio::sync::oneshot::Sender<()>,
 ) -> Result<(), BoxErr> {
@@ -29,7 +55,7 @@ pub async fn run(
     // stopped gracefully on EVERY exit of the composite below — clean shutdown,
     // a serve-task error, an engine-before-ready failure, or a startup bind error.
     let (pool, pg_handle) = service_runtime::build_pool_managed(&cfg).await?;
-    let mut outcome = serve_composite(cfg, addrs, shutdown, ready, pool).await;
+    let mut outcome = serve_composite(cfg, addrs, tuning, shutdown, ready, pool).await;
     stop_pg(pg_handle, &mut outcome).await;
     outcome
 }
@@ -40,6 +66,7 @@ pub async fn run(
 async fn serve_composite(
     cfg: service_runtime::Config,
     addrs: StandaloneAddrs,
+    tuning: StandaloneTuning,
     shutdown: impl Future<Output = ()> + Send + 'static,
     ready: tokio::sync::oneshot::Sender<()>,
     pool: sqlx::PgPool,
@@ -51,9 +78,9 @@ async fn serve_composite(
     ));
     let auth = service_runtime::AuthState {
         auth: pg.clone(),
-        session_ttl: service_runtime::session_ttl_from_env(),
+        session_ttl: tuning.session_ttl,
     };
-    let max_ttl = service_runtime::service_token_max_ttl_from_env();
+    let max_ttl = tuning.max_ttl;
 
     // One shutdown source fanned out to all three servers via a watch channel.
     // The sender stays in this frame so BOTH an external shutdown signal AND the
@@ -87,6 +114,7 @@ async fn serve_composite(
                 engine_listener,
                 &engine_cfg,
                 engine_pool,
+                tuning.engine,
                 eng_ready_tx,
                 engine_sd,
             )

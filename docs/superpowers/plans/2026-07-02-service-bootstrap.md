@@ -912,7 +912,7 @@ Part of road-service-bootstrap, toward iss-config-silent-fallbacks."
   `engine::run`/`standalone::run` exists (verified by grep — no engine test
   calls `run`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/services/engine/tests/engine_tuning.rs`:
 
@@ -1020,12 +1020,12 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/engine:engine-tuning //src/services/standalone:tuning > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t5.log`
 Expected: FAIL — `EngineTuning`/`StandaloneTuning` unresolved.
 
-- [ ] **Step 3: Implement the engine side**
+- [x] **Step 3: Implement the engine side**
 
 In `src/services/engine/src/run.rs`:
 
@@ -1127,7 +1127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 ```
 
-- [ ] **Step 4: Implement the standalone side**
+- [x] **Step 4: Implement the standalone side**
 
 In `src/services/standalone/src/lib.rs`:
 
@@ -1250,7 +1250,7 @@ and the engine spawn passes the engine slice through:
         standalone::run(cfg, addrs, tuning, std::future::pending::<()>(), ready_tx),
 ```
 
-- [ ] **Step 5: Run to green (pure + fixture)**
+- [x] **Step 5: Run to green (pure + fixture)**
 
 Run: `buck2 test //src/services/engine:engine-tuning //src/services/standalone:tuning > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5.log`
 Expected: PASS.
@@ -1258,7 +1258,7 @@ Run: `buck2 test -j 8 //src/services/standalone: > /tmp/t5b.log 2>&1; grep -E "T
 Expected: PASS (composite-e2e, composite-error-path, create-admin, tuning).
 Run: `buck2 build '//src/services/engine:engine[clippy.txt]' '//src/services/standalone:standalone[clippy.txt]' > /tmp/c5.log 2>&1` — artifacts empty.
 
-- [ ] **Step 6: prek + commit**
+- [x] **Step 6: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p5.log 2>&1; grep -c Failed /tmp/p5.log` — expected `0`.
 
