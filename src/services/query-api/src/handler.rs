@@ -3,8 +3,7 @@
 //! SQL with bound params; execute on the serving engine.
 
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, ObjectType, Ontology, PageReq, PolicyTarget,
-    RowFilter, TypeName,
+    Acl, Action, ControlPlaneError, Decision, Ontology, PageReq, PolicyTarget, TypeName,
 };
 pub use service_runtime::Subject;
 
@@ -159,7 +158,7 @@ pub use crate::governed::{
     GovernedType, OnMissing, Projection, identity_in_predicate, identity_is_governed, prop_ty,
     resolve_governed, resolve_hop, seed_predicates,
 };
-use crate::governed::{coerce_visible_predicate, load_policy, project_allowed};
+use crate::governed::{coerce_visible_predicate, load_policy};
 
 /// The target column a derived aggregate reads, if any (COUNT reads none).
 fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
@@ -976,38 +975,18 @@ pub async fn read_graph_reach(
 
     let (sql, params) = crate::sql::compile_graph_reach(
         deps.serving.dialect(),
-        &r.object_type.table,
+        &r.g.otype.table,
         &r.identity,
         &r.steps,
         &r.seed_predicates,
-        &r.row_filters,
-        &r.allowed,
-        &r.mask_cols,
+        &r.g.row_filters,
+        &r.proj.columns,
+        &r.proj.masked,
         q.depth,
         deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
-    let logical_types: Vec<String> = r
-        .allowed
-        .iter()
-        .map(|name| {
-            r.object_type
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    debug_assert_eq!(
-        served.columns, r.allowed,
-        "serving engine returned columns out of the projected order"
-    );
-    Ok(ObjectRows {
-        columns: r.allowed,
-        logical_types,
-        rows: served.rows,
-    })
+    Ok(r.proj.into_object_rows(served))
 }
 
 /// Serve a bounded shortest-path-**tree** read over a path-cycle (a 1-element path is the
@@ -1029,19 +1008,19 @@ pub async fn read_graph_tree(
     let r = resolve_graph(q, subject, deps).await?;
 
     // The tree projects identity (id + parent). A denied/masked identity would leak -> Forbidden.
-    if identity_is_governed(&r.object_type, &r.denied, &r.masked) {
+    if r.g.identity_governed() {
         return Err(QueryError::Forbidden);
     }
 
     let (sql, params) = crate::sql::compile_graph_tree(
         deps.serving.dialect(),
-        &r.object_type.table,
+        &r.g.otype.table,
         &r.identity,
         &r.steps,
         &r.seed_predicates,
-        &r.row_filters,
-        &r.allowed,
-        &r.mask_cols,
+        &r.g.row_filters,
+        &r.proj.columns,
+        &r.proj.masked,
         q.depth,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
@@ -1052,7 +1031,7 @@ pub async fn read_graph_tree(
     debug_assert_eq!(
         served.columns,
         {
-            let mut expected = r.allowed.clone();
+            let mut expected = r.proj.columns.clone();
             expected.extend(
                 [
                     crate::sql::TREE_DEPTH_COL,
@@ -1067,29 +1046,13 @@ pub async fn read_graph_tree(
         "serving engine returned tree columns out of the projected order"
     );
 
-    let logical_types: Vec<String> = r
-        .allowed
-        .iter()
-        .map(|name| {
-            r.object_type
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    let identity_type = r
-        .object_type
-        .properties
-        .iter()
-        .find(|p| p.name == r.identity)
-        .map(|p| p.ty.clone())
+    let identity_type = prop_ty(&r.g.otype, &r.identity)
+        .map(str::to_string)
         .unwrap_or_default();
 
     // Each served row is [object cells..., __depth, __parent, __id] (compile_graph_tree order).
     // Pop the three trailing columns off the end; the remainder are the object cells.
-    let ncols = r.allowed.len();
+    let ncols = r.proj.columns.len();
     let nodes: Vec<TreeNode> = served
         .rows
         .into_iter()
@@ -1110,28 +1073,29 @@ pub async fn read_graph_tree(
         })
         .collect();
 
+    let Projection {
+        columns,
+        logical_types,
+        ..
+    } = r.proj;
     Ok(ObjectTree {
-        columns: r.allowed,
+        columns,
         logical_types,
         identity_type,
         nodes,
     })
 }
 
-/// Everything the two graph reads (reachable-set and shortest-path-tree) need after resolving
-/// the queried type, ACL policy, and the path-cycle: the resolved object type + declared
-/// identity, the compiler `GraphStep`s (per-intermediate governance already folded in), the
-/// start row-filters, the visible/masked projection, the raw denied/masked column sets (so a
-/// caller can additionally require identity visibility), and the coerced seed predicates.
+/// Everything the two graph reads (reachable-set and shortest-path-tree) need after
+/// resolving the queried type, ACL policy, and the path-cycle: the governed type (whose
+/// row-filters govern the recursion start), the declared identity (the recursion's
+/// dedup key), the compiler `GraphStep`s (per-intermediate governance folded in), the
+/// visible/masked projection, and the coerced seed predicates.
 struct GraphResolved {
-    object_type: ObjectType,
+    g: GovernedType,
     identity: String,
     steps: Vec<crate::sql::GraphStep>,
-    row_filters: Vec<RowFilter>,
-    allowed: Vec<String>,
-    mask_cols: Vec<String>,
-    denied: std::collections::HashSet<String>,
-    masked: std::collections::HashSet<String>,
+    proj: Projection,
     seed_predicates: Vec<crate::filter::CallerPredicate>,
 }
 
@@ -1146,31 +1110,25 @@ async fn resolve_graph(
     deps: &QueryDeps<'_>,
 ) -> Result<GraphResolved, QueryError> {
     let type_name = TypeName(q.type_name.clone());
-    let target = PolicyTarget::Type(type_name.clone());
-
-    // Read gate (deny-by-default, before existence is revealed).
-    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
-        return Err(QueryError::Forbidden);
-    }
-    let object_type = deps
-        .ontology
-        .get_type(&type_name)
-        .await
-        .map_err(|e| match e {
-            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
-            other => QueryError::ControlPlane(other),
-        })?;
-    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+    let g = resolve_governed(
+        deps.ontology,
+        deps.acl,
+        &subject.0,
+        &type_name,
+        OnMissing::NotFound,
+    )
+    .await?;
 
     // Declared identity is the recursion's dedup key.
-    let identity = object_type
+    let identity = g
+        .otype
         .identity
         .clone()
         .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
 
-    // Resolve the path-cycle: walk l1..lK forward from the queried type. Each landed type is
-    // Read-gated and its row-filters loaded (intermediate governance). After the last link the
-    // type must be the queried type again (a cycle) — else it cannot be repeated.
+    // Resolve the path-cycle: walk l1..lK from the queried type. Each landed type is
+    // Read-gated and its row-filters loaded (intermediate governance). After the last
+    // link the type must be the queried type again (a cycle) — else it cannot repeat.
     if q.path.is_empty() {
         return Err(QueryError::NotCyclicPath(String::new()));
     }
@@ -1178,56 +1136,28 @@ async fn resolve_graph(
     let mut current = type_name.clone();
     let last = q.path.len() - 1;
     for (i, hop) in q.path.iter().enumerate() {
-        let (landed, backing) = match hop.direction {
-            Direction::Forward => {
-                let links = deps.ontology.links(&current, PageReq::unbounded()).await?;
-                let link = links
-                    .items
-                    .into_iter()
-                    .find(|l| l.name == hop.link)
-                    .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
-                (link.to.clone(), link.backing.clone())
-            }
-            Direction::Inverse => {
-                let links = deps
-                    .ontology
-                    .links_to(&current, PageReq::unbounded())
-                    .await?;
-                let mut matches = links.items.into_iter().filter(|l| l.name == hop.link);
-                let link = matches
-                    .next()
-                    .ok_or_else(|| QueryError::UnknownLink(hop.link.clone()))?;
-                if matches.next().is_some() {
-                    return Err(QueryError::AmbiguousLink(hop.link.clone()));
-                }
-                // Inverse: land on the origin, backing reversed so the symmetric join
-                // reaches `current` back to `link.from`.
-                (link.from.clone(), link.backing.reversed())
-            }
-        };
-        let landed_target = PolicyTarget::Type(landed.clone());
-        // Read on every reached type (intermediate + final), forward or inverse.
-        if deps
-            .acl
-            .check(&subject.0, Action::Read, &landed_target)
-            .await?
-            == Decision::Deny
-        {
-            return Err(QueryError::Forbidden);
-        }
-        let landed_type = deps.ontology.get_type(&landed).await?;
-        let (landed_filters, _ld, _lm) = load_policy(deps.acl, &subject.0, &landed_target).await?;
-        // Intermediates carry their own row-filters; the FINAL landing is the start type, whose
-        // filters are rendered at `nxt` by the compiler -> pass empty here (no double-render).
-        let next_filters = if i == last {
-            Vec::new()
-        } else {
-            landed_filters
-        };
+        let (landed, backing) = resolve_hop(deps.ontology, &current, hop).await?;
+        // Read on every reached type (intermediate + final), forward or inverse. A link
+        // pointing at a missing type is an internal inconsistency, not a 404.
+        let landed_g = resolve_governed(
+            deps.ontology,
+            deps.acl,
+            &subject.0,
+            &landed,
+            OnMissing::Internal,
+        )
+        .await?;
+        // Intermediates carry their own row-filters; the FINAL landing is the start
+        // type, whose filters are rendered at `nxt` by the compiler -> pass empty here
+        // (no double-render).
         steps.push(crate::sql::GraphStep {
             backing,
-            next_table: landed_type.table.clone(),
-            next_filters,
+            next_table: landed_g.otype.table.clone(),
+            next_filters: if i == last {
+                Vec::new()
+            } else {
+                landed_g.row_filters
+            },
         });
         current = landed;
     }
@@ -1236,44 +1166,17 @@ async fn resolve_graph(
     }
 
     // Projection: visible columns minus denied; masked applied. Empty -> Forbidden.
-    let allowed = project_allowed(&object_type.properties, &denied);
-    if allowed.is_empty() {
-        return Err(QueryError::Forbidden);
-    }
-    let mask_cols: Vec<String> = allowed
-        .iter()
-        .filter(|c| masked.contains(*c))
-        .cloned()
-        .collect();
+    let proj = Projection::visible(&g)?;
 
     // Seed predicates: source filters (visibility-checked + coerced) then the ?_ids= set.
-    let mut seed_predicates: Vec<crate::filter::CallerPredicate> = Vec::new();
-    for (col, raw) in &q.filters {
-        if !allowed.contains(col) || masked.contains(col) {
-            return Err(QueryError::BadFilter(col.clone()));
-        }
-        let ty = object_type
-            .properties
-            .iter()
-            .find(|p| &p.name == col)
-            .map(|p| p.ty.as_str())
-            .unwrap_or("");
-        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
-    }
-    if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
-        seed_predicates.push(p);
-    }
+    let seed = seed_predicates(&g, &proj.columns, &q.filters, &q.ids)?;
 
     Ok(GraphResolved {
-        object_type,
+        g,
         identity,
         steps,
-        row_filters,
-        allowed,
-        mask_cols,
-        denied,
-        masked,
-        seed_predicates,
+        proj,
+        seed_predicates: seed,
     })
 }
 
@@ -1302,24 +1205,18 @@ pub async fn read_graph_reach_union(
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
     let type_name = TypeName(q.type_name.clone());
-    let target = PolicyTarget::Type(type_name.clone());
-
-    // Read gate (deny-by-default, before existence is revealed).
-    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
-        return Err(QueryError::Forbidden);
-    }
-    let object_type = deps
-        .ontology
-        .get_type(&type_name)
-        .await
-        .map_err(|e| match e {
-            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
-            other => QueryError::ControlPlane(other),
-        })?;
-    let (row_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
+    let g = resolve_governed(
+        deps.ontology,
+        deps.acl,
+        &subject.0,
+        &type_name,
+        OnMissing::NotFound,
+    )
+    .await?;
 
     // Declared identity is the recursion's dedup key.
-    let identity = object_type
+    let identity = g
+        .otype
         .identity
         .clone()
         .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
@@ -1352,68 +1249,23 @@ pub async fn read_graph_reach_union(
         backings.push(link.backing.clone());
     }
 
-    // Projection: visible columns minus denied; masked applied. Empty -> Forbidden.
-    let allowed = project_allowed(&object_type.properties, &denied);
-    if allowed.is_empty() {
-        return Err(QueryError::Forbidden);
-    }
-    let mask_cols: Vec<String> = allowed
-        .iter()
-        .filter(|c| masked.contains(*c))
-        .cloned()
-        .collect();
-
-    // Seed predicates: source filters (visibility-checked + coerced) then the ?_ids= set.
-    let mut seed_predicates: Vec<crate::filter::CallerPredicate> = Vec::new();
-    for (col, raw) in &q.filters {
-        if !allowed.contains(col) || masked.contains(col) {
-            return Err(QueryError::BadFilter(col.clone()));
-        }
-        let ty = object_type
-            .properties
-            .iter()
-            .find(|p| &p.name == col)
-            .map(|p| p.ty.as_str())
-            .unwrap_or("");
-        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
-    }
-    if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
-        seed_predicates.push(p);
-    }
+    let proj = Projection::visible(&g)?;
+    let seeds = seed_predicates(&g, &proj.columns, &q.filters, &q.ids)?;
 
     let (sql, params) = crate::sql::compile_graph_reach_union(
         deps.serving.dialect(),
-        &object_type.table,
+        &g.otype.table,
         &identity,
         &backings,
-        &seed_predicates,
-        &row_filters,
-        &allowed,
-        &mask_cols,
+        &seeds,
+        &g.row_filters,
+        &proj.columns,
+        &proj.masked,
         q.depth,
         deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
-    let logical_types: Vec<String> = allowed
-        .iter()
-        .map(|name| {
-            object_type
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    debug_assert_eq!(
-        served.columns, allowed,
-        "serving engine returned columns out of the projected order"
-    );
-    Ok(ObjectRows {
-        columns: allowed,
-        logical_types,
-        rows: served.rows,
-    })
+    Ok(proj.into_object_rows(served))
 }
 
 /// A bounded recursive-core + relational-tail reachability read. `core_link` is a `*`-suffixed
@@ -1443,24 +1295,18 @@ pub async fn read_graph_reach_with_tail(
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
     let type_name = TypeName(q.type_name.clone());
-    let target = PolicyTarget::Type(type_name.clone());
+    let g = resolve_governed(
+        deps.ontology,
+        deps.acl,
+        &subject.0,
+        &type_name,
+        OnMissing::NotFound,
+    )
+    .await?;
 
-    // Read gate on the queried (core) type (deny-by-default, before existence is revealed).
-    if deps.acl.check(&subject.0, Action::Read, &target).await? == Decision::Deny {
-        return Err(QueryError::Forbidden);
-    }
-    let object_type = deps
-        .ontology
-        .get_type(&type_name)
-        .await
-        .map_err(|e| match e {
-            ControlPlaneError::NotFound(_) => QueryError::UnknownType(q.type_name.clone()),
-            other => QueryError::ControlPlane(other),
-        })?;
-    let (core_filters, denied, masked) = load_policy(deps.acl, &subject.0, &target).await?;
-
-    // Declared identity: the recursion's dedup key and the join key from the tail back to reach.
-    let identity = object_type
+    // Declared identity: the recursion's dedup key and the tail's join key back to reach.
+    let identity = g
+        .otype
         .identity
         .clone()
         .ok_or_else(|| QueryError::NoIdentity(q.type_name.clone()))?;
@@ -1492,118 +1338,63 @@ pub async fn read_graph_reach_with_tail(
     }
     let core_backing = core.backing.clone();
 
-    // Resolve the forward tail. Position 0 is the queried type with EMPTY row-filters — its
-    // governance lives in the recursive CTE; the tail constrains it by reach-membership. Each
-    // tail-landed type is Read-gated and its row-filters loaded; the final landing is projected.
+    // Resolve the forward tail. Position 0 is the queried type with EMPTY row-filters —
+    // its governance lives in the recursive CTE; the tail constrains it by
+    // reach-membership. Each tail-landed type is Read-gated and its row-filters loaded;
+    // the final landing is projected.
     let mut tail_types: Vec<crate::sql::ChainType> = vec![crate::sql::ChainType {
-        table: object_type.table.clone(),
+        table: g.otype.table.clone(),
         row_filters: vec![],
         predicates: vec![],
     }];
     let mut tail_hops: Vec<control_plane_core::LinkBacking> =
         Vec::with_capacity(q.tail_links.len());
     let mut current = type_name.clone();
-    let mut final_type = object_type.clone();
-    let mut final_denied = denied.clone();
-    let mut final_masked = masked.clone();
+    let mut final_g = g.clone();
     for link_name in &q.tail_links {
-        let outbound = deps.ontology.links(&current, PageReq::unbounded()).await?;
-        let link = outbound
-            .items
-            .into_iter()
-            .find(|l| &l.name == link_name)
-            .ok_or_else(|| QueryError::UnknownLink(link_name.clone()))?;
-        let landed = link.to.clone();
-        let landed_target = PolicyTarget::Type(landed.clone());
-        // Read on every reached type (the leak-free guarantee).
-        if deps
-            .acl
-            .check(&subject.0, Action::Read, &landed_target)
-            .await?
-            == Decision::Deny
-        {
-            return Err(QueryError::Forbidden);
-        }
-        let landed_type = deps.ontology.get_type(&landed).await?;
-        let (l_filters, l_denied, l_masked) =
-            load_policy(deps.acl, &subject.0, &landed_target).await?;
-        tail_hops.push(link.backing.clone());
+        let (landed, backing) =
+            resolve_hop(deps.ontology, &current, &Hop::from(link_name.as_str())).await?;
+        let landed_g = resolve_governed(
+            deps.ontology,
+            deps.acl,
+            &subject.0,
+            &landed,
+            OnMissing::Internal,
+        )
+        .await?;
+        tail_hops.push(backing);
         tail_types.push(crate::sql::ChainType {
-            table: landed_type.table.clone(),
-            row_filters: l_filters,
+            table: landed_g.otype.table.clone(),
+            row_filters: landed_g.row_filters.clone(),
             predicates: vec![],
         });
-        final_type = landed_type;
-        final_denied = l_denied;
-        final_masked = l_masked;
+        final_g = landed_g;
         current = landed;
     }
 
     // Projection: the FINAL tail type's visible columns (masked -> marker). Empty -> Forbidden.
-    let allowed = project_allowed(&final_type.properties, &final_denied);
-    if allowed.is_empty() {
-        return Err(QueryError::Forbidden);
-    }
-    let mask_cols: Vec<String> = allowed
-        .iter()
-        .filter(|c| final_masked.contains(*c))
-        .cloned()
-        .collect();
+    let proj = Projection::visible(&final_g)?;
 
-    // Seed predicates scope the recursion start (alias `s` in the CTE): source filters
-    // (visibility-checked + coerced against the queried type) then the ?_ids= set.
-    let source_allowed = project_allowed(&object_type.properties, &denied);
-    let mut seed_predicates: Vec<crate::filter::CallerPredicate> = Vec::new();
-    for (col, raw) in &q.filters {
-        if !source_allowed.contains(col) || masked.contains(col) {
-            return Err(QueryError::BadFilter(col.clone()));
-        }
-        let ty = object_type
-            .properties
-            .iter()
-            .find(|p| &p.name == col)
-            .map(|p| p.ty.as_str())
-            .unwrap_or("");
-        seed_predicates.push(crate::filter::coerce_predicate(col, ty, raw)?);
-    }
-    if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
-        seed_predicates.push(p);
-    }
+    // Seed predicates scope the recursion start (alias `s` in the CTE), governed by the
+    // QUERIED type's projection.
+    let source_allowed = g.allowed();
+    let seeds = seed_predicates(&g, &source_allowed, &q.filters, &q.ids)?;
 
     let (sql, params) = crate::sql::compile_graph_reach_tail(
         deps.serving.dialect(),
-        &object_type.table,
+        &g.otype.table,
         &identity,
         &core_backing,
-        &seed_predicates,
-        &core_filters,
+        &seeds,
+        &g.row_filters,
         &tail_types,
         &tail_hops,
-        &allowed,
-        &mask_cols,
-        final_type.identity.as_deref(),
+        &proj.columns,
+        &proj.masked,
+        final_g.otype.identity.as_deref(),
         q.depth,
         deps.default_limit,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
-    let logical_types: Vec<String> = allowed
-        .iter()
-        .map(|name| {
-            final_type
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    debug_assert_eq!(
-        served.columns, allowed,
-        "serving engine returned columns out of the projected order"
-    );
-    Ok(ObjectRows {
-        columns: allowed,
-        logical_types,
-        rows: served.rows,
-    })
+    Ok(proj.into_object_rows(served))
 }
