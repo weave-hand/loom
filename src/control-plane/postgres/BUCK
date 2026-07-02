@@ -148,6 +148,7 @@ rust_library(
         "//third-party:hex",
         "//third-party:hmac",
         "//third-party:iceberg",
+        "//third-party:libc",
         "//third-party:object_store",
         "//third-party:parquet",
         "//third-party:reqwest",
