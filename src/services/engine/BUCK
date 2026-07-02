@@ -211,6 +211,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "ticket-errors",
+    crate = "ticket_errors",
+    srcs = ["tests/ticket_errors.rs"],
+    crate_root = "tests/ticket_errors.rs",
+    deps = [
+        ":engine",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-flight",
+        "//third-party:hyper-util",
+        "//third-party:iceberg",
+        "//third-party:prost",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:tower",
+    ],
+)
+
+loom_fixture_test(
     name = "vector-search-flight",
     crate = "vector_search_flight",
     srcs = ["tests/vector_search_flight.rs"],

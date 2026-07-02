@@ -292,7 +292,7 @@ TEST, never the production code.
   ProstMessageExt}`.
 - Produces: four pins Tasks 2-3 and 6 keep green.
 
-- [ ] **Step 1: Create `ticket_errors.rs`**
+- [x] **Step 1: Create `ticket_errors.rs`**
 
 ```rust
 //! Pins for `do_get`'s ticket-decode error contract — the statuses and messages
@@ -441,7 +441,7 @@ async fn ticket_decode_error_contract() {
 }
 ```
 
-- [ ] **Step 2: Append the kNN DimMismatch wire pin to
+- [x] **Step 2: Append the kNN DimMismatch wire pin to
   `vector_search_flight.rs`**
 
 The seed prologue is a deliberate clone of `vector_search_flight_top_k`'s
@@ -550,7 +550,7 @@ async fn vector_search_dim_mismatch_is_invalid_argument() {
 }
 ```
 
-- [ ] **Step 3: Wire the new BUCK target**
+- [x] **Step 3: Wire the new BUCK target**
 
 Add to `src/services/engine/BUCK`, after the `vector-search-flight` target:
 
@@ -576,12 +576,12 @@ loom_fixture_test(
 )
 ```
 
-- [ ] **Step 4: Run — the pins are green against the UNMODIFIED code**
+- [x] **Step 4: Run — the pins are green against the UNMODIFIED code**
 
 Run: `buck2 test -j 8 //src/services/engine:ticket-errors //src/services/engine:vector-search-flight > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
 Expected: PASS. A failure here means a mis-written pin — fix the test.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p1.log 2>&1; grep -c Failed /tmp/p1.log` — expected `0`.
 
