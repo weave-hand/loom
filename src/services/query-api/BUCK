@@ -749,6 +749,22 @@ rust_test(
 )
 
 rust_test(
+    name = "graph-tree",
+    crate = "graph_tree",
+    srcs = ["tests/graph_tree.rs"],
+    crate_root = "tests/graph_tree.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "graph-reach-union",
     crate = "graph_reach_union",
     srcs = ["tests/graph_reach_union.rs"],

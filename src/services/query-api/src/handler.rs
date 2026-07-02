@@ -22,6 +22,28 @@ pub struct ObjectRows {
     pub rows: Vec<Vec<SqlValue>>,
 }
 
+/// One node of a shortest-path tree: its identity value, BFS depth (0 = root), predecessor
+/// identity value (`SqlValue::Null` for a root), and the governed object cells aligned to
+/// `ObjectTree.columns`.
+#[derive(Debug)]
+pub struct TreeNode {
+    pub id: SqlValue,
+    pub depth: i64,
+    pub parent: SqlValue,
+    pub cells: Vec<SqlValue>,
+}
+
+/// A governed shortest-path-tree read result: the object projection columns + their logical
+/// types (positionally aligned to each node's `cells`), the identity property's logical type
+/// (renders each node's `id` and `parent`), and the nodes ordered by `(depth, id)`.
+#[derive(Debug)]
+pub struct ObjectTree {
+    pub columns: Vec<String>,
+    pub logical_types: Vec<String>,
+    pub identity_type: String,
+    pub nodes: Vec<TreeNode>,
+}
+
 /// The governed, compiled-but-not-yet-executed form of an object read: the SQL string +
 /// positional params, plus the projected output columns and their logical types (in SELECT
 /// order), and which of those output columns were **masked**. Shared by `read_object`
@@ -1024,6 +1046,91 @@ pub async fn read_graph_reach(
         columns: r.allowed,
         logical_types,
         rows: served.rows,
+    })
+}
+
+/// Serve a bounded shortest-path-**tree** read over a path-cycle (a 1-element path is the
+/// single-self-link case): from the seed set, repeat `path` up to `depth` times, and for every
+/// reachable node return its shortest-path parent pointer + BFS depth, rooted at the seed set.
+/// Governance is `read_graph_reach`'s exactly (Read on the queried + every intermediate type;
+/// row-filters at seed/expansion/projection so no denied intermediate can be a parent), plus
+/// one precondition: because the tree PROJECTS identity as `id`/`parent`, a denied or masked
+/// identity cannot be served without leaking it -> `Forbidden` (undeclared identity is already
+/// `NoIdentity` from `resolve_graph`). The compiler emits no LIMIT; the depth cap bounds the
+/// forest so a parent is never dropped while a child is kept.
+pub async fn read_graph_tree(
+    q: &GraphQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectTree, QueryError> {
+    let r = resolve_graph(q, subject, deps).await?;
+
+    // The tree projects identity (id + parent). A denied/masked identity would leak -> Forbidden.
+    if identity_is_governed(&r.object_type, &r.denied, &r.masked) {
+        return Err(QueryError::Forbidden);
+    }
+
+    let (sql, params) = crate::sql::compile_graph_tree(
+        deps.serving.dialect(),
+        &r.object_type.table,
+        &r.identity,
+        &r.steps,
+        &r.seed_predicates,
+        &r.row_filters,
+        &r.allowed,
+        &r.mask_cols,
+        q.depth,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+
+    let logical_types: Vec<String> = r
+        .allowed
+        .iter()
+        .map(|name| {
+            r.object_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    let identity_type = r
+        .object_type
+        .properties
+        .iter()
+        .find(|p| p.name == r.identity)
+        .map(|p| p.ty.clone())
+        .unwrap_or_default();
+
+    // Each served row is [object cells..., __depth, __parent, __id] (compile_graph_tree order).
+    // Pop the three trailing columns off the end; the remainder are the object cells.
+    let ncols = r.allowed.len();
+    let nodes: Vec<TreeNode> = served
+        .rows
+        .into_iter()
+        .map(|mut row| {
+            let node_id = row.pop().unwrap_or(SqlValue::Null); // __id
+            let parent = row.pop().unwrap_or(SqlValue::Null); // __parent
+            let depth = match row.pop() {
+                Some(SqlValue::Int(d)) => d,
+                _ => 0, // a serving-engine surprise must not panic a permitted read
+            };
+            row.truncate(ncols); // defensive: keep exactly the object cells
+            TreeNode {
+                id: node_id,
+                depth,
+                parent,
+                cells: row,
+            }
+        })
+        .collect();
+
+    Ok(ObjectTree {
+        columns: r.allowed,
+        logical_types,
+        identity_type,
+        nodes,
     })
 }
 
