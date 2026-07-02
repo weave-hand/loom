@@ -82,6 +82,42 @@ fn push_appends_derived_columns_and_masked_membership() {
 }
 
 #[test]
+fn of_columns_zips_logical_types_in_caller_order_unknown_to_empty() {
+    let g = governed(&[], &[]);
+    let p = Projection::of_columns(
+        &g.otype,
+        vec!["status".to_string(), "id".to_string(), "ghost".to_string()],
+    );
+    assert_eq!(
+        p.columns,
+        vec!["status".to_string(), "id".to_string(), "ghost".to_string()]
+    );
+    // Types follow the caller's column order; an unknown column zips to "" —
+    // the same sentinel the action epilogues produced inline.
+    assert_eq!(
+        p.logical_types,
+        vec!["String".to_string(), "Long".to_string(), String::new()]
+    );
+    assert!(p.masked.is_empty(), "write path never masks");
+}
+
+#[test]
+fn object_rows_zips_rows_without_a_serving_echo() {
+    let g = governed(&[], &[]);
+    let p = Projection::of_columns(&g.otype, vec!["id".to_string(), "status".to_string()]);
+    let rows = p.object_rows(vec![vec![SqlValue::Int(1), SqlValue::Text("open".into())]]);
+    assert_eq!(rows.columns, vec!["id".to_string(), "status".to_string()]);
+    assert_eq!(
+        rows.logical_types,
+        vec!["Long".to_string(), "String".to_string()]
+    );
+    assert_eq!(
+        rows.rows,
+        vec![vec![SqlValue::Int(1), SqlValue::Text("open".into())]]
+    );
+}
+
+#[test]
 fn into_object_rows_zips_columns_types_and_rows() {
     let p = Projection::visible(&governed(&["secret"], &[])).unwrap();
     let rows = p.into_object_rows(Rows {

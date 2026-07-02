@@ -162,6 +162,24 @@ impl Projection {
         })
     }
 
+    /// The ungoverned projection of explicit `columns` against `otype`'s declared
+    /// properties: logical types via [`prop_ty`] in the caller's column order (an
+    /// unknown column zips to `""`, the pre-existing sentinel), no masked columns.
+    /// The ACTION write path's response epilogue — the affected row echoes columns
+    /// the caller already cleared the Write gate for; masking is a read-render
+    /// concept and does not apply to a write echo.
+    pub fn of_columns(otype: &ObjectType, columns: Vec<String>) -> Self {
+        let logical_types = columns
+            .iter()
+            .map(|name| prop_ty(otype, name).map(str::to_string).unwrap_or_default())
+            .collect();
+        Self {
+            columns,
+            logical_types,
+            masked: Vec::new(),
+        }
+    }
+
     /// Append one derived output column (name + declared logical type); `masked` marks
     /// it as mask-marker-SELECTed for the output mask set.
     pub fn push(&mut self, name: String, ty: String, masked: bool) {
@@ -172,6 +190,21 @@ impl Projection {
         self.logical_types.push(ty);
     }
 
+    /// Zip rows the caller already holds into an `ObjectRows` — the write path's
+    /// conversion, where there is no serving-engine echo to cross-check.
+    /// [`Self::into_object_rows`] delegates here after its column-order contract
+    /// check.
+    pub fn object_rows(
+        self,
+        rows: Vec<Vec<crate::serving::SqlValue>>,
+    ) -> crate::handler::ObjectRows {
+        crate::handler::ObjectRows {
+            columns: self.columns,
+            logical_types: self.logical_types,
+            rows,
+        }
+    }
+
     /// Zip served rows into an `ObjectRows`. The serving engine must echo the projected
     /// columns in SELECT order — the contract that lets the renderer zip
     /// `logical_types`/`columns` onto each row's cells by position.
@@ -180,11 +213,7 @@ impl Projection {
             served.columns, self.columns,
             "serving engine returned columns out of the projected order"
         );
-        crate::handler::ObjectRows {
-            columns: self.columns,
-            logical_types: self.logical_types,
-            rows: served.rows,
-        }
+        self.object_rows(served.rows)
     }
 }
 

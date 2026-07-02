@@ -548,7 +548,7 @@ column-order `debug_assert_eq!`, so the read paths are untouched.
   `Projection::object_rows(self, rows: Vec<Vec<SqlValue>>) -> ObjectRows`.
   Task 6's `affected_object` consumes both.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `src/services/query-api/tests/projection.rs` (its existing imports
 cover everything — `governed`, `Projection`, `SqlValue`):
@@ -591,12 +591,12 @@ fn object_rows_zips_rows_without_a_serving_echo() {
 }
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/query-api:projection > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t2.log`
 Expected: FAIL — compile error, `of_columns`/`object_rows` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/services/query-api/src/governed.rs`, inside `impl Projection`, add
 below `visible` (:163):
@@ -657,13 +657,13 @@ Rewrite `into_object_rows` (:178-189) to delegate:
     }
 ```
 
-- [ ] **Step 4: Run to green (unit + the read paths that ride `into_object_rows`)**
+- [x] **Step 4: Run to green (unit + the read paths that ride `into_object_rows`)**
 
 Run: `buck2 test //src/services/query-api:projection //src/services/query-api:graph-reach //src/services/query-api:graph-reach-union //src/services/query-api:graph-reach-tail > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
 Expected: PASS.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c2.log 2>&1; cat /tmp/c2.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p2.log 2>&1; grep -c Failed /tmp/p2.log` — expected `0`.
 
