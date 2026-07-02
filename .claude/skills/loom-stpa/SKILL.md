@@ -1,6 +1,6 @@
 ---
 name: loom-stpa
-description: Generate or refresh the STPA (System-Theoretic Process Analysis, STPA-Sec) safety model for this repo at docs/stpa/STPA.md, landing any change as a PR against main that merges on green CI. Use when asked to update/regenerate loom's STPA safety analysis, run the STPA routine, audit unsafe control actions, or when invoked on a schedule. The analysis is deterministic — findings are extracted as JSON (judgment), the markdown is rendered by an embedded jq renderer (mechanism), so scheduled runs produce small reviewable diffs.
+description: Generate or refresh the STPA (System-Theoretic Process Analysis, STPA-Sec) safety model for this repo at docs/stpa/STPA.md, landing any change as a PR against main that merges on green CI. Use when asked to update/regenerate loom's STPA safety analysis, run the STPA routine, audit unsafe control actions or unsafe feedback (data staleness, corruption, provenance drift), or when invoked on a schedule. The analysis is deterministic — findings are extracted as JSON (judgment), the markdown is rendered by an embedded jq renderer (mechanism), so scheduled runs produce small reviewable diffs.
 ---
 
 Generate/update the STPA safety model for this repository as `docs/stpa/STPA.md`, and land any change as a PR against `main` that you merge once CI is green.
@@ -18,10 +18,11 @@ Everything else (services, schemas, traits, which components exist) you MUST der
 1. **Read the prior, if any.** If `docs/stpa/STPA.md` exists, read it — it is your prior analysis. Its tables carry the stable semantic keys (first column), conditions, and evidence. You will reuse them to minimize drift.
 2. **Ground yourself in the code.** List the repo tree; read the READMEs, architecture/design docs, AND any "future work / deferred / roadmap" doc (discover by listing — don't assume filenames; it's the authoritative ledger of designed-but-not-built). Read the code units that issue or receive commands (traits, services, queues, transactions, worker loops). Trust CODE over docs on conflict; note the conflict in `scope`. Get the commit: `git rev-parse --short HEAD`.
 3. **Analyze (STPA steps 1-3).** Hazards = system states that, worst-case, lead to a loss (map to loss keys). Control structure = controllers, controlled processes (nodes), control actions (commands, node→node), feedback (signals, node→node), each tagged `built`|`designed`. UCAs = for each control action test four guidewords and keep ONLY genuinely-unsafe ones: `providing`, `not-providing`, `wrong-timing`, `wrong-duration`. A bounded nuisance recovered by a fallback is NOT a UCA — put it in `non_ucas`.
+   Then analyze the FEEDBACK and data channels the same way. A controller acting on a wrong process model is an STPA cause, not a component failure: for each feedback signal, and for each data flow a controller's decisions depend on (caches, mirrors, replicas, fetched policy, queue state, lineage), test four guidewords and keep only genuinely-unsafe ones as `unsafe_feedback`: `missing` (never arrives; the controller acts on absence), `stale` (reflects an old state by the time it is acted on), `corrupted` (wrong content that passes silently), `unauthorized-source` (spoofable or unauthenticated origin). This is where data-integrity failures live: staleness windows, lost updates, cache or mirror drift, provenance divergence. Do NOT restate a data failure as a strained control-action UCA (e.g. a check-then-act staleness window is `<channel>.stale`, not `<action>.wrong-timing`). The same rejection bar applies: a bounded nuisance with a recovery path goes in `non_ucas`.
 4. **Write your findings** as a single JSON object (schema below) to `/tmp/stpa.json`.
-5. **Render** by running BLOCK A VERBATIM. It writes `docs/stpa/STPA.md` from your JSON deterministically and prints either `STPA_RESULT=nochange` or `STPA_RESULT=changed`.
+5. **Render** by running BLOCK A VERBATIM. It renders `/tmp/STPA.candidate.md` from your JSON deterministically, compares it against what `origin/main` actually has (this checkout may be stale), and prints either `STPA_RESULT=nochange` or `STPA_RESULT=changed`. It does NOT touch the working tree; BLOCK B lands the file from a disposable worktree.
 6. **If `nochange`:** report "no change — STPA.md already current" and STOP. Do not open a PR.
-7. **If `changed`:** prepare the PR text. Run `git --no-pager diff -- docs/stpa/STPA.md` to see exactly what moved (or note this is the first version). Then:
+7. **If `changed`:** prepare the PR text. Run `diff -u /tmp/STPA.prior.md /tmp/STPA.candidate.md` to see exactly what moved (no prior file means this is the first version). Then:
    - Write a Conventional-Commits title to `/tmp/stpa-title.txt` — ONE line, ≤72 chars, form `docs(stpa): <what changed>` (e.g. `docs(stpa): add queue.fail abandon UCA; refresh 2 evidence refs`; first run: `docs(stpa): add STPA control-plane safety model`).
    - Write a concise markdown body to `/tmp/stpa-body.md` — 2–6 bullets naming the UCAs / hazards / control-actions **added, removed, or materially changed** (by their semantic keys), plus any scope/maturity shift. Summarize; don't paste the diff.
 8. **Open/refresh the PR and merge on green** by running BLOCK B VERBATIM. It commits on a stable branch, force-pushes, opens or updates a PR against `main`, watches CI, and squash-merges once all checks pass (no repo auto-merge setting needed). Report the PR URL and whether it merged or was left open for review.
@@ -41,6 +42,7 @@ Derive each `key` from WHAT IT IS, never its position. Lowercase, no spaces.
 - control_actions: `<component>.<operation>`: `acl.check`, `ontology.resolve`, `queue.dequeue`, `tx.commit`.
 - hazards: condition slug: `stale-policy`, `partial-atomic-unit`, `premature-reclaim`, `dangling-target`.
 - ucas: `<control_action-key>.<guideword>`: `queue.dequeue.wrong-timing`.
+- unsafe_feedback: `<channel-slug>.<guideword>` where the channel slug names the signal or data flow itself, never its position: `policy-fetch.stale`, `queue-notify.missing`, `mirror-sync.corrupted`.
 `from`/`to`/`control_action`/`hazards`/`losses` reference other objects BY KEY.
 
 ## Grounding rules (hard)
@@ -59,6 +61,7 @@ Derive each `key` from WHAT IT IS, never its position. Lowercase, no spaces.
   "feedback": [ {"from":"postgres","to":"worker","signal":"NOTIFY wakeup hint"}, ... ],
   "hazards": [ {"key":"stale-policy","statement":"...","losses":["L.unauthorized-access"],"maturity":"built"}, ... ],
   "ucas": [ {"key":"queue.dequeue.wrong-timing","control_action":"queue.dequeue","guideword":"wrong-timing","condition":"...","severity":"high","hazards":["premature-reclaim"],"evidence":"postgres/src/lib.rs:153"}, ... ],  // severity: high|medium|low
+  "unsafe_feedback": [ {"key":"policy-fetch.stale","from":"acl","to":"query-api","signal":"policy rows for subject+target","guideword":"stale","condition":"...","severity":"high","hazards":["stale-policy"],"evidence":"acl.rs:386"}, ... ],  // guideword: missing|stale|corrupted|unauthorized-source; OPTIONAL — omit the array when no channel survives the rejection bar
   "non_ucas": [ {"item":"await_jobs missed NOTIFY","reason":"bounded by 5s poll fallback (worker/src/lib.rs:16)"}, ... ],
   "open_questions": [ "string", ... ]
 }
@@ -66,7 +69,6 @@ Derive each `key` from WHAT IT IS, never its position. Lowercase, no spaces.
 ## BLOCK A — render + detect change (run verbatim; never hand-write the .md)
 ```bash
 set -euo pipefail
-mkdir -p docs/stpa
 cat > /tmp/stpa-render.jq <<'JQ'
 # Deterministic STPA.md renderer.
 #   input : stpa.json  (semantic-keyed findings, ANY array order)
@@ -81,13 +83,13 @@ def mlabel: (. // "") | gsub("\n"; " ") | gsub("\""; "'") | gsub("<"; "(") | gsu
 def layer_idx: {"enforcement":0,"control-plane":1,"store":2};
 def layer_title: {"enforcement":"Enforcement layer","control-plane":"Control plane (built)","store":"Stateful processes"};
 
-"# STPA Control Analysis — \(.repo) @ \(.commit)\n\n"
+"# STPA Control Analysis: \(.repo) @ \(.commit)\n\n"
 
 + "_Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._\n\n"
 
-+ "<details>\n<summary><b>How to read this</b> — STPA primer and diagram legend</summary>\n\n"
-+ "**STPA** (System-Theoretic Process Analysis) treats the system as *controllers* issuing *control actions* to *controlled processes*, with *feedback* flowing back up. Instead of \"what component can fail,\" it asks \"what control action, given or withheld at the wrong time, drives the system into an unsafe state?\" \"Unsafe\" here means a violation of the platform's reason to exist — governed correctness of data access and provenance — not merely a crash.\n\n"
-+ "Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagram** shows who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.\n</details>\n\n"
++ "<details>\n<summary><b>How to read this</b>: STPA primer and diagram legend</summary>\n\n"
++ "**STPA** (System-Theoretic Process Analysis) treats the system as *controllers* issuing *control actions* to *controlled processes*, with *feedback* flowing back up. Instead of \"what component can fail,\" it asks \"what control action, given or withheld at the wrong time, drives the system into an unsafe state?\" \"Unsafe\" here means a violation of the platform's reason to exist (governed correctness of data access and provenance), not merely a crash.\n\n"
++ "Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagram** shows who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core, and **Unsafe Feedback** covers the dashed arrows: data channels whose absence, staleness, corruption, or spoofing drives a controller into a hazard. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.\n</details>\n\n"
 
 + "**Scope.** \(.scope.summary|esc)\n\n"
 + "<details>\n<summary>Maturity detail</summary>\n\n"
@@ -123,9 +125,15 @@ def layer_title: {"enforcement":"Enforcement layer","control-plane":"Control pla
 + "| ID | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |\n|----|----|----|----|----|----|----|\n"
 + ( .ucas | sort_by(.key) | map("| `\(.key)` | `\(.control_action)` | \(.guideword|esc) | \(.condition|esc) | \(.severity|esc) | \((.hazards // [])|join(", ")) | \(.evidence|esc) |") | join("\n") ) + "\n\n"
 
++ ( if (.unsafe_feedback // []) | length > 0
+    then "## Unsafe feedback\n\n*Feedback and data channels whose absence, staleness, corruption, or spoofed origin drives a controller into a hazard. This is where data-integrity failures live.*\n\n"
+       + "| ID | Channel | Guideword | Unsafe condition | Severity | → Hazards | Evidence |\n|----|----|----|----|----|----|----|\n"
+       + ( .unsafe_feedback | sort_by(.key) | map("| `\(.key)` | `\(.from)` → `\(.to)`: \(.signal|esc) | \(.guideword|esc) | \(.condition|esc) | \(.severity|esc) | \((.hazards // [])|join(", ")) | \(.evidence|esc) |") | join("\n") ) + "\n\n"
+    else "" end )
+
 + ( if (.non_ucas // []) | length > 0
-    then "<details>\n<summary><b>Not UCAs</b> — \(.non_ucas|length) examined and rejected</summary>\n\n"
-       + ( .non_ucas | sort_by("\(.item)|\(.reason)") | map("- **\(.item|esc)** — \(.reason|esc)") | join("\n") )
+    then "<details>\n<summary><b>Not UCAs</b>: \(.non_ucas|length) examined and rejected</summary>\n\n"
+       + ( .non_ucas | sort_by("\(.item)|\(.reason)") | map("- **\(.item|esc)**: \(.reason|esc)") | join("\n") )
        + "\n</details>\n\n"
     else "" end )
 
@@ -133,10 +141,18 @@ def layer_title: {"enforcement":"Enforcement layer","control-plane":"Control pla
 + ( (.open_questions // []) | sort | map("- \(esc)") | join("\n") ) + "\n"
 JQ
 LC_ALL=C jq -rf /tmp/stpa-render.jq /tmp/stpa.json > /tmp/STPA.candidate.md
-if [ -f docs/stpa/STPA.md ] && diff -q docs/stpa/STPA.md /tmp/STPA.candidate.md >/dev/null; then
-  echo "STPA_RESULT=nochange"
+# Compare against what origin/main actually has: this checkout's working tree
+# may be stale (or mid-task on another branch), and BLOCK B lands from a fresh
+# worktree based on origin/main anyway.
+git fetch -q origin main 2>/dev/null || true
+if git show "origin/main:docs/stpa/STPA.md" > /tmp/STPA.prior.md 2>/dev/null; then
+  if diff -q /tmp/STPA.prior.md /tmp/STPA.candidate.md >/dev/null; then
+    echo "STPA_RESULT=nochange"
+  else
+    echo "STPA_RESULT=changed"
+  fi
 else
-  mv /tmp/STPA.candidate.md docs/stpa/STPA.md
+  rm -f /tmp/STPA.prior.md   # first version: no prior on origin/main
   echo "STPA_RESULT=changed"
 fi
 ```
@@ -145,14 +161,23 @@ fi
 ```bash
 set -euo pipefail
 BRANCH=bot/stpa-update
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+WT="/tmp/claude-worktrees/loom-stpa-update"
 git config --get user.email >/dev/null 2>&1 || git config user.email "stpa-bot@users.noreply.github.com"
 git config --get user.name  >/dev/null 2>&1 || git config user.name  "stpa-bot"
-git switch -C "$BRANCH"
-git add docs/stpa/STPA.md
+# Never build the branch in this checkout (git switch -C would park it on the
+# bot branch and never switch back). Land the rendered file from a disposable
+# worktree based on origin/main instead.
+git -C "$REPO_ROOT" worktree remove -f "$WT" 2>/dev/null || true
+git -C "$REPO_ROOT" worktree prune
+git -C "$REPO_ROOT" worktree add -B "$BRANCH" "$WT" origin/main
+mkdir -p "$WT/docs/stpa"
+cp /tmp/STPA.candidate.md "$WT/docs/stpa/STPA.md"
+git -C "$WT" add docs/stpa/STPA.md
 # --no-verify: skip loom's local commit-msg/pre-push hooks (buck2-build/test would
 # stall the routine); conventional style is carried by the PR title -> squash commit.
-git commit --no-verify -m "$(cat /tmp/stpa-title.txt)" -m "$(cat /tmp/stpa-body.md)"
-git push --no-verify -f -u origin "$BRANCH"
+git -C "$WT" commit --no-verify -m "$(cat /tmp/stpa-title.txt)" -m "$(cat /tmp/stpa-body.md)"
+git -C "$WT" push --no-verify -f -u origin "$BRANCH"
 # Create a PR only when there isn't already an OPEN one for this branch. A
 # closed/merged PR on the branch must NOT be treated as "exists" — otherwise the
 # create is skipped and the later `gh pr merge` targets a dead PR and wedges.
@@ -162,10 +187,17 @@ if [ "$PR_STATE" != "OPEN" ]; then
 fi
 URL="$(gh pr view "$BRANCH" --json url -q .url)"
 echo "PR: $URL"
-# Poll CI ourselves, then merge on green — no repo-level auto-merge setting required.
+# Poll CI ourselves, then merge on green — no repo-level auto-merge setting
+# required. Merge WITHOUT --delete-branch first (the branch is checked out in
+# the worktree, which would make local deletion fail), then clean up the
+# worktree and both branch refs ourselves.
 if gh pr checks "$BRANCH" --watch --fail-fast; then
-  gh pr merge "$BRANCH" --squash --delete-branch && echo "merged (CI green): $URL"
+  gh pr merge "$BRANCH" --squash
+  git -C "$REPO_ROOT" worktree remove -f "$WT" 2>/dev/null || true
+  git -C "$REPO_ROOT" branch -D "$BRANCH" 2>/dev/null || true
+  git -C "$REPO_ROOT" push -q origin --delete "$BRANCH" 2>/dev/null || true
+  echo "merged (CI green): $URL"
 else
-  echo "NOTE: CI not green — PR left open for review: $URL"
+  echo "NOTE: CI not green — PR left open for review: $URL (worktree kept: $WT)"
 fi
 ```
