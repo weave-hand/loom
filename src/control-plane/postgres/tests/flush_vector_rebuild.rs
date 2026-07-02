@@ -16,7 +16,7 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_flush::flush_table;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -197,8 +197,10 @@ async fn flush_enqueues_one_build_job_per_declared_index() {
         &table,
         &columns(),
         &ipc_body(rows),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await
@@ -237,8 +239,10 @@ async fn flush_without_declared_index_enqueues_nothing() {
         &table,
         &columns(),
         &ipc_body(rows),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await
@@ -333,8 +337,10 @@ async fn two_flushes_with_pending_build_enqueue_one() {
         &table,
         &columns(),
         &ipc_body(rows1),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await
@@ -356,8 +362,10 @@ async fn two_flushes_with_pending_build_enqueue_one() {
         &table,
         &columns(),
         &ipc_body(rows2),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await
@@ -388,8 +396,10 @@ async fn flush_while_build_running_enqueues_a_fresh_pending() {
         &table,
         &columns(),
         &ipc_body(rows1),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await
@@ -413,8 +423,10 @@ async fn flush_while_build_running_enqueues_a_fresh_pending() {
         &table,
         &columns(),
         &ipc_body(rows2),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await

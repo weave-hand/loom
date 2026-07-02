@@ -70,6 +70,35 @@ pub(crate) async fn end_cap_live_inline_rows(
     Ok(())
 }
 
+/// End-cap the SPECIFIC inline rows `row_ids` of `table_id` at snapshot `at`
+/// (`end_snapshot = at` where `loom_row_id = any($1) and end_snapshot is null`).
+/// Used by commits that retire just-flushed rows at the same snapshot the new
+/// Parquet becomes live, so reads never double-serve or drop them. Runs in the
+/// caller's transaction.
+///
+/// Runtime sqlx (not a compile-time `query!`): the `inline_<table_id>` table
+/// name is a dynamic identifier and `any($1)` binds a row-id array — neither is
+/// expressible in a literal, schema-checked macro. Spliced via `AssertSqlSafe`.
+pub(crate) async fn end_cap_inline_rows_by_id(
+    conn: &mut PgConnection,
+    table_id: i64,
+    row_ids: &[i64],
+    at: SnapshotId,
+) -> Result<()> {
+    let sql = format!(
+        "update {} set end_snapshot = {} \
+         where loom_row_id = any($1) and end_snapshot is null",
+        inline_table_name(table_id),
+        at.0,
+    );
+    sqlx::query(AssertSqlSafe(sql))
+        .bind(row_ids.to_vec())
+        .execute(&mut *conn)
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 /// True if `table` has any live inline row at `at`. Used to refuse an additive
 /// Parquet land while un-flushed inline rows exist: such a land would project a
 /// new column into the mirror that the physical `inline_<tid>` table lacks, so

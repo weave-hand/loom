@@ -11,7 +11,7 @@ use control_plane_core::Catalog;
 use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, SnapshotId, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -162,8 +162,10 @@ async fn additive_land_evolves_mirror_and_bumps_schema_version() {
         &t,
         &ab,
         &ipc_ab(3),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4())),
     )
     .await
@@ -174,8 +176,10 @@ async fn additive_land_evolves_mirror_and_bumps_schema_version() {
         &t,
         &abc,
         &ipc_abc(2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4())),
     )
     .await
@@ -251,8 +255,10 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
         &t,
         &ab,
         &ipc_ab(3),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4())),
     )
     .await
@@ -266,8 +272,10 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
         &t,
         &only_a,
         &ipc_a(2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4())),
     )
     .await
@@ -306,8 +314,10 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
         &t,
         &abd_req,
         &body,
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4())),
     )
     .await
@@ -378,8 +388,10 @@ async fn additive_land_rejected_while_live_inline_rows_exist() {
         &t,
         &abc,
         &ipc_id_name_extra(2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4())),
     )
     .await

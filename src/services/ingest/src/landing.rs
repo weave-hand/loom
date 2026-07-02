@@ -8,7 +8,7 @@ use arrow::datatypes::Schema;
 use async_trait::async_trait;
 use control_plane_core::{ColumnSpec, LineageEvent, SnapshotId, TableRef};
 
-use control_plane_postgres::iceberg_landing::land as iceberg_land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land as iceberg_land};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use sqlx::PgPool;
 
@@ -62,8 +62,10 @@ impl LandingMaterializer for IcebergMaterializer {
             req.table,
             req.columns,
             req.ipc_body,
-            self.inline_byte_limit,
-            self.flush_byte_threshold,
+            InlineLimits {
+                inline_byte_limit: self.inline_byte_limit,
+                flush_byte_threshold: self.flush_byte_threshold,
+            },
             req.lineage,
         )
         .await

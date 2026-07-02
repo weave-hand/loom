@@ -23,7 +23,9 @@
 #![deny(missing_docs)]
 
 mod catalog;
+mod commit_mirror;
 mod error;
 pub mod s3_storage;
 pub use catalog::*;
+pub use commit_mirror::*;
 pub use s3_storage::S3StorageFactory;

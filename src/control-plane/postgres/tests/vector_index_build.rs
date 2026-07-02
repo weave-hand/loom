@@ -16,7 +16,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -160,8 +160,10 @@ async fn build_covers_all_rows_live_at_s() {
         &table,
         &columns(),
         &ipc_body(rows_1_2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await
@@ -174,8 +176,10 @@ async fn build_covers_all_rows_live_at_s() {
         &table,
         &columns(),
         &ipc_body(rows_3_4),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await

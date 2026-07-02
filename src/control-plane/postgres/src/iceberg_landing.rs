@@ -30,7 +30,7 @@ use crate::iceberg_mirror::{
     live_columns_for, next_snapshot, project_files, reconcile_and_project, stamp_schema_version,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
-use crate::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
+use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
 
@@ -49,23 +49,28 @@ fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
     Ok((schema, batches))
 }
 
-/// Land an Iceberg request. `inline_byte_limit` is the in-memory (uncompressed)
-/// Arrow size at/below which the request inlines (mirror-only typed rows) instead
-/// of writing real Parquet. `flush_byte_threshold` is the live-inline-byte total
-/// at/above which a `flush_table` job is enqueued after an inline write. Returns
-/// the loom mirror snapshot id either way.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "iceberg landing functions have many required parameters with no sensible grouping"
-)]
+/// The inline-tier routing limits carried by [`land`]: at/below
+/// `inline_byte_limit` a request inlines (mirror-only typed rows) instead of
+/// writing real Parquet; at/above `flush_byte_threshold` live inline bytes an
+/// inline write enqueues a `flush_table` job.
+#[derive(Clone, Copy, Debug)]
+pub struct InlineLimits {
+    /// In-memory (uncompressed) Arrow size at/below which the request inlines.
+    pub inline_byte_limit: usize,
+    /// Live-inline-byte total at/above which a `flush_table` job is enqueued
+    /// after an inline write.
+    pub flush_byte_threshold: i64,
+}
+
+/// Land an Iceberg request, routing by in-memory size per `limits` (see
+/// [`InlineLimits`]). Returns the loom mirror snapshot id either way.
 pub async fn land(
     pool: &PgPool,
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
     ipc_body: &[u8],
-    inline_byte_limit: usize,
-    flush_byte_threshold: i64,
+    limits: InlineLimits,
     lineage: LineageEvent,
 ) -> Result<SnapshotId> {
     let (schema, batches) = decode_ipc(ipc_body)?;
@@ -77,7 +82,7 @@ pub async fn land(
     // realignment, same-typed reordered columns would silently swap values.
     let (schema, batches) = align_to_columns(&schema, batches, columns)?;
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
-    if bytes <= inline_byte_limit {
+    if bytes <= limits.inline_byte_limit {
         let batch = concat_batches(&schema, &batches).map_err(be)?;
         inline_append(
             pool,
@@ -85,7 +90,7 @@ pub async fn land(
             columns,
             &batch,
             lineage,
-            Some(flush_byte_threshold),
+            Some(limits.flush_byte_threshold),
         )
         .await
     } else {
@@ -142,20 +147,13 @@ fn align_to_columns(
 /// `batches` (bare arrow — re-wrapped under the table's field-id schema) as a
 /// real Parquet snapshot running `extras` in the commit tx, and return the mirror
 /// snapshot id. Shared by the landing Parquet path and the flush path.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "iceberg landing functions have many required parameters with no sensible grouping"
-)]
 pub(crate) async fn append_parquet_snapshot(
     pool: &PgPool,
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
-    lineage: Option<&LineageEvent>,
-    end_cap: Option<InlineEndCap<'_>>,
-    overwrite: bool,
-    jobs: &[control_plane_core::NewJob],
+    extras: CommitExtras<'_>,
 ) -> Result<SnapshotId> {
     ensure_iceberg_table(catalog, table, columns).await?;
 
@@ -198,10 +196,7 @@ pub(crate) async fn append_parquet_snapshot(
                         ));
                     }
                 }
-                return land_additive(
-                    pool, catalog, table, columns, batches, lineage, end_cap, jobs,
-                )
-                .await;
+                return land_additive(pool, catalog, table, columns, batches, extras).await;
             }
             Err(e) => return Err(ControlPlaneError::Validation(e.to_string())),
         }
@@ -226,11 +221,9 @@ pub(crate) async fn append_parquet_snapshot(
         .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
         .collect::<Result<Vec<_>>>()?;
 
-    append_batches_with_extras(
-        catalog, &ice_table, batches, lineage, end_cap, overwrite, jobs,
-    )
-    .await
-    .map_err(be)?;
+    append_batches_with_extras(catalog, &ice_table, batches, extras)
+        .await
+        .map_err(be)?;
 
     Ok(IcebergCatalog::new(pool.clone())
         .current_snapshot(table)
@@ -306,22 +299,18 @@ fn coerce_batch_to_ice(
 /// clients not seeing the new column is the accepted `iss-iceberg-inline-visibility` gap).
 /// loom-governed reads resolve entirely through the mirror, so the new columns/files are
 /// immediately visible. Returns the mirror snapshot id.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "iceberg landing functions have many required parameters with no sensible grouping"
-)]
+///
+/// `extras.overwrite` is deliberately NOT applied here: an additive land is
+/// always an append (`WriteMode::Append`, prior files stay live) — faithful to
+/// the pre-`CommitExtras` chain, which never forwarded the flag to this path.
 async fn land_additive(
     pool: &PgPool,
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
-    lineage: Option<&LineageEvent>,
-    end_cap: Option<InlineEndCap<'_>>,
-    jobs: &[control_plane_core::NewJob],
+    extras: CommitExtras<'_>,
 ) -> Result<SnapshotId> {
-    use crate::lineage::pg_emit;
-
     // Load the table and build the SUPERSET arrow schema from the landing `columns`
     // (field-ids 1..N), so the writer chain stamps every column (incl. the new ones)
     // into the Parquet footer.
@@ -371,30 +360,7 @@ async fn land_additive(
     let mut tx = pool.begin().await.map_err(be)?;
     let at = next_snapshot(&mut tx, None).await?;
     register_files(&mut tx, table, columns, &loom_files, WriteMode::Append, at).await?;
-    if let Some(cap) = end_cap {
-        // Retire the flushed inline rows at the same snapshot the new files become live
-        // (faithful to `do_update_table`'s inline end-cap).
-        // Runtime sqlx (not a compile-time `query!`): the `inline_<table_id>` table name
-        // is a dynamic identifier and `any($1)` binds a row-id array — neither is
-        // expressible in a literal, schema-checked macro. Spliced via `AssertSqlSafe`.
-        let sql = format!(
-            "update {} set end_snapshot = {} \
-             where loom_row_id = any($1) and end_snapshot is null",
-            crate::iceberg_inline::inline_table_name(cap.table_id),
-            at.0,
-        );
-        sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(cap.row_ids)
-            .execute(&mut *tx)
-            .await
-            .map_err(be)?;
-    }
-    if let Some(ev) = lineage {
-        pg_emit(&mut *tx, ev).await?;
-    }
-    for job in jobs {
-        crate::queue::pg_insert_if_absent(&mut *tx, job).await?;
-    }
+    crate::iceberg_sql_catalog::apply_commit_extras(&mut tx, at, &extras).await?;
     tx.commit().await.map_err(be)?;
     Ok(at)
 }
@@ -552,10 +518,10 @@ async fn land_parquet(
         table,
         columns,
         batches,
-        Some(&lineage),
-        None,
-        false,
-        &[],
+        CommitExtras {
+            lineage: Some(&lineage),
+            ..CommitExtras::default()
+        },
     )
     .await
 }
@@ -592,10 +558,11 @@ pub async fn overwrite_parquet_snapshot(
         table,
         columns,
         batches,
-        lineage,
-        None,
-        true,
-        &[],
+        CommitExtras {
+            lineage,
+            overwrite: true,
+            ..CommitExtras::default()
+        },
     )
     .await
 }

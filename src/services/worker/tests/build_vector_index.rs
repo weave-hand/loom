@@ -21,7 +21,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -263,8 +263,10 @@ async fn worker_builds_vector_index_over_the_wire() {
         &table,
         &columns(),
         &ipc_body(rows),
-        0,        // inline_byte_limit = 0 -> always write real Parquet
-        i64::MAX, // flush_byte_threshold -> no auto-enqueue
+        InlineLimits {
+            inline_byte_limit: 0,           // always write real Parquet
+            flush_byte_threshold: i64::MAX, // no auto-enqueue
+        },
         lineage(RunId(uuid::Uuid::new_v4()), &table),
     )
     .await
@@ -414,8 +416,10 @@ async fn build_with_unknown_index_name_fails() {
         &table,
         &columns(),
         &ipc_body(rows),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), &table),
     )
     .await

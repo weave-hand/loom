@@ -15,7 +15,7 @@ use control_plane_core::{
     PropertyDef, RunId, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -175,8 +175,10 @@ async fn seed_and_build(
         &table,
         &columns(),
         &ipc_body(rows_1_2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -190,8 +192,10 @@ async fn seed_and_build(
         &table,
         &columns(),
         &ipc_body(rows_3_4),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -340,8 +344,10 @@ async fn no_bound_index_is_deterministic_error() {
         &table,
         &columns(),
         &ipc_body(rows),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -389,8 +395,10 @@ async fn knn_cold_hot_merge_cosine() {
         &table,
         &columns(),
         &ipc_body(inline),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -445,8 +453,10 @@ async fn knn_cold_hot_merge_l2() {
         &table,
         &columns(),
         &ipc_body(inline),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -534,8 +544,10 @@ async fn seed_and_build_ivf(
         &table,
         &columns(),
         &ipc_body(rows_1_2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -547,8 +559,10 @@ async fn seed_and_build_ivf(
         &table,
         &columns(),
         &ipc_body(rows_3_4),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -620,8 +634,10 @@ async fn ivf_hot_delta_row_is_never_pruned_cosine() {
         &table,
         &columns(),
         &ipc_body(inline),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -671,8 +687,10 @@ async fn ivf_hot_delta_row_is_never_pruned_l2() {
         &table,
         &columns(),
         &ipc_body(inline),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -757,8 +775,10 @@ async fn seed_and_build_hnsw(
         &table,
         &columns(),
         &ipc_body(rows_1_2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -770,8 +790,10 @@ async fn seed_and_build_hnsw(
         &table,
         &columns(),
         &ipc_body(rows_3_4),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -821,8 +843,10 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_cosine() {
         &table,
         &columns(),
         &ipc_body(inline),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -875,8 +899,10 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_l2() {
         &table,
         &columns(),
         &ipc_body(inline),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await

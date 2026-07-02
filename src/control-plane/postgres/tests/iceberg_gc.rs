@@ -21,7 +21,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_gc::{GcSummary, gc_table};
 use control_plane_postgres::iceberg_inline::inline_append;
-use control_plane_postgres::iceberg_landing::{land, overwrite_parquet_snapshot};
+use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -230,8 +230,10 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
     )
     .await
@@ -370,8 +372,10 @@ async fn gc_is_a_noop_when_nothing_aged_out() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "fresh"),
     )
     .await
@@ -414,8 +418,10 @@ async fn gc_serializes_with_concurrent_flush() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "race"),
     )
     .await
@@ -502,8 +508,10 @@ async fn gc_reclaims_a_dropped_table() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, "wh", "gone"),
     )
     .await
@@ -581,8 +589,10 @@ async fn gc_preserves_a_within_window_dropped_table() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "recent"),
     )
     .await
@@ -643,8 +653,10 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "reused"),
     )
     .await
@@ -661,8 +673,10 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
         &t,
         &columns(),
         &ipc_body(5),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "reused"),
     )
     .await
@@ -717,8 +731,10 @@ async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "twice"),
     )
     .await
@@ -761,8 +777,10 @@ async fn gc_reclaims_a_dropped_table_with_vector_index() {
         &t,
         &columns(),
         &ipc_body(4),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "indexed"),
     )
     .await

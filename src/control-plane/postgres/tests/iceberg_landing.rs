@@ -13,7 +13,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -139,8 +139,10 @@ async fn small_request_inlines_and_emits_lineage() {
         &table,
         &columns(),
         &ipc_body(3),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, "wh", "small"),
     )
     .await
@@ -182,8 +184,10 @@ async fn large_request_writes_parquet_and_emits_lineage() {
         &table,
         &columns(),
         &ipc_body(5),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, "wh", "big"),
     )
     .await
@@ -224,8 +228,10 @@ async fn reordered_columns_inline_align_by_name() {
         &table,
         &reordered_columns(),
         &ipc_body_reordered(),
-        usize::MAX,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, "wh", "reorder_inline"),
     )
     .await
@@ -255,8 +261,10 @@ async fn reordered_columns_parquet_align_by_name() {
         &table,
         &reordered_columns(),
         &ipc_body_reordered(),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, "wh", "reorder_parquet"),
     )
     .await

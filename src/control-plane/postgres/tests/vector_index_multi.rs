@@ -14,7 +14,7 @@ use control_plane_core::{
     PropertyDef, RunId, TableRef, TypeName, VectorIndexDef, VectorKey,
 };
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -174,8 +174,10 @@ async fn two_named_indexes_on_one_property_build_and_search_independently() {
         &table,
         &columns(),
         &ipc_body(rows),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(run, &table),
     )
     .await

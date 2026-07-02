@@ -22,7 +22,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -223,8 +223,10 @@ async fn vector_search_flight_top_k() {
         &table,
         &columns(),
         &ipc_body(rows_1_2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -238,8 +240,10 @@ async fn vector_search_flight_top_k() {
         &table,
         &columns(),
         &ipc_body(rows_3_4),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await
@@ -333,8 +337,10 @@ async fn vector_search_no_index_is_not_found() {
         &table,
         &columns(),
         &ipc_body(rows),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage_evt(run, &table),
     )
     .await

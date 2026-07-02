@@ -21,7 +21,7 @@ use control_plane_core::{
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline::inline_append;
-use control_plane_postgres::iceberg_landing::{land, overwrite_parquet_snapshot};
+use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -365,8 +365,10 @@ async fn gc_job_flows_through_worker_and_reclaims_object() {
         &table,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         inline_lineage(RunId(uuid::Uuid::new_v4()), &table),
     )
     .await
