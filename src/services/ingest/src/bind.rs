@@ -3,9 +3,9 @@
 //! guaranteed-serveable by the query read path. See the part-2b design doc.
 
 use control_plane_core::{
-    Aggregation, BaseType, Catalog, ControlPlaneError, DerivedPropertyDef, LinkBacking, LinkDef,
-    ObjectType, Ontology, PageReq, TableRef, TableSchema, TypeName, UnknownLogicalType,
-    resolve_logical, satisfies,
+    BaseType, Catalog, ControlPlaneError, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType,
+    Ontology, PageReq, TableRef, TableSchema, TypeName, UnknownLogicalType, resolve_logical,
+    satisfies,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -173,37 +173,39 @@ pub async fn bind(
     Ok(())
 }
 
-/// The target-type column an aggregation reads, or `None` for `Count` (which
-/// aggregates rows, not a column).
-fn agg_column(agg: &Aggregation) -> Option<&str> {
-    match agg {
-        Aggregation::Count => None,
-        Aggregation::Sum(c) | Aggregation::Avg(c) | Aggregation::Min(c) | Aggregation::Max(c) => {
-            Some(c)
-        }
+/// The result of resolving an aggregation's target column. `Missing` is the three
+/// absent cases (target type, its live snapshot, or the column) the caller reports as
+/// a single [`BindViolationReason::MissingAggColumn`]; `Present` carries the column's
+/// resolved base type (`None` if its logical type is unknown — a present column, so
+/// NOT a `MissingAggColumn`).
+enum ColumnLookup {
+    Missing,
+    Present(Option<BaseType>),
+}
+
+/// Resolve `col_name` on `link`'s target type's table into a [`ColumnLookup`]. Any
+/// non-`NotFound` control-plane error propagates.
+async fn target_column_type(
+    catalog: &dyn Catalog,
+    ontology: &dyn Ontology,
+    link: &LinkDef,
+    col_name: &str,
+) -> Result<ColumnLookup, BindError> {
+    let target_table = match ontology.resolve(&link.to).await {
+        Ok(t) => t,
+        Err(ControlPlaneError::NotFound(_)) => return Ok(ColumnLookup::Missing),
+        Err(e) => return Err(BindError::ControlPlane(e)),
+    };
+    let snap = match catalog.current_snapshot(&target_table).await {
+        Ok(s) => s,
+        Err(ControlPlaneError::NotFound(_)) => return Ok(ColumnLookup::Missing),
+        Err(e) => return Err(BindError::ControlPlane(e)),
+    };
+    let schema = catalog.schema(&target_table, snap.id).await?;
+    match schema.columns.iter().find(|c| c.name == col_name) {
+        None => Ok(ColumnLookup::Missing),
+        Some(col) => Ok(ColumnLookup::Present(resolve_logical(&col.ty))),
     }
-}
-
-/// A human label for an aggregation, used in violation messages.
-fn agg_label(agg: &Aggregation) -> &'static str {
-    match agg {
-        Aggregation::Count => "Count",
-        Aggregation::Sum(_) => "Sum",
-        Aggregation::Avg(_) => "Avg",
-        Aggregation::Min(_) => "Min",
-        Aggregation::Max(_) => "Max",
-    }
-}
-
-/// `Sum`/`Avg` apply only to numeric base types.
-fn is_numeric(b: BaseType) -> bool {
-    matches!(b, BaseType::Integer | BaseType::Long | BaseType::Double)
-}
-
-/// `Min`/`Max` apply to any totally-ordered base type — every base type except
-/// `Boolean`.
-fn is_ordered(b: BaseType) -> bool {
-    !matches!(b, BaseType::Boolean)
 }
 
 /// Validate one derived property against the type's outbound `links` and the link
@@ -229,85 +231,42 @@ async fn validate_derived(
     // 2. For column-bearing aggregations, resolve the target column and check the
     //    aggregation is applicable to its logical type. `Count` takes no column.
     let mut col_base: Option<BaseType> = None;
-    if let Some(col_name) = agg_column(&d.agg) {
-        // Resolve the link target type -> its physical table. A target type/table
-        // that no longer exists means the column cannot exist either.
-        let target_table = match ontology.resolve(&link.to).await {
-            Ok(t) => t,
-            Err(ControlPlaneError::NotFound(_)) => {
+    if let Some(col_name) = d.agg.column() {
+        match target_column_type(catalog, ontology, link, col_name).await? {
+            ColumnLookup::Missing => {
                 violations.push(BindViolation {
                     property: d.name.clone(),
                     reason: BindViolationReason::MissingAggColumn,
                 });
                 return Ok(());
             }
-            Err(e) => return Err(BindError::ControlPlane(e)),
-        };
-        let snap = match catalog.current_snapshot(&target_table).await {
-            Ok(s) => s,
-            Err(ControlPlaneError::NotFound(_)) => {
-                violations.push(BindViolation {
-                    property: d.name.clone(),
-                    reason: BindViolationReason::MissingAggColumn,
-                });
-                return Ok(());
+            ColumnLookup::Present(base) => {
+                col_base = base;
+                if !d.agg.column_applicable(col_base) {
+                    // Collect-all: keep going to also report a result-type mismatch.
+                    violations.push(BindViolation {
+                        property: d.name.clone(),
+                        reason: BindViolationReason::BadAggType {
+                            agg: d.agg.label().to_string(),
+                            column: col_name.to_string(),
+                        },
+                    });
+                }
             }
-            Err(e) => return Err(BindError::ControlPlane(e)),
-        };
-        let schema = catalog.schema(&target_table, snap.id).await?;
-        let Some(col) = schema.columns.iter().find(|c| c.name == col_name) else {
-            violations.push(BindViolation {
-                property: d.name.clone(),
-                reason: BindViolationReason::MissingAggColumn,
-            });
-            return Ok(());
-        };
-        col_base = resolve_logical(&col.ty);
-        let applicable = match &d.agg {
-            Aggregation::Sum(_) | Aggregation::Avg(_) => col_base.is_some_and(is_numeric),
-            Aggregation::Min(_) | Aggregation::Max(_) => col_base.is_some_and(is_ordered),
-            Aggregation::Count => true, // unreachable: Count has no column
-        };
-        if !applicable {
-            // Collect-all: keep going to also report a result-type mismatch.
-            violations.push(BindViolation {
-                property: d.name.clone(),
-                reason: BindViolationReason::BadAggType {
-                    agg: agg_label(&d.agg).to_string(),
-                    column: col_name.to_string(),
-                },
-            });
         }
     }
 
-    // 3. The declared result type must be a known logical type and consistent with
-    //    the aggregation's result category. (Existence + category only; the full
-    //    coercion lattice is deferred — see fut-coercion-taxonomy.)
+    // 3. The declared result type must be a known logical type and consistent with the
+    //    aggregation's result category. (Existence + category only; the full coercion
+    //    lattice is deferred — see fut-coercion-taxonomy.)
     let declared = resolve_logical(&d.ty);
-    let (ok, expected) = match &d.agg {
-        // A count is naturally an int64; accept Integer or Long. (The spec prose
-        // says "integer"; we relax to int-or-long — see the plan's spec note.)
-        Aggregation::Count => (
-            matches!(declared, Some(BaseType::Integer | BaseType::Long)),
-            "integer or long".to_string(),
-        ),
-        Aggregation::Sum(_) | Aggregation::Avg(_) => {
-            (declared.is_some_and(is_numeric), "numeric".to_string())
-        }
-        Aggregation::Min(_) | Aggregation::Max(_) => {
-            // Min/Max return the column's own type.
-            let expected = col_base
-                .map(|b| b.canonical_name().to_string())
-                .unwrap_or_else(|| "the target column's type".to_string());
-            (declared.is_some() && declared == col_base, expected)
-        }
-    };
-    if !ok {
+    let category = d.agg.result_expectation(col_base);
+    if !category.accepts(declared) {
         violations.push(BindViolation {
             property: d.name.clone(),
             reason: BindViolationReason::BadDerivedResultType {
                 declared: d.ty.clone(),
-                expected,
+                expected: category.description(),
             },
         });
     }
