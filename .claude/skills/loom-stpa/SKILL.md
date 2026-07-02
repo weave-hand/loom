@@ -138,7 +138,10 @@ def layer_title: {"enforcement":"Enforcement layer","control-plane":"Control pla
     else "" end )
 
 + "## Open questions\n\n"
-+ ( (.open_questions // []) | sort | map("- \(esc)") | join("\n") ) + "\n"
++ ( (.open_questions // []) | sort | map("- \(esc)") | join("\n") )
+# No trailing "\n" here: `jq -r` appends exactly one newline, so the file ends
+# with a single EOF newline. Adding "\n" would emit "\n\n", which end-of-file-fixer
+# rewrites and fails the `lint` CI job — and makes BLOCK A see a perpetual diff.
 JQ
 LC_ALL=C jq -rf /tmp/stpa-render.jq /tmp/stpa.json > /tmp/STPA.candidate.md
 # Compare against what origin/main actually has: this checkout's working tree
