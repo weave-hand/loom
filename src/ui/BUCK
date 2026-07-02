@@ -48,7 +48,7 @@ rust_test(
 rust_binary(
     name = "app",
     crate = "app",
-    srcs = ["src/main.rs", "src/net.rs", "src/session.rs"],
+    srcs = ["src/main.rs", "src/explorer.rs", "src/net.rs", "src/session.rs"],
     crate_root = "src/main.rs",
     edition = "2024",
     default_target_platform = "//platforms:wasm",
@@ -61,6 +61,7 @@ rust_binary(
         "//third-party:wasm-bindgen-futures",
         "//third-party:web-sys",
         "//third-party:yew",
+        ":ui-components",
         ":ui-core",
     ],
     visibility = ["PUBLIC"],
