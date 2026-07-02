@@ -2,7 +2,7 @@ use control_plane_core::{Aggregation, CompareOp, LinkBacking, RowFilter, ScalarV
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
 use query_api::sql::{
-    DataFusionDialect, DerivedAggregate, DerivedSelect, SqlDialect, compile_select,
+    DataFusionDialect, DerivedAggregate, DerivedSelect, SelectInputs, SqlDialect, compile_select,
     compile_select_with,
 };
 
@@ -48,10 +48,10 @@ fn default_compile_select_equals_explicit_datafusion() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&f),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&f),
+            ..SelectInputs::default()
+        },
         100,
     )
     .unwrap();
@@ -60,10 +60,10 @@ fn default_compile_select_equals_explicit_datafusion() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&f),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&f),
+            ..SelectInputs::default()
+        },
         None,
         100,
     )
@@ -86,10 +86,10 @@ fn dialect_controls_quoting_and_placeholders() {
         &t(),
         &["id".into()],
         &[],
-        std::slice::from_ref(&f),
-        &[],
-        &[],
-        &[],
+        &SelectInputs {
+            row_filters: std::slice::from_ref(&f),
+            ..SelectInputs::default()
+        },
         None,
         100,
     )
@@ -108,7 +108,7 @@ fn datafusion_dialect_emits_bare_limit() {
     let df = DataFusionDialect;
     assert_eq!(df.limit_clause(1000), "LIMIT 1000");
     let (sql, _params) =
-        compile_select(&t(), &["id".into()], &[], &[], &[], &[], &[], 1000).unwrap();
+        compile_select(&t(), &["id".into()], &[], &SelectInputs::default(), 1000).unwrap();
     assert_eq!(
         sql, r#"SELECT "id" FROM "main"."orders" LIMIT 1000"#,
         "bare LIMIT, no ORDER BY barrier: {sql}"
@@ -122,10 +122,7 @@ fn compile_select_emits_order_by_when_requested() {
         &t(),
         &["id".into(), "name".into()],
         &[],
-        &[],
-        &[],
-        &[],
-        &[],
+        &SelectInputs::default(),
         Some("id"),
         10,
     )
@@ -149,10 +146,7 @@ fn compile_select_no_order_by_by_default() {
         &t(),
         &["id".into()],
         &[],
-        &[],
-        &[],
-        &[],
-        &[],
+        &SelectInputs::default(),
         None,
         10,
     )
@@ -201,10 +195,11 @@ fn positional_indices_span_select_derived_then_where() {
         },
         &["id".into()],
         &[],
-        &[],
-        &predicates,
-        &[],
-        &derived,
+        &SelectInputs {
+            predicates: &predicates,
+            derived: &derived,
+            ..SelectInputs::default()
+        },
         None,
         100,
     )
