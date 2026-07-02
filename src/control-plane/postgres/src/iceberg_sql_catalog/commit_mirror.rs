@@ -203,17 +203,14 @@ impl SqlCatalog {
         if let Some(cap) = &extras.end_cap {
             // Retire the flushed inline rows at the same snapshot the new data file
             // becomes live, so reads never double-serve or drop them.
-            let sql = format!(
-                "update {} set end_snapshot = {} \
-                 where loom_row_id = any($1) and end_snapshot is null",
-                crate::iceberg_inline::inline_table_name(cap.table_id),
-                at.0,
-            );
-            sqlx::query(sqlx::AssertSqlSafe(sql))
-                .bind(cap.row_ids)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
+            crate::iceberg_inline::end_cap_inline_rows_by_id(
+                &mut tx,
+                cap.table_id,
+                cap.row_ids,
+                at,
+            )
+            .await
+            .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
         }
 
         if let Some(ev) = extras.lineage {

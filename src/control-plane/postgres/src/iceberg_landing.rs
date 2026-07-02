@@ -382,20 +382,8 @@ async fn land_additive(
     if let Some(cap) = end_cap {
         // Retire the flushed inline rows at the same snapshot the new files become live
         // (faithful to `do_update_table`'s inline end-cap).
-        // Runtime sqlx (not a compile-time `query!`): the `inline_<table_id>` table name
-        // is a dynamic identifier and `any($1)` binds a row-id array — neither is
-        // expressible in a literal, schema-checked macro. Spliced via `AssertSqlSafe`.
-        let sql = format!(
-            "update {} set end_snapshot = {} \
-             where loom_row_id = any($1) and end_snapshot is null",
-            crate::iceberg_inline::inline_table_name(cap.table_id),
-            at.0,
-        );
-        sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(cap.row_ids)
-            .execute(&mut *tx)
-            .await
-            .map_err(be)?;
+        crate::iceberg_inline::end_cap_inline_rows_by_id(&mut tx, cap.table_id, cap.row_ids, at)
+            .await?;
     }
     if let Some(ev) = lineage {
         pg_emit(&mut *tx, ev).await?;
