@@ -1850,6 +1850,7 @@ pub async fn read_graph_reach_with_tail(
         &tail_hops,
         &allowed,
         &mask_cols,
+        final_type.identity.as_deref(),
         q.depth,
         deps.default_limit,
     )?;
