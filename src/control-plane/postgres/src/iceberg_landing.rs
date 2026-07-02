@@ -311,8 +311,6 @@ async fn land_additive(
     batches: Vec<RecordBatch>,
     extras: CommitExtras<'_>,
 ) -> Result<SnapshotId> {
-    use crate::lineage::pg_emit;
-
     // Load the table and build the SUPERSET arrow schema from the landing `columns`
     // (field-ids 1..N), so the writer chain stamps every column (incl. the new ones)
     // into the Parquet footer.
@@ -362,18 +360,7 @@ async fn land_additive(
     let mut tx = pool.begin().await.map_err(be)?;
     let at = next_snapshot(&mut tx, None).await?;
     register_files(&mut tx, table, columns, &loom_files, WriteMode::Append, at).await?;
-    if let Some(cap) = &extras.end_cap {
-        // Retire the flushed inline rows at the same snapshot the new files become live
-        // (faithful to `do_update_table`'s inline end-cap).
-        crate::iceberg_inline::end_cap_inline_rows_by_id(&mut tx, cap.table_id, cap.row_ids, at)
-            .await?;
-    }
-    if let Some(ev) = extras.lineage {
-        pg_emit(&mut *tx, ev).await?;
-    }
-    for job in extras.jobs {
-        crate::queue::pg_insert_if_absent(&mut *tx, job).await?;
-    }
+    crate::iceberg_sql_catalog::apply_commit_extras(&mut tx, at, &extras).await?;
     tx.commit().await.map_err(be)?;
     Ok(at)
 }

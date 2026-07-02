@@ -50,6 +50,35 @@ pub struct InlineEndCap<'a> {
     pub row_ids: &'a [i64],
 }
 
+/// Apply the non-projection commit side-effects — inline end-cap, lineage
+/// emit, job enqueue — in the caller's commit transaction at snapshot `at`, in
+/// that (load-bearing) order. Shared by [`SqlCatalog::do_update_table`] (the
+/// CAS commit) and `iceberg_landing::land_additive` (the mirror-only additive
+/// commit) so the extras semantics cannot drift between them.
+///
+/// `extras.overwrite` is NOT applied here: overwrite ordering (end-cap the live
+/// files BEFORE projecting the new ones) belongs to the projection step
+/// (`write_mirror` / `register_files`), which runs before this.
+pub(crate) async fn apply_commit_extras(
+    conn: &mut sqlx::PgConnection,
+    at: SnapshotId,
+    extras: &CommitExtras<'_>,
+) -> control_plane_core::Result<()> {
+    if let Some(cap) = &extras.end_cap {
+        // Retire the flushed inline rows at the same snapshot the new data
+        // becomes live, so reads never double-serve or drop them.
+        crate::iceberg_inline::end_cap_inline_rows_by_id(conn, cap.table_id, cap.row_ids, at)
+            .await?;
+    }
+    if let Some(ev) = extras.lineage {
+        pg_emit(&mut *conn, ev).await?;
+    }
+    for job in extras.jobs {
+        crate::queue::pg_insert_if_absent(&mut *conn, job).await?;
+    }
+    Ok(())
+}
+
 impl SqlCatalog {
     /// Physically delete an object-store file by its absolute URL (e.g. a `file://`
     /// or `s3://` Parquet path). Idempotent: a missing object is not an error —
@@ -200,30 +229,9 @@ impl SqlCatalog {
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
-        if let Some(cap) = &extras.end_cap {
-            // Retire the flushed inline rows at the same snapshot the new data file
-            // becomes live, so reads never double-serve or drop them.
-            crate::iceberg_inline::end_cap_inline_rows_by_id(
-                &mut tx,
-                cap.table_id,
-                cap.row_ids,
-                at,
-            )
+        apply_commit_extras(&mut tx, at, &extras)
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
-        }
-
-        if let Some(ev) = extras.lineage {
-            pg_emit(&mut *tx, ev)
-                .await
-                .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
-        }
-
-        for job in extras.jobs {
-            crate::queue::pg_insert_if_absent(&mut *tx, job)
-                .await
-                .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
-        }
 
         tx.commit().await.map_err(from_sqlx_error)?;
         Ok(staged_table)
