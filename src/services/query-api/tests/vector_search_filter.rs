@@ -63,7 +63,7 @@ mod post_filter {
     use control_plane_core::{CompareOp, RowFilter, ScalarValue, TableRef};
     use query_api::filter::CallerPredicate;
     use query_api::serving::SqlValue;
-    use query_api::sql::compile_select;
+    use query_api::sql::{SelectInputs, compile_select};
 
     #[test]
     fn ands_candidate_ids_to_row_filter_on_identity_projection() {
@@ -87,10 +87,11 @@ mod post_filter {
             &table,
             &["id".into()],
             &[],
-            std::slice::from_ref(&row_filter),
-            std::slice::from_ref(&pred),
-            &[],
-            &[],
+            &SelectInputs {
+                row_filters: std::slice::from_ref(&row_filter),
+                predicates: std::slice::from_ref(&pred),
+                ..SelectInputs::default()
+            },
             2,
         )
         .unwrap();
