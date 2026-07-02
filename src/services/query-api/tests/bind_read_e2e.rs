@@ -112,6 +112,7 @@ async fn landed_then_bound_dataset_is_queryable() {
             type_name: "Customer".into(),
             filters: vec![],
             ids: vec![],
+            or_raw: Vec::new(),
         },
         &Subject(subj),
         &deps,

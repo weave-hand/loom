@@ -74,6 +74,10 @@ pub struct ObjectQuery {
     /// Object-set input: scope the read to these identity values (an `In` predicate on
     /// the declared identity). Empty = no scoping.
     pub ids: Vec<String>,
+    /// OR-group inputs: the raw value of each `_or` query param (a comma-separated list of
+    /// `column:value` member predicates). Each entry becomes one parenthesized disjunction
+    /// ANDed into the WHERE. Empty = no OR-groups. Parsed in `read_object`.
+    pub or_raw: Vec<String>,
 }
 
 /// Borrowed dependencies for one read.

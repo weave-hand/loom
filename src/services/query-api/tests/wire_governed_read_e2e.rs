@@ -126,6 +126,7 @@ async fn governed_read_parity_over_wire() {
         type_name: "Order".into(),
         filters: vec![],
         ids: vec![],
+        or_raw: Vec::new(),
     };
     let s = Subject(subj.clone());
     let direct = read_object(
@@ -199,6 +200,7 @@ async fn governed_read_parity_over_wire() {
         type_name: "Order".into(),
         filters: vec![],
         ids: vec![],
+        or_raw: Vec::new(),
     };
     let ms = Subject(masker.clone());
     let direct_masked = read_object(

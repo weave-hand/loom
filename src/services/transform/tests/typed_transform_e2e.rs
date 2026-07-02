@@ -329,6 +329,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
             type_name: "OrderEnriched".into(),
             filters: vec![],
             ids: vec![],
+            or_raw: Vec::new(),
         },
         &Subject(subj),
         &deps,
