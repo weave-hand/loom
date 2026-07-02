@@ -296,6 +296,20 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "object-identity-dedup-e2e",
+    crate = "object_identity_dedup_e2e",
+    srcs = ["tests/object_identity_dedup_e2e.rs"],
+    crate_root = "tests/object_identity_dedup_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "association-e2e",
     crate = "association_e2e",
     srcs = ["tests/association_e2e.rs"],
