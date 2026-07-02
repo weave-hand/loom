@@ -59,9 +59,10 @@ fn required_but_nullable_column_is_a_violation() {
         columns: vec![col("id", "long", true)],
     };
     let v = property_violations(&ty, &schema);
-    assert!(v
-        .iter()
-        .any(|x| x.reason == BindViolationReason::NullabilityViolation));
+    assert!(
+        v.iter()
+            .any(|x| x.reason == BindViolationReason::NullabilityViolation)
+    );
 }
 
 #[test]
@@ -82,9 +83,10 @@ fn property_type_mismatch_is_reported() {
         columns: vec![col("id", "long", false)],
     };
     let v = property_violations(&ty, &schema);
-    assert!(v
-        .iter()
-        .any(|x| matches!(x.reason, BindViolationReason::TypeMismatch { .. })));
+    assert!(
+        v.iter()
+            .any(|x| matches!(x.reason, BindViolationReason::TypeMismatch { .. }))
+    );
 }
 
 #[test]
@@ -140,10 +142,12 @@ fn structural_violations_composes_all_three_passes() {
         columns: vec![col("_x", "long", false)],
     };
     let v = structural_violations(&ty, &schema);
-    assert!(v
-        .iter()
-        .any(|x| x.reason == BindViolationReason::ReservedName));
-    assert!(v
-        .iter()
-        .any(|x| matches!(x.reason, BindViolationReason::BadIdentity(_))));
+    assert!(
+        v.iter()
+            .any(|x| x.reason == BindViolationReason::ReservedName)
+    );
+    assert!(
+        v.iter()
+            .any(|x| matches!(x.reason, BindViolationReason::BadIdentity(_)))
+    );
 }

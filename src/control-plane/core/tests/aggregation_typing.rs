@@ -2,7 +2,7 @@
 //! cohesive home the bind derived-property validator delegates to (and the single
 //! landing site for the future coercion taxonomy).
 
-use control_plane_core::{Aggregation, BaseType, ResultExpectation};
+use control_plane_core::{Aggregation, BaseType};
 
 #[test]
 fn column_is_none_only_for_count() {
