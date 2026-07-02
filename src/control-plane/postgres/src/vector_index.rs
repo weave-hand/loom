@@ -337,7 +337,7 @@ pub async fn inline_delta_batch(
     use arrow_schema::{DataType, Field, Schema};
 
     let mut id_builder = Int64Builder::new();
-    let item_field = Arc::new(Field::new("item", DataType::Float32, false));
+    let item_field = Arc::new(control_plane_core::vector_list_field());
     let mut vec_builder = ListBuilder::new(Float32Builder::new()).with_field(item_field.clone());
 
     for r in &rows {

@@ -159,6 +159,13 @@ async fn read_vectors(pool: sqlx::PgPool) -> (Vec<i64>, Vec<Vec<f32>>) {
             .as_any()
             .downcast_ref::<ListArray>()
             .expect("embedding is List");
+        // Pin the wire contract explicitly: the list child is the canonical
+        // "item" field from core's map, on every storage arm.
+        if let arrow_schema::DataType::List(child) = b.schema().field(1).data_type() {
+            assert_eq!(child.name(), "item", "canonical list-child field name");
+        } else {
+            panic!("embedding column is not a List type");
+        }
         for row in list.iter() {
             let v = row.expect("non-null embedding");
             let f = v
