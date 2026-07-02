@@ -770,6 +770,19 @@ rust_test(
 )
 
 rust_test(
+    name = "sql-compile-props",
+    crate = "sql_compile_props",
+    srcs = ["tests/sql_compile_props.rs"],
+    crate_root = "tests/sql_compile_props.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:proptest",
+    ],
+)
+
+rust_test(
     name = "associations",
     crate = "associations",
     srcs = ["tests/associations.rs"],
