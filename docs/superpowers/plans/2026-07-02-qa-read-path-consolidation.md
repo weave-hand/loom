@@ -202,16 +202,24 @@ lockfile / `.sqlx` changes, no BUCK changes beyond the two new test targets.
    ``scalar predicate on `{col}` requires exactly one operand``. Unreachable
    through the HTTP layer today (`filter::coerce_predicate` enforces arity);
    still fail-closed — no SQL is emitted.
-2. **`GET /objects/{type}` repeated-`_ids` edge**: `?_ids=&_ids=1` was 400
-   (mid-loop check on the first, empty occurrence); it becomes 200 with
-   `ids=["1"]` — last-occurrence-wins, matching the other four routes'
-   post-loop check. (`?_ids=` alone and `?_ids=1&_ids=` stay 400.) No test
-   pins the old edge.
+2. **Repeated-reserved-key edges become uniform last-occurrence-wins.**
+   `GET /objects/{type}` `?_ids=&_ids=1` was 400 (mid-loop check on the
+   first, empty occurrence); it becomes 200 with `ids=["1"]` — matching the
+   other four routes' post-loop check. (`?_ids=` alone and `?_ids=1&_ids=`
+   stay 400.) Likewise `depth`/`tree` on `get_graph`, `get_graph_path`, and
+   `depth` on `lineage_closure`: the old scraper loops eagerly parsed every
+   occurrence and 400'd on the first invalid one, so `?depth=abc&depth=3`
+   was 400; the splitter parses only the last occurrence, so it is now 200
+   at depth 3 (and `?tree=xyz&tree=true` selects the tree view). The last
+   occurrence is still fully validated (depth range-capped, tree
+   boolean-checked); single-occurrence requests are unchanged. No test pins
+   any of the old repeated-key edges.
 3. **Multi-invalid-param 400 precedence**: when several reserved params are
    simultaneously invalid (e.g. `?depth=abc&_ids=`), the 400 body now follows
    a fixed check order (`_ids`, `depth`, `tree`, depth-range) instead of
-   query-string arrival order. Any single-error request returns the identical
-   status + body. No test pins multi-error precedence.
+   query-string arrival order. Any single-error request whose reserved keys
+   each appear once returns the identical status + body (repeated keys are
+   whitelist item 2). No test pins multi-error precedence.
 4. **Total error mapping unifies the route×variant grid**: almost all newly
    mapped combos are unreachable — e.g. a hypothetical `UnknownLink` on
    `/objects/{type}` would now be 404 (was opaque 500), `Serving(NoIndex)`

@@ -629,7 +629,7 @@ async fn graph_respond(
 }
 
 /// Tree tail for `?tree=true` on the path-cycle routes: run `read_graph_tree`,
-/// render `{roots, nodes}` via `tree_to_json`, map errors via `graph_error`.
+/// render `{roots, nodes}` via `tree_to_json`, map errors via `query_error_response`.
 async fn graph_tree_respond(
     st: &AppState,
     q: GraphQuery,
