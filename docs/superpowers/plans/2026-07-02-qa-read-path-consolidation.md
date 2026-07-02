@@ -555,7 +555,7 @@ Part of road-qa-read-path-consolidation."
 - Deletes: the three `#[expect(clippy::indexing_slicing)]` (:302, :321, :333)
   and their three `debug_assert_eq!` guards.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `src/services/query-api/tests/sql_compile.rs` (extend its sql import
 line to `use query_api::sql::{ChainType, CompileError, DerivedAggregate, DerivedSelect, compile_chain, compile_select};`;
@@ -605,13 +605,13 @@ fn scalar_with_no_operand_is_an_error_not_a_panic() {
 }
 ```
 
-- [ ] **Step 2: Run to see them fail**
+- [x] **Step 2: Run to see them fail**
 
 Run: `buck2 test //src/services/query-api:sql-compile > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL|panicked" /tmp/t2.log`
 Expected: FAIL — the three new tests panic (`debug_assert` / index out of
 bounds) instead of returning `Err`.
 
-- [ ] **Step 3: Make `caller_predicate_sql` total and fallible**
+- [x] **Step 3: Make `caller_predicate_sql` total and fallible**
 
 Replace `caller_predicate_sql` (:276-345) with:
 
@@ -704,14 +704,14 @@ Propagate the fallibility (each is a mechanical `?`):
    `compile_graph_tree` (:1001), and the Task-1 call sites in
    `compile_graph_reach_union` and `recursive_reach_cte`.
 
-- [ ] **Step 4: Run to green**
+- [x] **Step 4: Run to green**
 
 Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-tree //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail //src/services/query-api:compile-chain-pairs //src/services/query-api:sql-dialect > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
 Expected: PASS (new tests + every pre-existing exact-SQL assertion).
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c2.log 2>&1; cat /tmp/c2.log` — artifact empty (the three
 `indexing_slicing` expects are gone; nothing new fires).
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p2.log 2>&1; grep -c Failed /tmp/p2.log` — expected `0`.
 

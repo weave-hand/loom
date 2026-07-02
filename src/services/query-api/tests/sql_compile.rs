@@ -1,7 +1,9 @@
 use control_plane_core::{Aggregation, CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{ChainType, DerivedAggregate, DerivedSelect, compile_chain, compile_select};
+use query_api::sql::{
+    ChainType, CompileError, DerivedAggregate, DerivedSelect, compile_chain, compile_select,
+};
 
 fn t() -> TableRef {
     TableRef {
@@ -1122,5 +1124,47 @@ fn identity_none_is_byte_identical_to_distinct_fallback() {
          JOIN \"main\".\"orders\" t_1 ON t_1.\"id\" = t_2.\"person_id\" \
          JOIN \"main\".\"customer\" t_0 ON t_0.\"id\" = t_1.\"customer_id\" \
          LIMIT 100"
+    );
+}
+
+#[test]
+fn between_with_one_operand_is_an_error_not_a_panic() {
+    let p = CallerPredicate {
+        column: "age".into(),
+        op: CompareOp::Between,
+        values: vec![SqlValue::Int(1)],
+    };
+    let res = compile_select(&t(), &["age".into()], &[], &[], &[p], &[], &[], 10);
+    assert!(
+        matches!(res, Err(CompileError::MalformedFilter(ref m)) if m.contains("exactly two operands")),
+        "got: {res:?}"
+    );
+}
+
+#[test]
+fn text_pattern_with_no_operand_is_an_error_not_a_panic() {
+    let p = CallerPredicate {
+        column: "name".into(),
+        op: CompareOp::Contains,
+        values: vec![],
+    };
+    let res = compile_select(&t(), &["name".into()], &[], &[], &[p], &[], &[], 10);
+    assert!(
+        matches!(res, Err(CompileError::MalformedFilter(ref m)) if m.contains("exactly one operand")),
+        "got: {res:?}"
+    );
+}
+
+#[test]
+fn scalar_with_no_operand_is_an_error_not_a_panic() {
+    let p = CallerPredicate {
+        column: "age".into(),
+        op: CompareOp::Eq,
+        values: vec![],
+    };
+    let res = compile_select(&t(), &["age".into()], &[], &[], &[p], &[], &[], 10);
+    assert!(
+        matches!(res, Err(CompileError::MalformedFilter(ref m)) if m.contains("exactly one operand")),
+        "got: {res:?}"
     );
 }

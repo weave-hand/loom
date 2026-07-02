@@ -272,16 +272,19 @@ fn derived_aggregate_sql(
 /// Render one caller predicate at `alias` (empty = unqualified), pushing its operand
 /// params in conjunct order. Scalar ops use `op_sql`; set ops expand to N placeholders;
 /// null ops emit no param. The column is a trusted ontology identifier (quoted), every
-/// operand a bound placeholder.
+/// operand a bound placeholder. Total over the operand arity: a predicate whose
+/// `values` violates its operator's arity (normally impossible — enforced upstream by
+/// `filter::coerce_predicate`) is a `CompileError`, never a panic and never SQL with a
+/// placeholder bound to a stale param — fail-closed on the injection boundary.
 fn caller_predicate_sql(
     dialect: &dyn SqlDialect,
     p: &CallerPredicate,
     alias: &str,
     params: &mut Vec<SqlValue>,
-) -> String {
+) -> Result<String, CompileError> {
     use control_plane_core::CompareOp::*;
     let col = col_ref(dialect, alias, &p.column);
-    match p.op {
+    Ok(match p.op {
         In | NotIn => {
             let kw = if matches!(p.op, In) { "IN" } else { "NOT IN" };
             let mut placeholders = Vec::with_capacity(p.values.len());
@@ -294,54 +297,46 @@ fn caller_predicate_sql(
         IsNull => format!("({col} IS NULL)"),
         IsNotNull => format!("({col} IS NOT NULL)"),
         Between => {
-            debug_assert_eq!(
-                p.values.len(),
-                2,
-                "between predicate must have two operands"
-            );
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "between caller-predicate invariant: exactly two operands (enforced upstream by filter::coerce_predicate). Fail closed on violation rather than emit placeholders bound to stale params on this ACL/caller-predicate path."
-            )]
-            let (lo, hi) = {
-                params.push(p.values[0].clone());
-                let lo = dialect.placeholder(params.len());
-                params.push(p.values[1].clone());
-                let hi = dialect.placeholder(params.len());
-                (lo, hi)
+            let [lo_v, hi_v] = p.values.as_slice() else {
+                return Err(CompileError::MalformedFilter(format!(
+                    "between predicate on `{}` requires exactly two operands",
+                    p.column
+                )));
             };
+            params.push(lo_v.clone());
+            let lo = dialect.placeholder(params.len());
+            params.push(hi_v.clone());
+            let hi = dialect.placeholder(params.len());
             format!("({col} BETWEEN {lo} AND {hi})")
         }
         Contains | StartsWith | EndsWith => {
-            debug_assert_eq!(
-                p.values.len(),
-                1,
-                "text-pattern predicate must have one operand"
-            );
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "text-pattern caller-predicate invariant: exactly one operand (enforced upstream by filter::coerce_predicate). Fail closed on violation rather than emit a placeholder bound to a stale param on this ACL/caller-predicate path."
-            )]
-            params.push(p.values[0].clone());
+            let [v] = p.values.as_slice() else {
+                return Err(CompileError::MalformedFilter(format!(
+                    "text-pattern predicate on `{}` requires exactly one operand",
+                    p.column
+                )));
+            };
+            params.push(v.clone());
             format!(
                 "({col} ILIKE {} ESCAPE '\\')",
                 dialect.placeholder(params.len())
             )
         }
         _ => {
-            debug_assert_eq!(p.values.len(), 1, "scalar predicate must have one operand");
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "scalar caller-predicate invariant: exactly one operand (enforced upstream by filter::coerce_predicate). Fail closed on violation rather than emit a placeholder bound to a stale param on this ACL/caller-predicate path."
-            )]
-            params.push(p.values[0].clone());
+            let [v] = p.values.as_slice() else {
+                return Err(CompileError::MalformedFilter(format!(
+                    "scalar predicate on `{}` requires exactly one operand",
+                    p.column
+                )));
+            };
+            params.push(v.clone());
             format!(
                 "({col} {} {})",
                 op_sql(p.op),
                 dialect.placeholder(params.len())
             )
         }
-    }
+    })
 }
 
 /// Masked physical-column projection exprs: a column in `mask_cols` emits the constant
@@ -420,13 +415,13 @@ fn select_where_conjuncts(
     predicates: &[CallerPredicate],
     or_groups: &[Vec<CallerPredicate>],
     params: &mut Vec<SqlValue>,
-) -> Vec<String> {
+) -> Result<Vec<String>, CompileError> {
     let mut conjuncts: Vec<String> = Vec::new();
     for f in row_filters {
         conjuncts.push(filter_sql(dialect, f, "", params));
     }
     for p in predicates {
-        conjuncts.push(caller_predicate_sql(dialect, p, "", params));
+        conjuncts.push(caller_predicate_sql(dialect, p, "", params)?);
     }
     for group in or_groups {
         // Skip an empty group so a `pub` caller passing `vec![vec![]]` can never emit the
@@ -438,10 +433,10 @@ fn select_where_conjuncts(
         let members: Vec<String> = group
             .iter()
             .map(|m| caller_predicate_sql(dialect, m, "", params))
-            .collect();
+            .collect::<Result<_, _>>()?;
         conjuncts.push(format!("({})", members.join(" OR ")));
     }
-    conjuncts
+    Ok(conjuncts)
 }
 
 /// `allowed_cols` must be non-empty (caller enforces). `row_filters` and `predicates`
@@ -485,7 +480,7 @@ pub fn compile_select_with(
     };
 
     let conjuncts =
-        select_where_conjuncts(dialect, row_filters, predicates, or_groups, &mut params);
+        select_where_conjuncts(dialect, row_filters, predicates, or_groups, &mut params)?;
 
     let mut sql = format!("SELECT {cols} FROM {from_clause}");
     if !conjuncts.is_empty() {
@@ -634,7 +629,7 @@ fn chain_from_where(
     for (i, t) in types.iter().enumerate() {
         let a = alias(i);
         for p in &t.predicates {
-            conjuncts.push(caller_predicate_sql(dialect, p, &a, &mut params));
+            conjuncts.push(caller_predicate_sql(dialect, p, &a, &mut params)?);
         }
         for f in &t.row_filters {
             conjuncts.push(filter_sql(dialect, f, &a, &mut params));
@@ -807,19 +802,19 @@ fn reach_seed_where(
     seed_predicates: &[CallerPredicate],
     row_filters: &[RowFilter],
     params: &mut Vec<SqlValue>,
-) -> String {
+) -> Result<String, CompileError> {
     let mut seed_conj: Vec<String> = Vec::new();
     for p in seed_predicates {
-        seed_conj.push(caller_predicate_sql(dialect, p, "s", params));
+        seed_conj.push(caller_predicate_sql(dialect, p, "s", params)?);
     }
     for f in row_filters {
         seed_conj.push(filter_sql(dialect, f, "s", params));
     }
-    if seed_conj.is_empty() {
+    Ok(if seed_conj.is_empty() {
         String::new()
     } else {
         format!(" WHERE {}", seed_conj.join(" AND "))
-    }
+    })
 }
 
 /// Recursive-step JOINs: join `cur` through every path link to `nxt`. Intermediate landings
@@ -933,7 +928,7 @@ pub fn compile_graph_reach(
     let id = q(identity);
     let mut params: Vec<SqlValue> = Vec::new();
 
-    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params);
+    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params)?;
     let joins = reach_joins(dialect, path);
     let rec_where = reach_recursive_where(dialect, path, row_filters, depth, &mut params);
 
@@ -990,7 +985,7 @@ pub fn compile_graph_tree(
     let id = q(identity);
     let mut params: Vec<SqlValue> = Vec::new();
 
-    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params);
+    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params)?;
     let joins = reach_joins(dialect, path);
     let rec_where = reach_recursive_where(dialect, path, row_filters, depth, &mut params);
 
@@ -1073,7 +1068,7 @@ pub fn compile_graph_reach_union(
     let id = q(identity);
     let mut params: Vec<SqlValue> = Vec::new();
 
-    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params);
+    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, &mut params)?;
 
     // Edge subquery: each backing contributes one non-recursive arm that emits (from_id, to_id)
     // pairs. Arms are joined with UNION ALL (duplicates acceptable here; the outer CTE dedupes).
@@ -1146,7 +1141,7 @@ fn recursive_reach_cte(
     let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
     let id = q(identity);
 
-    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, params);
+    let seed_where = reach_seed_where(dialect, seed_predicates, row_filters, params)?;
 
     let joins = link_join(dialect, backing, "cur", "nxt", &tbl, "j");
 
