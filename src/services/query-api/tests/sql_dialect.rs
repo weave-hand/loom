@@ -125,6 +125,7 @@ fn compile_select_emits_order_by_when_requested() {
         &[],
         &[],
         &[],
+        &[],
         Some("id"),
         10,
     )
@@ -147,6 +148,7 @@ fn compile_select_no_order_by_by_default() {
         &DataFusionDialect,
         &t(),
         &["id".into()],
+        &[],
         &[],
         &[],
         &[],
