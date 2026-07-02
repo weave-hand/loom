@@ -1707,7 +1707,7 @@ Part of road-qa-action-decomposition."
 **Files:**
 - Modify: `docs/ROADMAP.md` (`road-qa-action-decomposition`, line 294-295)
 
-- [ ] **Step 1: Full query-api suite**
+- [x] **Step 1: Full query-api suite**
 
 Run: `buck2 build -M none //src/services/query-api/... > /tmp/b8.log 2>&1; grep -E "BUILD (SUCCEEDED|FAILED)" /tmp/b8.log`
 Expected: `BUILD SUCCEEDED`.
@@ -1716,7 +1716,7 @@ Expected: PASS (fixture-heavy — the `-j 8` cap avoids postgres boot-slot
 starvation). If any unrelated fixture test flakes on timeout, re-run that
 target alone before investigating.
 
-- [ ] **Step 2: Prove the metric drop**
+- [x] **Step 2: Prove the metric drop**
 
 Invoke the `loom-complexity` skill with args `diff` (this is a complexity
 item — the spec requires the proof). Expected: `run_mutate` drops from cc 44
@@ -1725,7 +1725,7 @@ from cc 15; no new extracted fn appears at cc ≥ 15. Record the observed
 numbers for the register prose (do NOT edit the census — the scheduled
 routine refreshes it).
 
-- [ ] **Step 3: Close the register item**
+- [x] **Step 3: Close the register item**
 
 In `docs/ROADMAP.md:294-295`, flip the checkbox/status and replace the prose:
 
@@ -1737,7 +1737,7 @@ In `docs/ROADMAP.md:294-295`, flip the checkbox/status and replace the prose:
 Run: `bash tools/docs.sh validate`
 Expected: exit 0, no grammar/id/vocab errors.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p8.log 2>&1; grep -c Failed /tmp/p8.log` — expected `0`.
 
