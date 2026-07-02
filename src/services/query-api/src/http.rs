@@ -60,6 +60,138 @@ fn internal_error(context: &str, e: impl Display) -> axum::response::Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
 }
 
+/// Parse an `_ids` value: comma-split, drop empties; an empty result is the caller
+/// fault every read endpoint 400s on.
+#[expect(
+    clippy::result_large_err,
+    reason = "Err carries the exact axum Response the endpoint returns; boxing it would only \
+              push the allocation to every call site for no benefit on this cold error path"
+)]
+fn parse_ids(v: &str) -> Result<Vec<String>, axum::response::Response> {
+    let ids: Vec<String> = v
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    if ids.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response());
+    }
+    Ok(ids)
+}
+
+/// Parse a `depth` value; a non-integer is the exact 400 the endpoints returned inline.
+#[expect(
+    clippy::result_large_err,
+    reason = "Err carries the exact axum Response the endpoint returns; boxing it would only \
+              push the allocation to every call site for no benefit on this cold error path"
+)]
+fn parse_depth(v: &str) -> Result<u32, axum::response::Response> {
+    // A `match`, not `.map_err(|_| ..)`: the parse error carries no detail worth
+    // preserving (the body is a fixed message), and this sidesteps map_err_ignore
+    // without a suppression.
+    match v.parse::<u32>() {
+        Ok(d) => Ok(d),
+        Err(_) => {
+            Err((StatusCode::BAD_REQUEST, "depth must be a positive integer").into_response())
+        }
+    }
+}
+
+/// Parse a `tree` flag: `true`/`false` (case-insensitive); anything else is a 400.
+#[expect(
+    clippy::result_large_err,
+    reason = "Err carries the exact axum Response the endpoint returns; boxing it would only \
+              push the allocation to every call site for no benefit on this cold error path"
+)]
+fn parse_tree(v: &str) -> Result<bool, axum::response::Response> {
+    match v.to_ascii_lowercase().as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err((StatusCode::BAD_REQUEST, "tree must be true or false").into_response()),
+    }
+}
+
+/// Default + bound the graph `depth` knob. The range check is a safety guardrail
+/// (bounds recursion), deliberately not config.
+#[expect(
+    clippy::result_large_err,
+    reason = "Err carries the exact axum Response the endpoint returns; boxing it would only \
+              push the allocation to every call site for no benefit on this cold error path"
+)]
+fn graph_depth(depth: Option<u32>) -> Result<u32, axum::response::Response> {
+    let depth = depth.unwrap_or(DEFAULT_GRAPH_DEPTH);
+    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
+        )
+            .into_response());
+    }
+    Ok(depth)
+}
+
+/// The reserved (non-filter) query params of a read endpoint, split from the caller
+/// filter pairs in one pass. Each endpoint names exactly the keys it reserves; an
+/// unreserved key stays a filter (so e.g. `_direction` on `/objects/{type}` is still an
+/// unknown filter column -> 400, exactly as before this splitter existed).
+#[derive(Default)]
+struct ReservedParams {
+    ids: Vec<String>,
+    or_raw: Vec<String>,
+    limit: Option<String>,
+    cursor: Option<String>,
+    direction: Option<String>,
+    shape: Option<String>,
+    path: Option<String>,
+    links: Vec<String>,
+    depth: Option<u32>,
+    tree: bool,
+    filters: Vec<(String, String)>,
+}
+
+impl ReservedParams {
+    /// Split `params` on the endpoint's `reserved` key set. Parse failures return the
+    /// exact 400s the endpoints previously produced inline.
+    #[expect(
+        clippy::result_large_err,
+        reason = "Err carries the exact axum Response the endpoint returns; boxing it would \
+                  only push the allocation to every call site for no benefit on this cold \
+                  error path"
+    )]
+    fn split(
+        params: Vec<(String, String)>,
+        reserved: &[&str],
+    ) -> Result<Self, axum::response::Response> {
+        let mut out = Self::default();
+        for (k, v) in params {
+            if !reserved.contains(&k.as_str()) {
+                out.filters.push((k, v));
+                continue;
+            }
+            match k.as_str() {
+                "_ids" => out.ids = parse_ids(&v)?,
+                "_or" => out.or_raw.push(v),
+                "limit" => out.limit = Some(v),
+                "cursor" => out.cursor = Some(v),
+                "_direction" => out.direction = Some(v),
+                "_shape" => out.shape = Some(v),
+                "path" | "_path" => out.path = Some(v),
+                "links" => {
+                    out.links = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect();
+                }
+                "depth" => out.depth = Some(parse_depth(&v)?),
+                "tree" => out.tree = parse_tree(&v)?,
+                _ => out.filters.push((k, v)),
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// Shared, owned dependencies. Holds the control plane as one object-safe facade
 /// (`Arc<dyn ControlPlane>`) and hands its narrow concern objects to the read path.
 #[derive(Clone)]
@@ -68,6 +200,19 @@ pub struct AppState {
     pub serving: Arc<dyn ServingEngine>,
     pub action_engine: Arc<dyn ActionEngine>,
     pub default_limit: u32,
+}
+
+impl AppState {
+    /// The borrowed read-path dependency bundle — one construction point for the
+    /// `QueryDeps` literal previously hand-built per endpoint.
+    fn deps(&self) -> QueryDeps<'_> {
+        QueryDeps {
+            ontology: self.cp.ontology(),
+            acl: self.cp.acl(),
+            serving: self.serving.as_ref(),
+            default_limit: self.default_limit,
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -175,36 +320,19 @@ async fn get_object(
     // knobs out of the params; the rest are filters. Repeated filter keys are preserved (a
     // column may carry several predicates, e.g. a range); the handler parses each value's
     // operator and coerces it. Presence of `limit` OR `cursor` selects the paginated read path.
-    let mut ids: Vec<String> = Vec::new();
-    let mut or_raw: Vec<String> = Vec::new();
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    let mut raw_limit: Option<String> = None;
-    let mut raw_cursor: Option<String> = None;
-    for (k, v) in params {
-        match k.as_str() {
-            "_ids" => {
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-                if ids.is_empty() {
-                    return (StatusCode::BAD_REQUEST, "_ids requires at least one value")
-                        .into_response();
-                }
-            }
-            "_or" => or_raw.push(v),
-            "limit" => raw_limit = Some(v),
-            "cursor" => raw_cursor = Some(v),
-            _ => filters.push((k, v)),
-        }
-    }
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
+    let p = match ReservedParams::split(params, &["_ids", "_or", "limit", "cursor"]) {
+        Ok(p) => p,
+        Err(r) => return r,
     };
+    let ReservedParams {
+        ids,
+        or_raw,
+        filters,
+        limit: raw_limit,
+        cursor: raw_cursor,
+        ..
+    } = p;
+    let deps = st.deps();
     let paginated = raw_limit.is_some() || raw_cursor.is_some();
     if paginated {
         let limit = match raw_limit {
@@ -235,13 +363,7 @@ async fn get_object(
             Ok((rows, next)) => {
                 Json(crate::render::objects_to_json(&rows, next.as_ref())).into_response()
             }
-            Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-            Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-            Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-            Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
-            Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-            Err(QueryError::BadPagination(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
-            Err(e) => internal_error("object read serving fault", e),
+            Err(e) => query_error_response(e, "object read serving fault"),
         };
     }
     match read_object(
@@ -257,12 +379,7 @@ async fn get_object(
     .await
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
-        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-        Err(e) => internal_error("object read serving fault", e),
+        Err(e) => query_error_response(e, "object read serving fault"),
     }
 }
 
@@ -289,64 +406,27 @@ async fn get_linked(
 ) -> impl IntoResponse {
     // Pull `_direction` (single-hop knob), `_shape`, and `_ids` out of the params; the rest
     // are filters.
-    let mut direction_raw: Option<String> = None;
-    let mut shape: Option<String> = None;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "_direction" => direction_raw = Some(v),
-            "_shape" => shape = Some(v),
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            _ => filter_params.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    let direction = match parse_direction(direction_raw.as_deref()) {
+    let p = match ReservedParams::split(params, &["_direction", "_shape", "_ids"]) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let direction = match parse_direction(p.direction.as_deref()) {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    // Resolve filter keys against the single-link path: bare -> source (t_0), `<link>.col`
-    // -> target (t_1). A bad prefix -> 400. (Filter keys use the bare link name.)
-    let filters = match crate::chain_filter::resolve_chain_filters(
-        std::slice::from_ref(&link_name),
-        filter_params,
-    ) {
-        Ok(f) => f,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
-    };
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
-    let query = ChainQuery {
+    respond_shaped(
+        &st,
         from_type,
-        path: vec![Hop {
+        vec![Hop {
             link: link_name,
             direction,
         }],
-        filters,
-        ids,
-    };
-    match shape.as_deref() {
-        None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
-        Some("association") => {
-            respond_associations(read_associations(&query, &subject, &deps).await)
-        }
-        Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
-    }
+        p.shape,
+        p.filters,
+        p.ids,
+        &subject,
+    )
+    .await
 }
 
 #[utoipa::path(
@@ -369,51 +449,43 @@ async fn get_linked_chain(
 ) -> impl IntoResponse {
     // `_path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
     // every other pair is a filter. Repeated filter keys are preserved (e.g. a range).
-    let mut hops: Vec<Hop> = Vec::new();
-    let mut shape: Option<String> = None;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "_path" => hops = parse_path_hops(&v),
-            "_shape" => shape = Some(v),
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            _ => filter_params.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
+    let p = match ReservedParams::split(params, &["_path", "_shape", "_ids"]) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let hops = p.path.as_deref().map(parse_path_hops).unwrap_or_default();
+    respond_shaped(&st, from_type, hops, p.shape, p.filters, p.ids, &subject).await
+}
+
+/// The shared tail of the two `/links` routes: resolve filter keys against the path's
+/// bare link names, build the `ChainQuery`, and dispatch on `_shape`
+/// (objects | association).
+async fn respond_shaped(
+    st: &AppState,
+    from_type: String,
+    path: Vec<Hop>,
+    shape: Option<String>,
+    filter_params: Vec<(String, String)>,
+    ids: Vec<String>,
+    subject: &Subject,
+) -> axum::response::Response {
     // Filter keys reference bare link names; resolve against those (direction-independent).
-    let names: Vec<String> = hops.iter().map(|h| h.link.clone()).collect();
+    let names: Vec<String> = path.iter().map(|h| h.link.clone()).collect();
     let filters = match crate::chain_filter::resolve_chain_filters(&names, filter_params) {
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     let query = ChainQuery {
         from_type,
-        path: hops,
+        path,
         filters,
         ids,
     };
     match shape.as_deref() {
-        None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
+        None | Some("objects") => respond_objects(read_linked_chain(&query, subject, &deps).await),
         Some("association") => {
-            respond_associations(read_associations(&query, &subject, &deps).await)
+            respond_associations(read_associations(&query, subject, &deps).await)
         }
         Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
     }
@@ -424,14 +496,14 @@ fn respond_objects(
 ) -> axum::response::Response {
     match res {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => chain_error(e),
+        Err(e) => query_error_response(e, "chain/association read serving fault"),
     }
 }
 
 fn respond_associations(res: Result<Associations, QueryError>) -> axum::response::Response {
     match res {
         Ok(a) => Json(crate::render::associations_to_json(&a)).into_response(),
-        Err(e) => chain_error(e),
+        Err(e) => query_error_response(e, "chain/association read serving fault"),
     }
 }
 
@@ -462,18 +534,32 @@ fn bad_filter_value_response(e: &crate::filter::FilterError) -> axum::response::
     (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-/// Shared HTTP mapping for chain/association read errors.
-fn chain_error(e: QueryError) -> axum::response::Response {
+/// The single, TOTAL `QueryError` -> HTTP response mapping. Every variant is matched
+/// deliberately — adding a `QueryError` variant is a compile error here, not a silent
+/// 500. Governance denials are bodyless 403s; caller faults echo only the
+/// caller-supplied name (never internal SQL/schema detail); backend faults log
+/// server-side via `internal_error` with the given `context` and return an opaque 500.
+fn query_error_response(e: QueryError, context: &'static str) -> axum::response::Response {
+    use crate::serving::ServingError;
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
         QueryError::AmbiguousLink(l) => (StatusCode::BAD_REQUEST, l).into_response(),
-        QueryError::BadChain(m) => (StatusCode::BAD_REQUEST, m).into_response(),
-        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
-        other => internal_error("chain/association read serving fault", other),
+        QueryError::BadFilterValue(ref err) => bad_filter_value_response(err),
+        QueryError::BadChain(m) | QueryError::BadGraphPath(m) | QueryError::BadPagination(m) => {
+            (StatusCode::BAD_REQUEST, m).into_response()
+        }
+        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
+        QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
+        QueryError::Serving(ServingError::NoIndex(m)) => (StatusCode::NOT_FOUND, m).into_response(),
+        QueryError::Serving(ServingError::DimMismatch(m)) => {
+            (StatusCode::BAD_REQUEST, m).into_response()
+        }
+        e @ (QueryError::Serving(ServingError::Engine(_))
+        | QueryError::ControlPlane(_)
+        | QueryError::Malformed(_)) => internal_error(context, e),
     }
 }
 
@@ -483,16 +569,6 @@ fn chain_error(e: QueryError) -> axum::response::Response {
 // guardrail, not a deployment concern. See road-config-seam-unification.
 const MAX_GRAPH_DEPTH: u32 = 10;
 const DEFAULT_GRAPH_DEPTH: u32 = 5;
-
-/// Parse a `?tree=` (or similar) boolean flag token. Accepts `true`/`false` (case-insensitive);
-/// any other value is a 400. Absent -> `false` (the caller defaults before calling this).
-fn parse_bool_flag(v: &str) -> Result<bool, ()> {
-    match v.to_ascii_lowercase().as_str() {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(()),
-    }
-}
 
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph/{link_name}",
@@ -517,55 +593,22 @@ async fn get_graph(
     subject: Subject,
 ) -> impl IntoResponse {
     // Pull `depth`, `_ids`, and `tree` out; the rest are seed filters.
-    let mut depth = DEFAULT_GRAPH_DEPTH;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut tree = false;
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "depth" => match v.parse::<u32>() {
-                Ok(d) => depth = d,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
-                        .into_response();
-                }
-            },
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            "tree" => match parse_bool_flag(&v) {
-                Ok(t) => tree = t,
-                Err(()) => {
-                    return (StatusCode::BAD_REQUEST, "tree must be true or false").into_response();
-                }
-            },
-            _ => filters.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
-        )
-            .into_response();
-    }
-    if tree {
+    let p = match ReservedParams::split(params, &["depth", "_ids", "tree"]) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let depth = match graph_depth(p.depth) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if p.tree {
         graph_tree_respond(
             &st,
             type_name,
             vec![link_name.into()],
             depth,
-            filters,
-            ids,
+            p.filters,
+            p.ids,
             &subject,
         )
         .await
@@ -577,8 +620,8 @@ async fn get_graph(
                 path: vec![link_name.into()],
             },
             depth,
-            filters,
-            ids,
+            p.filters,
+            p.ids,
             &subject,
         )
         .await
@@ -611,57 +654,19 @@ async fn get_graph_path(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    let mut depth = DEFAULT_GRAPH_DEPTH;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut tree = false;
-    let mut path: Vec<Hop> = Vec::new();
-    let mut links: Vec<String> = Vec::new();
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "path" => path = parse_path_hops(&v),
-            "links" => {
-                links = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect()
-            }
-            "depth" => match v.parse::<u32>() {
-                Ok(d) => depth = d,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
-                        .into_response();
-                }
-            },
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            "tree" => match parse_bool_flag(&v) {
-                Ok(t) => tree = t,
-                Err(()) => {
-                    return (StatusCode::BAD_REQUEST, "tree must be true or false").into_response();
-                }
-            },
-            _ => filters.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
-        )
-            .into_response();
-    }
+    let p = match ReservedParams::split(params, &["path", "links", "depth", "_ids", "tree"]) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let depth = match graph_depth(p.depth) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let path = p.path.as_deref().map(parse_path_hops).unwrap_or_default();
+    let links = p.links;
+    let ids = p.ids;
+    let filters = p.filters;
+    let tree = p.tree;
     // Exactly one of `path` (ordered cycle / `*` recursive-core+tail) or `links` (self-link
     // union) selects the mode.
     if !path.is_empty() && !links.is_empty() {
@@ -780,24 +785,8 @@ async fn get_graph_path(
     }
 }
 
-/// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
-fn graph_error(e: QueryError) -> axum::response::Response {
-    match e {
-        QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
-        QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
-        QueryError::AmbiguousLink(l) => (StatusCode::BAD_REQUEST, l).into_response(),
-        QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
-        QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
-        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
-        QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
-        QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
-        other => internal_error("graph read serving fault", other),
-    }
-}
-
 /// Shared `/graph` object-read tail: build a `GraphReadQuery` of the given kind, run
-/// `read_graph`, render, map errors via `graph_error`.
+/// `read_graph`, render, map errors via `query_error_response`.
 async fn graph_read_respond(
     st: &AppState,
     type_name: String,
@@ -807,12 +796,7 @@ async fn graph_read_respond(
     ids: Vec<String>,
     subject: &Subject,
 ) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     match read_graph(
         &GraphReadQuery {
             type_name,
@@ -827,13 +811,13 @@ async fn graph_read_respond(
     .await
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => graph_error(e),
+        Err(e) => query_error_response(e, "graph read serving fault"),
     }
 }
 
 /// Tree tail for `?tree=true` on the single `/graph/:link` and `?path=` path-cycle routes:
 /// build a `GraphQuery`, run `read_graph_tree`, render `{roots, nodes}` via `tree_to_json`,
-/// map errors via `graph_error`.
+/// map errors via `query_error_response`.
 async fn graph_tree_respond(
     st: &AppState,
     type_name: String,
@@ -843,12 +827,7 @@ async fn graph_tree_respond(
     ids: Vec<String>,
     subject: &Subject,
 ) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     match read_graph_tree(
         &GraphQuery {
             type_name,
@@ -863,7 +842,7 @@ async fn graph_tree_respond(
     .await
     {
         Ok(tree) => Json(crate::render::tree_to_json(&tree)).into_response(),
-        Err(e) => graph_error(e),
+        Err(e) => query_error_response(e, "graph read serving fault"),
     }
 }
 
@@ -1000,12 +979,7 @@ async fn post_search(
     if let Err(msg) = validate_search_request(&req) {
         return (StatusCode::BAD_REQUEST, msg).into_response();
     }
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     let q = crate::handler::VectorSearchQuery {
         type_name,
         index_name,
@@ -1022,15 +996,7 @@ async fn post_search(
                 .collect();
             Json(serde_json::json!({ "results": results })).into_response()
         }
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(QueryError::Serving(crate::serving::ServingError::NoIndex(m))) => {
-            (StatusCode::NOT_FOUND, m).into_response()
-        }
-        Err(QueryError::Serving(crate::serving::ServingError::DimMismatch(m))) => {
-            (StatusCode::BAD_REQUEST, m).into_response()
-        }
-        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-        Err(e) => internal_error("vector search serving fault", e),
+        Err(e) => query_error_response(e, "vector search serving fault"),
     }
 }
 
