@@ -448,7 +448,9 @@ impl IngestError {
 }
 ```
 
-Also add `use crate::IngestError;` is already present (line 25); confirm `axum::response::{IntoResponse, Json, Response}` and `axum::http::StatusCode` are imported (they are, lines 14-16). Add `use tracing` is not needed — `tracing::error!` is a macro path.
+`use crate::IngestError;` is already present (line 25); confirm `axum::response::{IntoResponse, Json, Response}` and `axum::http::StatusCode` are imported (they are, lines 14-16).
+
+**Also add the `tracing` dep to the ingest lib.** `tracing::error!` is a macro *path*, so `tracing` must be a **direct** dependency of the `ingest` `rust_library` — buck2 only `--extern`s direct deps, and today ingest does not depend on `tracing` (only `main.rs` calls `service_runtime::init_tracing()`). Add `"//third-party:tracing",` to the `rust_library`'s `deps` in `src/services/ingest/BUCK` (the block at lines ~10-29, alongside the other `//third-party:*` entries). Without this, the Step 5 build fails with `error[E0433]: failed to resolve: use of undeclared crate or module tracing`. `//third-party:tracing` already exists in `third-party/BUCK`.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
