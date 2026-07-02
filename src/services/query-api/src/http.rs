@@ -5,10 +5,9 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use crate::handler::{
-    Associations, ChainQuery, Direction, GraphQuery, GraphTailQuery, GraphUnionQuery, Hop,
-    ObjectQuery, QueryDeps, QueryError, read_associations, read_graph_reach,
-    read_graph_reach_union, read_graph_reach_with_tail, read_graph_tree, read_linked_chain,
-    read_object, read_object_page,
+    Associations, ChainQuery, GraphQuery, GraphReadSpec, GraphTailQuery, GraphUnionQuery, Hop,
+    ObjectQuery, QueryDeps, QueryError, read_associations, read_graph_reach_spec, read_graph_tree,
+    read_linked_chain, read_object, read_object_page,
 };
 use crate::openapi::{
     JobAck, ObjectsResponse, OntologyTypesResponse, VectorSearchResponse, WriteDeniedBody,
@@ -69,6 +68,19 @@ pub struct AppState {
     pub serving: Arc<dyn ServingEngine>,
     pub action_engine: Arc<dyn ActionEngine>,
     pub default_limit: u32,
+}
+
+impl AppState {
+    /// The per-request borrowed dependency bundle every read handler passes down —
+    /// one construction point instead of a hand-built literal per route.
+    pub fn deps(&self) -> QueryDeps<'_> {
+        QueryDeps {
+            ontology: self.cp.ontology(),
+            acl: self.cp.acl(),
+            serving: self.serving.as_ref(),
+            default_limit: self.default_limit,
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -172,40 +184,20 @@ async fn get_object(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    // Pull the `_ids` object-set input, `_or` groups, and the `limit`/`cursor` pagination
+    // Split the `_ids` object-set input, `_or` groups, and the `limit`/`cursor` pagination
     // knobs out of the params; the rest are filters. Repeated filter keys are preserved (a
     // column may carry several predicates, e.g. a range); the handler parses each value's
     // operator and coerces it. Presence of `limit` OR `cursor` selects the paginated read path.
-    let mut ids: Vec<String> = Vec::new();
-    let mut or_raw: Vec<String> = Vec::new();
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    let mut raw_limit: Option<String> = None;
-    let mut raw_cursor: Option<String> = None;
-    for (k, v) in params {
-        match k.as_str() {
-            "_ids" => {
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-                if ids.is_empty() {
-                    return (StatusCode::BAD_REQUEST, "_ids requires at least one value")
-                        .into_response();
-                }
-            }
-            "_or" => or_raw.push(v),
-            "limit" => raw_limit = Some(v),
-            "cursor" => raw_cursor = Some(v),
-            _ => filters.push((k, v)),
-        }
-    }
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
+    let (reserved, filters) =
+        crate::query_params::split_reserved(params, &["_ids", "_or", "limit", "cursor"]);
+    let ids = match crate::query_params::parse_ids(reserved.last("_ids")) {
+        Ok(ids) => ids,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
     };
+    let or_raw: Vec<String> = reserved.all("_or").to_vec();
+    let raw_limit = reserved.last("limit").map(String::from);
+    let raw_cursor = reserved.last("cursor").map(String::from);
+    let deps = st.deps();
     let paginated = raw_limit.is_some() || raw_cursor.is_some();
     if paginated {
         let limit = match raw_limit {
@@ -236,13 +228,7 @@ async fn get_object(
             Ok((rows, next)) => {
                 Json(crate::render::objects_to_json(&rows, next.as_ref())).into_response()
             }
-            Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-            Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-            Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-            Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
-            Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-            Err(QueryError::BadPagination(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
-            Err(e) => internal_error("object read serving fault", e),
+            Err(e) => query_error_response(e, "object read serving fault"),
         };
     }
     match read_object(
@@ -258,12 +244,7 @@ async fn get_object(
     .await
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(QueryError::UnknownType(t)) => (StatusCode::NOT_FOUND, t).into_response(),
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(QueryError::BadFilter(c)) => (StatusCode::BAD_REQUEST, c).into_response(),
-        Err(QueryError::BadFilterValue(e)) => bad_filter_value_response(&e),
-        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-        Err(e) => internal_error("object read serving fault", e),
+        Err(e) => query_error_response(e, "object read serving fault"),
     }
 }
 
@@ -288,32 +269,15 @@ async fn get_linked(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    // Pull `_direction` (single-hop knob), `_shape`, and `_ids` out of the params; the rest
+    // Split `_direction` (single-hop knob), `_shape`, and `_ids` out of the params; the rest
     // are filters.
-    let mut direction_raw: Option<String> = None;
-    let mut shape: Option<String> = None;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "_direction" => direction_raw = Some(v),
-            "_shape" => shape = Some(v),
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            _ => filter_params.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    let direction = match parse_direction(direction_raw.as_deref()) {
+    let (reserved, filter_params) =
+        crate::query_params::split_reserved(params, &["_direction", "_shape", "_ids"]);
+    let ids = match crate::query_params::parse_ids(reserved.last("_ids")) {
+        Ok(ids) => ids,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let direction = match parse_direction(reserved.last("_direction")) {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
@@ -326,12 +290,6 @@ async fn get_linked(
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
     let query = ChainQuery {
         from_type,
         path: vec![Hop {
@@ -341,13 +299,7 @@ async fn get_linked(
         filters,
         ids,
     };
-    match shape.as_deref() {
-        None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
-        Some("association") => {
-            respond_associations(read_associations(&query, &subject, &deps).await)
-        }
-        Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
-    }
+    respond_shaped(&st, query, reserved.last("_shape"), &subject).await
 }
 
 #[utoipa::path(
@@ -370,40 +322,21 @@ async fn get_linked_chain(
 ) -> impl IntoResponse {
     // `_path` is the comma-separated ordered chain of (optionally `~`-inverse) link names;
     // every other pair is a filter. Repeated filter keys are preserved (e.g. a range).
-    let mut hops: Vec<Hop> = Vec::new();
-    let mut shape: Option<String> = None;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut filter_params: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "_path" => hops = parse_path_hops(&v),
-            "_shape" => shape = Some(v),
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            _ => filter_params.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
+    let (reserved, filter_params) =
+        crate::query_params::split_reserved(params, &["_path", "_shape", "_ids"]);
+    let ids = match crate::query_params::parse_ids(reserved.last("_ids")) {
+        Ok(ids) => ids,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let hops: Vec<Hop> = reserved
+        .last("_path")
+        .map(parse_path_hops)
+        .unwrap_or_default();
     // Filter keys reference bare link names; resolve against those (direction-independent).
     let names: Vec<String> = hops.iter().map(|h| h.link.clone()).collect();
     let filters = match crate::chain_filter::resolve_chain_filters(&names, filter_params) {
         Ok(f) => f,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
-    };
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
     };
     let query = ChainQuery {
         from_type,
@@ -411,10 +344,23 @@ async fn get_linked_chain(
         filters,
         ids,
     };
-    match shape.as_deref() {
-        None | Some("objects") => respond_objects(read_linked_chain(&query, &subject, &deps).await),
+    respond_shaped(&st, query, reserved.last("_shape"), &subject).await
+}
+
+/// The shared single-hop/chain response tail: dispatch `_shape` (objects default,
+/// association pairs, unknown -> 400) over the governed chain read. The get_linked
+/// and get_linked_chain tails were verbatim copies of this.
+async fn respond_shaped(
+    st: &AppState,
+    query: ChainQuery,
+    shape: Option<&str>,
+    subject: &Subject,
+) -> axum::response::Response {
+    let deps = st.deps();
+    match shape {
+        None | Some("objects") => respond_objects(read_linked_chain(&query, subject, &deps).await),
         Some("association") => {
-            respond_associations(read_associations(&query, &subject, &deps).await)
+            respond_associations(read_associations(&query, subject, &deps).await)
         }
         Some(other) => (StatusCode::BAD_REQUEST, format!("unknown shape: {other}")).into_response(),
     }
@@ -425,14 +371,14 @@ fn respond_objects(
 ) -> axum::response::Response {
     match res {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => chain_error(e),
+        Err(e) => query_error_response(e, "chain/association read serving fault"),
     }
 }
 
 fn respond_associations(res: Result<Associations, QueryError>) -> axum::response::Response {
     match res {
         Ok(a) => Json(crate::render::associations_to_json(&a)).into_response(),
-        Err(e) => chain_error(e),
+        Err(e) => query_error_response(e, "chain/association read serving fault"),
     }
 }
 
@@ -463,18 +409,36 @@ fn bad_filter_value_response(e: &crate::filter::FilterError) -> axum::response::
     (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-/// Shared HTTP mapping for chain/association read errors.
-fn chain_error(e: QueryError) -> axum::response::Response {
+/// The single, TOTAL `QueryError` -> HTTP response mapping — the union of the four
+/// partial per-route copies it replaced (object/chain/graph/search). No catch-all
+/// over `QueryError`'s variants: adding a variant fails compilation here, forcing a
+/// deliberate status. Client-fault variants echo only caller-supplied names (type/
+/// column/link — no internal detail); backend faults go through `internal_error`
+/// (logged server-side, opaque body). `Serving` splits: `NoIndex` is the /search
+/// 404, `DimMismatch` its 400 — both constructed only on the vector-search path —
+/// and everything else is an opaque 500.
+pub fn query_error_response(e: QueryError, context: &'static str) -> axum::response::Response {
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
         QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
         QueryError::AmbiguousLink(l) => (StatusCode::BAD_REQUEST, l).into_response(),
-        QueryError::BadChain(m) => (StatusCode::BAD_REQUEST, m).into_response(),
-        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
         QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
         QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
         QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
-        other => internal_error("chain/association read serving fault", other),
+        QueryError::BadChain(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
+        QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
+        QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::BadPagination(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::Serving(crate::serving::ServingError::NoIndex(m)) => {
+            (StatusCode::NOT_FOUND, m).into_response()
+        }
+        QueryError::Serving(crate::serving::ServingError::DimMismatch(m)) => {
+            (StatusCode::BAD_REQUEST, m).into_response()
+        }
+        e @ (QueryError::ControlPlane(_) | QueryError::Serving(_) | QueryError::Malformed(_)) => {
+            internal_error(context, e)
+        }
     }
 }
 
@@ -493,6 +457,35 @@ fn parse_bool_flag(v: &str) -> Result<bool, ()> {
         "false" => Ok(false),
         _ => Err(()),
     }
+}
+
+/// The shared `/graph` route knobs — `_ids`, `depth` (default + `MAX_GRAPH_DEPTH`
+/// range guardrail), `tree` — pulled from the route's reserved params. Err carries
+/// the ready 400 response (fixed check order: ids, depth parse, tree, depth range),
+/// boxed to keep the `Result`'s Err variant small (`clippy::result_large_err`).
+fn graph_knobs(
+    reserved: &crate::query_params::ReservedParams,
+) -> Result<(Vec<String>, u32, bool), Box<axum::response::Response>> {
+    let ids = crate::query_params::parse_ids(reserved.last("_ids"))
+        .map_err(|m| Box::new((StatusCode::BAD_REQUEST, m).into_response()))?;
+    let depth = crate::query_params::parse_depth(reserved.last("depth"), DEFAULT_GRAPH_DEPTH)
+        .map_err(|m| Box::new((StatusCode::BAD_REQUEST, m).into_response()))?;
+    let tree = match reserved.last("tree") {
+        None => false,
+        Some(v) => parse_bool_flag(v).map_err(|()| {
+            Box::new((StatusCode::BAD_REQUEST, "tree must be true or false").into_response())
+        })?,
+    };
+    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
+            )
+                .into_response(),
+        ));
+    }
+    Ok((ids, depth, tree))
 }
 
 #[utoipa::path(
@@ -517,70 +510,24 @@ async fn get_graph(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    // Pull `depth`, `_ids`, and `tree` out; the rest are seed filters.
-    let mut depth = DEFAULT_GRAPH_DEPTH;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut tree = false;
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "depth" => match v.parse::<u32>() {
-                Ok(d) => depth = d,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
-                        .into_response();
-                }
-            },
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            "tree" => match parse_bool_flag(&v) {
-                Ok(t) => tree = t,
-                Err(()) => {
-                    return (StatusCode::BAD_REQUEST, "tree must be true or false").into_response();
-                }
-            },
-            _ => filters.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
-        )
-            .into_response();
-    }
+    // Split `depth`, `_ids`, and `tree` out; the rest are seed filters.
+    let (reserved, filters) =
+        crate::query_params::split_reserved(params, &["depth", "_ids", "tree"]);
+    let (ids, depth, tree) = match graph_knobs(&reserved) {
+        Ok(t) => t,
+        Err(resp) => return *resp,
+    };
+    let q = GraphQuery {
+        type_name,
+        path: vec![link_name.into()],
+        depth,
+        filters,
+        ids,
+    };
     if tree {
-        graph_tree_respond(
-            &st,
-            type_name,
-            vec![link_name.into()],
-            depth,
-            filters,
-            ids,
-            &subject,
-        )
-        .await
+        graph_tree_respond(&st, q, &subject).await
     } else {
-        graph_respond(
-            &st,
-            type_name,
-            vec![link_name.into()],
-            depth,
-            filters,
-            ids,
-            &subject,
-        )
-        .await
+        graph_respond(&st, GraphReadSpec::PathCycle(&q), &subject).await
     }
 }
 
@@ -610,308 +557,88 @@ async fn get_graph_path(
     Query(params): Query<Vec<(String, String)>>,
     subject: Subject,
 ) -> impl IntoResponse {
-    let mut depth = DEFAULT_GRAPH_DEPTH;
-    let mut ids: Vec<String> = Vec::new();
-    let mut ids_present = false;
-    let mut tree = false;
-    let mut path: Vec<Hop> = Vec::new();
-    let mut links: Vec<String> = Vec::new();
-    let mut filters: Vec<(String, String)> = Vec::with_capacity(params.len());
-    for (k, v) in params {
-        match k.as_str() {
-            "path" => path = parse_path_hops(&v),
-            "links" => {
-                links = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect()
-            }
-            "depth" => match v.parse::<u32>() {
-                Ok(d) => depth = d,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
-                        .into_response();
-                }
-            },
-            "_ids" => {
-                ids_present = true;
-                ids = v
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
-            }
-            "tree" => match parse_bool_flag(&v) {
-                Ok(t) => tree = t,
-                Err(()) => {
-                    return (StatusCode::BAD_REQUEST, "tree must be true or false").into_response();
-                }
-            },
-            _ => filters.push((k, v)),
-        }
-    }
-    if ids_present && ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "_ids requires at least one value").into_response();
-    }
-    if !(1..=MAX_GRAPH_DEPTH).contains(&depth) {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("depth must be 1..={MAX_GRAPH_DEPTH}"),
-        )
-            .into_response();
-    }
-    // Exactly one of `path` (ordered cycle / `*` recursive-core+tail) or `links` (self-link
-    // union) selects the mode.
-    if !path.is_empty() && !links.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "specify either path or links, not both",
-        )
-            .into_response();
-    }
-    if !links.is_empty() {
-        if tree {
-            return (
-                StatusCode::BAD_REQUEST,
-                "tree view is not supported with links (union)",
-            )
-                .into_response();
-        }
-        return graph_union_respond(&st, type_name, links, depth, filters, ids, &subject).await;
-    }
-    if path.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "path or links requires at least one link",
-        )
-            .into_response();
-    }
-    // Part B: a `*`-suffixed FORWARD segment marks a recursive core + relational tail. `~foo*`
-    // is NOT a tail — it stays a path-cycle inverse hop whose name ends in `*` (=> UnknownLink).
-    let starred: Vec<usize> = path
-        .iter()
-        .enumerate()
-        .filter(|(_, h)| h.direction == Direction::Forward && h.link.ends_with('*'))
-        .map(|(i, _)| i)
-        .collect();
-    if !starred.is_empty() {
-        if tree {
-            return (
-                StatusCode::BAD_REQUEST,
-                "tree view is not supported for a recursive-core (*) path",
-            )
-                .into_response();
-        }
-        if starred.len() > 1 {
-            return (
-                StatusCode::BAD_REQUEST,
-                "at most one path segment may be marked recursive with `*`",
-            )
-                .into_response();
-        }
-        if starred.first().copied().unwrap_or(0) != 0 {
-            return (
-                StatusCode::BAD_REQUEST,
-                "the recursive `*` segment must be the first path segment",
-            )
-                .into_response();
-        }
-        let Some(first_hop) = path.first() else {
-            return (StatusCode::BAD_REQUEST, "empty path").into_response();
-        };
-        let core_link = first_hop.link.trim_end_matches('*').to_string();
-        if core_link.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                "recursive core link name must not be empty",
-            )
-                .into_response();
-        }
-        // Tail is forward-only (part-B non-goal defers inverse tails); re-emit each remaining
-        // hop's name, re-attaching `~` for any inverse hop so it resolves as an (absent)
-        // forward link rather than silently dropping the sigil.
-        let tail_links: Vec<String> = path
-            .get(1..)
-            .unwrap_or_default()
-            .iter()
-            .map(|h| match h.direction {
-                Direction::Forward => h.link.clone(),
-                Direction::Inverse => format!("~{}", h.link),
-            })
-            .collect();
-        return graph_tail_respond(
-            &st, type_name, core_link, tail_links, depth, filters, ids, &subject,
-        )
-        .await;
-    }
-    if tree {
-        graph_tree_respond(&st, type_name, path, depth, filters, ids, &subject).await
-    } else {
-        graph_respond(&st, type_name, path, depth, filters, ids, &subject).await
-    }
-}
-
-/// Shared HTTP mapping for graph reachability read errors (path-cycle and union).
-fn graph_error(e: QueryError) -> axum::response::Response {
-    match e {
-        QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
-        QueryError::UnknownLink(l) => (StatusCode::NOT_FOUND, l).into_response(),
-        QueryError::AmbiguousLink(l) => (StatusCode::BAD_REQUEST, l).into_response(),
-        QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
-        QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
-        QueryError::NoIdentity(t) => (StatusCode::BAD_REQUEST, t).into_response(),
-        QueryError::BadFilter(c) => (StatusCode::BAD_REQUEST, c).into_response(),
-        QueryError::BadFilterValue(e) => bad_filter_value_response(&e),
-        QueryError::Forbidden => StatusCode::FORBIDDEN.into_response(),
-        other => internal_error("graph read serving fault", other),
-    }
-}
-
-/// Path-cycle (`?path=` / single `/graph/:link`) tail: build a `GraphQuery`, run
-/// `read_graph_reach`, map via `graph_error`.
-async fn graph_respond(
-    st: &AppState,
-    type_name: String,
-    path: Vec<Hop>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
-    subject: &Subject,
-) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
+    let (reserved, filters) =
+        crate::query_params::split_reserved(params, &["path", "links", "depth", "_ids", "tree"]);
+    let (ids, depth, tree) = match graph_knobs(&reserved) {
+        Ok(t) => t,
+        Err(resp) => return *resp,
     };
-    match read_graph_reach(
-        &GraphQuery {
-            type_name,
-            path,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => graph_error(e),
-    }
-}
-
-/// Tree tail for `?tree=true` on the single `/graph/:link` and `?path=` path-cycle routes:
-/// build a `GraphQuery`, run `read_graph_tree`, render `{roots, nodes}` via `tree_to_json`,
-/// map errors via `graph_error`.
-async fn graph_tree_respond(
-    st: &AppState,
-    type_name: String,
-    path: Vec<Hop>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
-    subject: &Subject,
-) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
-    match read_graph_tree(
-        &GraphQuery {
-            type_name,
-            path,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
-        Ok(tree) => Json(crate::render::tree_to_json(&tree)).into_response(),
-        Err(e) => graph_error(e),
-    }
-}
-
-/// Union (`?links=`) tail: build a `GraphUnionQuery`, run `read_graph_reach_union`, map via
-/// `graph_error`.
-async fn graph_union_respond(
-    st: &AppState,
-    type_name: String,
-    links: Vec<String>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
-    subject: &Subject,
-) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
-    match read_graph_reach_union(
-        &GraphUnionQuery {
-            type_name,
-            links,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
-        Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => graph_error(e),
-    }
-}
-
-/// Recursive-core + relational-tail (`?path=l0*,l1,…`) tail: build a `GraphTailQuery`, run
-/// `read_graph_reach_with_tail`, map via `graph_error`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "HTTP handler requires all routing params"
-)]
-async fn graph_tail_respond(
-    st: &AppState,
-    type_name: String,
-    core_link: String,
-    tail_links: Vec<String>,
-    depth: u32,
-    filters: Vec<(String, String)>,
-    ids: Vec<String>,
-    subject: &Subject,
-) -> axum::response::Response {
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
-    match read_graph_reach_with_tail(
-        &GraphTailQuery {
-            type_name,
+    let path: Vec<Hop> = reserved
+        .last("path")
+        .map(parse_path_hops)
+        .unwrap_or_default();
+    let links: Vec<String> = reserved
+        .last("links")
+        .map(crate::query_params::comma_list)
+        .unwrap_or_default();
+    match crate::path_parse::parse_graph_mode(path, links, tree) {
+        Err(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        Ok(crate::path_parse::GraphMode::Union(links)) => {
+            let q = GraphUnionQuery {
+                type_name,
+                links,
+                depth,
+                filters,
+                ids,
+            };
+            graph_respond(&st, GraphReadSpec::UnionSelfLinks(&q), &subject).await
+        }
+        Ok(crate::path_parse::GraphMode::CoreTail {
             core_link,
             tail_links,
-            depth,
-            filters,
-            ids,
-        },
-        subject,
-        &deps,
-    )
-    .await
-    {
+        }) => {
+            let q = GraphTailQuery {
+                type_name,
+                core_link,
+                tail_links,
+                depth,
+                filters,
+                ids,
+            };
+            graph_respond(&st, GraphReadSpec::CoreTail(&q), &subject).await
+        }
+        Ok(crate::path_parse::GraphMode::PathCycle(path)) => {
+            let q = GraphQuery {
+                type_name,
+                path,
+                depth,
+                filters,
+                ids,
+            };
+            if tree {
+                graph_tree_respond(&st, q, &subject).await
+            } else {
+                graph_respond(&st, GraphReadSpec::PathCycle(&q), &subject).await
+            }
+        }
+    }
+}
+
+/// The one /graph reachability tail: run the spec'd read via the handler spine,
+/// render, map errors.
+async fn graph_respond(
+    st: &AppState,
+    spec: GraphReadSpec<'_>,
+    subject: &Subject,
+) -> axum::response::Response {
+    let deps = st.deps();
+    match read_graph_reach_spec(spec, subject, &deps).await {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
-        Err(e) => graph_error(e),
+        Err(e) => query_error_response(e, "graph read serving fault"),
+    }
+}
+
+/// Tree tail for `?tree=true` on the path-cycle routes: run `read_graph_tree`,
+/// render `{roots, nodes}` via `tree_to_json`, map errors via `query_error_response`.
+async fn graph_tree_respond(
+    st: &AppState,
+    q: GraphQuery,
+    subject: &Subject,
+) -> axum::response::Response {
+    let deps = st.deps();
+    match read_graph_tree(&q, subject, &deps).await {
+        Ok(tree) => Json(crate::render::tree_to_json(&tree)).into_response(),
+        Err(e) => query_error_response(e, "graph read serving fault"),
     }
 }
 
@@ -1048,12 +775,7 @@ async fn post_search(
     if let Err(msg) = validate_search_request(&req) {
         return (StatusCode::BAD_REQUEST, msg).into_response();
     }
-    let deps = QueryDeps {
-        ontology: st.cp.ontology(),
-        acl: st.cp.acl(),
-        serving: st.serving.as_ref(),
-        default_limit: st.default_limit,
-    };
+    let deps = st.deps();
     let q = crate::handler::VectorSearchQuery {
         type_name,
         index_name,
@@ -1070,15 +792,7 @@ async fn post_search(
                 .collect();
             Json(serde_json::json!({ "results": results })).into_response()
         }
-        Err(QueryError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(QueryError::Serving(crate::serving::ServingError::NoIndex(m))) => {
-            (StatusCode::NOT_FOUND, m).into_response()
-        }
-        Err(QueryError::Serving(crate::serving::ServingError::DimMismatch(m))) => {
-            (StatusCode::BAD_REQUEST, m).into_response()
-        }
-        Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
-        Err(e) => internal_error("vector search serving fault", e),
+        Err(e) => query_error_response(e, "vector search serving fault"),
     }
 }
 
@@ -1112,23 +826,14 @@ async fn lineage_closure(
     params: Vec<(String, String)>,
     dir: LineageDir,
 ) -> axum::response::Response {
-    let mut depth: u32 = 1;
-    let mut after: Option<String> = None;
-    let mut limit: Option<String> = None;
-    for (k, v) in params {
-        match k.as_str() {
-            "depth" => match v.parse::<u32>() {
-                Ok(d) => depth = d,
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
-                        .into_response();
-                }
-            },
-            "after" => after = Some(v),
-            "limit" => limit = Some(v),
-            _ => {} // ignore unknown query params
-        }
-    }
+    // Unknown params were ignored before the splitter; discarding the "filters" side keeps that.
+    let (reserved, _) = crate::query_params::split_reserved(params, &["depth", "after", "limit"]);
+    let depth = match crate::query_params::parse_depth(reserved.last("depth"), 1) {
+        Ok(d) => d,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let after = reserved.last("after").map(String::from);
+    let limit = reserved.last("limit").map(String::from);
     let page = match crate::lineage_read::parse_lineage_page(after, limit) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
@@ -1221,15 +926,9 @@ async fn get_lineage_run_events(
     let Ok(uuid) = uuid::Uuid::parse_str(&run_id) else {
         return (StatusCode::BAD_REQUEST, "run_id must be a UUID").into_response();
     };
-    let mut after: Option<String> = None;
-    let mut limit: Option<String> = None;
-    for (k, v) in params {
-        match k.as_str() {
-            "after" => after = Some(v),
-            "limit" => limit = Some(v),
-            _ => {}
-        }
-    }
+    let (reserved, _) = crate::query_params::split_reserved(params, &["after", "limit"]);
+    let after = reserved.last("after").map(String::from);
+    let limit = reserved.last("limit").map(String::from);
     let page = match crate::lineage_read::parse_lineage_page(after, limit) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),

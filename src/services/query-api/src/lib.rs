@@ -19,6 +19,7 @@ pub mod openapi;
 pub mod openapi_gen;
 pub mod params;
 pub mod path_parse;
+pub mod query_params;
 pub mod render;
 pub mod serve;
 pub mod serving;

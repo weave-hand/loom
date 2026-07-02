@@ -26,7 +26,7 @@ use service_runtime::{Subject, token_sha256};
 use time::OffsetDateTime;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::handler::{ObjectQuery, QueryError, compile_object_read};
+use crate::handler::{GovernedRead, ObjectQuery, QueryError, compile_object_read};
 use crate::serving::inline_params;
 use crate::sql::DataFusionDialect;
 
@@ -124,6 +124,35 @@ impl FlightExportService {
             max_rows,
         }
     }
+
+    /// The one governed-read compile both Flight verbs share: govern `cmd` for THIS
+    /// authenticated subject and compile the ACL'd SELECT with the row cap + 1 (so an
+    /// over-cap slice is detectable, not silently truncated). `get_flight_info` uses
+    /// the result's schema; `do_get` executes its SQL — a forged/replayed ticket is
+    /// still a governed request because governance re-derives here per call.
+    async fn governed(
+        &self,
+        cmd: ExportCommand,
+        subject: SubjectId,
+    ) -> Result<GovernedRead, Status> {
+        compile_object_read(
+            &ObjectQuery {
+                type_name: cmd.type_name,
+                filters: cmd.filters,
+                ids: cmd.ids,
+                or_raw: Vec::new(),
+            },
+            &Subject(subject),
+            self.cp.ontology(),
+            self.cp.acl(),
+            &DataFusionDialect,
+            self.max_rows.saturating_add(1),
+            None,
+            None,
+        )
+        .await
+        .map_err(map_query_err)
+    }
 }
 
 /// Resolve the bearer token in the gRPC `authorization` metadata to a verified subject.
@@ -193,23 +222,7 @@ impl FlightService for FlightExportService {
         let descriptor = request.into_inner();
         let cmd = ExportCommand::decode(&descriptor.cmd)
             .map_err(|e| Status::invalid_argument(format!("bad export command: {e}")))?;
-        let governed = compile_object_read(
-            &ObjectQuery {
-                type_name: cmd.type_name.clone(),
-                filters: cmd.filters.clone(),
-                ids: cmd.ids.clone(),
-                or_raw: Vec::new(),
-            },
-            &Subject(subject),
-            self.cp.ontology(),
-            self.cp.acl(),
-            &DataFusionDialect,
-            self.max_rows.saturating_add(1),
-            None,
-            None,
-        )
-        .await
-        .map_err(map_query_err)?;
+        let governed = self.governed(cmd.clone(), subject).await?;
         let schema = export_arrow_schema(
             &governed.columns,
             &governed.logical_types,
@@ -235,25 +248,7 @@ impl FlightService for FlightExportService {
         let ticket = request.into_inner();
         let cmd = ExportCommand::decode(&ticket.ticket)
             .map_err(|e| Status::invalid_argument(format!("bad export ticket: {e}")))?;
-        // Re-derive the governed SQL for THIS authenticated subject (compile with cap+1 so an
-        // over-cap slice is detectable, not silently truncated).
-        let governed = compile_object_read(
-            &ObjectQuery {
-                type_name: cmd.type_name,
-                filters: cmd.filters,
-                ids: cmd.ids,
-                or_raw: Vec::new(),
-            },
-            &Subject(subject),
-            self.cp.ontology(),
-            self.cp.acl(),
-            &DataFusionDialect,
-            self.max_rows.saturating_add(1),
-            None,
-            None,
-        )
-        .await
-        .map_err(map_query_err)?;
+        let governed = self.governed(cmd, subject).await?;
         let sql = inline_params(&governed.sql, &governed.params);
         let batches = self
             .engine

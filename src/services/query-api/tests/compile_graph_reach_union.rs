@@ -7,7 +7,7 @@
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{DataFusionDialect, compile_graph_reach_union};
+use query_api::sql::{DataFusionDialect, ReachSpec, compile_graph_reach_union};
 
 fn person() -> TableRef {
     TableRef {
@@ -38,16 +38,19 @@ fn two_self_links_union_with_row_filter() {
         op: CompareOp::Eq,
         value: ScalarValue::Bool(true),
     }];
+    let table = person();
     let (sql, params) = compile_graph_reach_union(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &table,
+            identity: "id",
+            seed_predicates: &[], // no seed predicates
+            row_filters: &row_filters,
+            allowed_cols: &["id".to_string(), "name".to_string()],
+            mask_cols: &[],
+            depth: 3,
+        },
         &[fk, jt],
-        &[], // no seed predicates
-        &row_filters,
-        &["id".to_string(), "name".to_string()],
-        &[],
-        3,
         1000,
     )
     .unwrap();
@@ -116,16 +119,19 @@ fn single_self_link_with_seed_predicate() {
         op: CompareOp::In,
         values: vec![SqlValue::Int(7)],
     }];
+    let table = person();
     let (sql, params) = compile_graph_reach_union(
         &DataFusionDialect,
-        &person(),
-        "id",
+        &ReachSpec {
+            table: &table,
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &[], // no row-filters
+            allowed_cols: &["id".to_string()],
+            mask_cols: &[],
+            depth: 2,
+        },
         &[fk],
-        &seed,
-        &[], // no row-filters
-        &["id".to_string()],
-        &[],
-        2,
         1000,
     )
     .unwrap();
@@ -143,4 +149,55 @@ fn single_self_link_with_seed_predicate() {
     // Only the seed In value is bound (no row-filters, no projection filters).
     assert_eq!(params.len(), 1, "seed id only; got {params:?}");
     assert_eq!(params[0], SqlValue::Int(7));
+}
+
+#[test]
+fn union_masked_projection_full_sql_is_byte_exact() {
+    // One FK self-link, one seed predicate, one row filter, one MASKED column —
+    // every helper-replaced region of the compiler renders. Byte-exact pin for the
+    // helper-reuse refactor (the other union tests assert fragments only and pass
+    // empty mask_cols).
+    let fk = LinkBacking::ForeignKey {
+        from_column: "knows_id".into(),
+        to_column: "id".into(),
+    };
+    let seed = vec![CallerPredicate {
+        column: "name".into(),
+        op: CompareOp::Eq,
+        values: vec![SqlValue::Text("Ada".into())],
+    }];
+    let row_filters = vec![RowFilter::Compare {
+        property: "active".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Bool(true),
+    }];
+    let table = person();
+    let (sql, params) = compile_graph_reach_union(
+        &DataFusionDialect,
+        &ReachSpec {
+            table: &table,
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &row_filters,
+            allowed_cols: &["id".to_string(), "name".to_string(), "email".to_string()],
+            mask_cols: &["email".to_string()],
+            depth: 3,
+        },
+        &[fk],
+        100,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"WITH RECURSIVE reach(id, depth) AS (SELECT s."id" AS id, 0 AS depth FROM "main"."person" s WHERE (s."name" = ?) AND (s."active" = ?) UNION SELECT e.to_id AS id, r.depth + 1 AS depth FROM reach r JOIN (SELECT cur."id" AS from_id, nxt."id" AS to_id FROM "main"."person" cur JOIN "main"."person" nxt ON cur."knows_id" = nxt."id") e ON r.id = e.from_id JOIN "main"."person" nxt ON e.to_id = nxt."id" WHERE r.depth < 3 AND (nxt."active" = ?)) SELECT p."id", p."name", '***' AS "email" FROM "main"."person" p WHERE p."id" IN (SELECT id FROM reach WHERE depth >= 1) AND (p."active" = ?) LIMIT 100"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("Ada".into()),
+            SqlValue::Bool(true),
+            SqlValue::Bool(true),
+            SqlValue::Bool(true),
+        ]
+    );
 }

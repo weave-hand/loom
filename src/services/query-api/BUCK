@@ -1016,6 +1016,28 @@ rust_test(
 )
 
 rust_test(
+    name = "query-params",
+    crate = "query_params",
+    srcs = ["tests/query_params.rs"],
+    crate_root = "tests/query_params.rs",
+    edition = "2024",
+    deps = [":query-api"],
+)
+
+rust_test(
+    name = "query-error-http",
+    crate = "query_error_http",
+    srcs = ["tests/query_error_http.rs"],
+    crate_root = "tests/query_error_http.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:axum",
+    ],
+)
+
+rust_test(
     name = "identity-in-predicate",
     crate = "identity_in_predicate",
     srcs = ["tests/identity_in_predicate.rs"],

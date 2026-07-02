@@ -46,3 +46,82 @@ pub fn parse_direction(raw: Option<&str>) -> Result<Direction, InvalidDirection>
         Some(other) => Err(InvalidDirection(other.to_string())),
     }
 }
+
+/// The recursion structure a `/objects/:type/graph` request selected.
+#[derive(Debug)]
+pub enum GraphMode {
+    /// `?path=l1,..,lk`: an ordered cycle repeated to depth (tree view allowed).
+    PathCycle(Vec<Hop>),
+    /// `?links=l1,..`: a union of self-links.
+    Union(Vec<String>),
+    /// `?path=l0*,l1,..`: a recursive core + relational tail. `core_link` has the
+    /// `*` stripped; each tail hop is re-emitted by name with the `~` sigil
+    /// re-attached for inverse hops (a forward-only tail resolves `~x` as an
+    /// absent forward link rather than silently dropping the sigil).
+    CoreTail {
+        core_link: String,
+        tail_links: Vec<String>,
+    },
+}
+
+/// Select the graph mode from the parsed `path`/`links` params and the `tree` flag,
+/// enforcing the route's grammar in its historical precedence order. Every `Err`
+/// string is served verbatim as the 400 body. A `*`-suffixed FORWARD segment marks
+/// the recursive core; `~foo*` is NOT a core (it stays a path-cycle inverse hop
+/// whose name ends in `*`, resolving to UnknownLink downstream).
+pub fn parse_graph_mode(
+    path: Vec<Hop>,
+    links: Vec<String>,
+    tree: bool,
+) -> Result<GraphMode, String> {
+    if !path.is_empty() && !links.is_empty() {
+        return Err("specify either path or links, not both".to_string());
+    }
+    if !links.is_empty() {
+        if tree {
+            return Err("tree view is not supported with links (union)".to_string());
+        }
+        return Ok(GraphMode::Union(links));
+    }
+    if path.is_empty() {
+        return Err("path or links requires at least one link".to_string());
+    }
+    let starred: Vec<usize> = path
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.direction == Direction::Forward && h.link.ends_with('*'))
+        .map(|(i, _)| i)
+        .collect();
+    if starred.is_empty() {
+        return Ok(GraphMode::PathCycle(path));
+    }
+    if tree {
+        return Err("tree view is not supported for a recursive-core (*) path".to_string());
+    }
+    if starred.len() > 1 {
+        return Err("at most one path segment may be marked recursive with `*`".to_string());
+    }
+    if starred.first().copied().unwrap_or(0) != 0 {
+        return Err("the recursive `*` segment must be the first path segment".to_string());
+    }
+    let Some(first_hop) = path.first() else {
+        return Err("empty path".to_string());
+    };
+    let core_link = first_hop.link.trim_end_matches('*').to_string();
+    if core_link.is_empty() {
+        return Err("recursive core link name must not be empty".to_string());
+    }
+    let tail_links: Vec<String> = path
+        .get(1..)
+        .unwrap_or_default()
+        .iter()
+        .map(|h| match h.direction {
+            Direction::Forward => h.link.clone(),
+            Direction::Inverse => format!("~{}", h.link),
+        })
+        .collect();
+    Ok(GraphMode::CoreTail {
+        core_link,
+        tail_links,
+    })
+}
