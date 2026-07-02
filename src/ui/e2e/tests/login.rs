@@ -2,7 +2,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "rust_test body"
+    clippy::print_stderr,
+    reason = "rust_test body; the skip branch prints a diagnostic to stderr"
 )]
 //! Full-page login e2e: render, sad path, happy path — one backend + one browser
 //! (resource-light, per the shared-cluster/fresh-db model).
