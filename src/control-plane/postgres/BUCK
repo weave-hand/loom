@@ -303,7 +303,13 @@ loom_fixture_test(
     crate = "lineage",
     srcs = ["tests/lineage.rs"],
     crate_root = "tests/lineage.rs",
-    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
 )
 
 # Freshness gate for the committed sqlx offline cache: re-runs sqlx's `describe`
