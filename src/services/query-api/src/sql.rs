@@ -896,31 +896,51 @@ fn reach_projection_where(
     proj_conj.join(" AND ")
 }
 
+/// The parameters every reach-family compiler shares: the queried (seed/recursion)
+/// type's physical table, its declared identity (the recursion's dedup key), the
+/// caller seed predicates (anchor alias `s`), the queried type's ACL row-filters
+/// (rendered at `s`/`nxt`/`p` per compiler; the recursive CORE's governance for the
+/// tail compiler), the visible/masked projection (the FINAL type's for the tail
+/// compiler), and the inlined depth bound. `limit` is deliberately NOT here:
+/// `compile_graph_tree` emits no LIMIT by design (a LIMIT could orphan a child), so
+/// the LIMIT-emitting compilers take it explicitly instead of carrying a field one
+/// consumer silently ignores. Copy (all fields are borrows + u32) so the compilers
+/// can destructure `*spec` without ceremony.
+#[derive(Clone, Copy)]
+pub struct ReachSpec<'a> {
+    pub table: &'a TableRef,
+    pub identity: &'a str,
+    pub seed_predicates: &'a [CallerPredicate],
+    pub row_filters: &'a [RowFilter],
+    pub allowed_cols: &'a [String],
+    pub mask_cols: &'a [String],
+    pub depth: u32,
+}
+
 /// Compile a depth-bounded recursive reachability query over a PATH-CYCLE: the deduped set of
-/// `table` rows reachable from the seed set by repeating `path` (which starts and ends at
-/// `table`) up to `depth` times. Each recursive step joins `cur` through the whole path to
-/// `nxt` (both `table`), governing each intermediate landing with its `next_filters` and the
-/// final node `nxt` with the start `row_filters`. A 1-step path is the single-self-link case
-/// (byte-identical SQL). Termination by the inlined `depth` bound; the recursive `UNION` dedups
-/// the reachable id set, and the `p` projection is keyed by `p.id IN (SELECT id FROM reach)` so it
-/// is already object-unique (no projection `DISTINCT` — that would collapse masked identities).
-/// Every caller value is a bound param.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "SQL compile functions require all builder parameters"
-)]
+/// the spec's `table` rows reachable from the seed set by repeating `path` (which starts and
+/// ends at that table) up to the spec's `depth` times. Each recursive step joins `cur` through
+/// the whole path to `nxt` (both the queried table), governing each intermediate landing with
+/// its `next_filters` and the final node `nxt` with the start `row_filters`. A 1-step path is
+/// the single-self-link case (byte-identical SQL). Termination by the inlined depth bound; the
+/// recursive `UNION` dedups the reachable id set, and the `p` projection is keyed by
+/// `p.id IN (SELECT id FROM reach)` so it is already object-unique (no projection `DISTINCT` —
+/// that would collapse masked identities). Every caller value is a bound param.
 pub fn compile_graph_reach(
     dialect: &dyn SqlDialect,
-    table: &TableRef,
-    identity: &str,
+    spec: &ReachSpec<'_>,
     path: &[GraphStep],
-    seed_predicates: &[CallerPredicate],
-    row_filters: &[RowFilter],
-    allowed_cols: &[String],
-    mask_cols: &[String],
-    depth: u32,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
+    let ReachSpec {
+        table,
+        identity,
+        seed_predicates,
+        row_filters,
+        allowed_cols,
+        mask_cols,
+        depth,
+    } = *spec;
     validate_reach_filters(row_filters, path)?;
 
     let q = |id: &str| dialect.quote_ident(id);
@@ -963,21 +983,20 @@ pub fn compile_graph_reach(
 /// recursive filters, projection filters) minus the limit. The anchor's `pred` is
 /// `NULLIF(s.<id>, s.<id>)` — a NULL typed as the identity column, union-compatible with the
 /// recursive term's `r.id` without the compiler knowing the SQL type.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "SQL compile functions require all builder parameters"
-)]
 pub fn compile_graph_tree(
     dialect: &dyn SqlDialect,
-    table: &TableRef,
-    identity: &str,
+    spec: &ReachSpec<'_>,
     path: &[GraphStep],
-    seed_predicates: &[CallerPredicate],
-    row_filters: &[RowFilter],
-    allowed_cols: &[String],
-    mask_cols: &[String],
-    depth: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
+    let ReachSpec {
+        table,
+        identity,
+        seed_predicates,
+        row_filters,
+        allowed_cols,
+        mask_cols,
+        depth,
+    } = *spec;
     validate_reach_filters(row_filters, path)?;
 
     let q = |id: &str| dialect.quote_ident(id);
@@ -1046,22 +1065,21 @@ pub fn compile_graph_tree(
 /// Param order: seed predicates, seed row-filters (`s`), recursive row-filters (`nxt`, ONE set
 /// shared across all arms), projection row-filters (`p`). `backings` is non-empty (enforced by
 /// caller). Every caller value is a bound param.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "SQL compile functions require all builder parameters"
-)]
 pub fn compile_graph_reach_union(
     dialect: &dyn SqlDialect,
-    table: &TableRef,
-    identity: &str,
+    spec: &ReachSpec<'_>,
     backings: &[LinkBacking],
-    seed_predicates: &[CallerPredicate],
-    row_filters: &[RowFilter],
-    allowed_cols: &[String],
-    mask_cols: &[String],
-    depth: u32,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
+    let ReachSpec {
+        table,
+        identity,
+        seed_predicates,
+        row_filters,
+        allowed_cols,
+        mask_cols,
+        depth,
+    } = *spec;
     validate_reach_filters(row_filters, &[])?;
     let q = |id: &str| dialect.quote_ident(id);
     let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
@@ -1121,21 +1139,22 @@ pub fn compile_graph_reach_union(
 /// stays cycle-safe on cyclic self-links. Seed then recursive params are appended to `params` in
 /// that order. This is a focused helper, NOT a refactor of `compile_graph_reach` (whose CTE
 /// generalizes over a multi-link path); the shared surface is the self-hop join, which already
-/// lives in `link_join`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "SQL compile functions require all builder parameters"
-)]
+/// lives in `link_join`. Ignores `spec.allowed_cols`/`spec.mask_cols` — the CTE projects only
+/// `id`/`depth`; the caller owns the visible projection.
 fn recursive_reach_cte(
     dialect: &dyn SqlDialect,
-    table: &TableRef,
-    identity: &str,
+    spec: &ReachSpec<'_>,
     backing: &LinkBacking,
-    seed_predicates: &[CallerPredicate],
-    row_filters: &[RowFilter],
-    depth: u32,
     params: &mut Vec<SqlValue>,
 ) -> Result<String, CompileError> {
+    let ReachSpec {
+        table,
+        identity,
+        seed_predicates,
+        row_filters,
+        depth,
+        ..
+    } = *spec;
     validate_reach_filters(row_filters, &[])?;
     let q = |id: &str| dialect.quote_ident(id);
     let tbl = format!("{}.{}", q(&table.schema), q(&table.name));
@@ -1157,39 +1176,36 @@ fn recursive_reach_cte(
 }
 
 /// Compile a depth-bounded recursive-core + relational-tail reachability read: from the seed set,
-/// follow `core_backing` (a self-link on `table`) 1..`depth` times to a reachable set, then chain
-/// `tail_hops` forward off that set (`tail_types[0]` = `table`, `tail_types[k]` = the projected
-/// final type) and project the final type's columns, deduped per object. When `final_identity` is
-/// `Some`, the dedup partitions on the final type's RAW identity via a windowed `ROW_NUMBER()`
-/// (below the masking layer, so a masked/denied identity cannot collapse distinct objects); when
-/// `None`, it falls back to `SELECT DISTINCT` over the visible projection. The recursive core is
-/// the [`recursive_reach_cte`]; the tail is the shared [`chain_from_where`]; the two are glued by
+/// follow `core_backing` (a self-link on the spec's `table`) 1..`depth` times to a reachable set,
+/// then chain `tail_hops` forward off that set (`tail_types[0]` = the queried table,
+/// `tail_types[k]` = the projected final type) and project the final type's columns, deduped per
+/// object. When `final_identity` is `Some`, the dedup partitions on the final type's RAW identity
+/// via a windowed `ROW_NUMBER()` (below the masking layer, so a masked/denied identity cannot
+/// collapse distinct objects); when `None`, it falls back to `SELECT DISTINCT` over the visible
+/// projection. The recursive core is the [`recursive_reach_cte`]; the tail is the shared
+/// [`chain_from_where`]; the two are glued by
 /// `t_0.{identity} IN (SELECT id FROM reach WHERE depth >= 1)` (the depth>=1 reachable set,
 /// excluding the seed unless a cycle re-reaches it). `tail_types[0]` MUST carry empty row-filters:
-/// the queried type's governance lives in the CTE (`core_row_filters`), so re-applying at `t_0`
-/// would only duplicate params. Param order: seed predicates, seed `core_row_filters` (s),
-/// recursive `core_row_filters` (nxt), then the tail's per-position params. Precondition:
-/// `tail_types.len() == tail_hops.len() + 1` and `tail_hops` non-empty. Every caller value is a
-/// bound param.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "SQL compile functions require all builder parameters"
-)]
+/// the queried type's governance lives in the CTE (the spec's `row_filters` — the core's), so
+/// re-applying at `t_0` would only duplicate params. Param order: seed predicates, seed core
+/// row-filters (s), recursive core row-filters (nxt), then the tail's per-position params.
+/// Precondition: `tail_types.len() == tail_hops.len() + 1` and `tail_hops` non-empty.
+/// Every caller value is a bound param.
 pub fn compile_graph_reach_tail(
     dialect: &dyn SqlDialect,
-    table: &TableRef,
-    identity: &str,
+    spec: &ReachSpec<'_>,
     core_backing: &LinkBacking,
-    seed_predicates: &[CallerPredicate],
-    core_row_filters: &[RowFilter],
     tail_types: &[ChainType],
     tail_hops: &[LinkBacking],
-    allowed_cols: &[String],
-    mask_cols: &[String],
     final_identity: Option<&str>,
-    depth: u32,
     limit: u32,
 ) -> Result<(String, Vec<SqlValue>), CompileError> {
+    let ReachSpec {
+        identity,
+        allowed_cols,
+        mask_cols,
+        ..
+    } = *spec;
     debug_assert_eq!(
         tail_types.len(),
         tail_hops.len() + 1,
@@ -1207,16 +1223,7 @@ pub fn compile_graph_reach_tail(
     let mut params: Vec<SqlValue> = Vec::new();
 
     // Recursive core CTE first (the CTE is textually first, so its `?` placeholders bind first).
-    let cte = recursive_reach_cte(
-        dialect,
-        table,
-        identity,
-        core_backing,
-        seed_predicates,
-        core_row_filters,
-        depth,
-        &mut params,
-    )?;
+    let cte = recursive_reach_cte(dialect, spec, core_backing, &mut params)?;
 
     // Relational tail: t_0 = `table` (the reachable set), chained forward to the final type t_k.
     let (from, conjuncts, tail_params) = chain_from_where(dialect, tail_types, tail_hops)?;

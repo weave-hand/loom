@@ -817,7 +817,7 @@ fn recursive_reach_cte(
 ) -> Result<String, CompileError>
 ```
 
-- [ ] **Step 1: Migrate the signatures + bodies (compiler-driven)**
+- [x] **Step 1: Migrate the signatures + bodies (compiler-driven)**
 
 In `sql.rs`: add `ReachSpec` above `compile_graph_reach`; change each
 signature as above; delete the five `#[allow(clippy::too_many_arguments)]`
@@ -848,7 +848,7 @@ In `compile_graph_reach_tail`, the internal `recursive_reach_cte` call
     let cte = recursive_reach_cte(dialect, spec, core_backing, &mut params)?;
 ```
 
-- [ ] **Step 2: Update the four handler.rs call sites**
+- [x] **Step 2: Update the four handler.rs call sites**
 
 `read_graph_reach` (:976):
 
@@ -928,7 +928,7 @@ In `compile_graph_reach_tail`, the internal `recursive_reach_cte` call
     )?;
 ```
 
-- [ ] **Step 3: Update the 17 test call sites (call shape only)**
+- [x] **Step 3: Update the 17 test call sites (call shape only)**
 
 Mechanical rule — the old positional args map into the spec:
 old `(dialect, table, identity, path/backings/core…, seed_predicates,
@@ -968,14 +968,14 @@ the spec literal if the borrow checker requires an lvalue. **Every assertion
 line stays byte-identical** (these tests construct `ReachSpec` directly —
 they are the pure-logic `rust_test` coverage for the new seam).
 
-- [ ] **Step 4: Run to green**
+- [x] **Step 4: Run to green**
 
 Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-tree //src/services/query-api:compile-graph-tree-exec //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail //src/services/query-api:recursive-cte-over-datafusion //src/services/query-api:graph-reach //src/services/query-api:graph-tree //src/services/query-api:graph-reach-union //src/services/query-api:graph-reach-tail > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
 Expected: PASS.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c3.log 2>&1; cat /tmp/c3.log` — artifact empty (five allows deleted, no
 `too_many_arguments` fires: arities are 4/3/4/7/4).
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p3.log 2>&1; grep -c Failed /tmp/p3.log` — expected `0`.
 

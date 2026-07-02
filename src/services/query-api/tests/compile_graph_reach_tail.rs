@@ -10,7 +10,7 @@
 use control_plane_core::{CompareOp, LinkBacking, RowFilter, ScalarValue, TableRef};
 use query_api::filter::CallerPredicate;
 use query_api::serving::SqlValue;
-use query_api::sql::{ChainType, DataFusionDialect, compile_graph_reach_tail};
+use query_api::sql::{ChainType, DataFusionDialect, ReachSpec, compile_graph_reach_tail};
 
 fn tref(n: &str) -> TableRef {
     TableRef {
@@ -42,19 +42,22 @@ fn fk_core_single_tail_shape() {
         from_column: "worksat_id".into(),
         to_column: "id".into(),
     }];
+    let table = tref("person");
     let (sql, params) = compile_graph_reach_tail(
         &DataFusionDialect,
-        &tref("person"),
-        "id",
+        &ReachSpec {
+            table: &table,
+            identity: "id",
+            seed_predicates: &[],
+            row_filters: &[],
+            allowed_cols: &["id".to_string()],
+            mask_cols: &[],
+            depth: 3,
+        },
         &core,
-        &[],
-        &[],
         &tail_types,
         &tail_hops,
-        &["id".to_string()],
-        &[],
         None,
-        3,
         1000,
     )
     .unwrap();
@@ -131,19 +134,22 @@ fn param_order_seed_core_tail() {
         from_column: "worksat_id".into(),
         to_column: "id".into(),
     }];
+    let table = tref("person");
     let (sql, params) = compile_graph_reach_tail(
         &DataFusionDialect,
-        &tref("person"),
-        "id",
+        &ReachSpec {
+            table: &table,
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &core_rf,
+            allowed_cols: &["id".to_string()],
+            mask_cols: &[],
+            depth: 2,
+        },
         &core,
-        &seed,
-        &core_rf,
         &tail_types,
         &tail_hops,
-        &["id".to_string()],
-        &[],
         None,
-        2,
         1000,
     )
     .unwrap();
@@ -206,19 +212,22 @@ fn join_table_core_and_multi_hop_tail() {
             to_column: "id".into(),
         },
     ];
+    let table = tref("person");
     let (sql, _params) = compile_graph_reach_tail(
         &DataFusionDialect,
-        &tref("person"),
-        "id",
+        &ReachSpec {
+            table: &table,
+            identity: "id",
+            seed_predicates: &[],
+            row_filters: &[],
+            allowed_cols: &["id".to_string(), "cname".to_string()],
+            mask_cols: &[],
+            depth: 4,
+        },
         &core,
-        &[],
-        &[],
         &tail_types,
         &tail_hops,
-        &["id".to_string(), "cname".to_string()],
-        &[],
         None,
-        4,
         1000,
     )
     .unwrap();
@@ -272,19 +281,22 @@ fn masked_final_identity_dedups_via_window_below_the_mask() {
         from_column: "worksat_id".into(),
         to_column: "id".into(),
     }];
+    let table = tref("person");
     let (sql, params) = compile_graph_reach_tail(
         &DataFusionDialect,
-        &tref("person"),
-        "id",
+        &ReachSpec {
+            table: &table,
+            identity: "id",
+            seed_predicates: &[],
+            row_filters: &[],
+            allowed_cols: &["cname".to_string(), "cid".to_string()],
+            mask_cols: &["cid".to_string()],
+            depth: 3,
+        },
         &core,
-        &[],
-        &[],
         &tail_types,
         &tail_hops,
-        &["cname".to_string(), "cid".to_string()],
-        &["cid".to_string()],
         Some("cid"),
-        3,
         1000,
     )
     .unwrap();
@@ -360,19 +372,22 @@ fn tail_full_sql_including_cte_is_byte_exact() {
         from_column: "worksat_id".into(),
         to_column: "id".into(),
     }];
+    let table = tref("person");
     let (sql, params) = compile_graph_reach_tail(
         &DataFusionDialect,
-        &tref("person"),
-        "id",
+        &ReachSpec {
+            table: &table,
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &core_rf,
+            allowed_cols: &["id".to_string(), "cname".to_string()],
+            mask_cols: &["cname".to_string()],
+            depth: 2,
+        },
         &core,
-        &seed,
-        &core_rf,
         &tail_types,
         &tail_hops,
-        &["id".to_string(), "cname".to_string()],
-        &["cname".to_string()],
         None,
-        2,
         50,
     )
     .unwrap();

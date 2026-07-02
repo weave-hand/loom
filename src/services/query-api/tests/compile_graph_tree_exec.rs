@@ -9,7 +9,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use e2e_support::{InProcessServingEngine, tref};
 use query_api::filter::CallerPredicate;
 use query_api::serving::{ServingEngine, SqlValue};
-use query_api::sql::{DataFusionDialect, GraphStep, compile_graph_tree};
+use query_api::sql::{DataFusionDialect, GraphStep, ReachSpec, compile_graph_tree};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tree_sql_executes_on_datafusion() {
@@ -68,14 +68,16 @@ async fn tree_sql_executes_on_datafusion() {
     }];
     let (sql, params) = compile_graph_tree(
         &DataFusionDialect,
-        &person,
-        "id",
+        &ReachSpec {
+            table: &person,
+            identity: "id",
+            seed_predicates: &seed,
+            row_filters: &[],
+            allowed_cols: &["id".to_string(), "name".to_string()],
+            mask_cols: &[],
+            depth: 3,
+        },
         &steps,
-        &seed,
-        &[],
-        &["id".to_string(), "name".to_string()],
-        &[],
-        3,
     )
     .unwrap();
 
