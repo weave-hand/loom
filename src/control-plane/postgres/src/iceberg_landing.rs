@@ -49,23 +49,28 @@ fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
     Ok((schema, batches))
 }
 
-/// Land an Iceberg request. `inline_byte_limit` is the in-memory (uncompressed)
-/// Arrow size at/below which the request inlines (mirror-only typed rows) instead
-/// of writing real Parquet. `flush_byte_threshold` is the live-inline-byte total
-/// at/above which a `flush_table` job is enqueued after an inline write. Returns
-/// the loom mirror snapshot id either way.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "iceberg landing functions have many required parameters with no sensible grouping"
-)]
+/// The inline-tier routing limits carried by [`land`]: at/below
+/// `inline_byte_limit` a request inlines (mirror-only typed rows) instead of
+/// writing real Parquet; at/above `flush_byte_threshold` live inline bytes an
+/// inline write enqueues a `flush_table` job.
+#[derive(Clone, Copy, Debug)]
+pub struct InlineLimits {
+    /// In-memory (uncompressed) Arrow size at/below which the request inlines.
+    pub inline_byte_limit: usize,
+    /// Live-inline-byte total at/above which a `flush_table` job is enqueued
+    /// after an inline write.
+    pub flush_byte_threshold: i64,
+}
+
+/// Land an Iceberg request, routing by in-memory size per `limits` (see
+/// [`InlineLimits`]). Returns the loom mirror snapshot id either way.
 pub async fn land(
     pool: &PgPool,
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
     ipc_body: &[u8],
-    inline_byte_limit: usize,
-    flush_byte_threshold: i64,
+    limits: InlineLimits,
     lineage: LineageEvent,
 ) -> Result<SnapshotId> {
     let (schema, batches) = decode_ipc(ipc_body)?;
@@ -77,7 +82,7 @@ pub async fn land(
     // realignment, same-typed reordered columns would silently swap values.
     let (schema, batches) = align_to_columns(&schema, batches, columns)?;
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
-    if bytes <= inline_byte_limit {
+    if bytes <= limits.inline_byte_limit {
         let batch = concat_batches(&schema, &batches).map_err(be)?;
         inline_append(
             pool,
@@ -85,7 +90,7 @@ pub async fn land(
             columns,
             &batch,
             lineage,
-            Some(flush_byte_threshold),
+            Some(limits.flush_byte_threshold),
         )
         .await
     } else {

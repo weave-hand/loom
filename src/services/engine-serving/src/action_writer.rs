@@ -67,8 +67,10 @@ impl IcebergActionWriter {
             table,
             columns,
             ipc,
-            self.inline_byte_limit,
-            self.flush_byte_threshold,
+            iceberg_landing::InlineLimits {
+                inline_byte_limit: self.inline_byte_limit,
+                flush_byte_threshold: self.flush_byte_threshold,
+            },
             event,
         )
         .await

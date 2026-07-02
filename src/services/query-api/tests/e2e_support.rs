@@ -40,7 +40,7 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::vector_index::build_vector_index;
 use engine_serving::execute_query;
 use http_body_util::BodyExt;
@@ -785,8 +785,10 @@ pub async fn seed_vector_type(
         &table,
         &vector_columns(),
         &vector_ipc_body(rows_1_2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         vector_lineage_evt(run, &table),
     )
     .await
@@ -798,8 +800,10 @@ pub async fn seed_vector_type(
         &table,
         &vector_columns(),
         &vector_ipc_body(rows_3_4),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         vector_lineage_evt(run, &table),
     )
     .await

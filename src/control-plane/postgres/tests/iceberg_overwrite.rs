@@ -15,7 +15,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_landing::{land, overwrite_parquet_snapshot};
+use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
 use control_plane_postgres::iceberg_mirror::{
     end_cap_live_data_files, ensure_table, next_snapshot,
 };
@@ -115,8 +115,10 @@ async fn overwrite_expires_old_and_preserves_time_travel() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
     )
     .await
@@ -170,8 +172,10 @@ async fn replaced_files_carry_per_column_stats() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "stats"),
     )
     .await
@@ -215,8 +219,10 @@ async fn truncate_overwrite_with_zero_files() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "trunc"),
     )
     .await
@@ -258,8 +264,10 @@ async fn overwrite_emits_lineage() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "lin"),
     )
     .await
@@ -317,8 +325,10 @@ async fn overwrite_atomicity_leaves_prior_set_intact() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "atomic"),
     )
     .await

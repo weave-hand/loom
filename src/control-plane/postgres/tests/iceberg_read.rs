@@ -11,7 +11,7 @@ use control_plane_core::Catalog;
 use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -94,8 +94,10 @@ async fn reads_landed_file_back_to_exact_rows() {
         &table,
         &columns(),
         &ipc_body(3),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "read_test"),
     )
     .await

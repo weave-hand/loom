@@ -13,7 +13,7 @@ use control_plane_core::{
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
-use control_plane_postgres::iceberg_landing::land;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -92,8 +92,10 @@ async fn iceberg_tx_compact_files_swaps_subset() {
         &t,
         &columns(),
         &ipc_body(10),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
     )
     .await
@@ -104,8 +106,10 @@ async fn iceberg_tx_compact_files_swaps_subset() {
         &t,
         &columns(),
         &ipc_body(2),
-        0,
-        i64::MAX,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
     )
     .await
