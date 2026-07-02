@@ -1,7 +1,7 @@
 //! Execution smoke: run compile_graph_tree's SQL directly through the in-process
 //! Iceberg/DataFusion serving engine (no handler/HTTP) to prove the window-over-recursive-CTE
-//! + NULLIF typed-null anchor executes on DataFusion 54. Seeds person(id,name) + a knows(a,b)
-//! self-link 1->2->3 and asserts the served columns/rows carry __depth/__parent/__id.
+//! with a NULLIF typed-null anchor executes on DataFusion 54. Seeds person(id,name) plus a
+//! knows(a,b) self-link 1->2->3 and asserts the served columns/rows carry __depth/__parent/__id.
 
 use control_plane_core::{LinkBacking, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -28,7 +28,10 @@ async fn tree_sql_executes_on_datafusion() {
                 ("id".to_string(), "long".to_string(), false),
                 ("name".to_string(), "string".to_string(), true),
             ],
-            &[SeedCol::Long(vec![1, 2, 3]), SeedCol::Str(vec!["a", "b", "c"])],
+            &[
+                SeedCol::Long(vec![1, 2, 3]),
+                SeedCol::Str(vec!["a", "b", "c"]),
+            ],
         )
         .await;
     // knows(a, b): 1->2, 2->3.
@@ -93,13 +96,26 @@ async fn tree_sql_executes_on_datafusion() {
         "tree projection columns"
     );
     // Tree over 1->2->3 from {1}: root 1 + nodes 2, 3 => 3 rows.
-    assert_eq!(served.rows.len(), 3, "root + two descendants: {:?}", served.rows);
+    assert_eq!(
+        served.rows.len(),
+        3,
+        "root + two descendants: {:?}",
+        served.rows
+    );
     // The first row (ORDER BY depth, id) is the root 1 at depth 0 with NULL parent.
     let root = &served.rows[0];
     assert_eq!(root.first(), Some(&SqlValue::Int(1)), "root id: {root:?}");
     // __depth is index 2, __parent index 3 (NULL for root), __id index 4.
-    assert_eq!(root.get(2), Some(&SqlValue::Int(0)), "root depth 0: {root:?}");
-    assert_eq!(root.get(3), Some(&SqlValue::Null), "root parent NULL: {root:?}");
+    assert_eq!(
+        root.get(2),
+        Some(&SqlValue::Int(0)),
+        "root depth 0: {root:?}"
+    );
+    assert_eq!(
+        root.get(3),
+        Some(&SqlValue::Null),
+        "root parent NULL: {root:?}"
+    );
     assert_eq!(root.get(4), Some(&SqlValue::Int(1)), "root __id: {root:?}");
     // Keep the writer alive until here (its TempDir holds the Parquet).
     drop(writer);

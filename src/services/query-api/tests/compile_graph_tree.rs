@@ -54,10 +54,15 @@ fn fk_self_link_tree_shape() {
     assert!(sql.contains("r.depth < 3"), "depth bound inlined: {sql}");
     // settle: one parent per node, min depth then min pred
     assert!(
-        sql.contains("ROW_NUMBER() OVER (PARTITION BY id ORDER BY depth ASC, pred ASC NULLS FIRST)"),
+        sql.contains(
+            "ROW_NUMBER() OVER (PARTITION BY id ORDER BY depth ASC, pred ASC NULLS FIRST)"
+        ),
         "settle window: {sql}"
     );
-    assert!(sql.contains("WHERE t.rn = 1"), "keep the settled parent: {sql}");
+    assert!(
+        sql.contains("WHERE t.rn = 1"),
+        "keep the settled parent: {sql}"
+    );
     // roots (depth 0) are INCLUDED — no `depth >= 1` filter as in reachability
     assert!(
         !sql.contains("depth >= 1"),
@@ -71,14 +76,20 @@ fn fk_self_link_tree_shape() {
         "depth/parent/id output columns: {sql}"
     );
     // no LIMIT on the tree (depth cap bounds it; a LIMIT could orphan a child)
-    assert!(!sql.to_uppercase().contains("LIMIT"), "no LIMIT on the tree: {sql}");
+    assert!(
+        !sql.to_uppercase().contains("LIMIT"),
+        "no LIMIT on the tree: {sql}"
+    );
     // stable node order
     assert!(
         sql.contains("ORDER BY t.depth ASC, p.\"id\" ASC"),
         "node ordering: {sql}"
     );
     // FK hop cur -> nxt (reused reach_joins)
-    assert!(sql.contains("cur.\"knows_id\" = nxt.\"id\""), "fk join: {sql}");
+    assert!(
+        sql.contains("cur.\"knows_id\" = nxt.\"id\""),
+        "fk join: {sql}"
+    );
     assert!(sql.contains("p.\"name\""), "object projection: {sql}");
 }
 
@@ -128,11 +139,17 @@ fn join_table_tree_with_row_filter_and_seed_param_order() {
     );
     // row-filter rendered at seed(s), expansion(nxt), projection(p)
     assert!(
-        sql.contains("s.\"active\"") && sql.contains("nxt.\"active\"") && sql.contains("p.\"active\""),
+        sql.contains("s.\"active\"")
+            && sql.contains("nxt.\"active\"")
+            && sql.contains("p.\"active\""),
         "row-filter at 3 positions: {sql}"
     );
     // params: seed In (1) + active at s, nxt, p (3) = 4, SAME ORDER as compile_graph_reach
-    assert_eq!(params.len(), 4, "1 seed id + 3 row-filter renderings; got {params:?}");
+    assert_eq!(
+        params.len(),
+        4,
+        "1 seed id + 3 row-filter renderings; got {params:?}"
+    );
     assert_eq!(params[0], SqlValue::Int(5));
     assert_eq!(params[1], SqlValue::Bool(true)); // s.active
     assert_eq!(params[2], SqlValue::Bool(true)); // nxt.active
@@ -180,7 +197,16 @@ fn two_step_path_cycle_tree() {
         2,
     )
     .unwrap();
-    assert!(sql.contains("cur.\"team_id\" = g1.\"id\""), "step1 join: {sql}");
-    assert!(sql.contains("g1.\"id\" = nxt.\"team_id\""), "step2 join: {sql}");
-    assert!(sql.contains("g1.\"active\""), "intermediate filter at g1: {sql}");
+    assert!(
+        sql.contains("cur.\"team_id\" = g1.\"id\""),
+        "step1 join: {sql}"
+    );
+    assert!(
+        sql.contains("g1.\"id\" = nxt.\"team_id\""),
+        "step2 join: {sql}"
+    );
+    assert!(
+        sql.contains("g1.\"active\""),
+        "intermediate filter at g1: {sql}"
+    );
 }

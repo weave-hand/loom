@@ -344,7 +344,8 @@ pub fn ids_i64(body: &serde_json::Value) -> Vec<i64> {
 /// Read an identity value that may render as a JSON number OR a numeric string (`Long`
 /// identities render as numeric strings — see `ids_i64`). `None` for JSON `null`.
 fn as_id(v: &serde_json::Value) -> Option<i64> {
-    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+    v.as_i64()
+        .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
 }
 
 /// Extract `(id, depth, parent)` triples from a `{ "roots": [...], "nodes": [...] }`

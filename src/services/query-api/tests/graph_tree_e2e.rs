@@ -116,7 +116,11 @@ async fn setup_active(
                 ("name".to_string(), "string".to_string(), true),
                 ("active".to_string(), "boolean".to_string(), false),
             ],
-            &[SeedCol::Long(ids), SeedCol::Str(names), SeedCol::Bool(active)],
+            &[
+                SeedCol::Long(ids),
+                SeedCol::Str(names),
+                SeedCol::Bool(active),
+            ],
         )
         .await;
 
@@ -171,8 +175,13 @@ async fn setup_active(
 #[tokio::test(flavor = "multi_thread")]
 async fn linear_chain_tree_has_root_and_parent_pointers() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) =
-        setup(&fx, vec![1, 2, 3], vec!["ann", "bob", "cal"], &[(1, 2), (2, 3)]).await;
+    let (cp, eng, _writer) = setup(
+        &fx,
+        vec![1, 2, 3],
+        vec!["ann", "bob", "cal"],
+        &[(1, 2), (2, 3)],
+    )
+    .await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -196,14 +205,23 @@ async fn linear_chain_tree_has_root_and_parent_pointers() {
         "root + parent pointers along the chain: {body}"
     );
     // the object projection is present per node
-    assert_eq!(body["nodes"][0]["object"]["name"], serde_json::json!("ann"), "{body}");
+    assert_eq!(
+        body["nodes"][0]["object"]["name"],
+        serde_json::json!("ann"),
+        "{body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn without_flag_returns_the_flat_set() {
     let fx = PgFixture::start();
-    let (cp, eng, _writer) =
-        setup(&fx, vec![1, 2, 3], vec!["ann", "bob", "cal"], &[(1, 2), (2, 3)]).await;
+    let (cp, eng, _writer) = setup(
+        &fx,
+        vec![1, 2, 3],
+        vec!["ann", "bob", "cal"],
+        &[(1, 2), (2, 3)],
+    )
+    .await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -219,8 +237,14 @@ async fn without_flag_returns_the_flat_set() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.get("objects").is_some(), "flat set shape without the flag: {body}");
-    assert!(body.get("roots").is_none(), "no tree shape without the flag: {body}");
+    assert!(
+        body.get("objects").is_some(),
+        "flat set shape without the flag: {body}"
+    );
+    assert!(
+        body.get("roots").is_none(),
+        "no tree shape without the flag: {body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -262,7 +286,11 @@ async fn tree_with_starred_path_is_400() {
         "alice",
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "tree + starred path -> 400");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "tree + starred path -> 400"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -319,7 +347,11 @@ async fn tie_break_picks_smallest_parent_deterministically() {
             .find(|(id, _, _)| *id == 4)
             .copied()
             .expect("node 4 present");
-        assert_eq!(four, (4, 2, Some(2)), "run {run}: 4 settles to depth 2, parent 2: {body}");
+        assert_eq!(
+            four,
+            (4, 2, Some(2)),
+            "run {run}: 4 settles to depth 2, parent 2: {body}"
+        );
         assert_eq!(tree_roots(&body), vec![1], "run {run}: root is 1: {body}");
     }
 }
@@ -358,7 +390,11 @@ async fn parent_pointers_form_a_valid_rooted_tree() {
             None => assert_eq!(*depth, 0, "a root has depth 0 (id {id}): {body}"),
             Some(p) => {
                 let pd = depth_of.get(p).copied().expect("parent present in tree");
-                assert_eq!(*depth, pd + 1, "child depth = parent depth + 1 (id {id}): {body}");
+                assert_eq!(
+                    *depth,
+                    pd + 1,
+                    "child depth = parent depth + 1 (id {id}): {body}"
+                );
             }
         }
     }
@@ -456,7 +492,9 @@ async fn row_filter_prunes_and_no_node_reports_a_blocked_parent() {
     );
     // The denied node 2 is absent AND never reported as a parent (path edges don't leak it).
     assert!(
-        nodes.iter().all(|(id, _, parent)| *id != 2 && *parent != Some(2)),
+        nodes
+            .iter()
+            .all(|(id, _, parent)| *id != 2 && *parent != Some(2)),
         "denied intermediate 2 is absent as node and as parent: {body}"
     );
 }
@@ -493,7 +531,12 @@ async fn forest_two_roots_and_shared_node_settles_to_min_depth() {
     nodes.sort_by_key(|(id, _, _)| *id);
     assert_eq!(
         nodes,
-        vec![(1, 0, None), (2, 1, Some(1)), (3, 1, Some(10)), (10, 0, None)],
+        vec![
+            (1, 0, None),
+            (2, 1, Some(1)),
+            (3, 1, Some(10)),
+            (10, 0, None)
+        ],
         "shared node 3 settles to the shorter path (depth 1 via 10), not depth 2 via 2: {body}"
     );
 }
