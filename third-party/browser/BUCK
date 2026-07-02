@@ -1,0 +1,67 @@
+# Vendored headless Chromium + chromedriver (Chrome for Testing), pinned per the
+# single CHROME_FOR_TESTING_VERSION so browser and driver never desync (they must
+# share a Chrome major). x86_64-linux only — Chrome for Testing publishes no
+# linux-arm64 build; the aarch64 arm is a documented follow-up. Drives the
+# //src/ui/e2e:login fantoccini test. To bump: change CHROME_FOR_TESTING_VERSION
+# and refresh both sha256s (download the two linux64 zips and `sha256sum`).
+#
+# We vendor only the browser BINARY (a reproducible, pinned version). Its ~36
+# runtime libs (libnspr4/libnss3, the GTK/X11 stack, alsa, dbus, gbm/drm, …) come
+# from the HOST loader path, NOT vendored: the //src/ui/e2e:login test runs on the
+# LOCAL executor (loom_fixture_test policy), i.e. a dev machine or the ubuntu-24.04
+# CI runner, where those libs are present or apt-installed. It is env-gated
+# (LOOM_UI_E2E=1) and is NOT hermetic / NOT run on the RE workers, whose build
+# image (rbe-ubuntu24-04) lacks the browser libs. Hardening to hermetic-RE (a
+# custom RBE image with the deb.deps, or vendoring the lib closure) is deferred —
+# see fut-ui-e2e-hermetic-browser.
+
+CHROME_FOR_TESTING_VERSION = "150.0.7871.46"
+
+_CFT_URL = "https://storage.googleapis.com/chrome-for-testing-public/{ver}/linux64/{asset}-linux64.zip"
+
+http_archive(
+    name = "chrome-headless-shell-archive",
+    urls = [_CFT_URL.format(ver = CHROME_FOR_TESTING_VERSION, asset = "chrome-headless-shell")],
+    sha256 = "0395e5db8d1631d5ed879d4f05fec423425537018fa1d73a58b1ade13288f447",
+    strip_prefix = "chrome-headless-shell-linux64",
+    type = "zip",
+)
+
+http_archive(
+    name = "chromedriver-archive",
+    urls = [_CFT_URL.format(ver = CHROME_FOR_TESTING_VERSION, asset = "chromedriver")],
+    sha256 = "2bd858c27c5d913bc9574e4fb7196161acbefd7f911d9a4b1e01a4cd36095716",
+    strip_prefix = "chromedriver-linux64",
+    type = "zip",
+)
+
+# Materialise the whole headless-shell dir with the binary +x (it loads sibling
+# .pak/ICU/snapshot files from its own directory, so keep the tree intact).
+genrule(
+    name = "chrome-headless-shell",
+    out = "chs",
+    cmd = "mkdir -p $OUT && cp -r $(location :chrome-headless-shell-archive)/. $OUT/ && chmod +x $OUT/chrome-headless-shell",
+    visibility = ["PUBLIC"],
+)
+
+# chromedriver is a self-contained ELF; expose it +x.
+genrule(
+    name = "chromedriver",
+    out = "chromedriver",
+    cmd = "cp $(location :chromedriver-archive)/chromedriver $OUT && chmod +x $OUT",
+    executable = True,
+    visibility = ["PUBLIC"],
+)
+
+command_alias(
+    name = "chromedriver-bin",
+    exe = ":chromedriver",
+    visibility = ["PUBLIC"],
+)
+
+# NB: no build-time `chrome-headless-shell --version` genrule — a genrule runs on
+# the RE build image, which lacks the browser libs, so it would always fail there
+# and prove nothing about the LOCAL executor the test actually uses. Smoke the
+# binary on the host instead (it resolves libs from the host loader):
+#   p=$(buck2 build --show-full-output //third-party/browser:chrome-headless-shell | awk '{print $2}')
+#   "$p/chrome-headless-shell" --version   # → Google Chrome for Testing <ver>
