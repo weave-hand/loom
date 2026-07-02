@@ -230,6 +230,29 @@ pub fn identity_in_predicate(
     }))
 }
 
+/// Coerce one raw caller filter `raw` on `col` into a typed predicate, applying the same
+/// visibility gate a plain filter gets: a denied (not in `allowed`) or masked column is a
+/// `BadFilter` (400, no type-info leak), never a silent pass. Shared by plain `eq_filters`
+/// and every `_or` member so an OR-group can never widen what a column-denial forbids.
+fn coerce_visible_predicate(
+    col: &str,
+    raw: &str,
+    object_type: &ObjectType,
+    allowed: &[String],
+    masked: &std::collections::HashSet<String>,
+) -> Result<crate::filter::CallerPredicate, QueryError> {
+    if !allowed.iter().any(|c| c.as_str() == col) || masked.contains(col) {
+        return Err(QueryError::BadFilter(col.to_string()));
+    }
+    let ty = object_type
+        .properties
+        .iter()
+        .find(|p| p.name.as_str() == col)
+        .map(|p| p.ty.as_str())
+        .unwrap_or("");
+    Ok(crate::filter::coerce_predicate(col, ty, raw)?)
+}
+
 /// The target column a derived aggregate reads, if any (COUNT reads none).
 fn agg_column(a: &control_plane_core::Aggregation) -> Option<&str> {
     use control_plane_core::Aggregation::*;
@@ -286,26 +309,33 @@ pub async fn compile_object_read(
         .cloned()
         .collect();
 
-    // Visibility first (denied/masked column -> 400, no type info leak), then parse the
-    // raw value into a typed predicate (operator + coerced operands) for the column.
-    let mut predicates: Vec<crate::filter::CallerPredicate> = Vec::with_capacity(q.filters.len());
+    // Visibility first (denied/masked column -> 400, no type info leak), then parse the raw
+    // value into a typed predicate (operator + coerced operands) for the column.
+    let mut predicates: Vec<crate::filter::CallerPredicate> =
+        Vec::with_capacity(q.filters.len());
     for (col, raw) in &q.filters {
-        if !allowed.contains(col) || masked.contains(col) {
-            return Err(QueryError::BadFilter(col.clone()));
-        }
-        let ty = object_type
-            .properties
-            .iter()
-            .find(|p| &p.name == col)
-            .map(|p| p.ty.as_str())
-            .unwrap_or("");
-        let p = crate::filter::coerce_predicate(col, ty, raw)?;
-        predicates.push(p);
+        predicates.push(coerce_visible_predicate(col, raw, &object_type, &allowed, &masked)?);
     }
 
     // Object-set input: scope to the given identities (an In predicate on the identity).
     if let Some(p) = identity_in_predicate(&object_type, &denied, &masked, &q.ids)? {
         predicates.push(p);
+    }
+
+    // OR-groups: each `_or` param is its own parenthesized disjunction. Members reuse the
+    // plain-predicate visibility + coercion, so a denied/masked column inside a group fails
+    // the request exactly as a denied plain filter does — an OR-group adds a combinator, not
+    // a governance bypass. Groups are ANDed above; row-filters/`_ids` are never disjoined.
+    let mut or_groups: Vec<Vec<crate::filter::CallerPredicate>> =
+        Vec::with_capacity(q.or_raw.len());
+    for raw in &q.or_raw {
+        let members = crate::filter::split_or_members(raw)?;
+        let mut group = Vec::with_capacity(members.len());
+        for member in &members {
+            let (col, val) = crate::filter::split_member(member)?;
+            group.push(coerce_visible_predicate(col, val, &object_type, &allowed, &masked)?);
+        }
+        or_groups.push(group);
     }
 
     // Derived properties (aggregate-over-link), governed both-ends. Resolved + appended
@@ -368,7 +398,7 @@ pub async fn compile_object_read(
         &mask_cols,
         &row_filters,
         &predicates,
-        &[],
+        &or_groups,
         &derived_selects,
         limit,
     )?;

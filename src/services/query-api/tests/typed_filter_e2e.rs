@@ -396,6 +396,7 @@ async fn between_matches_ge_and_le() {
                     type_name: "Order".into(),
                     filters,
                     ids: vec![],
+                    or_raw: Vec::new(),
                 },
                 &Subject(a),
                 deps,
@@ -452,6 +453,7 @@ async fn contains_is_case_insensitive_and_anchors() {
                     type_name: "Order".into(),
                     filters,
                     ids: vec![],
+                    or_raw: Vec::new(),
                 },
                 &Subject(a),
                 deps,
@@ -513,6 +515,7 @@ async fn contains_literal_percent_matches_the_character() {
                     type_name: "Order".into(),
                     filters,
                     ids: vec![],
+                    or_raw: Vec::new(),
                 },
                 &Subject(a),
                 deps,
@@ -528,4 +531,132 @@ async fn contains_literal_percent_matches_the_character() {
         .await
         .unwrap();
     assert_eq!(ids(&r), vec!["5".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn or_groups_union_and_governance() {
+    let fx = PgFixture::start();
+    let (cp, eng, a, _writer) = setup(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+        default_limit: 1000,
+    };
+    let ids = |rows: &query_api::handler::ObjectRows| {
+        let body = objects_to_json(rows);
+        let mut v: Vec<String> = body["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+
+    // Union across columns: amount > 25 OR active = false -> rows {5 (30.0)} ∪ {2 (false)}.
+    let r = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            filters: vec![],
+            ids: vec![],
+            or_raw: vec!["amount:gt:25,active:eq:false".into()],
+        },
+        &Subject(a.clone()),
+        &deps,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ids(&r), vec!["2".to_string(), "5".to_string()]);
+
+    // OR-group intersected (ANDed) with a plain predicate: (amount = 10.5) AND
+    // (active = true OR amount > 100). amount=10.5 -> {1,3}; both are active=true. -> {1,3}.
+    let r2 = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            filters: vec![("amount".into(), "10.5".into())],
+            ids: vec![],
+            or_raw: vec!["active:eq:true,amount:gt:100".into()],
+        },
+        &Subject(a.clone()),
+        &deps,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ids(&r2), vec!["1".to_string(), "3".to_string()]);
+
+    // Two OR-groups are ANDed: (amount>=20 OR active=false) AND (amount<=20 OR active=true).
+    // Per-row (amount, active):
+    //   row1 (10.5,T): g1 = 10.5>=20 F | active=false F  -> F  => out
+    //   row2 (20.0,F): g1 = 20>=20 T                     -> T ; g2 = 20<=20 T -> T => in
+    //   row3 (10.5,T): g1 = 10.5>=20 F | active=false F  -> F  => out
+    //   row4 (NULL,NULL): all comparisons on NULL are F  -> F  => out
+    //   row5 (30.0,NULL): g1 = 30>=20 T -> T ; g2 = 30<=20 F | active=true F -> F => out
+    // Intersection -> only row 2.
+    let r3 = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            filters: vec![],
+            ids: vec![],
+            or_raw: vec![
+                "amount:ge:20,active:eq:false".into(),
+                "amount:le:20,active:eq:true".into(),
+            ],
+        },
+        &Subject(a.clone()),
+        &deps,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ids(&r3), vec!["2".to_string()]);
+
+    // A one-member OR-group is rejected (BadFilterValue / 400).
+    let e_single = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            filters: vec![],
+            ids: vec![],
+            or_raw: vec!["amount:gt:25".into()],
+        },
+        &Subject(a.clone()),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(e_single, QueryError::BadFilterValue(_)),
+        "single-member OR-group -> BadFilterValue, got {e_single:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn or_group_never_weakens_governance() {
+    let fx = PgFixture::start();
+    let (cp, eng, a, _writer) = setup(&fx).await;
+    let deps = QueryDeps {
+        ontology: &cp,
+        acl: &cp,
+        serving: &eng,
+        default_limit: 1000,
+    };
+
+    // A member naming a column the subject cannot filter on must fail the whole request.
+    // (Use a column absent from the type — same BadFilter path as a denied column.)
+    let denied = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            filters: vec![],
+            ids: vec![],
+            or_raw: vec!["nonexistent:eq:x,amount:gt:1".into()],
+        },
+        &Subject(a.clone()),
+        &deps,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(denied, QueryError::BadFilter(_)),
+        "member on a non-permitted column -> BadFilter (no leak), got {denied:?}"
+    );
 }
