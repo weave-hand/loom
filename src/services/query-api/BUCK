@@ -1093,6 +1093,21 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "lineage-read",
+    crate = "lineage_read",
+    srcs = ["tests/lineage_read.rs"],
+    crate_root = "tests/lineage_read.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:uuid",
+    ],
+)
+
 loom_fixture_test(
     name = "object-set-e2e",
     crate = "object_set_e2e",
@@ -1284,5 +1299,43 @@ loom_fixture_test(
         "//src/services/engine-wire:engine-wire",
         "//third-party:tempfile",
         "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "wire-lineage-e2e",
+    crate = "wire_lineage_e2e",
+    srcs = ["tests/wire_lineage_e2e.rs"],
+    crate_root = "tests/wire_lineage_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "lineage-http-e2e",
+    crate = "lineage_http_e2e",
+    srcs = ["tests/lineage_http_e2e.rs"],
+    crate_root = "tests/lineage_http_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )

@@ -1,9 +1,10 @@
 //! A read-only governance `ControlPlane` for query-api: `acl()`/`ontology()` read
-//! over the engine wire; `queue()` delegates to the direct Postgres plane (still used
-//! for the GC enqueue); `catalog()`/`lineage()`/`begin()` are guarded because query-api
-//! never uses them through this plane. Write/define governance methods fail loudly —
-//! query-api authorizes reads here and sends pre-authorized writes via the engine's
-//! write RPCs; it never defines governance.
+//! over the engine wire; `queue()` and `lineage()` delegate to the direct Postgres
+//! plane (the GC enqueue and the governed lineage read endpoints); `catalog()`/
+//! `begin()` are guarded because query-api never uses them through this plane.
+//! Write/define governance methods fail loudly — query-api authorizes reads here
+//! and sends pre-authorized writes via the engine's write RPCs; it never defines
+//! governance.
 
 use std::sync::Arc;
 
@@ -195,12 +196,11 @@ impl ControlPlane for WireControlPlane {
         panic!("WireControlPlane is a read-only governance client: catalog() is not supported")
     }
 
-    #[expect(
-        clippy::panic,
-        reason = "read-only governance client: query-api never reads lineage through this plane"
-    )]
     fn lineage(&self) -> &(dyn Lineage + Send + Sync) {
-        panic!("WireControlPlane is a read-only governance client: lineage() is not supported")
+        // Lineage is not carried over the engine wire; read it from the direct
+        // Postgres plane, exactly as `queue()` does. query-api's governed lineage
+        // read endpoints resolve provenance here.
+        self.direct.lineage()
     }
 
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {

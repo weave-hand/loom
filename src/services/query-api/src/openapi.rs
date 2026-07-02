@@ -77,6 +77,9 @@ pub struct ConstraintViolationItem {
         crate::http::post_action,
         crate::http::post_search,
         crate::http::enqueue_gc,
+        crate::http::get_lineage_upstream,
+        crate::http::get_lineage_downstream,
+        crate::http::get_lineage_run_events,
     ),
     components(schemas(
         ObjectsResponse,
@@ -87,6 +90,10 @@ pub struct ConstraintViolationItem {
         ConstraintViolationsBody,
         ConstraintViolationItem,
         crate::http::VectorSearchRequest,
+        crate::lineage_read::DatasetNode,
+        crate::lineage_read::DatasetClosureResponse,
+        crate::lineage_read::LineageEventView,
+        crate::lineage_read::RunEventsResponse,
     ))
 )]
 pub struct ApiDoc;

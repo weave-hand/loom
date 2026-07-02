@@ -13,6 +13,7 @@ pub mod filter;
 pub mod flight_export;
 pub mod handler;
 pub mod http;
+pub mod lineage_read;
 pub mod openapi;
 pub mod openapi_gen;
 pub mod params;

@@ -17,7 +17,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
-use control_plane_core::{ControlPlane, GC_JOB_KIND, NewJob};
+use control_plane_core::{ControlPlane, ControlPlaneError, DatasetRef, GC_JOB_KIND, NewJob, RunId};
 use service_runtime::Subject;
 
 /// Upper bound on a single `/search` request's `k` — caps per-request work.
@@ -76,6 +76,15 @@ pub fn router(state: AppState) -> Router {
         .route("/actions/:action_name", post(post_action))
         .route("/search/:type_name/:index_name", post(post_search))
         .route("/maintenance/gc/:schema/:table", post(enqueue_gc))
+        .route(
+            "/lineage/datasets/:namespace/:name/upstream",
+            get(get_lineage_upstream),
+        )
+        .route(
+            "/lineage/datasets/:namespace/:name/downstream",
+            get(get_lineage_downstream),
+        )
+        .route("/lineage/runs/:run_id/events", get(get_lineage_run_events))
         .with_state(state)
 }
 
@@ -889,5 +898,163 @@ async fn post_search(
         }
         Err(QueryError::NoIdentity(t)) => (StatusCode::BAD_REQUEST, t).into_response(),
         Err(e) => internal_error("vector search serving fault", e),
+    }
+}
+
+/// Which direction of the provenance closure a request walks.
+#[derive(Clone, Copy)]
+enum LineageDir {
+    Upstream,
+    Downstream,
+}
+
+/// Map a lineage read error to a status. A `Validation` fault (over-cap/zero depth,
+/// malformed cursor) is a caller error (400); anything else is an opaque 500 logged
+/// server-side. An unknown dataset is NOT an error — the capability returns an empty
+/// page, which serializes as `{ "datasets": [], "next_cursor": null }`.
+fn lineage_error(e: ControlPlaneError) -> axum::response::Response {
+    match e {
+        ControlPlaneError::Validation(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        other => internal_error("lineage read fault", other),
+    }
+}
+
+/// Shared upstream/downstream handler: parse `depth` (default 1, forwarded to the
+/// capability which caps it), `after`/`limit` (-> `PageReq`), then call the closure
+/// read and serialize the page. `depth` beyond `LINEAGE_MAX_DEPTH` (or 0) is rejected
+/// BELOW by the capability as `Validation` -> 400 — the wire cannot trigger an
+/// unbounded walk.
+async fn lineage_closure(
+    st: &AppState,
+    namespace: String,
+    name: String,
+    params: Vec<(String, String)>,
+    dir: LineageDir,
+) -> axum::response::Response {
+    let mut depth: u32 = 1;
+    let mut after: Option<String> = None;
+    let mut limit: Option<String> = None;
+    for (k, v) in params {
+        match k.as_str() {
+            "depth" => match v.parse::<u32>() {
+                Ok(d) => depth = d,
+                Err(_) => {
+                    return (StatusCode::BAD_REQUEST, "depth must be a positive integer")
+                        .into_response();
+                }
+            },
+            "after" => after = Some(v),
+            "limit" => limit = Some(v),
+            _ => {} // ignore unknown query params
+        }
+    }
+    let page = match crate::lineage_read::parse_lineage_page(after, limit) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    let ds = DatasetRef { namespace, name };
+    let lineage = st.cp.lineage();
+    let res = match dir {
+        LineageDir::Upstream => lineage.upstream(&ds, depth, page).await,
+        LineageDir::Downstream => lineage.downstream(&ds, depth, page).await,
+    };
+    match res {
+        Ok(page) => Json(crate::lineage_read::dataset_closure_body(page)).into_response(),
+        Err(e) => lineage_error(e),
+    }
+}
+
+#[utoipa::path(
+    get, path = "/lineage/datasets/{namespace}/{name}/upstream",
+    params(
+        ("namespace" = String, Path, description = "Dataset namespace"),
+        ("name" = String, Path, description = "Dataset name"),
+        ("depth" = Option<u32>, Query, description = "Closure depth (default 1, capped)"),
+        ("after" = Option<String>, Query, description = "Opaque next-page cursor"),
+        ("limit" = Option<u32>, Query, description = "Max datasets per page"),
+    ),
+    responses(
+        (status = 200, description = "Upstream dataset closure", body = crate::lineage_read::DatasetClosureResponse),
+        (status = 400, description = "Bad depth/limit/cursor"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "lineage",
+)]
+async fn get_lineage_upstream(
+    State(st): State<AppState>,
+    Path((namespace, name)): Path<(String, String)>,
+    Query(params): Query<Vec<(String, String)>>,
+    _subject: Subject,
+) -> axum::response::Response {
+    lineage_closure(&st, namespace, name, params, LineageDir::Upstream).await
+}
+
+#[utoipa::path(
+    get, path = "/lineage/datasets/{namespace}/{name}/downstream",
+    params(
+        ("namespace" = String, Path, description = "Dataset namespace"),
+        ("name" = String, Path, description = "Dataset name"),
+        ("depth" = Option<u32>, Query, description = "Closure depth (default 1, capped)"),
+        ("after" = Option<String>, Query, description = "Opaque next-page cursor"),
+        ("limit" = Option<u32>, Query, description = "Max datasets per page"),
+    ),
+    responses(
+        (status = 200, description = "Downstream dataset closure", body = crate::lineage_read::DatasetClosureResponse),
+        (status = 400, description = "Bad depth/limit/cursor"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "lineage",
+)]
+async fn get_lineage_downstream(
+    State(st): State<AppState>,
+    Path((namespace, name)): Path<(String, String)>,
+    Query(params): Query<Vec<(String, String)>>,
+    _subject: Subject,
+) -> axum::response::Response {
+    lineage_closure(&st, namespace, name, params, LineageDir::Downstream).await
+}
+
+#[utoipa::path(
+    get, path = "/lineage/runs/{run_id}/events",
+    params(
+        ("run_id" = String, Path, description = "OpenLineage run id (UUID)"),
+        ("after" = Option<String>, Query, description = "Opaque next-page cursor"),
+        ("limit" = Option<u32>, Query, description = "Max events per page"),
+    ),
+    responses(
+        (status = 200, description = "Events for the run", body = crate::lineage_read::RunEventsResponse),
+        (status = 400, description = "Malformed run id or limit"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "lineage",
+)]
+async fn get_lineage_run_events(
+    State(st): State<AppState>,
+    Path(run_id): Path<String>,
+    Query(params): Query<Vec<(String, String)>>,
+    _subject: Subject,
+) -> axum::response::Response {
+    let Ok(uuid) = uuid::Uuid::parse_str(&run_id) else {
+        return (StatusCode::BAD_REQUEST, "run_id must be a UUID").into_response();
+    };
+    let mut after: Option<String> = None;
+    let mut limit: Option<String> = None;
+    for (k, v) in params {
+        match k.as_str() {
+            "after" => after = Some(v),
+            "limit" => limit = Some(v),
+            _ => {}
+        }
+    }
+    let page = match crate::lineage_read::parse_lineage_page(after, limit) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    match st.cp.lineage().events_for(&RunId(uuid), page).await {
+        Ok(page) => Json(crate::lineage_read::run_events_body(page)).into_response(),
+        Err(e) => lineage_error(e),
     }
 }
