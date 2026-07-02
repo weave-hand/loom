@@ -804,6 +804,7 @@ fn compiles_between_as_two_bound_params() {
         &[],
         std::slice::from_ref(&p),
         &[],
+        &[],
         100,
     )
     .unwrap();
@@ -827,6 +828,7 @@ fn compiles_contains_as_ilike_with_escape_and_bound_param() {
         &[],
         &[],
         std::slice::from_ref(&p),
+        &[],
         &[],
         100,
     )
