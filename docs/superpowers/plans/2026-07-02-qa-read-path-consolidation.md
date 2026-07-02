@@ -2363,7 +2363,7 @@ Part of road-qa-read-path-consolidation."
 **Files:**
 - Modify: `docs/ROADMAP.md` (`road-qa-read-path-consolidation` :292-293)
 
-- [ ] **Step 1: Full query-api suite**
+- [x] **Step 1: Full query-api suite**
 
 Run: `buck2 build -M none //src/services/query-api/... > /tmp/b10.log 2>&1; grep -E "BUILD (SUCCEEDED|FAILED)" /tmp/b10.log`
 Expected: `BUILD SUCCEEDED`.
@@ -2372,7 +2372,7 @@ Expected: PASS (fixture-heavy — the `-j 8` cap avoids postgres boot-slot
 starvation). If any unrelated fixture test flakes on timeout, re-run that
 target alone before investigating.
 
-- [ ] **Step 2: Close the register item**
+- [x] **Step 2: Close the register item**
 
 In `docs/ROADMAP.md:292-293`, flip the checkbox/status and replace the prose:
 
@@ -2384,7 +2384,7 @@ In `docs/ROADMAP.md:292-293`, flip the checkbox/status and replace the prose:
 Run: `bash tools/docs.sh validate`
 Expected: exit 0, no grammar/id/vocab errors.
 
-- [ ] **Step 3: prek + commit**
+- [x] **Step 3: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p10.log 2>&1; grep -c Failed /tmp/p10.log` — expected `0`.
 
