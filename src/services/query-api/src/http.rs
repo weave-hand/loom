@@ -475,9 +475,11 @@ async fn get_graph(
     .await
 }
 
-/// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` (comma-split; empty/absent ->
-/// 400) plus the same `depth`/`_ids`/filter handling as `get_graph`, then shares the
-/// `read_graph_reach` call + error mapping via `graph_respond`.
+/// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` via `parse_path_hops`
+/// (comma-split; empty/absent -> 400), where a `~`-prefixed element is followed backward
+/// (an inverse hop, same grammar as the `/links` chain), plus the same `depth`/`_ids`/filter
+/// handling as `get_graph`, then shares the `read_graph_reach` call + error mapping via
+/// `graph_respond`.
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph",
     params(("type_name" = String, Path, description = "Seed object type")),
