@@ -7,7 +7,7 @@
 use control_plane_core::{JsonRepr, json_repr_of};
 use serde_json::{Value, json};
 
-use crate::handler::{Associations, ObjectRows};
+use crate::handler::{Associations, ObjectRows, ObjectTree};
 use crate::serving::{SqlValue, iso_date, iso_timestamp};
 
 /// `{ "objects": [ { property: typed_value, ... }, ... ] }`. Keys are the projected
@@ -46,6 +46,38 @@ pub fn associations_to_json(a: &Associations) -> Value {
         })
         .collect();
     json!({ "associations": assocs })
+}
+
+/// `{ "roots": [<id>, ...], "nodes": [ { "id", "depth", "parent", "object": {..} }, ... ] }`.
+/// Roots are the parentless nodes (in node order, which is `(depth, id)`). `id`/`parent` are
+/// rendered through the identity property's logical type (`parent` is JSON `null` for a root);
+/// `object` is the governed typed projection, rendered exactly as `objects_to_json` does a row.
+pub fn tree_to_json(tree: &ObjectTree) -> Value {
+    let mut roots: Vec<Value> = Vec::new();
+    let nodes: Vec<Value> = tree
+        .nodes
+        .iter()
+        .map(|n| {
+            let mut obj = serde_json::Map::with_capacity(tree.columns.len());
+            for (i, col) in tree.columns.iter().enumerate() {
+                let logical_ty = tree.logical_types.get(i).map(String::as_str).unwrap_or("");
+                let cell = n.cells.get(i).unwrap_or(&SqlValue::Null);
+                obj.insert(col.clone(), render_cell(logical_ty, cell));
+            }
+            let id_json = render_cell(&tree.identity_type, &n.id);
+            let parent_json = render_cell(&tree.identity_type, &n.parent);
+            if matches!(n.parent, SqlValue::Null) {
+                roots.push(id_json.clone());
+            }
+            json!({
+                "id": id_json,
+                "depth": n.depth,
+                "parent": parent_json,
+                "object": Value::Object(obj),
+            })
+        })
+        .collect();
+    json!({ "roots": roots, "nodes": nodes })
 }
 
 /// Render one cell as JSON, driven by its declared logical type.

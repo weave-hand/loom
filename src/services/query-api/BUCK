@@ -377,6 +377,36 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "compile-graph-tree-exec",
+    crate = "compile_graph_tree_exec",
+    srcs = ["tests/compile_graph_tree_exec.rs"],
+    crate_root = "tests/compile_graph_tree_exec.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "graph-tree-e2e",
+    crate = "graph_tree_e2e",
+    srcs = ["tests/graph_tree_e2e.rs"],
+    crate_root = "tests/graph_tree_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "inverse-hops-e2e",
     crate = "inverse_hops_e2e",
     srcs = ["tests/inverse_hops_e2e.rs"],
@@ -735,6 +765,22 @@ rust_test(
 )
 
 rust_test(
+    name = "graph-tree",
+    crate = "graph_tree",
+    srcs = ["tests/graph_tree.rs"],
+    crate_root = "tests/graph_tree.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "graph-reach-union",
     crate = "graph_reach_union",
     srcs = ["tests/graph_reach_union.rs"],
@@ -778,6 +824,18 @@ rust_test(
     crate = "compile_graph_reach",
     srcs = ["tests/compile_graph_reach.rs"],
     crate_root = "tests/compile_graph_reach.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
+    name = "compile-graph-tree",
+    crate = "compile_graph_tree",
+    srcs = ["tests/compile_graph_tree.rs"],
+    crate_root = "tests/compile_graph_tree.rs",
     edition = "2024",
     deps = [
         ":query-api",

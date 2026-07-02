@@ -22,6 +22,28 @@ pub struct ObjectRows {
     pub rows: Vec<Vec<SqlValue>>,
 }
 
+/// One node of a shortest-path tree: its identity value, BFS depth (0 = root), predecessor
+/// identity value (`SqlValue::Null` for a root), and the governed object cells aligned to
+/// `ObjectTree.columns`.
+#[derive(Debug)]
+pub struct TreeNode {
+    pub id: SqlValue,
+    pub depth: i64,
+    pub parent: SqlValue,
+    pub cells: Vec<SqlValue>,
+}
+
+/// A governed shortest-path-tree read result: the object projection columns + their logical
+/// types (positionally aligned to each node's `cells`), the identity property's logical type
+/// (renders each node's `id` and `parent`), and the nodes ordered by `(depth, id)`.
+#[derive(Debug)]
+pub struct ObjectTree {
+    pub columns: Vec<String>,
+    pub logical_types: Vec<String>,
+    pub identity_type: String,
+    pub nodes: Vec<TreeNode>,
+}
+
 /// The governed, compiled-but-not-yet-executed form of an object read: the SQL string +
 /// positional params, plus the projected output columns and their logical types (in SELECT
 /// order), and which of those output columns were **masked**. Shared by `read_object`
@@ -989,6 +1011,179 @@ pub async fn read_graph_reach(
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
+    let r = resolve_graph(q, subject, deps).await?;
+
+    let (sql, params) = crate::sql::compile_graph_reach(
+        deps.serving.dialect(),
+        &r.object_type.table,
+        &r.identity,
+        &r.steps,
+        &r.seed_predicates,
+        &r.row_filters,
+        &r.allowed,
+        &r.mask_cols,
+        q.depth,
+        deps.default_limit,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let logical_types: Vec<String> = r
+        .allowed
+        .iter()
+        .map(|name| {
+            r.object_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    debug_assert_eq!(
+        served.columns, r.allowed,
+        "serving engine returned columns out of the projected order"
+    );
+    Ok(ObjectRows {
+        columns: r.allowed,
+        logical_types,
+        rows: served.rows,
+    })
+}
+
+/// Serve a bounded shortest-path-**tree** read over a path-cycle (a 1-element path is the
+/// single-self-link case): from the seed set, repeat `path` up to `depth` times, and for every
+/// reachable node return its shortest-path parent pointer + BFS depth, rooted at the seed set.
+/// Governance is `read_graph_reach`'s exactly (Read on the queried + every intermediate type;
+/// row-filters at seed/expansion/projection so no denied intermediate can be a parent), plus
+/// one precondition: because the tree PROJECTS identity as `id`/`parent`, a denied or masked
+/// identity cannot be served without leaking it -> `Forbidden` (undeclared identity is already
+/// `NoIdentity` from `resolve_graph`). The compiler emits no LIMIT (a LIMIT could drop a parent
+/// while keeping its child); the depth cap bounds the *path length*, so — unlike the
+/// `default_limit`-capped reach read — the full reachable set within the cap is returned
+/// unpaginated, which can be wider than the equivalent reach query.
+pub async fn read_graph_tree(
+    q: &GraphQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<ObjectTree, QueryError> {
+    let r = resolve_graph(q, subject, deps).await?;
+
+    // The tree projects identity (id + parent). A denied/masked identity would leak -> Forbidden.
+    if identity_is_governed(&r.object_type, &r.denied, &r.masked) {
+        return Err(QueryError::Forbidden);
+    }
+
+    let (sql, params) = crate::sql::compile_graph_tree(
+        deps.serving.dialect(),
+        &r.object_type.table,
+        &r.identity,
+        &r.steps,
+        &r.seed_predicates,
+        &r.row_filters,
+        &r.allowed,
+        &r.mask_cols,
+        q.depth,
+    )?;
+    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    // Contract guard (mirrors the sibling reads): the tree projects the visible columns then
+    // the three trailing tree columns, in this exact order — the positional split below relies
+    // on it. A compiler/engine column-order regression trips this in tests rather than silently
+    // producing garbled nodes.
+    debug_assert_eq!(
+        served.columns,
+        {
+            let mut expected = r.allowed.clone();
+            expected.extend(
+                [
+                    crate::sql::TREE_DEPTH_COL,
+                    crate::sql::TREE_PARENT_COL,
+                    crate::sql::TREE_NODE_ID_COL,
+                ]
+                .into_iter()
+                .map(String::from),
+            );
+            expected
+        },
+        "serving engine returned tree columns out of the projected order"
+    );
+
+    let logical_types: Vec<String> = r
+        .allowed
+        .iter()
+        .map(|name| {
+            r.object_type
+                .properties
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    let identity_type = r
+        .object_type
+        .properties
+        .iter()
+        .find(|p| p.name == r.identity)
+        .map(|p| p.ty.clone())
+        .unwrap_or_default();
+
+    // Each served row is [object cells..., __depth, __parent, __id] (compile_graph_tree order).
+    // Pop the three trailing columns off the end; the remainder are the object cells.
+    let ncols = r.allowed.len();
+    let nodes: Vec<TreeNode> = served
+        .rows
+        .into_iter()
+        .map(|mut row| {
+            let node_id = row.pop().unwrap_or(SqlValue::Null); // __id
+            let parent = row.pop().unwrap_or(SqlValue::Null); // __parent
+            let depth = match row.pop() {
+                Some(SqlValue::Int(d)) => d,
+                _ => 0, // a serving-engine surprise must not panic a permitted read
+            };
+            row.truncate(ncols); // defensive: keep exactly the object cells
+            TreeNode {
+                id: node_id,
+                depth,
+                parent,
+                cells: row,
+            }
+        })
+        .collect();
+
+    Ok(ObjectTree {
+        columns: r.allowed,
+        logical_types,
+        identity_type,
+        nodes,
+    })
+}
+
+/// Everything the two graph reads (reachable-set and shortest-path-tree) need after resolving
+/// the queried type, ACL policy, and the path-cycle: the resolved object type + declared
+/// identity, the compiler `GraphStep`s (per-intermediate governance already folded in), the
+/// start row-filters, the visible/masked projection, the raw denied/masked column sets (so a
+/// caller can additionally require identity visibility), and the coerced seed predicates.
+struct GraphResolved {
+    object_type: ObjectType,
+    identity: String,
+    steps: Vec<crate::sql::GraphStep>,
+    row_filters: Vec<RowFilter>,
+    allowed: Vec<String>,
+    mask_cols: Vec<String>,
+    denied: std::collections::HashSet<String>,
+    masked: std::collections::HashSet<String>,
+    seed_predicates: Vec<crate::filter::CallerPredicate>,
+}
+
+/// Resolve + govern a graph read: Read-gate the queried type, resolve the path-cycle (Read on
+/// every intermediate type, its row-filters folded into the step), require a declared identity
+/// (the recursion's dedup key), project the visible columns, and coerce/visibility-check the
+/// seed predicates + `?_ids=`. Shared verbatim by `read_graph_reach` (reachable set) and
+/// `read_graph_tree` (shortest-path tree) so governance lives in one place.
+async fn resolve_graph(
+    q: &GraphQuery,
+    subject: &Subject,
+    deps: &QueryDeps<'_>,
+) -> Result<GraphResolved, QueryError> {
     let type_name = TypeName(q.type_name.clone());
     let target = PolicyTarget::Type(type_name.clone());
 
@@ -1108,38 +1303,16 @@ pub async fn read_graph_reach(
         seed_predicates.push(p);
     }
 
-    let (sql, params) = crate::sql::compile_graph_reach(
-        deps.serving.dialect(),
-        &object_type.table,
-        &identity,
-        &steps,
-        &seed_predicates,
-        &row_filters,
-        &allowed,
-        &mask_cols,
-        q.depth,
-        deps.default_limit,
-    )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
-    let logical_types: Vec<String> = allowed
-        .iter()
-        .map(|name| {
-            object_type
-                .properties
-                .iter()
-                .find(|p| &p.name == name)
-                .map(|p| p.ty.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    debug_assert_eq!(
-        served.columns, allowed,
-        "serving engine returned columns out of the projected order"
-    );
-    Ok(ObjectRows {
-        columns: allowed,
-        logical_types,
-        rows: served.rows,
+    Ok(GraphResolved {
+        object_type,
+        identity,
+        steps,
+        row_filters,
+        allowed,
+        mask_cols,
+        denied,
+        masked,
+        seed_predicates,
     })
 }
 
