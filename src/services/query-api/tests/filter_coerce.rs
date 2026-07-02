@@ -248,7 +248,7 @@ fn between_wrong_arity_is_rejected() {
 fn between_type_mismatch_is_rejected_like_ge() {
     assert!(matches!(
         coerce_predicate("amount", "Integer", "between:foo,25"),
-        Err(FilterError::BadValue(_, _))
+        Err(FilterError::Coerce { .. })
     ));
 }
 
