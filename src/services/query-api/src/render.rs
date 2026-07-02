@@ -81,7 +81,7 @@ pub fn tree_to_json(tree: &ObjectTree) -> Value {
 }
 
 /// Render one cell as JSON, driven by its declared logical type.
-pub(crate) fn render_cell(logical_ty: &str, cell: &SqlValue) -> Value {
+fn render_cell(logical_ty: &str, cell: &SqlValue) -> Value {
     if matches!(cell, SqlValue::Null) {
         return Value::Null;
     }

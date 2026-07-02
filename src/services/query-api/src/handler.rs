@@ -1056,8 +1056,10 @@ pub async fn read_graph_reach(
 /// row-filters at seed/expansion/projection so no denied intermediate can be a parent), plus
 /// one precondition: because the tree PROJECTS identity as `id`/`parent`, a denied or masked
 /// identity cannot be served without leaking it -> `Forbidden` (undeclared identity is already
-/// `NoIdentity` from `resolve_graph`). The compiler emits no LIMIT; the depth cap bounds the
-/// forest so a parent is never dropped while a child is kept.
+/// `NoIdentity` from `resolve_graph`). The compiler emits no LIMIT (a LIMIT could drop a parent
+/// while keeping its child); the depth cap bounds the *path length*, so — unlike the
+/// `default_limit`-capped reach read — the full reachable set within the cap is returned
+/// unpaginated, which can be wider than the equivalent reach query.
 pub async fn read_graph_tree(
     q: &GraphQuery,
     subject: &Subject,
@@ -1082,6 +1084,27 @@ pub async fn read_graph_tree(
         q.depth,
     )?;
     let served = deps.serving.fetch_rows(&sql, &params).await?;
+    // Contract guard (mirrors the sibling reads): the tree projects the visible columns then
+    // the three trailing tree columns, in this exact order — the positional split below relies
+    // on it. A compiler/engine column-order regression trips this in tests rather than silently
+    // producing garbled nodes.
+    debug_assert_eq!(
+        served.columns,
+        {
+            let mut expected = r.allowed.clone();
+            expected.extend(
+                [
+                    crate::sql::TREE_DEPTH_COL,
+                    crate::sql::TREE_PARENT_COL,
+                    crate::sql::TREE_NODE_ID_COL,
+                ]
+                .into_iter()
+                .map(String::from),
+            );
+            expected
+        },
+        "serving engine returned tree columns out of the projected order"
+    );
 
     let logical_types: Vec<String> = r
         .allowed
