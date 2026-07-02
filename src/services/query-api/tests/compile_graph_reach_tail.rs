@@ -319,3 +319,74 @@ fn masked_final_identity_dedups_via_window_below_the_mask() {
     );
     assert!(params.is_empty(), "no params expected; got {params:?}");
 }
+
+#[test]
+fn tail_full_sql_including_cte_is_byte_exact() {
+    // FK core with seed predicate + core row filter (pins the WHOLE
+    // recursive_reach_cte text), FK tail with a tail-type row filter, MASKED final
+    // column, no declared final identity (DISTINCT branch). Byte-exact pin for the
+    // helper-reuse refactor (the other tail tests assert fragments only).
+    let core = LinkBacking::ForeignKey {
+        from_column: "knows_id".into(),
+        to_column: "id".into(),
+    };
+    let seed = vec![CallerPredicate {
+        column: "name".into(),
+        op: CompareOp::Eq,
+        values: vec![SqlValue::Text("Ada".into())],
+    }];
+    let core_rf = vec![RowFilter::Compare {
+        property: "active".into(),
+        op: CompareOp::Eq,
+        value: ScalarValue::Bool(true),
+    }];
+    let tail_types = vec![
+        ChainType {
+            table: tref("person"),
+            row_filters: vec![],
+            predicates: vec![],
+        },
+        ChainType {
+            table: tref("company"),
+            row_filters: vec![RowFilter::Compare {
+                property: "public".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Bool(true),
+            }],
+            predicates: vec![],
+        },
+    ];
+    let tail_hops = vec![LinkBacking::ForeignKey {
+        from_column: "worksat_id".into(),
+        to_column: "id".into(),
+    }];
+    let (sql, params) = compile_graph_reach_tail(
+        &DataFusionDialect,
+        &tref("person"),
+        "id",
+        &core,
+        &seed,
+        &core_rf,
+        &tail_types,
+        &tail_hops,
+        &["id".to_string(), "cname".to_string()],
+        &["cname".to_string()],
+        None,
+        2,
+        50,
+    )
+    .unwrap();
+    assert_eq!(
+        sql,
+        r#"WITH RECURSIVE reach(id, depth) AS (SELECT s."id" AS id, 0 AS depth FROM "main"."person" s WHERE (s."name" = ?) AND (s."active" = ?) UNION SELECT nxt."id" AS id, r.depth + 1 AS depth FROM reach r JOIN "main"."person" cur ON cur."id" = r.id JOIN "main"."person" nxt ON cur."knows_id" = nxt."id" WHERE r.depth < 2 AND (nxt."active" = ?)) SELECT DISTINCT t_1."id", '***' AS "cname" FROM "main"."company" t_1 JOIN "main"."person" t_0 ON t_0."worksat_id" = t_1."id" WHERE t_0."id" IN (SELECT id FROM reach WHERE depth >= 1) AND (t_1."public" = ?) LIMIT 50"#
+    );
+    assert_eq!(
+        params,
+        vec![
+            SqlValue::Text("Ada".into()),
+            SqlValue::Bool(true),
+            SqlValue::Bool(true),
+            SqlValue::Bool(true),
+        ]
+    );
+}

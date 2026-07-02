@@ -259,7 +259,7 @@ exact-pinned (`tests/sql_compile.rs`, e.g.
   identical: seed predicates, seed filters, recursive filters, projection
   filters), proven by the new exact pins.
 
-- [ ] **Step 1: Write the exact full-SQL pins (green against the current compiler)**
+- [x] **Step 1: Write the exact full-SQL pins (green against the current compiler)**
 
 The expected strings below were captured from the CURRENT compilers (probe
 `assert_eq!` runs against the pre-refactor tree, 2026-07-02) — byte-exact,
@@ -402,14 +402,14 @@ fn tail_full_sql_including_cte_is_byte_exact() {
 mechanical `ReachSpec` call-shape migration there — assertions byte-identical,
 like every other compile test.)
 
-- [ ] **Step 2: Run the pinning suite green (baseline, incl. the new pins)**
+- [x] **Step 2: Run the pinning suite green (baseline, incl. the new pins)**
 
 Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:sql-dialect //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-tree //src/services/query-api:compile-graph-tree-exec //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail //src/services/query-api:compile-chain-pairs //src/services/query-api:recursive-cte-over-datafusion > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
 Expected: PASS — the two new pins are green against the UNMODIFIED compiler.
 If either fails here, the expected string was mis-transcribed: fix the TEST,
 never the compiler.
 
-- [ ] **Step 3: Substitute the helpers**
+- [x] **Step 3: Substitute the helpers**
 
 In `compile_graph_reach_union`, replace the validate loop (:1078-1080), the
 inline seed block (:1086-1098), the inline rec-where block (:1114-1122 —
@@ -507,14 +507,14 @@ In `compile_chain_with`, replace the inline cols block (:657-666):
 (`masked_col_exprs`'s `alias` is a raw prefix — `"p."` / `"t_2."` — so the
 rendered exprs are byte-identical to the inline `format!` forms.)
 
-- [ ] **Step 4: Run the pinning suite green (post-substitution)**
+- [x] **Step 4: Run the pinning suite green (post-substitution)**
 
 Run: `buck2 test //src/services/query-api:sql-compile //src/services/query-api:sql-dialect //src/services/query-api:compile-graph-reach //src/services/query-api:compile-graph-tree //src/services/query-api:compile-graph-tree-exec //src/services/query-api:compile-graph-reach-union //src/services/query-api:compile-graph-reach-tail //src/services/query-api:compile-chain-pairs //src/services/query-api:recursive-cte-over-datafusion > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
 Expected: PASS — identical test list; the two Step-1 pins prove byte-identity
 of the rewritten compilers; zero assertion changes anywhere.
 Run: `buck2 build '//src/services/query-api:query-api[clippy.txt]' > /tmp/c1.log 2>&1; cat /tmp/c1.log` — artifact empty.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 Run: `buck2 run //tools:prek -- run --all-files > /tmp/p1.log 2>&1; grep -c Failed /tmp/p1.log` — expected `0`.
 
