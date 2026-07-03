@@ -1388,7 +1388,7 @@ transaction.
 - Modify: `src/control-plane/postgres/src/iceberg_mirror.rs` (`project_files`)
 - Modify: `src/control-plane/postgres/.sqlx/` (regenerated)
 
-- [ ] **Step 1: Pinning suites green pre-change**
+- [x] **Step 1: Pinning suites green pre-change**
 
 ```bash
 buck2 test //src/control-plane/postgres:iceberg-column-stats \
@@ -1397,7 +1397,7 @@ buck2 test //src/control-plane/postgres:iceberg-column-stats \
   > /tmp/t7pre.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7pre.log
 ```
 
-- [ ] **Step 2: Rewrite `project_files`**:
+- [x] **Step 2: Rewrite `project_files`**:
 
 ```rust
 /// Write the data-file rows for loom snapshot `at`, plus every file's
@@ -1468,7 +1468,7 @@ pub async fn project_files(
 array binds. If `stat_to_text`'s signature takes `&StatValue`, the closure
 form matches the current call — copy it verbatim from the deleted loop.)
 
-- [ ] **Step 3: Refresh the `.sqlx` cache and verify freshness**
+- [x] **Step 3: Refresh the `.sqlx` cache and verify freshness**
 
 ```bash
 bash tools/sqlx-prepare.sh
@@ -1477,7 +1477,7 @@ buck2 test //src/control-plane/postgres:sqlx-cache-check -j 8 > /tmp/t7sqlx.log 
   grep -E "Tests finished|FAIL" /tmp/t7sqlx.log
 ```
 
-- [ ] **Step 4: Re-run the pinning suites — green**
+- [x] **Step 4: Re-run the pinning suites — green**
 
 ```bash
 buck2 test //src/control-plane/postgres:iceberg-column-stats \
@@ -1487,7 +1487,7 @@ buck2 test //src/control-plane/postgres:iceberg-column-stats \
   > /tmp/t7.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t7.log
 ```
 
-- [ ] **Step 5: prek + commit (production change + `.sqlx` delta in the SAME commit)**
+- [x] **Step 5: prek + commit (production change + `.sqlx` delta in the SAME commit)**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek7.log 2>&1; grep -E "Failed" /tmp/prek7.log || echo CLEAN
