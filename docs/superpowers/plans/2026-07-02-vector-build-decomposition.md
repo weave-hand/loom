@@ -276,7 +276,7 @@ production code.
   `PgControlPlane::new(pool, Duration)`, `engine_serving::vector_search`.
 - Produces: the seed helpers and test files Task 2 appends its red tests to.
 
-- [ ] **Step 1: Create `vector_index_inline_delta.rs`** (pin only; Task 2
+- [x] **Step 1: Create `vector_index_inline_delta.rs`** (pin only; Task 2
   appends the red tests)
 
 ```rust
@@ -526,7 +526,7 @@ async fn int_identity_delta_batch_shape() {
 (If `PgControlPlane::new`'s second parameter differs on this branch, mirror
 the construction in `engine-serving/tests/vector_search.rs:306` verbatim.)
 
-- [ ] **Step 2: Create `vector_search_identity_kinds.rs`** (cold pin only;
+- [x] **Step 2: Create `vector_search_identity_kinds.rs`** (cold pin only;
   Task 2 appends the hot red tests)
 
 ```rust
@@ -753,7 +753,7 @@ async fn string_identity_cold_search() {
 }
 ```
 
-- [ ] **Step 3: Wire both BUCK targets**
+- [x] **Step 3: Wire both BUCK targets**
 
 Append to `src/control-plane/postgres/BUCK` (after `vector-index-multi`,
 mirroring its shape):
@@ -809,7 +809,7 @@ loom_fixture_test(
 )
 ```
 
-- [ ] **Step 4: Run both pins — expect PASS against unmodified production code**
+- [x] **Step 4: Run both pins — expect PASS against unmodified production code**
 
 ```bash
 buck2 test //src/control-plane/postgres:vector-index-inline-delta \
@@ -820,7 +820,7 @@ buck2 test //src/control-plane/postgres:vector-index-inline-delta \
 Expected: `Tests finished: Pass 2. Fail 0. ...`. If either pin is red, the
 pin misstates current behavior — fix the test, never the production code.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek1.log 2>&1; grep -E "Failed" /tmp/prek1.log || echo CLEAN
