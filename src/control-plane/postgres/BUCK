@@ -657,6 +657,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "inline-delta-cas",
+    crate = "inline_delta_cas",
+    srcs = ["tests/inline_delta_cas.rs"],
+    crate_root = "tests/inline_delta_cas.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-inline-vector",
     crate = "iceberg_inline_vector",
     srcs = ["tests/iceberg_inline_vector.rs"],

@@ -396,6 +396,271 @@ pub async fn inline_append(
     Ok(at)
 }
 
+// ---------------------------------------------------------------------------
+// Scalable copy-on-write: O(change) inline delta writes guarded by a per-identity
+// compare-and-swap. A mutation (row-version or tombstone) lands as ONE inline row
+// keyed by the object's identity; the merge-on-read (identity-aware) lets the
+// highest `begin_snapshot` win and a tombstone hide the file row. Inline delta rows
+// are NEVER end-capped here — time travel is served by the merge + Postgres MVCC.
+// ---------------------------------------------------------------------------
+
+/// Mark `tid` as carrying inline shadow deltas, so the byte-trigger flush is
+/// suppressed until slice-2 consolidation (flushing a version/tombstone would
+/// duplicate or resurrect a file row). Idempotent.
+///
+/// AssertSqlSafe: static query against a standalone table; the `.sqlx` cache
+/// cannot be regenerated in this env (initdb refuses to run as root).
+pub async fn set_has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result<()> {
+    sqlx::query(AssertSqlSafe(
+        "insert into iceberg_mirror.shadow_flag (table_id) values ($1) on conflict do nothing",
+    ))
+    .bind(tid)
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// True if `tid` has been flagged as carrying inline shadow deltas (Task-5 flush
+/// guard). AssertSqlSafe: see [`set_has_shadow`].
+pub async fn has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool> {
+    let v: bool = sqlx::query_scalar(AssertSqlSafe(
+        "select exists(select 1 from iceberg_mirror.shadow_flag where table_id = $1)",
+    ))
+    .bind(tid)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(v)
+}
+
+/// Extract the id column's cell (row 0) from `batch`, typed by its `ColumnSpec`.
+/// The id value never crosses a crate boundary as a `Cell`/`SqlValue`: callers pass
+/// it inside an Arrow batch and name the id column, and this locates it by name.
+fn extract_id_cell(columns: &[ColumnSpec], id_column: &str, batch: &RecordBatch) -> Result<Cell> {
+    let (idx, spec) = columns
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.name == id_column)
+        .ok_or_else(|| {
+            ControlPlaneError::Backend(format!("id column {id_column} not in batch").into())
+        })?;
+    cell_from_arrow(batch, idx, 0, &spec.ty)
+}
+
+/// `coalesce(max(begin_snapshot), 0)` over the LIVE inline rows of one identity —
+/// the identity's current inline version (0 when it has no live inline row).
+///
+/// Uses `sqlx::query` (not `query_scalar`) because `bind_cell` binds onto `Query`,
+/// then reads column 0 by alias. AssertSqlSafe: the `inline_<tid>` name is dynamic
+/// and `id_column` is a quoted mirror identifier; the id value is a bound param.
+async fn read_max_version(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    id_column: &str,
+    id: &Cell,
+) -> Result<i64> {
+    let sql = format!(
+        "select coalesce(max(begin_snapshot), 0) as v from {} \
+         where \"{}\" = $1 and end_snapshot is null",
+        inline_table_name(tid),
+        id_column.replace('"', "\"\""),
+    );
+    let row = bind_cell(sqlx::query(AssertSqlSafe(sql)), id)
+        .fetch_one(conn)
+        .await
+        .map_err(backend)?;
+    let v: i64 = row.try_get("v").map_err(backend)?;
+    Ok(v)
+}
+
+/// A deterministic 64-bit advisory-lock key for one identity of one inline table.
+/// Different identities (or tables) hash to different keys, so concurrent mutations
+/// of distinct identities never contend; the SAME identity always maps to the SAME
+/// key, so its mutations serialize. No `rand`; mirrors `iceberg_flush::lock_key`'s
+/// `DefaultHasher` scheme (stable within a process, which is all the CAS needs).
+fn advisory_key_for_id(tid: i64, id: &Cell) -> i64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tid.hash(&mut h);
+    "\u{1f}".hash(&mut h);
+    // Tag each variant so distinct types with equal bit patterns don't collide, then
+    // hash the scalar. Floats/vectors hash their bit representation (f32/f64 are not
+    // `Hash`); SQL NULL hashes as the tagged `None`.
+    match id {
+        Cell::I32(v) => {
+            0u8.hash(&mut h);
+            v.hash(&mut h);
+        }
+        Cell::I64(v) => {
+            1u8.hash(&mut h);
+            v.hash(&mut h);
+        }
+        Cell::F64(v) => {
+            2u8.hash(&mut h);
+            v.map(f64::to_bits).hash(&mut h);
+        }
+        Cell::Bool(v) => {
+            3u8.hash(&mut h);
+            v.hash(&mut h);
+        }
+        Cell::Str(v) => {
+            4u8.hash(&mut h);
+            v.hash(&mut h);
+        }
+        Cell::Date(v) => {
+            5u8.hash(&mut h);
+            v.hash(&mut h);
+        }
+        Cell::Ts(v) => {
+            6u8.hash(&mut h);
+            v.hash(&mut h);
+        }
+        Cell::Vec(v) => {
+            7u8.hash(&mut h);
+            v.as_ref()
+                .map(|xs| xs.iter().map(|f| f.to_bits()).collect::<Vec<u32>>())
+                .hash(&mut h);
+        }
+    }
+    h.finish() as i64
+}
+
+/// The current inline version of one identity: `coalesce(max(begin_snapshot), 0)`
+/// over its live inline rows. Returns `0` when the table has no inline storage or
+/// the identity has no live inline row. `id_batch` is a one-row batch containing the
+/// id column; `columns` describes it and names where the id lives.
+pub async fn current_inline_version(
+    pool: &PgPool,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    id_column: &str,
+    id_batch: &RecordBatch,
+) -> Result<i64> {
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
+        return Ok(0);
+    };
+    let id_cell = extract_id_cell(columns, id_column, id_batch)?;
+    read_max_version(&mut conn, tid, id_column, &id_cell).await
+}
+
+/// Write ONE inline delta row (a row-version or a tombstone) for a single identity,
+/// guarded by a per-identity compare-and-swap. Returns the new snapshot id, or
+/// `ControlPlaneError::Conflict` if a newer version for the identity already exists.
+///
+/// For a **version**, `batch` is the full one-row post-PATCH row and `columns` all
+/// data specs. For a **tombstone**, `batch` is a one-cell batch holding just the id
+/// and `columns = [id spec]`; the tombstone row carries the id + `loom_tombstone =
+/// true` with the other data columns NULL, so the identity-aware merge-on-read hides
+/// the object.
+///
+/// Concurrency: a transaction-scoped advisory lock keyed by `(tid, id)` serializes
+/// concurrent mutations of the SAME identity. Under that lock, `read_max_version ==
+/// expected_version` is a safe CAS — two writers cannot both pass: the first commits
+/// a newer `begin_snapshot`, so the second (which only reads the max AFTER taking the
+/// lock) sees a higher value and returns `Conflict`. Distinct identities hash to
+/// distinct keys and never contend. Inline delta rows are never end-capped here.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + lineage + CAS witness; a params struct would only obscure the call sites"
+)]
+pub async fn write_inline_delta(
+    pool: &PgPool,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    id_column: &str,
+    tombstone: bool,
+    batch: &RecordBatch,
+    lineage: LineageEvent,
+    expected_version: i64,
+) -> Result<SnapshotId> {
+    let mut tx = pool.begin().await.map_err(backend)?;
+
+    // The mutation targets an existing object, so a live mirror row must exist.
+    let tid = live_table_id(&mut tx, &table.schema, &table.name)
+        .await?
+        .ok_or_else(|| {
+            ControlPlaneError::Backend(
+                format!("no mirror table for {}.{}", table.schema, table.name).into(),
+            )
+        })?;
+
+    // Ensure inline storage (+ loom_tombstone) exists if the object was file-only.
+    ensure_inline_schema(&mut tx, tid, columns).await?;
+    let id_cell = extract_id_cell(columns, id_column, batch)?;
+
+    // Per-identity serialization: a transaction-scoped advisory lock keyed by
+    // (tid, id). It auto-releases when this tx ends (commit/rollback/panic), so it
+    // can never leak onto a pooled connection. AssertSqlSafe: static query.
+    let key = advisory_key_for_id(tid, &id_cell);
+    sqlx::query(AssertSqlSafe("select pg_advisory_xact_lock($1)"))
+        .bind(key)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+
+    // CAS: under the lock, the identity's current live max version must still equal
+    // the version the caller read. A mismatch means a concurrent mutation won.
+    let cur = read_max_version(&mut tx, tid, id_column, &id_cell).await?;
+    if cur != expected_version {
+        return Err(ControlPlaneError::Conflict(format!(
+            "cow: identity version advanced {expected_version} -> {cur} (concurrent mutation)"
+        )));
+    }
+
+    // Allocate the new snapshot only after the CAS passes (it inserts the
+    // iceberg_mirror.snapshot row that makes the delta read-visible).
+    let at = next_snapshot(&mut tx, None).await?;
+
+    // Insert one delta row. BOTH kinds carry the identity value so the merge-on-read
+    // (partition by <id>) shadows/hides the file row for that id.
+    if tombstone {
+        // Tombstone: begin_snapshot, loom_tombstone=true, "<id_col>"=id; data NULL.
+        let sql = format!(
+            "insert into {} (begin_snapshot, loom_tombstone, \"{}\") values ($1, true, $2)",
+            inline_table_name(tid),
+            id_column.replace('"', "\"\""),
+        );
+        bind_cell(sqlx::query(AssertSqlSafe(sql)).bind(at.0), &id_cell)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+    } else {
+        // Version: mirror inline_append's INSERT but prefix loom_tombstone=false.
+        // The id column is one of <cols>, so the version row carries the id naturally.
+        let col_list = columns
+            .iter()
+            .map(|c| format!("\"{}\"", c.name.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let placeholders = (0..columns.len())
+            .map(|i| format!("${}", i + 2)) // $1 = begin_snapshot
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "insert into {} (begin_snapshot, loom_tombstone, {col_list}) \
+             values ($1, false, {placeholders})",
+            inline_table_name(tid),
+        );
+        let cells = columns
+            .iter()
+            .enumerate()
+            .map(|(c, spec)| cell_from_arrow(batch, c, 0, &spec.ty))
+            .collect::<Result<Vec<_>>>()?;
+        let mut q = sqlx::query(AssertSqlSafe(sql)).bind(at.0);
+        for cell in &cells {
+            q = bind_cell(q, cell);
+        }
+        q.execute(&mut *tx).await.map_err(backend)?;
+    }
+
+    set_has_shadow(&mut tx, tid).await?;
+    pg_emit(&mut *tx, &lineage).await?;
+    tx.commit().await.map_err(backend)?;
+    Ok(at)
+}
+
 /// Arrow field for a logical column. Delegates to core's authoritative
 /// `BaseType::arrow_data_type` map (canonical, non-`*View`, vector list child
 /// `"item"`), so the inline read schema can never drift from the serving path.
