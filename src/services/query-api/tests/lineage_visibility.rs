@@ -26,11 +26,17 @@ use query_api::lineage_filter::{LineageDir, LineageVisibility, LineageVisibility
 use store_config::{ObjectStoreBackend, ObjectStoreConfig};
 
 fn ty(name: &str) -> DatasetRef {
-    DatasetRef { namespace: "loom:type".into(), name: name.into() }
+    DatasetRef {
+        namespace: "loom:type".into(),
+        name: name.into(),
+    }
 }
 
 fn ext(ns: &str, name: &str) -> DatasetRef {
-    DatasetRef { namespace: ns.into(), name: name.into() }
+    DatasetRef {
+        namespace: ns.into(),
+        name: name.into(),
+    }
 }
 
 fn edge(inp: DatasetRef, out: DatasetRef) -> LineageEvent {
@@ -51,7 +57,7 @@ fn naming() -> LineageNaming {
     })
 }
 
-async fn cp() -> MemoryControlPlane {
+fn cp() -> MemoryControlPlane {
     MemoryControlPlane::new(Duration::from_millis(300))
 }
 
@@ -69,9 +75,14 @@ async fn subject_reading(cp: &MemoryControlPlane, name: &str, types: &[&str]) ->
         cp.define_type(ObjectType::build(*t, ("ns", *t)).done())
             .await
             .unwrap();
-        cp.grant(&role, Action::Read, PolicyTarget::Type(TypeName((*t).into())), Effect::Allow)
-            .await
-            .unwrap();
+        cp.grant(
+            &role,
+            Action::Read,
+            PolicyTarget::Type(TypeName((*t).into())),
+            Effect::Allow,
+        )
+        .await
+        .unwrap();
     }
     subj
 }
@@ -85,7 +96,7 @@ fn names(page: &control_plane_core::Page<DatasetRef>) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread")]
 async fn cut_not_skip_denied_intermediate_hides_its_ancestors() {
     // upstream chain A -> N -> X -> S (edges output->input reversed by upstream).
-    let cp = cp().await;
+    let cp = cp();
     for (i, o) in [("A", "N"), ("N", "X"), ("X", "S")] {
         cp.lineage().emit(edge(ty(i), ty(o))).await.unwrap();
     }
@@ -94,7 +105,13 @@ async fn cut_not_skip_denied_intermediate_hides_its_ancestors() {
     let subj = subject_reading(&cp, "u", &["A", "X", "S"]).await;
     let vis = LineageVisibility::new(cp.acl(), cp.lineage(), &bridge);
     let page = vis
-        .visible_closure(&subj, &ty("S"), 3, LineageDir::Upstream, &PageReq::unbounded())
+        .visible_closure(
+            &subj,
+            &ty("S"),
+            3,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
         .await
         .unwrap();
     // Only X is reachable through readable nodes; N cut the branch so A is hidden.
@@ -103,10 +120,19 @@ async fn cut_not_skip_denied_intermediate_hides_its_ancestors() {
     // A subject that can also read N sees {X, A, N}.
     let subj2 = subject_reading(&cp, "v", &["A", "N", "X", "S"]).await;
     let page2 = vis_for(&cp, &bridge)
-        .visible_closure(&subj2, &ty("S"), 3, LineageDir::Upstream, &PageReq::unbounded())
+        .visible_closure(
+            &subj2,
+            &ty("S"),
+            3,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
         .await
         .unwrap();
-    assert_eq!(names(&page2), vec!["A".to_string(), "N".to_string(), "X".to_string()]);
+    assert_eq!(
+        names(&page2),
+        vec!["A".to_string(), "N".to_string(), "X".to_string()]
+    );
 }
 
 fn vis_for<'a>(cp: &'a MemoryControlPlane, bridge: &'a LineageNaming) -> LineageVisibility<'a> {
@@ -115,29 +141,44 @@ fn vis_for<'a>(cp: &'a MemoryControlPlane, bridge: &'a LineageNaming) -> Lineage
 
 #[tokio::test(flavor = "multi_thread")]
 async fn seed_unreadable_returns_empty_page() {
-    let cp = cp().await;
+    let cp = cp();
     cp.lineage().emit(edge(ty("A"), ty("S"))).await.unwrap();
     let bridge = naming();
     // U reads A but not the seed S.
     let subj = subject_reading(&cp, "u", &["A"]).await;
     let page = vis_for(&cp, &bridge)
-        .visible_closure(&subj, &ty("S"), 3, LineageDir::Upstream, &PageReq::unbounded())
+        .visible_closure(
+            &subj,
+            &ty("S"),
+            3,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
         .await
         .unwrap();
-    assert!(page.items.is_empty(), "seed gating: unreadable seed → empty");
+    assert!(
+        page.items.is_empty(),
+        "seed gating: unreadable seed → empty"
+    );
     assert!(page.next.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cycle_terminates_via_visited_guard() {
-    let cp = cp().await;
+    let cp = cp();
     // X <-> Y cycle.
     cp.lineage().emit(edge(ty("X"), ty("Y"))).await.unwrap();
     cp.lineage().emit(edge(ty("Y"), ty("X"))).await.unwrap();
     let bridge = naming();
     let subj = subject_reading(&cp, "u", &["X", "Y"]).await;
     let page = vis_for(&cp, &bridge)
-        .visible_closure(&subj, &ty("X"), 10, LineageDir::Upstream, &PageReq::unbounded())
+        .visible_closure(
+            &subj,
+            &ty("X"),
+            10,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
         .await
         .unwrap();
     // Seed excluded; the only other node is Y. Terminates (no hang).
@@ -146,28 +187,49 @@ async fn cycle_terminates_via_visited_guard() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn depth_zero_and_over_cap_are_validation_errors() {
-    let cp = cp().await;
+    let cp = cp();
     let bridge = naming();
     let subj = subject_reading(&cp, "u", &[]).await;
     for bad in [0u32, 33u32] {
         let err = vis_for(&cp, &bridge)
-            .visible_closure(&subj, &ty("S"), bad, LineageDir::Upstream, &PageReq::unbounded())
+            .visible_closure(
+                &subj,
+                &ty("S"),
+                bad,
+                LineageDir::Upstream,
+                &PageReq::unbounded(),
+            )
             .await
             .unwrap_err();
-        assert!(matches!(err, LineageVisibilityError::Cp(_)), "depth {bad} → Cp(Validation)");
+        assert!(
+            matches!(err, LineageVisibilityError::Cp(_)),
+            "depth {bad} → Cp(Validation)"
+        );
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn external_refs_are_default_allowed_unresolvable_loom_is_denied() {
-    let cp = cp().await;
+    let cp = cp();
     // seed S (readable) <- external s3 source and <- a malformed loom ref.
-    cp.lineage().emit(edge(ext("s3://raw", "bucket.csv"), ty("S"))).await.unwrap();
-    cp.lineage().emit(edge(ext("loom", "nodot"), ty("S"))).await.unwrap(); // malformed → fail-closed
+    cp.lineage()
+        .emit(edge(ext("s3://raw", "bucket.csv"), ty("S")))
+        .await
+        .unwrap();
+    cp.lineage()
+        .emit(edge(ext("loom", "nodot"), ty("S")))
+        .await
+        .unwrap(); // malformed → fail-closed
     let bridge = naming();
     let subj = subject_reading(&cp, "u", &["S"]).await;
     let page = vis_for(&cp, &bridge)
-        .visible_closure(&subj, &ty("S"), 2, LineageDir::Upstream, &PageReq::unbounded())
+        .visible_closure(
+            &subj,
+            &ty("S"),
+            2,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
         .await
         .unwrap();
     // External present; the malformed loom-namespace ref is fail-closed (absent).
@@ -176,10 +238,13 @@ async fn external_refs_are_default_allowed_unresolvable_loom_is_denied() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn windowing_pages_every_visible_ref_once_in_order() {
-    let cp = cp().await;
+    let cp = cp();
     // Fan-out: 5 readable inputs feed Z; all under loom:type.
     for i in 0..5 {
-        cp.lineage().emit(edge(ty(&format!("in{i}")), ty("Z"))).await.unwrap();
+        cp.lineage()
+            .emit(edge(ty(&format!("in{i}")), ty("Z")))
+            .await
+            .unwrap();
     }
     let bridge = naming();
     let subj = subject_reading(&cp, "u", &["Z", "in0", "in1", "in2", "in3", "in4"]).await;
@@ -187,7 +252,10 @@ async fn windowing_pages_every_visible_ref_once_in_order() {
     let mut seen: Vec<String> = Vec::new();
     let mut after: Option<control_plane_core::Cursor> = None;
     for _ in 0..10 {
-        let req = PageReq { after: after.clone(), limit: Some(2) };
+        let req = PageReq {
+            after: after.clone(),
+            limit: Some(2),
+        };
         let page = vis
             .visible_closure(&subj, &ty("Z"), 1, LineageDir::Upstream, &req)
             .await
@@ -205,32 +273,56 @@ async fn windowing_pages_every_visible_ref_once_in_order() {
     assert_eq!(seen, vec!["in0", "in1", "in2", "in3", "in4"]);
     // Cursor is the encoding of the last emitted ref on a non-final page.
     let first = vis
-        .visible_closure(&subj, &ty("Z"), 1, LineageDir::Upstream, &PageReq { after: None, limit: Some(2) })
+        .visible_closure(
+            &subj,
+            &ty("Z"),
+            1,
+            LineageDir::Upstream,
+            &PageReq {
+                after: None,
+                limit: Some(2),
+            },
+        )
         .await
         .unwrap();
-    assert_eq!(first.next, Some(encode_dataset_cursor(first.items.last().unwrap())));
+    assert_eq!(
+        first.next,
+        Some(encode_dataset_cursor(first.items.last().unwrap()))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn scan_cap_exceeded_is_its_own_error() {
-    let cp = cp().await;
+    let cp = cp();
     // A small readable fan-out; a cap of 1 is exceeded on the second distinct node.
     for i in 0..4 {
-        cp.lineage().emit(edge(ty(&format!("in{i}")), ty("Z"))).await.unwrap();
+        cp.lineage()
+            .emit(edge(ty(&format!("in{i}")), ty("Z")))
+            .await
+            .unwrap();
     }
     let bridge = naming();
     let subj = subject_reading(&cp, "u", &["Z", "in0", "in1", "in2", "in3"]).await;
     let err = vis_for(&cp, &bridge)
         .with_scan_cap(1)
-        .visible_closure(&subj, &ty("Z"), 1, LineageDir::Upstream, &PageReq::unbounded())
+        .visible_closure(
+            &subj,
+            &ty("Z"),
+            1,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
         .await
         .unwrap_err();
-    assert!(matches!(err, LineageVisibilityError::ScanCapExceeded), "over-cap → ScanCapExceeded");
+    assert!(
+        matches!(err, LineageVisibilityError::ScanCapExceeded),
+        "over-cap → ScanCapExceeded"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn redact_events_drops_denied_refs_keeps_envelope() {
-    let cp = cp().await;
+    let cp = cp();
     let bridge = naming();
     let subj = subject_reading(&cp, "u", &["A"]).await; // reads A, not B
     let run = RunId(uuid::Uuid::new_v4());
@@ -242,8 +334,14 @@ async fn redact_events_drops_denied_refs_keeps_envelope() {
         outputs: vec![ty("B")],
         payload: serde_json::json!({ "k": 1 }),
     };
-    let page = control_plane_core::Page { items: vec![ev], next: None };
-    let red = vis_for(&cp, &bridge).redact_events(&subj, page).await.unwrap();
+    let page = control_plane_core::Page {
+        items: vec![ev],
+        next: None,
+    };
+    let red = vis_for(&cp, &bridge)
+        .redact_events(&subj, page)
+        .await
+        .unwrap();
     let e = &red.items[0];
     assert_eq!(e.inputs, vec![ty("A")], "denied B removed from inputs");
     assert!(e.outputs.is_empty(), "denied B removed from outputs");

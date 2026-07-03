@@ -95,8 +95,8 @@ impl<'a> LineageVisibility<'a> {
             ResolvedDataset::Type(ty) => PolicyTarget::Type(ty),
             ResolvedDataset::External(dr) => {
                 // Fail-closed for internal-looking-but-unresolvable refs.
-                let loom_owned = dr.namespace == LOOM_DATASET_NAMESPACE
-                    || dr.namespace == LOOM_TYPE_NAMESPACE;
+                let loom_owned =
+                    dr.namespace == LOOM_DATASET_NAMESPACE || dr.namespace == LOOM_TYPE_NAMESPACE;
                 return Ok(!loom_owned);
             }
         };
@@ -115,7 +115,9 @@ impl<'a> LineageVisibility<'a> {
         let page = match dir {
             LineageDir::Upstream => self.lineage.upstream(node, 1, PageReq::unbounded()).await?,
             LineageDir::Downstream => {
-                self.lineage.downstream(node, 1, PageReq::unbounded()).await?
+                self.lineage
+                    .downstream(node, 1, PageReq::unbounded())
+                    .await?
             }
         };
         Ok(page.items)
@@ -146,8 +148,7 @@ impl<'a> LineageVisibility<'a> {
         }
 
         // std collections used directly to avoid a hashing dep; DatasetRef: Ord+Clone.
-        let mut visited: std::collections::BTreeSet<DatasetRef> =
-            std::collections::BTreeSet::new();
+        let mut visited: std::collections::BTreeSet<DatasetRef> = std::collections::BTreeSet::new();
         visited.insert(seed.clone());
         let mut frontier: Vec<DatasetRef> = vec![seed.clone()];
         let mut visible: Vec<DatasetRef> = Vec::new();

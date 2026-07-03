@@ -855,7 +855,9 @@ async fn lineage_closure(
         st.cp.lineage(),
         st.naming.as_ref(),
     );
-    let res = vis.visible_closure(&subject.0, &seed, depth, dir, &page).await;
+    let res = vis
+        .visible_closure(&subject.0, &seed, depth, dir, &page)
+        .await;
     match res {
         Ok(page) => Json(crate::lineage_read::dataset_closure_body(page)).into_response(),
         Err(e) => lineage_visibility_error(e),
