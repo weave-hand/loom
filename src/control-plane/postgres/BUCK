@@ -272,6 +272,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "identity-for-table",
+    crate = "identity_for_table",
+    srcs = ["tests/identity_for_table.rs"],
+    crate_root = "tests/identity_for_table.rs",
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:sqlx", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "action_kind_persist",
     crate = "action_kind_persist",
     srcs = ["tests/action_kind_persist.rs"],
