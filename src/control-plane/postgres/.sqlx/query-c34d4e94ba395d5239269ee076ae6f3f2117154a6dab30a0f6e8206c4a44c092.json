@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.subject_id, pc.password_phc from auth.user u join auth.password_credential pc on pc.subject_id = u.subject_id where u.username = $1 and u.disabled_at is null",
+  "query": "select u.subject_id, pc.password_phc, u.locked_until from auth.user u join auth.password_credential pc on pc.subject_id = u.subject_id where u.username = $1 and u.disabled_at is null",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "password_phc"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "locked_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth.\"user\"",
+            "name": "locked_until"
+          }
+        }
       }
     ],
     "parameters": {
@@ -33,8 +44,9 @@
     },
     "nullable": [
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "90a1a243a66bf79d34e62d6ce53b09513765d2598fd5e43801beb815e1370d56"
+  "hash": "c34d4e94ba395d5239269ee076ae6f3f2117154a6dab30a0f6e8206c4a44c092"
 }

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    Auth, ControlPlaneError, NewServiceAccount, NewUser, Page, PageReq, PasswordCredential, Result,
-    ServiceAccount, ServiceToken, SubjectId, UserSummary,
+    Auth, ControlPlaneError, LockoutPolicy, NewServiceAccount, NewUser, Page, PageReq,
+    PasswordCredential, Result, ServiceAccount, ServiceToken, SubjectId, UserSummary,
 };
 use time::OffsetDateTime;
 
@@ -64,7 +64,7 @@ impl Auth for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn find_password_credential(&self, username: &str) -> Result<Option<PasswordCredential>> {
         let row = sqlx::query!(
-            "select u.subject_id, pc.password_phc \
+            "select u.subject_id, pc.password_phc, u.locked_until \
              from auth.user u \
              join auth.password_credential pc on pc.subject_id = u.subject_id \
              where u.username = $1 and u.disabled_at is null",
@@ -76,6 +76,7 @@ impl Auth for PgControlPlane {
         Ok(row.map(|r| PasswordCredential {
             subject_id: SubjectId(r.subject_id),
             password_phc: r.password_phc,
+            locked_until: r.locked_until,
         }))
     }
 
@@ -225,6 +226,120 @@ impl Auth for PgControlPlane {
             .map_err(backend)?;
         }
         tx.commit().await.map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn update_password(&self, subject: &SubjectId, new_phc: &str) -> Result<()> {
+        let res = sqlx::query!(
+            "update auth.password_credential set password_phc = $2, updated_at = now() \
+             where subject_id = $1",
+            &subject.0,
+            new_phc,
+        )
+        .execute(self.pool())
+        .await
+        .map_err(backend)?;
+        if res.rows_affected() == 0 {
+            return Err(ControlPlaneError::NotFound(format!(
+                "credential for subject {}",
+                subject.0
+            )));
+        }
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn password_phc_for_subject(&self, subject: &SubjectId) -> Result<Option<String>> {
+        let phc = sqlx::query_scalar!(
+            "select password_phc from auth.password_credential where subject_id = $1",
+            &subject.0,
+        )
+        .fetch_optional(self.pool())
+        .await
+        .map_err(backend)?;
+        Ok(phc)
+    }
+
+    #[tracing::instrument(skip(self, keep), level = "debug")]
+    async fn revoke_subject_sessions(
+        &self,
+        subject: &SubjectId,
+        keep: Option<&[u8; 32]>,
+    ) -> Result<()> {
+        match keep {
+            Some(k) => {
+                sqlx::query!(
+                    "delete from auth.session where subject_id = $1 and token_sha256 <> $2",
+                    &subject.0,
+                    &k[..],
+                )
+                .execute(self.pool())
+                .await
+                .map_err(backend)?;
+            }
+            None => {
+                sqlx::query!("delete from auth.session where subject_id = $1", &subject.0,)
+                    .execute(self.pool())
+                    .await
+                    .map_err(backend)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn record_failed_login(
+        &self,
+        username: &str,
+        now: OffsetDateTime,
+        policy: LockoutPolicy,
+    ) -> Result<()> {
+        // Interval math is done in Rust so the SQL binds only concrete instants —
+        // no PgInterval. `new_count` is computed in the subquery from the current
+        // stored count and written back in a single statement. (Under READ
+        // COMMITTED two racing failures can under-count; acceptable for lockout.
+        // Store-backed so the counter survives restarts and is shared across
+        // replicas, unlike an in-memory counter an attacker could reset.)
+        let window_cutoff = now - policy.window;
+        let locked_until = now + policy.lockout_duration;
+        let threshold = i32::try_from(policy.threshold).unwrap_or(i32::MAX);
+        sqlx::query!(
+            "update auth.user u \
+             set failed_attempt_count = nc.new_count, \
+                 last_failed_at = $2, \
+                 locked_until = case when nc.new_count >= $4 then $5 else u.locked_until end \
+             from ( \
+               select case \
+                   when last_failed_at is null or last_failed_at < $3 then 1 \
+                   else failed_attempt_count + 1 \
+                 end as new_count \
+               from auth.user where username = $1 \
+             ) nc \
+             where u.username = $1",
+            username,
+            now,
+            window_cutoff,
+            threshold,
+            locked_until,
+        )
+        .execute(self.pool())
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn reset_failed_logins(&self, username: &str) -> Result<()> {
+        sqlx::query!(
+            "update auth.user \
+             set failed_attempt_count = 0, locked_until = null, last_failed_at = null \
+             where username = $1",
+            username,
+        )
+        .execute(self.pool())
+        .await
+        .map_err(backend)?;
         Ok(())
     }
 

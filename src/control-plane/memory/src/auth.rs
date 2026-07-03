@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Auth, ControlPlaneError, NewServiceAccount, NewUser, Page, PageReq, PasswordCredential, Result,
-    ServiceAccount, ServiceToken, SubjectId, UserSummary,
+    Auth, ControlPlaneError, LockoutPolicy, NewServiceAccount, NewUser, Page, PageReq,
+    PasswordCredential, Result, ServiceAccount, ServiceToken, SubjectId, UserSummary,
 };
 use time::OffsetDateTime;
 
@@ -14,6 +14,9 @@ struct MemUser {
     password_phc: String,
     disabled: bool,
     created_at: OffsetDateTime,
+    failed_attempt_count: u32,
+    last_failed_at: Option<OffsetDateTime>,
+    locked_until: Option<OffsetDateTime>,
 }
 
 struct MemSession {
@@ -67,6 +70,9 @@ impl Auth for MemoryControlPlane {
                 password_phc: user.password_phc.clone(),
                 disabled: false,
                 created_at: OffsetDateTime::now_utc(),
+                failed_attempt_count: 0,
+                last_failed_at: None,
+                locked_until: None,
             },
         );
         drop(auth);
@@ -85,6 +91,7 @@ impl Auth for MemoryControlPlane {
             .map(|u| PasswordCredential {
                 subject_id: SubjectId(u.subject_id.clone()),
                 password_phc: u.password_phc.clone(),
+                locked_until: u.locked_until,
             }))
     }
 
@@ -182,6 +189,81 @@ impl Auth for MemoryControlPlane {
         if disabled {
             let subject = u.subject_id.clone();
             auth.sessions.retain(|_, s| s.subject_id != subject);
+        }
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn update_password(&self, subject: &SubjectId, new_phc: &str) -> Result<()> {
+        let mut auth = self.auth.lock();
+        match auth.users.values_mut().find(|u| u.subject_id == subject.0) {
+            Some(u) => {
+                u.password_phc = new_phc.to_string();
+                Ok(())
+            }
+            None => Err(ControlPlaneError::NotFound(format!(
+                "credential for subject {}",
+                subject.0
+            ))),
+        }
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn password_phc_for_subject(&self, subject: &SubjectId) -> Result<Option<String>> {
+        let auth = self.auth.lock();
+        Ok(auth
+            .users
+            .values()
+            .find(|u| u.subject_id == subject.0)
+            .map(|u| u.password_phc.clone()))
+    }
+
+    #[tracing::instrument(skip(self, keep), level = "debug")]
+    async fn revoke_subject_sessions(
+        &self,
+        subject: &SubjectId,
+        keep: Option<&[u8; 32]>,
+    ) -> Result<()> {
+        let mut auth = self.auth.lock();
+        match keep {
+            Some(k) => auth
+                .sessions
+                .retain(|hash, s| s.subject_id != subject.0 || hash == k),
+            None => auth.sessions.retain(|_, s| s.subject_id != subject.0),
+        }
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn record_failed_login(
+        &self,
+        username: &str,
+        now: OffsetDateTime,
+        policy: LockoutPolicy,
+    ) -> Result<()> {
+        let mut auth = self.auth.lock();
+        if let Some(u) = auth.users.get_mut(username) {
+            let within_window = u.last_failed_at.is_some_and(|t| now - t <= policy.window);
+            u.failed_attempt_count = if within_window {
+                u.failed_attempt_count + 1
+            } else {
+                1
+            };
+            u.last_failed_at = Some(now);
+            if u.failed_attempt_count >= policy.threshold {
+                u.locked_until = Some(now + policy.lockout_duration);
+            }
+        }
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn reset_failed_logins(&self, username: &str) -> Result<()> {
+        let mut auth = self.auth.lock();
+        if let Some(u) = auth.users.get_mut(username) {
+            u.failed_attempt_count = 0;
+            u.last_failed_at = None;
+            u.locked_until = None;
         }
         Ok(())
     }

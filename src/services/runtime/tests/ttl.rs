@@ -4,13 +4,42 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use service_runtime::{ConfigError, service_token_max_ttl, session_ttl};
+use service_runtime::{ConfigError, login_lockout, service_token_max_ttl, session_ttl};
 
 fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs
         .iter()
         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
         .collect()
+}
+
+#[test]
+fn lockout_defaults() {
+    let p = login_lockout(&map(&[])).unwrap();
+    assert_eq!(p.threshold, 5);
+    assert_eq!(p.window, time::Duration::minutes(15));
+    assert_eq!(p.lockout_duration, time::Duration::minutes(15));
+}
+
+#[test]
+fn lockout_parses_overrides() {
+    let p = login_lockout(&map(&[
+        ("LOOM_LOGIN_LOCKOUT_THRESHOLD", "3"),
+        ("LOOM_LOGIN_LOCKOUT_WINDOW", "60"),
+        ("LOOM_LOGIN_LOCKOUT_DURATION", "120"),
+    ]))
+    .unwrap();
+    assert_eq!(p.threshold, 3);
+    assert_eq!(p.window, time::Duration::seconds(60));
+    assert_eq!(p.lockout_duration, time::Duration::seconds(120));
+}
+
+#[test]
+fn lockout_malformed_threshold_is_startup_error() {
+    let vars = map(&[("LOOM_LOGIN_LOCKOUT_THRESHOLD", "lots")]);
+    let err = login_lockout(&vars).unwrap_err();
+    assert!(matches!(err, ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_LOGIN_LOCKOUT_THRESHOLD"));
 }
 
 #[test]

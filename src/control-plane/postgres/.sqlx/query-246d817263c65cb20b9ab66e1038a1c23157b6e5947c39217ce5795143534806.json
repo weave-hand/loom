@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from auth.session where subject_id = $1 and token_sha256 <> $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "246d817263c65cb20b9ab66e1038a1c23157b6e5947c39217ce5795143534806"
+}
