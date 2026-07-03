@@ -456,3 +456,37 @@ async fn non_admin_bearer_is_403_on_management_routes() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn shape_invalid_define_bodies_are_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    seed_types(&cp).await;
+    // Well-formed JSON, wrong shape: the handler's serde_json::from_value
+    // branch — the decode 400, not axum's syntax 400.
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/links", &token, r#"{"nonsense": true}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.contains("invalid LinkDef"),
+        "names the decode failure: {body}"
+    );
+    let (status, body) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/actions",
+            &token,
+            r#"{"steps": "not-an-array"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.contains("invalid ActionDef"),
+        "names the decode failure: {body}"
+    );
+}
