@@ -360,9 +360,10 @@ In `third-party/browser/BUCK`, replace the second paragraph of the header commen
 # ghcr.io/weave-hand/loom-rbe-browser and pinned in platforms/defs.bzl). So
 # //src/ui/e2e:login runs for real on RE (hermetic) and on a dev box with the
 # libs present; it auto-skips only where the browser can't start (LOOM_UI_E2E=1
-# turns that skip into a hard error). x86_64-linux only — Chrome for Testing
-# publishes no linux-arm64 build; the aarch64 arm is a documented follow-up
-# (fut-ui-e2e-hermetic-browser retains the arm64 note).
+# turns that skip into a hard error). x86_64-linux only — the vendored browser
+# and RE are amd64-only; an aarch64 arm would vendor the linux-arm64 Chrome for
+# Testing build (available since 2026-03-12) plus an arm64 RBE image once RE runs
+# arm64 (fut-ui-e2e-hermetic-browser retains the arm64 note).
 ```
 
 - [ ] **Step 2: Update the `src/ui/CLAUDE.md` login-e2e bullet**
@@ -392,7 +393,7 @@ Also update the trailing line `Hermetic-RE hardening: fut-ui-e2e-hermetic-browse
 
 - [ ] **Step 3: Close the register item**
 
-Invoke the `loom-docs-update` skill to close `fut-ui-e2e-hermetic-browser`. The intended end state of its entry in `docs/FUTURE.md`: checkbox `[x]`, `status:promoted`, `spec:2026-07-02-ui-e2e-hermetic-rbe-image-design`, and a closing note that the custom RBE image landed and the login e2e now runs on RE — while explicitly retaining the arm64 gap as the remaining deferred work (Chrome for Testing has no linux-arm64 build). If `loom-docs-update` is unavailable, edit the entry directly to that end state.
+Invoke the `loom-docs-update` skill to close `fut-ui-e2e-hermetic-browser`. The intended end state of its entry in `docs/FUTURE.md`: checkbox `[x]`, `status:promoted`, `spec:2026-07-02-ui-e2e-hermetic-rbe-image-design`, and a closing note that the custom RBE image landed and the login e2e now runs on RE — while explicitly retaining the arm64 gap as the remaining deferred work — not for lack of a browser build (Chrome for Testing ships linux-arm64 as of 2026-03-12) but because loom's vendored browser + RE are amd64-only, so arm64 needs the arm64 CfT archive vendored + an arm64 RBE image once RE runs arm64. If `loom-docs-update` is unavailable, edit the entry directly to that end state.
 
 - [ ] **Step 4: Validate the registers**
 

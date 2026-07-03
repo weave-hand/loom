@@ -36,9 +36,12 @@ auto-skip — so a genuine login regression reddens CI. Do it hermetically, by
 giving the RE worker the browser libs, without regressing local ergonomics or
 touching the green login-e2e feature (PR #311).
 
-Non-goals: arm64 support (Chrome for Testing publishes no linux-arm64 build; RE
-is amd64-only — a separate deferred follow-up); vendoring the glibc-coupled lib
-closure as buck archives (rejected as fragile — see Alternatives).
+Non-goals: arm64 support (loom's vendored browser and CI RE are both amd64-only,
+so arm64 has no consumer here; Chrome for Testing *does* now ship a linux-arm64
+build as of 2026-03-12, so an arm64 arm is a matter of vendoring that archive +
+an arm64 RBE image once RE runs arm64 — a separate deferred follow-up);
+vendoring the glibc-coupled lib closure as buck archives (rejected as fragile —
+see Alternatives).
 
 ## Approach (chosen)
 
@@ -173,7 +176,10 @@ action.
   the host … auto-skips" paragraph) to reflect hermetic-on-RE.
 - Close `fut-ui-e2e-hermetic-browser` via `loom-docs-update` (`status: promoted`,
   `spec:` set, checkbox `[x]`). The **arm64** sub-note stays deferred as its own
-  concern (no linux-arm64 Chrome for Testing build; RE is amd64-only).
+  concern — not for lack of a browser build (Chrome for Testing ships linux-arm64
+  as of 2026-03-12) but because loom's vendored browser and RE are amd64-only, so
+  an arm64 arm needs the arm64 CfT archive vendored + an arm64 RBE image once RE
+  runs arm64.
 
 ## Verification
 
