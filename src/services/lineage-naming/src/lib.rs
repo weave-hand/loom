@@ -5,7 +5,7 @@
 //! docs/superpowers/specs/2026-07-01-dataset-naming-bridge-design.md.
 
 use control_plane_core::{
-    DatasetId, DatasetRef, LOOM_DATASET_NAMESPACE, TableRef, TypeId, TypeName,
+    DatasetId, DatasetRef, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TableRef, TypeId, TypeName,
 };
 use store_config::{ObjectStoreBackend, ObjectStoreConfig};
 
@@ -30,6 +30,12 @@ pub enum ResolvedDataset {
     Table(TableRef),
     /// Names an ontology type this deployment governs.
     Type(TypeName),
+    /// The ref's namespace is **loom-owned** — logical `"loom"`/`"loom:type"` or this
+    /// deployment's `site_namespace` — but its name fails the corresponding parse. The
+    /// governed object it *should* name cannot be determined, so consumers must fail
+    /// **closed** (deny) rather than treat it as external and default-allow. Carries the
+    /// raw ref verbatim.
+    Unresolvable(DatasetRef),
     /// Names a dataset outside this deployment's governance — an external datasource,
     /// or a different loom site's warehouse. Carries the raw ref verbatim.
     External(DatasetRef),
@@ -70,33 +76,40 @@ impl LineageNaming {
         TypeId::from(ty).dataset_ref()
     }
 
-    /// Resolve any `DatasetRef` back to the governed object it names, or `External`.
-    /// Total; never errors. Recognizes, in order:
-    ///   1. the logical loom namespaces (`"loom"` / `"loom:type"`), via `core`'s
-    ///      `DatasetId`/`TypeId::from_dataset_ref` — back-compat with the refs
-    ///      control-plane producers emit with no storage context;
-    ///   2. this deployment's `site_namespace` with a well-formed `schema.table`
-    ///      name — reusing the same `core` parse guards by re-namespacing to the
-    ///      logical form;
-    ///   3. everything else — a different datasource, or a malformed name under a
-    ///      loom namespace — `External(raw ref)`.
+    /// Resolve any `DatasetRef` back to the governed object it names, or classify why
+    /// not. Total; never errors. Keyed on the namespace first, so an owned namespace
+    /// with a malformed name is distinguishable from a genuinely foreign one:
+    ///   1. logical `"loom"` — well-formed `schema.table` → `Table`, else `Unresolvable`;
+    ///   2. logical `"loom:type"` — non-empty name → `Type`, else `Unresolvable`;
+    ///   3. this deployment's `site_namespace` — well-formed `schema.table` (tables only;
+    ///      types live on the logical namespace) → `Table`, else `Unresolvable`;
+    ///   4. any other namespace — a genuinely foreign datasource or a different loom
+    ///      site's warehouse → `External(raw ref)`.
     pub fn resolve(&self, dr: &DatasetRef) -> ResolvedDataset {
-        if let Some(id) = DatasetId::from_dataset_ref(dr) {
-            return ResolvedDataset::Table(id.table().clone());
+        if dr.namespace == LOOM_DATASET_NAMESPACE {
+            return match DatasetId::from_dataset_ref(dr) {
+                Some(id) => ResolvedDataset::Table(id.table().clone()),
+                None => ResolvedDataset::Unresolvable(dr.clone()),
+            };
         }
-        if let Some(ty) = TypeId::from_dataset_ref(dr) {
-            return ResolvedDataset::Type(ty.type_name().clone());
+        if dr.namespace == LOOM_TYPE_NAMESPACE {
+            return match TypeId::from_dataset_ref(dr) {
+                Some(ty) => ResolvedDataset::Type(ty.type_name().clone()),
+                None => ResolvedDataset::Unresolvable(dr.clone()),
+            };
         }
         if dr.namespace == self.site_namespace {
-            // Same `schema.table` name shape as the logical form; delegate to core's
-            // parse guards by re-namespacing, so malformed names degrade to External.
+            // Storage namespace carries the same `schema.table` name shape as the
+            // logical form; delegate to core's parse guards by re-namespacing. A
+            // malformed name is owned-but-unparseable → Unresolvable (fail closed).
             let logical = DatasetRef {
                 namespace: LOOM_DATASET_NAMESPACE.to_string(),
                 name: dr.name.clone(),
             };
-            if let Some(id) = DatasetId::from_dataset_ref(&logical) {
-                return ResolvedDataset::Table(id.table().clone());
-            }
+            return match DatasetId::from_dataset_ref(&logical) {
+                Some(id) => ResolvedDataset::Table(id.table().clone()),
+                None => ResolvedDataset::Unresolvable(dr.clone()),
+            };
         }
         ResolvedDataset::External(dr.clone())
     }

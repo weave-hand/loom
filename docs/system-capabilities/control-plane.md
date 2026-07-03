@@ -257,8 +257,11 @@ Naming and layering were bridged so the graph is navigable and governable. The
 dataset naming bridge (#291) is a postgres-free `lineage-naming` crate providing
 the OpenLineage-conformant mapping from a loom `TableRef`/`TypeName` to
 `{namespace, name}` and a total reverse `resolve` into
-`ResolvedDataset::{Table, Type, External}` — external datasets are first-class,
-not rejected. The type↔table layer join (#292) emits a binding edge at bind
+`ResolvedDataset::{Table, Type, Unresolvable, External}` — external datasets are
+first-class, not rejected, while a ref under a loom-owned namespace (logical or
+this deployment's storage `site_namespace`) whose name fails to parse resolves to
+`Unresolvable` so consumers can fail closed rather than default-allow it (#337).
+The type↔table layer join (#292) emits a binding edge at bind
 time connecting a type-named lineage node to its backing table node, so typed
 and physical provenance read as one graph rather than two disjoint layers.
 
@@ -269,17 +272,20 @@ The semantics are cut-not-skip (a denied intermediate is dropped *and* not
 expanded, so nodes reachable only through it are never discovered), seed-gated
 (an unreadable seed yields an empty page — denied is indistinguishable from
 unknown), and redact-within for events (denied refs are dropped from
-`inputs`/`outputs` while the envelope and cursor stay intact). External refs
-default-allow, but a loom-namespace ref that fails to resolve is fail-closed.
-The visible set is assembled before windowing — a pure function of `(seed,
+`inputs`/`outputs` while the envelope and cursor stay intact, and the opaque
+event `payload` is gated all-or-nothing — served verbatim only when every typed
+ref was readable, else nulled, so free-form dataset names in it cannot leak past
+the redaction applied to the typed refs (#337)). External refs default-allow,
+but a ref under any loom-owned namespace — logical *or* the deployment's storage
+`site_namespace` — that fails to resolve is `Unresolvable` and fail-closed:
+denied *and* cut (#337). The visible set is assembled before windowing — a pure
+function of `(seed,
 depth, subject)` — so pagination stays complete with no short pages, and a scan
 cap bounds the ACL fan-out with a 422. `core` stays subject-free; the governance
 lives entirely in the service layer.
 
 ## Known gaps
 
-- `#iss-lineage-payload-redaction` — governed lineage read still leaks denied names via the opaque event payload
-- `#iss-lineage-storage-namespace-fail-open` — fail-closed recovery misses malformed storage-namespace refs
 - `#road-action-computed-assignments` — expression-valued action properties (bounded pure grammar), spec'd not built
 - `#road-action-multi-object` — multi-object/multi-step actions in one transaction, spec'd not built
 - `#road-action-enqueue-downstream` — actions that atomically enqueue a downstream job, spec'd not built

@@ -8,9 +8,8 @@
 //! docs/superpowers/specs/2026-07-01-lineage-acl-filtering-design.md.
 
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, DatasetRef, Decision, LOOM_DATASET_NAMESPACE,
-    LOOM_TYPE_NAMESPACE, Lineage, LineageEvent, Page, PageReq, PolicyTarget, SubjectId,
-    check_depth, decode_dataset_cursor, encode_dataset_cursor,
+    Acl, Action, ControlPlaneError, DatasetRef, Decision, Lineage, LineageEvent, Page, PageReq,
+    PolicyTarget, SubjectId, check_depth, decode_dataset_cursor, encode_dataset_cursor,
 };
 use lineage_naming::{LineageNaming, ResolvedDataset};
 
@@ -77,14 +76,13 @@ impl<'a> LineageVisibility<'a> {
         self
     }
 
-    /// Classify a ref's readability for `subject`. Internal (`Table`/`Type`) → readable
-    /// iff `Acl::check(Read)` allows. External → default-allow (external datasources
-    /// carry no loom-ACL'd data and are the source leaves). A ref under a loom-owned
-    /// namespace that the bridge could not parse is treated as **unresolvable →
-    /// fail-closed** (never readable), so a bridge/mapping gap can only narrow, never
-    /// widen, disclosure. A bridge is total (no `Unresolvable` variant); we recover
-    /// that case from `External` + a loom-owned namespace without re-implementing the
-    /// bridge's parse.
+    /// Classify a ref's readability for `subject`. `Table`/`Type` → readable iff
+    /// `Acl::check(Read)` allows. `Unresolvable` (owned namespace, unparseable name) →
+    /// **never readable**: it is denied *and cut*, same as an ACL Deny, so a bridge/
+    /// mapping gap can only narrow, never widen, disclosure. The bridge now owns the
+    /// namespace-ownership predicate (it holds `site_namespace`), so query-api no longer
+    /// re-derives "loom-owned" here. `External` (a genuinely foreign datasource) →
+    /// default-allow: it carries no loom-ACL'd data and is a source leaf.
     async fn is_readable(
         &self,
         subject: &SubjectId,
@@ -93,12 +91,8 @@ impl<'a> LineageVisibility<'a> {
         let target = match self.bridge.resolve(r) {
             ResolvedDataset::Table(t) => PolicyTarget::Table(t),
             ResolvedDataset::Type(ty) => PolicyTarget::Type(ty),
-            ResolvedDataset::External(dr) => {
-                // Fail-closed for internal-looking-but-unresolvable refs.
-                let loom_owned =
-                    dr.namespace == LOOM_DATASET_NAMESPACE || dr.namespace == LOOM_TYPE_NAMESPACE;
-                return Ok(!loom_owned);
-            }
+            ResolvedDataset::Unresolvable(_) => return Ok(false),
+            ResolvedDataset::External(_) => return Ok(true),
         };
         Ok(self.acl.check(subject, Action::Read, &target).await? == Decision::Allow)
     }
@@ -203,11 +197,15 @@ impl<'a> LineageVisibility<'a> {
             .await
     }
 
-    /// Redact denied refs *within* each event: drop any `DatasetRef` in `inputs`/
-    /// `outputs` the subject cannot read, keep the envelope. No row is dropped, so the
-    /// page shape and event cursor are untouched (the payoff of redact-within over
-    /// event-drop — it composes with the event-keyed cursor with zero pagination
-    /// interaction). The opaque `payload` is left verbatim (see spec Open questions).
+    /// Redact denied refs *within* each event and gate the opaque `payload`. Any
+    /// `DatasetRef` in `inputs`/`outputs` the subject cannot read is dropped, keeping
+    /// the envelope (no row is dropped, so the page shape and event cursor are
+    /// untouched). The `payload` is served verbatim **iff every typed ref was
+    /// readable**; if any ref was redacted it is replaced with `Value::Null`, because
+    /// loom's emitters embed dataset identifiers in the free-form `payload` and a
+    /// blocklist scrub of arbitrary JSON is fail-open by construction. A nulled payload
+    /// is indistinguishable from a stored-null one — it discloses nothing beyond what
+    /// the already-redacted `inputs`/`outputs` imply.
     pub async fn redact_events(
         &self,
         subject: &SubjectId,
@@ -216,8 +214,17 @@ impl<'a> LineageVisibility<'a> {
         let Page { items, next } = page;
         let mut out = Vec::with_capacity(items.len());
         for mut ev in items {
+            let inputs_len = ev.inputs.len();
+            let outputs_len = ev.outputs.len();
             ev.inputs = self.readable_only(subject, ev.inputs).await?;
             ev.outputs = self.readable_only(subject, ev.outputs).await?;
+            // A length shrink is exactly "a ref was denied" because `readable_only`
+            // filters without deduping (cardinality per ref is preserved). If it ever
+            // deduped, the gate would only over-null (fail-safe), never leak.
+            if ev.inputs.len() != inputs_len || ev.outputs.len() != outputs_len {
+                // Some ref was denied ⇒ the payload may name it in free-form text. Gate.
+                ev.payload = serde_json::Value::Null;
+            }
             out.push(ev);
         }
         Ok(Page { items: out, next })

@@ -138,28 +138,25 @@ fn reverse_external_datasources_are_not_rejected() {
 }
 
 #[test]
-fn reverse_malformed_under_loom_namespace_degrades_to_external() {
-    let n = s3_naming();
+fn reverse_malformed_under_owned_namespace_is_unresolvable() {
+    // A ref whose namespace is loom-owned (logical "loom"/"loom:type" OR this
+    // deployment's site_namespace) but whose name fails the parse must fail closed —
+    // Unresolvable, NOT External (which would default-allow and widen disclosure).
+    let n = s3_naming(); // site_namespace = "s3://bucket"
     for bad in [
-        dr("loom", "nodot"),        // no schema separator
-        dr("loom", ".x"),           // empty schema
-        dr("loom", "x."),           // empty table
-        dr("s3://bucket", "a.b.c"), // ambiguous multi-dot under storage namespace
+        dr("loom", "nodot"),           // logical table ns, no schema separator
+        dr("loom", ".x"),              // empty schema
+        dr("loom", "x."),              // empty table
+        dr("loom:type", ""),           // logical type ns, empty name
+        dr("s3://bucket", "a.b.c"),    // site ns, ambiguous multi-dot
+        dr("s3://bucket", "Customer"), // site ns, no separator (type-shaped, tables only)
     ] {
-        assert_eq!(n.resolve(&bad), ResolvedDataset::External(bad.clone()));
+        assert_eq!(
+            n.resolve(&bad),
+            ResolvedDataset::Unresolvable(bad.clone()),
+            "owned-namespace malformed ref must fail closed"
+        );
     }
-}
-
-#[test]
-fn reverse_storage_namespace_with_type_shaped_name_is_external() {
-    // The storage namespace only carries tables; a bare identifier (no dot) does not
-    // parse as schema.table, and types live on the logical namespace, so this is
-    // External, not Type.
-    let n = s3_naming();
-    assert_eq!(
-        n.resolve(&dr("s3://bucket", "Customer")),
-        ResolvedDataset::External(dr("s3://bucket", "Customer"))
-    );
 }
 
 #[test]
