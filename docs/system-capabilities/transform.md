@@ -42,8 +42,9 @@ schema-inference failure, registration errors, conformance violations, a
 commit that produces no snapshot) abandon the job; transient failures (wire
 RPC errors, Flight fetch races against compaction, object-store write faults)
 retry with `WorkerTuning::backoff` — the same capped exponential every other
-worker job uses, closing the old per-handler backoff drift (`2s`-base formula;
-`#fut-transform-backoff-unify`, resolved by #PRNUM). A mid-handler drop race
+worker job uses, closing the old per-handler backoff drift (the old crate's
+`2^attempts`s formula, 64s cap; `#fut-transform-backoff-unify`, resolved by
+#PRNUM). A mid-handler drop race
 (an input vanishing between existence check and file read) surfaces as a
 transient wire error whose retry re-lists cleanly and converges to the
 unknown-input abandon. A panicking handler is backstopped by the worker loop's

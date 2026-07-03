@@ -232,6 +232,7 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   The binaries ship as a minimal `serve` with no graceful shutdown/signal handling, no TLS, and no connection-pool tuning knobs.
 - [ ] **YAML config-file format** `{#fut-config-yaml-format area:deploy status:deferred from:2026-06-25-config-seam-unification-design pr:- spec:-}`
   `#road-config-seam-unification` loads the structured config file as JSON (`serde_json`, already vendored). Adding YAML authoring is purely additive (JSON ⊂ YAML) but needs a *maintained* YAML crate — the de-facto `serde_yaml` is archived upstream — so the crate choice is its own decision, deferred until a deployment actually wants to hand-author YAML ConfigMaps.
+
 ## test
 
 - [ ] **Actual-binary subprocess smoke** `{#fut-binary-subprocess-smoke area:test status:deferred from:2026-06-23-e2e-http-client-design pr:- spec:-}`

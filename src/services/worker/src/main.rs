@@ -5,8 +5,7 @@
 //! compaction). Connects to the engine over a UDS and runs the generic
 //! `control_plane_worker::Worker<GrpcQueueClient>` loop, draining `flush_table`,
 //! `gc_table`, `compact_table`, `transform`, and `typed-transform` jobs (dispatched
-//! by kind). No
-//! Postgres in the dep closure — the engine owns PG.
+//! by kind). No Postgres in the dep closure — the engine owns PG.
 
 use std::sync::Arc;
 use std::time::Duration;

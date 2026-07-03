@@ -233,9 +233,13 @@ fixture round-trip that lands and reads a table with `s3://` mirror paths
 (#182). Paths are opaque URLs end to end. Two path defects on transform
 chains were fixed: `write_dataset` output is absolutized at write time via
 `absolute_data_files` so relative paths can never reach the mirror, and
-`scan_table` is scheme-aware — an absolute `FileRef` path is used verbatim
-with its derived object store registered, sharing one `object_store_url_for`
-resolver with the serving engine (#245).
+`scan_table` was made scheme-aware — an absolute `FileRef` path used
+verbatim with its derived object store registered, sharing one
+`object_store_url_for` resolver with the serving engine (#245). With
+transforms on the engine wire, `scan_table` no longer sits on a production
+path — the wire path registers Flight-fetched batches via `register_batches`
+— so it survives as datafusion-io's tested read helper, while
+`object_store_url_for` remains the resolver the serving engine shares.
 
 ## GC
 

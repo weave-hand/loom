@@ -54,8 +54,9 @@ pub async fn scan_table(
     // promoted by `absolute_data_files`: `file://…`/`s3://bucket/…`). `FileRef` drops
     // the authoritative `path_is_relative` flag on read-back, so infer from the path
     // string: a `"://"` marks an absolute URI. Register each distinct object store once.
-    // (`scan_table` is never called with an empty `files` slice — both callers guard it
-    // — so registering inside the loop loses no store the old unconditional register did.)
+    // (Callers must not pass an empty `files` slice — an empty input registers via
+    // `register_empty_table` instead — so registering inside the loop loses no store the
+    // old unconditional register did.)
     let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut paths: Vec<ListingTableUrl> = Vec::with_capacity(files.len());
     for f in files {

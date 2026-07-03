@@ -409,6 +409,183 @@ async fn empty_input_counts_zero() {
     );
 }
 
+/// Two DISTINCT inputs join over the wire: each table registers under its own name
+/// and the SQL joins them into a third table. The same job also pins WriteConfig
+/// threading (`ctx.write_cfg` reaches `write_dataset`): a tiny
+/// `target_file_size_bytes` makes `estimate_partitions` clamp to `max_files`, so the
+/// parquet sink splits the result across >= 2 data files. The join result is > one
+/// 8192-row DataFusion batch, so `df.collect()` yields >= 2 batches BY CONSTRUCTION
+/// (nothing in the plan merges beyond `batch_size`) for the sink to round-robin —
+/// independent of host CPU count / `target_partitions`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transform_joins_two_inputs() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    // orders: ids 1..=9000, customers: ids 2..=9001 — the join keeps the
+    // intersection 2..=9000 (8999 rows, > one 8192-row batch).
+    let orders = tref("main", "orders");
+    let (schema, batches) = ipc_body(&(1..=9000).collect::<Vec<i64>>());
+    land(
+        &pool,
+        &catalog,
+        &orders,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&orders),
+    )
+    .await
+    .expect("land orders");
+
+    let customers = tref("main", "customers");
+    let (schema, batches) = ipc_body(&(2..=9001).collect::<Vec<i64>>());
+    land(
+        &pool,
+        &catalog,
+        &customers,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&customers),
+    )
+    .await
+    .expect("land customers");
+
+    // Tune the ctx's write config: a 1-byte target forces the partition estimate to
+    // its `max_files` clamp, so the sink opens multiple writers.
+    let mut ctx = build_ctx(&eng.sock, &wh_str).await;
+    ctx.write_cfg = datafusion_io::WriteConfig {
+        target_file_size_bytes: 1,
+        max_files: 8,
+        compression_factor: 1.0,
+    };
+
+    let joined = tref("main", "joined");
+    handle_transform(
+        &ctx,
+        make_transform_job(
+            &[orders.clone(), customers.clone()],
+            &joined,
+            "SELECT o.id FROM orders o JOIN customers c ON o.id = c.id",
+            OutputMode::Append,
+        ),
+    )
+    .await
+    .expect("join transform");
+
+    let ice = IcebergCatalog::new(pool);
+    let snap = ice
+        .current_snapshot(&joined)
+        .await
+        .expect("output snapshot");
+    let ids = read_i64s(&ctx.flight, &ice, &joined, snap.id).await;
+    assert_eq!(
+        ids,
+        (2..=9000).collect::<HashSet<i64>>(),
+        "the join kept exactly the ids present in BOTH inputs"
+    );
+
+    // WriteConfig threading: the tuned tiny target split the committed output.
+    let listed = ctx
+        .control
+        .list_files("main".into(), "joined".into())
+        .await
+        .expect("list output files");
+    assert!(
+        listed.files.len() >= 2,
+        "the tuned WriteConfig split the output across multiple files (got {})",
+        listed.files.len()
+    );
+}
+
+/// `SELECT *` over a zero-file input commits an EMPTY output rather than erroring:
+/// `write_dataset` of a zero-row result yields zero files, and the commit's empty
+/// append still creates the table and allocates a snapshot — so ListFiles shows a
+/// LIVE table (declared columns present) with an empty file list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_input_select_star_commits_empty_output() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    // Zero-file fixture via a directly-constructed Iceberg control plane.
+    let icp = IcebergControlPlane::new(cp, local_sql_catalog(fx.pg_dsn(&db), &wh_str).await);
+    let input = tref("main", "empty_in");
+    create_empty_table(&icp, &input, &columns()).await;
+
+    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let out = tref("main", "empty_out");
+    let job = make_transform_job(
+        std::slice::from_ref(&input),
+        &out,
+        "SELECT * FROM empty_in",
+        OutputMode::Append,
+    );
+    handle_transform(&ctx, job)
+        .await
+        .expect("SELECT * over the empty input commits an empty output, not an error");
+
+    // Live table, zero files: `columns` present on ListFiles is the table-exists
+    // discriminator; the file list is empty (a row-less snapshot).
+    let listed = ctx
+        .control
+        .list_files("main".into(), "empty_out".into())
+        .await
+        .expect("list output files");
+    let cols = listed
+        .columns
+        .expect("the empty output is a live table (declared columns present)");
+    assert_eq!(
+        cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        vec!["id"],
+        "the output carries the input's declared column"
+    );
+    assert!(
+        listed.files.is_empty(),
+        "the empty passthrough committed zero data files, got {:?}",
+        listed.files
+    );
+}
+
 /// Chaining: a second transform reads the FIRST transform's output. Landed inputs
 /// carry warehouse-relative file paths, but a transform's own output is committed
 /// with ABSOLUTE `file://` URIs (`absolute_data_files`) — so registering `main.dst`
