@@ -179,8 +179,16 @@ impl Ontology for WireOntology {
         Err(read_only("define_link"))
     }
 
+    async fn delete_link(&self, _from: &TypeName, _name: &str) -> Result<()> {
+        Err(read_only("delete_link"))
+    }
+
     async fn define_action(&self, _action: ActionDef) -> Result<()> {
         Err(read_only("define_action"))
+    }
+
+    async fn delete_action(&self, _name: &ActionName) -> Result<()> {
+        Err(read_only("delete_action"))
     }
 
     async fn define_vector_index(&self, _def: VectorIndexDef) -> Result<()> {

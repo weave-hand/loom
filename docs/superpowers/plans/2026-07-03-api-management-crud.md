@@ -186,7 +186,7 @@ async fn delete_action(&self, name: &ActionName) -> Result<()>;
 ```
 Both idempotent. Definitions only — physical columns/join tables untouched.
 
-- [ ] **Step 1: Failing contract asserts** (in `ontology_contract`, after the `list_actions` block; reuse the in-scope `Widget` type / `createWidget` action and the link the contract defines — read the fn):
+- [x] **Step 1: Failing contract asserts** (in `ontology_contract`, after the `list_actions` block; reuse the in-scope `Widget` type / `createWidget` action and the link the contract defines — read the fn):
 ```rust
 // delete_link: gone from reads, idempotent, re-definable.
 // (use the actual in-scope link: its `from` type and name — read the contract)
@@ -250,11 +250,11 @@ assert!(
 (`create_widget_again`: capture the ActionDef via `get_action` BEFORE deleting.)
 **Placement caution:** these asserts REMOVE definitions earlier asserts created — insert them at the END of the contract (after every assert that still reads them), or define+delete fresh `mgmt-*` names instead. Read the tail of the fn first and choose whichever keeps every existing assert green.
 
-- [ ] **Step 2: Red** (same command shape, `//src/control-plane/memory:ontology`). Expect E0599.
+- [x] **Step 2: Red** (same command shape, `//src/control-plane/memory:ontology`). Expect E0599.
 
-- [ ] **Step 3: Implement.** Memory: `ont.links.retain(|l| !(l.from == *from && l.name == name)); Ok(())` and `ont.actions.remove(&name.0); Ok(())`. Postgres: `delete from ontology.link where from_type = $1 and name = $2` and `delete from ontology.action where name = $1` (steps/params/assignments cascade per migration 0030). WireOntology: `Err(read_only("delete_link"))` / `Err(read_only("delete_action"))` beside the `define_*` rejections. `MissingType` stub: `unreachable!("not exercised by resolve_governed")` bodies.
+- [x] **Step 3: Implement.** Memory: `ont.links.retain(|l| !(l.from == *from && l.name == name)); Ok(())` and `ont.actions.remove(&name.0); Ok(())`. Postgres: `delete from ontology.link where from_type = $1 and name = $2` and `delete from ontology.action where name = $1` (steps/params/assignments cascade per migration 0030). WireOntology: `Err(read_only("delete_link"))` / `Err(read_only("delete_action"))` beside the `define_*` rejections. `MissingType` stub: `unreachable!("not exercised by resolve_governed")` bodies.
 
-- [ ] **Step 4: sqlx-prepare; Step 5: green** (`//src/control-plane/... //src/services/query-api:resolve-governed //src/services/query-api:wire-governance-e2e`); **Step 6: prek; commit** `feat(ontology): delete_link + delete_action across adapters`.
+- [x] **Step 4: sqlx-prepare; Step 5: green** (`//src/control-plane/... //src/services/query-api:resolve-governed //src/services/query-api:wire-governance-e2e`); **Step 6: prek; commit** `feat(ontology): delete_link + delete_action across adapters`.
 
 ---
 

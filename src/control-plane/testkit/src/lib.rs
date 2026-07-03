@@ -1390,6 +1390,79 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.define_vector_index(missing).await.is_err(),
         "missing property rejected"
     );
+
+    // --- delete_link: gone from reads, idempotent, re-definable ---
+    // Uses the `customer` link (Order -> Customer) defined above; fetched before
+    // deletion so the exact definition can be re-defined afterwards.
+    let customer_link_def = o
+        .links(&tn("Order"), PageReq::unbounded())
+        .await
+        .expect("links before delete")
+        .items
+        .into_iter()
+        .find(|l| l.name == "customer")
+        .expect("customer link in scope");
+    o.delete_link(&tn("Order"), "customer")
+        .await
+        .expect("delete_link");
+    assert!(
+        !o.links(&tn("Order"), PageReq::unbounded())
+            .await
+            .expect("links after delete")
+            .items
+            .iter()
+            .any(|l| l.name == "customer"),
+        "deleted link no longer listed"
+    );
+    o.delete_link(&tn("Order"), "customer")
+        .await
+        .expect("delete_link is idempotent");
+    o.define_link(customer_link_def.clone())
+        .await
+        .expect("re-define link after delete");
+    assert!(
+        o.links(&tn("Order"), PageReq::unbounded())
+            .await
+            .expect("links after re-define")
+            .items
+            .iter()
+            .any(|l| l.name == "customer"),
+        "re-defined link listed again"
+    );
+
+    // --- delete_action: gone from get + list, idempotent, re-definable ---
+    let create_widget_again = o
+        .get_action(&ActionName("createWidget".into()))
+        .await
+        .expect("fetch action before delete");
+    o.delete_action(&ActionName("createWidget".into()))
+        .await
+        .expect("delete_action");
+    assert!(matches!(
+        o.get_action(&ActionName("createWidget".into())).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(
+        !o.list_actions(PageReq::unbounded())
+            .await
+            .expect("list after delete")
+            .items
+            .iter()
+            .any(|a| a.name.0 == "createWidget"),
+        "deleted action not listed"
+    );
+    o.delete_action(&ActionName("createWidget".into()))
+        .await
+        .expect("delete_action is idempotent");
+    o.define_action(create_widget_again)
+        .await
+        .expect("re-define action after delete");
+    assert!(
+        o.get_action(&ActionName("createWidget".into()))
+            .await
+            .is_ok(),
+        "re-defined action readable"
+    );
 }
 
 /// Contract for the `Acl` ops. `a` must be freshly empty.

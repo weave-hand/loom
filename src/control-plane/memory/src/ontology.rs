@@ -53,6 +53,15 @@ impl Ontology for MemoryControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn delete_link(&self, from: &TypeName, name: &str) -> Result<()> {
+        self.ontology
+            .lock()
+            .links
+            .retain(|l| !(l.from == *from && l.name == name));
+        Ok(())
+    }
+
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
         self.ontology
             .lock()
@@ -115,6 +124,12 @@ impl Ontology for MemoryControlPlane {
             )));
         }
         ont.actions.insert(action.name.0.clone(), action);
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn delete_action(&self, name: &ActionName) -> Result<()> {
+        self.ontology.lock().actions.remove(&name.0);
         Ok(())
     }
 

@@ -146,6 +146,19 @@ impl Ontology for PgControlPlane {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn delete_link(&self, from: &TypeName, name: &str) -> Result<()> {
+        sqlx::query!(
+            "delete from ontology.link where from_type = $1 and name = $2",
+            from.0,
+            name,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
         let row = sqlx::query!(
             "select table_schema, table_name, identity from ontology.object_type where name = $1",
@@ -383,6 +396,16 @@ impl Ontology for PgControlPlane {
             }
         }
         tx.commit().await.map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn delete_action(&self, name: &ActionName) -> Result<()> {
+        // Steps/params/assignments cascade from the action row (0030/0009/0025).
+        sqlx::query!("delete from ontology.action where name = $1", name.0)
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
         Ok(())
     }
 
