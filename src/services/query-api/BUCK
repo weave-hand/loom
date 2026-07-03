@@ -10,6 +10,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/services/engine-wire:engine-wire",
+        "//src/services/lineage-naming:lineage-naming",
         "//src/services/runtime:runtime",
         "//src/loom-config:loom-config",
         "//third-party:arrow",
@@ -1600,6 +1601,25 @@ loom_fixture_test(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+rust_test(
+    name = "lineage-visibility",
+    crate = "lineage_visibility",
+    srcs = ["tests/lineage_visibility.rs"],
+    crate_root = "tests/lineage_visibility.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//src/services/lineage-naming:lineage-naming",
+        "//src/services/store-config:store-config",
         "//third-party:serde_json",
         "//third-party:time",
         "//third-party:tokio",
