@@ -41,13 +41,13 @@ fn widget(props: Vec<PropertyDef>) -> ObjectType {
 }
 
 fn action(params: Vec<ParamDef>) -> ActionDef {
-    ActionDef {
-        name: ActionName("createWidget".into()),
-        target: TypeName("Widget".into()),
-        parameters: params,
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    }
+    ActionDef::single_step(
+        ActionName("createWidget".into()),
+        TypeName("Widget".into()),
+        ActionKind::Insert,
+        params,
+        vec![],
+    )
 }
 
 fn msg(err: &ActionError) -> String {
@@ -189,13 +189,13 @@ fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
 }
 
 fn insert_action(params: Vec<ParamDef>, assignments: Vec<Assignment>) -> ActionDef {
-    ActionDef {
-        name: ActionName("a".into()),
-        target: TypeName("Gadget".into()),
-        parameters: params,
-        kind: ActionKind::Insert,
+    ActionDef::single_step(
+        ActionName("a".into()),
+        TypeName("Gadget".into()),
+        ActionKind::Insert,
+        params,
         assignments,
-    }
+    )
 }
 
 fn is_misconfigured(r: Result<(), ActionError>) -> bool {
@@ -307,13 +307,13 @@ fn gadget_with_total() -> ObjectType {
 fn valid_expression_conforms() {
     // total = id + 1 : Long, assignable to the Double `total` property by widening -> conforms.
     // (Only the required `id` param is declared; no stray param.)
-    let a = ActionDef {
-        name: ActionName("a".into()),
-        target: TypeName("Gadget".into()),
-        parameters: vec![pb("id", "Long", true, None)],
-        kind: ActionKind::Insert,
-        assignments: vec![Assignment::expr("total", "id + 1")],
-    };
+    let a = ActionDef::single_step(
+        ActionName("a".into()),
+        TypeName("Gadget".into()),
+        ActionKind::Insert,
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("total", "id + 1")],
+    );
     check_conformance(&a, &gadget_with_total()).expect("computed assignment conforms");
 }
 
@@ -378,16 +378,16 @@ fn unknown_function_or_arity_rejected() {
 #[test]
 fn forward_property_ref_rejected() {
     // status references @total, but total is assigned AFTER status here (declared order).
-    let a = ActionDef {
-        name: ActionName("a".into()),
-        target: TypeName("Gadget".into()),
-        parameters: vec![pb("id", "Long", true, None)],
-        kind: ActionKind::Insert,
-        assignments: vec![
+    let a = ActionDef::single_step(
+        ActionName("a".into()),
+        TypeName("Gadget".into()),
+        ActionKind::Insert,
+        vec![pb("id", "Long", true, None)],
+        vec![
             Assignment::expr("status", "if @total > 1.0 then \"hi\" else \"lo\""),
             Assignment::expr("total", "id + 1"),
         ],
-    };
+    );
     assert!(is_misconfigured(check_conformance(
         &a,
         &gadget_with_total()
@@ -397,15 +397,15 @@ fn forward_property_ref_rejected() {
 #[test]
 fn earlier_property_ref_conforms() {
     // total assigned first, then status references @total — resolved-earlier, OK.
-    let a = ActionDef {
-        name: ActionName("a".into()),
-        target: TypeName("Gadget".into()),
-        parameters: vec![pb("id", "Long", true, None)],
-        kind: ActionKind::Insert,
-        assignments: vec![
+    let a = ActionDef::single_step(
+        ActionName("a".into()),
+        TypeName("Gadget".into()),
+        ActionKind::Insert,
+        vec![pb("id", "Long", true, None)],
+        vec![
             Assignment::expr("total", "id + 1"),
             Assignment::expr("status", "if @total > 1.0 then \"hi\" else \"lo\""),
         ],
-    };
+    );
     check_conformance(&a, &gadget_with_total()).expect("earlier @prop ref conforms");
 }

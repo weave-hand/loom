@@ -269,23 +269,34 @@ impl Ontology for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_action(&self, action: ActionDef) -> Result<()> {
+        // Single-step schema (unchanged): persist the sole step to the existing
+        // action/action_param/action_assignment tables. Multi-step persistence lands in a
+        // later migration — reject it defensively here (a stopgap the migration removes).
+        if action.steps.len() > 1 {
+            return Err(ControlPlaneError::Validation(
+                "multi-step action persistence lands in a later migration".into(),
+            ));
+        }
+        let step = action.steps.first().ok_or_else(|| {
+            ControlPlaneError::Validation(format!("action `{}` has no steps", action.name.0))
+        })?;
         let mut tx = self.pool.begin().await.map_err(backend)?;
         // The target type must exist. The explicit check makes the error a clear
         // `Validation` (matching the memory fake) instead of a raw FK backend error;
         // the FK (0009_actions.sql) stays as the atomic backstop inside this tx.
-        let target_exists = object_type_exists(&mut *tx, &action.target.0).await?;
+        let target_exists = object_type_exists(&mut *tx, &step.target.0).await?;
         if !target_exists {
             return Err(ControlPlaneError::Validation(format!(
                 "action `{}` references unknown target type `{}`",
-                action.name.0, action.target.0
+                action.name.0, step.target.0
             )));
         }
         sqlx::query!(
             "insert into ontology.action (name, target_type, kind) values ($1, $2, $3) \
              on conflict (name) do update set target_type = excluded.target_type, kind = excluded.kind",
             action.name.0,
-            action.target.0,
-            action.kind.as_str(),
+            step.target.0,
+            step.kind.as_str(),
         )
         .execute(&mut *tx)
         .await
@@ -297,7 +308,7 @@ impl Ontology for PgControlPlane {
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
-        for (i, p) in action.parameters.iter().enumerate() {
+        for (i, p) in step.parameters.iter().enumerate() {
             sqlx::query!(
                 "insert into ontology.action_param (action_name, ordinal, name, ty, required, binds) \
                  values ($1, $2, $3, $4, $5, $6)",
@@ -319,7 +330,7 @@ impl Ontology for PgControlPlane {
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
-        for (i, a) in action.assignments.iter().enumerate() {
+        for (i, a) in step.assignments.iter().enumerate() {
             let (value, expr): (Option<serde_json::Value>, Option<String>) = match &a.source {
                 AssignmentSource::Const(v) => (Some(v.clone()), None),
                 AssignmentSource::Expr(s) => (None, Some(s.clone())),
@@ -366,10 +377,13 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(ActionDef {
-            name: name.clone(),
-            target: TypeName(row.target_type),
-            parameters: params
+        // Single-step schema: the existing columns describe exactly one step, reconstructed
+        // via `single_step` (byte-compatible with the pre-steps flat shape).
+        Ok(ActionDef::single_step(
+            name.clone(),
+            TypeName(row.target_type),
+            row.kind.parse()?,
+            params
                 .into_iter()
                 .map(|r| ParamDef {
                     name: r.name,
@@ -378,8 +392,7 @@ impl Ontology for PgControlPlane {
                     binds: r.binds,
                 })
                 .collect(),
-            kind: row.kind.parse()?,
-            assignments: assignment_rows
+            assignment_rows
                 .into_iter()
                 .map(|r| Assignment {
                     property: r.property,
@@ -393,7 +406,7 @@ impl Ontology for PgControlPlane {
                     },
                 })
                 .collect(),
-        })
+        ))
     }
 
     async fn define_vector_index(&self, def: VectorIndexDef) -> Result<()> {

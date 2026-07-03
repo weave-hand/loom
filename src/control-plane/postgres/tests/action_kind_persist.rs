@@ -28,18 +28,18 @@ async fn action_kind_round_trips() {
     .await
     .expect("define Widget type");
 
-    cp.define_action(ActionDef {
-        name: ActionName("delWidget".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![ParamDef {
+    cp.define_action(ActionDef::single_step(
+        ActionName("delWidget".into()),
+        TypeName("Widget".into()),
+        ActionKind::Delete,
+        vec![ParamDef {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
             binds: None,
         }],
-        kind: ActionKind::Delete,
-        assignments: vec![],
-    })
+        vec![],
+    ))
     .await
     .expect("define Delete action");
 
@@ -47,5 +47,5 @@ async fn action_kind_round_trips() {
         .get_action(&ActionName("delWidget".into()))
         .await
         .expect("get_action");
-    assert_eq!(got.kind, ActionKind::Delete);
+    assert_eq!(got.steps[0].kind, ActionKind::Delete);
 }

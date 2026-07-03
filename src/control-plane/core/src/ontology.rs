@@ -477,24 +477,120 @@ impl Assignment {
     }
 }
 
-/// A named ontology operation. Slice-1 semantics: insert/update/delete one instance of
-/// `target`. Parameters are mapped onto the target's properties (via `ParamDef.binds`), and
-/// `assignments` fill properties with declared constants when no parameter supplies them.
+/// One step of an [`ActionDef`]: a single-target mutation. `bind` names the step's
+/// output row so later steps can reference its properties (`@order.id`). Slice-1
+/// `ParamDef.binds` and slice-2 `Assignment` live inside a step unchanged.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ActionDef {
-    pub name: ActionName,
+pub struct ActionStep {
     pub target: TypeName,
-    /// Ordered.
-    pub parameters: Vec<ParamDef>,
-    /// The mutation kind. `Insert` (part-1 default) creates; `Update`/`Delete` mutate
-    /// one existing object by `target`'s declared `identity`.
     pub kind: ActionKind,
-    /// Ordered constant property assignments (the default/fixed-value case).
+    #[serde(default)]
+    pub parameters: Vec<ParamDef>,
     #[serde(default)]
     pub assignments: Vec<Assignment>,
+    /// Names this step's resolved row for cross-step references. `None` ⇒ not bindable.
+    #[serde(default)]
+    pub bind: Option<String>,
+}
+
+/// A named action: an ordered list of single-target mutation [`ActionStep`]s committed
+/// in one transaction. A single-step action is byte-compatible with the pre-steps flat
+/// shape (see the `ActionDefRepr` serde bridge).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "ActionDefRepr", into = "ActionDefRepr")]
+pub struct ActionDef {
+    pub name: ActionName,
+    pub steps: Vec<ActionStep>,
+}
+
+/// Wire bridge: a single-step, bind-less action reads/writes the legacy flat JSON;
+/// anything else uses the explicit `steps` array. `#[serde(untagged)]` tries `Flat`
+/// first on read, so legacy `{name,target,kind,parameters,assignments}` still parses.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum ActionDefRepr {
+    Flat {
+        name: ActionName,
+        target: TypeName,
+        #[serde(default)]
+        kind: ActionKind,
+        #[serde(default)]
+        parameters: Vec<ParamDef>,
+        #[serde(default)]
+        assignments: Vec<Assignment>,
+    },
+    Stepped {
+        name: ActionName,
+        steps: Vec<ActionStep>,
+    },
+}
+
+impl From<ActionDefRepr> for ActionDef {
+    fn from(r: ActionDefRepr) -> Self {
+        match r {
+            ActionDefRepr::Flat {
+                name,
+                target,
+                kind,
+                parameters,
+                assignments,
+            } => ActionDef::single_step(name, target, kind, parameters, assignments),
+            ActionDefRepr::Stepped { name, steps } => ActionDef { name, steps },
+        }
+    }
+}
+
+impl From<ActionDef> for ActionDefRepr {
+    fn from(a: ActionDef) -> Self {
+        // A single bind-less step round-trips to the flat form (byte-compat). `into()`
+        // consumes `a`, so move the single step out before matching on its `bind`.
+        let mut steps = a.steps;
+        let single = if steps.len() == 1 {
+            match steps.first() {
+                Some(s) if s.bind.is_none() => steps.pop(),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        match single {
+            Some(s) => ActionDefRepr::Flat {
+                name: a.name,
+                target: s.target,
+                kind: s.kind,
+                parameters: s.parameters,
+                assignments: s.assignments,
+            },
+            None => ActionDefRepr::Stepped {
+                name: a.name,
+                steps,
+            },
+        }
+    }
 }
 
 impl ActionDef {
+    /// Build a one-step action from the pre-steps flat shape (the implicit-step migration).
+    #[must_use]
+    pub fn single_step(
+        name: ActionName,
+        target: TypeName,
+        kind: ActionKind,
+        parameters: Vec<ParamDef>,
+        assignments: Vec<Assignment>,
+    ) -> Self {
+        ActionDef {
+            name,
+            steps: vec![ActionStep {
+                target,
+                kind,
+                parameters,
+                assignments,
+                bind: None,
+            }],
+        }
+    }
+
     /// Start a fluent [`ActionDefBuilder`] for an action named `name` targeting
     /// the type `target`, of mutation kind `kind`. Plain construction — no
     /// validation, no I/O (that stays with [`Ontology::define_action`]).
@@ -505,7 +601,7 @@ impl ActionDef {
     ///     .param_req("id", "Long")
     ///     .param_req("qty", "Long")
     ///     .done();
-    /// assert_eq!(update.parameters.len(), 2);
+    /// assert_eq!(update.steps.len(), 1);
     /// ```
     pub fn build(
         name: impl Into<String>,
@@ -513,50 +609,57 @@ impl ActionDef {
         kind: ActionKind,
     ) -> ActionDefBuilder {
         ActionDefBuilder {
-            inner: ActionDef {
-                name: ActionName(name.into()),
+            name: ActionName(name.into()),
+            steps: vec![ActionStep {
                 target: TypeName(target.into()),
-                parameters: Vec::new(),
                 kind,
+                parameters: Vec::new(),
                 assignments: Vec::new(),
-            },
+                bind: None,
+            }],
         }
     }
 }
 
 /// Fluent constructor for [`ActionDef`] — see [`ActionDef::build`]. Methods
-/// append in call order (`parameters`/`assignments` are ordered).
+/// append in call order onto the current (last) step; `step` opens a new step.
 #[derive(Clone, Debug)]
 pub struct ActionDefBuilder {
-    inner: ActionDef,
+    name: ActionName,
+    /// Always holds at least one open step (seeded by [`ActionDef::build`]).
+    steps: Vec<ActionStep>,
 }
 
 impl ActionDefBuilder {
     /// Append an optional (`required: false`) parameter binding the property of
-    /// the same name (`binds: None`).
+    /// the same name (`binds: None`) to the current step.
     pub fn param(mut self, name: impl Into<String>, ty: impl Into<String>) -> Self {
-        self.inner.parameters.push(ParamDef {
-            name: name.into(),
-            ty: ty.into(),
-            required: false,
-            binds: None,
-        });
+        if let Some(s) = self.steps.last_mut() {
+            s.parameters.push(ParamDef {
+                name: name.into(),
+                ty: ty.into(),
+                required: false,
+                binds: None,
+            });
+        }
         self
     }
 
-    /// Append a required parameter binding the property of the same name.
+    /// Append a required parameter binding the property of the same name to the current step.
     pub fn param_req(mut self, name: impl Into<String>, ty: impl Into<String>) -> Self {
-        self.inner.parameters.push(ParamDef {
-            name: name.into(),
-            ty: ty.into(),
-            required: true,
-            binds: None,
-        });
+        if let Some(s) = self.steps.last_mut() {
+            s.parameters.push(ParamDef {
+                name: name.into(),
+                ty: ty.into(),
+                required: true,
+                binds: None,
+            });
+        }
         self
     }
 
     /// Append a parameter renamed away from the property it writes
-    /// ([`ParamDef::binds`] = `Some(binds)`) — the full [`ParamDef`] surface.
+    /// ([`ParamDef::binds`] = `Some(binds)`) to the current step — the full [`ParamDef`] surface.
     pub fn param_bound(
         mut self,
         name: impl Into<String>,
@@ -564,36 +667,64 @@ impl ActionDefBuilder {
         required: bool,
         binds: impl Into<String>,
     ) -> Self {
-        self.inner.parameters.push(ParamDef {
-            name: name.into(),
-            ty: ty.into(),
-            required,
-            binds: Some(binds.into()),
-        });
+        if let Some(s) = self.steps.last_mut() {
+            s.parameters.push(ParamDef {
+                name: name.into(),
+                ty: ty.into(),
+                required,
+                binds: Some(binds.into()),
+            });
+        }
         self
     }
 
     /// Append a declared constant assignment filling `property` with `value` when no
-    /// parameter supplies it.
+    /// parameter supplies it, on the current step.
     pub fn assign(mut self, property: impl Into<String>, value: serde_json::Value) -> Self {
-        self.inner
-            .assignments
-            .push(Assignment::constant(property, value));
+        if let Some(s) = self.steps.last_mut() {
+            s.assignments.push(Assignment::constant(property, value));
+        }
         self
     }
 
-    /// Append a declared computed-expression assignment: `property` is set by evaluating
-    /// `source` (the closed grammar) over the action's inputs.
+    /// Append a declared computed-expression assignment on the current step: `property` is set
+    /// by evaluating `source` (the closed grammar) over the action's inputs.
     pub fn assign_expr(mut self, property: impl Into<String>, source: impl Into<String>) -> Self {
-        self.inner
-            .assignments
-            .push(Assignment::expr(property, source));
+        if let Some(s) = self.steps.last_mut() {
+            s.assignments.push(Assignment::expr(property, source));
+        }
+        self
+    }
+
+    /// Open a new step targeting `target` of mutation kind `kind`; subsequent
+    /// `param`/`assign` calls append to it.
+    #[must_use]
+    pub fn step(mut self, target: impl Into<String>, kind: ActionKind) -> ActionDefBuilder {
+        self.steps.push(ActionStep {
+            target: TypeName(target.into()),
+            kind,
+            parameters: Vec::new(),
+            assignments: Vec::new(),
+            bind: None,
+        });
+        self
+    }
+
+    /// Name the current step's resolved row so later steps can reference its properties.
+    #[must_use]
+    pub fn bind(mut self, name: impl Into<String>) -> Self {
+        if let Some(s) = self.steps.last_mut() {
+            s.bind = Some(name.into());
+        }
         self
     }
 
     /// Finish: the assembled [`ActionDef`].
     pub fn done(self) -> ActionDef {
-        self.inner
+        ActionDef {
+            name: self.name,
+            steps: self.steps,
+        }
     }
 }
 

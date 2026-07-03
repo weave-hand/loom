@@ -7,12 +7,12 @@ fn action_kind_defaults_to_insert() {
 
 #[test]
 fn action_def_carries_kind() {
-    let a = ActionDef {
-        name: ActionName("a".into()),
-        target: TypeName("T".into()),
-        parameters: vec![],
-        kind: ActionKind::Delete,
-        assignments: vec![],
-    };
-    assert_eq!(a.kind, ActionKind::Delete);
+    let a = ActionDef::single_step(
+        ActionName("a".into()),
+        TypeName("T".into()),
+        ActionKind::Delete,
+        vec![],
+        vec![],
+    );
+    assert_eq!(a.steps[0].kind, ActionKind::Delete);
 }

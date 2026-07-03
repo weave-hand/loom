@@ -54,9 +54,10 @@ pub use logical_type::{
     vector_list_field,
 };
 pub use ontology::{
-    ActionDef, ActionDefBuilder, ActionKind, ActionName, Aggregation, Assignment, AssignmentSource,
-    Cardinality, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType, ObjectTypeBuilder, Ontology,
-    ParamDef, PropertyDef, ResultExpectation, TypeName, VectorIndexDef,
+    ActionDef, ActionDefBuilder, ActionKind, ActionName, ActionStep, Aggregation, Assignment,
+    AssignmentSource, Cardinality, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType,
+    ObjectTypeBuilder, Ontology, ParamDef, PropertyDef, ResultExpectation, TypeName,
+    VectorIndexDef,
 };
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};

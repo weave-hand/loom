@@ -153,13 +153,13 @@ fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
 }
 
 fn insert(params: Vec<ParamDef>, assignments: Vec<Assignment>) -> ActionDef {
-    ActionDef {
-        name: ActionName("a".into()),
-        target: TypeName("Gadget".into()),
-        parameters: params,
-        kind: ActionKind::Insert,
+    ActionDef::single_step(
+        ActionName("a".into()),
+        TypeName("Gadget".into()),
+        ActionKind::Insert,
+        params,
         assignments,
-    }
+    )
 }
 
 #[test]

@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use control_plane_core::{
-    Action, ActionDef, ActionKind, ActionName, ConstraintViolation, ControlPlane,
+    Action, ActionDef, ActionKind, ActionName, ActionStep, ConstraintViolation, ControlPlane,
     ControlPlaneError, DatasetRef, Decision, EventType, LineageEvent, ObjectType, PageReq, Policy,
     PolicyTarget, PropertyDef, PropertyValidator, RunId, SubjectId, resolve_logical,
 };
@@ -117,7 +117,11 @@ fn request_now() -> time::PrimitiveDateTime {
 /// sees every problem at once. `Ok(())` if conformant, else `ActionError::Misconfigured`.
 pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
     use control_plane_core::ActionKind;
-    match action.kind {
+    let step = action
+        .steps
+        .first()
+        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
+    match step.kind {
         ActionKind::Insert => check_insert_conformance(action, target),
         ActionKind::Update => check_mutate_conformance(action, target, true),
         ActionKind::Delete => check_mutate_conformance(action, target, false),
@@ -133,7 +137,11 @@ fn check_param_property_types(
     violations: &mut Vec<String>,
 ) {
     let target_name = &target.name.0;
-    for p in &action.parameters {
+    let Some(step) = action.steps.first() else {
+        violations.push("action has no steps".into());
+        return;
+    };
+    for p in &step.parameters {
         let bound = p.binds_property();
         match target.properties.iter().find(|prop| prop.name == bound) {
             None if p.binds.is_none() => violations.push(format!(
@@ -172,14 +180,14 @@ fn check_param_property_types(
 /// which properties have been resolved *earlier* in declared assignment order (for the
 /// forward-`@ref` rule). Params seed the resolved set (they are resolved before any assignment).
 struct ConformanceEnv<'a> {
-    action: &'a ActionDef,
+    step: &'a ActionStep,
     target: &'a ObjectType,
     resolved: std::collections::HashSet<String>,
 }
 
 impl crate::expr::TypeEnv for ConformanceEnv<'_> {
     fn param_type(&self, name: &str) -> Option<control_plane_core::BaseType> {
-        self.action
+        self.step
             .parameters
             .iter()
             .find(|p| p.name == name)
@@ -248,13 +256,17 @@ fn check_assignments_and_binds(
     violations: &mut Vec<String>,
 ) {
     let target_name = &target.name.0;
+    let Some(step) = action.steps.first() else {
+        violations.push("action has no steps".into());
+        return;
+    };
     let mut bound: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let dup = |prop: &str| {
         format!(
             "property `{prop}` of type `{target_name}` is written by more than one parameter/constant"
         )
     };
-    for p in &action.parameters {
+    for p in &step.parameters {
         let prop = p.binds_property();
         if !bound.insert(prop) {
             violations.push(dup(prop));
@@ -264,16 +276,16 @@ fn check_assignments_and_binds(
     // Seed the resolved-property set with everything a param binds (params resolve before any
     // assignment); assignments then resolve in declared order.
     let mut env = ConformanceEnv {
-        action,
+        step,
         target,
-        resolved: action
+        resolved: step
             .parameters
             .iter()
             .map(|p| p.binds_property().to_string())
             .collect(),
     };
 
-    for a in &action.assignments {
+    for a in &step.assignments {
         match target
             .properties
             .iter()
@@ -308,6 +320,10 @@ fn check_assignments_and_binds(
 fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
     let target_name = &target.name.0;
     let mut violations: Vec<String> = Vec::new();
+    let step = action
+        .steps
+        .first()
+        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
 
     check_param_property_types(action, target, &mut violations);
     check_assignments_and_binds(action, target, &mut violations);
@@ -317,15 +333,15 @@ fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(
         if !prop.required {
             continue;
         }
-        let by_required_param = action
+        let by_required_param = step
             .parameters
             .iter()
             .any(|p| p.binds_property() == prop.name && p.required);
-        let by_assignment = action.assignments.iter().any(|a| a.property == prop.name);
+        let by_assignment = step.assignments.iter().any(|a| a.property == prop.name);
         if by_required_param || by_assignment {
             continue;
         }
-        if let Some(p) = action
+        if let Some(p) = step
             .parameters
             .iter()
             .find(|p| p.binds_property() == prop.name && !p.required)
@@ -364,6 +380,10 @@ fn check_mutate_conformance(
 ) -> Result<(), ActionError> {
     let target_name = &target.name.0;
     let mut violations: Vec<String> = Vec::new();
+    let step = action
+        .steps
+        .first()
+        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
 
     check_param_property_types(action, target, &mut violations);
     check_assignments_and_binds(action, target, &mut violations);
@@ -373,7 +393,7 @@ fn check_mutate_conformance(
             "type `{target_name}` has no declared identity; UPDATE/DELETE require one"
         )),
         Some(idprop) => {
-            match action
+            match step
                 .parameters
                 .iter()
                 .find(|p| p.binds_property() == idprop)
@@ -387,7 +407,7 @@ fn check_mutate_conformance(
                 Some(_) => {}
             }
             if !is_update {
-                for p in &action.parameters {
+                for p in &step.parameters {
                     if p.binds_property() != idprop {
                         violations.push(format!(
                             "DELETE on `{target_name}` takes only the identity parameter; `{}` is extra",
@@ -395,7 +415,7 @@ fn check_mutate_conformance(
                         ));
                     }
                 }
-                if !action.assignments.is_empty() {
+                if !step.assignments.is_empty() {
                     violations.push(format!(
                         "DELETE on `{target_name}` takes no constant assignments"
                     ));
@@ -437,13 +457,19 @@ pub async fn run_action(
             other => ActionError::ControlPlane(other),
         })?;
 
+    // Single-step semantics: the sole step carries target/kind. Task 3/5 iterate every step.
+    let step = action
+        .steps
+        .first()
+        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
+
     // 2. Resolve the target type (for its table + property logical types). A missing
     //    target here is a broken ActionDef (internal inconsistency), not a client error —
     //    propagate as a ControlPlane fault (-> 500), not a 404.
-    let target = deps.cp.ontology().get_type(&action.target).await?;
+    let target = deps.cp.ontology().get_type(&step.target).await?;
 
     // 3. Govern: deny-by-default Write on the target type. First live use of Action::Write.
-    let policy_target = PolicyTarget::Type(action.target.clone());
+    let policy_target = PolicyTarget::Type(step.target.clone());
     if deps
         .cp
         .acl()
@@ -462,7 +488,7 @@ pub async fn run_action(
 
     // 4. Dispatch on the mutation kind. The coarse Write gate + conformance above are shared;
     //    the fine-grained write policy and the actual write differ per kind.
-    match action.kind {
+    match step.kind {
         ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await,
         ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await,
         ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await,
@@ -558,7 +584,11 @@ async fn run_insert(
     deps: &ActionDeps<'_>,
 ) -> Result<(ObjectRows, RunId), ActionError> {
     let action_name = action.name.0.as_str();
-    let policy_target = PolicyTarget::Type(action.target.clone());
+    let step = action
+        .steps
+        .first()
+        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
+    let policy_target = PolicyTarget::Type(step.target.clone());
 
     // 4. Resolve the write row: parse+validate the typed params, remap each to its bound
     //    property, and append the action's constant assignments (property-keyed pairs).
@@ -631,7 +661,7 @@ async fn run_insert(
     let run_id = RunId(Uuid::new_v4());
     let event = LineageEvent::completed_with_run(
         run_id,
-        vec![DatasetRef::from(&action.target)],
+        vec![DatasetRef::from(&step.target)],
         serde_json::json!({ "action": action_name }),
     );
 
@@ -837,7 +867,11 @@ async fn run_mutate(
 ) -> Result<(ObjectRows, RunId), ActionError> {
     ensure_cow_supported(target)?;
     let action_name = action.name.0.as_str();
-    let policy_target = PolicyTarget::Type(action.target.clone());
+    let step = action
+        .steps
+        .first()
+        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
+    let policy_target = PolicyTarget::Type(step.target.clone());
 
     // The identity property + the supplied identity value (parsed/typed via the params).
     let idprop = target.identity.clone().ok_or_else(|| {
@@ -894,8 +928,8 @@ async fn run_mutate(
         run_id,
         event_type: EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
-        inputs: vec![DatasetRef::from(&action.target)],
-        outputs: vec![DatasetRef::from(&action.target)],
+        inputs: vec![DatasetRef::from(&step.target)],
+        outputs: vec![DatasetRef::from(&step.target)],
         payload: serde_json::json!({ "action": action_name, "op": op }),
     };
 

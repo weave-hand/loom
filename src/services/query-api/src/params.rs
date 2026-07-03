@@ -57,13 +57,21 @@ pub fn resolve_action_row(
     body: &serde_json::Map<String, Value>,
     now: time::PrimitiveDateTime,
 ) -> Result<Vec<(String, SqlValue)>, ParamError> {
+    // Single-step semantics: read the sole step's params/assignments. A well-formed action
+    // always carries ≥1 step (construction-impossible empty), reported as a loud error rather
+    // than a panic. Task 3/5 generalize this to iterate every step.
+    let step = action
+        .steps
+        .first()
+        .ok_or_else(|| ParamError::BadValue(action.name.0.clone(), "action has no steps".into()))?;
+
     // Param leg: reuse parse_params (rejects unknown keys, enforces required, coerces by
     // param.ty), then remap each pair from param name → bound property. parse_params preserves
-    // action.parameters order, so zipping the param refs onto its output is exact.
-    let param_pairs = parse_params(&action.parameters, body)?;
+    // step.parameters order, so zipping the param refs onto its output is exact.
+    let param_pairs = parse_params(&step.parameters, body)?;
 
     // param name -> value (for bare-identifier refs in expressions).
-    let param_env: std::collections::HashMap<String, SqlValue> = action
+    let param_env: std::collections::HashMap<String, SqlValue> = step
         .parameters
         .iter()
         .zip(&param_pairs)
@@ -71,18 +79,18 @@ pub fn resolve_action_row(
         .collect();
 
     let mut out: Vec<(String, SqlValue)> =
-        Vec::with_capacity(param_pairs.len() + action.assignments.len());
+        Vec::with_capacity(param_pairs.len() + step.assignments.len());
     // property name -> value (params' bound properties, then earlier assignments), for @refs.
     let mut prop_env: std::collections::HashMap<String, SqlValue> =
         std::collections::HashMap::new();
-    for (prm, (_, value)) in action.parameters.iter().zip(param_pairs) {
+    for (prm, (_, value)) in step.parameters.iter().zip(param_pairs) {
         prop_env.insert(prm.binds_property().to_string(), value.clone());
         out.push((prm.binds_property().to_string(), value));
     }
 
     // Assignment leg: constants coerce against the PROPERTY's logical type; expressions parse +
     // evaluate against the accumulating param/prop env, in declared order.
-    for a in &action.assignments {
+    for a in &step.assignments {
         let prop_ty = target
             .properties
             .iter()

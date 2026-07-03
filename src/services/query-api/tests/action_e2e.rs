@@ -66,10 +66,11 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
         .await
         .unwrap();
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createWidget".into()),
-            target: widget.clone(),
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("createWidget".into()),
+            widget.clone(),
+            ActionKind::Insert,
+            vec![
                 control_plane_core::ParamDef {
                     name: "id".into(),
                     ty: "Long".into(),
@@ -83,9 +84,8 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
                     binds: None,
                 },
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
+            vec![],
+        ))
         .await
         .unwrap();
 
@@ -268,18 +268,18 @@ async fn ungranted_subject_is_forbidden() {
         .await
         .unwrap();
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createWidget".into()),
-            target: widget.clone(),
-            parameters: vec![control_plane_core::ParamDef {
+        .define_action(ActionDef::single_step(
+            ActionName("createWidget".into()),
+            widget.clone(),
+            ActionKind::Insert,
+            vec![control_plane_core::ParamDef {
                 name: "id".into(),
                 ty: "Long".into(),
                 required: true,
                 binds: None,
             }],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
+            vec![],
+        ))
         .await
         .unwrap();
 

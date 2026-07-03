@@ -122,13 +122,13 @@ async fn seed() -> MemoryControlPlane {
     })
     .await
     .unwrap();
-    cp.define_action(ActionDef {
-        name: ActionName("createWidget".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![param("id", "Long", true), param("code", "String", true)],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    })
+    cp.define_action(ActionDef::single_step(
+        ActionName("createWidget".into()),
+        TypeName("Widget".into()),
+        ActionKind::Insert,
+        vec![param("id", "Long", true), param("code", "String", true)],
+        vec![],
+    ))
     .await
     .unwrap();
 

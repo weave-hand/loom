@@ -245,6 +245,19 @@ rust_test(
 )
 
 rust_test(
+    name = "action-steps",
+    crate = "action_steps",
+    srcs = ["tests/action_steps.rs"],
+    crate_root = "tests/action_steps.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "action_mapping",
     crate = "action_mapping",
     srcs = ["tests/action_mapping.rs"],

@@ -85,10 +85,11 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
     })
     .await
     .unwrap();
-    cp.define_action(ActionDef {
-        name: ActionName("createWidget".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![
+    cp.define_action(ActionDef::single_step(
+        ActionName("createWidget".into()),
+        TypeName("Widget".into()),
+        ActionKind::Insert,
+        vec![
             ParamDef {
                 name: "id".into(),
                 ty: "Long".into(),
@@ -102,9 +103,8 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
                 binds: None,
             },
         ],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    })
+        vec![],
+    ))
     .await
     .unwrap();
     let subj = SubjectId("writer".into());

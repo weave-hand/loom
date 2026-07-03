@@ -93,10 +93,11 @@ async fn seed(
         .expect("define_link join_table");
     // Action with parameters (covers ParamDef wire payload + get_action RPC).
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createCustomer".into()),
-            target: customer.clone(),
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("createCustomer".into()),
+            customer.clone(),
+            ActionKind::Insert,
+            vec![
                 ParamDef {
                     name: "name".into(),
                     ty: "String".into(),
@@ -110,9 +111,8 @@ async fn seed(
                     binds: None,
                 },
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
+            vec![],
+        ))
         .await
         .expect("define_action");
     (cp, db, warehouse)
@@ -214,7 +214,7 @@ async fn rpc_roundtrips_match_direct_reads() {
     assert_eq!(direct_action, wire_action, "get_action parity");
     // The parameters vec must be non-empty so ParamDef serde is actually exercised.
     assert!(
-        !wire_action.parameters.is_empty(),
+        !wire_action.steps[0].parameters.is_empty(),
         "action must have parameters to exercise ParamDef serde"
     );
 

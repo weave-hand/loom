@@ -201,17 +201,17 @@ async fn arithmetic_expression_writes_product() {
     } = setup_gadget_writer(fx).await;
 
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("create".into()),
-            target: gadget,
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("create".into()),
+            gadget,
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("qty", "Long", false, None),
                 param("unitPrice", "Double", false, None),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![Assignment::expr("total", "qty * unitPrice")],
-        })
+            vec![Assignment::expr("total", "qty * unitPrice")],
+        ))
         .await
         .unwrap();
 
@@ -255,16 +255,16 @@ async fn all_integer_expression_widens_into_double_column() {
     // Double `total` column. The type-checker allows the widening; this pins that the write
     // path (`one_cell`) also accepts it instead of 500ing on a Double/Int mismatch.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("create".into()),
-            target: gadget,
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("create".into()),
+            gadget,
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("qty", "Long", false, None),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![Assignment::expr("total", "qty + 1")],
-        })
+            vec![Assignment::expr("total", "qty + 1")],
+        ))
         .await
         .unwrap();
 
@@ -303,21 +303,21 @@ async fn conditional_and_string_expressions() {
     } = setup_gadget_writer(fx).await;
 
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("create".into()),
-            target: gadget,
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("create".into()),
+            gadget,
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("qty", "Long", false, None),
                 param("unitPrice", "Double", false, None),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![
+            vec![
                 Assignment::expr("total", "qty * unitPrice"),
                 Assignment::expr("tier", "if @total > 100.0 then \"gold\" else \"std\""),
                 Assignment::expr("label", "upper(\"wid\") ++ \"-\" ++ lower(\"GET\")"),
             ],
-        })
+        ))
         .await
         .unwrap();
 
@@ -360,13 +360,13 @@ async fn now_lands_a_timestamp_in_window() {
     } = setup_gadget_writer(fx).await;
 
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("create".into()),
-            target: gadget,
-            parameters: vec![param("id", "Long", true, None)],
-            kind: ActionKind::Insert,
-            assignments: vec![Assignment::expr("createdAt", "now()")],
-        })
+        .define_action(ActionDef::single_step(
+            ActionName("create".into()),
+            gadget,
+            ActionKind::Insert,
+            vec![param("id", "Long", true, None)],
+            vec![Assignment::expr("createdAt", "now()")],
+        ))
         .await
         .unwrap();
 
@@ -419,17 +419,17 @@ async fn runtime_fault_returns_bad_params_and_writes_nothing() {
 
     // Conformance passes (Long/Int -> Long, widens to Double); eval faults at div-by-zero.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("create".into()),
-            target: gadget,
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("create".into()),
+            gadget,
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("qty", "Long", false, None),
                 param("unitPrice", "Double", false, None),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![Assignment::expr("total", "qty / 0")],
-        })
+            vec![Assignment::expr("total", "qty / 0")],
+        ))
         .await
         .unwrap();
 
@@ -479,17 +479,17 @@ async fn computed_value_is_governed_identically() {
     } = setup_gadget_writer(fx).await;
 
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("create".into()),
-            target: gadget.clone(),
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("create".into()),
+            gadget.clone(),
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("qty", "Long", false, None),
                 param("unitPrice", "Double", false, None),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![Assignment::expr("total", "qty * unitPrice")],
-        })
+            vec![Assignment::expr("total", "qty * unitPrice")],
+        ))
         .await
         .unwrap();
 
@@ -563,17 +563,17 @@ async fn computed_value_is_constraint_gated() {
     .await;
 
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("create".into()),
-            target: gadget,
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("create".into()),
+            gadget,
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("qty", "Long", false, None),
                 param("unitPrice", "Double", false, None),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![Assignment::expr("total", "qty * unitPrice")],
-        })
+            vec![Assignment::expr("total", "qty * unitPrice")],
+        ))
         .await
         .unwrap();
 
@@ -625,33 +625,33 @@ async fn update_action_computes_patched_value() {
 
     // Seed one gadget via a plain computed insert.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("create".into()),
-            target: gadget.clone(),
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("create".into()),
+            gadget.clone(),
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("qty", "Long", false, None),
                 param("unitPrice", "Double", false, None),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![Assignment::expr("total", "qty * unitPrice")],
-        })
+            vec![Assignment::expr("total", "qty * unitPrice")],
+        ))
         .await
         .unwrap();
     // Update action: identity `id` bound by a required `key` param; `qty`/`unitPrice` are
     // re-supplied and `total` is recomputed from the PATCHED values.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("recompute".into()),
-            target: gadget,
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("recompute".into()),
+            gadget,
+            ActionKind::Update,
+            vec![
                 param("key", "Long", true, Some("id")),
                 param("qty", "Long", false, None),
                 param("unitPrice", "Double", false, None),
             ],
-            kind: ActionKind::Update,
-            assignments: vec![Assignment::expr("total", "qty * unitPrice")],
-        })
+            vec![Assignment::expr("total", "qty * unitPrice")],
+        ))
         .await
         .unwrap();
 
