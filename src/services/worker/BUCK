@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
 
 # The worker library exposes the flush handler so the e2e test can import it.
@@ -16,6 +17,7 @@ rust_library(
         "//src/services/transform:transform",
         "//third-party:arrow",
         "//third-party:object_store",
+        "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:uuid",
     ],
@@ -50,6 +52,27 @@ rust_binary(
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
+)
+
+# Pure-logic test for the generic `run_wire_job` wrapper (parse-error => Abandon,
+# rpc-error => Retry, success passthrough) — no fixture needed.
+rust_test(
+    name = "run-wire-job",
+    crate = "run_wire_job",
+    srcs = ["tests/run_wire_job.rs"],
+    crate_root = "tests/run_wire_job.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/loom-config:loom-config",
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
 )
 
 # End-to-end test: needs engine + postgres fixture to stand up the server,

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use control_plane_core::{ControlPlane, Job, JobFailure, RetryPolicy};
+use control_plane_core::{ControlPlane, Job, JobFailure};
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
@@ -85,10 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "transform" => {
                             transform_handler(cp.as_ref(), store, &root_url, &write_cfg, job).await
                         }
-                        other => Err(JobFailure {
-                            error: format!("unknown job kind: {other}"),
-                            policy: RetryPolicy::Abandon,
-                        }),
+                        other => Err(JobFailure::abandon(format!("unknown job kind: {other}"))),
                     }
                 }
             },
