@@ -10,7 +10,8 @@ use crate::handler::{
     read_linked_chain, read_object, read_object_page,
 };
 use crate::openapi::{
-    JobAck, ObjectsResponse, OntologyTypesResponse, VectorSearchResponse, WriteDeniedBody,
+    DatasetDetailResponse, DatasetsResponse, JobAck, ObjectsResponse, OntologyTypesResponse,
+    TypeDetailResponse, VectorSearchResponse, WriteDeniedBody,
 };
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
@@ -20,7 +21,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use control_plane_core::{
-    ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, NewJob, PageReq, RunId,
+    ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, LinkDef, NewJob, PageReq,
+    RunId, TableRef, TypeName,
 };
 use lineage_naming::LineageNaming;
 use service_runtime::Subject;
@@ -107,6 +109,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/lineage/runs/:run_id/events", get(get_lineage_run_events))
         .route("/ontology/types", get(list_ontology_types))
+        .route("/ontology/types/:name", get(get_ontology_type))
+        .route("/datasets", get(list_datasets))
+        .route("/datasets/:schema/:table", get(get_dataset))
         .with_state(state)
 }
 
@@ -128,6 +133,155 @@ async fn list_ontology_types(State(st): State<AppState>, _subject: Subject) -> i
         }
         Err(e) => internal_error("ontology list_types fault", e),
     }
+}
+
+/// Map a control-plane metadata-read fault: `NotFound` is the caller's 404 (the message
+/// echoes only the name/table the caller supplied); anything else is the opaque logged 500.
+fn cp_read_error(context: &str, e: ControlPlaneError) -> axum::response::Response {
+    match e {
+        ControlPlaneError::NotFound(m) => (StatusCode::NOT_FOUND, m).into_response(),
+        other => internal_error(context, other),
+    }
+}
+
+/// Render one `LinkDef` as the `LinkView` documentation shape (`cardinality` as its
+/// persisted token). The physical `backing` stays server-side — this is ontology
+/// metadata for callers, not storage detail.
+fn link_view_json(l: &LinkDef) -> serde_json::Value {
+    serde_json::json!({
+        "name": l.name,
+        "from": l.from.0,
+        "to": l.to.0,
+        "cardinality": l.cardinality.as_str(),
+    })
+}
+
+/// Per-type ontology detail: the declared properties (with required flags), identity,
+/// backing table, and the type's outbound (`links`) + inbound (`links_to`) link
+/// adjacency. Like `/ontology/types`, auth-required but NOT per-type ACL-gated —
+/// ontology metadata, not object data.
+#[utoipa::path(
+    get, path = "/ontology/types/{name}",
+    params(("name" = String, Path, description = "Ontology object type")),
+    responses(
+        (status = 200, description = "Type detail: properties, identity, links", body = TypeDetailResponse),
+        (status = 404, description = "Unknown type"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "ontology",
+)]
+async fn get_ontology_type(
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    _subject: Subject,
+) -> axum::response::Response {
+    let onto = st.cp.ontology();
+    let type_name = TypeName(name);
+    let ty = match onto.get_type(&type_name).await {
+        Ok(t) => t,
+        Err(e) => return cp_read_error("ontology get_type fault", e),
+    };
+    let links = match onto.links(&type_name, PageReq::unbounded()).await {
+        Ok(page) => page.items,
+        Err(e) => return cp_read_error("ontology links fault", e),
+    };
+    let links_to = match onto.links_to(&type_name, PageReq::unbounded()).await {
+        Ok(page) => page.items,
+        Err(e) => return cp_read_error("ontology links_to fault", e),
+    };
+    let properties: Vec<serde_json::Value> = ty
+        .properties
+        .iter()
+        .map(|p| serde_json::json!({ "name": p.name, "ty": p.ty, "required": p.required }))
+        .collect();
+    Json(serde_json::json!({
+        "name": ty.name.0,
+        "table": { "schema": ty.table.schema, "name": ty.table.name },
+        "identity": ty.identity,
+        "properties": properties,
+        "links": links.iter().map(link_view_json).collect::<Vec<_>>(),
+        "links_to": links_to.iter().map(link_view_json).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+/// Dataset catalog: every table currently live in the Iceberg mirror, `(schema, name)`-
+/// ordered. Auth-required but not ACL-gated — catalog metadata (like `/ontology/types`);
+/// ACL governs the data reads.
+#[utoipa::path(
+    get, path = "/datasets",
+    responses(
+        (status = 200, description = "Live mirror tables", body = DatasetsResponse),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "datasets",
+)]
+async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::response::Response {
+    match st.cp.catalog().list_tables(PageReq::unbounded()).await {
+        Ok(page) => {
+            let datasets: Vec<serde_json::Value> = page
+                .items
+                .iter()
+                .map(|t| serde_json::json!({ "schema": t.schema, "name": t.name }))
+                .collect();
+            Json(serde_json::json!({ "datasets": datasets })).into_response()
+        }
+        Err(e) => internal_error("catalog list_tables fault", e),
+    }
+}
+
+/// Dataset detail: the table's current snapshot (id + RFC3339 time) composed with its
+/// column schema at that snapshot.
+#[utoipa::path(
+    get, path = "/datasets/{schema}/{table}",
+    params(
+        ("schema" = String, Path, description = "Iceberg schema"),
+        ("table" = String, Path, description = "Table name"),
+    ),
+    responses(
+        (status = 200, description = "Current snapshot + column schema", body = DatasetDetailResponse),
+        (status = 404, description = "Unknown table"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "datasets",
+)]
+async fn get_dataset(
+    State(st): State<AppState>,
+    Path((schema, table)): Path<(String, String)>,
+    _subject: Subject,
+) -> axum::response::Response {
+    let catalog = st.cp.catalog();
+    let table_ref = TableRef {
+        schema,
+        name: table,
+    };
+    let snapshot = match catalog.current_snapshot(&table_ref).await {
+        Ok(s) => s,
+        Err(e) => return cp_read_error("catalog current_snapshot fault", e),
+    };
+    let table_schema = match catalog.schema(&table_ref, snapshot.id).await {
+        Ok(s) => s,
+        Err(e) => return cp_read_error("catalog schema fault", e),
+    };
+    let snapshot_time = snapshot
+        .time
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let columns: Vec<serde_json::Value> = table_schema
+        .columns
+        .iter()
+        .map(|c| serde_json::json!({ "name": c.name, "ty": c.ty, "nullable": c.nullable }))
+        .collect();
+    Json(serde_json::json!({
+        "table": { "schema": table_ref.schema, "name": table_ref.name },
+        "snapshot_id": snapshot.id.0,
+        "snapshot_time": snapshot_time,
+        "columns": columns,
+    }))
+    .into_response()
 }
 
 /// Operator-triggered physical GC: enqueue a `gc_table` job for `(schema, table)`.

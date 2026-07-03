@@ -81,6 +81,79 @@ pub struct OntologyTypesResponse {
     pub types: Vec<String>,
 }
 
+/// Documentation shape for a `{ "schema": .., "name": .. }` table reference.
+#[derive(ToSchema)]
+pub struct TableRefView {
+    pub schema: String,
+    pub name: String,
+}
+
+/// Documentation shape for one declared property in a type-detail response.
+#[derive(ToSchema)]
+pub struct PropertyView {
+    pub name: String,
+    /// The ontology's LOGICAL type name (e.g. `Long`), not the physical column type.
+    pub ty: String,
+    pub required: bool,
+}
+
+/// Documentation shape for one link in a type-detail response. The physical backing
+/// (FK / join table) is deliberately not exposed.
+#[derive(ToSchema)]
+pub struct LinkView {
+    pub name: String,
+    /// Source object type.
+    pub from: String,
+    /// Target object type.
+    pub to: String,
+    /// `one` | `many`.
+    pub cardinality: String,
+}
+
+/// Documentation shape for the `GET /ontology/types/{name}` type-detail response.
+#[derive(ToSchema)]
+pub struct TypeDetailResponse {
+    pub name: String,
+    /// The physical Iceberg table backing this type.
+    pub table: TableRefView,
+    /// The identity (primary-key) property, or `null` when none is declared.
+    pub identity: Option<String>,
+    /// The declared properties, in order.
+    pub properties: Vec<PropertyView>,
+    /// Outbound links (`from` = this type).
+    pub links: Vec<LinkView>,
+    /// Inbound links (`to` = this type).
+    pub links_to: Vec<LinkView>,
+}
+
+/// Documentation shape for the `GET /datasets` response.
+#[derive(ToSchema)]
+pub struct DatasetsResponse {
+    /// Every table currently live in the mirror, `(schema, name)`-ordered.
+    pub datasets: Vec<TableRefView>,
+}
+
+/// Documentation shape for one column in a dataset-detail response.
+#[derive(ToSchema)]
+pub struct DatasetColumnView {
+    pub name: String,
+    /// The column's loom LOGICAL type name.
+    pub ty: String,
+    pub nullable: bool,
+}
+
+/// Documentation shape for the `GET /datasets/{schema}/{table}` response.
+#[derive(ToSchema)]
+pub struct DatasetDetailResponse {
+    pub table: TableRefView,
+    /// The table's current (latest live) snapshot id.
+    pub snapshot_id: i64,
+    /// RFC3339 timestamp of that snapshot.
+    pub snapshot_time: String,
+    /// The column schema at that snapshot, in column order.
+    pub columns: Vec<DatasetColumnView>,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -100,6 +173,9 @@ pub struct OntologyTypesResponse {
         crate::http::get_lineage_downstream,
         crate::http::get_lineage_run_events,
         crate::http::list_ontology_types,
+        crate::http::get_ontology_type,
+        crate::http::list_datasets,
+        crate::http::get_dataset,
     ),
     components(schemas(
         ObjectsResponse,
@@ -111,6 +187,13 @@ pub struct OntologyTypesResponse {
         ConstraintViolationsBody,
         ConstraintViolationItem,
         OntologyTypesResponse,
+        TableRefView,
+        PropertyView,
+        LinkView,
+        TypeDetailResponse,
+        DatasetsResponse,
+        DatasetColumnView,
+        DatasetDetailResponse,
         crate::http::VectorSearchRequest,
         crate::lineage_read::DatasetNode,
         crate::lineage_read::DatasetClosureResponse,
