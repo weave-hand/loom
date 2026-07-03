@@ -171,12 +171,14 @@ impl query_api::serving::ServingEngine for InProcessServingEngine {
         let batch = engine_serving::vector_search(
             sql_catalog,
             pool,
-            table,
-            index_name,
-            query,
-            k,
-            nprobe,
-            ef_search,
+            engine_serving::VectorQuery {
+                table,
+                index_name,
+                query,
+                k,
+                nprobe,
+                ef_search,
+            },
         )
         .await
         .map_err(|e| match e {

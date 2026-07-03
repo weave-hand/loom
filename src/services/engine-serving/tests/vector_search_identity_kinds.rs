@@ -20,7 +20,27 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::vector_index::build_vector_index;
+use engine_serving::VectorQuery;
 use loom_test_seed::local_sql_catalog;
+
+/// Terse `VectorQuery` builder for the call sites in this file.
+fn vq<'a>(
+    table: &'a TableRef,
+    index_name: &'a str,
+    query: &'a [f32],
+    k: usize,
+    nprobe: Option<u32>,
+    ef_search: Option<u32>,
+) -> VectorQuery<'a> {
+    VectorQuery {
+        table,
+        index_name,
+        query,
+        k,
+        nprobe,
+        ef_search,
+    }
+}
 
 fn columns(id_ty: &str) -> Vec<ColumnSpec> {
     vec![
@@ -202,12 +222,7 @@ async fn string_identity_cold_search() {
     let batch = engine_serving::vector_search(
         &catalog,
         &pool,
-        &table,
-        "by_flat",
-        &[1.0_f32, 0.0, 0.0, 0.0],
-        1,
-        None,
-        None,
+        vq(&table, "by_flat", &[1.0_f32, 0.0, 0.0, 0.0], 1, None, None),
     )
     .await
     .expect("cold search over string identity");
@@ -278,12 +293,7 @@ async fn string_identity_cold_hot_merge() {
     let batch = engine_serving::vector_search(
         &catalog,
         &pool,
-        &table,
-        "by_flat",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("cold+hot search over string identity");
@@ -342,12 +352,7 @@ async fn integer_identity_cold_hot_merge() {
     let batch = engine_serving::vector_search(
         &catalog,
         &pool,
-        &table,
-        "by_flat",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("cold+hot search over integer identity");

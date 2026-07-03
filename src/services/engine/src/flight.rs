@@ -120,12 +120,14 @@ impl FlightDataService {
         let batch = engine_serving::vector_search(
             &self.catalog,
             &self.pool,
-            &table,
-            &vs.index_name,
-            &vs.query,
-            vs.k as usize,
-            vs.nprobe,
-            vs.ef_search,
+            engine_serving::VectorQuery {
+                table: &table,
+                index_name: &vs.index_name,
+                query: &vs.query,
+                k: vs.k as usize,
+                nprobe: vs.nprobe,
+                ef_search: vs.ef_search,
+            },
         )
         .await
         .map_err(serving_status)?;

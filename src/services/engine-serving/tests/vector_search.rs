@@ -8,11 +8,30 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::land;
-use engine_serving::EngineServingError;
+use engine_serving::{EngineServingError, VectorQuery};
 use loom_test_seed::{
     cold_limits, distances_f32, hot_limits, ids_i64, land_vec4, local_sql_catalog,
     seed_docs_vector, test_lineage, vec4_columns, vec4_ipc,
 };
+
+/// Terse `VectorQuery` builder for the call sites in this file.
+fn vq<'a>(
+    table: &'a TableRef,
+    index_name: &'a str,
+    query: &'a [f32],
+    k: usize,
+    nprobe: Option<u32>,
+    ef_search: Option<u32>,
+) -> VectorQuery<'a> {
+    VectorQuery {
+        table,
+        index_name,
+        query,
+        k,
+        nprobe,
+        ef_search,
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn knn_cold_exact_cosine() {
@@ -30,12 +49,7 @@ async fn knn_cold_exact_cosine() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_flat",
-        &[1.0_f32, 0.0, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[1.0_f32, 0.0, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("vector_search cosine");
@@ -65,12 +79,7 @@ async fn knn_cold_exact_l2() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_flat",
-        &[0.0_f32, 1.0, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[0.0_f32, 1.0, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("vector_search l2");
@@ -148,12 +157,7 @@ async fn no_bound_index_is_deterministic_error() {
     let err = engine_serving::vector_search(
         &catalog,
         &pool,
-        &table,
-        "by_flat",
-        &[1.0_f32, 0.0, 0.0, 0.0],
-        1,
-        None,
-        None,
+        vq(&table, "by_flat", &[1.0_f32, 0.0, 0.0, 0.0], 1, None, None),
     )
     .await
     .expect_err("should be NoIndex error");
@@ -184,12 +188,7 @@ async fn knn_cold_hot_merge_cosine() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_flat",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("vector_search cold+hot cosine");
@@ -227,12 +226,7 @@ async fn knn_cold_hot_merge_l2() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_flat",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("vector_search cold+hot l2");
@@ -273,12 +267,7 @@ async fn ivf_cold_search_returns_exact_match() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_ivf",
-        &[1.0_f32, 0.0, 0.0, 0.0],
-        1,
-        None,
-        None,
+        vq(&table, "by_ivf", &[1.0_f32, 0.0, 0.0, 0.0], 1, None, None),
     )
     .await
     .expect("ivf cold search");
@@ -315,12 +304,7 @@ async fn ivf_hot_delta_row_is_never_pruned_cosine() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_ivf",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_ivf", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("ivf cold+hot search");
@@ -361,12 +345,7 @@ async fn ivf_hot_delta_row_is_never_pruned_l2() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_ivf",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_ivf", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("ivf cold+hot l2");
@@ -414,12 +393,7 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_cosine() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_hnsw",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_hnsw", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("hnsw cold+hot cosine");
@@ -466,12 +440,7 @@ async fn hnsw_cold_hot_merge_counts_fresh_row_once_l2() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_hnsw",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_hnsw", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("hnsw cold+hot l2");
@@ -512,12 +481,14 @@ async fn ivf_nprobe_full_reproduces_exact_match() {
     let batch = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_ivf",
-        &[1.0_f32, 0.0, 0.0, 0.0],
-        1,
-        Some(2),
-        None,
+        vq(
+            &table,
+            "by_ivf",
+            &[1.0_f32, 0.0, 0.0, 0.0],
+            1,
+            Some(2),
+            None,
+        ),
     )
     .await
     .expect("ivf nprobe=nlist");
@@ -542,24 +513,21 @@ async fn flat_ignores_both_knobs() {
     let plain = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_flat",
-        &[1.0_f32, 0.0, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[1.0_f32, 0.0, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("flat plain");
     let knobbed = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_flat",
-        &[1.0_f32, 0.0, 0.0, 0.0],
-        2,
-        Some(4),
-        Some(64),
+        vq(
+            &table,
+            "by_flat",
+            &[1.0_f32, 0.0, 0.0, 0.0],
+            2,
+            Some(4),
+            Some(64),
+        ),
     )
     .await
     .expect("flat knobbed");
@@ -580,12 +548,7 @@ async fn query_dim_mismatch_is_error() {
     let err = engine_serving::vector_search(
         &s.catalog,
         &s.pool,
-        &table,
-        "by_flat",
-        &[1.0_f32, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[1.0_f32, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect_err("dim mismatch");
