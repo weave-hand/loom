@@ -33,6 +33,12 @@ pub struct EmbeddedPgConfig {
 pub enum EmbeddedPgError {
     #[error("embedded Postgres cannot run as root — run loom as a normal user")]
     RunningAsRoot,
+    #[error(
+        "embedded Postgres cannot start: missing shared library {lib}. loom bundles \
+         only its own Postgres artifacts, not system libraries — install it on the host \
+         (see the Host prerequisites section of docs/deploy.md)"
+    )]
+    MissingSharedLibrary { lib: String },
     #[error("another process already owns the data dir {0}")]
     AlreadyLocked(PathBuf),
     #[error("invalid database name {0:?}: must match [a-z_][a-z0-9_]*")]
@@ -51,6 +57,22 @@ pub enum EmbeddedPgError {
     CreateDatabase(sqlx::Error),
     #[error("pg_ctl stop failed: exit {0}")]
     Stop(std::process::ExitStatus),
+}
+
+/// Extract the missing library name from a dynamic-loader failure line, if the
+/// stderr contains one. Matches the glibc loader message
+/// `error while loading shared libraries: <lib>: cannot open shared object file`.
+/// Pure so it is unit-testable without a host that actually lacks the library.
+#[must_use]
+pub fn classify_loader_error(stderr: &str) -> Option<String> {
+    const MARKER: &str = "error while loading shared libraries: ";
+    let start = stderr.find(MARKER)? + MARKER.len();
+    let lib = stderr.get(start..)?.split([':', '\n']).next()?.trim();
+    if lib.is_empty() {
+        None
+    } else {
+        Some(lib.to_string())
+    }
 }
 
 /// Guard the database name before it is spliced into `CREATE DATABASE` (which
@@ -206,6 +228,24 @@ fn acquire_owner_lock(data_dir: &Path) -> Result<OwnerLock, EmbeddedPgError> {
 }
 
 impl EmbeddedPg {
+    /// Run `postgres -V` and convert a dynamic-loader failure into
+    /// `MissingSharedLibrary`. Any other failure (or an I/O error spawning the
+    /// probe) is swallowed so the normal init/spawn path reproduces today's error.
+    async fn preflight_shared_libs(cfg: &EmbeddedPgConfig) -> Result<(), EmbeddedPgError> {
+        let out = pg_command(cfg.bin_dir.join("postgres"), &cfg.ld_library_path)
+            .arg("-V")
+            .output()
+            .await?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if let Some(lib) = classify_loader_error(&stderr) {
+            return Err(EmbeddedPgError::MissingSharedLibrary { lib });
+        }
+        Ok(())
+    }
+
     async fn run_initdb(cfg: &EmbeddedPgConfig) -> Result<(), EmbeddedPgError> {
         let out = pg_command(cfg.bin_dir.join("initdb"), &cfg.ld_library_path)
             .arg("-D")
@@ -310,6 +350,11 @@ impl EmbeddedPg {
             return Err(EmbeddedPgError::RunningAsRoot);
         }
         validate_db_name(&cfg.database)?;
+        // Cheap, side-effect-free preflight: a dynamic-loader failure (e.g. a
+        // host missing libxml2.so.2) becomes a named error pointing at the deploy
+        // docs, instead of a cryptic Initdb/ServerExited status later. Non-loader
+        // failures fall through so the real init/spawn path surfaces its usual error.
+        Self::preflight_shared_libs(&cfg).await?;
         ensure_dir_secure(&cfg.data_dir)?;
         ensure_dir_secure(&cfg.socket_dir)?;
         // Single-owner lock (covers the fresh-init race the pidfile check misses).

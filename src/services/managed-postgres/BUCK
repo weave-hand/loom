@@ -25,6 +25,19 @@ rust_test(
     deps = [":managed-postgres"],
 )
 
+rust_test(
+    name = "loader-error",
+    crate = "loader_error",
+    srcs = ["tests/loader_error.rs"],
+    crate_root = "tests/loader_error.rs",
+    edition = "2024",
+    deps = [
+        ":managed-postgres",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "embedded-lifecycle",
     crate = "embedded_lifecycle",
