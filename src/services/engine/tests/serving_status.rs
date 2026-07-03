@@ -44,7 +44,9 @@ fn engine_is_internal_with_full_display() {
 
 #[test]
 fn conflict_is_aborted_with_inner_message() {
-    let s = serving_status(EngineServingError::Conflict("expected version 3, saw 4".into()));
+    let s = serving_status(EngineServingError::Conflict(
+        "expected version 3, saw 4".into(),
+    ));
     assert_eq!(s.code(), tonic::Code::Aborted);
     assert_eq!(s.message(), "expected version 3, saw 4");
 }

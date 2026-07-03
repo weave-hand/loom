@@ -78,7 +78,11 @@ async fn update_shadows_file_row_without_rewrite() {
     let row = read_widget(&cp, &pool, &subj, 1)
         .await
         .expect("row present after update");
-    assert_eq!(row["qty"], json!("9"), "inline version shadows the file row");
+    assert_eq!(
+        row["qty"],
+        json!("9"),
+        "inline version shadows the file row"
+    );
 
     // No Parquet was rewritten: the live data_file set is byte-for-byte unchanged.
     let files_after = data_file_paths(&pool, "main", "widget").await;

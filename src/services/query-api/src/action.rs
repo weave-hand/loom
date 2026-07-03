@@ -917,7 +917,10 @@ async fn run_mutate(
         //    identity value; the serving seam substitutes it via `inline_params`).
         let live = deps
             .serving
-            .fetch_rows(&select_object_sql(target, &idprop), &[id_value.clone()])
+            .fetch_rows(
+                &select_object_sql(target, &idprop),
+                std::slice::from_ref(&id_value),
+            )
             .await?;
         // 0 live rows ⇒ the object does not exist (the caller's 404). >1 is a corrupt-PK
         // invariant the identity-dedup merge could not resolve (e.g. duplicate live file

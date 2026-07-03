@@ -255,7 +255,12 @@ fn build_merge_view(
         .map_err(to_serving)?
         .filter(cref("_loom_tomb").eq(lit(false)))
         .map_err(to_serving)?
-        .select(data_cols.iter().map(|n| cref(n.as_str())).collect::<Vec<_>>())
+        .select(
+            data_cols
+                .iter()
+                .map(|n| cref(n.as_str()))
+                .collect::<Vec<_>>(),
+        )
         .map_err(to_serving)?;
     Ok(merged.into_view())
 }

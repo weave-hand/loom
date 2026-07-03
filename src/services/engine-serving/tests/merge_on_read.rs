@@ -73,11 +73,7 @@ async fn define_type(
 
 /// Define `(schema.name)` as an identity type whose non-id property is the camelCase
 /// `unitPrice`, so the merge-on-read view for it must preserve mixed-case column names.
-async fn define_camel_type(
-    cp: &control_plane_postgres::PgControlPlane,
-    schema: &str,
-    name: &str,
-) {
+async fn define_camel_type(cp: &control_plane_postgres::PgControlPlane, schema: &str, name: &str) {
     cp.define_type(ObjectType {
         name: TypeName(format!("Type_{schema}_{name}")),
         table: TableRef {
@@ -154,13 +150,10 @@ async fn inline_version_shadows_file_row() {
     // `SELECT *` expands to the merge view's schema: it MUST equal the mirror data
     // schema exactly (no `_loom_prec` / `_loom_tomb` helper columns leaked), which the
     // governed layer and all callers rely on.
-    let batches = engine_serving::execute_query(
-        &catalog,
-        "SELECT * FROM \"s\".\"t\" ORDER BY \"id\"",
-        None,
-    )
-    .await
-    .expect("execute_query");
+    let batches =
+        engine_serving::execute_query(&catalog, "SELECT * FROM \"s\".\"t\" ORDER BY \"id\"", None)
+            .await
+            .expect("execute_query");
 
     let sch = batches.first().expect("at least one batch").schema();
     assert_eq!(
