@@ -198,16 +198,25 @@ fn build_merge_view(
     inline: PgTableProvider,
 ) -> Result<Arc<dyn TableProvider>, EngineServingError> {
     use datafusion::functions_window::expr_fn::row_number;
-    use datafusion::logical_expr::{ExprFunctionExt, col, lit};
+    use datafusion::logical_expr::{ExprFunctionExt, lit};
+
+    // Case-preserving unqualified column reference. DataFusion's `col()` parses its
+    // argument as a SQL identifier and LOWERCASES unquoted names (e.g. `col("unitPrice")`
+    // resolves to a nonexistent `unitprice`), which would fail every mixed-case mirror
+    // column. `Column::new_unqualified` takes the name verbatim, so the merge view's
+    // schema equals the mirror data schema exactly — camelCase names preserved — for
+    // ALL identity types. (The helper column names are lowercase, but routing them
+    // through the same builder keeps every reference consistent.)
+    let cref = |name: &str| Expr::Column(Column::new_unqualified(name));
 
     // Mirror data columns in order — the exact output projection.
     let data_cols: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
     // Inline tier aligned to [<data_cols>, _loom_prec, _loom_tomb]. The provider
     // exposes precedence/tombstone under their physical names; alias for the union.
-    let mut inline_exprs: Vec<Expr> = data_cols.iter().map(|n| col(n.as_str())).collect();
-    inline_exprs.push(col("begin_snapshot").alias("_loom_prec"));
-    inline_exprs.push(col("loom_tombstone").alias("_loom_tomb"));
+    let mut inline_exprs: Vec<Expr> = data_cols.iter().map(|n| cref(n.as_str())).collect();
+    inline_exprs.push(cref("begin_snapshot").alias("_loom_prec"));
+    inline_exprs.push(cref("loom_tombstone").alias("_loom_tomb"));
     let inline_df = ctx
         .read_table(Arc::new(inline))
         .map_err(to_serving)?
@@ -232,8 +241,8 @@ fn build_merge_view(
     // ROW_NUMBER() OVER (PARTITION BY <id> ORDER BY _loom_prec DESC): rank 1 is the
     // greatest-precedence row per identity (row_number returns non-null UInt64).
     let ranked = row_number()
-        .partition_by(vec![col(identity)])
-        .order_by(vec![col("_loom_prec").sort(false, false)])
+        .partition_by(vec![cref(identity)])
+        .order_by(vec![cref("_loom_prec").sort(false, false)])
         .build()
         .map_err(to_serving)?
         .alias("_loom_rn");
@@ -242,11 +251,11 @@ fn build_merge_view(
     let merged = unioned
         .window(vec![ranked])
         .map_err(to_serving)?
-        .filter(col("_loom_rn").eq(lit(1_u64)))
+        .filter(cref("_loom_rn").eq(lit(1_u64)))
         .map_err(to_serving)?
-        .filter(col("_loom_tomb").eq(lit(false)))
+        .filter(cref("_loom_tomb").eq(lit(false)))
         .map_err(to_serving)?
-        .select(data_cols.iter().map(|n| col(n.as_str())).collect::<Vec<_>>())
+        .select(data_cols.iter().map(|n| cref(n.as_str())).collect::<Vec<_>>())
         .map_err(to_serving)?;
     Ok(merged.into_view())
 }

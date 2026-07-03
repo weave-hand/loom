@@ -25,6 +25,17 @@ fn cols() -> Vec<(String, String, bool)> {
     ]
 }
 
+/// Like [`cols`] but the non-id column is CAMELCASE (`unitPrice`). Exercises the
+/// merge view's case handling: DataFusion's `col()` lowercases unquoted identifiers,
+/// so a mixed-case mirror column must be referenced case-preservingly or it fails to
+/// resolve (regression for main's `action-computed-e2e`, which uses camelCase columns).
+fn camel_cols() -> Vec<(String, String, bool)> {
+    vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("unitPrice".to_string(), "string".to_string(), false),
+    ]
+}
+
 /// Define `(schema.name)` as an ontology type with the given identity column, so
 /// `identity_for_table` resolves (or not) during the merge-on-read decision.
 async fn define_type(
@@ -49,6 +60,40 @@ async fn define_type(
             },
             PropertyDef {
                 name: "name".into(),
+                ty: "String".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+    })
+    .await
+    .expect("define_type");
+}
+
+/// Define `(schema.name)` as an identity type whose non-id property is the camelCase
+/// `unitPrice`, so the merge-on-read view for it must preserve mixed-case column names.
+async fn define_camel_type(
+    cp: &control_plane_postgres::PgControlPlane,
+    schema: &str,
+    name: &str,
+) {
+    cp.define_type(ObjectType {
+        name: TypeName(format!("Type_{schema}_{name}")),
+        table: TableRef {
+            schema: schema.into(),
+            name: name.into(),
+        },
+        identity: Some("id".to_string()),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "unitPrice".into(),
                 ty: "String".into(),
                 required: false,
                 constraints: control_plane_core::PropertyConstraints::default(),
@@ -132,6 +177,61 @@ async fn inline_version_shadows_file_row() {
 
     // The inline version shadows the file row: exactly one row for id=1, name="inline".
     assert_eq!(rows(&batches), vec![(1, "inline".to_string())]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_version_shadows_file_row_camelcase_column() {
+    // Regression: an identity type whose non-id column is CAMELCASE (`unitPrice`).
+    // The merge view referenced columns via `col(name)`, which lowercases unquoted
+    // identifiers, so it looked up a nonexistent `unitprice` and the read failed with
+    // `No field named unitprice` (main's `action-computed-e2e`). The view must instead
+    // preserve the mixed-case name AND leak no `begin_snapshot`/`loom_tombstone` helper.
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+
+    // File-resident row {id:1, unitPrice:"file"} (real Parquet via the writer chain).
+    writer
+        .seed_arrays(
+            "s6",
+            "t6",
+            &camel_cols(),
+            &[SeedCol::Long(vec![1]), SeedCol::Str(vec!["file"])],
+        )
+        .await;
+    // Inline VERSION {id:1, unitPrice:"shadow"} at a LATER snapshot (shadows the file row).
+    writer
+        .inline("s6", "t6", &camel_cols(), &[(1, "shadow")], Uuid::new_v4())
+        .await;
+    define_camel_type(&cp, "s6", "t6").await;
+
+    let catalog = IcebergCatalog::new(pool);
+    // `SELECT *` expands to the merge view's schema: it MUST equal the mirror data
+    // schema exactly — the camelCase name preserved, no helper columns leaked.
+    let batches = engine_serving::execute_query(
+        &catalog,
+        "SELECT * FROM \"s6\".\"t6\" ORDER BY \"id\"",
+        None,
+    )
+    .await
+    .expect("execute_query");
+
+    let sch = batches.first().expect("at least one batch").schema();
+    let names: Vec<&str> = sch.fields().iter().map(|f| f.name().as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["id", "unitPrice"],
+        "merge view preserves the mixed-case column name and leaks no helper columns"
+    );
+    assert!(
+        !names.contains(&"begin_snapshot") && !names.contains(&"loom_tombstone"),
+        "no merge helper column leaks into the view schema: {names:?}"
+    );
+
+    // The inline version shadows the file row: exactly one row for id=1, value "shadow".
+    assert_eq!(rows(&batches), vec![(1, "shadow".to_string())]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
