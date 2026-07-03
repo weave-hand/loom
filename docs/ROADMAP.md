@@ -20,11 +20,6 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 - [ ] **Transform jobs over the engine wire — retire the pool-owning transform worker** `{#road-transform-wire-migration area:transform status:planned from:2026-07-02-pillar-idioms-audit-design pr:- spec:2026-07-03-transform-wire-migration-design}`
   Promoted from `#fut-transform-wire-migration`. Migrate `run_transform`-shaped jobs (SQL + typed) onto the zero-pool worker: inputs stream over Flight (`FlightTicket` file sets, `ListFilesResponse` gaining `columns_json`), compute stays `datafusion-io`, commit via a new `EngineControl::CommitTransform` RPC mirroring `CompactTable`; ends with `src/services/transform/` deleted. Sequenced: wire plumbing → physical transform → typed transform → delete. The engine-owns-Postgres end-state for compute workers.
 
-## quality
-
-- [ ] **Tx trait segregation + Auth on the ControlPlane facade** `{#road-tx-trait-segregation area:quality status:planned from:2026-07-02-pillar-idioms-audit-design pr:- spec:2026-07-03-tx-trait-segregation-design}`
-  Promoted from `#fut-tx-trait-segregation`. Split `Tx` (unit of work: `enqueue`/`emit`/`commit`/`rollback`) from `TableTx: Tx` (the staging surface), add `TableControlPlane::begin_table()` since consumers reach a Tx only via `begin()`; PgTx keeps base traits only and its runtime `Validation` stubs are deleted. Add `auth()` to the `ControlPlane` facade (one line per adapter) with a facade contract probe. Precedes `#fut-wider-tx-composition`.
-
 ## acl
 
 - [ ] **Comprehensive auth capability — build-vs-adopt a fuller identity layer** `{#road-auth-comprehensive area:acl status:planned from:2026-06-23-auth-password-session-design pr:- spec:2026-07-01-auth-comprehensive-adopt-design}`
