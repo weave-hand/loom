@@ -57,9 +57,9 @@ impl IndexSpec {
             None | Some("flat") => Ok(IndexSpec::Flat),
             Some("ivf_flat") => Ok(IndexSpec::IvfFlat { nlist }),
             Some("hnsw") => Ok(IndexSpec::Hnsw { m, ef_construction }),
-            Some(other) => Err(ControlPlaneError::Backend(
-                format!("unknown index kind '{other}'").into(),
-            )),
+            Some(other) => Err(ControlPlaneError::Validation(format!(
+                "unknown index kind '{other}'"
+            ))),
         }
     }
 
@@ -113,9 +113,9 @@ impl std::str::FromStr for Metric {
         match s {
             "cosine" => Ok(Metric::Cosine),
             "l2" => Ok(Metric::L2),
-            other => Err(ControlPlaneError::Backend(
-                format!("unknown metric '{other}'").into(),
-            )),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown metric '{other}'"
+            ))),
         }
     }
 }
@@ -147,9 +147,9 @@ impl std::str::FromStr for IndexKind {
             "flat" => Ok(IndexKind::Flat),
             "ivf_flat" => Ok(IndexKind::IvfFlat),
             "hnsw" => Ok(IndexKind::Hnsw),
-            other => Err(ControlPlaneError::Backend(
-                format!("unknown index kind '{other}'").into(),
-            )),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown index kind '{other}'"
+            ))),
         }
     }
 }

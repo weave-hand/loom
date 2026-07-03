@@ -1142,7 +1142,7 @@ unmodified).
 - Modify: `src/control-plane/core/src/vector_index/codec.rs` (`pack_rows`
   error variant + the doc line above it)
 
-- [ ] **Step 1: Append the class-asserting tests (RED)** to
+- [x] **Step 1: Append the class-asserting tests (RED)** to
   `core/tests/vector_index.rs`:
 
 ```rust
@@ -1183,7 +1183,7 @@ Expected: exactly ONE failing test (the new one — the errors are `Backend`
 today); every pre-existing test green. If the new test passes, STOP — the
 claim inventory is wrong.
 
-- [ ] **Step 2: Flip the four sites.** In `vector_index/mod.rs`, the three
+- [x] **Step 2: Flip the four sites.** In `vector_index/mod.rs`, the three
   `ControlPlaneError::Backend(format!(...).into())` returns in
   `Metric::from_str`, `IndexKind::from_str`, `IndexSpec::from_label` become
   `ControlPlaneError::Validation(format!(...))` (message strings unchanged;
@@ -1202,7 +1202,7 @@ claim inventory is wrong.
   caller-shaped data)" if it states the variant). Touch NOTHING else in
   `codec.rs`.
 
-- [ ] **Step 3: Run — new test green, codec goldens + downstream vector
+- [x] **Step 3: Run — new test green, codec goldens + downstream vector
   suites green unmodified**
 
 ```bash
@@ -1219,7 +1219,7 @@ buck2 test //src/control-plane/postgres:vector-index-build \
 (Target names verified against both BUCK files.) Expected: `Fail 0` — nothing
 pins the old class.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek5.log 2>&1; grep -E "Failed" /tmp/prek5.log || echo CLEAN
