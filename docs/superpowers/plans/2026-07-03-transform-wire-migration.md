@@ -450,5 +450,5 @@ Coverage accounting before deletion (all already ported): `output_mode`/`conform
 - Check: `grep -rn 'road-transform-wire-migration\|fut-transform-wire-migration' docs/ .claude/ src/` — rewrite surviving `[[...]]` links as `` `#id` `` code spans; delete matching Known-gaps bullets. FUTURE's `fut-transform-followups` prose references stay (they name deferred follow-ups, not this item).
 - Grep stale paths: `grep -rn 'services/transform' docs/` — repoint or delete every hit (ROADMAP/FUTURE prose included; `docs/system-capabilities/transform.md:7,17,55,117` are known hits). The generated code-health registers (`docs/code-health/complexity.md:137-141`, `duplication.md:37-54`) will also hit — delete the dead rows but don't hand-reconcile beyond that; the scheduled census routines rebuild them.
 
-- [ ] **Step 1:** register + docs edits; `bash tools/docs.sh validate` → OK.
-- [ ] **Step 2:** prek; commit `docs: close road-transform-wire-migration — transforms on the zero-pool worker`
+- [x] **Step 1:** register + docs edits; `bash tools/docs.sh validate` → OK. (Deviation: generated code-health census rows left for the scheduled routines — the census regions are not hand-edited per the loom-complexity/duplication skill contract. Bonus closes: `fut-transform-backoff-unify` — resolved by the WorkerTuning::backoff unification; CLAUDE.md pillar status updated.)
+- [x] **Step 2:** prek; commit `docs: close road-transform-wire-migration — transforms on the zero-pool worker`
