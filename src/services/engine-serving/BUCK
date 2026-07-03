@@ -199,6 +199,7 @@ loom_fixture_test(
         "//third-party:arrow",
         "//third-party:iceberg",
         "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",
