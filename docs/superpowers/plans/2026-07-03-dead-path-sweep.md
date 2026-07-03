@@ -265,7 +265,7 @@ pub async fn handle_build_vector_index(
 }
 ```
 
-  Note: the error-message prefix changes from e.g. `"bad gc payload"` to `"bad gc payload"` (identical) — verify each `what` string reproduces the old prefix exactly (`flush`, `gc`, `build_vector_index`). If any `GrpcQueueClient` RPC method borrows `&self` rather than consuming, the closure still works because it moves the owned client in; leave as written and let the build confirm.
+  Verify each `what` string reproduces the old parse-error prefix exactly: `flush` → `"bad flush payload: …"`, `gc` → `"bad gc payload: …"`, `build_vector_index` → `"bad build_vector_index payload: …"` (matching the current literals). The closures move their owned `GrpcQueueClient` in and `run_wire_job` imposes no `'static` bound, so an RPC method taking `&self` (or `&mut self` on a `mut` binding) works either way — leave as written and let the build confirm.
 
 - [ ] **Step 4: Convert `compact.rs` and the mains to the constructors.**
   - In `src/services/worker/src/compact.rs`, delete the local `fn retry(...)` (`:24-31`) and replace its call sites `retry(&ctx.worker_tuning, attempts, msg)` with `JobFailure::retry(ctx.worker_tuning.backoff(attempts), msg)`; replace the `Abandon` literal at `:36-39` with `JobFailure::abandon(format!("bad compact payload: {e}"))`. Update the `use` line (`:6`) to drop `RetryPolicy` if now unused.
@@ -660,10 +660,11 @@ git commit -m "refactor(store-config): ServingStore named struct in place of the
 
 - [ ] **Step 3: Update the test callers.** In each test call site (14 in `vector_search.rs`, 3 in `vector_search_identity_kinds.rs`, 3 in `vector_index_auto_rebuild.rs`, 1 in `e2e_support.rs:174`), wrap the six query args in `VectorQuery { ... }`. A local helper in each test file (e.g. `fn vq<'a>(...) -> VectorQuery<'a>`) is acceptable to keep call sites terse, but a plain struct literal is fine.
 
-- [ ] **Step 4: Build + test.** Run:
+- [ ] **Step 4: Build + test.** Run (note: `e2e-support` is built explicitly because B4 edits `query-api/tests/e2e_support.rs:174` and no other B-phase target compiles it):
 
 ```bash
-buck2 build -M none //src/services/engine-serving:engine-serving //src/services/engine:engine 2>&1 | tail -5
+buck2 build -M none //src/services/engine-serving:engine-serving //src/services/engine:engine \
+  //src/services/query-api:e2e-support 2>&1 | tail -5
 buck2 test //src/services/engine-serving:vector-search //src/services/engine-serving:vector-search-identity-kinds \
   //src/services/engine-serving:vector-index-auto-rebuild //src/services/engine:vector-search-flight \
   > /tmp/b4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/b4.log
@@ -707,7 +708,7 @@ pub async fn execute_query(
 }
 ```
 
-  (Prefer `datafusion::physical_plan::common::collect` — no new dep — over `TryStreamExt::try_collect`. If you use `try_collect`, add `//third-party:futures` to the engine-serving **lib** deps.) The `ServingStore` param type reflects B3.
+  (Prefer `datafusion::physical_plan::common::collect` — no new dep — over `TryStreamExt::try_collect`. If you use `try_collect`, add `//third-party:futures` to the engine-serving **lib** deps.) The `ServingStore` param type reflects B3. Keep `execute_query`'s existing first-param type verbatim from the current signature (`&IcebergCatalog`, which is engine-serving's alias for the iceberg `SqlCatalog` — do not rename it to `SqlCatalog`, that's a pre-existing spelling and churning it is out of scope).
 
 - [ ] **Step 3: Build + test.** Run:
 
@@ -886,7 +887,7 @@ git commit -m "refactor(datafusion-io): one decode_ipc; ingest + action-writer a
 
 - [ ] **Step 3: Update the two ingest construction sites.** In `http.rs:345` and `:434`, drop `ipc_body: body.as_ref()` from the `LandRequest` literal. The `schema`/`batches` already come from the C2 `datafusion_io::decode_ipc(&body)` call — no extra decode.
 
-- [ ] **Step 4: Update engine-serving `write_object`.** In `action_writer.rs`, `write_object` (`:64`) currently forwards raw `ipc: &[u8]` into `iceberg_landing::land`. Decode once at the top of `write_object` with `datafusion_io::decode_ipc(ipc).map_err(|e| EngineServingError::Engine(e.to_string()))?` and pass `(schema, batches)` to `land`. Handle empty `ipc` if `write_object` can receive it (mirror `overwrite_table`'s empty handling if applicable — check whether an empty insert is possible; if not, no special case needed).
+- [ ] **Step 4: Update engine-serving `write_object`.** In `action_writer.rs`, `write_object` (`:64`) currently forwards raw `ipc: &[u8]` into `iceberg_landing::land`. Decode once at the top of `write_object` with `datafusion_io::decode_ipc(ipc).map_err(|e| EngineServingError::Engine(e.to_string()))?` and pass `(schema, batches)` to `land`. **Empty-body resolution:** unlike `overwrite_table` (empty `ipc` = truncate-all, a valid signal that discards the schema), `write_object` is a typed *insert* that always carries ≥1 row — an empty insert is not a meaningful operation. So do **not** add an empty-vec branch here: let `decode_ipc` surface the malformed-body error (which maps to `EngineServingError::Engine` → an error response), exactly as the previous double-decode path did when `iceberg_landing::land` re-decoded the same empty bytes. If, on reading the code, `write_object` provably cannot receive empty `ipc` (its caller always builds a non-empty batch), that confirms no special case is needed.
 
 - [ ] **Step 5: Update the direct-`land` test callers.** Each test in `control-plane/postgres/tests/{iceberg_landing, iceberg_schema_evolution_land, iceberg_compact, iceberg_tx_compact, iceberg_overwrite, iceberg_gc, vector_landing, vector_index_build, vector_index_multi, vector_index_hnsw, vector_index_ivf, vector_index_inline_delta, iceberg_read, flush_vector_rebuild}.rs` and `engine-serving/tests/{inline_vector_sql, vector_search, vector_search_identity_kinds, vector_index_auto_rebuild}.rs` calls `land(..., ipc_body, ...)`. Introduce a tiny per-file (or shared) helper that decodes the test's IPC bytes once and passes `(schema, batches)`, OR change each call to build batches directly. Prefer a shared test helper: these tests already construct IPC bodies with a common pattern — add a `decode_ipc`-based shim so the diff is mechanical. (The `road-test-wire-harness` item will later hoist these; here, keep the change minimal and local.)
 
@@ -918,6 +919,7 @@ buck2 clean
 - [ ] Run the union of affected subtrees once more, green:
 
 ```bash
+buck2 build -M none //src/services/query-api:e2e-support 2>&1 | tail -3   # B4 edited e2e_support.rs
 buck2 test //src/control-plane/core/... //src/services/worker/... //src/services/transform/... \
   //src/services/datafusion-io/... //src/services/engine/... //src/services/engine-serving/... \
   //src/services/store-config/... //src/services/ingest/... //src/control-plane/postgres/... \
