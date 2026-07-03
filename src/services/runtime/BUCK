@@ -285,3 +285,20 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+# Acceptance 1: a client-only embedded Config (no PG bin, no LOOM_DB_*) connects
+# to a booted cluster via defaults and runs create-admin. Boots a hermetic
+# Postgres, so it must route local (loom_fixture_test).
+loom_fixture_test(
+    name = "embedded-client-only",
+    crate = "embedded_client_only",
+    srcs = ["tests/embedded_client_only.rs"],
+    crate_root = "tests/embedded_client_only.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/control-plane/core:core",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
