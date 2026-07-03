@@ -16,6 +16,17 @@ fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
     ServingError::Engine(e.to_string())
 }
 
+/// Map a `write_delta` failure, preserving `ControlPlaneError::Conflict` (a CAS
+/// loss on the inline-delta path, surfaced by `GrpcQueueClient::write_delta` via
+/// `write_status`) as `ServingError::Conflict` rather than collapsing it into an
+/// opaque `Engine` string, so the caller can distinguish a retryable conflict.
+fn to_serving_write(e: control_plane_core::ControlPlaneError) -> ServingError {
+    match e {
+        control_plane_core::ControlPlaneError::Conflict(m) => ServingError::Conflict(m),
+        other => ServingError::Engine(other.to_string()),
+    }
+}
+
 /// Encode a single record batch as an Arrow IPC stream body. (Moved verbatim from
 /// the old `serving_datafusion.rs`; stays client-side.)
 pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
@@ -104,6 +115,94 @@ impl ActionEngine for EngineActionClient {
             )
             .await
             .map_err(to_serving)?;
+        Ok(control_plane_core::SnapshotId(id))
+    }
+
+    async fn current_inline_version(
+        &self,
+        table: &control_plane_core::TableRef,
+        id_column: &str,
+        id_value: &SqlValue,
+        id_logical: &str,
+    ) -> Result<i64, ServingError> {
+        let id_cols = vec![id_column.to_string()];
+        let id_values = vec![id_value.clone()];
+        let id_logicals = vec![id_logical.to_string()];
+        let (_schema, batch, specs) = build_object_batch(&id_cols, &id_values, &id_logicals)?;
+        let id_ipc = encode_ipc_stream(&batch)?;
+        let columns_json = serde_json::to_string(&specs).map_err(to_serving)?;
+        self.ctl
+            .current_inline_version(
+                table.schema.clone(),
+                table.name.clone(),
+                id_column.to_string(),
+                id_ipc,
+                columns_json,
+            )
+            .await
+            .map_err(to_serving)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the wire write_delta RPC shape one-for-one; a params struct would only obscure the call site"
+    )]
+    async fn write_delta(
+        &self,
+        table: &control_plane_core::TableRef,
+        id_column: &str,
+        tombstone: bool,
+        columns: &[String],
+        values: &[SqlValue],
+        logical_types: &[String],
+        event: control_plane_core::LineageEvent,
+        expected_version: i64,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        let lineage_json = serde_json::to_string(&LineageWire::from(&event)).map_err(to_serving)?;
+        let (ipc, columns_json) = if tombstone {
+            // A tombstone carries only the identity — locate it among the
+            // caller's (columns, values, logical_types) by name and build a
+            // one-cell id batch, same shape as `current_inline_version`.
+            let idx = columns.iter().position(|c| c == id_column).ok_or_else(|| {
+                ServingError::Engine(format!(
+                    "write_delta: id column `{id_column}` not found in columns"
+                ))
+            })?;
+            let id_value = values.get(idx).ok_or_else(|| {
+                ServingError::Engine("write_delta: values shorter than columns".into())
+            })?;
+            let id_logical = logical_types.get(idx).ok_or_else(|| {
+                ServingError::Engine("write_delta: logical_types shorter than columns".into())
+            })?;
+            let id_cols = vec![id_column.to_string()];
+            let id_values = vec![id_value.clone()];
+            let id_logicals = vec![id_logical.clone()];
+            let (_schema, batch, specs) = build_object_batch(&id_cols, &id_values, &id_logicals)?;
+            (
+                encode_ipc_stream(&batch)?,
+                serde_json::to_string(&specs).map_err(to_serving)?,
+            )
+        } else {
+            let (_schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
+            (
+                encode_ipc_stream(&batch)?,
+                serde_json::to_string(&specs).map_err(to_serving)?,
+            )
+        };
+        let id = self
+            .ctl
+            .write_delta(
+                table.schema.clone(),
+                table.name.clone(),
+                id_column.to_string(),
+                tombstone,
+                ipc,
+                columns_json,
+                lineage_json,
+                expected_version,
+            )
+            .await
+            .map_err(to_serving_write)?;
         Ok(control_plane_core::SnapshotId(id))
     }
 }

@@ -64,6 +64,12 @@ pub enum ServingError {
     /// Query vector length != index dim → 400.
     #[error("dimension mismatch: {0}")]
     DimMismatch(String),
+    /// A write lost an optimistic-concurrency race (a stale inline-delta CAS
+    /// token) — the caller may retry with a freshly-read version. Kept distinct
+    /// from `Engine` so callers can tell a retryable conflict from an opaque
+    /// failure.
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 /// Build a one-row Arrow `RecordBatch` + `Schema` + loom `ColumnSpec` list from an
@@ -306,6 +312,51 @@ pub trait ActionEngine: Send + Sync {
         logical_types: &[String],
         event: control_plane_core::LineageEvent,
     ) -> Result<control_plane_core::SnapshotId, ServingError>;
+
+    /// The current O(change) inline version of one identity (`0` if no live
+    /// inline row exists yet). `id_value`/`id_logical` are the identity column's
+    /// current value and logical type; an impl builds a one-cell id batch from
+    /// them to send over the wire. This is the CAS-token read half of the
+    /// identity-targeted UPDATE/DELETE path (`write_delta` is the write half).
+    /// The default errors — only a wire-backed engine that actually serves the
+    /// inline-shadow tier (`EngineActionClient`) overrides it; the in-process
+    /// test stubs never perform a COW mutation.
+    async fn current_inline_version(
+        &self,
+        _table: &control_plane_core::TableRef,
+        _id_column: &str,
+        _id_value: &SqlValue,
+        _id_logical: &str,
+    ) -> Result<i64, ServingError> {
+        Err(ServingError::Engine(
+            "current_inline_version unsupported".into(),
+        ))
+    }
+
+    /// Write one O(change) inline delta row for a single identity — a
+    /// row-version write when `tombstone` is false, or a tombstone (delete
+    /// marker) when true — committing `event` atomically with it. Guarded by a
+    /// per-identity compare-and-swap against `expected_version` (read via
+    /// [`Self::current_inline_version`]); a lost race surfaces as
+    /// `ServingError::Conflict`, not a generic error, so the caller can re-read
+    /// and retry. The default errors — only `EngineActionClient` overrides it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the wire write_delta RPC shape one-for-one; a params struct would only obscure the call site"
+    )]
+    async fn write_delta(
+        &self,
+        _table: &control_plane_core::TableRef,
+        _id_column: &str,
+        _tombstone: bool,
+        _columns: &[String],
+        _values: &[SqlValue],
+        _logical_types: &[String],
+        _event: control_plane_core::LineageEvent,
+        _expected_version: i64,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        Err(ServingError::Engine("write_delta unsupported".into()))
+    }
 }
 
 /// Escape a string for embedding in a single-quoted SQL literal: double every
