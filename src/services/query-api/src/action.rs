@@ -189,11 +189,16 @@ fn check_assignments_and_binds(
                 "constant assignment names property `{}`, which is not a property of type `{target_name}`",
                 a.property
             )),
-            Some(prop) => {
-                if let Err(e) = crate::params::validate_const(&a.property, &prop.ty, &a.value) {
-                    violations.push(format!("constant for property `{}`: {e}", a.property));
+            Some(prop) => match &a.source {
+                control_plane_core::AssignmentSource::Const(v) => {
+                    if let Err(e) = crate::params::validate_const(&a.property, &prop.ty, v) {
+                        violations.push(format!("constant for property `{}`: {e}", a.property));
+                    }
                 }
-            }
+                control_plane_core::AssignmentSource::Expr(_) => {
+                    // Expression type-checking is wired in Task 6.
+                }
+            },
         }
         if !bound.insert(&a.property) {
             violations.push(dup(&a.property));
@@ -220,8 +225,8 @@ fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(
             .parameters
             .iter()
             .any(|p| p.binds_property() == prop.name && p.required);
-        let by_constant = action.assignments.iter().any(|a| a.property == prop.name);
-        if by_required_param || by_constant {
+        let by_assignment = action.assignments.iter().any(|a| a.property == prop.name);
+        if by_required_param || by_assignment {
             continue;
         }
         if let Some(p) = action

@@ -7,8 +7,8 @@
 //! renamed param, and (4) an UPDATE targets/patches via the bound property.
 
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, ConstAssignment, ControlPlane, Effect,
-    ObjectType, Policy, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, Assignment, ControlPlane, Effect, ObjectType,
+    Policy, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -242,14 +242,8 @@ async fn constants_fill_properties_including_a_required_one() {
             parameters: vec![param("displayName", "String", false, Some("name"))],
             kind: ActionKind::Insert,
             assignments: vec![
-                ConstAssignment {
-                    property: "id".into(),
-                    value: json!("7"),
-                },
-                ConstAssignment {
-                    property: "status".into(),
-                    value: json!("active"),
-                },
+                Assignment::constant("id", json!("7")),
+                Assignment::constant("status", json!("active")),
             ],
         })
         .await
@@ -306,10 +300,7 @@ async fn resolved_row_is_governed_identically_for_constant_and_renamed_param() {
             target: gadget.clone(),
             parameters: vec![param("id", "Long", true, None)],
             kind: ActionKind::Insert,
-            assignments: vec![ConstAssignment {
-                property: "status".into(),
-                value: json!("active"),
-            }],
+            assignments: vec![Assignment::constant("status", json!("active"))],
         })
         .await
         .unwrap();

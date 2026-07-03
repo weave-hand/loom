@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ActionDef, ActionName, Aggregation, ConstAssignment, ControlPlaneError, DerivedPropertyDef,
-    IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef,
-    Result, TableRef, TypeName, VectorIndexDef,
+    ActionDef, ActionName, Aggregation, Assignment, AssignmentSource, ControlPlaneError,
+    DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq,
+    ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
 };
 
 use crate::{PgControlPlane, backend};
@@ -319,13 +319,23 @@ impl Ontology for PgControlPlane {
         .await
         .map_err(backend)?;
         for (i, a) in action.assignments.iter().enumerate() {
+            let value = match &a.source {
+                AssignmentSource::Const(v) => v.clone(),
+                // Expr persistence lands in migration 0027 (Task 5); until then, no caller
+                // produces an Expr through the postgres adapter.
+                AssignmentSource::Expr(_) => {
+                    return Err(ControlPlaneError::Validation(
+                        "expression assignments are not yet persisted".into(),
+                    ));
+                }
+            };
             sqlx::query!(
                 "insert into ontology.action_assignment (action_name, ordinal, property, value) \
                  values ($1, $2, $3, $4)",
                 action.name.0,
                 i as i32,
                 a.property,
-                a.value,
+                value,
             )
             .execute(&mut *tx)
             .await
@@ -375,10 +385,7 @@ impl Ontology for PgControlPlane {
             kind: row.kind.parse()?,
             assignments: assignment_rows
                 .into_iter()
-                .map(|r| ConstAssignment {
-                    property: r.property,
-                    value: r.value,
-                })
+                .map(|r| Assignment::constant(r.property, r.value))
                 .collect(),
         })
     }

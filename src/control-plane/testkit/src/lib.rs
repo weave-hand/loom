@@ -17,12 +17,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
-    CompareOp, ConstAssignment, ControlPlane, ControlPlaneError, DatasetRef, Decision,
-    DerivedPropertyDef, Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent,
-    LinkBacking, LinkDef, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page,
-    PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter,
-    RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
+    Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Assignment, Auth, Cardinality,
+    Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef,
+    Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef,
+    Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq, ParamDef,
+    Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId, ScalarValue,
+    SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -1042,10 +1042,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             },
         ],
         kind: ActionKind::Insert,
-        assignments: vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!("active"),
-        }],
+        assignments: vec![Assignment::constant("status", serde_json::json!("active"))],
     };
     o.define_action(create_gadget.clone())
         .await

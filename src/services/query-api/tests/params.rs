@@ -116,7 +116,7 @@ fn invalid_iso_date_is_an_error() {
 // --- resolve_action_row: param->property mapping + constant assignments (slice 1) ---
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, ConstAssignment, ObjectType, PropertyDef, TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, Assignment, ObjectType, PropertyDef, TableRef, TypeName,
 };
 use query_api::params::resolve_action_row;
 
@@ -152,7 +152,7 @@ fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
     }
 }
 
-fn insert(params: Vec<ParamDef>, assignments: Vec<ConstAssignment>) -> ActionDef {
+fn insert(params: Vec<ParamDef>, assignments: Vec<Assignment>) -> ActionDef {
     ActionDef {
         name: ActionName("a".into()),
         target: TypeName("Gadget".into()),
@@ -190,10 +190,7 @@ fn resolve_maps_binds_to_property() {
 fn resolve_appends_constants() {
     let action = insert(
         vec![pb("id", "Long", true, None)],
-        vec![ConstAssignment {
-            property: "status".into(),
-            value: json!("active"),
-        }],
+        vec![Assignment::constant("status", json!("active"))],
     );
     let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" }))).unwrap();
     assert!(

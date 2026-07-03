@@ -439,15 +439,42 @@ pub struct VectorIndexDef {
     pub spec: IndexSpec,
 }
 
-/// A declared constant filling a property when no parameter supplies it (the
-/// default/fixed-value case, e.g. `status = "active"`). `value` is the JSON wire form of a
-/// scalar — the canonical representation the query-api write path coerces to the property's
-/// logical type (the same path parameters take); it is validated against the property type at
-/// invocation-time conformance. Not `Eq` because `serde_json::Value` is not `Eq`.
+/// The source of a property's [`Assignment`]: either a fixed constant (the JSON wire form of a
+/// scalar, coerced to the property's logical type on the write path) or a bounded expression
+/// over the action's params / earlier-resolved properties (computed at invocation, slice 2).
+/// Not `Eq` because `serde_json::Value` is not `Eq`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ConstAssignment {
+pub enum AssignmentSource {
+    Const(serde_json::Value),
+    Expr(String),
+}
+
+/// A declared assignment filling a property when no parameter supplies it. `Const` is the
+/// default/fixed-value case (e.g. `status = "active"`); `Expr` computes the value from the
+/// action's inputs (e.g. `total = qty * unitPrice`). Ordered within `ActionDef.assignments`;
+/// an `Expr` may reference a property assigned *earlier* in that order.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Assignment {
     pub property: String,
-    pub value: serde_json::Value,
+    pub source: AssignmentSource,
+}
+
+impl Assignment {
+    /// A fixed-constant assignment (the slice-1 shape).
+    pub fn constant(property: impl Into<String>, value: serde_json::Value) -> Self {
+        Assignment {
+            property: property.into(),
+            source: AssignmentSource::Const(value),
+        }
+    }
+
+    /// A computed-expression assignment (slice 2); `source` is the raw expression string.
+    pub fn expr(property: impl Into<String>, source: impl Into<String>) -> Self {
+        Assignment {
+            property: property.into(),
+            source: AssignmentSource::Expr(source.into()),
+        }
+    }
 }
 
 /// A named ontology operation. Slice-1 semantics: insert/update/delete one instance of
@@ -464,7 +491,7 @@ pub struct ActionDef {
     pub kind: ActionKind,
     /// Ordered constant property assignments (the default/fixed-value case).
     #[serde(default)]
-    pub assignments: Vec<ConstAssignment>,
+    pub assignments: Vec<Assignment>,
 }
 
 impl ActionDef {
@@ -546,13 +573,21 @@ impl ActionDefBuilder {
         self
     }
 
-    /// Append a declared constant assignment ([`ConstAssignment`]) filling
-    /// `property` with `value` when no parameter supplies it.
+    /// Append a declared constant assignment filling `property` with `value` when no
+    /// parameter supplies it.
     pub fn assign(mut self, property: impl Into<String>, value: serde_json::Value) -> Self {
-        self.inner.assignments.push(ConstAssignment {
-            property: property.into(),
-            value,
-        });
+        self.inner
+            .assignments
+            .push(Assignment::constant(property, value));
+        self
+    }
+
+    /// Append a declared computed-expression assignment: `property` is set by evaluating
+    /// `source` (the closed grammar) over the action's inputs.
+    pub fn assign_expr(mut self, property: impl Into<String>, source: impl Into<String>) -> Self {
+        self.inner
+            .assignments
+            .push(Assignment::expr(property, source));
         self
     }
 

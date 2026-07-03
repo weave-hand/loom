@@ -75,13 +75,19 @@ pub fn resolve_action_row(
             .ok_or_else(|| {
                 ParamError::BadValue(
                     a.property.clone(),
-                    "constant names an unknown property".into(),
+                    "assignment names an unknown property".into(),
                 )
             })?;
-        out.push((
-            a.property.clone(),
-            parse_value(&a.property, prop_ty, &a.value)?,
-        ));
+        let value = match &a.source {
+            control_plane_core::AssignmentSource::Const(v) => parse_value(&a.property, prop_ty, v)?,
+            control_plane_core::AssignmentSource::Expr(_) => {
+                return Err(ParamError::BadValue(
+                    a.property.clone(),
+                    "expression assignments are not yet evaluated".into(),
+                ));
+            }
+        };
+        out.push((a.property.clone(), value));
     }
     Ok(out)
 }

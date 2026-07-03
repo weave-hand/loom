@@ -159,7 +159,7 @@ fn all_violations_are_collected() {
 
 // --- Param->property mapping: binds + constant assignments (slice 1) ---
 
-use control_plane_core::ConstAssignment;
+use control_plane_core::Assignment;
 
 /// Gadget: id (Long, required), name (String, optional), status (String, optional).
 fn gadget() -> ObjectType {
@@ -188,7 +188,7 @@ fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
     }
 }
 
-fn insert_action(params: Vec<ParamDef>, assignments: Vec<ConstAssignment>) -> ActionDef {
+fn insert_action(params: Vec<ParamDef>, assignments: Vec<Assignment>) -> ActionDef {
     ActionDef {
         name: ActionName("a".into()),
         target: TypeName("Gadget".into()),
@@ -210,10 +210,7 @@ fn rename_and_constant_conform() {
             pb("id", "Long", true, None),
             pb("displayName", "String", false, Some("name")),
         ],
-        vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!("active"),
-        }],
+        vec![Assignment::constant("status", serde_json::json!("active"))],
     );
     check_conformance(&a, &gadget()).expect("conforms");
 }
@@ -223,10 +220,7 @@ fn required_property_covered_by_constant_conforms() {
     // A REQUIRED property (`id`) covered ONLY by a constant is valid coverage.
     let a = insert_action(
         vec![],
-        vec![ConstAssignment {
-            property: "id".into(),
-            value: serde_json::json!("7"),
-        }],
+        vec![Assignment::constant("id", serde_json::json!("7"))],
     );
     check_conformance(&a, &gadget()).expect("constant covers required");
 }
@@ -247,10 +241,7 @@ fn binds_unknown_property_rejected() {
 fn constant_unknown_property_rejected() {
     let a = insert_action(
         vec![pb("id", "Long", true, None)],
-        vec![ConstAssignment {
-            property: "nope".into(),
-            value: serde_json::json!("x"),
-        }],
+        vec![Assignment::constant("nope", serde_json::json!("x"))],
     );
     assert!(is_misconfigured(check_conformance(&a, &gadget())));
 }
@@ -260,10 +251,7 @@ fn constant_type_mismatch_rejected() {
     // `status` is String; a bool constant is incompatible.
     let a = insert_action(
         vec![pb("id", "Long", true, None)],
-        vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!(true),
-        }],
+        vec![Assignment::constant("status", serde_json::json!(true))],
     );
     assert!(is_misconfigured(check_conformance(&a, &gadget())));
 }
@@ -276,10 +264,7 @@ fn double_bind_param_and_constant_rejected() {
             pb("id", "Long", true, None),
             pb("name", "String", false, None),
         ],
-        vec![ConstAssignment {
-            property: "name".into(),
-            value: serde_json::json!("x"),
-        }],
+        vec![Assignment::constant("name", serde_json::json!("x"))],
     );
     assert!(is_misconfigured(check_conformance(&a, &gadget())));
 }
