@@ -128,37 +128,42 @@ impl DbConfig {
     /// `<LOOM_DATA_PATH>/pgrun`, user `postgres`, trust auth, db `loom`); explicit
     /// vars still override. In external mode all five stay required.
     pub fn from_map(vars: &HashMap<String, String>) -> Result<DbConfig, ConfigError> {
-        let max_connections = match vars.get("LOOM_DB_MAX_CONNECTIONS") {
-            Some(s) => Some(
-                s.parse::<u32>()
-                    .map_err(|e| invalid("LOOM_DB_MAX_CONNECTIONS", e))?,
-            ),
-            None => None,
-        };
-        let embedded = vars.get("LOOM_PG_MODE").map(String::as_str) == Some("embedded");
-        if embedded {
-            // Socket dir matches EmbeddedSettings' `<data_path>/pgrun`. LOOM_DATA_PATH
-            // is required by Config::from_map before this runs, so req_var is safe.
-            let data_path = PathBuf::from(req_var(vars, "LOOM_DATA_PATH")?);
-            let default_host = data_path.join("pgrun").display().to_string();
-            return Ok(DbConfig {
-                host: vars.get("LOOM_DB_HOST").cloned().unwrap_or(default_host),
-                port: match vars.get("LOOM_DB_PORT") {
-                    Some(s) => s.parse::<u16>().map_err(|e| invalid("LOOM_DB_PORT", e))?,
-                    None => 5432,
-                },
-                user: vars
-                    .get("LOOM_DB_USER")
-                    .cloned()
-                    .unwrap_or_else(|| "postgres".to_string()),
-                password: vars.get("LOOM_DB_PASSWORD").cloned().unwrap_or_default(),
-                dbname: vars
-                    .get("LOOM_DB_NAME")
-                    .cloned()
-                    .unwrap_or_else(|| DEFAULT_EMBEDDED_DB_NAME.to_string()),
-                max_connections,
-            });
+        if vars.get("LOOM_PG_MODE").map(String::as_str) == Some("embedded") {
+            Self::from_map_embedded(vars)
+        } else {
+            Self::from_map_external(vars)
         }
+    }
+
+    /// Embedded-mode fields: the five `LOOM_DB_*` vars default to values consistent
+    /// with `EmbeddedPg::connect_options()` (socket `<LOOM_DATA_PATH>/pgrun`, port
+    /// 5432, user `postgres`, trust password, db `loom`); explicit vars override.
+    fn from_map_embedded(vars: &HashMap<String, String>) -> Result<DbConfig, ConfigError> {
+        // Socket dir matches EmbeddedSettings' `<data_path>/pgrun`. LOOM_DATA_PATH is
+        // required by Config::from_map before this runs, so req_var is safe.
+        let data_path = PathBuf::from(req_var(vars, "LOOM_DATA_PATH")?);
+        let default_host = data_path.join("pgrun").display().to_string();
+        Ok(DbConfig {
+            host: vars.get("LOOM_DB_HOST").cloned().unwrap_or(default_host),
+            port: match vars.get("LOOM_DB_PORT") {
+                Some(s) => s.parse::<u16>().map_err(|e| invalid("LOOM_DB_PORT", e))?,
+                None => 5432,
+            },
+            user: vars
+                .get("LOOM_DB_USER")
+                .cloned()
+                .unwrap_or_else(|| "postgres".to_string()),
+            password: vars.get("LOOM_DB_PASSWORD").cloned().unwrap_or_default(),
+            dbname: vars
+                .get("LOOM_DB_NAME")
+                .cloned()
+                .unwrap_or_else(|| DEFAULT_EMBEDDED_DB_NAME.to_string()),
+            max_connections: Self::max_connections(vars)?,
+        })
+    }
+
+    /// External-mode fields: all five `LOOM_DB_*` vars are required.
+    fn from_map_external(vars: &HashMap<String, String>) -> Result<DbConfig, ConfigError> {
         Ok(DbConfig {
             host: req_var(vars, "LOOM_DB_HOST")?,
             port: req_var(vars, "LOOM_DB_PORT")?
@@ -167,8 +172,19 @@ impl DbConfig {
             user: req_var(vars, "LOOM_DB_USER")?,
             password: req_var(vars, "LOOM_DB_PASSWORD")?,
             dbname: req_var(vars, "LOOM_DB_NAME")?,
-            max_connections,
+            max_connections: Self::max_connections(vars)?,
         })
+    }
+
+    /// Parse the optional `LOOM_DB_MAX_CONNECTIONS` (shared by both modes).
+    fn max_connections(vars: &HashMap<String, String>) -> Result<Option<u32>, ConfigError> {
+        match vars.get("LOOM_DB_MAX_CONNECTIONS") {
+            Some(s) => Ok(Some(
+                s.parse::<u32>()
+                    .map_err(|e| invalid("LOOM_DB_MAX_CONNECTIONS", e))?,
+            )),
+            None => Ok(None),
+        }
     }
 
     /// sqlx connect options. A `host` beginning with `/` is a unix-socket directory
