@@ -156,9 +156,9 @@ Deferred/planned/defect work is tracked in three **parsable markdown registers**
 split by commitment level — the single source of truth for "what's deferred /
 planned / broken":
 
-- `docs/ROADMAP.md` — committed/sequenced work (`status: planned|done`).
-- `docs/FUTURE.md` — deliberately-deferred ideas (`status: deferred|promoted|dropped`).
-- `docs/ISSUES.md` — known defects/gaps in shipped code (`status: open|fixed|wontfix`).
+- `docs/ROADMAP.md` — committed/sequenced work (`status: planned`).
+- `docs/FUTURE.md` — deliberately-deferred ideas (`status: deferred`).
+- `docs/ISSUES.md` — known defects/gaps in shipped code (`status: open`).
 
 The registers carry **open work only**: when an item closes, its entry is
 removed in the closing PR and the landed capability is documented per subsystem

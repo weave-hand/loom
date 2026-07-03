@@ -10,9 +10,14 @@ registers use the tagged-item grammar in
 it first. Markdown is the source of truth; `tools/docs.sh validate` is the gate.
 
 Registers and their commitment level:
-- `docs/ROADMAP.md` — committed/sequenced work (`status: planned|done`)
-- `docs/FUTURE.md` — deliberately-deferred ideas (`status: deferred|promoted|dropped`)
-- `docs/ISSUES.md` — known defects/gaps in shipped code (`status: open|fixed|wontfix`)
+- `docs/ROADMAP.md` — committed/sequenced work (`status: planned`)
+- `docs/FUTURE.md` — deliberately-deferred ideas (`status: deferred`)
+- `docs/ISSUES.md` — known defects/gaps in shipped code (`status: open`)
+
+The registers carry **open work only**: a closed item's entry is removed (its
+capability documented in `docs/system-capabilities/`, git history keeping the
+record), so the terminal statuses (`done|promoted|dropped|fixed|wontfix`) appear
+only transiently inside a closing PR, never in the committed files.
 
 Item grammar (one markdown list item, prose indented below):
 `- [ ] **Title** ` + "`" + `{#id area:<a> status:<s> from:<f> pr:<p> spec:<sp>}` + "`"
@@ -48,8 +53,11 @@ undesigned idea as buildable). Open `fut-*` are `spec:-` until promoted.
 3. **Classify** each item into ROADMAP / FUTURE / ISSUES by commitment level.
 4. **Reconcile.** Run `bash tools/docs.sh shipped-open` (and `--stale`); for each
    candidate, confirm via `gh pr view <n> --json state` / reading the code whether
-   the work shipped. If shipped, set the item `[x]` with a terminal status and the
-   `pr:`. Do NOT auto-close without confirming.
+   the work shipped. If shipped, REMOVE the item's entry (registers carry open
+   work only), fold the capability into `docs/system-capabilities/` with the PR
+   ref inline, and rewrite surviving `[[id]]` links to it as `` `#id` `` code
+   spans. Name removed ids + PRs in the commit/PR body. Do NOT auto-close
+   without confirming.
 5. **Render** the three files in the grammar, grouped by `## <area>`, preserving
    the original prose. On the FIRST run also perform the migration:
    - Move `docs/TO_BE_PLANNED.md` items into ROADMAP/FUTURE, then `git rm` it.

@@ -38,14 +38,17 @@ mechanics, `superpowers:brainstorming` for spec authoring, and the
      checked out — don't plan over it).
    - Output a short ranked shortlist with one-line reasons (unblocks others, area
      balance, quick win).
-2. **Promote / retire.** For a FUTURE idea being committed to: set it
-   `- [x] status:promoted`, and mint a ROADMAP item `road-<slug>`,
+2. **Promote / retire.** The registers carry open items only (closed entries are
+   removed; git history is the record). For a FUTURE idea being committed to:
+   remove the FUTURE entry and mint a ROADMAP item `road-<slug>`,
    `- [ ] status:planned`, carrying the same `area:`, the `spec:` slug (or `-`),
-   and a `[[fut-…]]` link back. The reverse is the same mechanics: drop a dead
-   FUTURE idea (`- [x] status:dropped`) or demote an abandoned ROADMAP `planned`
-   item back to a FUTURE `deferred` idea, recording why in the prose. (ISSUES
-   defects are orthogonal — they stay in ISSUES, `open` until `fixed`/`wontfix`;
-   do not move them to ROADMAP.) Validate edits: `bash tools/docs.sh validate`.
+   and the removed `#fut-…` id mentioned in the prose as a code span (a `[[…]]`
+   link to a removed item would dangle). The reverse is the same mechanics: drop
+   a dead FUTURE idea by removing its entry (record why in the commit/PR body)
+   or demote an abandoned ROADMAP `planned` item back to a FUTURE `deferred`
+   idea, recording why in the prose. (ISSUES defects are orthogonal — they stay
+   in ISSUES until fixed, then are removed by the fixing PR; do not move them to
+   ROADMAP.) Validate edits: `bash tools/docs.sh validate`.
 3. **Ready (direction gate).** Checkout requires `docs/superpowers/specs/<spec>.md`
    to exist. If the chosen item has `spec:-` or the file is missing, invoke
    `superpowers:brainstorming` to author the spec (a human sets direction). **Stop
