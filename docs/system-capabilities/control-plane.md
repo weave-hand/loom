@@ -23,7 +23,7 @@ back together, so a snapshot commit and the downstream job it enqueues (or the
 lineage event it emits) are atomic — no lost work, no orphan jobs. A decision
 record keeps the `Tx` seam deliberately flat rather than growing a nested
 transaction-composition API; wider composition is tracked as a deferred idea.
-The seam is also honest at compile time about capability (#PRNUM): `Tx` carries
+The seam is also honest at compile time about capability (#340): `Tx` carries
 only the backend-neutral unit of work (`enqueue`/`emit`/`commit`/`rollback`),
 while the table-format staging surface (`create_table`/`append_files`/
 `replace_files`/`compact_files`) lives on `TableTx: Tx`, reached via
@@ -201,7 +201,7 @@ keeping the predicate, policy id, and role server-side.
 ## Auth
 
 Auth is the sixth concern, mirroring the others' store-don't-interpret split —
-and since #PRNUM it is reachable through the facade like the other five
+and since #340 it is reachable through the facade like the other five
 (`ControlPlane::auth()`, delegated by the Iceberg and wire planes to their
 Postgres backing), so a holder of `Arc<dyn ControlPlane>` no longer needs the
 concrete adapter to authenticate. In substance:
