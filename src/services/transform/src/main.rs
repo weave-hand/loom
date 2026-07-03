@@ -12,7 +12,6 @@ use control_plane_postgres::iceberg_sql_catalog::{
 };
 use control_plane_worker::Worker;
 use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use object_store::ObjectStore;
 use tokio_util::sync::CancellationToken;
 use transform::{transform_handler, typed_transform_handler};
@@ -94,8 +93,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Construct the vendored Iceberg SQL catalog over the same Postgres + a `file://`
-/// warehouse rooted at the service data path (mirrors `ingest::build_iceberg_catalog`).
+/// Construct the vendored Iceberg SQL catalog over the same Postgres + the configured
+/// object-store warehouse (mirrors `ingest::build_iceberg_catalog`).
 async fn build_iceberg_catalog(
     cfg: &service_runtime::Config,
 ) -> Result<SqlCatalog, Box<dyn std::error::Error>> {
@@ -103,10 +102,10 @@ async fn build_iceberg_catalog(
     props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
     props.insert(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", cfg.data_path.display()),
+        cfg.object_store.warehouse_uri.clone(),
     );
     let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props)
         .await?;
     Ok(catalog)
