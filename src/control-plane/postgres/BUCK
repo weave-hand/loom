@@ -1013,6 +1013,19 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "fixture-timing",
+    crate = "fixture_timing",
+    srcs = ["tests/fixture_timing.rs"],
+    crate_root = "tests/fixture_timing.rs",
+    deps = [
+        ":postgres",
+        "//third-party:tokio",
+        "//third-party:tracing",
+        "//third-party:tracing-test",
+    ],
+)
+
+loom_fixture_test(
     name = "vector-index-inline-delta",
     crate = "vector_index_inline_delta",
     srcs = ["tests/vector_index_inline_delta.rs"],
