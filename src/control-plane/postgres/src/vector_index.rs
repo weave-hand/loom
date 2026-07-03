@@ -264,7 +264,9 @@ pub async fn inline_delta_batch(
     born_after: i64,
     at: i64,
 ) -> Result<Option<RecordBatch>> {
-    use crate::iceberg_inline::{column_array, inline_table_name};
+    use crate::iceberg_inline::{
+        column_array, inline_table_exists, inline_table_name, mvcc_live_pred, quote_ident,
+    };
     use crate::iceberg_mirror::live_table_id;
     use control_plane_core::resolve_logical;
 
@@ -274,14 +276,7 @@ pub async fn inline_delta_batch(
     };
 
     // Check the inline table exists.
-    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-        "select to_regclass('{}')::text",
-        inline_table_name(tid)
-    )))
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(backend)?;
-    if exists.is_none() {
+    if !inline_table_exists(&mut conn, tid).await? {
         return Ok(None);
     }
 
@@ -331,16 +326,16 @@ pub async fn inline_delta_batch(
         })?;
 
     // Runtime query: select only the identity + vector columns with the delta MVCC predicate.
-    let id_quoted = format!("\"{}\"", identity_col.replace('"', "\"\""));
-    let vec_quoted = format!("\"{}\"", vector_col.replace('"', "\"\""));
+    let id_quoted = quote_ident(&identity_col);
+    let vec_quoted = quote_ident(&vector_col);
     let rows = sqlx::query(AssertSqlSafe(format!(
         "select {id_quoted}, {vec_quoted} \
          from {} \
          where begin_snapshot > {born_after} \
-           and begin_snapshot <= {at} \
-           and (end_snapshot is null or end_snapshot > {at}) \
+           and {} \
          order by loom_row_id",
         inline_table_name(tid),
+        mvcc_live_pred(at),
     )))
     .fetch_all(&mut *conn)
     .await

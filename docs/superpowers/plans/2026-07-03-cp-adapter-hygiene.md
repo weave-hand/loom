@@ -1248,7 +1248,7 @@ site; `inline_append` stops rebuilding its insert statement per row.
   `fn mvcc_live_pred(at: i64) -> String`;
   `async fn inline_table_exists(conn: &mut PgConnection, table_id: i64) -> Result<bool>`.
 
-- [ ] **Step 1: Pinning suites green pre-change**
+- [x] **Step 1: Pinning suites green pre-change**
 
 ```bash
 buck2 test //src/control-plane/postgres:iceberg-inline \
@@ -1262,7 +1262,7 @@ buck2 test //src/control-plane/postgres:iceberg-inline \
 (Target spellings verified against `src/control-plane/postgres/BUCK`.)
 Expected: `Fail 0`.
 
-- [ ] **Step 2: Add the helpers** to `iceberg_inline.rs`:
+- [x] **Step 2: Add the helpers** to `iceberg_inline.rs`:
 
 ```rust
 /// Quote `name` as a PG identifier: wrap in double quotes, escaping embedded
@@ -1296,7 +1296,7 @@ pub(crate) async fn inline_table_exists(
 }
 ```
 
-- [ ] **Step 3: Convert the sites** (each replacement keeps the surrounding
+- [x] **Step 3: Convert the sites** (each replacement keeps the surrounding
   early-return shape byte-identical):
 
   - `has_live_inline_rows`: the two-statement preamble becomes
@@ -1355,7 +1355,7 @@ pub(crate) async fn inline_table_exists(
     )))
 ```
 
-- [ ] **Step 4: Re-run Step 1's suites — green**
+- [x] **Step 4: Re-run Step 1's suites — green**
 
 ```bash
 buck2 test //src/control-plane/postgres:iceberg-inline \
@@ -1367,7 +1367,7 @@ buck2 test //src/control-plane/postgres:iceberg-inline \
 git status --porcelain src/control-plane/postgres/.sqlx   # expect empty
 ```
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek6.log 2>&1; grep -E "Failed" /tmp/prek6.log || echo CLEAN
