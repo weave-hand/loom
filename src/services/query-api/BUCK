@@ -1033,6 +1033,18 @@ rust_test(
 )
 
 rust_test(
+    name = "expr-parse",
+    crate = "expr_parse",
+    srcs = ["tests/expr_parse.rs"],
+    crate_root = "tests/expr_parse.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
     name = "sql-dialect",
     crate = "sql_dialect",
     srcs = ["tests/sql_dialect.rs"],
