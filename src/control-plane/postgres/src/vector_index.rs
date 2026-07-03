@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use control_plane_core::{
-    Catalog, ControlPlaneError, DatasetRef, EventType, LineageEvent, Result, RunId, SnapshotId,
-    TableRef, VectorKey,
+    Catalog, ControlPlaneError, DatasetRef, EventType, IndexSpec, LineageEvent, Metric, Result,
+    RunId, SnapshotId, TableRef, TableSchema, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool};
@@ -374,6 +374,87 @@ pub async fn inline_delta_batch(
     Ok(Some(batch))
 }
 
+/// The pre-read inputs of a vector-index build: the MVCC anchor snapshot S
+/// (captured BEFORE any data read so cold and hot reads are consistent as of
+/// S), the named declaration's column/metric/spec (authoritative), and the
+/// ontology-declared identity column.
+struct BuildInputs {
+    at: SnapshotId,
+    column: String,
+    metric: Metric,
+    spec: IndexSpec,
+    identity_col: String,
+}
+
+/// Jobs 1-2 of the build: snapshot anchor, declaration resolution, identity
+/// column. Resolution order (snapshot -> declaration -> identity) is
+/// load-bearing for error precedence and preserved from the inline code.
+async fn resolve_build_inputs(
+    ice: &crate::iceberg_catalog::IcebergCatalog,
+    pool: &PgPool,
+    table: &TableRef,
+    index_name: &str,
+) -> Result<BuildInputs> {
+    let at = ice.current_snapshot(table).await?.id;
+    let type_name = type_name_for(pool, table).await?;
+    let def = crate::ontology::vector_index_def_row(pool, &type_name, index_name)
+        .await?
+        .ok_or_else(|| {
+            ControlPlaneError::NotFound(format!(
+                "no vector index definition `{index_name}` on type `{type_name}`"
+            ))
+        })?;
+    let identity_col = identity_column_for(pool, table).await?;
+    Ok(BuildInputs {
+        at,
+        column: def.property,
+        metric: def.metric,
+        spec: def.spec,
+        identity_col,
+    })
+}
+
+/// Jobs 3-5: read the cold Parquet files and hot inline rows live at `at`,
+/// and extract `(VectorKey, vector)` rows from both tiers.
+async fn collect_vectors(
+    catalog: &crate::iceberg_sql_catalog::SqlCatalog,
+    ice: &crate::iceberg_catalog::IcebergCatalog,
+    table: &TableRef,
+    at: SnapshotId,
+    column: &str,
+    identity_col: &str,
+) -> Result<Vec<(VectorKey, Vec<f32>)>> {
+    let files = ice.files_with_stats(table, at).await?;
+    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+    let (_, cold_batches) = crate::read_files_as_batches(catalog, table, &paths).await?;
+    let hot_batch: Option<RecordBatch> = ice.inline_live_batch(table, at).await?.map(|(_, _, b)| b);
+
+    let mut all_rows: Vec<(VectorKey, Vec<f32>)> = Vec::new();
+    for batch in cold_batches.iter().chain(hot_batch.iter()) {
+        all_rows.extend(extract_rows(batch, column, identity_col)?);
+    }
+    Ok(all_rows)
+}
+
+/// The declared `vector(N)` dimension of `column` in `schema`, or 0 when the
+/// column is missing or its type is not a well-formed `vector(N)` — the
+/// build's fallback when the table has no rows to infer from (job 6's
+/// legacy `unwrap_or(0)`).
+#[must_use]
+pub fn declared_dim(schema: &TableSchema, column: &str) -> u32 {
+    schema
+        .columns
+        .iter()
+        .find(|c| c.name == column)
+        .and_then(|c| {
+            // ty is e.g. "vector(4)"
+            c.ty.strip_prefix("vector(")
+                .and_then(|s| s.strip_suffix(')'))
+                .and_then(|s| s.parse::<u32>().ok())
+        })
+        .unwrap_or(0)
+}
+
 /// Build a flat vector index over all vectors live at the table's current
 /// snapshot, write a Puffin sidecar to object storage, and commit the
 /// `vector_index` mirror row plus a lineage event in one Postgres transaction.
@@ -394,68 +475,26 @@ pub async fn build_vector_index(
     use crate::iceberg_catalog::IcebergCatalog;
     use crate::iceberg_mirror::live_table_id;
     use crate::lineage::pg_emit;
-    use crate::read_files_as_batches;
 
-    // 1. Snapshot S: the catalog snapshot we build as-of (MVCC anchor).
+    // 1-2. Snapshot anchor S + declaration + identity (see resolve_build_inputs).
     let ice = IcebergCatalog::new(pool.clone());
-    let s: i64 = ice.current_snapshot(table).await?.id.0;
-    let at = SnapshotId(s);
+    let inputs = resolve_build_inputs(&ice, pool, table, index_name).await?;
+    let at = inputs.at;
+    let s: i64 = at.0;
+    let column: &str = &inputs.column;
+    let metric = inputs.metric;
+    let index_spec = inputs.spec.clone();
+    let identity_col = inputs.identity_col.clone();
 
-    // Resolve the named declaration (authoritative source of column/metric/spec).
-    let type_name = type_name_for(pool, table).await?;
-    let def = crate::ontology::vector_index_def_row(pool, &type_name, index_name)
-        .await?
-        .ok_or_else(|| {
-            ControlPlaneError::NotFound(format!(
-                "no vector index definition `{index_name}` on type `{type_name}`"
-            ))
-        })?;
-    let column: &str = &def.property;
-    let metric = def.metric;
-    let index_spec = def.spec;
-
-    // 2. Resolve identity column from the ontology.
-    let identity_col = identity_column_for(pool, table).await?;
-
-    // 3. Cold data: Parquet files live at S.
-    let files = ice.files_with_stats(table, at).await?;
-    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-    let (_, cold_batches) = read_files_as_batches(catalog, table, &paths).await?;
-
-    // 4. Hot data: live inline rows at S.
-    let hot_batch_opt = ice.inline_live_batch(table, at).await?;
-    let hot_batch: Option<RecordBatch> = hot_batch_opt.map(|(_, _, b)| b);
-
-    // 5. Extract (VectorKey, Vec<f32>) rows from all batches.
-    let mut all_rows: Vec<(VectorKey, Vec<f32>)> = Vec::new();
-    for batch in &cold_batches {
-        let rows = extract_rows(batch, column, &identity_col)?;
-        all_rows.extend(rows);
-    }
-    if let Some(ref batch) = hot_batch {
-        let rows = extract_rows(batch, column, &identity_col)?;
-        all_rows.extend(rows);
-    }
-
+    // 3-5. Cold Parquet + hot inline rows, extracted to (VectorKey, vector).
+    let all_rows = collect_vectors(catalog, &ice, table, at, column, &identity_col).await?;
     let row_count = all_rows.len() as i64;
 
-    // 6. Infer dim from the first row (or from the schema).
-    let dim: u32 = if let Some((_, v)) = all_rows.first() {
-        v.len() as u32
-    } else {
-        // No rows: look up the declared dim from the column spec.
-        let schema = ice.schema(table, at).await?;
-        schema
-            .columns
-            .iter()
-            .find(|c| c.name == column)
-            .and_then(|c| {
-                // ty is e.g. "vector(4)"
-                c.ty.strip_prefix("vector(")
-                    .and_then(|s| s.strip_suffix(')'))
-                    .and_then(|s| s.parse::<u32>().ok())
-            })
-            .unwrap_or(0)
+    // 6. Infer dim from the first row; an empty table falls back to the
+    //    declared vector(N) (schema fetched only on this arm, as before).
+    let dim: u32 = match all_rows.first() {
+        Some((_, v)) => v.len() as u32,
+        None => declared_dim(&ice.schema(table, at).await?, column),
     };
 
     // 7. Build the chosen index via the core spec routing (`IndexSpec::build` —

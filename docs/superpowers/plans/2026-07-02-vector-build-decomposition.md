@@ -1519,7 +1519,7 @@ git commit -m "refactor(core): IndexSpec::build owns the spec->index constructio
     Result<Vec<(VectorKey, Vec<f32>)>>` (private)
   - `pub fn declared_dim(schema: &TableSchema, column: &str) -> u32`
 
-- [ ] **Step 1: Write the failing unit test `tests/vector_index_unit.rs`**
+- [x] **Step 1: Write the failing unit test `tests/vector_index_unit.rs`**
 
 ```rust
 //! Pure-seam unit tests for the decomposed build path: `declared_dim` (the
@@ -1568,7 +1568,7 @@ fn declared_dim_zero_when_not_a_vector() {
 }
 ```
 
-- [ ] **Step 2: Wire the BUCK target (pure `rust_test`, mirroring
+- [x] **Step 2: Wire the BUCK target (pure `rust_test`, mirroring
   `iceberg-type`) and observe RED (unresolved import)**
 
 Append to `src/control-plane/postgres/BUCK` near the other pure tests:
@@ -1598,7 +1598,7 @@ buck2 test //src/control-plane/postgres:vector-index-unit > /tmp/t4red.log 2>&1;
 
 Expected: compile failure — `declared_dim` does not exist yet.
 
-- [ ] **Step 3: Add the three seams to `vector_index.rs`** (above
+- [x] **Step 3: Add the three seams to `vector_index.rs`** (above
   `build_vector_index`; the bodies are today's jobs 1-6 moved verbatim, with
   `use control_plane_core::{Metric, TableSchema}` added to the top-level
   import list)
@@ -1689,7 +1689,7 @@ pub fn declared_dim(schema: &TableSchema, column: &str) -> u32 {
 }
 ```
 
-- [ ] **Step 4: Rewire `build_vector_index` jobs 1-6 onto the seams**
+- [x] **Step 4: Rewire `build_vector_index` jobs 1-6 onto the seams**
 
 Replace `:388-448` (jobs 1-6; everything from `// 1. Snapshot S` through the
 dim inference) with:
@@ -1723,7 +1723,7 @@ Everything from `// 7.` down is untouched in this task (the local names
 Delete the now-dead `use crate::iceberg_mirror::live_table_id;` ONLY if the
 compiler flags it — job 10 still uses it in this task.
 
-- [ ] **Step 5: Run — unit test green, fixture suites green**
+- [x] **Step 5: Run — unit test green, fixture suites green**
 
 ```bash
 buck2 test //src/control-plane/postgres:vector-index-unit > /tmp/t4a.log 2>&1; \
@@ -1738,7 +1738,7 @@ buck2 test //src/control-plane/postgres:vector-index-build \
 
 Expected: `Fail 0` in both.
 
-- [ ] **Step 6: prek + commit**
+- [x] **Step 6: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek4.log 2>&1; grep -E "Failed" /tmp/prek4.log || echo CLEAN

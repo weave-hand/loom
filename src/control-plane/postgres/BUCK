@@ -798,6 +798,19 @@ loom_fixture_test(
     ],
 )
 
+rust_test(
+    name = "vector-index-unit",
+    crate = "vector_index_unit",
+    srcs = ["tests/vector_index_unit.rs"],
+    crate_root = "tests/vector_index_unit.rs",
+    edition = "2024",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:uuid",
+    ],
+)
+
 # puffin-roundtrip: pure filesystem IO, no Postgres. Uses rust_test + local-only
 # execution rather than loom_fixture_test to avoid the :libxml2 / :postgres-bin
 # http_archive dependencies (those are needed for actual fixture tests that boot
