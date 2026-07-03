@@ -255,8 +255,8 @@ fn window(
     }
     let taken: Vec<DatasetRef> = match page.limit {
         // `usize::try_from(..).unwrap_or(usize::MAX)` is the in-tree idiom for this
-        // exact `limit + 1` (see memory/src/lineage.rs) — a bare `as` cast trips the
-        // restriction-group `as_conversions`/`cast_possible_truncation` lints.
+        // exact `limit + 1` (see memory/src/lineage.rs) — a lossless widen that avoids
+        // an `as` cast and matches the adapter's own keyset windowing verbatim.
         Some(l) => {
             let keep = usize::try_from(l).unwrap_or(usize::MAX).saturating_add(1);
             visible.into_iter().take(keep).collect()
