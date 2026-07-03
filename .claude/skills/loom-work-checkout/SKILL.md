@@ -51,8 +51,9 @@ one step. The registers and grammar are defined in
       the register close prose.
 4. **Finish** — `superpowers:finishing-a-development-branch`: open a PR whose head
    branch is `work/<id>` (this is what binds the claim to the PR). In that PR,
-   close the register item via `loom-docs-update` (`- [ ]`→`- [x]`, terminal
-   status, add `pr:#N`).
+   close the register item via `loom-docs-update` — remove its entry and fold
+   the landed capability into `docs/system-capabilities/`, naming the id + PR
+   in the PR body (registers carry open work only).
 5. **Release** is automatic: once the PR merges/closes, the claim is reaped by
    `bash tools/docs.sh claims --reap` (run by routines). If you abandon before a
    PR, release explicitly: `bash tools/docs.sh release <id>`.

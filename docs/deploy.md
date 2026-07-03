@@ -1,12 +1,16 @@
 # Deploying loom (images + Helm chart)
 
-This is loom's MVP packaging: reproducible OCI images for the two service
-binaries and a Helm chart that runs them on Kubernetes. The image/Helm build
+This is loom's packaging: reproducible OCI images for the three service
+binaries and a Helm chart that runs them on Kubernetes, plus a standalone
+single-binary `loom` for environments without a cluster (see *Single-binary
+`loom`* below). The image/Helm build
 rules come from [`jomcgi/homelab`](https://github.com/jomcgi/homelab/tree/main/buck2),
 consumed as a **git external cell** (`homelab`) rather than vendored or
 submoduled — buck2 fetches the pinned commit automatically (see *Build rules*
 below). The deployable targets live in their own `deploy//` buck2 cell
 (deliberately off the normal `//src` CI sweep — see below).
+
+_Capabilities as of 4861433b._
 
 ## What ships
 
@@ -14,14 +18,17 @@ below). The deployable targets live in their own `deploy//` buck2 cell
 | --- | --- | --- |
 | ingest service | `deploy//images/ingest:image` | `ghcr.io/weave-hand/loom-ingest` |
 | query-api service | `deploy//images/query-api:image` | `ghcr.io/weave-hand/loom-query-api` |
+| engine service | `deploy//images/engine:image` | `ghcr.io/weave-hand/loom-engine` |
 | Helm chart | `deploy//chart:chart` | `oci://ghcr.io/weave-hand/charts/loom` |
+| standalone binary | `//src/services/standalone:loom` | not published (build locally) |
 
 Each image is the buck2-built Rust binary (`x86_64-unknown-linux-gnu`, glibc)
-layered onto a minimal apko/Wolfi base. The base carries `glibc` + `libgcc` +
-CA certs; query-api additionally carries `libstdc++` for its embedded DuckDB
-(the `duckdb` crate compiles bundled C++) **and** layers the vendored
-`ducklake`/`postgres_scanner` DuckDB extensions at `/opt/duckdb/extensions`
-(`DUCKDB_EXTENSION_DIR`), which the binary `LOAD`s at attach time. Both run as
+layered onto a minimal apko/Wolfi base carrying just `glibc` + `libgcc` +
+CA certs. query-api is a pure wire client over the engine's Arrow Flight
+service, so it bundles no analytics engine and needs no extra runtime libs;
+the **engine** ships as its own image and runs as a **sidecar container in the
+query-api pod**, sharing a Unix socket (`engine.socketPath` on an emptyDir,
+wired via `LOOM_ENGINE_SOCKET`). All containers run as
 non-root (uid 65532) with the binary at the image entrypoint. Package versions
 are pinned in the committed `apko.lock.json`; refresh with `apko lock apko.yaml`
 when an `apko.yaml` changes.
@@ -67,7 +74,12 @@ buck2 run deploy//chart:chart.push
 - A **StorageClass** for the shared object-store PVC. loom does not choose one
   (`objectStore.storageClassName: ""` uses the cluster default).
 
-### Object store and schema migrations
+### Object store and schema migrations (#273)
+
+Both concerns landed with the deploy-hardening slice (#273), which closed the
+demo→deployable gap: a fresh `helm install` yields a working loom with no
+out-of-band schema step, and the warehouse can live on S3/MinIO instead of a
+single-node PVC.
 
 - **Schema migrations** are applied automatically per `migrations.mode`:
   `job` (default) runs a hook Job (the ingest image with `LOOM_MIGRATE=apply`),
@@ -80,7 +92,10 @@ buck2 run deploy//chart:chart.push
   Deployment pods roll (clean ordering for additive changes). `onBoot` sets
   `LOOM_DB_MIGRATE_ON_BOOT=true` on the service containers so each pod migrates at
   startup (sqlx's advisory lock serialises concurrent replicas); `external` applies
-  neither, for operators who manage the schema themselves.
+  neither, for operators who manage the schema themselves. The migrations are
+  **baked into every binary** at compile time (`sqlx::migrate!` — no migrations
+  on disk to mount), so any loom image, including the standalone `loom` binary,
+  can act as the one-shot migrator via `LOOM_MIGRATE=apply`.
 - **Object store — local PVC (default) or S3/MinIO.** By default the services use a
   `LocalFileSystem` warehouse at `LOOM_DATA_PATH`, backed by one PVC that ingest
   writes and query-api reads; with the default `ReadWriteOnce` the chart
@@ -103,7 +118,8 @@ buck2 run deploy//chart:chart.push
 - **Hardened containers**: `runAsNonRoot`, `readOnlyRootFilesystem`, all
   capabilities dropped, `seccompProfile: RuntimeDefault`,
   `automountServiceAccountToken: false`. A writable `emptyDir` is mounted at
-  `/tmp` (with `HOME`/`TMPDIR` pointed there) for DuckDB scratch.
+  `/tmp` (with `workingDir`/`HOME`/`TMPDIR` pointed there) as the only writable
+  scratch space.
 
 ### Key values
 
@@ -118,6 +134,36 @@ the full set; the notable knobs:
 | `networkPolicy.enabled` | `true` | Default-deny on/off. |
 | `gateway.enabled` | `false` | Attach an HTTPRoute to a parent Gateway. |
 | `gateway.parentRef.name` | `""` | Existing Gateway to route through. |
+
+## Configuration model
+
+All binaries (chart-deployed and standalone) share one typed, validated config
+seam (#202): operational tuning knobs (inline/flush byte limits, Parquet write
+tuning, worker poll/backoff, serving page limit, DB pool `max_connections`)
+live in per-domain structs and resolve as three overlaid layers, **defaults <
+file < env**:
+
+1. **Defaults** — each struct's `Default` (the documented constants).
+2. **Config file** — if `LOOM_CONFIG_FILE` points at a path, the **JSON**
+   document there (e.g. a mounted ConfigMap value) is deserialized over the
+   defaults; partial documents are valid, omitted keys keep their defaults.
+   YAML is deliberately not supported yet.
+3. **Environment** — flat `LOOM_*` vars override individual keys last, so
+   secrets and per-pod tuning need no file edit.
+
+Configuration is **fail-loud**: a present-but-malformed value from either the
+file or an env var aborts startup with a `ConfigError` naming the offending
+key — it never silently falls back to a default (#202). The remaining ad-hoc
+readers that violated this (auth session/token TTLs, engine write-path tuning,
+`LOOM_ENGINE_SOCKET`, query-api's UI/CORS/Flight/export-cap vars) were swept
+onto the same fail-loud env-snapshot readers (#309); the mains now boot through
+one shared `service_runtime::bootstrap` path. Safety guardrails (recursion/
+graph-depth caps) and domain invariants (namespaces, job kinds) stay `const`
+and are deliberately not configurable.
+
+Surfacing the tuning knobs as first-class chart `values.yaml` fields is still
+open (`fut-deploy-config-values-wiring`) — today an operator sets the raw
+`LOOM_*` env vars or mounts a `LOOM_CONFIG_FILE` document by hand.
 
 ## Release pipeline (`.github/workflows/release.yml`)
 
@@ -163,13 +209,20 @@ services (engine, ingest, query-api) in one process with an embedded Postgres.
 
 ### What it is
 
-`loom` (buck2 target `//src/services/standalone:loom`) runs the engine gRPC
-service (tonic over a Unix-domain socket), the ingest HTTP service, and the
-query-api HTTP service as concurrent tasks in one tokio runtime. In embedded
-mode it boots the bundled Postgres distribution exactly once, waits for the
-engine to be ready, then opens the two HTTP listeners. A single SIGINT or
-SIGTERM fans out to all three services and stops the embedded Postgres cleanly
-before the process exits.
+`loom` (buck2 target `//src/services/standalone:loom`, shipped in #276) runs
+the engine gRPC service (tonic over a Unix-domain socket), the ingest HTTP
+service, and the query-api HTTP service as concurrent tasks in one tokio
+runtime, via the same library serve seams (`engine::run` / `ingest::serve` /
+`query_api::serve`) the lean per-service binaries use — the wiring exists once.
+In embedded mode it boots the bundled Postgres distribution exactly once,
+waits for the engine to be ready (an explicit readiness gate: listeners are
+bound synchronously before the serve loops spawn), then opens the two HTTP
+listeners. A single SIGINT or SIGTERM fans out graceful shutdown to all three
+services, and the embedded Postgres is stopped cleanly (`pg_ctl stop -m fast`)
+last, after its clients have drained. If any one serve task exits with an
+error, the composite shuts the others down too and reports the originating
+service; the embedded Postgres is stopped cleanly on **every** exit path —
+clean shutdown, serve-task error, or startup failure (#278).
 
 The binary is built the same way as the lean service images:
 
@@ -177,20 +230,63 @@ The binary is built the same way as the lean service images:
 buck2 build //src/services/standalone:loom
 ```
 
+### Embedded Postgres lifecycle
+
+The embedded control plane is a real Postgres that loom owns end to end — the
+same postgres adapter, `.sqlx` cache, and Iceberg mirror catalog as the
+external-DB deploy, with no second backend:
+
+- **Persistent cluster.** Data lives at `<LOOM_DATA_PATH>/pgdata`, the Unix
+  socket at `<LOOM_DATA_PATH>/pgrun` (socket-only; no TCP port). First boot
+  runs `initdb`; subsequent boots adopt the cluster in place (no re-init, data
+  survives restarts). A single-owner guard fails fast if another loom already
+  holds the data dir. Hardening (#247) added `0700` perms on `pgdata`/`pgrun`
+  and fast-fail readiness (a dead `postgres` child surfaces its real error
+  instead of burning the readiness timeout).
+- **Self-extracting distribution.** The PG binaries ride inside `loom`
+  (`include_bytes!` of the pinned distribution tarball) and self-extract on
+  first boot to `<LOOM_DATA_PATH>/cache/pg-<version>/` (lock-free temp-dir +
+  atomic rename; reused across restarts). No `LOOM_PG_BIN_DIR` needs to be
+  pre-staged. The embed lives in a gated crate, so lean service binaries do
+  not carry the ~12 MB.
+- **Migrations baked in.** Schema migrations are embedded at compile time via
+  `sqlx::migrate!` and applied on boot — nothing to mount, and the same
+  embedded migrator backs `LOOM_MIGRATE=apply` and the chart's migration Job.
+
+### First-admin bootstrap (`loom create-admin`)
+
+There is **no env-driven admin auto-bootstrap** — the old
+`LOOM_BOOTSTRAP_ADMIN_*` variables are gone from all binaries. The sole
+admin-creation path is the out-of-band CLI subcommand:
+
+```sh
+loom create-admin --username <name>   # password read from stdin (prompt on stderr)
+```
+
+It seeds the first admin (a normal identity holding the reserved `admin`
+role, not an ACL-bypass superuser) and **seals** the instance in one sequence;
+a second `create-admin` against the same database is refused. Run it against
+the running instance's database (`tools/dev-up.sh` does this automatically
+after boot). Note: in embedded mode the config parser currently still demands
+`LOOM_PG_BIN_DIR`/`LOOM_PG_LD_LIBRARY_PATH` even for this client-only
+connection — supply the same values as the server process (see *Known gaps*,
+`iss-embedded-config-requires-pg-bin-dir`). A chart-level one-shot
+`create-admin` Job does not exist yet (`fut-helm-create-admin-job`).
+
 ### Environment variables
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `LOOM_DATA_PATH` | yes | — | Root for Parquet/Iceberg data **and** the embedded-Postgres cache (`<path>/cache/pg-<version>/`). |
 | `LOOM_ENGINE_SOCKET` | yes | — | Path to the Unix-domain socket the engine listens on and the other two services connect to. |
-| `LOOM_BIND_ADDR` | yes | — | Required by config parsing but **unused by `loom`** (the composite binds the two dedicated addrs below); set any value. Tracked for removal — see the ergonomics note. |
+| `LOOM_BIND_ADDR` | yes | — | Required by config parsing but **unused by `loom`** (the composite binds the two dedicated addrs below); set any value. Tracked for removal — see *Known gaps* (`fut-embedded-pg-db-vars-optional`). |
 | `LOOM_PG_MODE` | no | `external` | Set to `embedded` to start the bundled Postgres automatically. |
 | `LOOM_QUERY_API_BIND_ADDR` | no | `0.0.0.0:8080` | TCP address for the query-api HTTP listener. |
 | `LOOM_INGEST_BIND_ADDR` | no | `0.0.0.0:8081` | TCP address for the ingest HTTP listener. |
 | `LOOM_FLIGHT_BIND_ADDR` | no | — | If set, also exposes the engine's Arrow Flight SQL endpoint on this address. |
 | `LOOM_PG_BIN_DIR` | no | — | Path to an external `pg_ctl`/`postgres` install. **Optional in embedded mode** — the binary self-extracts its baked-in Postgres distribution to `<LOOM_DATA_PATH>/cache/pg-<version>/` and wires it automatically. |
 | `LOOM_MIGRATE` | no | — | Set to `apply` to run schema migrations and exit immediately (useful with an external/managed Postgres before starting the full process). |
-| `LOOM_DB_HOST`, `LOOM_DB_PORT`, `LOOM_DB_USER`, `LOOM_DB_PASSWORD`, `LOOM_DB_NAME` | yes | — | Control-plane database connection vars. In **embedded** mode `LOOM_DB_NAME` names the database created inside the bundled cluster; the connection uses the embedded socket at `<LOOM_DATA_PATH>/pgrun` as the `postgres` superuser, so `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD` are **required by config parsing but ignored** (supply any placeholder). In **external** mode all five are the real connection settings. Reducing this verbosity for embedded mode is tracked — see the ergonomics note. |
+| `LOOM_DB_HOST`, `LOOM_DB_PORT`, `LOOM_DB_USER`, `LOOM_DB_PASSWORD`, `LOOM_DB_NAME` | yes | — | Control-plane database connection vars. In **embedded** mode `LOOM_DB_NAME` names the database created inside the bundled cluster; the connection uses the embedded socket at `<LOOM_DATA_PATH>/pgrun` as the `postgres` superuser, so `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD` are **required by config parsing but ignored** (supply any placeholder). In **external** mode all five are the real connection settings. Reducing this verbosity for embedded mode is tracked — see *Known gaps* (`fut-embedded-pg-db-vars-optional`). |
 | `LOOM_WAREHOUSE_URI` | no | — | Object-store warehouse URI (e.g. `s3://bucket/prefix` or a local `file://` path under `LOOM_DATA_PATH`). |
 
 ### Minimal quick-start
@@ -238,6 +334,38 @@ LOOM_DB_NAME=loom \
 When `LOOM_MIGRATE=apply` the process exits after migrations complete — it does
 not start the HTTP listeners or the engine, making it suitable as a migration
 init container.
+
+## Known gaps
+
+Open deploy-area register items (see `docs/ISSUES.md` / `docs/FUTURE.md` for
+full context):
+
+- `#iss-embedded-pg-libxml2` — the self-extracted PG lacks `libxml2.so.2`, so
+  a fresh embedded boot fails on hosts without it (`tools/dev-up.sh` shims a
+  symlink as a workaround; the self-extract path is not CI-covered).
+- `#iss-embedded-config-requires-pg-bin-dir` — client-only invocations (e.g.
+  `loom create-admin`) still require `LOOM_PG_BIN_DIR`/
+  `LOOM_PG_LD_LIBRARY_PATH` in embedded mode despite never spawning Postgres.
+- `#fut-embedded-pg-db-vars-optional` — embedded mode still requires
+  placeholder `LOOM_BIND_ADDR` + `LOOM_DB_HOST/PORT/USER/PASSWORD` values that
+  config parsing demands but the composite ignores.
+- `#fut-embedded-pg-cache-gc` — stale `pg-<version>/` extract caches are never
+  swept after a version-pin bump (bounded disk leak).
+- `#fut-embedded-postgres-pg-upgrade` — no `pg_upgrade` story when a PG major
+  bump meets an existing `pgdata` (it errors clearly; migration is manual).
+- `#fut-helm-create-admin-job` — the chart has no one-shot `create-admin` Job;
+  first-admin bootstrap in a Helm deploy is a manual CLI run.
+- `#fut-deploy-config-values-wiring` — the typed tuning knobs are not surfaced
+  as `values.yaml` fields; operators set raw env vars.
+- `#fut-deploy-data-path-optional-s3` — `LOOM_DATA_PATH` is required even under
+  an `s3://` warehouse (the chart's S3 path sets an inert value).
+- `#fut-deploy-s3-credentials-identity` — S3 credentials are static-secret
+  only; no cloud workload identity (IRSA / GKE WI) yet.
+- `#fut-graceful-shutdown-tls` — the lean per-service binaries have no graceful
+  shutdown/signal handling and no TLS (the standalone composite has the signal
+  wiring; TLS is open everywhere).
+- `#fut-config-yaml-format` — `LOOM_CONFIG_FILE` is JSON-only; YAML authoring
+  awaits a maintained YAML crate.
 
 ## Build rules (the `homelab` external cell)
 

@@ -16,12 +16,22 @@ the spec/plan just finished and the PR number(s) for the work.
 1. Identify the completed spec/plan (the one just implemented on this branch) and
    the PR number(s). If unsure of the PR, use `gh pr view --json number -q .number`
    for the current branch.
-2. **Close resolved items.** Find register items whose `spec:` references this
+2. **Close resolved items — by REMOVING them.** The registers carry open work
+   only (see CLAUDE.md → *Documentation registers*); git history is the
+   item-by-item record. Find register items whose `spec:` references this
    spec/plan, or whose description the work satisfies:
    `bash tools/docs.sh query open | grep -i <keyword>` and
    `grep -n <spec-slug> docs/ROADMAP.md docs/FUTURE.md docs/ISSUES.md`.
-   For each resolved item: change `- [ ]` → `- [x]`, set a terminal status
-   (`done` / `fixed` / `promoted`), and add the PR to `pr:` (e.g. `pr:#84`).
+   For each resolved item:
+   - Delete its whole entry (the `- [ ]` line **and** the indented prose below it).
+     Do NOT flip to `- [x]` — closed entries no longer live in the registers.
+   - **Document the landed capability** in the matching
+     `docs/system-capabilities/<subsystem>.md` (or `docs/deploy.md` for deploy):
+     fold what shipped into the right themed section with the PR ref inline
+     `(#N)`, and remove the item's id from that doc's `## Known gaps` if listed.
+   - Rewrite any surviving `[[<id>]]` reference to the removed item as a plain
+     `` `#<id>` `` code span (the `[[…]]` link would dangle and fail validate).
+   - Name the closed id(s) + PR in the commit/PR body — that is the id↔PR record.
 3. **Record new deferrals.** Read the completed spec's "deferred" / "out of
    scope" / "non-goals" section. For each genuinely-deferred follow-up, add a new
    item to FUTURE (an idea) or ISSUES (a defect/gap) with `status: deferred`/`open`,
@@ -30,10 +40,11 @@ the spec/plan just finished and the PR number(s) for the work.
    related items. **Never put the originating spec in `spec:`** — `spec:` means a
    *dedicated* design exists (the claim/readiness signal); a deferral has none
    until `loom-work-plan` authors one, so it stays `spec:-`.
-4. **Promote if applicable.** If the work fulfilled a committed ROADMAP item, mark
-   it `done`; if it began a `deferred` FUTURE item, set that item `promoted` and add
-   the matching `road-…` item.
+4. **Promote if applicable.** If the work began a `deferred` FUTURE item rather
+   than finishing it, remove the FUTURE entry and add the matching `road-…` item
+   (mention the removed `#fut-…` id in the new item's prose as a code span).
 5. **Validate:** `bash tools/docs.sh validate` — fix every reported error.
-6. **Stage** the register edits so they ride the current feature branch's commit
-   (do not open a separate PR): `git add docs/ROADMAP.md docs/FUTURE.md docs/ISSUES.md`.
+6. **Stage** the register + capability-doc edits so they ride the current feature
+   branch's commit (do not open a separate PR): `git add docs/ROADMAP.md
+   docs/FUTURE.md docs/ISSUES.md docs/system-capabilities/`.
    Mention in the commit/PR body which items were closed/added.
