@@ -52,6 +52,11 @@ pub enum EngineServingError {
     /// Callers should surface this as a 400/bad-request.
     #[error("dimension mismatch: {0}")]
     DimMismatch(String),
+    /// An inline-delta CAS lost a race: the identity's live version had already
+    /// moved past `expected_version` by the time the write was attempted. Callers
+    /// should surface this as a retryable conflict, never a generic 500.
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.
@@ -112,17 +117,31 @@ pub async fn build_serving_provider(
     // a PG TableProvider that pushes filter/limit/projection into a per-query
     // SELECT — no Arrow->Parquet->Arrow round-trip. The snapshot is baked into a
     // base predicate so MVCC visibility matches `inline_live_batch`.
-    let inline_provider =
-        build_inline_provider(catalog, table, &schema, &table_schema.columns, snap.id).await?;
+    // Resolve the type's identity column (if any). An identity-bearing type serves an
+    // identity-dedup MERGE (inline deltas shadow file rows by precedence, and a
+    // tombstone winner hides the id); an identity-less type keeps the additive union.
+    let identity = control_plane_postgres::ontology::identity_for_table(&catalog.pool, table)
+        .await
+        .map_err(to_serving)?;
 
-    // Combine: file-only, inline-only, or a UNION ALL view of both. The inline
-    // provider carries the authoritative mirror schema, while the file provider's
-    // schema is Parquet-footer-inferred, so a column's nullability may differ
-    // (Parquet writers often mark columns nullable regardless of the logical
-    // `required` flag); `DataFrame::union` widens nullability, so this is fine —
-    // names + datatypes match because both derive from the same table schema.
-    let provider: Arc<dyn datafusion::catalog::TableProvider> =
-        match (file_provider, inline_provider) {
+    let inline_provider = build_inline_provider(
+        catalog,
+        table,
+        &schema,
+        &table_schema.columns,
+        snap.id,
+        identity.as_deref(),
+    )
+    .await?;
+
+    // Combine. Identity-less: file-only, inline-only, or an additive UNION ALL of both
+    // (the file provider presents the mirror schema; the union's nullability-widening
+    // is defensive here — names + datatypes match because both derive from the same
+    // table schema). Identity-bearing: a plain file
+    // provider when there are no live inline rows (file rows are already identity-unique),
+    // else the identity-dedup merge view.
+    let provider: Arc<dyn datafusion::catalog::TableProvider> = match identity.as_deref() {
+        None => match (file_provider, inline_provider) {
             (Some(f), Some(i)) => {
                 let file_view: Arc<dyn TableProvider> = Arc::new(f);
                 let df = ctx
@@ -135,9 +154,115 @@ pub async fn build_serving_provider(
             (Some(f), None) => Arc::new(f),
             (None, Some(i)) => Arc::new(i),
             (None, None) => return Ok(None), // a live table with no data; nothing to register
-        };
+        },
+        Some(id) => match (file_provider, inline_provider) {
+            // Identity but no live inline rows: file rows are already identity-unique,
+            // so return the plain file provider (cheaper, schema preserved trivially).
+            (Some(f), None) => Arc::new(f),
+            (None, None) => return Ok(None),
+            // Identity + inline present (with or without a file tier): dedup by identity.
+            (file_opt, Some(i)) => build_merge_view(ctx, &schema, id, file_opt, i)?,
+        },
+    };
 
     Ok(Some(provider))
+}
+
+/// Build the identity-dedup merge view for an identity-bearing type. The file tier
+/// synthesizes precedence `0` and a `false` tombstone; the inline tier exposes its
+/// `begin_snapshot` as `_loom_prec` and `loom_tombstone` as `_loom_tomb`. The two
+/// tiers are UNION-ALL'd (or the inline tier alone when `file` is `None`), then
+/// deduped per identity keeping the greatest precedence, tombstoned winners are
+/// dropped, and the result is projected back to EXACTLY the mirror data `schema`.
+///
+/// Equivalent to (the reference SQL): for identity column `<id>`,
+/// ```sql
+/// SELECT <data_cols> FROM (
+///   SELECT <data_cols>, _loom_tomb,
+///          ROW_NUMBER() OVER (PARTITION BY <id> ORDER BY _loom_prec DESC) AS _loom_rn
+///   FROM ( <file 0/false>  UNION ALL  <inline begin_snapshot/loom_tombstone> )
+/// ) WHERE _loom_rn = 1 AND _loom_tomb = false
+/// ```
+///
+/// A `ROW_NUMBER()` window (not `DISTINCT ON`) is used deliberately: the window is a
+/// pass-through over the data columns, so they keep their mirror `DataType` AND
+/// nullability end to end (union coerces identical schemas to themselves; window /
+/// filter / final projection are pass-through). Thus the final projection needs no
+/// casts and the view's schema equals `schema` exactly — which the governed layer
+/// and callers require. (`DISTINCT ON` would widen the identity column to nullable.)
+fn build_merge_view(
+    ctx: &SessionContext,
+    schema: &SchemaRef,
+    identity: &str,
+    file: Option<IcebergMirrorTableProvider>,
+    inline: PgTableProvider,
+) -> Result<Arc<dyn TableProvider>, EngineServingError> {
+    use datafusion::functions_window::expr_fn::row_number;
+    use datafusion::logical_expr::{ExprFunctionExt, lit};
+
+    // Case-preserving unqualified column reference. DataFusion's `col()` parses its
+    // argument as a SQL identifier and LOWERCASES unquoted names (e.g. `col("unitPrice")`
+    // resolves to a nonexistent `unitprice`), which would fail every mixed-case mirror
+    // column. `Column::new_unqualified` takes the name verbatim, so the merge view's
+    // schema equals the mirror data schema exactly — camelCase names preserved — for
+    // ALL identity types. (The helper column names are lowercase, but routing them
+    // through the same builder keeps every reference consistent.)
+    let cref = |name: &str| Expr::Column(Column::new_unqualified(name));
+
+    // Mirror data columns in order — the exact output projection.
+    let data_cols: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+
+    // Inline tier aligned to [<data_cols>, _loom_prec, _loom_tomb]. The provider
+    // exposes precedence/tombstone under their physical names; alias for the union.
+    let mut inline_exprs: Vec<Expr> = data_cols.iter().map(|n| cref(n.as_str())).collect();
+    inline_exprs.push(cref("begin_snapshot").alias("_loom_prec"));
+    inline_exprs.push(cref("loom_tombstone").alias("_loom_tomb"));
+    let inline_df = ctx
+        .read_table(Arc::new(inline))
+        .map_err(to_serving)?
+        .select(inline_exprs)
+        .map_err(to_serving)?;
+
+    // File tier synthesizes precedence 0 + false tombstone, so any inline delta
+    // shadows a file row. UNION ALL with the inline tier (or inline alone).
+    let unioned = match file {
+        Some(f) => ctx
+            .read_table(Arc::new(f))
+            .map_err(to_serving)?
+            .with_column("_loom_prec", lit(0_i64))
+            .map_err(to_serving)?
+            .with_column("_loom_tomb", lit(false))
+            .map_err(to_serving)?
+            .union(inline_df)
+            .map_err(to_serving)?,
+        None => inline_df,
+    };
+
+    // ROW_NUMBER() OVER (PARTITION BY <id> ORDER BY _loom_prec DESC): rank 1 is the
+    // greatest-precedence row per identity (row_number returns non-null UInt64).
+    let ranked = row_number()
+        .partition_by(vec![cref(identity)])
+        .order_by(vec![cref("_loom_prec").sort(false, false)])
+        .build()
+        .map_err(to_serving)?
+        .alias("_loom_rn");
+    // Keep the winner per identity, hide tombstoned winners, then project back to the
+    // mirror data schema (dropping _loom_prec / _loom_tomb / _loom_rn).
+    let merged = unioned
+        .window(vec![ranked])
+        .map_err(to_serving)?
+        .filter(cref("_loom_rn").eq(lit(1_u64)))
+        .map_err(to_serving)?
+        .filter(cref("_loom_tomb").eq(lit(false)))
+        .map_err(to_serving)?
+        .select(
+            data_cols
+                .iter()
+                .map(|n| cref(n.as_str()))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(to_serving)?;
+    Ok(merged.into_view())
 }
 
 /// Register `table`'s live data files (at its current snapshot) via the pruning-aware
@@ -185,12 +310,20 @@ pub(crate) fn register_qualified(
 /// inline storage or no live inline rows (preserving the prior `inline_parquet`
 /// `None` behavior). `schema` is the table's authoritative arrow schema (already
 /// built by the caller); `cols` are the mirror column defs (for logical types).
+///
+/// When `identity` is `Some` the type serves an identity-dedup MERGE, so the
+/// provider's schema is EXTENDED with two trailing columns — `begin_snapshot`
+/// (i64 non-null, the row's precedence) and `loom_tombstone` (bool non-null) —
+/// under their physical names, so `PgTableProvider`'s per-scan SELECT resolves
+/// them; the merge in `build_serving_provider` aliases them to `_loom_prec` /
+/// `_loom_tomb`. When `identity` is `None` the schema stays data-only.
 async fn build_inline_provider(
     catalog: &IcebergCatalog,
     table: &TableRef,
     schema: &SchemaRef,
     cols: &[control_plane_core::ColumnDef],
     at: control_plane_core::SnapshotId,
+    identity: Option<&str>,
 ) -> Result<Option<PgTableProvider>, EngineServingError> {
     use control_plane_postgres::iceberg_inline::{has_live_inline_rows, inline_table_name};
     use control_plane_postgres::iceberg_mirror::live_table_id;
@@ -227,10 +360,24 @@ async fn build_inline_provider(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Merge mode: append the precedence + tombstone columns (physical names) so the
+    // dedup can rank rows and hide tombstoned identities. Data-only otherwise.
+    let (provider_schema, logical_types) = if identity.is_some() {
+        let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+        fields.push(Field::new("begin_snapshot", DataType::Int64, false));
+        fields.push(Field::new("loom_tombstone", DataType::Boolean, false));
+        let mut lts = logical_types;
+        lts.push(control_plane_core::BaseType::Long);
+        lts.push(control_plane_core::BaseType::Boolean);
+        (Arc::new(Schema::new(fields)) as SchemaRef, lts)
+    } else {
+        (schema.clone(), logical_types)
+    };
     Ok(Some(PgTableProvider::new(
         catalog.pool.clone(),
         inline_table_name(tid),
-        schema.clone(),
+        provider_schema,
         logical_types,
         Some(base),
     )))

@@ -35,6 +35,19 @@ pub fn cp_status(s: tonic::Status) -> ControlPlaneError {
     }
 }
 
+/// Map a tonic [`tonic::Status`] from a data-plane write RPC (`write_delta`) back
+/// to a [`ControlPlaneError`], preserving `Aborted` as `Conflict` (rather than
+/// collapsing it into an opaque [`be`] backend string) so a CAS loss on the
+/// inline-delta path surfaces as a class the caller can retry on, not a generic
+/// failure. Mirrors [`cp_status`]'s `Aborted` arm.
+#[must_use]
+pub fn write_status(s: tonic::Status) -> ControlPlaneError {
+    match s.code() {
+        tonic::Code::Aborted => ControlPlaneError::Conflict(s.message().to_string()),
+        _ => be(s),
+    }
+}
+
 /// Map a tonic [`tonic::Status`] from the engine's Flight **SQL** plane back to a
 /// [`ControlPlaneError`], inverting the engine-side `serving_status` mapping so the
 /// planning-error class survives the wire: `InvalidArgument` (the engine classifies
@@ -226,6 +239,72 @@ impl GrpcQueueClient {
             })
             .await
             .map_err(be)?
+            .into_inner();
+        Ok(resp.snapshot_id)
+    }
+
+    /// The current inline version of one identity (`0` if no live inline row
+    /// exists). `id_ipc` is a one-row Arrow IPC stream holding just the id column;
+    /// `columns_json` (a `Vec<ColumnSpec>`) describes it.
+    pub async fn current_inline_version(
+        &self,
+        schema: String,
+        name: String,
+        id_column: String,
+        id_ipc: Vec<u8>,
+        columns_json: String,
+    ) -> Result<i64> {
+        let resp = self
+            .inner
+            .clone()
+            .current_inline_version(pb::CurrentInlineVersionRequest {
+                schema,
+                name,
+                id_column,
+                id_ipc,
+                columns_json,
+            })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok(resp.version)
+    }
+
+    /// Write one O(change) inline delta row (a row-version or a tombstone) over
+    /// the wire, guarded engine-side by a per-identity CAS against
+    /// `expected_version`. Returns the new snapshot id. A CAS loss surfaces as
+    /// [`ControlPlaneError::Conflict`] (via [`write_status`]), not a generic
+    /// backend error, so callers can retry.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WriteDeltaRequest wire shape one-for-one; a params struct would only obscure the call site"
+    )]
+    pub async fn write_delta(
+        &self,
+        schema: String,
+        name: String,
+        id_column: String,
+        tombstone: bool,
+        ipc: Vec<u8>,
+        columns_json: String,
+        lineage_json: String,
+        expected_version: i64,
+    ) -> Result<i64> {
+        let resp = self
+            .inner
+            .clone()
+            .write_delta(pb::WriteDeltaRequest {
+                schema,
+                name,
+                id_column,
+                tombstone,
+                ipc,
+                columns_json,
+                lineage_json,
+                expected_version,
+            })
+            .await
+            .map_err(write_status)?
             .into_inner();
         Ok(resp.snapshot_id)
     }

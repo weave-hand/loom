@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::governed::Projection;
 use crate::handler::ObjectRows;
 use crate::params::ParamError;
-use crate::serving::{ActionEngine, SqlValue};
+use crate::serving::{ActionEngine, ServingError, SqlValue};
 use crate::write_filter::{self, WriteVerdict};
 
 pub struct ActionDeps<'a> {
@@ -417,9 +417,9 @@ fn check_mutate_conformance(
 
 /// Run one named action against its target type from `body`. Dispatches on the action's
 /// `kind`: `Insert` creates a new instance; `Update`/`Delete` mutate or remove one existing
-/// instance located by the target type's declared identity (whole-table copy-on-write).
-/// Returns the affected object as a single-row `ObjectRows` plus the `RunId` so the caller
-/// can locate the action's lineage (committed atomically with the new snapshot).
+/// instance located by the target type's declared identity (O(change) inline-delta
+/// copy-on-write). Returns the affected object as a single-row `ObjectRows` plus the `RunId`
+/// so the caller can locate the action's lineage (committed atomically with the new snapshot).
 pub async fn run_action(
     action_name: &str,
     body: &serde_json::Map<String, Value>,
@@ -669,10 +669,14 @@ fn ensure_cow_supported(target: &ObjectType) -> Result<(), ActionError> {
     Ok(())
 }
 
-/// `SELECT "c1", "c2", ... FROM "schema"."table"` over all properties (identifiers
-/// double-quoted, embedded quotes doubled). The privileged, ACL-unfiltered full-table
-/// read backing copy-on-write. Column order = property order.
-fn select_all_sql(target: &ObjectType) -> String {
+/// Targeted single-object read backing the O(change) copy-on-write:
+/// `SELECT "c1", "c2", ... FROM "schema"."table" WHERE "id" = ?` over all properties
+/// (identifiers double-quoted, embedded quotes doubled; column order = property order).
+/// Uses a `?` placeholder — NOT `$1`: the serving seam substitutes `?` via
+/// `inline_params` (`serving::inline_params`), so a `$1` would never be bound. The
+/// single param is the resolved identity value. The read runs over the identity-aware
+/// merge view, so it returns the current merged version of exactly the targeted object.
+fn select_object_sql(target: &ObjectType, id_column: &str) -> String {
     let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
     let cols = target
         .properties
@@ -681,10 +685,33 @@ fn select_all_sql(target: &ObjectType) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "SELECT {cols} FROM {}.{}",
+        "SELECT {cols} FROM {}.{} WHERE {} = ?",
         q(&target.table.schema),
-        q(&target.table.name)
+        q(&target.table.name),
+        q(id_column),
     )
+}
+
+/// Max bounded retries of the inline-delta write after a per-identity CAS conflict
+/// before the conflict surfaces to the caller (a genuinely-contended object).
+const COW_MAX_RETRIES: u32 = 5;
+
+/// Backoff before retrying a lost inline-delta CAS: capped exponential
+/// (`min(CAP, BASE << attempt)`) plus a small deterministic jitter derived from hashing
+/// `attempt` (no `rand` — a deterministic hash is enough to spread retries). Mirrors
+/// `iceberg_writer::commit_backoff`'s scheme without the per-writer path; the
+/// per-identity advisory lock already serializes same-identity writers, so genuine
+/// contention (and thus a retry) is rare.
+fn cow_backoff(attempt: u32) -> std::time::Duration {
+    use std::hash::{Hash, Hasher};
+    const BASE: std::time::Duration = std::time::Duration::from_millis(5);
+    const CAP: std::time::Duration = std::time::Duration::from_millis(100);
+    let exp = BASE.saturating_mul(1u32 << attempt.min(16)).min(CAP);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    attempt.hash(&mut hasher);
+    // Jitter in [0, BASE): keep it bounded so it never dominates the delay.
+    let jitter_ms = hasher.finish() % (BASE.as_millis() as u64).max(1);
+    exp + std::time::Duration::from_millis(jitter_ms)
 }
 
 /// Does the candidate row pass EVERY policy's `row_filter`? Evaluates ONLY the row-filter
@@ -788,12 +815,18 @@ pub fn enforce_mutate_policy(
     Ok(())
 }
 
-/// UPDATE/DELETE via whole-table copy-on-write. Locates the row by the target type's
-/// declared identity through a privileged (ACL-unfiltered) full-table read, applies the
-/// mutation in memory (DELETE drops the row; UPDATE PATCHes the named non-identity columns),
-/// governs the affected row(s), then atomically rewrites the full live row set + lineage via
-/// `overwrite_table`. Returns the affected object (UPDATE: the new version; DELETE: the
-/// removed row) + run id. `NotFound` if no live row matches the supplied identity.
+/// UPDATE/DELETE via O(change) inline-delta copy-on-write. Reads the single targeted
+/// object by its declared identity through the identity-aware merge view (a privileged,
+/// ACL-unfiltered read), applies the mutation to that one row (DELETE ⇒ a tombstone;
+/// UPDATE ⇒ the named non-identity columns PATCHed), governs the affected row, then
+/// commits ONE inline delta row + lineage — a mirror-only write that does NOT rewrite
+/// the table's Parquet files. The write is guarded by a per-identity compare-and-swap
+/// against the version token read BEFORE the row read; a lost race
+/// (`ServingError::Conflict`) re-reads the fresh winner, re-governs, and re-writes, up
+/// to [`COW_MAX_RETRIES`] times. Returns the affected object (UPDATE: the new version;
+/// DELETE: the removed row) + run id. `NotFound` if no live row matches the identity; a
+/// Backend fault if more than one live row does (a corrupt-PK invariant the merge view
+/// cannot resolve — e.g. duplicate live file rows).
 async fn run_mutate(
     action: &ActionDef,
     target: &ObjectType,
@@ -823,92 +856,38 @@ async fn run_mutate(
     // The target type's full ordered property set (column names + logical types).
     let columns: Vec<String> = target.properties.iter().map(|p| p.name.clone()).collect();
     let logical: Vec<String> = target.properties.iter().map(|p| p.ty.clone()).collect();
-    let id_idx = columns.iter().position(|c| c == &idprop).ok_or_else(|| {
-        ActionError::Misconfigured(format!("identity `{idprop}` is not a property"))
-    })?;
+    // The identity property's logical type — needed for the version-token read and, on
+    // DELETE, for the one-cell tombstone id batch.
+    let id_logical = target
+        .properties
+        .iter()
+        .find(|p| p.name == idprop)
+        .map(|p| p.ty.clone())
+        .ok_or_else(|| {
+            ActionError::Misconfigured(format!("identity `{idprop}` is not a property"))
+        })?;
 
-    // Privileged full-table read (ACL-unfiltered): COW must see every live row to rewrite
-    // the table without dropping rows the caller cannot read.
-    let live = deps
-        .serving
-        .fetch_rows(&select_all_sql(target), &[])
-        .await?;
-
-    // Locate the target row. The identity is a primary key, so at most one live match.
-    let (target_idx, existing) = locate_unique_row(&live.rows, id_idx, &id_value, &idprop)?;
-
-    // The PATCH columns the caller actually SET (non-identity, non-null). An omitted optional
-    // param materializes as `SqlValue::Null`; PATCH semantics leave it untouched, so it is
-    // excluded both from the column-denial check and from the in-memory overwrite.
+    // The PATCH columns the caller actually SET (non-identity, non-null). An omitted
+    // optional param materializes as `SqlValue::Null`; PATCH semantics leave it untouched,
+    // so it is excluded both from the column-denial check and from the written row.
+    // Retry-invariant (derived from the request, not the read row).
     let set_pairs: Vec<(String, SqlValue)> = pairs
         .iter()
         .filter(|(c, v)| c != &idprop && !matches!(v, SqlValue::Null))
         .cloned()
         .collect();
 
-    // Compute the resulting row (UPDATE = existing with the SET columns overwritten).
-    let new_row: Option<Vec<SqlValue>> = is_update.then(|| {
-        let mut row = existing.clone();
-        for (col, val) in &set_pairs {
-            if let Some(ci) = columns.iter().position(|c| c == col)
-                && let Some(slot) = row.get_mut(ci)
-            {
-                *slot = val.clone();
-            }
-        }
-        row
-    });
-
-    // Fine-grained Write policy on the affected row(s), with the legs isolated (a whole-row
-    // mutate verdict, not the INSERT gate).
+    // Fine-grained Write policies for the subject on this type. Fetched once; the
+    // per-row governance (`enforce_mutate_policy`) is re-run against the freshly-read
+    // row on every retry, so a CAS re-read re-governs the current winner.
     let write_policies = deps
         .cp
         .acl()
         .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
         .await?;
-    enforce_mutate_policy(
-        &write_policies.items,
-        &columns,
-        &existing,
-        &set_pairs,
-        new_row.as_deref(),
-        action_name,
-    )?;
 
-    // Per-value constraint validation on the SET values — the same rules INSERT
-    // enforces, so an UPDATE can no longer write a value the equivalent INSERT
-    // rejects (whitelisted change, road-qa-action-decomposition). Ordered after the
-    // policy legs (403 before 422, mirroring INSERT) and after the locate phase (a
-    // missing identity stays NotFound). DELETE sets nothing (`set_pairs` is empty),
-    // so it is structurally unaffected; the identity is a locator, not a written
-    // value, and is not re-validated.
-    let cviol = value_constraint_violations(target, &set_pairs)?;
-    if !cviol.is_empty() {
-        tracing::info!(
-            action = action_name,
-            count = cviol.len(),
-            "update rejected: constraint violation"
-        );
-        return Err(ActionError::ConstraintViolation(cviol));
-    }
-
-    // Build the new full live set: existing rows minus the target (DELETE) or with the
-    // target replaced by its new version (UPDATE).
-    let mut rows: Vec<Vec<SqlValue>> = live.rows.clone();
-    match &new_row {
-        Some(row) => {
-            if let Some(slot) = rows.get_mut(target_idx) {
-                slot.clone_from(row);
-            }
-        }
-        None => {
-            if target_idx < rows.len() {
-                rows.remove(target_idx);
-            }
-        }
-    }
-
-    // Lineage + atomic copy-on-write commit.
+    // Lineage minted once; the run_id is stable across retries (reused on re-write, so
+    // the caller's returned run_id names the same action regardless of contention).
     let run_id = RunId(Uuid::new_v4());
     let op = if is_update { "update" } else { "delete" };
     let event = LineageEvent {
@@ -919,11 +898,133 @@ async fn run_mutate(
         outputs: vec![DatasetRef::from(&action.target)],
         payload: serde_json::json!({ "action": action_name, "op": op }),
     };
-    deps.action_engine
-        .overwrite_table(&target.table, &columns, &rows, &logical, event)
-        .await?;
 
-    // Return the affected object (UPDATE: the new version; DELETE: the removed values).
-    let returned = new_row.unwrap_or(existing);
+    // Bounded CAS retry loop: capture the per-identity version token, read the current
+    // merged row, re-govern it, then commit ONE O(change) inline delta guarded by the
+    // token. A lost race (`ServingError::Conflict`) re-reads the fresh winner and retries
+    // up to COW_MAX_RETRIES times; past the cap the conflict surfaces to the caller.
+    let mut attempt = 0u32;
+    let returned = loop {
+        // 1. Version token BEFORE the read — the provably-safe ordering: any mutation of
+        //    this identity that lands between here and the write bumps its version, so the
+        //    CAS in `write_delta` detects it and forces a retry (never a lost update).
+        let v0 = deps
+            .action_engine
+            .current_inline_version(&target.table, &idprop, &id_value, &id_logical)
+            .await?;
+
+        // 2. Targeted merged read of the current live object (single `?` bound to the
+        //    identity value; the serving seam substitutes it via `inline_params`).
+        let live = deps
+            .serving
+            .fetch_rows(
+                &select_object_sql(target, &idprop),
+                std::slice::from_ref(&id_value),
+            )
+            .await?;
+        // 0 live rows ⇒ the object does not exist (the caller's 404). >1 is a corrupt-PK
+        // invariant the identity-dedup merge could not resolve (e.g. duplicate live file
+        // rows) — surfaced as a Backend fault (the operator's 500), never a silent
+        // pick-one mutate. Mirrors the old `locate_unique_row` guard.
+        let existing = match live.rows.as_slice() {
+            [] => return Err(ActionError::NotFound),
+            [row] => row.clone(),
+            _ => {
+                return Err(ActionError::ControlPlane(ControlPlaneError::Backend(
+                    format!("identity `{idprop}` matches more than one live row").into(),
+                )));
+            }
+        };
+
+        // 3. Compute the resulting row (UPDATE = existing with the SET columns
+        //    overwritten; DELETE keeps `None`). Same PATCH logic as the whole-table path.
+        let new_row: Option<Vec<SqlValue>> = is_update.then(|| {
+            let mut row = existing.clone();
+            for (col, val) in &set_pairs {
+                if let Some(ci) = columns.iter().position(|c| c == col)
+                    && let Some(slot) = row.get_mut(ci)
+                {
+                    *slot = val.clone();
+                }
+            }
+            row
+        });
+
+        // 4. Governance + constraints — unchanged from the whole-table path. The three
+        //    ordered mutate legs run on the freshly-read `existing`/`new_row`, then the
+        //    per-value constraint check on the SET values (403 before 422, mirroring
+        //    INSERT). DELETE sets nothing (`set_pairs` empty), so it is unaffected.
+        enforce_mutate_policy(
+            &write_policies.items,
+            &columns,
+            &existing,
+            &set_pairs,
+            new_row.as_deref(),
+            action_name,
+        )?;
+        let cviol = value_constraint_violations(target, &set_pairs)?;
+        if !cviol.is_empty() {
+            tracing::info!(
+                action = action_name,
+                count = cviol.len(),
+                "update rejected: constraint violation"
+            );
+            return Err(ActionError::ConstraintViolation(cviol));
+        }
+
+        // 5. Commit ONE inline delta, guarded by the CAS on `v0`. UPDATE writes the full
+        //    post-PATCH row; DELETE writes a tombstone carrying only the identity (the
+        //    engine builds a one-cell id batch and NULLs the other columns).
+        let res = match &new_row {
+            Some(row) => {
+                deps.action_engine
+                    .write_delta(
+                        &target.table,
+                        &idprop,
+                        false,
+                        &columns,
+                        row,
+                        &logical,
+                        event.clone(),
+                        v0,
+                    )
+                    .await
+            }
+            None => {
+                deps.action_engine
+                    .write_delta(
+                        &target.table,
+                        &idprop,
+                        true,
+                        std::slice::from_ref(&idprop),
+                        std::slice::from_ref(&id_value),
+                        std::slice::from_ref(&id_logical),
+                        event.clone(),
+                        v0,
+                    )
+                    .await
+            }
+        };
+        match res {
+            // 6. Success: return the affected object (UPDATE: the new version; DELETE: the
+            //    removed row's values).
+            Ok(_) => break new_row.unwrap_or(existing),
+            // Lost the per-identity CAS race — re-read the fresh winner and retry.
+            Err(ServingError::Conflict(_)) if attempt < COW_MAX_RETRIES => {
+                attempt += 1;
+                tracing::debug!(
+                    action = action_name,
+                    attempt,
+                    "cow: inline-delta CAS conflict, re-reading and retrying"
+                );
+                tokio::time::sleep(cow_backoff(attempt)).await;
+                continue;
+            }
+            // A genuinely-contended object past the retry cap (or any other failure).
+            Err(e) => return Err(ActionError::from(e)),
+        }
+    };
+
+    // 7. Return the affected object + run id — unchanged shape.
     Ok((affected_object(target, columns, returned), run_id))
 }

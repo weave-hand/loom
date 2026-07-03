@@ -14,6 +14,8 @@ use engine_wire::pb;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status};
 
+use crate::flight::serving_status;
+
 fn status(e: control_plane_core::ControlPlaneError) -> Status {
     use control_plane_core::ControlPlaneError::*;
     match e {
@@ -281,6 +283,59 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(pb::OverwriteTableResponse {
+            snapshot_id: snap.0,
+        }))
+    }
+
+    async fn current_inline_version(
+        &self,
+        req: Request<pb::CurrentInlineVersionRequest>,
+    ) -> std::result::Result<Response<pb::CurrentInlineVersionResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let columns: Vec<control_plane_core::ColumnSpec> = serde_json::from_str(&r.columns_json)
+            .map_err(|e| Status::invalid_argument(format!("bad columns_json: {e}")))?;
+        let version = self
+            .writer
+            .current_inline_version(&table, &columns, &r.id_column, &r.id_ipc)
+            .await
+            .map_err(serving_status)?;
+        Ok(Response::new(pb::CurrentInlineVersionResponse { version }))
+    }
+
+    async fn write_delta(
+        &self,
+        req: Request<pb::WriteDeltaRequest>,
+    ) -> std::result::Result<Response<pb::WriteDeltaResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let columns: Vec<control_plane_core::ColumnSpec> = serde_json::from_str(&r.columns_json)
+            .map_err(|e| Status::invalid_argument(format!("bad columns_json: {e}")))?;
+        let wire: engine_wire::convert::LineageWire = serde_json::from_str(&r.lineage_json)
+            .map_err(|e| Status::invalid_argument(format!("bad lineage_json: {e}")))?;
+        let event: control_plane_core::LineageEvent = wire
+            .try_into()
+            .map_err(|e: String| Status::invalid_argument(format!("bad lineage: {e}")))?;
+        let snap = self
+            .writer
+            .write_delta(
+                &table,
+                &columns,
+                &r.id_column,
+                r.tombstone,
+                &r.ipc,
+                event,
+                r.expected_version,
+            )
+            .await
+            .map_err(serving_status)?;
+        Ok(Response::new(pb::WriteDeltaResponse {
             snapshot_id: snap.0,
         }))
     }

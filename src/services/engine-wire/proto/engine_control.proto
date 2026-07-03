@@ -14,6 +14,8 @@ service EngineControl {
   rpc BuildVectorIndex (BuildVectorIndexRequest) returns (BuildVectorIndexResponse);
   rpc WriteObject    (WriteObjectRequest)    returns (WriteObjectResponse);
   rpc OverwriteTable (OverwriteTableRequest) returns (OverwriteTableResponse);
+  rpc CurrentInlineVersion (CurrentInlineVersionRequest) returns (CurrentInlineVersionResponse);
+  rpc WriteDelta           (WriteDeltaRequest)           returns (WriteDeltaResponse);
   // Governance reads (query-api reads ACL + ontology over the wire).
   rpc Check            (CheckRequest)            returns (CheckResponse);
   rpc PoliciesFor      (PoliciesForRequest)      returns (PoliciesForResponse);
@@ -80,6 +82,27 @@ message OverwriteTableRequest {
   string lineage_json = 5;
 }
 message OverwriteTableResponse { int64 snapshot_id = 1; }
+
+message CurrentInlineVersionRequest {
+  string schema = 1;
+  string name = 2;
+  string id_column = 3;
+  bytes  id_ipc = 4;          // one-row Arrow IPC holding just the id column
+  string columns_json = 5;    // Vec<ColumnSpec> describing id_ipc
+}
+message CurrentInlineVersionResponse { int64 version = 1; }
+
+message WriteDeltaRequest {
+  string schema = 1;
+  string name = 2;
+  string id_column = 3;
+  bool   tombstone = 4;
+  bytes  ipc = 5;             // version: full one-row batch; tombstone: one-cell id batch
+  string columns_json = 6;    // Vec<ColumnSpec> describing ipc
+  string lineage_json = 7;    // LineageWire
+  int64  expected_version = 8;
+}
+message WriteDeltaResponse { int64 snapshot_id = 1; }
 
 // ---- Governance-read messages. *_json fields are serde_json of the named core type. ----
 

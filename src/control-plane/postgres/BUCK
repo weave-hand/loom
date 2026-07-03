@@ -278,6 +278,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "identity-for-table",
+    crate = "identity_for_table",
+    srcs = ["tests/identity_for_table.rs"],
+    crate_root = "tests/identity_for_table.rs",
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:sqlx", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "action_kind_persist",
     crate = "action_kind_persist",
     srcs = ["tests/action_kind_persist.rs"],
@@ -652,6 +660,42 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "inline-tombstone",
+    crate = "inline_tombstone",
+    srcs = ["tests/inline_tombstone.rs"],
+    crate_root = "tests/inline_tombstone.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "inline-delta-cas",
+    crate = "inline_delta_cas",
+    srcs = ["tests/inline_delta_cas.rs"],
+    crate_root = "tests/inline_delta_cas.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-inline-vector",
     crate = "iceberg_inline_vector",
     srcs = ["tests/iceberg_inline_vector.rs"],
@@ -706,6 +750,27 @@ loom_fixture_test(
         "//third-party:arrow-schema",
         "//third-party:iceberg",
         "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "flush-suppression",
+    crate = "flush_suppression",
+    srcs = ["tests/flush_suppression.rs"],
+    crate_root = "tests/flush_suppression.rs",
+    deps = [
+        "//third-party:parquet",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",

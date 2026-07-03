@@ -4,6 +4,7 @@ use control_plane_core::{
     DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq,
     ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
 };
+use sqlx::{AssertSqlSafe, PgPool};
 
 use crate::{PgControlPlane, backend};
 
@@ -477,6 +478,25 @@ impl Ontology for PgControlPlane {
         }
         Ok(out)
     }
+}
+
+/// Reverse-lookup: the identity column name for the object type stored at `table`,
+/// or None if it has no declared identity / does not exist. Used by the engine
+/// serving read to make merge-on-read identity-aware without a wire round-trip.
+// AssertSqlSafe: static query against ontology.object_type; sqlx regen unavailable
+// in this env (initdb-as-root). Convert to query! when regenerating locally.
+pub async fn identity_for_table(pool: &PgPool, table: &TableRef) -> Result<Option<String>> {
+    let row: Option<Option<String>> = sqlx::query_scalar(AssertSqlSafe(
+        "select identity from ontology.object_type \
+         where table_schema = $1 and table_name = $2",
+    ))
+    .bind(&table.schema)
+    .bind(&table.name)
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?;
+    // `identity` column is itself nullable → flatten Option<Option<String>>.
+    Ok(row.flatten())
 }
 
 /// Read one named vector-index declaration as a `VectorIndexDef`. Shared by the

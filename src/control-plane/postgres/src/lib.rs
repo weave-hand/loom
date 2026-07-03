@@ -38,7 +38,7 @@ pub mod puffin;
 pub mod vector_index;
 pub use iceberg_read::read_files_as_batches;
 mod lineage;
-mod ontology;
+pub mod ontology;
 mod queue;
 mod transaction;
 
