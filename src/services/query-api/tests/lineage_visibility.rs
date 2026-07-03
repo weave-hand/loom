@@ -410,3 +410,63 @@ async fn redact_events_stored_null_payload_stays_null() {
         "a stored-null payload with no redaction stays null (no false 'redacted' signal)"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_site_namespace_ref_is_denied_and_cut() {
+    // The test bridge's site_namespace is "file:///loom" (see `naming`). A ref under
+    // it whose name is not `schema.table` resolves to Unresolvable → fail closed:
+    // denied AND cut, so a node reachable only through it is never discovered, and it
+    // yields the empty page as a seed. A genuinely-external ref still passes.
+    let cp = cp();
+    // upstream(S): a malformed site-ns ref and a foreign s3 source both feed S.
+    cp.lineage()
+        .emit(edge(ext("file:///loom", "Customer"), ty("S")))
+        .await
+        .unwrap();
+    cp.lineage()
+        .emit(edge(ext("s3://raw", "landing.csv"), ty("S")))
+        .await
+        .unwrap();
+    // G is upstream ONLY of the malformed (cut) node.
+    cp.lineage()
+        .emit(edge(ty("G"), ext("file:///loom", "Customer")))
+        .await
+        .unwrap();
+    let bridge = naming();
+    let subj = subject_reading(&cp, "u", &["S", "G"]).await;
+    let vis = vis_for(&cp, &bridge);
+
+    // As an intermediate: cut node absent, G (reachable only through it) hidden,
+    // external source passes.
+    let page = vis
+        .visible_closure(
+            &subj,
+            &ty("S"),
+            3,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        names(&page),
+        vec!["landing.csv".to_string()],
+        "malformed site-ns ref is cut (G hidden); external still passes"
+    );
+
+    // As a seed: fails closed → empty page (like a denied/unknown seed).
+    let seeded = vis
+        .visible_closure(
+            &subj,
+            &ext("file:///loom", "Customer"),
+            2,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        seeded.items.is_empty(),
+        "malformed site-ns seed fails closed → empty page"
+    );
+}
