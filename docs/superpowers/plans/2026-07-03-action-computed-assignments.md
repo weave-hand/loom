@@ -252,6 +252,31 @@ fn comparison_and_boolean() {
 }
 
 #[test]
+fn not_binds_looser_than_comparison_tighter_than_and() {
+    // `not a > b` == `not (a > b)` (not is looser than comparison)
+    assert_eq!(
+        parse_expr("not qty > 5").unwrap(),
+        Expr::Unary(
+            UnOp::Not,
+            Box::new(Expr::Binary(
+                BinOp::Gt,
+                Box::new(Expr::Param("qty".into())),
+                Box::new(Expr::Int(5)),
+            )),
+        )
+    );
+    // `not a and b` == `(not a) and b` (not is tighter than and/or)
+    assert_eq!(
+        parse_expr("not active and ready").unwrap(),
+        Expr::Binary(
+            BinOp::And,
+            Box::new(Expr::Unary(UnOp::Not, Box::new(Expr::Param("active".into())))),
+            Box::new(Expr::Param("ready".into())),
+        )
+    );
+}
+
+#[test]
 fn if_then_else() {
     let e = parse_expr("if total > 100 then \"gold\" else \"std\"").unwrap();
     assert_eq!(
@@ -393,13 +418,15 @@ enum Tok {
     Comma,
 }
 
+// NOTE: index-free by construction — all character access goes through `at()` (`.get().copied()`),
+// never `chars[i]`/`chars[a..b]`, so the enforced `clippy::indexing_slicing` lint never fires.
 fn lex(src: &str) -> Result<Vec<Tok>, ParseError> {
     let chars: Vec<char> = src.chars().collect();
+    let at = |k: usize| chars.get(k).copied();
     let mut i = 0;
     let mut out = Vec::new();
     let err = |m: &str| ParseError(m.to_string());
-    while i < chars.len() {
-        let c = chars[i];
+    while let Some(c) = at(i) {
         if c.is_whitespace() {
             i += 1;
             continue;
@@ -413,7 +440,7 @@ fn lex(src: &str) -> Result<Vec<Tok>, ParseError> {
             '%' => { out.push(Tok::Percent); i += 1; }
             '-' => { out.push(Tok::Minus); i += 1; }
             '+' => {
-                if chars.get(i + 1) == Some(&'+') {
+                if at(i + 1) == Some('+') {
                     out.push(Tok::Concat);
                     i += 2;
                 } else {
@@ -423,7 +450,7 @@ fn lex(src: &str) -> Result<Vec<Tok>, ParseError> {
             }
             '=' => { out.push(Tok::Eq); i += 1; }
             '!' => {
-                if chars.get(i + 1) == Some(&'=') {
+                if at(i + 1) == Some('=') {
                     out.push(Tok::Ne);
                     i += 2;
                 } else {
@@ -431,7 +458,7 @@ fn lex(src: &str) -> Result<Vec<Tok>, ParseError> {
                 }
             }
             '<' => {
-                if chars.get(i + 1) == Some(&'=') {
+                if at(i + 1) == Some('=') {
                     out.push(Tok::Le);
                     i += 2;
                 } else {
@@ -440,7 +467,7 @@ fn lex(src: &str) -> Result<Vec<Tok>, ParseError> {
                 }
             }
             '>' => {
-                if chars.get(i + 1) == Some(&'=') {
+                if at(i + 1) == Some('=') {
                     out.push(Tok::Ge);
                     i += 2;
                 } else {
@@ -452,13 +479,13 @@ fn lex(src: &str) -> Result<Vec<Tok>, ParseError> {
                 let mut s = String::new();
                 i += 1;
                 loop {
-                    let Some(&ch) = chars.get(i) else {
+                    let Some(ch) = at(i) else {
                         return Err(err("unterminated string literal"));
                     };
                     match ch {
                         '"' => { i += 1; break; }
                         '\\' => {
-                            let Some(&esc) = chars.get(i + 1) else {
+                            let Some(esc) = at(i + 1) else {
                                 return Err(err("dangling escape in string literal"));
                             };
                             match esc {
@@ -478,30 +505,39 @@ fn lex(src: &str) -> Result<Vec<Tok>, ParseError> {
                 out.push(Tok::Str(s));
             }
             '@' => {
-                let start = i + 1;
-                let mut j = start;
-                while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
-                    j += 1;
+                i += 1;
+                let mut name = String::new();
+                while let Some(ch) = at(i) {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        name.push(ch);
+                        i += 1;
+                    } else {
+                        break;
+                    }
                 }
-                if j == start {
+                if name.is_empty() {
                     return Err(err("expected identifier after '@'"));
                 }
-                out.push(Tok::Prop(chars[start..j].iter().collect()));
-                i = j;
+                out.push(Tok::Prop(name));
             }
             c if c.is_ascii_digit() => {
-                let start = i;
+                let mut text = String::new();
                 let mut seen_dot = false;
-                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                    if chars[i] == '.' {
+                while let Some(ch) = at(i) {
+                    if ch == '.' {
                         if seen_dot {
                             break;
                         }
                         seen_dot = true;
+                        text.push(ch);
+                        i += 1;
+                    } else if ch.is_ascii_digit() {
+                        text.push(ch);
+                        i += 1;
+                    } else {
+                        break;
                     }
-                    i += 1;
                 }
-                let text: String = chars[start..i].iter().collect();
                 if seen_dot {
                     let n: f64 = text.parse().map_err(|_| err("bad number literal"))?;
                     out.push(Tok::Double(n));
@@ -511,11 +547,15 @@ fn lex(src: &str) -> Result<Vec<Tok>, ParseError> {
                 }
             }
             c if c.is_alphabetic() || c == '_' => {
-                let start = i;
-                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                    i += 1;
+                let mut word = String::new();
+                while let Some(ch) = at(i) {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        word.push(ch);
+                        i += 1;
+                    } else {
+                        break;
+                    }
                 }
-                let word: String = chars[start..i].iter().collect();
                 out.push(match word.as_str() {
                     "and" => Tok::And,
                     "or" => Tok::Or,
@@ -590,7 +630,10 @@ impl Parser {
                 Ok(Expr::Unary(UnOp::Neg, Box::new(e)))
             }
             Some(Tok::Not) => {
-                let e = self.expr_bp(PREFIX_BP)?;
+                // `not` binds looser than comparison (grammar table), so `not a > b` == `not (a > b)`
+                // but tighter than and/or, so `not a and b` == `(not a) and b`. Recurse at NOT_BP
+                // (== comparison lbp) to fold a comparison into the operand but stop before and/or.
+                let e = self.expr_bp(NOT_BP)?;
                 Ok(Expr::Unary(UnOp::Not, Box::new(e)))
             }
             Some(Tok::LParen) => {
@@ -646,7 +689,11 @@ impl Parser {
     }
 }
 
+/// Unary `-` binds tighter than every binary op (so `-a * b` == `(-a) * b`).
 const PREFIX_BP: u8 = 9;
+/// Unary `not` binds at comparison level: looser than comparison/arithmetic (captures them into
+/// its operand), tighter than `and`/`or`.
+const NOT_BP: u8 = 3;
 
 fn func_by_name(name: &str) -> Option<Func> {
     Some(match name {
@@ -1114,16 +1161,6 @@ fn typecheck_call(func: Func, args: &[Expr], env: &dyn TypeEnv) -> Result<BaseTy
         .iter()
         .map(|a| typecheck(a, env))
         .collect::<Result<_, _>>()?;
-    let arity = |want: usize| {
-        if arg_types.len() == want {
-            Ok(())
-        } else {
-            Err(TypeError::Arity(format!(
-                "function takes {want} argument(s), got {}",
-                arg_types.len()
-            )))
-        }
-    };
     let want_string = |t: BaseType, pos: usize| {
         if t == BaseType::String {
             Ok(())
@@ -1144,34 +1181,34 @@ fn typecheck_call(func: Func, args: &[Expr], env: &dyn TypeEnv) -> Result<BaseTy
             )))
         }
     };
-    match func {
-        Func::Now => {
-            arity(0)?;
-            Ok(BaseType::Timestamp)
-        }
-        Func::Upper | Func::Lower => {
-            arity(1)?;
-            want_string(arg_types[0], 1)?;
+    // Slice patterns keep this index-free (no `clippy::indexing_slicing`) and fold arity into the
+    // match: a wrong count falls through to the `_ =>` Arity arm.
+    match (func, arg_types.as_slice()) {
+        (Func::Now, []) => Ok(BaseType::Timestamp),
+        (Func::Now, _) => Err(TypeError::Arity("now() takes no arguments".into())),
+        (Func::Upper | Func::Lower, [s]) => {
+            want_string(*s, 1)?;
             Ok(BaseType::String)
         }
-        Func::Length => {
-            arity(1)?;
-            want_string(arg_types[0], 1)?;
+        (Func::Upper | Func::Lower, _) => {
+            Err(TypeError::Arity("upper/lower takes 1 argument".into()))
+        }
+        (Func::Length, [s]) => {
+            want_string(*s, 1)?;
             Ok(BaseType::Long)
         }
-        Func::Substr => {
-            arity(3)?;
-            want_string(arg_types[0], 1)?;
-            want_int(arg_types[1], 2)?;
-            want_int(arg_types[2], 3)?;
+        (Func::Length, _) => Err(TypeError::Arity("length takes 1 argument".into())),
+        (Func::Substr, [s, a, b]) => {
+            want_string(*s, 1)?;
+            want_int(*a, 2)?;
+            want_int(*b, 3)?;
             Ok(BaseType::String)
         }
-        Func::Coalesce => {
-            if arg_types.is_empty() {
-                return Err(TypeError::Arity("coalesce needs at least 1 argument".into()));
-            }
-            let mut acc = arg_types[0];
-            for t in &arg_types[1..] {
+        (Func::Substr, _) => Err(TypeError::Arity("substr takes 3 arguments".into())),
+        (Func::Coalesce, []) => Err(TypeError::Arity("coalesce needs at least 1 argument".into())),
+        (Func::Coalesce, [first, rest @ ..]) => {
+            let mut acc = *first;
+            for t in rest {
                 acc = join_branch(acc, *t)?;
             }
             Ok(acc)
@@ -1179,8 +1216,6 @@ fn typecheck_call(func: Func, args: &[Expr], env: &dyn TypeEnv) -> Result<BaseTy
     }
 }
 ```
-
-Note: `arg_types[0]` / `arg_types[1..]` indexing here is guarded by the preceding `arity`/`is_empty` checks; if clippy's `indexing_slicing` flags them, add `#[expect(clippy::indexing_slicing, reason = "arity() checked length immediately above")]` on the specific statements.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -1704,18 +1739,18 @@ fn substr(s: &str, start: Option<&SqlValue>, len: Option<&SqlValue>) -> Result<S
     let from = usize::try_from(start - 1).unwrap_or(usize::MAX);
     let take = usize::try_from(len).unwrap_or(usize::MAX);
     let end = from.saturating_add(take);
-    if from > chars.len() || end > chars.len() {
-        return Err(EvalError::Substr(format!(
+    // `.get(from..end)` returns None if the window is out of range — index-free (no
+    // `clippy::indexing_slicing`), and the None arm becomes the runtime fault.
+    match chars.get(from..end) {
+        Some(slice) => Ok(SqlValue::Text(slice.iter().collect())),
+        None => Err(EvalError::Substr(format!(
             "window {start}..{} exceeds length {}",
-            start + len,
+            start.saturating_add(len),
             chars.len()
-        )));
+        ))),
     }
-    Ok(SqlValue::Text(chars[from..end].iter().collect()))
 }
 ```
-
-Note: the `chars[from..end]` slice is bounds-checked by the `end > chars.len()` guard directly above; if clippy flags `indexing_slicing`, add `#[expect(clippy::indexing_slicing, reason = "bounds checked immediately above")]`.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -1922,7 +1957,7 @@ In `src/services/query-api/src/action.rs`:
         },
 ```
 
-- Required-property coverage in `check_insert_conformance` (~line 223): `by_constant` already counts any assignment by property name regardless of source — no change needed (it matches `a.property`). Confirm the line reads `action.assignments.iter().any(|a| a.property == prop.name)` and leave it.
+- Required-property coverage in `check_insert_conformance` (~line 223): the existing `by_constant` binding already counts any assignment by property name regardless of source (`action.assignments.iter().any(|a| a.property == prop.name)`), so an `Expr` assignment correctly covers a required property with no logic change. Rename the local from `by_constant` → `by_assignment` (it now covers both `Const` and `Expr`) so the name isn't a misnomer; leave the expression unchanged.
 
 - [ ] **Step 6: Build the affected crates and run the existing suites**
 
@@ -2113,8 +2148,8 @@ Append to `src/services/query-api/tests/action_conformance.rs` (reuse its `gadge
 
 ```rust
 // --- Computed (expression) assignments: define-time typing (slice 2) ---
-
-use control_plane_core::Assignment;
+// NOTE: `Assignment` is already imported at the top of this file (Task 4 renamed the slice-1
+// `use control_plane_core::ConstAssignment;` import to `Assignment`). Do NOT re-import it here.
 
 /// Gadget has id (Long, req), name (String), status (String). Add a numeric prop for typing.
 fn gadget_with_total() -> ObjectType {
@@ -2125,17 +2160,29 @@ fn gadget_with_total() -> ObjectType {
 
 #[test]
 fn valid_expression_conforms() {
-    // total = <constant-free arithmetic over params>; here over a param `q` bound to nothing
-    // extra — use id (Long) so `id * 2` is Long, assignable to nothing; instead compute total.
+    // total = id + 1 : Long, assignable to the Double `total` property by widening -> conforms.
+    // (Only the required `id` param is declared; no stray param.)
     let a = ActionDef {
         name: ActionName("a".into()),
         target: TypeName("Gadget".into()),
-        parameters: vec![pb("id", "Long", true, None), pb("q", "Double", false, Some("status"))],
+        parameters: vec![pb("id", "Long", true, None)],
         kind: ActionKind::Insert,
         assignments: vec![Assignment::expr("total", "id + 1")],
     };
-    // id + 1 : Long, assignable to Double (widening) -> conforms.
     check_conformance(&a, &gadget_with_total()).expect("computed assignment conforms");
+}
+
+#[test]
+fn expr_double_bind_rejected() {
+    // `status` is written by both a renamed param and an Expr assignment -> double-bind.
+    let a = insert_action(
+        vec![
+            pb("id", "Long", true, None),
+            pb("s", "String", false, Some("status")),
+        ],
+        vec![Assignment::expr("status", "upper(\"x\")")],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
 }
 
 #[test]
@@ -2374,8 +2421,13 @@ git commit -m "feat(query-api): type-check computed expression assignments at co
 
 - [ ] **Step 1: Update the params tests (new `now` arg + computed cases) — failing**
 
-In `src/services/query-api/tests/params.rs`:
-- Add a `now()` helper and pass it to every `resolve_action_row(...)` call (append `, now()`), e.g. update `:174`, `:198`, `:215`, `:235`.
+In `src/services/query-api/tests/params.rs` (the real helpers in this file are `gadget()`,
+`pb(name, ty, required, binds: Option<&str>)`, `insert(params, assignments)`, and `body(json!)`
+— use those, NOT `param`/`insert_action`; `Assignment` is already imported here after Task 4's
+rename of the `ConstAssignment` import — do NOT re-import it):
+
+- Add a `now()` helper and pass it to every existing `resolve_action_row(...)` call (append
+  `, now()`), i.e. update the calls at `:174`, `:198`, `:215`, `:235`.
 
 ```rust
 fn now() -> time::PrimitiveDateTime {
@@ -2384,16 +2436,9 @@ fn now() -> time::PrimitiveDateTime {
         time::Time::from_hms(9, 0, 0).unwrap(),
     )
 }
-```
 
-- Add computed-assignment cases (use the file's `gadget()`/`insert_action` helpers; note `insert_action` now takes `Vec<Assignment>`):
-
-```rust
-use control_plane_core::Assignment;
-
-#[test]
-fn computed_expression_writes_product() {
-    // qty * unitPrice -> total (add a total: Double prop to the gadget in this test).
+/// `gadget()` + a `total: Double` property, for computed-assignment tests.
+fn gadget_with_total() -> ObjectType {
     let mut g = gadget();
     g.properties.push(PropertyDef {
         name: "total".into(),
@@ -2401,44 +2446,58 @@ fn computed_expression_writes_product() {
         required: false,
         constraints: control_plane_core::PropertyConstraints::default(),
     });
-    let action = ActionDef {
-        name: ActionName("a".into()),
-        target: TypeName("Gadget".into()),
-        parameters: vec![
-            param("id", "Long", true, None),
-            param("qty", "Long", false, Some("name")), // name unused; keep params valid
-        ],
-        kind: ActionKind::Insert,
-        assignments: vec![Assignment::expr("total", "id + 1")],
-    };
+    g
+}
+```
+
+- Add computed-assignment cases (using `pb`/`insert` and `gadget_with_total()`):
+
+```rust
+#[test]
+fn computed_expression_writes_value() {
+    // total = id + 1 : Long(8), assignable to the Double `total` property.
+    let action = insert(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("total", "id + 1")],
+    );
     let pairs =
-        resolve_action_row(&action, &g, &body(json!({ "id": "7", "qty": "3" })), now()).unwrap();
+        resolve_action_row(&action, &gadget_with_total(), &body(json!({ "id": "7" })), now())
+            .unwrap();
     let total = pairs.iter().find(|(c, _)| c == "total").map(|(_, v)| v.clone());
     assert_eq!(total, Some(SqlValue::Int(8)));
 }
 
 #[test]
-fn computed_runtime_fault_is_bad_value() {
+fn computed_now_uses_injected_clock() {
+    // createdAt = now() lands exactly the injected clock (deterministic).
     let mut g = gadget();
     g.properties.push(PropertyDef {
-        name: "total".into(),
-        ty: "Long".into(),
+        name: "createdAt".into(),
+        ty: "Timestamp".into(),
         required: false,
         constraints: control_plane_core::PropertyConstraints::default(),
     });
-    let action = ActionDef {
-        name: ActionName("a".into()),
-        target: TypeName("Gadget".into()),
-        parameters: vec![param("id", "Long", true, None)],
-        kind: ActionKind::Insert,
-        assignments: vec![Assignment::expr("total", "id / 0")],
-    };
-    let err = resolve_action_row(&action, &g, &body(json!({ "id": "7" })), now()).unwrap_err();
+    let action = insert(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("createdAt", "now()")],
+    );
+    let pairs = resolve_action_row(&action, &g, &body(json!({ "id": "1" })), now()).unwrap();
+    let created = pairs.iter().find(|(c, _)| c == "createdAt").map(|(_, v)| v.clone());
+    assert_eq!(created, Some(SqlValue::Timestamp(now())));
+}
+
+#[test]
+fn computed_runtime_fault_is_bad_value() {
+    let action = insert(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("total", "id / 0")],
+    );
+    let err =
+        resolve_action_row(&action, &gadget_with_total(), &body(json!({ "id": "7" })), now())
+            .unwrap_err();
     assert!(matches!(err, ParamError::BadValue(_, _)));
 }
 ```
-
-(If `params.rs` lacks a `param(name, ty, required, binds)` helper, add the same one used in `action_mapping_e2e.rs`. Confirm the existing helper signatures in the file before writing.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -2573,54 +2632,118 @@ git commit -m "feat(query-api): evaluate computed expression assignments on the 
 
 - [ ] **Step 1: Write the e2e test file**
 
-Create `src/services/query-api/tests/action_computed_e2e.rs`, mirroring `action_mapping_e2e.rs`'s `setup_gadget_writer`/`read_gadgets` harness but with a `Gadget` type carrying numeric + string + timestamp properties: `id (Long, req, identity)`, `qty (Long)`, `unitPrice (Double)`, `total (Double)`, `tier (String)`, `label (String)`, `createdAt (Timestamp)`. Cover the spec's matrix — copy the setup harness from `action_mapping_e2e.rs` verbatim (adjusting the property list) and add:
+Create `src/services/query-api/tests/action_computed_e2e.rs`. **Copy the `setup_gadget_writer`
+and `read_gadgets` harness from `action_mapping_e2e.rs` verbatim** (same imports: `ActionDef`,
+`ActionKind`, `ActionName`, `Assignment`, `Acl`, `Action`, `Effect`, `ObjectType`, `Policy`,
+`PolicyTarget`, `PropertyDef`, `RoleId`, `SubjectId`, `TableRef`, `TypeName`, the `PgControlPlane`
+/ `PgFixture` / `IcebergCatalog` / `e2e_support` / `run_action` / `EngineActionClient` /
+`read_object` / `objects_to_json` set, and the `prop`/`param` local helpers), changing only the
+`define_type` property list to:
 
 ```rust
-#[tokio::test(flavor = "multi_thread")]
+properties: vec![
+    prop("id", "Long", true),
+    prop("qty", "Long", false),
+    prop("unitPrice", "Double", false),
+    prop("total", "Double", false),
+    prop("tier", "String", false),
+    prop("label", "String", false),
+    prop("createdAt", "Timestamp", false),
+],
+// identity: Some("id".into())
+```
+
+and the `read_gadgets` `live_tables()` existence check / `type_name` to `"Gadget"` (unchanged
+from the source file). Each test builds its own action, runs it via `run_action`, and reads back
+via `read_gadgets`. Concrete tests (each `#[tokio::test(flavor = "multi_thread")]`, destructuring
+`GadgetWriter` exactly as `action_mapping_e2e.rs` does):
+
+```rust
+// 1. Arithmetic: total = qty * unitPrice.
 async fn arithmetic_expression_writes_product() {
-    // total = qty * unitPrice via an Expr assignment; qty/unitPrice are bound params.
-    // define the action, run it, read back total.
-    // ... (mirror action_mapping_e2e.rs run_action + read_gadgets) ...
-    // assert total == 10.0 for qty=4, unitPrice=2.5
+    // define action `create` (Insert): params id(Long,req), qty(Long) binds qty,
+    // unitPrice(Double) binds unitPrice; assignments: [Assignment::expr("total", "qty * unitPrice")].
+    // run_action("create", json!({"id":"1","qty":"4","unitPrice":2.5}), ...).expect(...);
+    let got = read_gadgets(&cp, &pool, &subj).await;
+    assert_eq!(got["objects"][0]["total"], json!(10.0));
 }
 
-#[tokio::test(flavor = "multi_thread")]
+// 2. Conditional + string: tier via @total (assigned earlier), label via upper/lower/++.
 async fn conditional_and_string_expressions() {
-    // tier = if @total > 100 then "gold" else "std"; label = upper(...) ++ ...
-    // assert the computed tier/label land as expected.
+    // assignments (declared order):
+    //   Assignment::expr("total", "qty * unitPrice"),
+    //   Assignment::expr("tier", "if @total > 100.0 then \"gold\" else \"std\""),
+    //   Assignment::expr("label", "upper(\"wid\") ++ \"-\" ++ lower(\"GET\")"),
+    // run with qty=4, unitPrice=2.5 -> total 10.
+    let got = read_gadgets(&cp, &pool, &subj).await;
+    assert_eq!(got["objects"][0]["tier"], json!("std")); // 10 <= 100
+    assert_eq!(got["objects"][0]["label"], json!("WID-get"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
+// 3. now(): createdAt = now() lands a Timestamp within the request window.
 async fn now_lands_a_timestamp_in_window() {
-    // createdAt = now(); read back and assert the Timestamp is within [before, after] the call.
+    // assignments: [Assignment::expr("createdAt", "now()")].
+    let before = time::OffsetDateTime::now_utc();
+    // run_action(...).expect(...);
+    let after = time::OffsetDateTime::now_utc();
+    let got = read_gadgets(&cp, &pool, &subj).await;
+    // createdAt reads back as an ISO "YYYY-MM-DDThh:mm:ss" string; parse and bound-check to the second.
+    let s = got["objects"][0]["createdAt"].as_str().unwrap();
+    let fmt = time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
+    let parsed = time::PrimitiveDateTime::parse(s, &fmt).unwrap().assume_utc();
+    assert!(parsed >= before.replace_nanosecond(0).unwrap() && parsed <= after);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+// 4. Runtime fault -> 422, nothing committed.
 async fn runtime_fault_returns_422_and_writes_nothing() {
-    // total = qty / 0 (or an out-of-range substr). run_action -> ActionError::BadParams;
-    // and read_gadgets shows zero rows.
-    // assert matches!(err, ActionError::BadParams(_)); rows == 0.
+    // assignments: [Assignment::expr("total", "qty / 0")]. Conformance passes (Long/Long->Long,
+    // widens to Double); eval faults at div-by-zero.
+    let err = run_action("create", json!({"id":"1","qty":"4","unitPrice":2.5}).as_object().unwrap(), &subj, &deps)
+        .await.unwrap_err();
+    assert!(matches!(err, ActionError::BadParams(_)));
+    assert_eq!(read_gadgets(&cp, &pool, &subj).await["objects"].as_array().map(Vec::len), Some(0));
 }
 
-#[tokio::test(flavor = "multi_thread")]
+// 5. Governance: a computed value is deny-column gated identically to a literal.
 async fn computed_value_is_governed_identically() {
-    // A Write policy that denies `total`. A computed total is deny-column gated exactly like a
-    // literal one: run_action -> ActionError::WriteDenied(Column("total")); nothing landed.
+    // set_policy Write with deny_columns: vec!["total".into()] (mirror action_mapping_e2e.rs:331).
+    // action assigns total = qty * unitPrice.
+    let err = run_action("create", json!({"id":"1","qty":"4","unitPrice":2.5}).as_object().unwrap(), &subj, &deps)
+        .await.unwrap_err();
+    assert!(matches!(&err, ActionError::WriteDenied(WriteDenialReason::Column(c)) if c == "total"));
+    assert_eq!(read_gadgets(&cp, &pool, &subj).await["objects"].as_array().map(Vec::len), Some(0));
 }
 
-#[tokio::test(flavor = "multi_thread")]
+// 6. Constraint composition: a computed value trips a property constraint -> 422 (same as literal).
+async fn computed_value_is_constraint_gated() {
+    // define the type with a max constraint on `total` (mirror constraints_action_http.rs's
+    // PropertyConstraints usage: e.g. numeric max = 100.0). Compute total = qty * unitPrice = 250
+    // (qty=100, unitPrice=2.5) -> exceeds max.
+    let err = run_action("create", json!({"id":"1","qty":"100","unitPrice":2.5}).as_object().unwrap(), &subj, &deps)
+        .await.unwrap_err();
+    assert!(matches!(err, ActionError::ConstraintViolation(_)));
+    assert_eq!(read_gadgets(&cp, &pool, &subj).await["objects"].as_array().map(Vec::len), Some(0));
+}
+
+// 7. Update mapping: an Update action recomputes the patched value.
 async fn update_action_computes_patched_value() {
-    // seed one gadget; an Update action recomputes total = @... ; assert the patched value.
+    // seed one gadget (Insert action with total = qty*unitPrice). Then define an Update action
+    // (kind Update): params key(Long,req) binds id, qty(Long) binds qty, unitPrice(Double) binds
+    // unitPrice; assignment total = qty * unitPrice. run update with new qty/unitPrice; assert the
+    // recomputed total lands (mirror action_mapping_e2e.rs::update_targets_and_patches_via_bound_property).
+    let got = read_gadgets(&cp, &pool, &subj).await;
+    assert_eq!(got["objects"].as_array().map(Vec::len), Some(1));
+    assert_eq!(got["objects"][0]["total"], json!(20.0)); // e.g. qty=8, unitPrice=2.5
 }
 ```
 
-Fill each test body by following `action_mapping_e2e.rs` exactly (same `run_action`, `ActionDeps`, `read_gadgets`, `objects_to_json` calls). Concrete assertions:
-- arithmetic: `read_gadgets(...)["objects"][0]["total"]` equals `json!(10.0)`.
-- conditional/string: `tier == json!("std")` (total 10 ≤ 100), `label` equals the upper/concat result.
-- now: capture `let before = OffsetDateTime::now_utc();` before `run_action`, `let after = ...` after; parse the read-back `createdAt` ISO string and assert `before <= parsed <= after` (to the second).
-- 422 fault: `let err = run_action(...).await.unwrap_err(); assert!(matches!(err, ActionError::BadParams(_)));` and `read_gadgets` objects length is `Some(0)`.
-- governance: define a Write policy with `deny_columns: vec!["total".into()]` (mirror `resolved_row_is_governed_identically_for_constant_and_renamed_param`); assert `WriteDenied(WriteDenialReason::Column(c)) if c == "total"`.
-- update: mirror `update_targets_and_patches_via_bound_property`, but the update action has an `Expr` assignment computing the patched column.
+Fill each body with the exact `ActionDef { name, target, parameters, kind, assignments }` sketched
+in its comment (using `param(name, ty, required, Some(binds))` for bound params, `Assignment::expr`
+for computed ones), the `ActionDeps { cp, action_engine: &engine, serving: &serving }` construction,
+and the `run_action` / `read_gadgets` / `objects_to_json` calls exactly as `action_mapping_e2e.rs`.
+For test 6, define the `total` property with a max constraint — read `constraints_action_http.rs`
+for the `PropertyConstraints` field names before writing (do not guess the shape). Import
+`query_api::action::{ActionError, WriteDenialReason}` for the error-matching tests.
 
 - [ ] **Step 2: Add the BUCK target**
 
