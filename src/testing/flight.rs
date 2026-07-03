@@ -95,7 +95,7 @@ pub async fn spawn_engine_uds(
     // One shared catalog, mirroring production `engine::run::run`.
     let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), warehouse).await);
 
-    let control = if opts.control {
+    let control = opts.control.then(|| {
         let cp = PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
         let writer = IcebergActionWriter::new(
             catalog.clone(),
@@ -103,26 +103,22 @@ pub async fn spawn_engine_uds(
             opts.inline_byte_limit,
             opts.flush_byte_threshold,
         );
-        Some(EngineControlServer::new(EngineControlService {
+        EngineControlServer::new(EngineControlService {
             cp,
             catalog: catalog.clone(),
             pool: pool.clone(),
             retention: Duration::from_secs(7 * 24 * 3600),
             writer,
-        }))
-    } else {
-        None
-    };
-    let flight = if opts.flight {
-        Some(FlightServiceServer::new(FlightDataService {
+        })
+    });
+    let flight = opts.flight.then(|| {
+        FlightServiceServer::new(FlightDataService {
             catalog,
             serving_catalog: IcebergCatalog::new(pool.clone()),
             serving_store: None,
             pool,
-        }))
-    } else {
-        None
-    };
+        })
+    });
 
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = UnixListenerStream::new(listener);
