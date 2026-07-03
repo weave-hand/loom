@@ -1057,6 +1057,18 @@ rust_test(
 )
 
 rust_test(
+    name = "expr-eval",
+    crate = "expr_eval",
+    srcs = ["tests/expr_eval.rs"],
+    crate_root = "tests/expr_eval.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:time",
+    ],
+)
+
+rust_test(
     name = "sql-dialect",
     crate = "sql_dialect",
     srcs = ["tests/sql_dialect.rs"],

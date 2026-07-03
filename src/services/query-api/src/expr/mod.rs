@@ -14,6 +14,10 @@ pub mod typecheck;
 pub use parse::{ParseError, parse_expr};
 pub use typecheck::{TypeEnv, TypeError, assignable, typecheck};
 
+pub mod eval;
+
+pub use eval::{EvalError, ValueEnv, eval};
+
 use control_plane_core::BaseType;
 
 /// A parsed expression node. `Int` literals are carried as `i64` and typed `Long`; `@name`
