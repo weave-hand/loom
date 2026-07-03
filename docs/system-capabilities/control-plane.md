@@ -167,6 +167,28 @@ constant, else unset, with generalized define-time conformance (no double-bind,
 required coverage via param-or-constant) — and the resolved row still flows
 through the unchanged ACL and constraint gates.
 
+Multi-object/multi-step actions (#343) turn an `ActionDef` into an ordered
+`steps: Vec<ActionStep>` committed in one transaction. A single-step, bind-less
+action is byte-compatible with the flat pre-steps shape (serde emits the legacy
+JSON; it dispatches to the unchanged single-object `run_insert`/`run_mutate`, so
+inline tiering is preserved), while a multi-step action routes through
+`run_multi_step`: it resolves + governs (coarse `Action::Write` + fine ACL +
+constraints) **every** step before **any** write, threading a step-binding
+environment so a later step's `AssignmentSource::StepRef { bind, prop }` reads an
+earlier step's just-resolved identity (`orderId = @order.id`) — define-time
+rejects forward/self/unbound refs, a ref to a non-property of the bound step's
+target, and (a lost-update guard) an Update/Delete step whose target table
+another step also writes. The resolved per-step rows are staged through one
+atomic engine seam — `write_steps` (a wire RPC to the engine's
+`iceberg_landing::write_steps`) that opens one `pool.begin()`, allocates one
+snapshot, registers each step's files (Insert→append, Update/Delete→whole-table
+copy-on-write `replace_files`, which end-caps both the file and inline tiers,
+including an empty-rows delete-to-truncate), emits one action-level
+`LineageEvent` whose `outputs` list every step's target, and commits once — so
+any step's failure rolls the whole action back with no partial object graph ever
+visible. Persisted in normalized per-step tables (`action_step` +
+step-ordinal-keyed `action_param`/`action_assignment`).
+
 ## ACL
 
 The ACL concern stores and serves policy; it never enforces. Subjects hold
@@ -298,7 +320,6 @@ lives entirely in the service layer.
 ## Known gaps
 
 - `#road-action-computed-assignments` — expression-valued action properties (bounded pure grammar), spec'd not built
-- `#road-action-multi-object` — multi-object/multi-step actions in one transaction, spec'd not built
 - `#road-action-enqueue-downstream` — actions that atomically enqueue a downstream job, spec'd not built
 - `#road-auth-comprehensive` — build-vs-adopt decision for a fuller identity layer
 - `#fut-lineage-stitching` — run-grouped lifecycle stitching of events

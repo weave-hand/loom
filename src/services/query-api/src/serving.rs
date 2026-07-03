@@ -48,6 +48,30 @@ pub struct Rows {
     pub rows: Vec<Vec<SqlValue>>,
 }
 
+/// Where one step of a multi-target atomic write lands relative to the target
+/// table's existing live contents. `Append` adds the step's rows; `Overwrite`
+/// replaces the table's entire live set (superseding both the file and inline
+/// tiers, time travel preserved) — how a multi-step Update/Delete supersedes an
+/// inline-written object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteMode {
+    Append,
+    Overwrite,
+}
+
+/// One target of a multi-target atomic write ([`ActionEngine::write_steps`]): a
+/// table, the rows to write (row-major, each aligned to `columns`/`logical_types`),
+/// and whether they append to or overwrite the table's live set. Arrow-free by
+/// design — each engine builds the batch internally from the
+/// `(columns, rows, logical_types)` triple, exactly as [`build_object_batches`] does.
+pub struct StepWrite {
+    pub table: control_plane_core::TableRef,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<SqlValue>>,
+    pub logical_types: Vec<String>,
+    pub mode: WriteMode,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ServingError {
     #[error("serving engine: {0}")]
@@ -361,6 +385,21 @@ pub trait ActionEngine: Send + Sync {
         _expected_version: i64,
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
         Err(ServingError::Engine("write_delta unsupported".into()))
+    }
+
+    /// Stage N per-target writes AND one lineage event in ONE transaction — a
+    /// single snapshot covering every target, so all of them (and the lineage)
+    /// land or roll back together. Each [`StepWrite`] writes its rows to one table
+    /// (`Append` adds; `Overwrite` replaces the live set); `event` carries all the
+    /// step targets in its `outputs`. This is the atomic multi-object write-back
+    /// seam for multi-step actions. The default errors — only a wire-backed engine
+    /// (`EngineActionClient`) overrides it; the in-process test stubs never write.
+    async fn write_steps(
+        &self,
+        _writes: &[StepWrite],
+        _event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        Err(ServingError::Engine("write_steps unsupported".into()))
     }
 }
 

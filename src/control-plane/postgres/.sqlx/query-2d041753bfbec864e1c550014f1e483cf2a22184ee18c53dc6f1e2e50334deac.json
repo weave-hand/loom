@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select property, value, expr from ontology.action_assignment where action_name = $1 order by ordinal",
+  "query": "select property, value, expr, ref_bind, ref_prop from ontology.action_assignment where action_name = $1 and step_ordinal = $2 order by ordinal",
   "describe": {
     "columns": [
       {
@@ -35,18 +35,43 @@
             "name": "expr"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "ref_bind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_assignment",
+            "name": "ref_bind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "ref_prop",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_assignment",
+            "name": "ref_prop"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Text",
+        "Int4"
       ]
     },
     "nullable": [
       false,
       true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "60685b448d63a7b997a932a983c9cc09ad744d67aec79111fb1ef3b01b53db06"
+  "hash": "2d041753bfbec864e1c550014f1e483cf2a22184ee18c53dc6f1e2e50334deac"
 }

@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, ty, required, binds from ontology.action_param where action_name = $1 and step_ordinal = $2 order by ordinal",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_param",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ty",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_param",
+            "name": "ty"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "required",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_param",
+            "name": "required"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "binds",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action_param",
+            "name": "binds"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "bf2ecb07a78866aaeb2ab5c1a5b832998e6c6bafcd8dbc618f2bb1dea65058f6"
+}

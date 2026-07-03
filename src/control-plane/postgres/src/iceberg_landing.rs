@@ -303,22 +303,47 @@ async fn land_additive(
     batches: Vec<RecordBatch>,
     extras: CommitExtras<'_>,
 ) -> Result<SnapshotId> {
-    // Load the table and build the SUPERSET arrow schema from the landing `columns`
-    // (field-ids 1..N), so the writer chain stamps every column (incl. the new ones)
-    // into the Parquet footer.
+    // Write the landing `batches` as Parquet stamped with the SUPERSET schema (field-ids
+    // 1..N, incl. the newly-added columns) and build the loom `DataFile`s + per-column
+    // stats — pure IO, no commit. Shared with the multi-target `write_steps` path.
+    let loom_files = write_object_data_files(catalog, table, columns, batches).await?;
+
+    // One snapshot: project new columns (reconcile gate) + files, end-cap any flushed
+    // inline rows, emit lineage, stamp schema_version (the last inside `register_files`).
+    // `WriteMode::Append` so the prior files stay live (additive does not end-cap data).
+    let mut tx = pool.begin().await.map_err(backend)?;
+    let at = next_snapshot(&mut tx, None).await?;
+    register_files(&mut tx, table, columns, &loom_files, WriteMode::Append, at).await?;
+    crate::iceberg_sql_catalog::apply_commit_extras(&mut tx, at, &extras).await?;
+    tx.commit().await.map_err(backend)?;
+    Ok(at)
+}
+
+/// Write `batches` (typed by `columns`) as real Parquet under `table`'s Iceberg
+/// location and return the loom `DataFile`s (path + counts + per-column stats),
+/// WITHOUT committing anything or projecting the mirror. `table` must already exist in
+/// `catalog` (call [`ensure_iceberg_table`] first). The Parquet footer is stamped with
+/// the field-id schema built from `columns` (via [`ice_schema`]); the caller registers
+/// the returned files into a snapshot in its own transaction. This is the pure-IO half
+/// shared by the additive-land and multi-target `write_steps` paths.
+async fn write_object_data_files(
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batches: Vec<RecordBatch>,
+) -> Result<Vec<DataFile>> {
     let ns = NamespaceIdent::new(table.schema.clone());
     let ident = TableIdent::new(ns, table.name.clone());
     let ice_table = catalog.load_table(&ident).await.map_err(backend)?;
-    let superset = ice_schema(columns)?;
-    let ice_arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&superset).map_err(backend)?);
+    let sch = ice_schema(columns)?;
+    let ice_arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&sch).map_err(backend)?);
     let batches = batches
         .into_iter()
         .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
         .collect::<Result<Vec<_>>>()?;
 
-    // Write Parquet with the superset schema (no fast_append).
     let ice_files =
-        crate::iceberg_writer::write_parquet_with_schema(&ice_table, superset.into(), batches)
+        crate::iceberg_writer::write_parquet_with_schema(&ice_table, sch.into(), batches)
             .await
             .map_err(backend)?;
 
@@ -345,14 +370,89 @@ async fn land_additive(
             parquet_footer_size: None,
         });
     }
+    Ok(loom_files)
+}
 
-    // One snapshot: project new columns (reconcile gate) + files, end-cap any flushed
-    // inline rows, emit lineage, stamp schema_version (the last inside `register_files`).
-    // `WriteMode::Append` so the prior files stay live (additive does not end-cap data).
+/// One target of a multi-target atomic write ([`write_steps`]): the batches to land
+/// into `table` (typed by `columns`), appended or overwriting the live set.
+pub struct StepLand {
+    pub table: TableRef,
+    pub columns: Vec<ColumnSpec>,
+    pub batches: Vec<RecordBatch>,
+    /// `true` replaces the table's live set (both tiers end-capped); `false` appends.
+    pub overwrite: bool,
+}
+
+/// Stage N per-target writes AND one lineage event in ONE Postgres transaction — a
+/// single mirror snapshot covering every target, so all targets and the lineage land
+/// or roll back together. Generalises [`land`]'s Parquet path + [`register_files`] to N
+/// tables, exactly as [`crate::iceberg_control_plane::IcebergTx::commit`] does for the
+/// transform seam: each step's Parquet is written first (pure IO, outside the tx), then
+/// one transaction allocates a single snapshot, registers every step's files
+/// (`Append` or `Overwrite`), emits `lineage`, and commits. Empty `steps` is rejected
+/// (no snapshot to allocate) — the caller always has at least one target.
+pub async fn write_steps(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    steps: Vec<StepLand>,
+    lineage: LineageEvent,
+) -> Result<SnapshotId> {
+    if steps.is_empty() {
+        return Err(ControlPlaneError::Validation(
+            "write_steps: no targets".into(),
+        ));
+    }
+
+    // Phase 1 (pure IO, pre-tx): ensure each target exists + write its Parquet, building
+    // the loom `DataFile`s. A failure here commits nothing (no tx opened yet).
+    struct Staged {
+        table: TableRef,
+        columns: Vec<ColumnSpec>,
+        files: Vec<DataFile>,
+        overwrite: bool,
+    }
+    let mut staged: Vec<Staged> = Vec::with_capacity(steps.len());
+    for step in steps {
+        // A zero-row `Overwrite` (a multi-step Delete/Update that emptied the table) is a
+        // truncate: it writes NO Parquet, so skip the Iceberg table-create + Parquet write and
+        // stage zero files. Its `columns` are KEPT so Phase 2's `Overwrite` register still
+        // projects the schema at the shared snapshot — the emptied table then reads as empty
+        // (schema present, zero live files/inline rows), NOT as a missing table.
+        if step.overwrite && step.batches.iter().all(|b| b.num_rows() == 0) {
+            staged.push(Staged {
+                table: step.table,
+                columns: step.columns,
+                files: Vec::new(),
+                overwrite: true,
+            });
+            continue;
+        }
+        ensure_iceberg_table(catalog, &step.table, &step.columns).await?;
+        let files =
+            write_object_data_files(catalog, &step.table, &step.columns, step.batches).await?;
+        staged.push(Staged {
+            table: step.table,
+            columns: step.columns,
+            files,
+            overwrite: step.overwrite,
+        });
+    }
+
+    // Phase 2 (one tx): one snapshot for the whole write; register every step's files,
+    // emit the single lineage event, commit. Two steps targeting the same table both
+    // stage against this one snapshot (their file rows coexist, live at `at`). An empty-file
+    // `Overwrite` end-caps both tiers + re-projects the schema with zero files (a truncate).
     let mut tx = pool.begin().await.map_err(backend)?;
     let at = next_snapshot(&mut tx, None).await?;
-    register_files(&mut tx, table, columns, &loom_files, WriteMode::Append, at).await?;
-    crate::iceberg_sql_catalog::apply_commit_extras(&mut tx, at, &extras).await?;
+    for s in &staged {
+        let mode = if s.overwrite {
+            WriteMode::Overwrite
+        } else {
+            WriteMode::Append
+        };
+        register_files(&mut tx, &s.table, &s.columns, &s.files, mode, at).await?;
+    }
+    crate::lineage::pg_emit(&mut *tx, &lineage).await?;
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }
@@ -425,7 +525,15 @@ pub async fn register_files(
     match &mode {
         WriteMode::Append => {}
         WriteMode::Overwrite => {
+            // End-cap BOTH tiers, exactly as the `append_parquet_snapshot` overwrite
+            // path does (`commit_mirror`): the file tier's live data files AND any live
+            // inline-shadow rows are retired at `at`, so `files` become the sole live
+            // set. This is how a multi-step Update/Delete via `replace_files` supersedes
+            // an inline-written object (inline-only tables no-op the data-file end-cap;
+            // file-only tables no-op the inline end-cap — each end-cap is independently
+            // safe). Time travel is preserved (older snapshots still see the retired rows).
             end_cap_live_data_files(conn, tid, at).await?;
+            crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
         }
         WriteMode::Compact { expire_paths } => {
             // Subset-expire the named files; project the new ones below. Schema is

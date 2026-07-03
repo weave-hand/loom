@@ -103,10 +103,15 @@ impl Ontology for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_action(&self, action: ActionDef) -> Result<()> {
         let mut ont = self.ontology.lock();
-        if !ont.types.contains_key(&action.target.0) {
+        // Single-step semantics: validate the sole step's target exists, then store the
+        // whole action by clone (the map is step-shape-agnostic).
+        let step = action.steps.first().ok_or_else(|| {
+            ControlPlaneError::Validation(format!("action `{}` has no steps", action.name.0))
+        })?;
+        if !ont.types.contains_key(&step.target.0) {
             return Err(ControlPlaneError::Validation(format!(
                 "action `{}` references unknown target type `{}`",
-                action.name.0, action.target.0
+                action.name.0, step.target.0
             )));
         }
         ont.actions.insert(action.name.0.clone(), action);

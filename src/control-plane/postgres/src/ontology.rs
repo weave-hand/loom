@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ActionDef, ActionName, Aggregation, Assignment, AssignmentSource, ControlPlaneError,
-    DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq,
-    ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
+    ActionDef, ActionName, ActionStep, Aggregation, Assignment, AssignmentSource,
+    ControlPlaneError, DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology,
+    Page, PageReq, ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
 };
 use sqlx::{AssertSqlSafe, PgPool};
 
@@ -269,23 +269,37 @@ impl Ontology for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_action(&self, action: ActionDef) -> Result<()> {
-        let mut tx = self.pool.begin().await.map_err(backend)?;
-        // The target type must exist. The explicit check makes the error a clear
-        // `Validation` (matching the memory fake) instead of a raw FK backend error;
-        // the FK (0009_actions.sql) stays as the atomic backstop inside this tx.
-        let target_exists = object_type_exists(&mut *tx, &action.target.0).await?;
-        if !target_exists {
+        if action.steps.is_empty() {
             return Err(ControlPlaneError::Validation(format!(
-                "action `{}` references unknown target type `{}`",
-                action.name.0, action.target.0
+                "action `{}` has no steps",
+                action.name.0
             )));
         }
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        // Every step's target type must exist. The explicit check makes the error a clear
+        // `Validation` (matching the memory fake) instead of a raw FK backend error; the FK
+        // (0030_action_steps.sql) stays as the atomic backstop inside this tx.
+        for step in &action.steps {
+            if !object_type_exists(&mut *tx, &step.target.0).await? {
+                return Err(ControlPlaneError::Validation(format!(
+                    "action `{}` references unknown target type `{}`",
+                    action.name.0, step.target.0
+                )));
+            }
+        }
+        // The `action` row now carries only `name`; target_type/kind live per-step.
         sqlx::query!(
-            "insert into ontology.action (name, target_type, kind) values ($1, $2, $3) \
-             on conflict (name) do update set target_type = excluded.target_type, kind = excluded.kind",
+            "insert into ontology.action (name) values ($1) on conflict (name) do nothing",
             action.name.0,
-            action.target.0,
-            action.kind.as_str(),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        // Clear-then-insert for idempotent redefine (steps cascade-clear their params/
+        // assignments, but the explicit deletes keep the pattern self-contained and total).
+        sqlx::query!(
+            "delete from ontology.action_assignment where action_name = $1",
+            action.name.0,
         )
         .execute(&mut *tx)
         .await
@@ -297,102 +311,150 @@ impl Ontology for PgControlPlane {
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
-        for (i, p) in action.parameters.iter().enumerate() {
-            sqlx::query!(
-                "insert into ontology.action_param (action_name, ordinal, name, ty, required, binds) \
-                 values ($1, $2, $3, $4, $5, $6)",
-                action.name.0,
-                i as i32,
-                p.name,
-                p.ty,
-                p.required,
-                p.binds,
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        }
         sqlx::query!(
-            "delete from ontology.action_assignment where action_name = $1",
+            "delete from ontology.action_step where action_name = $1",
             action.name.0,
         )
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
-        for (i, a) in action.assignments.iter().enumerate() {
-            let (value, expr): (Option<serde_json::Value>, Option<String>) = match &a.source {
-                AssignmentSource::Const(v) => (Some(v.clone()), None),
-                AssignmentSource::Expr(s) => (None, Some(s.clone())),
-            };
+        for (si, step) in action.steps.iter().enumerate() {
+            let step_ordinal = si as i32;
             sqlx::query!(
-                "insert into ontology.action_assignment (action_name, ordinal, property, value, expr) \
+                "insert into ontology.action_step (action_name, ordinal, target_type, kind, bind) \
                  values ($1, $2, $3, $4, $5)",
                 action.name.0,
-                i as i32,
-                a.property,
-                value,
-                expr,
+                step_ordinal,
+                step.target.0,
+                step.kind.as_str(),
+                step.bind,
             )
             .execute(&mut *tx)
             .await
             .map_err(backend)?;
+            for (i, p) in step.parameters.iter().enumerate() {
+                sqlx::query!(
+                    "insert into ontology.action_param \
+                     (action_name, step_ordinal, ordinal, name, ty, required, binds) \
+                     values ($1, $2, $3, $4, $5, $6, $7)",
+                    action.name.0,
+                    step_ordinal,
+                    i as i32,
+                    p.name,
+                    p.ty,
+                    p.required,
+                    p.binds,
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+            }
+            for (i, a) in step.assignments.iter().enumerate() {
+                // Exactly one source is written; the CHECK constraint (0030) enforces the
+                // mutual exclusion. StepRef writes (ref_bind, ref_prop); Const/Expr leave them NULL.
+                let (value, expr, ref_bind, ref_prop): (
+                    Option<serde_json::Value>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ) = match &a.source {
+                    AssignmentSource::Const(v) => (Some(v.clone()), None, None, None),
+                    AssignmentSource::Expr(s) => (None, Some(s.clone()), None, None),
+                    AssignmentSource::StepRef { bind, prop } => {
+                        (None, None, Some(bind.clone()), Some(prop.clone()))
+                    }
+                };
+                sqlx::query!(
+                    "insert into ontology.action_assignment \
+                     (action_name, step_ordinal, ordinal, property, value, expr, ref_bind, ref_prop) \
+                     values ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    action.name.0,
+                    step_ordinal,
+                    i as i32,
+                    a.property,
+                    value,
+                    expr,
+                    ref_bind,
+                    ref_prop,
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+            }
         }
         tx.commit().await.map_err(backend)?;
         Ok(())
     }
 
     async fn get_action(&self, name: &ActionName) -> Result<ActionDef> {
-        let row = sqlx::query!(
-            "select target_type, kind from ontology.action where name = $1",
-            name.0,
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?
-        .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))?;
-        let params = sqlx::query!(
-            "select name, ty, required, binds from ontology.action_param \
+        // The `action` row now carries only `name`; existence is the NotFound gate.
+        if !action_exists(&self.pool, &name.0).await? {
+            return Err(ControlPlaneError::NotFound(name.0.clone()));
+        }
+        let step_rows = sqlx::query!(
+            "select ordinal, target_type, kind, bind from ontology.action_step \
              where action_name = $1 order by ordinal",
             name.0,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        let assignment_rows = sqlx::query!(
-            "select property, value, expr from ontology.action_assignment \
-             where action_name = $1 order by ordinal",
-            name.0,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
+        let mut steps = Vec::with_capacity(step_rows.len());
+        for sr in step_rows {
+            let params = sqlx::query!(
+                "select name, ty, required, binds from ontology.action_param \
+                 where action_name = $1 and step_ordinal = $2 order by ordinal",
+                name.0,
+                sr.ordinal,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?;
+            let assignment_rows = sqlx::query!(
+                "select property, value, expr, ref_bind, ref_prop from ontology.action_assignment \
+                 where action_name = $1 and step_ordinal = $2 order by ordinal",
+                name.0,
+                sr.ordinal,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?;
+            steps.push(ActionStep {
+                target: TypeName(sr.target_type),
+                kind: sr.kind.parse()?,
+                parameters: params
+                    .into_iter()
+                    .map(|r| ParamDef {
+                        name: r.name,
+                        ty: r.ty,
+                        required: r.required,
+                        binds: r.binds,
+                    })
+                    .collect(),
+                assignments: assignment_rows
+                    .into_iter()
+                    .map(|r| Assignment {
+                        property: r.property,
+                        // The CHECK constraint (0030) guarantees exactly one source is set.
+                        // Reconstruct StepRef when ref_bind is present, else Expr, else Const; the
+                        // all-NULL fallthrough is unreachable in practice — map it to a Null
+                        // constant to keep the mapping total.
+                        source: match (r.value, r.expr, r.ref_bind, r.ref_prop) {
+                            (_, _, Some(bind), Some(prop)) => {
+                                AssignmentSource::StepRef { bind, prop }
+                            }
+                            (_, Some(e), _, _) => AssignmentSource::Expr(e),
+                            (Some(v), None, _, _) => AssignmentSource::Const(v),
+                            _ => AssignmentSource::Const(serde_json::Value::Null),
+                        },
+                    })
+                    .collect(),
+                bind: sr.bind,
+            });
+        }
         Ok(ActionDef {
             name: name.clone(),
-            target: TypeName(row.target_type),
-            parameters: params
-                .into_iter()
-                .map(|r| ParamDef {
-                    name: r.name,
-                    ty: r.ty,
-                    required: r.required,
-                    binds: r.binds,
-                })
-                .collect(),
-            kind: row.kind.parse()?,
-            assignments: assignment_rows
-                .into_iter()
-                .map(|r| Assignment {
-                    property: r.property,
-                    source: match (r.value, r.expr) {
-                        (_, Some(e)) => AssignmentSource::Expr(e),
-                        (Some(v), None) => AssignmentSource::Const(v),
-                        // The CHECK constraint (0027) guarantees exactly one of value/expr is
-                        // set, so this arm is unreachable; map defensively to a Null constant to
-                        // keep the mapping total without panicking.
-                        (None, None) => AssignmentSource::Const(serde_json::Value::Null),
-                    },
-                })
-                .collect(),
+            steps,
         })
     }
 
@@ -538,6 +600,20 @@ pub async fn vector_index_def_row(
 pub(crate) async fn object_type_exists(ex: impl sqlx::PgExecutor<'_>, name: &str) -> Result<bool> {
     Ok(sqlx::query_scalar!(
         "select exists (select 1 from ontology.object_type where name = $1)",
+        name,
+    )
+    .fetch_one(ex)
+    .await
+    .map_err(backend)?
+    .unwrap_or(false))
+}
+
+/// True if an action named `name` exists. The `action` row now carries only its
+/// name (target_type/kind moved to `action_step` in 0030), so existence is the
+/// sole NotFound gate for `get_action`.
+pub(crate) async fn action_exists(ex: impl sqlx::PgExecutor<'_>, name: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar!(
+        "select exists (select 1 from ontology.action where name = $1)",
         name,
     )
     .fetch_one(ex)

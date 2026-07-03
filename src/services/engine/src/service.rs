@@ -322,6 +322,41 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         }))
     }
 
+    async fn write_steps(
+        &self,
+        req: Request<pb::WriteStepsRequest>,
+    ) -> std::result::Result<Response<pb::WriteStepsResponse>, Status> {
+        let r = req.into_inner();
+        let mut writes = Vec::with_capacity(r.steps.len());
+        for s in r.steps {
+            let columns: Vec<control_plane_core::ColumnSpec> =
+                serde_json::from_str(&s.columns_json)
+                    .map_err(|e| Status::invalid_argument(format!("bad columns_json: {e}")))?;
+            writes.push(engine_serving::StepWrite {
+                table: TableRef {
+                    schema: s.schema,
+                    name: s.name,
+                },
+                columns,
+                ipc: s.ipc,
+                overwrite: s.overwrite,
+            });
+        }
+        let wire: engine_wire::convert::LineageWire = serde_json::from_str(&r.lineage_json)
+            .map_err(|e| Status::invalid_argument(format!("bad lineage_json: {e}")))?;
+        let event: control_plane_core::LineageEvent = wire
+            .try_into()
+            .map_err(|e: String| Status::invalid_argument(format!("bad lineage: {e}")))?;
+        let snap = self
+            .writer
+            .write_steps(&writes, event)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(pb::WriteStepsResponse {
+            snapshot_id: snap.0,
+        }))
+    }
+
     async fn overwrite_table(
         &self,
         req: Request<pb::OverwriteTableRequest>,

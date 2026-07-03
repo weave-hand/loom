@@ -10,7 +10,7 @@ pub mod provider;
 pub mod serving;
 pub mod vector_search;
 
-pub use action_writer::IcebergActionWriter;
+pub use action_writer::{IcebergActionWriter, StepWrite};
 pub use governed::{
     GovernedTableProvider, TablePolicy, execute_governed_sql_stream, policy_for, row_filter_to_expr,
 };

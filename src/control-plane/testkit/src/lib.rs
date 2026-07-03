@@ -922,10 +922,11 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     .await
     .expect("define Widget");
 
-    let create_widget = ActionDef {
-        name: ActionName("createWidget".into()),
-        target: tn("Widget"),
-        parameters: vec![
+    let create_widget = ActionDef::single_step(
+        ActionName("createWidget".into()),
+        tn("Widget"),
+        ActionKind::Insert,
+        vec![
             ParamDef {
                 name: "id".into(),
                 ty: "Long".into(),
@@ -939,9 +940,8 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 binds: None,
             },
         ],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    };
+        vec![],
+    );
     o.define_action(create_widget.clone())
         .await
         .expect("define action");
@@ -956,6 +956,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.get_action(&ActionName("createWidget".into()))
             .await
             .unwrap()
+            .steps[0]
             .parameters
             .iter()
             .map(|p| p.name.clone())
@@ -964,24 +965,25 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "parameter order preserved"
     );
     // Upsert replaces the parameter list.
-    o.define_action(ActionDef {
-        name: ActionName("createWidget".into()),
-        target: tn("Widget"),
-        parameters: vec![ParamDef {
+    o.define_action(ActionDef::single_step(
+        ActionName("createWidget".into()),
+        tn("Widget"),
+        ActionKind::Insert,
+        vec![ParamDef {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
             binds: None,
         }],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    })
+        vec![],
+    ))
     .await
     .expect("redefine action");
     assert_eq!(
         o.get_action(&ActionName("createWidget".into()))
             .await
             .unwrap()
+            .steps[0]
             .parameters
             .len(),
         1,
@@ -1023,10 +1025,11 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     .await
     .expect("define Gadget");
 
-    let create_gadget = ActionDef {
-        name: ActionName("createGadget".into()),
-        target: tn("Gadget"),
-        parameters: vec![
+    let create_gadget = ActionDef::single_step(
+        ActionName("createGadget".into()),
+        tn("Gadget"),
+        ActionKind::Insert,
+        vec![
             ParamDef {
                 name: "id".into(),
                 ty: "Long".into(),
@@ -1041,9 +1044,8 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
                 binds: Some("name".into()),
             },
         ],
-        kind: ActionKind::Insert,
-        assignments: vec![Assignment::constant("status", serde_json::json!("active"))],
-    };
+        vec![Assignment::constant("status", serde_json::json!("active"))],
+    );
     o.define_action(create_gadget.clone())
         .await
         .expect("define mapping action");
@@ -1057,21 +1059,21 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
 
     // Slice 2: an expression assignment round-trips through storage (define == get), alongside
     // a constant. (Evaluation is a query-api concern; the adapter only persists the source.)
-    let computed = ActionDef {
-        name: ActionName("computeGadget".into()),
-        target: tn("Gadget"),
-        parameters: vec![ParamDef {
+    let computed = ActionDef::single_step(
+        ActionName("computeGadget".into()),
+        tn("Gadget"),
+        ActionKind::Insert,
+        vec![ParamDef {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
             binds: None,
         }],
-        kind: ActionKind::Insert,
-        assignments: vec![
+        vec![
             Assignment::constant("status", serde_json::json!("active")),
             Assignment::expr("name", "upper(\"g\")"),
         ],
-    };
+    );
     o.define_action(computed.clone()).await.unwrap();
     assert_eq!(
         o.get_action(&ActionName("computeGadget".into()))
@@ -1082,27 +1084,113 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // Redefining with an empty mapping clears binds + assignments (upsert replaces both).
-    o.define_action(ActionDef {
-        name: ActionName("createGadget".into()),
-        target: tn("Gadget"),
-        parameters: vec![ParamDef {
+    o.define_action(ActionDef::single_step(
+        ActionName("createGadget".into()),
+        tn("Gadget"),
+        ActionKind::Insert,
+        vec![ParamDef {
             name: "id".into(),
             ty: "Long".into(),
             required: true,
             binds: None,
         }],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    })
+        vec![],
+    ))
     .await
     .expect("redefine mapping action");
     let redef = o
         .get_action(&ActionName("createGadget".into()))
         .await
         .unwrap();
-    assert!(redef.assignments.is_empty(), "redefine clears assignments");
-    assert_eq!(redef.parameters.len(), 1, "redefine replaces parameters");
-    assert_eq!(redef.parameters[0].binds, None, "redefine clears binds");
+    assert!(
+        redef.steps[0].assignments.is_empty(),
+        "redefine clears assignments"
+    );
+    assert_eq!(
+        redef.steps[0].parameters.len(),
+        1,
+        "redefine replaces parameters"
+    );
+    assert_eq!(
+        redef.steps[0].parameters[0].binds, None,
+        "redefine clears binds"
+    );
+
+    // --- Multi-step action (Order + LineItem, bind on step 1) ---
+    // A two-step action persists ALL steps in the normalized per-step tables and
+    // round-trips unchanged. Step 1 (`Order`) carries a `bind`; step 2 (`LineItem`)
+    // carries its own params + a computed assignment. Both target types must exist.
+    o.define_type(ObjectType {
+        name: tn("Order"),
+        table: tref("main", "order"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "status".into(),
+                ty: "String".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+        identity: None,
+    })
+    .await
+    .expect("define Order");
+    o.define_type(ObjectType {
+        name: tn("LineItem"),
+        table: tref("main", "line_item"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "qty".into(),
+                ty: "Long".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "total".into(),
+                ty: "Double".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+        identity: None,
+    })
+    .await
+    .expect("define LineItem");
+
+    let place_order = ActionDef::build("placeOrder", "Order", ActionKind::Insert)
+        .param_req("id", "Long")
+        .assign("status", serde_json::json!("open"))
+        .bind("order")
+        .step("LineItem", ActionKind::Insert)
+        .param_req("id", "Long")
+        .param("qty", "Long")
+        .assign_expr("total", "qty * 10")
+        .done();
+    assert_eq!(place_order.steps.len(), 2, "two steps built");
+    o.define_action(place_order.clone())
+        .await
+        .expect("define multi-step action");
+    assert_eq!(
+        o.get_action(&ActionName("placeOrder".into()))
+            .await
+            .unwrap(),
+        place_order,
+        "multi-step action round-trips unchanged (both steps, bind preserved)",
+    );
 
     // --- Derived properties ---
     o.define_type(ObjectType {
@@ -2495,24 +2583,24 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
     );
 
     // define_action: an existing target type is accepted; an unknown one is rejected.
-    cp.define_action(ActionDef {
-        name: ActionName("act".into()),
-        target: tn("T"),
-        parameters: vec![],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    })
+    cp.define_action(ActionDef::single_step(
+        ActionName("act".into()),
+        tn("T"),
+        ActionKind::Insert,
+        vec![],
+        vec![],
+    ))
     .await
     .expect("define_action on existing target");
     assert!(
         matches!(
-            cp.define_action(ActionDef {
-                name: ActionName("actBad".into()),
-                target: tn("Nope"),
-                parameters: vec![],
-                kind: ActionKind::Insert,
-                assignments: vec![],
-            })
+            cp.define_action(ActionDef::single_step(
+                ActionName("actBad".into()),
+                tn("Nope"),
+                ActionKind::Insert,
+                vec![],
+                vec![],
+            ))
             .await,
             Err(ControlPlaneError::Validation(_))
         ),

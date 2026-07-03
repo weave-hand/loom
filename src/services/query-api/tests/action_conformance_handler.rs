@@ -110,27 +110,27 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
     })
     .await
     .unwrap();
-    cp.define_action(ActionDef {
-        name: ActionName("createWidget".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![param("id", "Long", true), param("name", "String", false)],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    })
+    cp.define_action(ActionDef::single_step(
+        ActionName("createWidget".into()),
+        TypeName("Widget".into()),
+        ActionKind::Insert,
+        vec![param("id", "Long", true), param("name", "String", false)],
+        vec![],
+    ))
     .await
     .unwrap();
-    cp.define_action(ActionDef {
-        name: ActionName("createBad".into()),
-        target: TypeName("Widget".into()),
+    cp.define_action(ActionDef::single_step(
+        ActionName("createBad".into()),
+        TypeName("Widget".into()),
+        ActionKind::Insert,
         // `naem` matches no property; `id`/`name` are fine.
-        parameters: vec![
+        vec![
             param("id", "Long", true),
             param("name", "String", false),
             param("naem", "String", false),
         ],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    })
+        vec![],
+    ))
     .await
     .unwrap();
 

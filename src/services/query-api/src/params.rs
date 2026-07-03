@@ -3,10 +3,18 @@
 //! string, Double as a number, Boolean as a bool, String as a string, Date/Timestamp as
 //! ISO strings. Pure logic, no I/O.
 
-use control_plane_core::{ActionDef, JsonRepr, ObjectType, ParamDef, json_repr_of};
+use std::collections::BTreeMap;
+
+use control_plane_core::{ActionStep, JsonRepr, ObjectType, ParamDef, json_repr_of};
 use serde_json::Value;
 
 use crate::serving::SqlValue;
+
+/// The cross-step binding environment at invocation: each earlier step's `bind` name mapped to
+/// its resolved row (`property -> value`, including its identity). A `StepRef { bind, prop }`
+/// assignment reads `env[bind][prop]`. The single-step path passes an empty env; Task 5 populates
+/// it as it resolves steps in order.
+pub type StepEnv = BTreeMap<String, BTreeMap<String, SqlValue>>;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ParamError {
@@ -45,25 +53,31 @@ pub fn parse_params(
     Ok(out)
 }
 
-/// Resolve an action invocation body into ordered `(property, SqlValue)` write pairs, applying
-/// the action's param→property mapping (`binds`) and constant assignments. The body is keyed by
-/// PARAMETER name; the returned pairs are keyed by the PROPERTY each param binds (or a constant
-/// fills). Assumes the action already passed conformance (so constants coerce and no property is
-/// double-written). Constants reuse the same `parse_value` coercion — against the PROPERTY's
-/// logical type — that parameters take, so a constant is a first-class equal of a param.
+/// Resolve ONE action step's invocation body into ordered `(property, SqlValue)` write pairs,
+/// applying the step's param→property mapping (`binds`), its constant/expression assignments, and
+/// any cross-step `StepRef`s (read from `step_env`). The body is keyed by PARAMETER name; the
+/// returned pairs are keyed by the PROPERTY each param binds (or a constant/ref fills). Assumes
+/// the step already passed conformance (so constants coerce and no property is double-written).
+/// Constants reuse the same `parse_value` coercion — against the PROPERTY's logical type — that
+/// parameters take, so a constant is a first-class equal of a param.
+///
+/// A single-step action passes its sole step (`action.steps.first()`); a multi-step action calls
+/// this once per step in declared order, passing the step whose params/assignments to resolve and
+/// the growing `step_env` so a later step's `StepRef` sees earlier steps' resolved rows.
 pub fn resolve_action_row(
-    action: &ActionDef,
+    step: &ActionStep,
     target: &ObjectType,
     body: &serde_json::Map<String, Value>,
     now: time::PrimitiveDateTime,
+    step_env: &StepEnv,
 ) -> Result<Vec<(String, SqlValue)>, ParamError> {
     // Param leg: reuse parse_params (rejects unknown keys, enforces required, coerces by
     // param.ty), then remap each pair from param name → bound property. parse_params preserves
-    // action.parameters order, so zipping the param refs onto its output is exact.
-    let param_pairs = parse_params(&action.parameters, body)?;
+    // step.parameters order, so zipping the param refs onto its output is exact.
+    let param_pairs = parse_params(&step.parameters, body)?;
 
     // param name -> value (for bare-identifier refs in expressions).
-    let param_env: std::collections::HashMap<String, SqlValue> = action
+    let param_env: std::collections::HashMap<String, SqlValue> = step
         .parameters
         .iter()
         .zip(&param_pairs)
@@ -71,18 +85,18 @@ pub fn resolve_action_row(
         .collect();
 
     let mut out: Vec<(String, SqlValue)> =
-        Vec::with_capacity(param_pairs.len() + action.assignments.len());
+        Vec::with_capacity(param_pairs.len() + step.assignments.len());
     // property name -> value (params' bound properties, then earlier assignments), for @refs.
     let mut prop_env: std::collections::HashMap<String, SqlValue> =
         std::collections::HashMap::new();
-    for (prm, (_, value)) in action.parameters.iter().zip(param_pairs) {
+    for (prm, (_, value)) in step.parameters.iter().zip(param_pairs) {
         prop_env.insert(prm.binds_property().to_string(), value.clone());
         out.push((prm.binds_property().to_string(), value));
     }
 
     // Assignment leg: constants coerce against the PROPERTY's logical type; expressions parse +
     // evaluate against the accumulating param/prop env, in declared order.
-    for a in &action.assignments {
+    for a in &step.assignments {
         let prop_ty = target
             .properties
             .iter()
@@ -107,6 +121,16 @@ pub fn resolve_action_row(
                 crate::expr::eval(&expr, &env, now)
                     .map_err(|e| ParamError::BadValue(a.property.clone(), e.to_string()))?
             }
+            control_plane_core::AssignmentSource::StepRef { bind, prop } => step_env
+                .get(bind)
+                .and_then(|row| row.get(prop))
+                .cloned()
+                .ok_or_else(|| {
+                    ParamError::BadValue(
+                        a.property.clone(),
+                        format!("cross-step reference @{bind}.{prop} is unresolved"),
+                    )
+                })?,
         };
         prop_env.insert(a.property.clone(), value.clone());
         out.push((a.property.clone(), value));

@@ -84,10 +84,11 @@ fn action_def_builder_matches_literal() {
         .param_req("id", "Long")
         .param_req("qty", "Long")
         .done();
-    let literal = ActionDef {
-        name: ActionName("updateWidget".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![
+    let literal = ActionDef::single_step(
+        ActionName("updateWidget".into()),
+        TypeName("Widget".into()),
+        ActionKind::Update,
+        vec![
             ParamDef {
                 name: "id".into(),
                 ty: "Long".into(),
@@ -101,9 +102,8 @@ fn action_def_builder_matches_literal() {
                 binds: None,
             },
         ],
-        kind: ActionKind::Update,
-        assignments: vec![],
-    };
+        vec![],
+    );
     assert_eq!(built, literal);
 }
 
@@ -114,12 +114,12 @@ fn action_def_builder_binds_and_assignment_hooks() {
         .param_bound("newName", "String", false, "name")
         .assign("status", serde_json::json!("active"))
         .done();
-    assert_eq!(a.parameters[0].binds, None);
-    assert_eq!(a.parameters[1].binds.as_deref(), Some("name"));
-    assert!(!a.parameters[1].required);
+    assert_eq!(a.steps[0].parameters[0].binds, None);
+    assert_eq!(a.steps[0].parameters[1].binds.as_deref(), Some("name"));
+    assert!(!a.steps[0].parameters[1].required);
     assert_eq!(
-        a.assignments,
+        a.steps[0].assignments,
         vec![Assignment::constant("status", serde_json::json!("active"))]
     );
-    assert_eq!(a.kind, ActionKind::Update);
+    assert_eq!(a.steps[0].kind, ActionKind::Update);
 }

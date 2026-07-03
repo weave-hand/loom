@@ -9,7 +9,8 @@ use engine_wire::client::GrpcQueueClient;
 use engine_wire::convert::LineageWire;
 
 use crate::serving::{
-    ActionEngine, ServingError, SqlValue, build_object_batch, build_object_batches,
+    ActionEngine, ServingError, SqlValue, StepWrite, WriteMode, build_object_batch,
+    build_object_batches,
 };
 
 fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
@@ -25,6 +26,29 @@ fn to_serving_write(e: control_plane_core::ControlPlaneError) -> ServingError {
         control_plane_core::ControlPlaneError::Conflict(m) => ServingError::Conflict(m),
         other => ServingError::Engine(other.to_string()),
     }
+}
+
+/// Build the `ColumnSpec` list for a zero-row `Overwrite` (truncate) step, where
+/// `build_object_batches` cannot run (it rejects empty rows) yet the engine still needs the
+/// schema to re-project the emptied table. Every field is nullable — the same spec shape
+/// `build_object_batches` produces from its `(columns, logical_types)`.
+fn empty_specs(
+    columns: &[String],
+    logical_types: &[String],
+) -> Result<Vec<control_plane_core::ColumnSpec>, ServingError> {
+    columns
+        .iter()
+        .zip(logical_types)
+        .map(|(name, logical)| {
+            let base = control_plane_core::resolve_logical(logical)
+                .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{logical}`")))?;
+            Ok(control_plane_core::ColumnSpec {
+                name: name.clone(),
+                ty: base.canonical_name(),
+                nullable: true,
+            })
+        })
+        .collect()
 }
 
 /// Encode a single record batch as an Arrow IPC stream body. (Moved verbatim from
@@ -201,6 +225,54 @@ impl ActionEngine for EngineActionClient {
                 lineage_json,
                 expected_version,
             )
+            .await
+            .map_err(to_serving_write)?;
+        Ok(control_plane_core::SnapshotId(id))
+    }
+
+    async fn write_steps(
+        &self,
+        writes: &[StepWrite],
+        event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        // Build one wire `StepWrite` per target: its rows -> multi-row Arrow batch ->
+        // IPC stream, plus the `ColumnSpec` JSON. The single lineage event (carrying
+        // every target in its outputs) crosses once.
+        let lineage_json = serde_json::to_string(&LineageWire::from(&event)).map_err(to_serving)?;
+        let mut steps = Vec::with_capacity(writes.len());
+        for w in writes {
+            let overwrite = matches!(w.mode, WriteMode::Overwrite);
+            // An empty-rows Overwrite (a multi-step Delete/Update that emptied the table) is a
+            // truncate for that target: send an EMPTY IPC body (`build_object_batches` rejects
+            // zero rows, so it must NOT be called) but the REAL column specs, so the engine
+            // re-projects the table's schema at the shared snapshot and it reads as empty (not
+            // as a missing table). Mirrors `overwrite_table`'s empty-body truncate, but keeps
+            // the schema since the multi-step commit registers a whole snapshot.
+            let (ipc, columns_json) = if overwrite && w.rows.is_empty() {
+                (
+                    Vec::new(),
+                    serde_json::to_string(&empty_specs(&w.columns, &w.logical_types)?)
+                        .map_err(to_serving)?,
+                )
+            } else {
+                let (_schema, batch, specs) =
+                    build_object_batches(&w.columns, &w.rows, &w.logical_types)?;
+                (
+                    encode_ipc_stream(&batch)?,
+                    serde_json::to_string(&specs).map_err(to_serving)?,
+                )
+            };
+            steps.push(engine_wire::pb::StepWrite {
+                schema: w.table.schema.clone(),
+                name: w.table.name.clone(),
+                ipc,
+                columns_json,
+                overwrite,
+            });
+        }
+        let id = self
+            .ctl
+            .write_steps(steps, lineage_json)
             .await
             .map_err(to_serving_write)?;
         Ok(control_plane_core::SnapshotId(id))

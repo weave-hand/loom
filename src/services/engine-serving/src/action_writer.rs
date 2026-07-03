@@ -14,6 +14,17 @@ use sqlx::PgPool;
 
 use crate::serving::EngineServingError;
 
+/// One decoded target of a multi-target atomic write ([`IcebergActionWriter::write_steps`]):
+/// a table, its column schema, the IPC-encoded batch to write, and whether the batch
+/// appends to or overwrites the table's live set. Built server-side from the wire
+/// `WriteStepsRequest` (one per `StepWrite` proto message).
+pub struct StepWrite {
+    pub table: TableRef,
+    pub columns: Vec<ColumnSpec>,
+    pub ipc: Vec<u8>,
+    pub overwrite: bool,
+}
+
 /// The relocated `ActionEngine` executor. Holds the same dependencies the old
 /// query-api writer held: an Iceberg `SqlCatalog`, a `PgPool`, and the inline/flush
 /// byte routing knobs.
@@ -68,6 +79,43 @@ impl IcebergActionWriter {
         )
         .await
         .map_err(|e| EngineServingError::Engine(e.to_string()))
+    }
+
+    /// Stage N per-target writes + ONE lineage event in ONE transaction (one
+    /// snapshot), so every target and the lineage land or roll back together — the
+    /// atomic multi-object write seam for multi-step actions. Each [`StepWrite`]
+    /// carries its own IPC-encoded batch, columns, and mode (append vs overwrite);
+    /// the batches are decoded here (pure) and handed to
+    /// [`iceberg_landing::write_steps`], which writes each target's Parquet before
+    /// opening the single commit transaction. A `None` snapshot (nothing staged) maps
+    /// to an error, exactly as the transform path maps `NoSnapshot`.
+    pub async fn write_steps(
+        &self,
+        writes: &[StepWrite],
+        event: LineageEvent,
+    ) -> Result<SnapshotId, EngineServingError> {
+        let mut steps = Vec::with_capacity(writes.len());
+        for w in writes {
+            // An empty `ipc` is a pure end-cap Overwrite (a multi-step Delete/Update that emptied
+            // the table): stage zero batches, exactly as `overwrite_table` treats an empty body as
+            // a truncate. `iceberg_landing::write_steps` end-caps that target at the shared snapshot.
+            let batches = if w.ipc.is_empty() {
+                Vec::new()
+            } else {
+                datafusion_io::decode_ipc(&w.ipc)
+                    .map_err(|e| EngineServingError::Engine(e.to_string()))?
+                    .1
+            };
+            steps.push(iceberg_landing::StepLand {
+                table: w.table.clone(),
+                columns: w.columns.clone(),
+                batches,
+                overwrite: w.overwrite,
+            });
+        }
+        iceberg_landing::write_steps(&self.pool, &self.catalog, steps, event)
+            .await
+            .map_err(|e| EngineServingError::Engine(e.to_string()))
     }
 
     /// Copy-on-write overwrite (UPDATE/DELETE): replace the table's entire live

@@ -37,27 +37,28 @@ fn widget(identity: Option<&str>) -> ObjectType {
 
 #[test]
 fn delete_requires_identity_param_only() {
-    let action = ActionDef {
-        name: ActionName("del".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![ParamDef {
+    let action = ActionDef::single_step(
+        ActionName("del".into()),
+        TypeName("Widget".into()),
+        ActionKind::Delete,
+        vec![ParamDef {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
             binds: None,
         }],
-        kind: ActionKind::Delete,
-        assignments: vec![],
-    };
+        vec![],
+    );
     assert!(check_conformance(&action, &widget(Some("sku"))).is_ok());
 }
 
 #[test]
 fn delete_rejects_extra_params() {
-    let action = ActionDef {
-        name: ActionName("del".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![
+    let action = ActionDef::single_step(
+        ActionName("del".into()),
+        TypeName("Widget".into()),
+        ActionKind::Delete,
+        vec![
             ParamDef {
                 name: "sku".into(),
                 ty: "String".into(),
@@ -71,36 +72,36 @@ fn delete_rejects_extra_params() {
                 binds: None,
             },
         ],
-        kind: ActionKind::Delete,
-        assignments: vec![],
-    };
+        vec![],
+    );
     assert!(check_conformance(&action, &widget(Some("sku"))).is_err());
 }
 
 #[test]
 fn mutate_requires_declared_identity() {
-    let action = ActionDef {
-        name: ActionName("del".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![ParamDef {
+    let action = ActionDef::single_step(
+        ActionName("del".into()),
+        TypeName("Widget".into()),
+        ActionKind::Delete,
+        vec![ParamDef {
             name: "sku".into(),
             ty: "String".into(),
             required: true,
             binds: None,
         }],
-        kind: ActionKind::Delete,
-        assignments: vec![],
-    };
+        vec![],
+    );
     assert!(check_conformance(&action, &widget(None)).is_err());
 }
 
 #[test]
 fn update_allows_partial_columns() {
     // identity "sku" + one mutable column "qty"; required prop coverage relaxed for PATCH.
-    let action = ActionDef {
-        name: ActionName("up".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![
+    let action = ActionDef::single_step(
+        ActionName("up".into()),
+        TypeName("Widget".into()),
+        ActionKind::Update,
+        vec![
             ParamDef {
                 name: "sku".into(),
                 ty: "String".into(),
@@ -114,9 +115,8 @@ fn update_allows_partial_columns() {
                 binds: None,
             },
         ],
-        kind: ActionKind::Update,
-        assignments: vec![],
-    };
+        vec![],
+    );
     assert!(check_conformance(&action, &widget(Some("sku"))).is_ok());
 }
 
@@ -128,10 +128,11 @@ use query_api::action::ActionError;
 #[test]
 fn update_identity_via_binds_conforms() {
     // Identity `sku` is bound by a required param renamed to `key`; `quantity` renames `qty`.
-    let action = ActionDef {
-        name: ActionName("upd".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![
+    let action = ActionDef::single_step(
+        ActionName("upd".into()),
+        TypeName("Widget".into()),
+        ActionKind::Update,
+        vec![
             ParamDef {
                 name: "key".into(),
                 ty: "String".into(),
@@ -145,45 +146,44 @@ fn update_identity_via_binds_conforms() {
                 binds: Some("qty".into()),
             },
         ],
-        kind: ActionKind::Update,
-        assignments: vec![],
-    };
+        vec![],
+    );
     check_conformance(&action, &widget(Some("sku"))).expect("update conforms via binds");
 }
 
 #[test]
 fn delete_identity_via_binds_conforms() {
     // Delete's sole param renames the identity.
-    let action = ActionDef {
-        name: ActionName("del".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![ParamDef {
+    let action = ActionDef::single_step(
+        ActionName("del".into()),
+        TypeName("Widget".into()),
+        ActionKind::Delete,
+        vec![ParamDef {
             name: "key".into(),
             ty: "String".into(),
             required: true,
             binds: Some("sku".into()),
         }],
-        kind: ActionKind::Delete,
-        assignments: vec![],
-    };
+        vec![],
+    );
     check_conformance(&action, &widget(Some("sku"))).expect("delete conforms via binds");
 }
 
 #[test]
 fn delete_with_assignment_rejected() {
     // Delete takes only the identity param; a constant assignment is a misconfiguration.
-    let action = ActionDef {
-        name: ActionName("del".into()),
-        target: TypeName("Widget".into()),
-        parameters: vec![ParamDef {
+    let action = ActionDef::single_step(
+        ActionName("del".into()),
+        TypeName("Widget".into()),
+        ActionKind::Delete,
+        vec![ParamDef {
             name: "key".into(),
             ty: "String".into(),
             required: true,
             binds: Some("sku".into()),
         }],
-        kind: ActionKind::Delete,
-        assignments: vec![Assignment::constant("qty", serde_json::json!(1))],
-    };
+        vec![Assignment::constant("qty", serde_json::json!(1))],
+    );
     assert!(matches!(
         check_conformance(&action, &widget(Some("sku"))),
         Err(ActionError::Misconfigured(_))

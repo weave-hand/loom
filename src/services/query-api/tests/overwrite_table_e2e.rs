@@ -48,10 +48,11 @@ async fn define_widget(cp: &PgControlPlane) -> TypeName {
         .await
         .unwrap();
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createWidget".into()),
-            target: widget.clone(),
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("createWidget".into()),
+            widget.clone(),
+            ActionKind::Insert,
+            vec![
                 ParamDef {
                     name: "id".into(),
                     ty: "Long".into(),
@@ -65,9 +66,8 @@ async fn define_widget(cp: &PgControlPlane) -> TypeName {
                     binds: None,
                 },
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
+            vec![],
+        ))
         .await
         .unwrap();
     widget

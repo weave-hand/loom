@@ -14,6 +14,7 @@ service EngineControl {
   rpc CommitTransform (CommitTransformRequest) returns (CommitTransformResponse);
   rpc BuildVectorIndex (BuildVectorIndexRequest) returns (BuildVectorIndexResponse);
   rpc WriteObject    (WriteObjectRequest)    returns (WriteObjectResponse);
+  rpc WriteSteps     (WriteStepsRequest)     returns (WriteStepsResponse);
   rpc OverwriteTable (OverwriteTableRequest) returns (OverwriteTableResponse);
   rpc CurrentInlineVersion (CurrentInlineVersionRequest) returns (CurrentInlineVersionResponse);
   rpc WriteDelta           (WriteDeltaRequest)           returns (WriteDeltaResponse);
@@ -90,6 +91,20 @@ message WriteObjectRequest {
   string lineage_json = 5;   // serde_json of LineageWire
 }
 message WriteObjectResponse { int64 snapshot_id = 1; }
+
+// Stage N per-target writes + one lineage event in one transaction (one snapshot).
+message StepWrite {
+  string schema = 1;
+  string name = 2;
+  bytes  ipc = 3;             // N-row Arrow IPC stream for this target (built client-side)
+  string columns_json = 4;    // serde_json of Vec<ColumnSpec> describing ipc
+  bool   overwrite = 5;       // true = replace the live set; false = append
+}
+message WriteStepsRequest {
+  repeated StepWrite steps = 1;
+  string lineage_json = 2;    // serde_json of LineageWire (all step targets in its outputs)
+}
+message WriteStepsResponse { int64 snapshot_id = 1; }
 
 message OverwriteTableRequest {
   string schema = 1;

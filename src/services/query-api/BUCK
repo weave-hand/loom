@@ -688,6 +688,45 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "action-multi-object-e2e",
+    crate = "action_multi_object_e2e",
+    srcs = ["tests/action_multi_object_e2e.rs"],
+    crate_root = "tests/action_multi_object_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "write-steps-e2e",
+    crate = "write_steps_e2e",
+    srcs = ["tests/write_steps_e2e.rs"],
+    crate_root = "tests/write_steps_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 rust_test(
     name = "render",
     crate = "render",
@@ -1246,10 +1285,39 @@ rust_test(
 )
 
 rust_test(
+    name = "multi-step-conformance",
+    crate = "multi_step_conformance",
+    srcs = ["tests/multi_step_conformance.rs"],
+    crate_root = "tests/multi_step_conformance.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "action-conformance-handler",
     crate = "action_conformance_handler",
     srcs = ["tests/action_conformance_handler.rs"],
     crate_root = "tests/action_conformance_handler.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "multi-step-run",
+    crate = "multi_step_run",
+    srcs = ["tests/multi_step_run.rs"],
+    crate_root = "tests/multi_step_run.rs",
     edition = "2024",
     deps = [
         ":query-api",

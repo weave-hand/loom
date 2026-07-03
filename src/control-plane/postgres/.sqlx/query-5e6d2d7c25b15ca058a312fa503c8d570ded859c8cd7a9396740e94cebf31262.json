@@ -1,49 +1,49 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select name, ty, required, binds from ontology.action_param where action_name = $1 order by ordinal",
+  "query": "select ordinal, target_type, kind, bind from ontology.action_step where action_name = $1 order by ordinal",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "name",
-        "type_info": "Text",
+        "name": "ordinal",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "ontology.action_param",
-            "name": "name"
+            "table": "ontology.action_step",
+            "name": "ordinal"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "ty",
+        "name": "target_type",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "ontology.action_param",
-            "name": "ty"
+            "table": "ontology.action_step",
+            "name": "target_type"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "required",
-        "type_info": "Bool",
+        "name": "kind",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "ontology.action_param",
-            "name": "required"
+            "table": "ontology.action_step",
+            "name": "kind"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "binds",
+        "name": "bind",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "ontology.action_param",
-            "name": "binds"
+            "table": "ontology.action_step",
+            "name": "bind"
           }
         }
       }
@@ -60,5 +60,5 @@
       true
     ]
   },
-  "hash": "7bbec9dae567a62646ca193075e88b8390846ab9e7b9c76855139669ed27282a"
+  "hash": "5e6d2d7c25b15ca058a312fa503c8d570ded859c8cd7a9396740e94cebf31262"
 }

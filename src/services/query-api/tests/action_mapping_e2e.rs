@@ -174,16 +174,16 @@ async fn rename_param_writes_bound_property() {
 
     // `displayName` binds the `name` property; `id` covers itself.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createGadget".into()),
-            target: gadget,
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("createGadget".into()),
+            gadget,
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("displayName", "String", false, Some("name")),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
+            vec![],
+        ))
         .await
         .unwrap();
 
@@ -236,16 +236,16 @@ async fn constants_fill_properties_including_a_required_one() {
     // A REQUIRED property (`id`) covered ONLY by a constant; `status` also constant-filled;
     // only `displayName`->`name` comes from the body.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("makeGadget".into()),
-            target: gadget,
-            parameters: vec![param("displayName", "String", false, Some("name"))],
-            kind: ActionKind::Insert,
-            assignments: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("makeGadget".into()),
+            gadget,
+            ActionKind::Insert,
+            vec![param("displayName", "String", false, Some("name"))],
+            vec![
                 Assignment::constant("id", json!("7")),
                 Assignment::constant("status", json!("active")),
             ],
-        })
+        ))
         .await
         .unwrap();
 
@@ -295,26 +295,26 @@ async fn resolved_row_is_governed_identically_for_constant_and_renamed_param() {
 
     // Two actions that both write `status`: one via a constant, one via a renamed param.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("constStatus".into()),
-            target: gadget.clone(),
-            parameters: vec![param("id", "Long", true, None)],
-            kind: ActionKind::Insert,
-            assignments: vec![Assignment::constant("status", json!("active"))],
-        })
+        .define_action(ActionDef::single_step(
+            ActionName("constStatus".into()),
+            gadget.clone(),
+            ActionKind::Insert,
+            vec![param("id", "Long", true, None)],
+            vec![Assignment::constant("status", json!("active"))],
+        ))
         .await
         .unwrap();
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("paramStatus".into()),
-            target: gadget.clone(),
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("paramStatus".into()),
+            gadget.clone(),
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("state", "String", false, Some("status")),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
+            vec![],
+        ))
         .await
         .unwrap();
 
@@ -394,30 +394,30 @@ async fn update_targets_and_patches_via_bound_property() {
 
     // Seed one Gadget via a plain insert action.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createGadget".into()),
-            target: gadget.clone(),
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("createGadget".into()),
+            gadget.clone(),
+            ActionKind::Insert,
+            vec![
                 param("id", "Long", true, None),
                 param("name", "String", false, None),
             ],
-            kind: ActionKind::Insert,
-            assignments: vec![],
-        })
+            vec![],
+        ))
         .await
         .unwrap();
     // Update action: identity `id` bound by a renamed required param `key`; `displayName`->`name`.
     cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("renameGadget".into()),
-            target: gadget,
-            parameters: vec![
+        .define_action(ActionDef::single_step(
+            ActionName("renameGadget".into()),
+            gadget,
+            ActionKind::Update,
+            vec![
                 param("key", "Long", true, Some("id")),
                 param("displayName", "String", false, Some("name")),
             ],
-            kind: ActionKind::Update,
-            assignments: vec![],
-        })
+            vec![],
+        ))
         .await
         .unwrap();
 
