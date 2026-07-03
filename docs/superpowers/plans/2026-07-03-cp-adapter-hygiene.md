@@ -56,13 +56,13 @@ are stale; every claim below re-anchored by symbol):**
 
 | # | Spec sub-item | Verdict | Current evidence |
 | --- | --- | --- | --- |
-| A | Exists-check helpers; `select exists(...)` 9×; most of `set_policy`'s cc | CONFIRMED | The two shared texts appear 9×: role-exists ×3 (`acl.rs:137` add_inheritance in-tx, `:204` grant, `:273` set_policy); object-type-exists ×6 (`ontology.rs:115` define_link, `:230` links, `:272` links_to, `:334` define_action; `acl.rs:219` grant, `:291` set_policy). Other `select exists` sites (subject `acl.rs:44`, role_member `:83`, cycle-CTE `:155`, `auth.rs`, `iceberg_mirror.rs:423`) are distinct one-off queries — out of scope |
+| A | Exists-check helpers; `select exists(...)` "9×"; most of `set_policy`'s cc | CONFIRMED — 10×, one more than the spec counted | The two shared texts appear 10×: role-exists ×4 (`acl.rs:57` assign_role, `:137` add_inheritance in-tx, `:204` grant, `:273` set_policy); object-type-exists ×6 (`ontology.rs:115` define_link, `:230` links, `:272` links_to, `:334` define_action IN-TX (`&mut *tx`), `acl.rs:219` grant, `:291` set_policy). Other `select exists` sites (subject `acl.rs:44`, role_member `:83`, cycle-CTE `:155`, `auth.rs`, `iceberg_mirror.rs:423`) are distinct one-off queries — out of scope |
 | B | `links`/`links_to` dedup via `query_as!` + named `LinkRow` | CONFIRMED | `ontology.rs:228-268` ≈ `:270-310`: byte-identical except `from_type = $1` vs `to_type = $1`; identical exists-preamble + row→`LinkDef` mapping |
 | C | Shared policy-target validation (pure decision fn in core, adapter supplies lookups) | CONFIRMED | postgres `acl.rs:217-232` (grant) + `:289-323` (set_policy) duplicated in memory `acl.rs:192-199` + `:229-247`, identical error strings |
 | D | Enum↔string codecs to core, fail-loud (`Cardinality`, `EventType`, `Action`, `Effect`, `ActionKind`) | CONFIRMED | postgres `lib.rs:127-174`: `cardinality_from_str` silently coerces to `One` (`:137`), `event_type_from_str` to `Start` (`:157`); `ActionKind` inline in `ontology.rs:347-351` (to) + `:433-437` (from, silent `Insert`). `Action`/`Effect` have to-str only (never parsed back — `check` computes `Decision` in SQL). Memory stores enums directly — codecs are postgres-only consumers today |
 | E | `PolicyTarget::key_parts()` replaces twice-written target encoding | CONFIRMED | postgres `lib.rs:176` `target_cols` + memory `acl.rs:12-24` `target_key` — same encoding written twice |
-| F | One `backend()` boxing helper (four variants, two Display-flatten) | CONFIRMED | `lib.rs:123` (`sqlx::Error`-only, source-carrying), `iceberg_read.rs:19` `be` (generic, source-carrying), `puffin.rs:16` `be<Display>` (FLATTENS), inline `.to_string().into()` at `iceberg_flush.rs:113` + `iceberg_inline.rs:558` (FLATTEN), plus ~7 `\|e\| Backend(Box::new(e))` closures (`lib.rs:93`, `auth.rs:350`, `iceberg_stats.rs:69`, `iceberg_inline.rs:58,69,254`, `commit_mirror.rs:93`). `auth.rs` `conflict_or_backend`/`notfound_or_backend` are domain mappers, NOT variants — kept |
-| G | Reclassify parse/dim failures `Backend`→`Validation` | CONFIRMED | `Metric::from_str` (`core/src/vector_index/mod.rs:117`), `IndexKind::from_str` (`:151`), `IndexSpec::from_label` (`:60`), `pack_rows` dim mismatch (`codec.rs:202`) all return `Backend`. No existing test pins the class (all assert `.is_err()` only: `core/tests/vector_index.rs:65,91,228,385`, `index_spec_build.rs:70`); engine wire already maps `Validation`→`InvalidArgument`→400 (#317), and query-api already asserts the *search-side* `DimMismatch`→400 — this aligns the build/decode side |
+| F | One `backend()` boxing helper (spec says "four variants, two Display-flatten") | CONFIRMED — actually SIX named variants (three Display-flatten) plus inline sites | Named: `lib.rs:123` `backend(sqlx::Error)` (source-carrying), `iceberg_read.rs:19` `be` (generic, source-carrying), `iceberg_landing.rs:38` `be` (generic, source-carrying, 24 `map_err(be)` sites), `iceberg_mirror.rs:16` `iceberg_err(iceberg::Error)` (source-carrying, 4 sites `:383,392,401,404`), `puffin.rs:16` `be<Display>` (FLATTENS, 7 sites), **`vector_index.rs:16` `backend<Display>` (FLATTENS and SHADOWS `lib.rs::backend` — its 10 `map_err(backend)` sites `:77,101,148,160,177,279,291,355,562,591` all sever sources today)**. Inline flattens: `iceberg_flush.rs:113`, `iceberg_inline.rs:558`, `vector_index.rs:201,205,373,472,476`. Inline `\|e\| Backend(Box::new(e))` closures: `lib.rs:93`, `auth.rs:350`, `iceberg_stats.rs:69`, `iceberg_inline.rs:58,69,254`, `commit_mirror.rs:93`. `auth.rs` `conflict_or_backend`/`notfound_or_backend` are domain mappers, NOT variants — kept |
+| G | Reclassify parse/dim failures `Backend`→`Validation` | CONFIRMED (edit); impact framing corrected | `Metric::from_str` (`core/src/vector_index/mod.rs:117`), `IndexKind::from_str` (`:151`), `IndexSpec::from_label` (`:60`), `pack_rows` dim mismatch (`codec.rs:202`) all return `Backend`. No existing test pins the class (all assert `.is_err()` only: `core/tests/vector_index.rs:65,91,228,385`, `index_spec_build.rs:70`). **No status code changes today**: the search path class-erases via `to_serving` → `EngineServingError::Engine` (internal) before and after; the governance plane's status mapping sends `Backend` AND `Validation` to internal alike; the worker's `JobFailure` policy is class-insensitive; #317's `Validation`→`InvalidArgument` lives on the Flight SQL plane these errors never traverse. The change is honest classification + the `"validation error: "` Display prefix — groundwork for future planes |
 | H | Inline-table access preamble + `mvcc_live_pred` + `quote_ident` | CONFIRMED | formatted `to_regclass('{}')` preamble ×3: `iceberg_inline.rs:114-121` (`has_live_inline_rows`), `:491-498` (`inline_live_batch`), `vector_index.rs:284-292` (`inline_delta_batch`, still there post-#320); live-pred text duplicated `iceberg_inline.rs:124-127`, `:511-514`, `vector_index.rs:347-349` (as the alive-at conjuncts); quote-escape pattern ×5 (`iceberg_inline.rs:253,330,506`, `vector_index.rs:342-343`) |
 | I | `inline_append` invariant SQL out of per-row loop | CONFIRMED | `iceberg_inline.rs:333-345` — `placeholders` + `sql` rebuilt inside `for row in 0..batch.num_rows()` |
 | J | `unnest` the `project_files` stat inserts | CONFIRMED | `iceberg_mirror.rs:150-168` — one INSERT per column-stat inside the per-file loop. SQL text changes → `.sqlx` refresh |
@@ -133,10 +133,17 @@ O → NEW `snapshot_write_order_contract` (Task 11, green on postgres first).
 2. **Parse/dim reclassification (Task 5).** `Metric::from_str`,
    `IndexKind::from_str`, `IndexSpec::from_label` (unknown kind) and
    `pack_rows` (vector dim mismatch) return `Validation` instead of `Backend`
-   — message text unchanged. Surfaces: a wrong-length vector at index build /
-   a corrupt metric row now classes as caller/data-shaped (4xx over the wire,
-   matching the already-shipped search-side `DimMismatch`→400) instead of 500.
-   No existing test pins the old class (all assert `.is_err()` only).
+   — message text unchanged apart from the variant's own `"validation error: "`
+   Display prefix. **This changes no status code on any currently reachable
+   plane**: the search path class-erases via `to_serving` →
+   `EngineServingError::Engine` (internal error) both before and after; the
+   governance-plane status mapping sends `Backend` and `Validation` to
+   internal alike; the worker's `JobFailure` handling is class-insensitive;
+   #317's `Validation`→`InvalidArgument` mapping lives on the Flight SQL
+   plane, which these errors never traverse. The change is honest
+   classification (caller/data-shaped, not backend fault) + the Display
+   prefix — groundwork so future planes can map the class correctly. No
+   existing test pins the old class (all assert `.is_err()` only).
 3. **Memory tx replay order (Task 11).** `replace_files` staged BEFORE
    `append_files` in one `Tx` now leaves the append's files live — matching
    postgres `IcebergTx` (the authority), which applies staged writes in
@@ -149,7 +156,8 @@ O → NEW `snapshot_write_order_contract` (Task 11, green on postgres first).
 
 Postgres-only, behavior-preserving. The two duplicated `select exists` texts
 collapse onto `role_exists`/`object_type_exists` over `impl PgExecutor<'_>`
-(the add_inheritance site runs inside a tx, so the executor must be generic),
+(the add_inheritance and define_action sites run inside transactions, so the
+executor must be generic and those sites stay in-tx),
 and `links`/`links_to` share one `LinkRow` + `link_defs` mapping.
 
 **Files:**
@@ -202,8 +210,8 @@ pub(crate) async fn object_type_exists(
 In `acl.rs` (module level):
 
 ```rust
-/// True if an ACL role with `id` exists. Shared by `grant`/`set_policy`
-/// (pool executor) and `add_inheritance` (in-tx executor).
+/// True if an ACL role with `id` exists. Shared by `assign_role`/`grant`/
+/// `set_policy` (pool executor) and `add_inheritance` (in-tx executor).
 async fn role_exists(ex: impl sqlx::PgExecutor<'_>, id: &str) -> Result<bool> {
     Ok(sqlx::query_scalar!(
         "select exists (select 1 from acl.role where id = $1)",
@@ -221,19 +229,28 @@ async fn role_exists(ex: impl sqlx::PgExecutor<'_>, id: &str) -> Result<bool> {
 `"select exists (select 1 from acl.role where id"` before deleting) — the
 `.sqlx` cache is untouched.
 
-- [ ] **Step 3: Convert the nine sites.** Each inline
+- [ ] **Step 3: Convert the ten sites.** Each inline
   `sqlx::query_scalar!(...).fetch_one(...).await.map_err(backend)?.unwrap_or(false)`
   block becomes a helper call; the surrounding `if !exists { return Err(...) }`
-  logic and its message strings stay byte-identical:
+  logic, its message strings, AND each site's executor (pool vs in-tx) stay
+  byte-identical:
 
+  - `acl.rs` `assign_role` (`:57-66`): the role check becomes
+    `let r_exists = role_exists(&self.pool, &role.0).await?;` (the subject
+    check just above it is a different SQL text — left alone).
   - `acl.rs` `grant`: `let r_exists = role_exists(&self.pool, &role.0).await?;`
     and the Type-target block: `let type_exists = object_type_exists(&self.pool, &name.0).await?;`
     (add `use crate::ontology::object_type_exists;` to `acl.rs`'s imports).
   - `acl.rs` `set_policy`: same two conversions.
   - `acl.rs` `add_inheritance`: inside the loop,
     `let exists = role_exists(&mut *tx, id).await?;` (in-tx executor).
-  - `ontology.rs` `define_link` (per-endpoint loop), `links`, `links_to`,
-    `define_action`: `object_type_exists(&self.pool, ...)`.
+  - `ontology.rs` `define_link` (per-endpoint loop), `links`, `links_to`:
+    `object_type_exists(&self.pool, ...)`.
+  - `ontology.rs` `define_action`: **runs inside its transaction today**
+    (`:333-340` uses `&mut *tx`) — convert to
+    `object_type_exists(&mut *tx, &action.target.0).await?` so the check
+    stays transactional (the executor-generic helper exists precisely for
+    this; do NOT move it to `&self.pool`).
 
 - [ ] **Step 4: Dedup `links`/`links_to`.** In `ontology.rs`, add beside
   `backing_from_row`:
@@ -518,8 +535,10 @@ impl Effect {
 ```
 
 (If any of these enums lacks `Copy`, take `&self` instead — check the derive
-line first; all five are `Copy` today.) Ensure `ControlPlaneError` is imported
-in each file (it already is in all three).
+line first; all five are `Copy` today.) Import `ControlPlaneError` where
+missing: `core/src/ontology.rs` and `core/src/acl.rs` reference it ZERO times
+today (add `use crate::error::ControlPlaneError;` to each); `lineage.rs`
+already imports it.
 
 - [ ] **Step 4: Run — unit tests PASS**
 
@@ -876,7 +895,8 @@ list in `core/src/lib.rs`. Run Step 1's target — expect PASS.
 
 - [ ] **Step 4: Migrate postgres `acl.rs`.** Delete `target_cols` from
   `lib.rs` (and its import in `acl.rs`); every `let (kind, a, b) =
-  target_cols(x);` becomes `let (kind, a, b) = x.key_parts();` (7 sites).
+  target_cols(x);` becomes `let (kind, a, b) = x.key_parts();` (6 sites:
+  `acl.rs:233,254,322,360,382,420`).
   `grant`'s validation block becomes:
 
 ```rust
@@ -983,16 +1003,34 @@ git commit -m "refactor(control-plane): PolicyTarget::key_parts + shared policy 
 ### Task 4: One source-carrying `backend()` boxing helper (spec item F)
 
 Generalize `lib.rs::backend` from `fn(sqlx::Error)` to any
-`E: std::error::Error + Send + Sync + 'static`; delete the two module-local
+`E: std::error::Error + Send + Sync + 'static`; delete the FIVE module-local
 variants and convert the flattening/inline sites. **Display text is
 unchanged** (`Backend` is `#[error(transparent)]`, and boxing the source
 displays the same string the old `e.to_string()` did) — only the `source()`
 chain improves.
 
+**The complete variant census (verified by grep; nothing else defines a
+Backend-boxing fn in the crate):**
+
+| Variant | Kind | Call sites | Fix |
+| --- | --- | --- | --- |
+| `lib.rs:123` `backend(sqlx::Error)` | source-carrying, sqlx-only | crate-wide `map_err(backend)` | generalize (Step 1) |
+| `iceberg_read.rs:19` `be<E: Error + Send + Sync + 'static>` | source-carrying | 8 `map_err(be)` | delete; rename sites |
+| `iceberg_landing.rs:38` `be<E: Error + Send + Sync + 'static>` | source-carrying (identical bound) | 24 `map_err(be)` | delete; rename sites |
+| `iceberg_mirror.rs:16` `iceberg_err(iceberg::Error)` | source-carrying, iceberg-only | 4 (`:383,392,401,404`) | delete; rename sites |
+| `puffin.rs:16` `be<E: Display>` | **FLATTENS** | 7 `map_err(be)` (all `iceberg::Error`) | delete; rename sites |
+| `vector_index.rs:16` `backend<E: Display>` | **FLATTENS + SHADOWS `lib.rs::backend`** | 10 `map_err(backend)` (`:77,101,148,160,177,279,291,355,562,591` — all sqlx) | delete the shadow; add `use crate::backend;` — the 10 sites then resolve to the shared helper unchanged |
+
 **Files:**
 - Modify: `src/control-plane/postgres/src/lib.rs` (generic `backend`)
 - Modify: `src/control-plane/postgres/src/iceberg_read.rs` (delete local `be`)
+- Modify: `src/control-plane/postgres/src/iceberg_landing.rs` (delete local
+  `be`)
+- Modify: `src/control-plane/postgres/src/iceberg_mirror.rs` (delete
+  `iceberg_err`; fix the `:326` doc comment that names it)
 - Modify: `src/control-plane/postgres/src/puffin.rs` (delete local `be`)
+- Modify: `src/control-plane/postgres/src/vector_index.rs` (delete the
+  shadowing `backend<Display>`; convert its 5 inline flattens)
 - Modify: `src/control-plane/postgres/src/iceberg_flush.rs`,
   `src/control-plane/postgres/src/iceberg_inline.rs`,
   `src/control-plane/postgres/src/iceberg_stats.rs`,
@@ -1016,11 +1054,36 @@ fn backend<E: std::error::Error + Send + Sync + 'static>(e: E) -> ControlPlaneEr
 Every existing `map_err(backend)` site keeps compiling (inference picks
 `E = sqlx::Error`).
 
-- [ ] **Step 2: Convert the variants.** In `iceberg_read.rs` delete the local
-  `be` and `use crate::backend;` — replace all `map_err(be)` with
-  `map_err(backend)`. Same in `puffin.rs` (its sites are all `iceberg::Error`
-  values, which implement `Error + Send + Sync`). Convert the inline sites:
-  `iceberg_flush.rs:113` and any other
+- [ ] **Step 2: Delete the five module-local variants** (census above):
+
+  - `iceberg_read.rs`: delete `be`, add `use crate::backend;`, rename its 8
+    `map_err(be)` → `map_err(backend)` (types: `iceberg::Error`, arrow/parquet
+    stream errors — all `Error + Send + Sync + 'static`).
+  - `iceberg_landing.rs`: delete `be` (its bound is IDENTICAL to the new
+    shared helper, so the rename is safe by construction), add
+    `use crate::backend;`, rename its 24 `map_err(be)` sites (types:
+    `ArrowError` from `StreamReader`/`concat_batches`/`RecordBatch::try_new`,
+    `sqlx::Error` from acquire/begin/commit, `iceberg::Error` from
+    `load_table`/`schema_to_arrow_schema`/namespace + table ops).
+  - `iceberg_mirror.rs`: delete `iceberg_err`, rename its 4 sites
+    (`:383,392,401,404`, all `iceberg::Error`) to `map_err(backend)` —
+    `use crate::backend;` is already imported (`:14`). Update the `:326` doc
+    comment ("as `Backend` (matching `iceberg_err`)") to name `backend`
+    instead.
+  - `puffin.rs`: delete `be<Display>`, add `use crate::backend;`, rename its
+    7 sites (all `iceberg::Error` — now source-carrying instead of
+    flattened).
+  - `vector_index.rs`: delete the `backend<E: Display>` shadow (`:16-18`) and
+    add `use crate::backend;` — its 10 existing `map_err(backend)` call
+    sites (`:77,101,148,160,177,279,291,355,562,591`, all `sqlx::Error`)
+    resolve to the shared source-carrying helper with no text change. Convert
+    its 5 inline flattens to `map_err(backend)`: `:201`/`:205`
+    (`ArrowError` from `schema().index_of`), `:373` (`ArrowError` from
+    `RecordBatch::try_new`), `:472` (`iceberg::Error` from
+    `TableIdent::from_strs`), `:476` (`iceberg::Error` from `load_table`).
+
+- [ ] **Step 3: Convert the remaining inline sites.** `iceberg_flush.rs:113`
+  (`serde_json::Error`) and any other
   `.map_err(|e| ControlPlaneError::Backend(e.to_string().into()))` /
   `.map_err(|e| ControlPlaneError::Backend(Box::new(e)))` /
   `.map_err(|e| ControlPlaneError::Backend(e.into()))` on an
@@ -1029,17 +1092,19 @@ Every existing `map_err(backend)` site keeps compiling (inference picks
 ```bash
 grep -rn "Backend(Box::new(e))\|Backend(e.to_string().into())\|Backend(e.into())" \
   src/control-plane/postgres/src/
+grep -rn "fn be\b\|fn be<\|fn iceberg_err\|fn backend" src/control-plane/postgres/src/
 ```
 
-  Leave every `Backend(format!(...).into())` / `Backend("msg".into())`
-  **message-literal** construction untouched — those are named-condition
-  errors, not source boxing. If a grep hit's `e` is not an
-  `Error + Send + Sync + 'static` type, leave that site as-is with a
-  one-line `// not an Error type; flattening is deliberate here` comment.
+  The second grep must end with exactly ONE definition (`lib.rs`). Leave every
+  `Backend(format!(...).into())` / `Backend("msg".into())` **message-literal**
+  construction untouched — those are named-condition errors, not source
+  boxing. If a grep hit's `e` is not an `Error + Send + Sync + 'static` type,
+  leave that site as-is with a one-line
+  `// not an Error type; flattening is deliberate here` comment.
   (`commit_mirror.rs:93` needs `use crate::backend;` — it lives in a
   submodule directory.)
 
-- [ ] **Step 3: Full postgres-crate build + suite** (error paths are spread
+- [ ] **Step 4: Full postgres-crate build + suite** (error paths are spread
   across the crate; the fixture suites pin observable messages)
 
 ```bash
@@ -1050,7 +1115,7 @@ buck2 test //src/control-plane/postgres: -j 8 > /tmp/t4.log 2>&1; \
 
 Expected: `Fail 0`.
 
-- [ ] **Step 4: prek + commit**
+- [ ] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek4.log 2>&1; grep -E "Failed" /tmp/prek4.log || echo CLEAN
@@ -1064,8 +1129,12 @@ git commit -m "refactor(control-plane): one source-carrying backend() boxing hel
 
 `Metric::from_str`, `IndexKind::from_str`, `IndexSpec::from_label` and
 `pack_rows`' dim mismatch flip `Backend` → `Validation`, message text
-unchanged. The codec's **bytes are untouched** (one error-variant line in
-`codec.rs`; the byte-golden tests must stay green unmodified).
+unchanged. **Honest classification only — no status code changes on any
+currently reachable plane** (see whitelist entry 2 for the per-plane
+mechanism); the observable delta is the class itself plus the variant's
+`"validation error: "` Display prefix. The codec's **bytes are untouched**
+(one error-variant line in `codec.rs`; the byte-golden tests must stay green
+unmodified).
 
 **Files:**
 - Test (append): `src/control-plane/core/tests/vector_index.rs`
@@ -1081,8 +1150,9 @@ unchanged. The codec's **bytes are untouched** (one error-variant line in
 fn parse_and_dim_failures_are_validation() {
     use control_plane_core::{ControlPlaneError, IndexKind, IndexSpec, Metric};
     use std::str::FromStr;
-    // Parse failures: caller/wire/row-shaped tokens -> Validation (4xx), not
-    // Backend (500). Whitelisted change 2 of road-cp-adapter-hygiene.
+    // Parse failures: caller/wire/row-shaped tokens are Validation (honest
+    // classification; no plane maps the class to a status code today).
+    // Whitelisted change 2 of road-cp-adapter-hygiene.
     assert!(matches!(
         Metric::from_str("hamming"),
         Err(ControlPlaneError::Validation(_))
@@ -1113,7 +1183,7 @@ Expected: exactly ONE failing test (the new one — the errors are `Backend`
 today); every pre-existing test green. If the new test passes, STOP — the
 claim inventory is wrong.
 
-- [ ] **Step 2: Flip the four variants.** In `vector_index/mod.rs`, the three
+- [ ] **Step 2: Flip the four sites.** In `vector_index/mod.rs`, the three
   `ControlPlaneError::Backend(format!(...).into())` returns in
   `Metric::from_str`, `IndexKind::from_str`, `IndexSpec::from_label` become
   `ControlPlaneError::Validation(format!(...))` (message strings unchanged;
@@ -1720,6 +1790,8 @@ already-`Eq + Hash` `TableRef`. Mechanical; compiler-driven.
 - Modify: `src/control-plane/memory/src/catalog.rs`
 - Modify: `src/control-plane/memory/src/transaction.rs` (key construction
   sites)
+- Modify: `src/control-plane/memory/src/lib.rs` (key construction at `:117`
+  in `seed_catalog` and `:169` in `drop_table_catalog`)
 
 - [ ] **Step 1: Pinning suites green pre-change**
 
@@ -1745,8 +1817,9 @@ pub(crate) struct CatalogState {
 `latest_live` takes `key: &TableRef`. Then sweep every construction site the
 compiler flags: `let key = (table.schema.clone(), table.name.clone());` →
 either `cat.files.get(table)` directly (lookups take `&TableRef`) or
-`let key = table.clone();` where an owned key is inserted. Both files; no
-logic changes.
+`let key = table.clone();` where an owned key is inserted. All three files
+(`catalog.rs`, `transaction.rs`, and `lib.rs`'s `seed_catalog:117` +
+`drop_table_catalog:169`); no logic changes.
 
 - [ ] **Step 3: Re-run Step 1's suites — green; commit**
 
@@ -2027,7 +2100,7 @@ between heavy phases if disk pressure appears.)
 
 ```markdown
 - [x] **Control-plane adapter hygiene batch** `{#road-cp-adapter-hygiene area:quality status:done from:2026-07-02-pillar-idioms-audit-design pr:- spec:2026-07-02-pillar-idioms-audit-design}`
-  Done, one commit per sub-item. Postgres: `role_exists`/`object_type_exists` over `PgExecutor` collapse the 9 duplicated exists checks; `links`/`links_to` share `LinkRow` + `link_defs`; ONE generic source-carrying `backend()` boxing helper (deleted `iceberg_read::be`, `puffin::be` and the `.to_string()` flattens); inline-table preamble → `inline_table_exists` + `mvcc_live_pred` + `quote_ident` (the `AssertSqlSafe` argument now lives in one place); `inline_append`'s statement text hoisted out of its row loop; `project_files` stat inserts batched via `unnest`; `vector_indexes_for` and `events_for` N+1s collapsed (one query / `event_id = any($1)`, pinned by the new `events_for_hydration_contract`; hydration follow-ups tracked by [[fut-lineage-events-page-hydration]]). Core: enum wire codecs (`Cardinality`/`EventType`/`ActionKind` `as_str`+`FromStr`, `Action`/`Effect` `as_str`) with FAIL-LOUD unknown tokens (was silent One/Start/Insert coercion — whitelisted); `PolicyTarget::key_parts()`; shared `check_grant_target`/`check_policy_write` write-time decisions (adapters supply lookups); `PageReq::{fetch_limit_i64,fetch_take}` own the keyset +1 sentinel; parse/dim failures (`Metric`/`IndexKind`/`from_label`/`pack_rows`) reclassified `Backend`→`Validation` (whitelisted; nothing pinned the old class). Memory: catalog keyed by `TableRef`; `MemoryTx` replays ONE ordered `StagedWrite` log matching postgres `IcebergTx` (whitelisted replay-order fix, pinned by the new `snapshot_write_order_contract`, proven green on postgres first). The spec's `dc!` sub-item was already shipped by #296 and dropped.
+  Done, one commit per sub-item. Postgres: `role_exists`/`object_type_exists` over `PgExecutor` collapse the 10 duplicated exists checks (in-tx sites kept in-tx); `links`/`links_to` share `LinkRow` + `link_defs`; ONE generic source-carrying `backend()` boxing helper — deleted all five module-local variants (`iceberg_read::be`, `iceberg_landing::be`, `iceberg_mirror::iceberg_err`, `puffin::be`, and `vector_index`'s Display-flattening `backend` shadow) plus the inline `.to_string()` flattens; inline-table preamble → `inline_table_exists` + `mvcc_live_pred` + `quote_ident` (the `AssertSqlSafe` argument now lives in one place); `inline_append`'s statement text hoisted out of its row loop; `project_files` stat inserts batched via `unnest`; `vector_indexes_for` and `events_for` N+1s collapsed (one query / `event_id = any($1)`, pinned by the new `events_for_hydration_contract`; hydration follow-ups tracked by [[fut-lineage-events-page-hydration]]). Core: enum wire codecs (`Cardinality`/`EventType`/`ActionKind` `as_str`+`FromStr`, `Action`/`Effect` `as_str`) with FAIL-LOUD unknown tokens (was silent One/Start/Insert coercion — whitelisted); `PolicyTarget::key_parts()`; shared `check_grant_target`/`check_policy_write` write-time decisions (adapters supply lookups); `PageReq::{fetch_limit_i64,fetch_take}` own the keyset +1 sentinel; parse/dim failures (`Metric`/`IndexKind`/`from_label`/`pack_rows`) reclassified `Backend`→`Validation` (whitelisted honest-classification change; no status code changes on currently reachable planes; nothing pinned the old class). Memory: catalog keyed by `TableRef`; `MemoryTx` replays ONE ordered `StagedWrite` log matching postgres `IcebergTx` (whitelisted replay-order fix, pinned by the new `snapshot_write_order_contract`, proven green on postgres first). The spec's `dc!` sub-item was already shipped by #296 and dropped.
 ```
 
 - [ ] **Step 3: Validate + commit**
@@ -2053,8 +2126,9 @@ finishing flow.
   prose. The spec's `.sqlx` note is honored where true (Tasks 7, 9) and
   refuted with a mechanism (hash-keyed cache) where not.
 - **Type consistency:** `object_type_exists`/`role_exists` take
-  `impl PgExecutor<'_>` (Task 1) matching the in-tx call in `add_inheritance`
-  and the Task-3 grant/set_policy uses; `link_defs` is defined infallible in
+  `impl PgExecutor<'_>` (Task 1) matching the in-tx calls in
+  `add_inheritance`/`define_action` and the Task-3 grant/set_policy uses;
+  `link_defs` is defined infallible in
   Task 1 and explicitly redefined fallible in Task 2 (single site, sequenced);
   `check_policy_write(policy, Option<&HashSet<String>>)` matches both
   adapters' Task-3 call shapes and the Task-3 unit tests;
@@ -2071,3 +2145,14 @@ finishing flow.
   the spec's single `fetch_limit()`, new-codec errors classed `Validation`
   from birth (so Task 5 only reclassifies pre-existing sites), and leaving
   `iceberg_gc.rs`'s name-string `to_regclass` probe alone.
+- **Adversarial-review corrections applied (2026-07-03):** Task 4's variant
+  census completed by re-grep — SIX named Backend-boxing fns, not four
+  (added `iceberg_landing::be` 24 sites, `iceberg_mirror::iceberg_err` 4
+  sites, and `vector_index`'s Display-flattening `backend` SHADOW with 10
+  call sites + 5 inline flattens); Task 5/whitelist-2 impact framing
+  corrected (honest classification + Display prefix only — no currently
+  reachable plane maps the class to a status code); exists-check census is
+  10× incl. `assign_role`, with `define_action`'s check kept in-tx; Task 10
+  covers `memory/src/lib.rs` (`seed_catalog`/`drop_table_catalog`) as the
+  third file; `target_cols` has 6 sites; core `ontology.rs`/`acl.rs` need
+  the `ControlPlaneError` import added.
