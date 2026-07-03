@@ -301,6 +301,19 @@ rust_test(
 )
 
 rust_test(
+    name = "vector-index-decode-props",
+    crate = "vector_index_decode_props",
+    srcs = ["tests/vector_index_decode_props.rs"],
+    crate_root = "tests/vector_index_decode_props.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:proptest",
+    ],
+)
+
+rust_test(
     name = "column-spec-serde",
     crate = "column_spec_serde",
     srcs = ["tests/column_spec_serde.rs"],
