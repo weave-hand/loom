@@ -42,6 +42,16 @@ fn expected() -> BTreeSet<(String, String)> {
         ("post", "/admin/roles"),
         ("get", "/admin/roles"),
         ("post", "/admin/roles/{role}/grants"),
+        ("get", "/admin/roles/{role}/grants"),
+        ("delete", "/admin/roles/{role}/grants"),
+        ("delete", "/admin/roles/{role}"),
+        ("post", "/admin/links"),
+        ("delete", "/admin/links/{from}/{name}"),
+        ("post", "/admin/actions"),
+        ("delete", "/admin/actions/{name}"),
+        ("get", "/admin/users/{username}/roles"),
+        ("put", "/admin/users/{username}/roles/{role}"),
+        ("delete", "/admin/users/{username}/roles/{role}"),
     ]
     .iter()
     .map(|(m, p)| ((*m).to_string(), (*p).to_string()))
