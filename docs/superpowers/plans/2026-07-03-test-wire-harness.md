@@ -939,14 +939,14 @@ git commit -m "test(testing): loom_test_flight engine-UDS spawn harness with con
   `vec4_columns`, `vec4_ipc`, `test_lineage`, `local_sql_catalog`, `ids_i64`,
   `distances_f32`, `hot_limits`, `cold_limits`, `VectorSeed`.
 
-- [ ] **Step 1: Baseline — run the package suite green**
+- [x] **Step 1: Baseline — run the package suite green**
 
 ```bash
 buck2 test //src/services/engine-serving: -j 8 > /tmp/t3pre.log 2>&1; \
   grep -E "Tests finished|FAIL" /tmp/t3pre.log
 ```
 
-- [ ] **Step 2: Migrate `vector_search.rs`.** Deletions: fns `columns`,
+- [x] **Step 2: Migrate `vector_search.rs`.** Deletions: fns `columns`,
   `ipc_body`, `lineage_evt`, `make_catalog`, `ids`, `distances`,
   `seed_and_build`, `seed_and_build_ivf`, `seed_and_build_hnsw` (the whole
   hand-rolled prologue). New imports replace the now-unused ones:
@@ -996,7 +996,7 @@ sanctioned renames):
   `vec4_ipc(rows)`, `make_catalog(…)` → `local_sql_catalog(…)`,
   `lineage_evt(run, &table)` → `test_lineage(run, &table)`.
 
-- [ ] **Step 3: Migrate `vector_index_auto_rebuild.rs`** — its
+- [x] **Step 3: Migrate `vector_index_auto_rebuild.rs`** — its
   `seed_and_build` is verbatim-identical to the canonical: same deletions
   (`columns`/`ipc_body`/`lineage_evt`/`make_catalog`/`ids`/`seed_and_build`),
   same call-site mapping (`seed_docs_vector(fx, &db, "by_flat", M,
@@ -1004,7 +1004,7 @@ sanctioned renames):
   carry them verbatim), `ids(` → `ids_i64(`. Rebuild-specific steps
   (auto-rebuild triggers, second search) stay untouched.
 
-- [ ] **Step 4: Migrate `inline_vector_sql.rs`** — swap `columns()` →
+- [x] **Step 4: Migrate `inline_vector_sql.rs`** — swap `columns()` →
   `vec4_columns()`, `ipc_body` → `vec4_ipc`, `make_catalog` →
   `local_sql_catalog` (delete the three local fns). The local `seed()`,
   `read_vectors()`, and table-arg `lineage_evt(table)` STAY (divergent
@@ -1012,19 +1012,19 @@ sanctioned renames):
   table)` with the identical `{"source": "test"}` payload, reimplement it as
   that one-liner; if its payload differs, leave it entirely alone.
 
-- [ ] **Step 5: Migrate `vector_search_identity_kinds.rs`** — swap ONLY
+- [x] **Step 5: Migrate `vector_search_identity_kinds.rs`** — swap ONLY
   `make_catalog` → `local_sql_catalog`. Everything else (id-kind
   parametrized `columns(id_ty)`, `ipc_from`, `object_type`, local
   `seed_and_build`, `ids_str`) is deliberate divergence and stays.
 
-- [ ] **Step 6: BUCK deps.** In `src/services/engine-serving/BUCK`, add
+- [x] **Step 6: BUCK deps.** In `src/services/engine-serving/BUCK`, add
   `"//src/testing:seed",` to the `deps` of the four `loom_fixture_test`
   targets (`vector-search`, the auto-rebuild target, the inline-vector-sql
   target, the identity-kinds target — locate by `srcs`). Remove any
   third-party dep a file no longer imports (e.g. `arrow-ipc` where the local
   `ipc_body` was the only user) — check with the build, not by guessing.
 
-- [ ] **Step 7: Run — package green; diff shows prologue-only changes**
+- [x] **Step 7: Run — package green; diff shows prologue-only changes**
 
 ```bash
 buck2 test //src/services/engine-serving: -j 8 > /tmp/t3.log 2>&1; \
@@ -1038,7 +1038,7 @@ Expected: `Fail 0`; net-negative diff; the assert-line grep shows ONLY
 matching `+` line differing only in the helper name). Any other assert delta
 is a bug — revert it.
 
-- [ ] **Step 8: prek + commit**
+- [x] **Step 8: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek3.log 2>&1; grep -E "Failed" /tmp/prek3.log || echo CLEAN

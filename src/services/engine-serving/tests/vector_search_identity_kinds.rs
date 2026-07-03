@@ -4,7 +4,6 @@
 //! (iss-inline-delta-string-identity). The cold pin here is GREEN pre-fix;
 //! Task 2 appends the *_cold_hot_merge red tests.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,12 +18,9 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
+use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::vector_index::build_vector_index;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
+use loom_test_seed::local_sql_catalog;
 
 fn columns(id_ty: &str) -> Vec<ColumnSpec> {
     vec![
@@ -107,20 +103,6 @@ fn lineage_evt(table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Define the type + a flat cosine index, land `cold_ipc` as Parquet, build.
 /// The warehouse TempDir is returned — the cold search reads its Parquet.
 async fn seed_and_build(
@@ -134,7 +116,7 @@ async fn seed_and_build(
 ) -> (SqlCatalog, sqlx::PgPool, tempfile::TempDir) {
     let pool = fx.pool_for(db).await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
     let cp = PgControlPlane::new(pool.clone(), Duration::from_secs(5));
     cp.ontology()
         .define_type(object_type(type_name, table, id_ty_property))
