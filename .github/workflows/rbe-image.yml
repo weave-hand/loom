@@ -1,0 +1,68 @@
+name: rbe-image
+
+# Custom BuildBuddy RBE image for loom (flame-public base + chrome-headless-shell
+# runtime libs), so //src/ui/e2e:login can start its vendored browser on the RE
+# worker. Manual only — the image changes ~never (Chrome-major or base bump).
+# After a successful run, copy the printed digest into platforms/defs.bzl's
+# container-image line. See
+# docs/superpowers/specs/2026-07-02-ui-e2e-hermetic-rbe-image-design.md.
+on:
+  workflow_dispatch:
+
+# Serialize dispatches so two runs can't race on the :latest tag / digest read.
+concurrency:
+  group: rbe-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/weave-hand/loom-rbe-browser
+
+permissions:
+  contents: read
+  packages: write   # push the image to ghcr
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Chrome for Testing version
+        id: ver
+        run: |
+          set -euo pipefail
+          v="$(grep -oP 'CHROME_FOR_TESTING_VERSION = "\K[^"]+' third-party/browser/BUCK)"
+          echo "cft=$v" >> "$GITHUB_OUTPUT"
+          echo "chrome-for-testing version: $v"
+
+      - name: Build image
+        run: docker build -t loom-rbe-browser:ci tools/ci/rbe-browser
+
+      - name: Smoke-test the lib closure (fails the publish if a lib is missing)
+        run: tools/ci/rbe-browser/smoke.sh loom-rbe-browser:ci
+
+      - name: Log in to ghcr
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Tag and push
+        id: push
+        run: |
+          set -euo pipefail
+          cft="${{ steps.ver.outputs.cft }}"
+          docker tag loom-rbe-browser:ci "$IMAGE:latest"
+          docker tag loom-rbe-browser:ci "$IMAGE:cft-$cft"
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:cft-$cft"
+          digest="$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{.Manifest.Digest}}')"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Report the digest to pin
+        run: |
+          echo "### RBE browser image published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin this in \`platforms/defs.bzl\`:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "docker://${IMAGE}@${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
