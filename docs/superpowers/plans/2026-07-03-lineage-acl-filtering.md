@@ -52,7 +52,9 @@
   - `pub const LINEAGE_FILTER_SCAN_CAP: usize = 10_000;`
   - `pub enum LineageDir { Upstream, Downstream }`
   - `pub enum LineageVisibilityError { ScanCapExceeded, Cp(ControlPlaneError) }`
-  - `pub struct LineageVisibility<'a> { pub acl: &'a (dyn Acl + Send + Sync), pub lineage: &'a (dyn Lineage + Send + Sync), pub bridge: &'a LineageNaming }`
+  - `pub struct LineageVisibility<'a>` with **private** fields `{ acl, lineage, bridge, scan_cap: usize }`, plus:
+    - `pub fn new(acl: &'a (dyn Acl + Send + Sync), lineage: &'a (dyn Lineage + Send + Sync), bridge: &'a LineageNaming) -> Self` (sets `scan_cap = LINEAGE_FILTER_SCAN_CAP`)
+    - `pub fn with_scan_cap(self, cap: usize) -> Self` (builder — lets a pure-logic test drive `ScanCapExceeded` without seeding 10k nodes)
   - `impl LineageVisibility<'_>`:
     - `pub async fn visible_closure(&self, subject: &SubjectId, seed: &DatasetRef, depth: u32, dir: LineageDir, page: &PageReq) -> Result<Page<DatasetRef>, LineageVisibilityError>`
     - `pub async fn visible_upstream(&self, subject, seed, depth, page) -> Result<Page<DatasetRef>, LineageVisibilityError>` (calls `visible_closure(.., Upstream, ..)`)
@@ -74,7 +76,7 @@ Create `src/services/query-api/src/lineage_filter.rs`:
 //! docs/superpowers/specs/2026-07-01-lineage-acl-filtering-design.md.
 
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Cursor, DatasetRef, Decision, LOOM_DATASET_NAMESPACE,
+    Acl, Action, ControlPlaneError, DatasetRef, Decision, LOOM_DATASET_NAMESPACE,
     LOOM_TYPE_NAMESPACE, Lineage, LineageEvent, Page, PageReq, PolicyTarget, SubjectId,
     check_depth, decode_dataset_cursor, encode_dataset_cursor,
 };
@@ -110,14 +112,39 @@ impl From<ControlPlaneError> for LineageVisibilityError {
 }
 
 /// The service-layer lineage governor: borrows the ACL, the lineage read surface,
-/// and the deployment naming bridge.
+/// and the deployment naming bridge. Construct via `new` (production `scan_cap`) or
+/// `new(..).with_scan_cap(n)` (tests that drive the cap).
 pub struct LineageVisibility<'a> {
-    pub acl: &'a (dyn Acl + Send + Sync),
-    pub lineage: &'a (dyn Lineage + Send + Sync),
-    pub bridge: &'a LineageNaming,
+    acl: &'a (dyn Acl + Send + Sync),
+    lineage: &'a (dyn Lineage + Send + Sync),
+    bridge: &'a LineageNaming,
+    scan_cap: usize,
 }
 
-impl LineageVisibility<'_> {
+impl<'a> LineageVisibility<'a> {
+    /// The governor with the production scan cap.
+    #[must_use]
+    pub fn new(
+        acl: &'a (dyn Acl + Send + Sync),
+        lineage: &'a (dyn Lineage + Send + Sync),
+        bridge: &'a LineageNaming,
+    ) -> Self {
+        LineageVisibility {
+            acl,
+            lineage,
+            bridge,
+            scan_cap: LINEAGE_FILTER_SCAN_CAP,
+        }
+    }
+
+    /// Override the scan cap (tests only in practice — the production path uses
+    /// `LINEAGE_FILTER_SCAN_CAP` via `new`).
+    #[must_use]
+    pub fn with_scan_cap(mut self, cap: usize) -> Self {
+        self.scan_cap = cap;
+        self
+    }
+
     /// Classify a ref's readability for `subject`. Internal (`Table`/`Type`) → readable
     /// iff `Acl::check(Read)` allows. External → default-allow (external datasources
     /// carry no loom-ACL'd data and are the source leaves). A ref under a loom-owned
@@ -210,7 +237,7 @@ Append to `impl LineageVisibility<'_>`:
                     if !visited.insert(nb.clone()) {
                         continue; // cycle / already-seen guard (mirrors the CTE UNION)
                     }
-                    if visited.len() > LINEAGE_FILTER_SCAN_CAP {
+                    if visited.len() > self.scan_cap {
                         return Err(LineageVisibilityError::ScanCapExceeded);
                     }
                     if self.is_readable(subject, &nb).await? {
@@ -262,22 +289,24 @@ fn window(
     mut visible: Vec<DatasetRef>,
     page: &PageReq,
 ) -> Result<Page<DatasetRef>, LineageVisibilityError> {
+    // The BFS `visited` set already guarantees uniqueness, so no dedup is needed —
+    // only the stable `(namespace, name)` sort (DatasetRef: Ord).
     visible.sort();
-    visible.dedup();
     if let Some(cursor) = &page.after {
         let after = decode_dataset_cursor(cursor)?;
         visible.retain(|d| *d > after);
     }
     let taken: Vec<DatasetRef> = match page.limit {
+        // `usize::try_from(..).unwrap_or(usize::MAX)` is the in-tree idiom for this
+        // exact `limit + 1` (see memory/src/lineage.rs) — a bare `as` cast trips the
+        // restriction-group `as_conversions`/`cast_possible_truncation` lints.
         Some(l) => {
-            let keep = (l as usize).saturating_add(1);
+            let keep = usize::try_from(l).unwrap_or(usize::MAX).saturating_add(1);
             visible.into_iter().take(keep).collect()
         }
         None => visible,
     };
-    Ok(Page::from_keyset(taken, page.limit, |d: &DatasetRef| -> Cursor {
-        encode_dataset_cursor(d)
-    }))
+    Ok(Page::from_keyset(taken, page.limit, encode_dataset_cursor))
 }
 ```
 
@@ -322,6 +351,27 @@ Append to `impl LineageVisibility<'_>`:
     }
 ```
 
+Also add a module-level bridge constructor (used by `serve.rs`'s fallback and by every
+test that builds an `AppState`, so the naming field is set in exactly one place):
+
+```rust
+/// A naming bridge over a local-disk warehouse root — the default when a caller has
+/// no `ObjectStoreConfig` at hand. Logical `loom`/`loom:type` refs resolve regardless
+/// of warehouse (the only thing the tests and the internally-emitted graph use); this
+/// simply fixes the storage-derived namespace to a local root. Reuses
+/// `service_runtime`'s `ObjectStoreConfig` re-export (already a lib dep), so callers
+/// need no direct `store-config`/`lineage-naming` dep.
+#[must_use]
+pub fn local_naming() -> std::sync::Arc<LineageNaming> {
+    std::sync::Arc::new(LineageNaming::from_object_store(
+        &service_runtime::ObjectStoreConfig {
+            warehouse_uri: "file:///loom".to_string(),
+            backend: service_runtime::ObjectStoreBackend::Local,
+        },
+    ))
+}
+```
+
 - [ ] **Step 4: Register the module + BUCK dep.**
 
 In `src/services/query-api/src/lib.rs`, add after line `pub mod lineage_read;`:
@@ -348,8 +398,14 @@ Create `src/services/query-api/tests/lineage_visibility.rs`. It uses a `MemoryCo
 
 use std::time::Duration;
 
+// `Acl` is imported because `subject_reading` calls `define_subject`/`define_role`/
+// `assign_role`/`grant` on the concrete `MemoryControlPlane` (these are `Acl`-trait
+// methods on a concrete receiver, so the trait must be in scope; cf. http_smoke.rs).
+// `Lineage` is deliberately NOT imported — `cp.lineage().emit(..)` calls through the
+// `&dyn Lineage` accessor return, which needs no trait in scope (an unused import
+// would trip clippy's `unused_imports` on test targets).
 use control_plane_core::{
-    Action, ControlPlane, DatasetRef, Effect, EventType, LineageEvent, PageReq, PolicyTarget,
+    Acl, Action, ControlPlane, DatasetRef, Effect, EventType, LineageEvent, PageReq, PolicyTarget,
     RoleId, RunId, SubjectId, TypeName, encode_dataset_cursor,
 };
 use control_plane_memory::MemoryControlPlane;
@@ -418,7 +474,7 @@ async fn cut_not_skip_denied_intermediate_hides_its_ancestors() {
     let bridge = naming();
     // U reads A, X, S but NOT N.
     let subj = subject_reading(&cp, "u", &["A", "X", "S"]).await;
-    let vis = LineageVisibility { acl: cp.acl(), lineage: cp.lineage(), bridge: &bridge };
+    let vis = LineageVisibility::new(cp.acl(), cp.lineage(), &bridge);
     let page = vis
         .visible_closure(&subj, &ty("S"), 3, LineageDir::Upstream, &PageReq::unbounded())
         .await
@@ -436,7 +492,7 @@ async fn cut_not_skip_denied_intermediate_hides_its_ancestors() {
 }
 
 fn vis_for<'a>(cp: &'a MemoryControlPlane, bridge: &'a LineageNaming) -> LineageVisibility<'a> {
-    LineageVisibility { acl: cp.acl(), lineage: cp.lineage(), bridge }
+    LineageVisibility::new(cp.acl(), cp.lineage(), bridge)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -538,6 +594,23 @@ async fn windowing_pages_every_visible_ref_once_in_order() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn scan_cap_exceeded_is_its_own_error() {
+    let cp = cp().await;
+    // A small readable fan-out; a cap of 1 is exceeded on the second distinct node.
+    for i in 0..4 {
+        cp.lineage().emit(edge(ty(&format!("in{i}")), ty("Z"))).await.unwrap();
+    }
+    let bridge = naming();
+    let subj = subject_reading(&cp, "u", &["Z", "in0", "in1", "in2", "in3"]).await;
+    let err = vis_for(&cp, &bridge)
+        .with_scan_cap(1)
+        .visible_closure(&subj, &ty("Z"), 1, LineageDir::Upstream, &PageReq::unbounded())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LineageVisibilityError::ScanCapExceeded), "over-cap → ScanCapExceeded");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn redact_events_drops_denied_refs_keeps_envelope() {
     let cp = cp().await;
     let bridge = naming();
@@ -610,9 +683,8 @@ git commit -m "feat(query-api): LineageVisibility filter — governed provenance
 **Files:**
 - Modify: `src/services/query-api/src/http.rs` (AppState field; `lineage_closure`; the three handlers; error mapping)
 - Modify: `src/services/query-api/src/serve.rs` (build the bridge from `cfg.object_store`, put it in `AppState`)
-- Modify: `src/services/query-api/tests/e2e_support.rs` (add a `local_naming()` helper; set `naming` in the `get`/`get_unauth`/`spawn_http` AppState constructions)
-- Modify: `src/services/query-api/tests/constraints_action_http.rs`, `tests/auth_e2e.rs`, `tests/serving_fault_logging.rs` (set `naming` in their AppState constructions)
-- Modify: `src/services/query-api/BUCK` (add `//src/services/lineage-naming:lineage-naming` to any of those test targets that now name `LineageNaming`, plus `//src/services/store-config:store-config` where `ObjectStoreConfig` is named directly)
+- Modify: **all 13 test files** that construct a query-api `AppState` (set `naming:` via the `local_naming()` lib helper — full list in Step 6): `tests/{e2e_support,constraints_action_http,auth_e2e,serving_fault_logging,http_wire_e2e,action_conformance_http,admin_e2e,filter_error_http,http_smoke,action_run_id_http,write_denial_http}.rs`
+- Modify: `src/services/query-api/BUCK` (only reactively — add `//src/services/lineage-naming:lineage-naming` to a test target *if* it fails with `E0463`; see Step 7)
 
 **Interfaces:**
 - Consumes (from Task 1): `query_api::lineage_filter::{LineageVisibility, LineageDir, LineageVisibilityError}`.
@@ -688,11 +760,11 @@ async fn lineage_closure(
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
     let seed = DatasetRef { namespace, name };
-    let vis = crate::lineage_filter::LineageVisibility {
-        acl: st.cp.acl(),
-        lineage: st.cp.lineage(),
-        bridge: st.naming.as_ref(),
-    };
+    let vis = crate::lineage_filter::LineageVisibility::new(
+        st.cp.acl(),
+        st.cp.lineage(),
+        st.naming.as_ref(),
+    );
     let res = vis.visible_closure(&subject.0, &seed, depth, dir, &page).await;
     match res {
         Ok(page) => Json(crate::lineage_read::dataset_closure_body(page)).into_response(),
@@ -727,11 +799,11 @@ In `get_lineage_run_events` (lines ~924–944), rename `_subject: Subject` → `
 ```rust
     match st.cp.lineage().events_for(&RunId(uuid), page).await {
         Ok(page) => {
-            let vis = crate::lineage_filter::LineageVisibility {
-                acl: st.cp.acl(),
-                lineage: st.cp.lineage(),
-                bridge: st.naming.as_ref(),
-            };
+            let vis = crate::lineage_filter::LineageVisibility::new(
+                st.cp.acl(),
+                st.cp.lineage(),
+                st.naming.as_ref(),
+            );
             match vis.redact_events(&subject.0, page).await {
                 Ok(red) => Json(crate::lineage_read::run_events_body(red)).into_response(),
                 Err(e) => lineage_visibility_error(e),
@@ -761,52 +833,48 @@ In `src/services/query-api/src/serve.rs`, change the unused `_cfg` param to `cfg
         }),
 ```
 
-- [ ] **Step 6: Add the `local_naming` helper + set `naming` in every test AppState construction.**
+- [ ] **Step 6: Set `naming` in ALL 14 query-api `AppState` construction sites via the `local_naming()` lib helper.**
 
-In `src/services/query-api/tests/e2e_support.rs`, add a helper (near the other pub helpers):
+The `naming` field is required (no `Default`), so **every** `AppState { … }` literal in the crate must set it. The `query_api::lineage_filter::local_naming()` helper (added in Task 1) returns `Arc<LineageNaming>` and is reachable from every test (they all dep `:query-api`) — so each site sets `naming: query_api::lineage_filter::local_naming(),` (fully-qualified; no `use`, no per-file bridge construction). The complete checklist — verify with `grep -rn 'AppState {' src/services/query-api` (ignore the one `ingest::http::AppState` in `http_wire_e2e.rs:90`):
 
-```rust
-/// A file-backed naming bridge for tests. Storage-derived recognition is
-/// deployment-specific and unused here; logical `loom`/`loom:type` refs resolve
-/// regardless of warehouse, and any other namespace is External.
-pub fn local_naming() -> std::sync::Arc<lineage_naming::LineageNaming> {
-    std::sync::Arc::new(lineage_naming::LineageNaming::from_object_store(
-        &store_config::ObjectStoreConfig {
-            warehouse_uri: "file:///loom".into(),
-            backend: store_config::ObjectStoreBackend::Local,
-        },
-    ))
-}
-```
+  1. `src/services/query-api/src/serve.rs:54` — set to the config-derived `naming` from Step 5 (NOT the local helper).
+  2. `tests/e2e_support.rs:251` (`get`)
+  3. `tests/e2e_support.rs:322` (`get_unauth`)
+  4. `tests/e2e_support.rs:1087` (`spawn_http`)
+  5. `tests/constraints_action_http.rs:175`
+  6. `tests/auth_e2e.rs:36` (uses `query_api::http::AppState` — qualify: `naming: query_api::lineage_filter::local_naming(),`)
+  7. `tests/serving_fault_logging.rs:92`
+  8. `tests/http_wire_e2e.rs:104` (the query-api `AppState`, NOT the ingest one at :90)
+  9. `tests/action_conformance_http.rs:134` (inside `seeded_state()`)
+  10. `tests/admin_e2e.rs:58`
+  11. `tests/filter_error_http.rs:119`
+  12. `tests/http_smoke.rs:102`
+  13. `tests/action_run_id_http.rs:134`
+  14. `tests/write_denial_http.rs:130`
 
-Set `naming: local_naming(),` in the three `AppState { … }` literals in `e2e_support.rs` (`get` ~251, `get_unauth` ~322, `spawn_http` ~1087).
+Each test literal gains exactly one line: `naming: query_api::lineage_filter::local_naming(),`. (`serve.rs` uses the field name `naming` bound to the Step-5 local `naming`.)
 
-In `tests/constraints_action_http.rs` (~175), `tests/auth_e2e.rs` (~36), `tests/serving_fault_logging.rs` (~92), add `naming:` to each `AppState { … }`. `auth_e2e.rs` already imports `e2e_support`, so use `e2e_support::local_naming()`. For `constraints_action_http.rs` and `serving_fault_logging.rs` (no e2e_support), inline:
+- [ ] **Step 7: BUCK deps.**
 
-```rust
-        naming: std::sync::Arc::new(lineage_naming::LineageNaming::from_object_store(
-            &service_runtime::ObjectStoreConfig {
-                warehouse_uri: "file:///loom".into(),
-                backend: service_runtime::ObjectStoreBackend::Local,
-            },
-        )),
-```
+The 13 test sites call `query_api::lineage_filter::local_naming()` **without naming the `lineage_naming` crate**, so in the common case they need **no** new BUCK dep — the lib (`:query-api`, already a dep of every target) owns the `lineage-naming` edge (added in Task 1 Step 4), and rustc resolves the transitively-typed `Arc<LineageNaming>` return value from the search path.
 
-(`service_runtime` re-exports `ObjectStoreConfig`/`ObjectStoreBackend`, so these two files need only a `//src/services/lineage-naming:lineage-naming` BUCK dep added, not `store-config`.)
+**Robustness fallback:** if any test target fails to build with `E0463 can't find crate for 'lineage_naming'` (rustc occasionally needs the crate's rlib as a direct extern to materialize a transitive return type), add `"//src/services/lineage-naming:lineage-naming"` to that specific target's `deps`. Do this reactively per failing target — do not pre-add it everywhere. No `store-config` dep is needed at any test site (the helper lives in the lib).
 
-- [ ] **Step 7: Update BUCK deps for the touched test targets.**
-
-In `src/services/query-api/BUCK`, add `"//src/services/lineage-naming:lineage-naming"` to the `deps` of the `e2e-support` library target and of the `constraints_action_http`, `auth_e2e`, and `serving_fault_logging` test targets (find each by its `crate_root`). Add `"//src/services/store-config:store-config"` to the `e2e-support` target (it names `ObjectStoreConfig`/`ObjectStoreBackend` directly in `local_naming`).
-
-- [ ] **Step 8: Build + run the existing lineage e2e and smoke suites (must stay green).**
+- [ ] **Step 8: Build the whole crate + run every suite whose AppState site changed (all must stay green).**
 
 Run:
 ```
 buck2 build -M none //src/services/query-api/... > /tmp/b.log 2>&1; tail -5 /tmp/b.log
-buck2 test //src/services/query-api:lineage-http-e2e //src/services/query-api:http-smoke > /tmp/t2.log 2>&1
+buck2 test //src/services/query-api:lineage-http-e2e //src/services/query-api:http-smoke \
+  //src/services/query-api:auth-e2e //src/services/query-api:admin-e2e \
+  //src/services/query-api:constraints-action-http //src/services/query-api:serving-fault-logging \
+  //src/services/query-api:filter-error-http //src/services/query-api:action-run-id-http \
+  //src/services/query-api:write-denial-http //src/services/query-api:action-conformance-http \
+  //src/services/query-api:http-wire-e2e //src/services/query-api:lineage-visibility \
+  > /tmp/t2.log 2>&1
 grep -E "Tests finished|FAIL|PASS" /tmp/t2.log
 ```
-Expected: build succeeds; both suites PASS. (The existing `lineage_http_e2e.rs` uses `"w"`-namespace refs → External → default-allow → readable, so every prior assertion holds. If the `lineage-http-e2e` target name differs, discover it: `buck2 targets //src/services/query-api: 2>/dev/null | grep -i lineage`.)
+Expected: the whole-crate build succeeds (proves all 14 AppState sites compile); every suite PASSES. (The existing `lineage_http_e2e.rs` uses `"w"`-namespace refs → External → default-allow → readable, so every prior assertion holds.) If any target name differs, discover it: `buck2 targets //src/services/query-api: 2>/dev/null | grep -i <name>`.
 
 - [ ] **Step 9: Verify clippy across the crate.**
 
@@ -817,11 +885,7 @@ Expected: no clippy warnings.
 
 ```bash
 git add src/services/query-api/src/http.rs src/services/query-api/src/serve.rs \
-        src/services/query-api/tests/e2e_support.rs \
-        src/services/query-api/tests/constraints_action_http.rs \
-        src/services/query-api/tests/auth_e2e.rs \
-        src/services/query-api/tests/serving_fault_logging.rs \
-        src/services/query-api/BUCK
+        src/services/query-api/tests/ src/services/query-api/BUCK
 git commit -m "feat(query-api): enforce per-node lineage ACL in the /lineage handlers"
 ```
 
@@ -1117,7 +1181,8 @@ git commit -m "test(query-api): e2e proof of least-disclosure lineage reads"
 - Events redact-within, envelope intact, no pagination interaction: Task 1 `redact_events`; Task 1 `redact_events_*` + Task 3 `events_redaction_*`. ✓
 - External default-allow: Task 1 `is_readable` External arm; Task 1 `external_refs_*` + Task 3 `external_source_is_default_allowed`. ✓
 - Pagination: visible set assembled before windowing; keyset window mirrors `from_keyset`: Task 1 `window`; Task 1 `windowing_*` + Task 3 `pagination_pages_every_visible_ref_once`. ✓
-- `LINEAGE_FILTER_SCAN_CAP` → 422: Task 1 constant + `ScanCapExceeded`; Task 2 `lineage_visibility_error` maps to 422. (Note: an e2e that drives >10k nodes is impractical to seed; the cap→422 path is proven at the handler-mapping + unit level. The scan-cap **trigger** is unit-covered by construction of the error; a dedicated >cap e2e is intentionally omitted as impractical — documented here, not silently dropped.) ✓
+- `LINEAGE_FILTER_SCAN_CAP` → 422: Task 1 `LINEAGE_FILTER_SCAN_CAP` const + the injectable `with_scan_cap` seam; the **trigger** is unit-tested (`scan_cap_exceeded_is_its_own_error` drives `ScanCapExceeded` with `with_scan_cap(1)`). The 422 **mapping** is the static 3-line `lineage_visibility_error` match (Task 2 Step 2) — verified by inspection, not a dedicated test (an HTTP e2e that seeds >10k real nodes is impractical, and the const cap is deliberately not wired to a config knob this slice, per the spec's "constant"). No false coverage is claimed. ✓
+- 500-on-error (never disclose on fault): `is_readable`/`redact_events` propagate any `Acl::check`/lineage error as `LineageVisibilityError::Cp(non-Validation)` → `internal_error` (500). The bridge `resolve` is infallible (total), so the only faultable seam is `Acl::check`; the memory/pg adapters do not fault on demand, so the 500 arm is verified by inspection of the match, not a fault-injection test. ✓
 - Error handling (bridge/ACL infra error → 500; malformed cursor → 400; over/zero depth → 400): Task 2 `lineage_visibility_error`; depth via `check_depth` in Task 1. ✓
 - Layering (filter in query-api, `core` untouched, no subject in `core`): the filter is a query-api module; no `core`/adapter changes. ✓
 - Non-goals respected: flat `Page<DatasetRef>` unchanged (reuses `dataset_closure_body`); no graph response; no fine-grained row/col policy (only `Acl::check(Read)`); no CTE push-down; stateless recompute; read-side only. ✓
@@ -1126,4 +1191,4 @@ git commit -m "test(query-api): e2e proof of least-disclosure lineage reads"
 
 **3. Type consistency:** `LineageVisibility`/`LineageDir`/`LineageVisibilityError`/`visible_closure`/`visible_upstream`/`visible_downstream`/`redact_events`/`LINEAGE_FILTER_SCAN_CAP`/`local_naming` are named identically across Tasks 1–3. `AppState.naming: Arc<LineageNaming>` set the same way in `serve.rs` and every test. `is_readable`/`one_hop`/`readable_only`/`window` are private helpers used only within Task 1. `subject.0` is the `SubjectId` (matches `Subject(pub SubjectId)`). ✓
 
-**Deviation from spec, recorded:** the built bridge (`ResolvedDataset::{Table,Type,External}`) has no `Unresolvable` variant; this plan recovers the spec's three-way readability by treating an `External` result **whose namespace is loom-owned** as fail-closed (unresolvable), and every other `External` as default-allow. This is faithful to the spec's intent (a bridge/mapping gap can only narrow disclosure) without re-implementing the bridge's parse (which the spec forbids). Capture this in the register as-built note.
+**Deviation from spec, recorded:** the built bridge (`ResolvedDataset::{Table,Type,External}`) has no `Unresolvable` variant; this plan recovers the spec's three-way readability by treating an `External` result **whose namespace is loom-owned** (`"loom"`/`"loom:type"`) as fail-closed (unresolvable), and every other `External` as default-allow. This is faithful to the spec's intent (a bridge/mapping gap can only narrow disclosure) without re-implementing the bridge's parse (which the spec forbids). **Known edge (as-built note for the register):** the fail-closed recovery keys on the two loom-*logical* namespaces only — a *malformed name under this deployment's own storage namespace* (`s3://bucket`/`file://…`) still resolves to `External` and is default-allowed, so such a ref widens rather than narrows disclosure. This is a narrow corner (the internally-emitted graph uses logical refs; a malformed storage ref would have to be injected), consistent with the spec's Unresolvable case being about loom-logical refs, and is recorded as a FUTURE follow-on rather than handled this slice.
