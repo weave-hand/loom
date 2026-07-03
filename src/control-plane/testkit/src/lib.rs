@@ -1116,6 +1116,82 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "redefine clears binds"
     );
 
+    // --- Multi-step action (Order + LineItem, bind on step 1) ---
+    // A two-step action persists ALL steps in the normalized per-step tables and
+    // round-trips unchanged. Step 1 (`Order`) carries a `bind`; step 2 (`LineItem`)
+    // carries its own params + a computed assignment. Both target types must exist.
+    o.define_type(ObjectType {
+        name: tn("Order"),
+        table: tref("main", "order"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "status".into(),
+                ty: "String".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+        identity: None,
+    })
+    .await
+    .expect("define Order");
+    o.define_type(ObjectType {
+        name: tn("LineItem"),
+        table: tref("main", "line_item"),
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "qty".into(),
+                ty: "Long".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "total".into(),
+                ty: "Double".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
+        derived: vec![],
+        identity: None,
+    })
+    .await
+    .expect("define LineItem");
+
+    let place_order = ActionDef::build("placeOrder", "Order", ActionKind::Insert)
+        .param_req("id", "Long")
+        .assign("status", serde_json::json!("open"))
+        .bind("order")
+        .step("LineItem", ActionKind::Insert)
+        .param_req("id", "Long")
+        .param("qty", "Long")
+        .assign_expr("total", "qty * 10")
+        .done();
+    assert_eq!(place_order.steps.len(), 2, "two steps built");
+    o.define_action(place_order.clone())
+        .await
+        .expect("define multi-step action");
+    assert_eq!(
+        o.get_action(&ActionName("placeOrder".into()))
+            .await
+            .unwrap(),
+        place_order,
+        "multi-step action round-trips unchanged (both steps, bind preserved)",
+    );
+
     // --- Derived properties ---
     o.define_type(ObjectType {
         name: tn("Account"),

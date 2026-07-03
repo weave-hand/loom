@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ontology.action (name) values ($1) on conflict (name) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d7115051db25c8abc6129ae2dbad1232c9b03faeb929905af9c270563f637a3f"
+}
