@@ -127,15 +127,16 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }
 
-/// Bound on `list_types` page draining — a defensive cap so a misbehaving cursor can never
-/// spin forever. Adapters return one full page today; this tolerates future keyset paging.
+/// Bound on `list_types`/`list_actions` page draining — a defensive cap so a misbehaving
+/// cursor can never spin forever. Adapters return one full page today; this tolerates future
+/// keyset paging.
 const MAX_TYPE_PAGES: usize = 10_000;
 
 /// Build the OpenAPI document with per-request ontology-derived operations merged onto the
-/// static base. Reads the live ontology through `cp` (`list_types` + per-type `links`), runs
-/// the pure generator, and extends the base document's paths + component schemas. On a read
-/// error it logs and returns the static base unchanged — a docs endpoint must never fail the
-/// whole document because an ontology read hiccupped.
+/// static base. Reads the live ontology through `cp` (`list_types` + per-type `links` +
+/// `list_actions`), runs the pure generator, and extends the base document's paths +
+/// component schemas. On a read error it logs and degrades — a docs endpoint must never fail
+/// the whole document because an ontology read hiccupped.
 pub async fn live_openapi(
     cp: std::sync::Arc<dyn control_plane_core::ControlPlane + Send + Sync>,
 ) -> utoipa::openapi::OpenApi {
@@ -179,7 +180,34 @@ pub async fn live_openapi(
         }
     }
 
-    let (paths, schemas) = crate::openapi_gen::ontology_openapi(&types, &links);
+    // Drain every defined action (same bounded loop as types). Unlike a `list_types`
+    // failure, an action-read error degrades to an actionless document rather than the
+    // static base — the types/links already read are still worth serving.
+    let mut actions = Vec::new();
+    let mut after = None;
+    for _ in 0..MAX_TYPE_PAGES {
+        let page = match onto
+            .list_actions(PageReq {
+                after: after.clone(),
+                limit: None,
+            })
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "openapi: list_actions failed; serving without actions");
+                actions.clear();
+                break;
+            }
+        };
+        actions.extend(page.items);
+        match page.next {
+            Some(cursor) => after = Some(cursor),
+            None => break,
+        }
+    }
+
+    let (paths, schemas) = crate::openapi_gen::ontology_openapi(&types, &links, &actions);
     doc.paths.paths.extend(paths.paths);
     if let Some(components) = doc.components.as_mut() {
         components.schemas.extend(schemas);

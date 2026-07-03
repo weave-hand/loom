@@ -1,11 +1,11 @@
-//! Pure ontology→OpenAPI generation: map an ontology snapshot (types + links) to OpenAPI
-//! `Paths` + component `Schemas`. No I/O — the caller reads the live ontology and hands it
-//! a snapshot. The type codec is faithful to `crate::render`'s wire rendering (e.g. Long is
-//! a decimal string, not a JSON integer — see `crate::render::render_cell`).
+//! Pure ontology→OpenAPI generation: map an ontology snapshot (types + links + actions) to
+//! OpenAPI `Paths` + component `Schemas`. No I/O — the caller reads the live ontology and
+//! hands it a snapshot. The type codec is faithful to `crate::render`'s wire rendering (e.g.
+//! Long is a decimal string, not a JSON integer — see `crate::render::render_cell`).
 
 use std::collections::BTreeMap;
 
-use control_plane_core::{BaseType, LinkDef, ObjectType, resolve_logical};
+use control_plane_core::{ActionDef, ActionKind, BaseType, LinkDef, ObjectType, resolve_logical};
 use service_runtime::BEARER_SCHEME_NAME;
 use utoipa::openapi::path::{
     HttpMethod, Operation, OperationBuilder, PathItem, Paths, PathsBuilder,
@@ -134,7 +134,7 @@ fn type_component_schema(ty: &ObjectType) -> RefOr<Schema> {
 fn get_objects_op(type_name: &str) -> Operation {
     OperationBuilder::new()
         .summary(Some(format!("List {type_name} objects")))
-        .tag("objects")
+        .tag(type_name)
         .security(bearer())
         .response(
             "200",
@@ -143,36 +143,10 @@ fn get_objects_op(type_name: &str) -> Operation {
         .build()
 }
 
-fn insert_op(type_name: &str) -> Operation {
-    let body = RequestBodyBuilder::new()
-        .content(
-            "application/json",
-            Content::new(Some(RefOr::Ref(Ref::from_schema_name(type_name)))),
-        )
-        .build();
-    OperationBuilder::new()
-        .summary(Some(format!("Create a {type_name}")))
-        .description(Some(format!(
-            "Insert a {type_name}. Invoked via the type's Insert action at \
-             POST /actions/{{actionName}}."
-        )))
-        .tag("actions")
-        .security(bearer())
-        .request_body(Some(body))
-        .response(
-            "201",
-            json_response(
-                RefOr::Ref(Ref::from_schema_name(type_name)),
-                "Created object",
-            ),
-        )
-        .build()
-}
-
 fn link_op(from: &str, link_name: &str, to: &str) -> Operation {
     OperationBuilder::new()
         .summary(Some(format!("Traverse {from}.{link_name} -> {to}")))
-        .tag("links")
+        .tag(from)
         .security(bearer())
         .response(
             "200",
@@ -181,26 +155,86 @@ fn link_op(from: &str, link_name: &str, to: &str) -> Operation {
         .build()
 }
 
+/// Request schema for an action: one property per parameter (`binds` renames the
+/// written property, not the wire parameter), `required` from the param flags.
+fn action_request_schema(action: &ActionDef) -> RefOr<Schema> {
+    let mut b = ObjectBuilder::new().schema_type(SchemaType::Type(Type::Object));
+    for p in &action.parameters {
+        b = b.property(p.name.clone(), property_schema(&p.ty, p.required));
+    }
+    for p in action.parameters.iter().filter(|p| p.required) {
+        b = b.required(p.name.clone());
+    }
+    RefOr::T(Schema::Object(b.build()))
+}
+
+fn plain_response(description: &str) -> utoipa::openapi::Response {
+    ResponseBuilder::new().description(description).build()
+}
+
+/// `POST /actions/{name}` for one defined action, tagged by its target type.
+fn action_op(action: &ActionDef) -> Operation {
+    let target = &action.target.0;
+    let (summary, ok_status, ok_desc) = match action.kind {
+        ActionKind::Insert => (format!("Insert a {target}"), "201", "Created object"),
+        ActionKind::Update => (
+            format!("Update a {target} (identity-targeted PATCH)"),
+            "200",
+            "Updated object",
+        ),
+        ActionKind::Delete => (
+            format!("Delete a {target} by identity"),
+            "200",
+            "Deleted object (pre-deletion values)",
+        ),
+    };
+    let body = RequestBodyBuilder::new()
+        .content(
+            "application/json",
+            Content::new(Some(action_request_schema(action))),
+        )
+        .build();
+    OperationBuilder::new()
+        .summary(Some(summary))
+        .tag(target)
+        .security(bearer())
+        .request_body(Some(body))
+        .response(
+            ok_status,
+            json_response(RefOr::Ref(Ref::from_schema_name(target)), ok_desc),
+        )
+        .response(
+            "400",
+            plain_response("Malformed or undecodable request body"),
+        )
+        .response("403", plain_response("Write denied by ACL policy"))
+        .response("404", plain_response("Unknown action or target object"))
+        .response(
+            "422",
+            plain_response("Constraint violation or bad parameters"),
+        )
+        .build()
+}
+
 /// Map an ontology snapshot to OpenAPI paths + component schemas. Pure. For each type: a
-/// component read schema, a `GET /objects/{Type}`, and a typed-insert `POST /objects/{Type}`
-/// (both on one path item). For each link: a `GET /objects/{from}/links/{link}` typed to the
-/// target.
+/// component read schema and a `GET /objects/{Type}`, tagged by the type name. For each
+/// link: a `GET /objects/{from}/links/{link}` typed to the target. For each action: a
+/// `POST /actions/{name}` whose request body is derived from the action's parameters.
 #[must_use]
 pub fn ontology_openapi(
     types: &[ObjectType],
     links: &[LinkDef],
+    actions: &[ActionDef],
 ) -> (Paths, BTreeMap<String, RefOr<Schema>>) {
     let mut schemas: BTreeMap<String, RefOr<Schema>> = BTreeMap::new();
     let mut pb = PathsBuilder::new();
     for ty in types {
         let name = &ty.name.0;
         schemas.insert(name.clone(), type_component_schema(ty));
-        // One PathItem carrying BOTH the GET and the typed-insert POST (a second
-        // `PathsBuilder::path` for the same key would overwrite the first).
-        // `merge_operations` mutates in place (returns `()`).
-        let mut item = PathItem::new(HttpMethod::Get, get_objects_op(name));
-        item.merge_operations(PathItem::new(HttpMethod::Post, insert_op(name)));
-        pb = pb.path(format!("/objects/{name}"), item);
+        pb = pb.path(
+            format!("/objects/{name}"),
+            PathItem::new(HttpMethod::Get, get_objects_op(name)),
+        );
     }
     for l in links {
         // Only emit a link whose endpoint types are both in the snapshot, so the generated
@@ -212,6 +246,16 @@ pub fn ontology_openapi(
         pb = pb.path(
             format!("/objects/{}/links/{}", l.from.0, l.name),
             PathItem::new(HttpMethod::Get, link_op(&l.from.0, &l.name, &l.to.0)),
+        );
+    }
+    for a in actions {
+        // Same skew guard as links: the 2xx response `$ref`s the target type's schema.
+        if !schemas.contains_key(&a.target.0) {
+            continue;
+        }
+        pb = pb.path(
+            format!("/actions/{}", a.name.0),
+            PathItem::new(HttpMethod::Post, action_op(a)),
         );
     }
     (pb.build(), schemas)

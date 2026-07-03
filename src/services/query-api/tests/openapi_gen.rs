@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use control_plane_core::{
-    BaseType, Cardinality, ControlPlane, LinkBacking, LinkDef, ObjectType, PropertyDef, TableRef,
-    TypeName,
+    ActionDef, ActionKind, ActionName, BaseType, Cardinality, ControlPlane, LinkBacking, LinkDef,
+    ObjectType, ParamDef, PropertyDef, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::openapi_gen::{base_type_to_schema, ontology_openapi};
@@ -175,6 +175,30 @@ fn orders_link() -> LinkDef {
     }
 }
 
+/// A well-formed Insert action against `customer()`: one required + one optional parameter.
+fn create_customer_action() -> ActionDef {
+    ActionDef {
+        name: ActionName("createCustomer".into()),
+        target: TypeName("Customer".into()),
+        parameters: vec![
+            ParamDef {
+                name: "name".into(),
+                ty: "string".into(),
+                required: true,
+                binds: None,
+            },
+            ParamDef {
+                name: "tier".into(),
+                ty: "integer".into(),
+                required: false,
+                binds: None,
+            },
+        ],
+        kind: ActionKind::Insert,
+        assignments: vec![],
+    }
+}
+
 // ---- generator -----------------------------------------------------------------------
 
 /// Flatten (method, path) pairs from generated `Paths` via JSON. `Paths` serializes as a bare
@@ -205,12 +229,24 @@ fn methods_and_paths(
     out
 }
 
+/// One generated operation as JSON: `paths[path][method]`. `Paths` serializes as a bare
+/// path→item map, so fall back to the top-level object when there is no `paths` key.
+fn op_json(paths: &utoipa::openapi::path::Paths, path: &str, method: &str) -> serde_json::Value {
+    let json = serde_json::to_value(paths).unwrap();
+    let map = json.get("paths").cloned().unwrap_or(json);
+    map[path][method].clone()
+}
+
 #[test]
 fn generates_per_type_operations() {
-    let (paths, schemas) = ontology_openapi(&[customer(), order()], &[orders_link()]);
+    let (paths, schemas) = ontology_openapi(&[customer(), order()], &[orders_link()], &[]);
     let mp = methods_and_paths(&paths);
     assert!(mp.contains(&("get".into(), "/objects/Customer".into())));
-    assert!(mp.contains(&("post".into(), "/objects/Customer".into())));
+    assert!(
+        !mp.contains(&("post".into(), "/objects/Customer".into())),
+        "the phantom typed-insert POST /objects/{{Type}} must be gone — inserts are \
+         real POST /actions/{{name}} operations"
+    );
     assert!(mp.contains(&("get".into(), "/objects/Order".into())));
     assert!(mp.contains(&("get".into(), "/objects/Customer/links/orders".into())));
 
@@ -243,7 +279,7 @@ fn generates_per_type_operations() {
 
 #[test]
 fn link_response_targets_the_to_type() {
-    let (paths, _schemas) = ontology_openapi(&[customer(), order()], &[orders_link()]);
+    let (paths, _schemas) = ontology_openapi(&[customer(), order()], &[orders_link()], &[]);
     let json = serde_json::to_value(&paths).unwrap();
     let s = serde_json::to_string(&json).unwrap();
     assert!(s.contains("/objects/Customer/links/orders"));
@@ -257,7 +293,7 @@ fn link_response_targets_the_to_type() {
 fn link_to_a_type_absent_from_the_snapshot_is_skipped() {
     // Order is NOT in the type snapshot, so its $ref would dangle — the link op must be
     // dropped rather than emit an invalid document referencing a missing schema.
-    let (paths, _schemas) = ontology_openapi(&[customer()], &[orders_link()]);
+    let (paths, _schemas) = ontology_openapi(&[customer()], &[orders_link()], &[]);
     let mp = methods_and_paths(&paths);
     assert!(
         !mp.contains(&("get".into(), "/objects/Customer/links/orders".into())),
@@ -265,6 +301,93 @@ fn link_to_a_type_absent_from_the_snapshot_is_skipped() {
     );
     // The present type's own operations still generate.
     assert!(mp.contains(&("get".into(), "/objects/Customer".into())));
+}
+
+#[test]
+fn generates_real_action_operations() {
+    let (paths, _schemas) = ontology_openapi(&[customer()], &[], &[create_customer_action()]);
+    let mp = methods_and_paths(&paths);
+    assert!(mp.contains(&("post".into(), "/actions/createCustomer".into())));
+
+    let op = op_json(&paths, "/actions/createCustomer", "post");
+    // Request body schema is derived from the action's parameters, not the type.
+    let schema = &op["requestBody"]["content"]["application/json"]["schema"];
+    assert!(
+        schema["properties"]["name"].is_object(),
+        "required param documented: {schema}"
+    );
+    assert!(
+        schema["properties"]["tier"].is_object(),
+        "optional param documented: {schema}"
+    );
+    assert_eq!(
+        schema["required"],
+        serde_json::json!(["name"]),
+        "only required params are required"
+    );
+    // Insert documents 201 Created with the target type's component schema.
+    assert_eq!(
+        op["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/Customer"
+    );
+    // Grouped under the target type, not a flat "actions" bucket.
+    assert_eq!(op["tags"], serde_json::json!(["Customer"]));
+}
+
+#[test]
+fn update_and_delete_actions_document_200() {
+    let update = ActionDef {
+        name: ActionName("updateCustomer".into()),
+        target: TypeName("Customer".into()),
+        parameters: vec![],
+        kind: ActionKind::Update,
+        assignments: vec![],
+    };
+    let delete = ActionDef {
+        name: ActionName("deleteCustomer".into()),
+        target: TypeName("Customer".into()),
+        parameters: vec![],
+        kind: ActionKind::Delete,
+        assignments: vec![],
+    };
+    let (paths, _schemas) = ontology_openapi(&[customer()], &[], &[update, delete]);
+
+    let up = op_json(&paths, "/actions/updateCustomer", "post");
+    assert!(up["responses"]["200"].is_object(), "Update documents 200");
+    assert!(up["responses"]["201"].is_null(), "Update is not a create");
+
+    let del = op_json(&paths, "/actions/deleteCustomer", "post");
+    assert!(del["responses"]["200"].is_object(), "Delete documents 200");
+    assert!(del["responses"]["201"].is_null(), "Delete is not a create");
+}
+
+#[test]
+fn action_targeting_a_type_absent_from_the_snapshot_is_skipped() {
+    // Customer is NOT in the type snapshot, so the 2xx $ref would dangle — the action op
+    // must be dropped rather than emit an invalid document (same skew guard as links).
+    let (paths, _schemas) = ontology_openapi(&[order()], &[], &[create_customer_action()]);
+    let mp = methods_and_paths(&paths);
+    assert!(
+        !mp.contains(&("post".into(), "/actions/createCustomer".into())),
+        "an action targeting an absent type must not be generated"
+    );
+}
+
+#[test]
+fn generated_ops_are_tagged_by_type() {
+    let (paths, _schemas) = ontology_openapi(&[customer(), order()], &[orders_link()], &[]);
+    let get = op_json(&paths, "/objects/Customer", "get");
+    assert_eq!(
+        get["tags"],
+        serde_json::json!(["Customer"]),
+        "GET /objects/{{Type}} groups under the type name"
+    );
+    let link = op_json(&paths, "/objects/Customer/links/orders", "get");
+    assert_eq!(
+        link["tags"],
+        serde_json::json!(["Customer"]),
+        "link ops group under the FROM type name"
+    );
 }
 
 // ---- liveness (memory-backed) --------------------------------------------------------
@@ -295,6 +418,18 @@ async fn live_doc_reflects_defined_types_without_restart() {
     assert!(
         j2["paths"]["/objects/Order"]["get"].is_object(),
         "new type appears live"
+    );
+
+    // Define a NEW action; the next generation must document it too.
+    cp.ontology()
+        .define_action(create_customer_action())
+        .await
+        .unwrap();
+    let doc3 = query_api::live_openapi(cp.clone()).await;
+    let j3 = serde_json::to_value(&doc3).unwrap();
+    assert!(
+        j3["paths"]["/actions/createCustomer"]["post"].is_object(),
+        "new action appears live"
     );
 }
 

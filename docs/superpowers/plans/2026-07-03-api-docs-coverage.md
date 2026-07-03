@@ -160,7 +160,7 @@ git add -A && git commit -m "feat(ontology): list_actions across store adapters 
 - Consumes: `ActionDef { name: ActionName(String), target: TypeName, parameters: Vec<ParamDef{name, ty, required, binds}>, kind: ActionKind{Insert|Update|Delete}, assignments }` (Task 1's `list_actions` feeds it).
 - Produces: `pub fn ontology_openapi(types: &[ObjectType], links: &[LinkDef], actions: &[ActionDef]) -> (Paths, BTreeMap<String, RefOr<Schema>>)`.
 
-- [ ] **Step 1: Rewrite the tests to the new contract (failing).** In `tests/openapi_gen.rs`:
+- [x] **Step 1: Rewrite the tests to the new contract (failing).** In `tests/openapi_gen.rs`:
   - Update every `ontology_openapi(...)` call site to pass a third arg (`&[]` where actions are irrelevant).
   - In `generates_per_type_operations`: **assert the phantom is gone** — `assert!(!mp.contains(&("post".into(), "/objects/Customer".into())))`.
   - Add a test `generates_real_action_operations`: build `ActionDef { name: ActionName("createCustomer".into()), target: TypeName("Customer".into()), parameters: vec![ParamDef{name: "name".into(), ty: "string".into(), required: true, binds: None}, ParamDef{name: "tier".into(), ty: "integer".into(), required: false, binds: None}], kind: ActionKind::Insert, assignments: vec![] }`; assert `("post", "/actions/createCustomer")` is present; serialize the doc to JSON and assert the op's `requestBody` schema has properties `name` + `tier` with `required == ["name"]`, response `201` `$ref`s `Customer`, and `tags == ["Customer"]`.
@@ -168,12 +168,12 @@ git add -A && git commit -m "feat(ontology): list_actions across store adapters 
   - Add skew guard: an action targeting an absent type emits no path.
   - Add tag coverage: generated GET `/objects/Customer` op and link op tags equal the type name (`["Customer"]`), not `"objects"`/`"links"`.
 
-- [ ] **Step 2: Run to verify failure.**
+- [x] **Step 2: Run to verify failure.**
 
 Run: `buck2 test //src/services/query-api:openapi-gen --unstable-allow-all-tests-on-re > /tmp/t2.log 2>&1; grep -E "error|FAIL|Tests finished" /tmp/t2.log | head`
 Expected: compile error (arity) then assertion failures.
 
-- [ ] **Step 3: Implement.** In `openapi_gen.rs`:
+- [x] **Step 3: Implement.** In `openapi_gen.rs`:
   - Extend the `control_plane_core` import with `ActionDef, ActionKind` (the tests additionally need `ActionName, ParamDef`).
   - Delete `insert_op` and the `merge_operations` POST in the type loop (the type loop emits GET only).
   - `get_objects_op(type_name)`: `.tag("objects")` → `.tag(type_name)`. `link_op(from, ..)`: `.tag("links")` → `.tag(from)`.
@@ -243,14 +243,14 @@ for a in actions {
   - Update the module doc + `ontology_openapi` doc comment (no more "typed-insert POST /objects/{Type}").
   - In `openapi.rs` `live_openapi`: after the links loop, drain actions with the same bounded loop shape as types (`list_actions`, `MAX_TYPE_PAGES`); on error `tracing::warn!` and proceed with empty actions (never fail the document); pass `&actions` to `ontology_openapi`.
 
-- [ ] **Step 4: Extend the liveness test.** In `tests/openapi_gen.rs` `live_doc_reflects_defined_types_without_restart` (or a sibling): `define_action` against the memory CP, assert `j["paths"]["/actions/<name>"]["post"].is_object()`.
+- [x] **Step 4: Extend the liveness test.** In `tests/openapi_gen.rs` `live_doc_reflects_defined_types_without_restart` (or a sibling): `define_action` against the memory CP, assert `j["paths"]["/actions/<name>"]["post"].is_object()`.
 
-- [ ] **Step 5: Run.**
+- [x] **Step 5: Run.**
 
 Run: `buck2 test //src/services/query-api:openapi-gen //src/services/query-api:openapi --unstable-allow-all-tests-on-re > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
 Expected: PASS.
 
-- [ ] **Step 6: prek, commit** — `feat(openapi): real action ops + per-type tags, drop phantom insert path`.
+- [x] **Step 6: prek, commit** — `feat(openapi): real action ops + per-type tags, drop phantom insert path`.
 
 ---
 
