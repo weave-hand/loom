@@ -81,7 +81,7 @@ git commit -m "refactor(vector-index): extract rebuild_jobs_for from the flush e
 **Interfaces:**
 - Consumes: Task 1's `rebuild_jobs_for`.
 
-- [ ] **Step 1: Write the failing test.** New file `tests/overwrite_vector_rebuild.rs`: copy `flush_vector_rebuild.rs`'s header docs pattern, its `setup` fixture (adapt: declare **two** indexes — call `define_vector_index` twice, e.g. `by_flat` + `by_flat2`, both `IndexKind::Flat`/`Metric::Cosine` over the same column — mirror how `setup(fx, true)` declares one), and its `job_count`/`job_count_by_state` helpers verbatim. First test:
+- [x] **Step 1: Write the failing test.** New file `tests/overwrite_vector_rebuild.rs`: copy `flush_vector_rebuild.rs`'s header docs pattern, its `setup` fixture (adapt: declare **two** indexes — call `define_vector_index` twice, e.g. `by_flat` + `by_flat2`, both `IndexKind::Flat`/`Metric::Cosine` over the same column — mirror how `setup(fx, true)` declares one), and its `job_count`/`job_count_by_state` helpers verbatim. First test:
 
 ```rust
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -115,12 +115,12 @@ async fn overwrite_enqueues_one_rebuild_per_declared_index() {
 
 (Verified signatures: `PgFixture::shared()` is sync; `vec4_batches(rows: &[(i64, [f32; 4])]) -> (SchemaRef, Vec<RecordBatch>)`; `test_lineage(run: RunId, table: &TableRef)`; setup declares the SECOND index by a second `define_vector_index` call — legal, PK is `(type_name, name)`, precedent `vector_index_multi.rs`. Note: flush's seed lands INLINE (`inline_byte_limit: usize::MAX`); that is fine — overwrite end-caps inline rows too — but if file-backed seeding is wanted use `cold_limits()` from loom_test_seed.) Wire the BUCK target (copy the `flush-vector-rebuild` stanza, rename target/crate/srcs/crate_root).
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `buck2 test //src/control-plane/postgres:overwrite-vector-rebuild --unstable-allow-all-tests-on-re > /tmp/o2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/o2.log`
 Expected: FAIL — `job_count_by_state == 0` today (empty job set).
 
-- [ ] **Step 3: Implement** — in `overwrite_parquet_snapshot`, compute jobs before the branch and pass them:
+- [x] **Step 3: Implement** — in `overwrite_parquet_snapshot`, compute jobs before the branch and pass them:
 
 ```rust
     let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;
@@ -145,8 +145,8 @@ Expected: FAIL — `job_count_by_state == 0` today (empty job set).
 
 (`overwrite_truncate` gains the param now but only *uses* it in Task 3 — name it `_jobs: &[NewJob]` in THIS task so clippy/prek stays clean (unused-variable would fail the hook), and rename to `jobs` when Task 3 adds the loop. Add `NewJob` to `iceberg_landing.rs`'s `control_plane_core` import list — it is not imported today.) Update `overwrite_parquet_snapshot`'s doc comment: overwrite commits now enqueue deduped index rebuilds like flush.
 
-- [ ] **Step 4: Run to verify pass** (same command). Expected: PASS.
-- [ ] **Step 5: prek + commit**
+- [x] **Step 4: Run to verify pass** (same command). Expected: PASS.
+- [x] **Step 5: prek + commit**
 
 ```bash
 git add src/control-plane/postgres/src/iceberg_landing.rs src/control-plane/postgres/tests/overwrite_vector_rebuild.rs src/control-plane/postgres/BUCK
