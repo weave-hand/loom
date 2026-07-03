@@ -1212,17 +1212,17 @@ git commit -m "test(control-plane): collapse make_catalog copies onto local_sql_
   `test_lineage`, `ids_i64`, `distances_f32`, `spawn_flight_uds`,
   `EngineGuard` (`.sock`).
 
-- [ ] **Step 1: Baseline green**
+- [x] **Step 1: Baseline green**
 
 ```bash
 buck2 test //src/services/engine: -j 8 > /tmp/t6pre.log 2>&1; \
   grep -E "Tests finished|FAIL" /tmp/t6pre.log
 ```
 
-- [ ] **Step 2: `make_catalog` → `local_sql_catalog` in all eight files**
+- [x] **Step 2: `make_catalog` → `local_sql_catalog` in all eight files**
   (same byte-check + swap recipe as Task 5).
 
-- [ ] **Step 3: `spawn_flight` → `spawn_flight_uds`** in `flight_sql.rs`,
+- [x] **Step 3: `spawn_flight` → `spawn_flight_uds`** in `flight_sql.rs`,
   `flight_ticket_membership.rs`, `vector_search_flight.rs` (the three
   verified-identical copies). Call-site mapping:
 
@@ -1238,7 +1238,7 @@ binding replaces `_sock_dir` as the keep-alive. Delete the local
 `spawn_flight` fn and its now-unused imports
 (`FlightServiceServer`/`UnixListenerStream`/`Server`, the `Duration` sleep).
 
-- [ ] **Step 4: Inline spawn blocks in `wire.rs` (2×), `compact_wire.rs`,
+- [x] **Step 4: Inline spawn blocks in `wire.rs` (2×), `compact_wire.rs`,
   `write_wire.rs`, `ticket_errors.rs`** — migrate each to `spawn_flight_uds`
   ONLY if its service construction is exactly
   `FlightDataService { catalog: <local make_catalog result>, serving_catalog:
@@ -1249,13 +1249,13 @@ binding replaces `_sock_dir` as the keep-alive. Delete the local
   only). Time-passage sleeps (e.g. `wire.rs`'s 100ms job-enqueue wait) are
   NOT readiness syncs — leave them.
 
-- [ ] **Step 5: `vector_search_flight.rs` vector swaps** — `columns()` →
+- [x] **Step 5: `vector_search_flight.rs` vector swaps** — `columns()` →
   `vec4_columns()`, `ipc_body` → `vec4_ipc`, `lineage_evt` → `test_lineage`
   (verified identical), `ids(` → `ids_i64(`, `distances(` →
   `distances_f32(` (the sanctioned renames; all other assert text
   byte-identical).
 
-- [ ] **Step 6: BUCK deps + run green + assert-diff check**
+- [x] **Step 6: BUCK deps + run green + assert-diff check**
 
 ```bash
 buck2 test //src/services/engine: -j 8 > /tmp/t6.log 2>&1; \
@@ -1265,7 +1265,7 @@ git diff src/services/engine/tests | grep -E "^[-+].*assert" | head
 
 Expected: `Fail 0`; assert deltas only the two sanctioned renames.
 
-- [ ] **Step 7: prek + commit**
+- [x] **Step 7: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek6.log 2>&1; grep -E "Failed" /tmp/prek6.log || echo CLEAN

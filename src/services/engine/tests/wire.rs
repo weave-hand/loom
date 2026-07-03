@@ -3,7 +3,7 @@
 //! Boots an ephemeral Postgres, constructs an `EngineControlService` server
 //! (bound to a tempdir unix socket), and drives it via `GrpcQueueClient`.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,15 +16,10 @@ use control_plane_core::{
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline::inline_append;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use tonic::transport::Server;
 
 // ---- helpers copied from postgres/tests/iceberg_flush.rs ------------------
@@ -53,20 +48,6 @@ fn inline_lineage(run: RunId, table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 // ---- server fixture -------------------------------------------------------
 
 /// Spawn an `EngineControlService` on a tmpdir UDS. Returns the socket path
@@ -80,8 +61,8 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let wh_str = wh.path().display().to_string();
-    let catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
-    let writer_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
+    let writer_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
     let writer = IcebergActionWriter::new(
         Arc::new(writer_catalog),
         pool.clone(),
@@ -259,7 +240,7 @@ async fn flush_over_wire() {
     let pool = fx.pool_for(&db).await;
 
     // Build a second catalog for the direct inline_append call.
-    let direct_catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let direct_catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
     let (_sock_dir, sock) = {
         // Build the server using the same db/warehouse.
@@ -271,8 +252,8 @@ async fn flush_over_wire() {
         let cp2 =
             control_plane_postgres::PgControlPlane::new(pool2.clone(), Duration::from_millis(5000));
         let wh2_str = wh.path().display().to_string();
-        let catalog2 = make_catalog(fx.pg_dsn(&db), &wh2_str).await;
-        let writer_catalog2 = make_catalog(fx.pg_dsn(&db), &wh2_str).await;
+        let catalog2 = local_sql_catalog(fx.pg_dsn(&db), &wh2_str).await;
+        let writer_catalog2 = local_sql_catalog(fx.pg_dsn(&db), &wh2_str).await;
         let writer2 = IcebergActionWriter::new(
             Arc::new(writer_catalog2),
             pool2.clone(),

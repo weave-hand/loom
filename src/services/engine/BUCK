@@ -58,6 +58,7 @@ loom_fixture_test(
     srcs = ["tests/wire.rs"],
     crate_root = "tests/wire.rs",
     deps = [
+        "//src/testing:seed",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -83,6 +84,7 @@ loom_fixture_test(
     srcs = ["tests/compact_wire.rs"],
     crate_root = "tests/compact_wire.rs",
     deps = [
+        "//src/testing:seed",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -109,6 +111,7 @@ loom_fixture_test(
     srcs = ["tests/write_wire.rs"],
     crate_root = "tests/write_wire.rs",
     deps = [
+        "//src/testing:seed",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -166,6 +169,8 @@ loom_fixture_test(
     srcs = ["tests/flight_sql.rs"],
     crate_root = "tests/flight_sql.rs",
     deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -187,6 +192,7 @@ loom_fixture_test(
     srcs = ["tests/governed_flight.rs"],
     crate_root = "tests/governed_flight.rs",
     deps = [
+        "//src/testing:seed",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -208,6 +214,8 @@ loom_fixture_test(
     srcs = ["tests/flight_ticket_membership.rs"],
     crate_root = "tests/flight_ticket_membership.rs",
     deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -229,6 +237,7 @@ loom_fixture_test(
     srcs = ["tests/ticket_errors.rs"],
     crate_root = "tests/ticket_errors.rs",
     deps = [
+        "//src/testing:flight",
         ":engine",
         "//src/control-plane/postgres:postgres",
         "//third-party:arrow-flight",
@@ -249,6 +258,8 @@ loom_fixture_test(
     srcs = ["tests/vector_search_flight.rs"],
     crate_root = "tests/vector_search_flight.rs",
     deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
