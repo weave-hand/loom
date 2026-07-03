@@ -26,8 +26,8 @@ pub use model::{InferTypeError, infer_object_type, model_shape_from_type};
 ///   and no catalog rows.
 /// - Failures after `begin()` but before `commit()` drop the `Tx`, which rolls
 ///   back (the postgres adapter auto-rolls back on drop; the memory adapter only
-///   staged in memory). A write-then-commit failure may orphan the Parquet files
-///   (documented in `materialize`); GC is a deferred concern.
+///   staged in memory). A write-then-commit failure may orphan the Parquet files;
+///   GC is a deferred concern.
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
     /// The batch did not satisfy the supplied model (rejected before any write).
