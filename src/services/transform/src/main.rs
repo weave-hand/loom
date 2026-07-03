@@ -16,36 +16,12 @@ use object_store::ObjectStore;
 use tokio_util::sync::CancellationToken;
 use transform::{transform_handler, typed_transform_handler};
 
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct TransformConfig {
-    worker: loom_config::WorkerTuning,
-    write: datafusion_io::WriteConfig,
-}
-
-impl loom_config::LayeredConfig for TransformConfig {
-    fn overlay_env(
-        &mut self,
-        env: &std::collections::HashMap<String, String>,
-    ) -> Result<(), loom_config::ConfigError> {
-        self.worker.overlay_env(env)?;
-        self.write.overlay_env(env)?;
-        Ok(())
-    }
-
-    fn validate(&self) -> Result<(), loom_config::ConfigError> {
-        self.worker.validate()?;
-        self.write.validate()?;
-        Ok(())
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
-    // Compose transform config as defaults < file < env (see `TransformConfig`'s `LayeredConfig`).
+    // Compose transform config as defaults < file < env (see `JobConfig`'s `LayeredConfig`).
     let env = service_runtime::env_map();
-    let tcfg: TransformConfig = service_runtime::load(&env)?;
+    let tcfg: datafusion_io::JobConfig = service_runtime::load(&env)?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
     // The queue is backend-neutral (same Postgres tables either way), so the Worker
     // always dequeues through the `PgControlPlane`; the *handler's* `ControlPlane`

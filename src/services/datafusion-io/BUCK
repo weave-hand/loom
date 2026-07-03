@@ -88,6 +88,18 @@ rust_test(
 )
 
 rust_test(
+    name = "job-config",
+    crate = "job_config",
+    srcs = ["tests/job_config.rs"],
+    crate_root = "tests/job_config.rs",
+    edition = "2024",
+    deps = [
+        ":datafusion-io",
+        "//src/loom-config:loom-config",
+    ],
+)
+
+rust_test(
     name = "single-file-write",
     crate = "single_file_write",
     srcs = ["tests/single_file_write.rs"],

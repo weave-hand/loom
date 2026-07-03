@@ -19,32 +19,6 @@ use engine_wire::flight::FlightTableClient;
 use tokio_util::sync::CancellationToken;
 use worker::compact::{CompactCtx, handle_compact};
 
-/// Thin composed config struct for the worker binary. Loaded via `loom_config::load`
-/// (defaults < file (`LOOM_CONFIG_FILE`) < env) through the `LayeredConfig` impl below.
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct WorkerConfig {
-    worker: loom_config::WorkerTuning,
-    write: datafusion_io::WriteConfig,
-}
-
-impl loom_config::LayeredConfig for WorkerConfig {
-    fn overlay_env(
-        &mut self,
-        env: &std::collections::HashMap<String, String>,
-    ) -> Result<(), loom_config::ConfigError> {
-        self.worker.overlay_env(env)?;
-        self.write.overlay_env(env)?;
-        Ok(())
-    }
-
-    fn validate(&self) -> Result<(), loom_config::ConfigError> {
-        self.worker.validate()?;
-        self.write.validate()?;
-        Ok(())
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // One env snapshot drives both the bootstrap reads and the composed config.
@@ -63,8 +37,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loom_config::overlay_opt(&env, "LOOM_LOCK_TIMEOUT_MS", &mut lease_ms)?;
     let lease = Duration::from_millis(lease_ms);
 
-    // Compose worker config as defaults < file < env (see `WorkerConfig`'s `LayeredConfig`).
-    let wcfg: WorkerConfig = loom_config::load(&env)?;
+    // Compose worker config as defaults < file < env (see `JobConfig`'s `LayeredConfig`).
+    let wcfg: datafusion_io::JobConfig = loom_config::load(&env)?;
 
     let store_cfg = store_config::ObjectStoreConfig::parse_from_env(&env)?;
     let write = Arc::new(store_config::build_write_store(&store_cfg)?);
