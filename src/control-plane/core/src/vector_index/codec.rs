@@ -20,6 +20,16 @@ pub(super) fn bad(m: &str) -> ControlPlaneError {
     ControlPlaneError::Backend(format!("vector index decode: {m}").into())
 }
 
+/// Final-step decode guard: the identity block ends every LVIX format, so any
+/// unread byte means a corrupt/padded blob (or a mixed-kind blob written by a
+/// pre-fix loom whose two encodings happened to sum compatibly).
+pub(super) fn expect_eof(r: &ByteReader<'_>) -> Result<()> {
+    if r.remaining() > 0 {
+        return Err(bad("trailing bytes after identity block"));
+    }
+    Ok(())
+}
+
 /// Bounds-checked little-endian reader over a serialized index blob.
 ///
 /// (Formerly the module-private `Cursor` — renamed because it shadowed

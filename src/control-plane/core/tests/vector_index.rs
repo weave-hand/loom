@@ -641,6 +641,35 @@ fn mixed_key_kinds_rejected_at_build() {
 }
 
 #[test]
+fn trailing_bytes_rejected_at_decode() {
+    use control_plane_core::decode;
+    let rows = vec![
+        (VectorKey::Int(1), vec![0.5]),
+        (VectorKey::Int(2), vec![0.25]),
+    ];
+    let blobs = [
+        FlatIndex::build(1, Metric::Cosine, rows.clone())
+            .expect("build")
+            .serialize(),
+        IvfFlatIndex::build(1, Metric::Cosine, rows.clone(), None)
+            .expect("build")
+            .serialize(),
+        HnswIndex::build(1, Metric::Cosine, rows, None, None)
+            .expect("build")
+            .serialize(),
+    ];
+    for mut blob in blobs {
+        blob.push(0xAB);
+        let e = decode(&blob).err().expect("trailing byte must fail decode");
+        assert!(
+            e.to_string()
+                .contains("trailing bytes after identity block"),
+            "wrong error: {e}"
+        );
+    }
+}
+
+#[test]
 fn parse_and_dim_failures_are_validation() {
     use control_plane_core::{ControlPlaneError, IndexKind, IndexSpec, Metric};
     use std::str::FromStr;

@@ -1,8 +1,8 @@
 //! IvfFlatIndex — approximate IVF-Flat index with deterministic k-means build.
 
 use super::codec::{
-    ByteReader, F32Section, KIND_IVF_FLAT, pack_rows, read_f32_section, read_header, read_keys,
-    write_f32s, write_header, write_keys,
+    ByteReader, F32Section, KIND_IVF_FLAT, expect_eof, pack_rows, read_f32_section, read_header,
+    read_keys, write_f32s, write_header, write_keys,
 };
 use super::kmeans;
 use super::{IndexKind, Metric, SplitMix64, VectorIndex, VectorKey, distance, row_slice};
@@ -134,6 +134,7 @@ impl IvfFlatIndex {
         }
         let data = read_f32_section(&mut r, row_count as usize, d, F32Section::Data)?;
         let keys = read_keys(&mut r, row_count as usize)?;
+        expect_eof(&r)?;
         Ok(IvfFlatIndex {
             dim,
             metric,

@@ -83,7 +83,7 @@ Expected: FAIL — all three builds return `Ok` today.
 Run: `buck2 test //src/control-plane/core:vector-index //src/control-plane/core:vector-index-codec > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
 Expected: PASS, 0 failures (goldens byte-identical).
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run -v0 //tools:prek -- run --all-files > /tmp/p.log 2>&1; grep -c Failed /tmp/p.log  # expect 0
@@ -100,7 +100,7 @@ git commit -m "fix(vector-index): reject mixed identity key kinds at build"
 **Interfaces:**
 - Produces: `pub(super) fn expect_eof(r: &ByteReader<'_>) -> Result<()>` — `Err(bad("trailing bytes after identity block"))` when `r.remaining() > 0`.
 
-- [ ] **Step 1: Write the failing tests** — append to `tests/vector_index.rs`:
+- [x] **Step 1: Write the failing tests** — append to `tests/vector_index.rs`:
 
 ```rust
 #[test]
@@ -121,12 +121,12 @@ fn trailing_bytes_rejected_at_decode() {
 
 (`decode` is the public entry at `vector_index/mod.rs:271`; the trait `serialize()` is on `VectorIndex`.)
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `buck2 test //src/control-plane/core:vector-index > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
 Expected: FAIL — all three decode `Ok` today, silently ignoring the byte.
 
-- [ ] **Step 3: Implement** — in `codec.rs`, next to `bad`:
+- [x] **Step 3: Implement** — in `codec.rs`, next to `bad`:
 
 ```rust
 /// Final-step decode guard: the identity block ends every LVIX format, so any
@@ -142,7 +142,7 @@ pub(super) fn expect_eof(r: &ByteReader<'_>) -> Result<()> {
 
 Then in each of the three `deserialize`s, after the `read_keys` line and before the `Ok(...)` struct expression: `expect_eof(&r)?;` (import via the existing `super::codec::{...}` use list).
 
-- [ ] **Step 4: Run to verify pass + goldens + round-trips green**
+- [x] **Step 4: Run to verify pass + goldens + round-trips green**
 
 Run: `buck2 test //src/control-plane/core:vector-index //src/control-plane/core:vector-index-codec //src/control-plane/core:vector-index-decode-props > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
 Expected: PASS, 0 failures.
