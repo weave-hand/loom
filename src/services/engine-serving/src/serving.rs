@@ -154,21 +154,30 @@ pub async fn register_iceberg_table(
     let Some(provider) = build_serving_provider(ctx, catalog, table, serving_store).await? else {
         return Ok(());
     };
+    register_qualified(ctx, &table.schema, &table.name, provider)
+}
 
-    // Ensure the schema exists in the default catalog, then register the table
-    // schema-qualified so `"schema"."table"` references resolve.
+/// Ensure `schema` exists in `ctx`'s default `datafusion` catalog (creating it if
+/// absent), then register `provider` under the schema-qualified name
+/// `"schema"."name"` so `"schema"."name"` references resolve. Shared by the
+/// unguarded `register_iceberg_table` and the governed path
+/// (`execute_governed_sql_stream`), which register the same shape of table under
+/// either a raw or a `GovernedTableProvider`-wrapped provider.
+pub(crate) fn register_qualified(
+    ctx: &SessionContext,
+    schema: &str,
+    name: &str,
+    provider: Arc<dyn TableProvider>,
+) -> Result<(), EngineServingError> {
     let cat = ctx
         .catalog("datafusion")
         .ok_or_else(|| EngineServingError::Engine("no default datafusion catalog".into()))?;
-    if cat.schema(&table.schema).is_none() {
-        cat.register_schema(&table.schema, Arc::new(MemorySchemaProvider::new()))
+    if cat.schema(schema).is_none() {
+        cat.register_schema(schema, Arc::new(MemorySchemaProvider::new()))
             .map_err(to_serving)?;
     }
-    ctx.register_table(
-        TableReference::partial(table.schema.clone(), table.name.clone()),
-        provider,
-    )
-    .map_err(to_serving)?;
+    ctx.register_table(TableReference::partial(schema, name), provider)
+        .map_err(to_serving)?;
     Ok(())
 }
 
@@ -437,19 +446,18 @@ impl IcebergMirrorTableProvider {
 }
 
 /// Execute already-compiled, param-inlined read-only `sql` against all live Iceberg
-/// tables and return the result batches. (This is the body of the old
-/// `DataFusionServingEngine::fetch_rows` minus the `Rows` flattening.)
+/// tables and return the result batches. Delegates to [`execute_query_stream`] and
+/// collects the resulting stream, so the two share one registration+planning path
+/// and differ only in unary-vs-streaming consumption.
 pub async fn execute_query(
     catalog: &IcebergCatalog,
     sql: &str,
     serving_store: Option<&ServingStore>,
 ) -> Result<Vec<RecordBatch>, EngineServingError> {
-    let ctx = SessionContext::new();
-    for table in catalog.live_tables().await.map_err(to_serving)? {
-        register_iceberg_table(&ctx, catalog, &table, serving_store).await?;
-    }
-    let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
-    df.collect().await.map_err(to_serving)
+    let stream = execute_query_stream(catalog, sql, serving_store).await?;
+    datafusion::physical_plan::common::collect(stream)
+        .await
+        .map_err(to_serving)
 }
 
 /// Streaming sibling of [`execute_query`]: register the same live Iceberg tables
