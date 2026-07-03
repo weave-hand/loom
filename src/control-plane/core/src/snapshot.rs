@@ -2,7 +2,7 @@
 //! the data files; loom writes the catalog rows). Format-neutral: the active
 //! table-format adapter (Iceberg) encodes these into its physical catalog.
 
-/// A column for `Tx::create_table`. `ty` is a loom LOGICAL type name (canonical:
+/// A column for `TableTx::create_table`. `ty` is a loom LOGICAL type name (canonical:
 /// "integer"/"long"/"double"/"boolean"/"string"/"date"/"timestamp", or a known
 /// alias). The active adapter maps it to its physical type string.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

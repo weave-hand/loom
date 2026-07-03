@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionName, Catalog, ControlPlane, ControlPlaneError, Decision, Effect,
-    Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, Policy, PolicyTarget, Queue, RoleId,
-    SubjectId, TableRef, Tx, TypeName, VectorIndexDef,
+    Acl, Action, ActionDef, ActionName, Auth, Catalog, ControlPlane, ControlPlaneError, Decision,
+    Effect, Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, Policy, PolicyTarget, Queue,
+    RoleId, SubjectId, TableRef, Tx, TypeName, VectorIndexDef,
 };
 use engine_wire::client::GrpcQueueClient;
 
@@ -199,6 +199,10 @@ impl ControlPlane for WireControlPlane {
 
     fn queue(&self) -> &(dyn Queue + Send + Sync) {
         self.direct.queue()
+    }
+
+    fn auth(&self) -> &(dyn Auth + Send + Sync) {
+        self.direct.auth()
     }
 
     #[expect(

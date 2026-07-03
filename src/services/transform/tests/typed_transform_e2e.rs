@@ -19,7 +19,7 @@ use arrow::array::{Float64Array, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
     Acl, Action, ControlPlane, ControlPlaneError, DatasetRef, Effect, NewJob, ObjectType, PageReq,
-    PropertyDef, Queue, RoleId, SubjectId, TypeName,
+    PropertyDef, Queue, RoleId, SubjectId, TableControlPlane, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -55,7 +55,7 @@ fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
 )]
 fn spawn_worker(
     pg: &PgControlPlane,
-    cp_h: Arc<dyn ControlPlane>,
+    cp_h: Arc<dyn TableControlPlane>,
     store: &Arc<dyn ObjectStore>,
     root_url: &str,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
@@ -239,7 +239,7 @@ async fn typed_transform_materializes_and_governs_the_output_model() {
     .unwrap();
 
     // 4. RUN the worker until the job drains (handler commits through Iceberg).
-    let cp_h: Arc<dyn ControlPlane> = Arc::new(IcebergControlPlane::new(
+    let cp_h: Arc<dyn TableControlPlane> = Arc::new(IcebergControlPlane::new(
         pg.clone(),
         make_catalog(fx.pg_dsn(&db), &warehouse).await,
     ));
@@ -444,7 +444,7 @@ async fn non_conforming_typed_transform_commits_nothing() {
     .await
     .unwrap();
 
-    let cp_h: Arc<dyn ControlPlane> = Arc::new(IcebergControlPlane::new(
+    let cp_h: Arc<dyn TableControlPlane> = Arc::new(IcebergControlPlane::new(
         pg.clone(),
         make_catalog(fx.pg_dsn(&db), &warehouse).await,
     ));

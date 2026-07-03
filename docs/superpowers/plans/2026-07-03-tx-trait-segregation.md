@@ -59,7 +59,7 @@ and on `ControlPlane` (with `use crate::auth::Auth;`):
 
 `Tx::commit`'s doc comment is rewritten: "Returns the new `SnapshotId` if the unit of work staged table-format writes (see `TableTx`), else `None` — `Tx`-only planes always return `None`."
 
-- [ ] **Step 1 (red-first probe): extend `control_plane_facade_contract`** — append an auth probe: resolve a session that cannot exist through the facade accessor and assert `Ok(None)`; mirror the contract's existing probe style, e.g.
+- [x] **Step 1 (red-first probe): extend `control_plane_facade_contract`** — append an auth probe: resolve a session that cannot exist through the facade accessor and assert `Ok(None)`; mirror the contract's existing probe style, e.g.
 
 ```rust
     // auth(): reachable through the facade; an unknown session resolves to None.
@@ -73,16 +73,16 @@ and on `ControlPlane` (with `use crate::auth::Auth;`):
 
 (Signature verified: `resolve_session(&self, token_sha256: &[u8; 32], now: OffsetDateTime) -> Result<Option<SubjectId>>` at core/src/auth.rs:123-127; testkit already has `time` in scope for auth_contract. NOTE: `control_plane_facade_contract` has exactly ONE runner — `memory/tests/facade.rs` — so the probe exercises Memory behaviorally; Pg/Iceberg/Wire `auth()` is compile-checked only. Do not claim multi-plane behavioral coverage; optionally note the missing postgres facade runner in the PR as observed doc rot — the contract's :3240 comment references a postgres facade test that does not exist.)
 
-- [ ] **Step 2: core** — move the four methods `Tx` → `TableTx` verbatim; add `TableControlPlane`; add `auth()` to `ControlPlane`; fix `commit`'s doc; export `TableTx`, `TableControlPlane` from `core/src/lib.rs` next to `Tx`/`ControlPlane`.
-- [ ] **Step 3: adapters** —
+- [x] **Step 2: core** — move the four methods `Tx` → `TableTx` verbatim; add `TableControlPlane`; add `auth()` to `ControlPlane`; fix `commit`'s doc; export `TableTx`, `TableControlPlane` from `core/src/lib.rs` next to `Tx`/`ControlPlane`.
+- [x] **Step 3: adapters** —
   - `PgTx`: delete the four stub methods and `no_table_format()`; prune now-unused imports (`ColumnSpec`, `DataFile`, `TableRef` if unused).
   - `PgControlPlane`: add `fn auth(&self) -> &(dyn Auth + Send + Sync) { self }` (it already `impl Auth`).
   - `IcebergTx`: split the single `impl Tx` into `impl Tx` (commit/rollback/enqueue/emit) + `impl TableTx` (the four staging methods, bodies unchanged).
   - `IcebergControlPlane`: `impl TableControlPlane` gets today's `begin()` body as `begin_table()`; `begin()` becomes `Ok(self.begin_table().await?)` (dyn upcast); `auth()` → `self.pg.auth()`.
   - `MemoryTx`/`MemoryControlPlane`: same split; `auth()` → `self` (memory `impl Auth` exists per spec).
   - `WireControlPlane`: `auth()` → `self.direct.auth()`; `begin()` untouched.
-- [ ] **Step 4: consumers** — transform's four signatures + `main.rs:39`'s `Arc<dyn ControlPlane>` → `Arc<dyn TableControlPlane>`, `cp.begin()` → `cp.begin_table()` (run.rs:192 and any sibling); testkit: the five staging contracts' bounds → `control_plane_core::TableControlPlane` + `begin_table()` (leave `queue_contract`/`lineage_contract`/`tx_isolation_contract` on `ControlPlane` — queue/lineage run against `PgControlPlane`; tx_isolation runs against Memory but stages nothing); `run_unknown_input.rs`'s `StubCp` gains `impl TableControlPlane` with `begin_table` body `unreachable!("begin not reached — input resolution fails first")` (matching its existing `begin()` at :77-79) and an `unreachable!` `auth()`; NO stub Tx exists or is needed. Fix the additional test callers listed in Files (begin→begin_table, handle re-annotations).
-- [ ] **Step 5: compile + targeted suites**
+- [x] **Step 4: consumers** — transform's four signatures + `main.rs:39`'s `Arc<dyn ControlPlane>` → `Arc<dyn TableControlPlane>`, `cp.begin()` → `cp.begin_table()` (run.rs:192 and any sibling); testkit: the five staging contracts' bounds → `control_plane_core::TableControlPlane` + `begin_table()` (leave `queue_contract`/`lineage_contract`/`tx_isolation_contract` on `ControlPlane` — queue/lineage run against `PgControlPlane`; tx_isolation runs against Memory but stages nothing); `run_unknown_input.rs`'s `StubCp` gains `impl TableControlPlane` with `begin_table` body `unreachable!("begin not reached — input resolution fails first")` (matching its existing `begin()` at :77-79) and an `unreachable!` `auth()`; NO stub Tx exists or is needed. Fix the additional test callers listed in Files (begin→begin_table, handle re-annotations).
+- [x] **Step 5: compile + targeted suites**
 
 ```bash
 buck2 build -M none //src/... > /tmp/x1.log 2>&1; grep -cE 'BUILD FAILED' /tmp/x1.log  # 0
@@ -91,9 +91,9 @@ buck2 test //src/control-plane/... //src/services/transform: --unstable-allow-al
 
 Expected: build succeeds; contracts (incl. the new auth probe on all planes' facade-contract runs) and transform suites PASS.
 
-- [ ] **Step 5b: doc-rot sweep** — reword alongside the split: `postgres/src/transaction.rs:1-7` module doc (describes the deleted stub-error behavior), `postgres/src/lib.rs:111-113` begin() comment ("table-write methods on this Tx error"), `iceberg_control_plane.rs:1-2` module doc ("makes `ControlPlane::begin()` genuinely polymorphic" → begin_table framing), `core/src/snapshot.rs:5` ("A column for `Tx::create_table`" → `TableTx::create_table`).
+- [x] **Step 5b: doc-rot sweep** — reword alongside the split: `postgres/src/transaction.rs:1-7` module doc (describes the deleted stub-error behavior), `postgres/src/lib.rs:111-113` begin() comment ("table-write methods on this Tx error"), `iceberg_control_plane.rs:1-2` module doc ("makes `ControlPlane::begin()` genuinely polymorphic" → begin_table framing), `core/src/snapshot.rs:5` ("A column for `Tx::create_table`" → `TableTx::create_table`).
 
-- [ ] **Step 6: prek + commit**
+- [x] **Step 6: prek + commit**
 
 ```bash
 buck2 run -v0 //tools:prek -- run --all-files > /tmp/p.log 2>&1; grep -c Failed /tmp/p.log  # 0
@@ -103,8 +103,8 @@ git commit -m "refactor(core): split Tx/TableTx + TableControlPlane; auth() on t
 
 ### Task 2: Whole-suite sweep (spec acceptance)
 
-- [ ] **Step 1:** `buck2 test //src/... --unstable-allow-all-tests-on-re > /tmp/x3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/x3.log` — expected PASS (this mirrors CI's build-test job; builds and test runs stay on RE, so the ~38 GiB local disk cap is not threatened). If disk pressure appears anyway: `buck2 clean` and rerun.
-- [ ] **Step 2:** If red: fix forward (a missed consumer or stub), re-run, amend into Task 1's commit.
+- [x] **Step 1:** `buck2 test //src/... --unstable-allow-all-tests-on-re > /tmp/x3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/x3.log` — expected PASS (this mirrors CI's build-test job; builds and test runs stay on RE, so the ~38 GiB local disk cap is not threatened). If disk pressure appears anyway: `buck2 clean` and rerun.
+- [x] **Step 2:** If red: fix forward (a missed consumer or stub), re-run, amend into Task 1's commit.
 
 ### Task 3: Register close + capability docs
 

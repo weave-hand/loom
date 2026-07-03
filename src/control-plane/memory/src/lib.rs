@@ -17,8 +17,8 @@ use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Catalog, ColumnDef, ControlPlane, FileRef, Lineage, NewJob, Ontology, Queue, Result,
-    SnapshotId, TableRef, Tx,
+    Acl, Auth, Catalog, ColumnDef, ControlPlane, FileRef, Lineage, NewJob, Ontology, Queue, Result,
+    SnapshotId, TableControlPlane, TableRef, TableTx, Tx,
 };
 use time::OffsetDateTime;
 use tokio::sync::Notify;
@@ -202,7 +202,17 @@ impl ControlPlane for MemoryControlPlane {
     fn queue(&self) -> &(dyn Queue + Send + Sync) {
         self
     }
+    fn auth(&self) -> &(dyn Auth + Send + Sync) {
+        self
+    }
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
+        Ok(self.begin_table().await?)
+    }
+}
+
+#[async_trait]
+impl TableControlPlane for MemoryControlPlane {
+    async fn begin_table(&self) -> Result<Box<dyn TableTx + Send>> {
         Ok(Box::new(MemoryTx {
             rows: self.rows.clone(),
             notify: self.notify.clone(),

@@ -11,7 +11,8 @@ use std::time::Duration;
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetRef, LineageEvent, NewJob, PageReq, Queue, TableRef,
+    ColumnSpec, ControlPlane, DatasetRef, LineageEvent, NewJob, PageReq, Queue, TableControlPlane,
+    TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -104,7 +105,7 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
 
     // The queue is backend-neutral (dequeue through `pg`); the handler commits output
     // through the Iceberg control plane (`cp`), mirroring the transform binary.
-    let cp_h: Arc<dyn ControlPlane> = Arc::new(IcebergControlPlane::new(
+    let cp_h: Arc<dyn TableControlPlane> = Arc::new(IcebergControlPlane::new(
         pg.clone(),
         make_catalog(fx.pg_dsn(&db), &warehouse).await,
     ));
@@ -185,7 +186,7 @@ async fn transform_joins_two_inputs_into_a_new_snapshot() {
 /// Create an input table with a schema but NO data files (current_snapshot exists,
 /// `files` is empty, `schema` resolves) — the empty-input fixture the edge-2 cases need.
 async fn create_empty_table(cp: &IcebergControlPlane, table: &TableRef, columns: &[ColumnSpec]) {
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(table, columns).await.unwrap();
     // Register the table in the mirror with an EMPTY file list: the table/columns/schema
     // are projected at the snapshot (so `current_snapshot`/`schema` resolve), but no data

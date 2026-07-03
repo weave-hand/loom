@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use control_plane_core::{ControlPlane, Job, JobFailure};
+use control_plane_core::{Job, JobFailure, TableControlPlane};
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let write_cfg = tcfg.write;
 
     let catalog = build_iceberg_catalog(&cfg).await?;
-    let cp_for_handler: Arc<dyn ControlPlane> =
+    let cp_for_handler: Arc<dyn TableControlPlane> =
         Arc::new(IcebergControlPlane::new(pg.clone(), catalog));
     let worker = Worker::new(pg, "transform-1", cfg.lock_timeout)
         .with_poll_interval(tcfg.worker.poll_interval());

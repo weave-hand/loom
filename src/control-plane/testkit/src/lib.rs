@@ -22,7 +22,7 @@ use control_plane_core::{
     Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef,
     LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq,
     ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
-    ScalarValue, SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
+    ScalarValue, SnapshotId, SubjectId, TableControlPlane, TableRef, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -3053,13 +3053,13 @@ pub async fn tx_isolation_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) 
 /// expire target that is not live); the failed commit must leave neither the job
 /// nor the event visible. Guards against a partial commit where queue/lineage were
 /// applied before a later catalog op errored. See iss-memory-tx-not-atomic.
-pub async fn tx_atomic_rollback_contract<CP: ControlPlane + Queue + Lineage>(cp: &CP) {
+pub async fn tx_atomic_rollback_contract<CP: TableControlPlane + Queue + Lineage>(cp: &CP) {
     use control_plane_core::{DataFile, FileFormat, TableRef};
     let ts = OffsetDateTime::from_unix_timestamp(1_700_000_100).unwrap();
     let run = RunId(uuid::Uuid::new_v4());
     let kinds = vec!["tx-atomic".to_string()];
 
-    let mut tx = cp.begin().await.expect("begin");
+    let mut tx = cp.begin_table().await.expect("begin");
     tx.enqueue(NewJob {
         kind: "tx-atomic".into(),
         payload: serde_json::json!({}),
@@ -3239,6 +3239,14 @@ pub async fn control_plane_facade_contract<CP: ControlPlane>(cp: &CP) {
     // catalog reads are covered by catalog_contract; binding the ref here keeps this
     // contract catalog-independent so the postgres facade test runs postgres-only.
     let _catalog: &(dyn Catalog + Send + Sync) = cp.catalog();
+
+    // auth(): reachable through the facade; an unknown session resolves to None.
+    let resolved = cp
+        .auth()
+        .resolve_session(&[0u8; 32], OffsetDateTime::now_utc())
+        .await
+        .expect("auth resolve through facade");
+    assert!(resolved.is_none(), "unknown session must resolve to None");
 }
 
 /// Contract for the snapshot-commit primitive (`create_table` + `append_files` +
@@ -3246,7 +3254,7 @@ pub async fn control_plane_facade_contract<CP: ControlPlane>(cp: &CP) {
 /// `cp` must be freshly empty.
 pub async fn snapshot_commit_contract<C>(cp: &C)
 where
-    C: control_plane_core::ControlPlane
+    C: control_plane_core::TableControlPlane
         + control_plane_core::Catalog
         + control_plane_core::Lineage
         + control_plane_core::Queue,
@@ -3260,7 +3268,7 @@ where
     let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let run = RunId(uuid::Uuid::new_v4());
 
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(
         &t,
         &[ColumnSpec {
@@ -3347,7 +3355,7 @@ where
         schema: "main".into(),
         name: "rolled".into(),
     };
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(
         &t2,
         &[ColumnSpec {
@@ -3371,7 +3379,7 @@ where
 /// freshly empty.
 pub async fn snapshot_replace_contract<C>(cp: &C)
 where
-    C: control_plane_core::ControlPlane + control_plane_core::Catalog,
+    C: control_plane_core::TableControlPlane + control_plane_core::Catalog,
 {
     use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
     let t = TableRef {
@@ -3389,7 +3397,7 @@ where
     };
 
     // create + append a.parquet (3 rows).
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(
         &t,
         &[ColumnSpec {
@@ -3412,7 +3420,7 @@ where
     assert_eq!(at1.items[0].path, "a.parquet");
 
     // replace with b.parquet (5 rows).
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.replace_files(&t, &[file("b.parquet", 5)]).await.unwrap();
     let s2 = tx
         .commit()
@@ -3446,7 +3454,7 @@ where
 /// replace staged BEFORE an append leaves the append's files live — postgres
 /// `IcebergTx` semantics, which the memory fake must match. `cp` must be
 /// freshly empty.
-pub async fn snapshot_write_order_contract<C: control_plane_core::ControlPlane>(cp: &C) {
+pub async fn snapshot_write_order_contract<C: control_plane_core::TableControlPlane>(cp: &C) {
     use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
     let t = TableRef {
         schema: "main".into(),
@@ -3468,13 +3476,13 @@ pub async fn snapshot_write_order_contract<C: control_plane_core::ControlPlane>(
     }];
 
     // Seed: create + append f0.
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(&t, &cols).await.unwrap();
     tx.append_files(&t, &[file("f0.parquet", 1)]).await.unwrap();
     let s1 = tx.commit().await.unwrap().expect("seed snapshot");
 
     // One tx: REPLACE with r.parquet, THEN APPEND a.parquet.
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(&t, &cols).await.unwrap(); // idempotent; IcebergTx resolves columns in-tx
     tx.replace_files(&t, &[file("r.parquet", 2)]).await.unwrap();
     tx.append_files(&t, &[file("a.parquet", 3)]).await.unwrap();
@@ -3518,7 +3526,7 @@ pub async fn snapshot_write_order_contract<C: control_plane_core::ControlPlane>(
 /// empty.
 pub async fn snapshot_compact_contract<C>(cp: &C)
 where
-    C: control_plane_core::ControlPlane + control_plane_core::Catalog,
+    C: control_plane_core::TableControlPlane + control_plane_core::Catalog,
 {
     use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
     let t = TableRef {
@@ -3536,7 +3544,7 @@ where
     };
 
     // create + append a(3) + b(5) + c(2) as three files.
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(
         &t,
         &[ColumnSpec {
@@ -3569,7 +3577,7 @@ where
     assert_eq!(total1, 10);
 
     // compact a + b into d(8); c untouched.
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.compact_files(
         &t,
         &["a.parquet".into(), "b.parquet".into()],

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use control_plane_core::{ControlPlane, NewJob, PageReq, Queue};
+use control_plane_core::{ControlPlane, NewJob, PageReq, Queue, TableControlPlane};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -35,7 +35,7 @@ async fn drain_transforms(
     store: &Arc<dyn ObjectStore>,
     root_url: &str,
 ) {
-    let cp_h: Arc<dyn ControlPlane> = Arc::new(IcebergControlPlane::new(
+    let cp_h: Arc<dyn TableControlPlane> = Arc::new(IcebergControlPlane::new(
         pg.clone(),
         make_catalog(fx.pg_dsn(db), warehouse).await,
     ));

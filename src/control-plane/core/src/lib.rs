@@ -61,7 +61,7 @@ pub use ontology::{
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
-pub use transaction::{ControlPlane, Tx};
+pub use transaction::{ControlPlane, TableControlPlane, TableTx, Tx};
 pub use vector_index::{
     FlatIndex, HnswIndex, IndexKind, IndexSpec, IvfFlatIndex, Metric, VectorIndex, VectorKey,
     decode, distance,
