@@ -20,6 +20,9 @@ fn expected() -> BTreeSet<(String, String)> {
         ("get", "/lineage/datasets/{namespace}/{name}/downstream"),
         ("get", "/lineage/runs/{run_id}/events"),
         ("get", "/ontology/types"),
+        ("get", "/ontology/types/{name}"),
+        ("get", "/datasets"),
+        ("get", "/datasets/{schema}/{table}"),
         // Runtime-mounted routes (serve.rs merges the auth, service-account, and
         // admin routers) — documented by the service_runtime OpenAPI fragments.
         ("post", "/auth/login"),
@@ -39,6 +42,16 @@ fn expected() -> BTreeSet<(String, String)> {
         ("post", "/admin/roles"),
         ("get", "/admin/roles"),
         ("post", "/admin/roles/{role}/grants"),
+        ("get", "/admin/roles/{role}/grants"),
+        ("delete", "/admin/roles/{role}/grants"),
+        ("delete", "/admin/roles/{role}"),
+        ("post", "/admin/links"),
+        ("delete", "/admin/links/{from}/{name}"),
+        ("post", "/admin/actions"),
+        ("delete", "/admin/actions/{name}"),
+        ("get", "/admin/users/{username}/roles"),
+        ("put", "/admin/users/{username}/roles/{role}"),
+        ("delete", "/admin/users/{username}/roles/{role}"),
     ]
     .iter()
     .map(|(m, p)| ((*m).to_string(), (*p).to_string()))

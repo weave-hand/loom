@@ -402,6 +402,18 @@ where
         ),
         "missing table snapshots is NotFound"
     );
+
+    // list_tables: a single full `(schema, name)`-ordered page of the live tables,
+    // including the seeded one.
+    let listed = catalog
+        .list_tables(PageReq::unbounded())
+        .await
+        .expect("list_tables");
+    assert!(listed.next.is_none(), "single full page");
+    let mut sorted = listed.items.clone();
+    sorted.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
+    assert_eq!(listed.items, sorted, "(schema, name)-ordered");
+    assert!(listed.items.contains(&t), "seeded table listed");
 }
 
 /// Contract for the MVCC `end`-bound and before-existence branches of the catalog
@@ -488,6 +500,19 @@ where
     );
 
     // Drop it.
+    // With BOTH tables live, list_tables pins the (schema, name) ordering on a
+    // genuinely multi-element list (the post-drop assert below sees only one).
+    let both = catalog
+        .list_tables(PageReq::unbounded())
+        .await
+        .expect("list_tables before drop")
+        .items;
+    assert_eq!(
+        both,
+        vec![t.clone(), other.clone()],
+        "both live tables listed, (schema, name)-ordered"
+    );
+
     let d = seeder.drop_table(&t).await;
     assert!(d > s1, "drop creates a later snapshot");
 
@@ -545,6 +570,16 @@ where
         matches!(catalog.current_snapshot(&nope).await, Err(NotFound(_))),
         "never-existed table is NotFound"
     );
+
+    // list_tables sees the drop: the end-capped table is no longer live, while the
+    // untouched `other` table still is.
+    let listed = catalog
+        .list_tables(PageReq::unbounded())
+        .await
+        .expect("list_tables after drop")
+        .items;
+    assert!(!listed.contains(&t), "dropped table no longer listed");
+    assert!(listed.contains(&other), "unrelated table still listed");
 }
 
 /// Contract for the `Ontology` read+write surface. Self-seeds via `define_*`
@@ -1390,6 +1425,79 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.define_vector_index(missing).await.is_err(),
         "missing property rejected"
     );
+
+    // --- delete_link: gone from reads, idempotent, re-definable ---
+    // Uses the `customer` link (Order -> Customer) defined above; fetched before
+    // deletion so the exact definition can be re-defined afterwards.
+    let customer_link_def = o
+        .links(&tn("Order"), PageReq::unbounded())
+        .await
+        .expect("links before delete")
+        .items
+        .into_iter()
+        .find(|l| l.name == "customer")
+        .expect("customer link in scope");
+    o.delete_link(&tn("Order"), "customer")
+        .await
+        .expect("delete_link");
+    assert!(
+        !o.links(&tn("Order"), PageReq::unbounded())
+            .await
+            .expect("links after delete")
+            .items
+            .iter()
+            .any(|l| l.name == "customer"),
+        "deleted link no longer listed"
+    );
+    o.delete_link(&tn("Order"), "customer")
+        .await
+        .expect("delete_link is idempotent");
+    o.define_link(customer_link_def.clone())
+        .await
+        .expect("re-define link after delete");
+    assert!(
+        o.links(&tn("Order"), PageReq::unbounded())
+            .await
+            .expect("links after re-define")
+            .items
+            .iter()
+            .any(|l| l.name == "customer"),
+        "re-defined link listed again"
+    );
+
+    // --- delete_action: gone from get + list, idempotent, re-definable ---
+    let create_widget_again = o
+        .get_action(&ActionName("createWidget".into()))
+        .await
+        .expect("fetch action before delete");
+    o.delete_action(&ActionName("createWidget".into()))
+        .await
+        .expect("delete_action");
+    assert!(matches!(
+        o.get_action(&ActionName("createWidget".into())).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(
+        !o.list_actions(PageReq::unbounded())
+            .await
+            .expect("list after delete")
+            .items
+            .iter()
+            .any(|a| a.name.0 == "createWidget"),
+        "deleted action not listed"
+    );
+    o.delete_action(&ActionName("createWidget".into()))
+        .await
+        .expect("delete_action is idempotent");
+    o.define_action(create_widget_again)
+        .await
+        .expect("re-define action after delete");
+    assert!(
+        o.get_action(&ActionName("createWidget".into()))
+            .await
+            .is_ok(),
+        "re-defined action readable"
+    );
 }
 
 /// Contract for the `Acl` ops. `a` must be freshly empty.
@@ -2105,6 +2213,97 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     a.set_policy(&rid("reader"), Action::Read, table_ok)
         .await
         .expect("table-target structural ok");
+
+    // --- list_grants: content, order, NotFound, reflects revoke ---
+    let mgmt = RoleId("mgmt".into());
+    a.define_role(&mgmt).await.expect("define mgmt");
+    a.grant(
+        &mgmt,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Widget".into())),
+        Effect::Allow,
+    )
+    .await
+    .expect("grant read");
+    a.grant(
+        &mgmt,
+        Action::Write,
+        PolicyTarget::Type(TypeName("Widget".into())),
+        Effect::Allow,
+    )
+    .await
+    .expect("grant write");
+    let grants = a
+        .list_grants(&mgmt, PageReq::unbounded())
+        .await
+        .expect("list_grants");
+    assert_eq!(grants.items.len(), 2);
+    assert!(grants.next.is_none());
+    assert_eq!(grants.items[0].action, Action::Read, "action-ordered");
+    assert_eq!(grants.items[0].effect, Effect::Allow);
+    assert_eq!(
+        grants.items[0].target,
+        PolicyTarget::Type(TypeName("Widget".into()))
+    );
+    assert!(matches!(
+        a.list_grants(&RoleId("no-such-role".into()), PageReq::unbounded())
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    a.revoke(
+        &mgmt,
+        Action::Write,
+        &PolicyTarget::Type(TypeName("Widget".into())),
+    )
+    .await
+    .expect("revoke");
+    assert_eq!(
+        a.list_grants(&mgmt, PageReq::unbounded())
+            .await
+            .expect("relist")
+            .items
+            .len(),
+        1
+    );
+
+    // --- roles_of: after assign/unassign; NotFound on unknown subject ---
+    let who = SubjectId("mgmt-user".into());
+    a.define_subject(&who).await.expect("subject");
+    a.assign_role(&who, &mgmt).await.expect("assign");
+    let mine = a
+        .roles_of(&who, PageReq::unbounded())
+        .await
+        .expect("roles_of");
+    assert_eq!(mine.items, vec![mgmt.clone()]);
+    a.unassign_role(&who, &mgmt).await.expect("unassign");
+    assert!(
+        a.roles_of(&who, PageReq::unbounded())
+            .await
+            .expect("empty")
+            .items
+            .is_empty()
+    );
+    assert!(matches!(
+        a.roles_of(&SubjectId("no-such-subject".into()), PageReq::unbounded())
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // --- delete_role: cascade observed, idempotent, re-creatable ---
+    a.assign_role(&who, &mgmt).await.expect("re-assign");
+    a.delete_role(&mgmt).await.expect("delete");
+    assert!(!a.has_role(&who, &mgmt).await.expect("membership gone"));
+    assert!(!a.list_roles().await.expect("roles").contains(&mgmt));
+    a.delete_role(&mgmt).await.expect("idempotent");
+    a.define_role(&mgmt).await.expect("re-create after delete");
+    assert!(
+        a.list_grants(&mgmt, PageReq::unbounded())
+            .await
+            .expect("fresh")
+            .items
+            .is_empty(),
+        "re-created role has no stale grants"
+    );
 }
 
 /// Contract for the `Auth` ops. `a` must be freshly empty. Bound on `Acl` too so

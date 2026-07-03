@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select role_id from acl.role_member where subject_id = $1 order by role_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.role_member",
+            "name": "role_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7af3bde4adc6e4d2794a319280247f16ab907bbae58c6c0442459fa4ed81c391"
+}

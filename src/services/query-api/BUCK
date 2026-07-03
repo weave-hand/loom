@@ -76,6 +76,46 @@ rust_test(
 )
 
 rust_test(
+    name = "ontology-type-detail",
+    crate = "ontology_type_detail",
+    srcs = ["tests/ontology_type_detail.rs"],
+    crate_root = "tests/ontology_type_detail.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//src/services/runtime:runtime",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "datasets-routes",
+    crate = "datasets_routes",
+    srcs = ["tests/datasets_routes.rs"],
+    crate_root = "tests/datasets_routes.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//src/services/runtime:runtime",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
     name = "web-static",
     crate = "web_static",
     srcs = ["tests/web_static.rs"],

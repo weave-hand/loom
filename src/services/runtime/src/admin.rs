@@ -11,11 +11,12 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use control_plane_core::{
-    ADMIN_ROLE, Action, Auth, ControlPlane, ControlPlaneError, Effect, NewUser, ObjectType,
-    PageReq, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName, UserSummary,
+    ADMIN_ROLE, Action, ActionDef, ActionName, Auth, ControlPlane, ControlPlaneError, Effect,
+    LinkDef, NewUser, ObjectType, PageReq, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef,
+    TypeName, UserSummary,
 };
 
 use crate::auth::{AuthState, Subject, protect, status_for, unauthorized};
@@ -411,6 +412,315 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
     }
 }
 
+/// `POST /admin/links` — define an ontology link between two existing types.
+/// `LinkDef` carries no `ToSchema`, so the body is documented as its serde shape
+/// and deserialized inside the handler (the `post_action` open-body pattern).
+#[utoipa::path(
+    post, path = "/admin/links",
+    request_body(
+        content = serde_json::Value,
+        description = "A `LinkDef` in its serde shape: `{\"name\", \"from\", \"to\", \
+            \"cardinality\": \"One\"|\"Many\", \"backing\": {\"ForeignKey\": {\"from_column\", \
+            \"to_column\"}} | {\"JoinTable\": {\"table\": {\"schema\", \"name\"}, \"from_key\", \
+            \"from_column\", \"to_column\", \"to_key\"}}}`",
+    ),
+    responses(
+        (status = 201, description = "Link defined"),
+        (status = 400, description = "Body does not decode as a LinkDef, or validation failed"),
+        (status = 404, description = "Unknown endpoint type (`from` or `to`)"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn define_link_route(
+    State(st): State<AdminState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let link: LinkDef = match serde_json::from_value(body) {
+        Ok(l) => l,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("invalid LinkDef: {e}")).into_response();
+        }
+    };
+    match st.cp.ontology().define_link(link).await {
+        Ok(()) => (StatusCode::CREATED, "defined").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `DELETE /admin/links/:from/:name` — remove a link definition (idempotent;
+/// the physical columns/join tables are untouched).
+#[utoipa::path(
+    delete, path = "/admin/links/{from}/{name}",
+    params(
+        ("from" = String, Path, description = "The link's `from` type"),
+        ("name" = String, Path, description = "Link name"),
+    ),
+    responses((status = 200, description = "Link definition removed (idempotent)")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn delete_link_route(
+    State(st): State<AdminState>,
+    Path((from, name)): Path<(String, String)>,
+) -> Response {
+    match st
+        .cp
+        .ontology()
+        .delete_link(&TypeName(from.clone()), &name)
+        .await
+    {
+        Ok(()) => {
+            Json(serde_json::json!({ "deleted": { "from": from, "name": name } })).into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `POST /admin/actions` — define an ontology action. `ActionDef` carries no
+/// `ToSchema`, so the body is documented as its serde shape and deserialized
+/// inside the handler (the `post_action` open-body pattern).
+#[utoipa::path(
+    post, path = "/admin/actions",
+    request_body(
+        content = serde_json::Value,
+        description = "An `ActionDef` in its serde shape: flat single-step \
+            `{\"name\", \"target\", \"kind\"?, \"parameters\"?, \"assignments\"?}` or stepped \
+            `{\"name\", \"steps\": [{\"target\", \"kind\", \"parameters\", \"assignments\", \
+            \"bind\"?}]}`",
+    ),
+    responses(
+        (status = 201, description = "Action defined"),
+        (status = 400, description = "Body does not decode as an ActionDef, or validation \
+            failed (e.g. unknown target type)"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn define_action_route(
+    State(st): State<AdminState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let action: ActionDef = match serde_json::from_value(body) {
+        Ok(a) => a,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("invalid ActionDef: {e}")).into_response();
+        }
+    };
+    match st.cp.ontology().define_action(action).await {
+        Ok(()) => (StatusCode::CREATED, "defined").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `DELETE /admin/actions/:name` — remove an action definition (idempotent).
+#[utoipa::path(
+    delete, path = "/admin/actions/{name}",
+    params(("name" = String, Path, description = "Action name")),
+    responses((status = 200, description = "Action definition removed (idempotent)")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn delete_action_route(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
+    match st
+        .cp
+        .ontology()
+        .delete_action(&ActionName(name.clone()))
+        .await
+    {
+        Ok(()) => Json(serde_json::json!({ "deleted": { "name": name } })).into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `DELETE /admin/roles/:role` — delete a role and everything hanging off it
+/// (memberships, grants, policies, inheritance edges). Idempotent.
+#[utoipa::path(
+    delete, path = "/admin/roles/{role}",
+    params(("role" = String, Path, description = "Role id to delete")),
+    responses((status = 200, description = "Role and its grants/memberships removed (idempotent)")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn delete_role_route(State(st): State<AdminState>, Path(role): Path<String>) -> Response {
+    match st.cp.acl().delete_role(&RoleId(role.clone())).await {
+        Ok(()) => Json(serde_json::json!({ "deleted": { "role": role } })).into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// One grant row as rendered on the admin read surface: wire tokens for
+/// action/effect plus the `PolicyTarget` in its serde shape.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct GrantView {
+    action: String,
+    /// The `PolicyTarget` serde shape, e.g. `{"Type": "Widget"}`.
+    target: serde_json::Value,
+    effect: String,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct RoleGrantsResp {
+    grants: Vec<GrantView>,
+}
+
+/// `GET /admin/roles/:role/grants` — list a role's coarse grants.
+#[utoipa::path(
+    get, path = "/admin/roles/{role}/grants",
+    params(("role" = String, Path, description = "Role whose grants to list")),
+    responses(
+        (status = 200, description = "The role's grants", body = RoleGrantsResp),
+        (status = 404, description = "Unknown role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn list_role_grants(State(st): State<AdminState>, Path(role): Path<String>) -> Response {
+    match st
+        .cp
+        .acl()
+        .list_grants(&RoleId(role), PageReq::unbounded())
+        .await
+    {
+        Ok(page) => {
+            let grants = page
+                .items
+                .into_iter()
+                .map(|g| GrantView {
+                    action: g.action.as_str().to_string(),
+                    target: serde_json::to_value(&g.target).unwrap_or_default(),
+                    effect: g.effect.as_str().to_string(),
+                })
+                .collect();
+            Json(RoleGrantsResp { grants }).into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `DELETE /admin/roles/:role/grants` — revoke a coarse grant. The body is the
+/// same `GrantReq` the POST takes; revoking an absent grant is idempotent.
+#[utoipa::path(
+    delete, path = "/admin/roles/{role}/grants",
+    params(("role" = String, Path, description = "Role whose grant to revoke")),
+    request_body = GrantReq,
+    responses(
+        (status = 200, description = "Revoked (idempotent)"),
+        (status = 400, description = "action is not read|write"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn revoke_grant(
+    State(st): State<AdminState>,
+    Path(role): Path<String>,
+    Json(req): Json<GrantReq>,
+) -> Response {
+    let action = match req.action.as_str() {
+        "read" => Action::Read,
+        "write" => Action::Write,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "action must be read|write" })),
+            )
+                .into_response();
+        }
+    };
+    let target = PolicyTarget::Type(TypeName(req.r#type.clone()));
+    match st.cp.acl().revoke(&RoleId(role), action, &target).await {
+        Ok(()) => (StatusCode::OK, "revoked").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `GET /admin/users/:username/roles` — the roles assigned to a user (the
+/// username IS the subject id on this surface, mirroring `create_user`).
+#[utoipa::path(
+    get, path = "/admin/users/{username}/roles",
+    params(("username" = String, Path, description = "Username whose roles to list")),
+    responses(
+        (status = 200, description = "The user's role ids, as `{\"roles\": [...]}`"),
+        (status = 404, description = "Unknown user"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn user_roles(State(st): State<AdminState>, Path(username): Path<String>) -> Response {
+    match st
+        .cp
+        .acl()
+        .roles_of(&SubjectId(username), PageReq::unbounded())
+        .await
+    {
+        Ok(page) => Json(serde_json::json!({
+            "roles": page.items.into_iter().map(|r| r.0).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `PUT /admin/users/:username/roles/:role` — assign a role to a user.
+#[utoipa::path(
+    put, path = "/admin/users/{username}/roles/{role}",
+    params(
+        ("username" = String, Path, description = "Username receiving the role"),
+        ("role" = String, Path, description = "Role id to assign"),
+    ),
+    responses(
+        (status = 200, description = "Role assigned (idempotent)"),
+        (status = 404, description = "Unknown user or role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn assign_user_role(
+    State(st): State<AdminState>,
+    Path((username, role)): Path<(String, String)>,
+) -> Response {
+    match st
+        .cp
+        .acl()
+        .assign_role(&SubjectId(username), &RoleId(role))
+        .await
+    {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `DELETE /admin/users/:username/roles/:role` — unassign a role from a user.
+/// The trait-level `unassign_role` is unconditionally idempotent (no 404), so
+/// the unknown-user 404 comes from a `roles_of` existence check here.
+#[utoipa::path(
+    delete, path = "/admin/users/{username}/roles/{role}",
+    params(
+        ("username" = String, Path, description = "Username losing the role"),
+        ("role" = String, Path, description = "Role id to unassign"),
+    ),
+    responses(
+        (status = 200, description = "Role unassigned (idempotent)"),
+        (status = 404, description = "Unknown user"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn unassign_user_role(
+    State(st): State<AdminState>,
+    Path((username, role)): Path<(String, String)>,
+) -> Response {
+    let subject = SubjectId(username);
+    // Existence gate: the trait's unassign_role is unconditional Ok(()).
+    if let Err(e) = st.cp.acl().roles_of(&subject, PageReq::unbounded()).await {
+        return status_for(&e).into_response();
+    }
+    match st.cp.acl().unassign_role(&subject, &RoleId(role)).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
 /// Admin routes, behind `require_auth` (401) then [`require_admin`] (403).
 pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
     let inner = Router::new()
@@ -420,7 +730,20 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         .route("/admin/users/:username/password", post(reset_password))
         .route("/admin/models", post(define_model))
         .route("/admin/roles", post(create_role).get(list_roles))
-        .route("/admin/roles/:role/grants", post(grant))
+        .route(
+            "/admin/roles/:role/grants",
+            post(grant).get(list_role_grants).delete(revoke_grant),
+        )
+        .route("/admin/roles/:role", delete(delete_role_route))
+        .route("/admin/links", post(define_link_route))
+        .route("/admin/links/:from/:name", delete(delete_link_route))
+        .route("/admin/actions", post(define_action_route))
+        .route("/admin/actions/:name", delete(delete_action_route))
+        .route("/admin/users/:username/roles", get(user_roles))
+        .route(
+            "/admin/users/:username/roles/:role",
+            put(assign_user_role).delete(unassign_user_role),
+        )
         .with_state(admin.clone())
         .route_layer(axum::middleware::from_fn_with_state(admin, require_admin));
     protect(inner, auth)
@@ -437,7 +760,17 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         create_role,
         list_roles,
         grant,
-        define_model
+        define_model,
+        define_link_route,
+        delete_link_route,
+        define_action_route,
+        delete_action_route,
+        delete_role_route,
+        list_role_grants,
+        revoke_grant,
+        user_roles,
+        assign_user_role,
+        unassign_user_role
     ),
     components(schemas(
         CreateUserReq,
@@ -449,7 +782,9 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         GrantReq,
         DefineModelReq,
         TableReq,
-        PropReq
+        PropReq,
+        GrantView,
+        RoleGrantsResp
     ))
 )]
 struct AdminApiDoc;

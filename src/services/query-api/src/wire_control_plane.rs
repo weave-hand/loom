@@ -1,7 +1,8 @@
 //! A read-only governance `ControlPlane` for query-api: `acl()`/`ontology()` read
-//! over the engine wire; `queue()` and `lineage()` delegate to the direct Postgres
-//! plane (the GC enqueue and the governed lineage read endpoints); `catalog()`/
-//! `begin()` are guarded because query-api never uses them through this plane.
+//! over the engine wire; `queue()`, `lineage()`, and `catalog()` delegate to the
+//! direct Postgres plane (the GC enqueue, governed lineage reads, and dataset
+//! metadata reads); `begin()` stays guarded because query-api never opens a
+//! control-plane transaction through this plane.
 //! Write/define governance methods fail loudly — query-api authorizes reads here
 //! and sends pre-authorized writes via the engine's write RPCs; it never defines
 //! governance.
@@ -11,8 +12,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionName, Auth, Catalog, ControlPlane, ControlPlaneError, Decision,
-    Effect, Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, Policy, PolicyTarget, Queue,
-    RoleId, SubjectId, TableRef, Tx, TypeName, VectorIndexDef,
+    Effect, Grant, Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, Policy, PolicyTarget,
+    Queue, RoleId, SubjectId, TableRef, Tx, TypeName, VectorIndexDef,
 };
 use engine_wire::client::GrpcQueueClient;
 
@@ -98,6 +99,23 @@ impl Acl for WireAcl {
         Err(read_only("revoke"))
     }
 
+    // Errors by design: there is no `gov_list_grants` wire RPC; the management
+    // read surface is served by the direct/postgres control plane, not this
+    // wire client — so this is never reached from that path.
+    async fn list_grants(&self, _r: &RoleId, _p: PageReq) -> Result<Page<Grant>> {
+        Err(read_only("list_grants"))
+    }
+
+    // Errors by design: no `gov_roles_of` wire RPC; unreached from the
+    // management surface for the same reason as `list_grants` above.
+    async fn roles_of(&self, _s: &SubjectId, _p: PageReq) -> Result<Page<RoleId>> {
+        Err(read_only("roles_of"))
+    }
+
+    async fn delete_role(&self, _r: &RoleId) -> Result<()> {
+        Err(read_only("delete_role"))
+    }
+
     async fn set_policy(&self, _r: &RoleId, _a: Action, _p: Policy) -> Result<()> {
         Err(read_only("set_policy"))
     }
@@ -162,8 +180,16 @@ impl Ontology for WireOntology {
         Err(read_only("define_link"))
     }
 
+    async fn delete_link(&self, _from: &TypeName, _name: &str) -> Result<()> {
+        Err(read_only("delete_link"))
+    }
+
     async fn define_action(&self, _action: ActionDef) -> Result<()> {
         Err(read_only("define_action"))
+    }
+
+    async fn delete_action(&self, _name: &ActionName) -> Result<()> {
+        Err(read_only("delete_action"))
     }
 
     async fn define_vector_index(&self, _def: VectorIndexDef) -> Result<()> {
@@ -209,12 +235,11 @@ impl ControlPlane for WireControlPlane {
         self.direct.auth()
     }
 
-    #[expect(
-        clippy::panic,
-        reason = "read-only governance client: query-api never reads the catalog through this plane"
-    )]
     fn catalog(&self) -> &(dyn Catalog + Send + Sync) {
-        panic!("WireControlPlane is a read-only governance client: catalog() is not supported")
+        // Catalog metadata reads are not carried over the engine wire; serve them
+        // from the direct Postgres plane, exactly as `queue()` and `lineage()` do.
+        // query-api's dataset read endpoints resolve table metadata here.
+        self.direct.catalog()
     }
 
     fn lineage(&self) -> &(dyn Lineage + Send + Sync) {

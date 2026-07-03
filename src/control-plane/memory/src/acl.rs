@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
-    RoleId, SubjectId, check_grant_target, check_policy_write,
+    Acl, Action, ControlPlaneError, Decision, Effect, Grant, Page, PageReq, Policy, PolicyTarget,
+    Result, RoleId, SubjectId, check_grant_target, check_policy_write,
 };
 
 use crate::MemoryControlPlane;
@@ -204,6 +204,61 @@ impl Acl for MemoryControlPlane {
             .lock()
             .grants
             .remove(&(role.0.clone(), action, target_key(target)));
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_grants(&self, role: &RoleId, _page: PageReq) -> Result<Page<Grant>> {
+        let acl = self.acl.lock();
+        if !acl.roles.contains(&role.0) {
+            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        let mut out = Vec::new();
+        for ((r, action, (kind, ta, tb)), effect) in &acl.grants {
+            if r == &role.0 {
+                out.push(Grant {
+                    action: *action,
+                    target: PolicyTarget::from_key_parts(kind, ta, tb)?,
+                    effect: *effect,
+                });
+            }
+        }
+        // Action is NOT Ord — sort by the string forms (matches postgres's
+        // `order by action, target_kind, ...` on the text columns: "read" < "write").
+        out.sort_by(|x, y| {
+            (x.action.as_str(), x.target.key_parts())
+                .cmp(&(y.action.as_str(), y.target.key_parts()))
+        });
+        Ok(Page::from_full(out))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn roles_of(&self, subject: &SubjectId, _page: PageReq) -> Result<Page<RoleId>> {
+        let acl = self.acl.lock();
+        if !acl.subjects.contains(&subject.0) {
+            return Err(ControlPlaneError::NotFound(format!(
+                "subject {}",
+                subject.0
+            )));
+        }
+        let mut out: Vec<RoleId> = acl
+            .members
+            .iter()
+            .filter(|(s, _)| s == &subject.0)
+            .map(|(_, r)| RoleId(r.clone()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(Page::from_full(out))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn delete_role(&self, role: &RoleId) -> Result<()> {
+        let mut acl = self.acl.lock();
+        acl.roles.remove(&role.0);
+        acl.members.retain(|(_, r)| r != &role.0);
+        acl.grants.retain(|(r, _, _), _| r != &role.0);
+        acl.policies.retain(|(r, _, _), _| r != &role.0);
+        acl.inherits.retain(|(a, b)| a != &role.0 && b != &role.0);
         Ok(())
     }
 

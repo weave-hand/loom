@@ -117,4 +117,18 @@ impl Catalog for MemoryControlPlane {
         cols.sort_by_key(|c| c.order);
         Ok(TableSchema { columns: cols })
     }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_tables(&self, _page: PageReq) -> Result<Page<TableRef>> {
+        let cat = self.catalog.lock();
+        // Live = no end-cap, mirroring the pg adapter's `end_snapshot is null`.
+        let mut live: Vec<TableRef> = cat
+            .tables
+            .iter()
+            .filter(|(_, v)| v.end.is_none())
+            .map(|(t, _)| t.clone())
+            .collect();
+        live.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
+        Ok(Page::from_full(live))
+    }
 }

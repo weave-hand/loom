@@ -758,6 +758,10 @@ pub trait Ontology {
     /// Create or replace a link, keyed by `(name, from)`. Both endpoint types must
     /// already exist, else `NotFound`. Upsert.
     async fn define_link(&self, link: LinkDef) -> Result<()>;
+    /// Delete a link, keyed by `(from, name)`. Definition only — the physical
+    /// backing columns / join tables are untouched. Idempotent: deleting an
+    /// absent link is `Ok(())`.
+    async fn delete_link(&self, from: &TypeName, name: &str) -> Result<()>;
     /// Fetch a type by name. `NotFound` if absent.
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType>;
     /// All defined types (order unspecified). The `page` request is accepted but not yet enforced; results
@@ -774,6 +778,9 @@ pub trait Ontology {
     async fn resolve(&self, name: &TypeName) -> Result<TableRef>;
     /// Create or replace a named action and its ordered parameter list. Upsert.
     async fn define_action(&self, action: ActionDef) -> Result<()>;
+    /// Delete a named action and its steps/params/assignments. Definition only.
+    /// Idempotent: deleting an absent action is `Ok(())`.
+    async fn delete_action(&self, name: &ActionName) -> Result<()>;
     /// Fetch an action by name. `NotFound` if absent.
     async fn get_action(&self, name: &ActionName) -> Result<ActionDef>;
     /// Page through every defined action, name-ordered. Adapters return the

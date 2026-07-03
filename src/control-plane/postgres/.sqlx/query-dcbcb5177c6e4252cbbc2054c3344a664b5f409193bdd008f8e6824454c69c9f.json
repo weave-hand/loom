@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select action, target_kind, target_a, target_b, effect from acl.role_grant where role_id = $1 order by action, target_kind, target_a, target_b",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.role_grant",
+            "name": "action"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "target_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.role_grant",
+            "name": "target_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "target_a",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.role_grant",
+            "name": "target_a"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "target_b",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.role_grant",
+            "name": "target_b"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "effect",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.role_grant",
+            "name": "effect"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dcbcb5177c6e4252cbbc2054c3344a664b5f409193bdd008f8e6824454c69c9f"
+}

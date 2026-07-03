@@ -166,6 +166,25 @@ rust_test(
 )
 
 rust_test(
+    name = "admin-management",
+    crate = "admin_management",
+    srcs = ["tests/admin_management.rs"],
+    crate_root = "tests/admin_management.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
     name = "lockout",
     crate = "lockout",
     srcs = ["tests/lockout.rs"],

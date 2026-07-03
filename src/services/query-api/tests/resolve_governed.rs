@@ -27,6 +27,9 @@ impl Ontology for MissingType {
     async fn define_link(&self, _link: LinkDef) -> control_plane_core::Result<()> {
         unreachable!("not exercised by resolve_governed")
     }
+    async fn delete_link(&self, _from: &TypeName, _name: &str) -> control_plane_core::Result<()> {
+        unreachable!("not exercised by resolve_governed")
+    }
     async fn get_type(&self, name: &TypeName) -> control_plane_core::Result<ObjectType> {
         Err(ControlPlaneError::NotFound(format!("type {}", name.0)))
     }
@@ -51,6 +54,9 @@ impl Ontology for MissingType {
         unreachable!("not exercised by resolve_governed")
     }
     async fn define_action(&self, _action: ActionDef) -> control_plane_core::Result<()> {
+        unreachable!("not exercised by resolve_governed")
+    }
+    async fn delete_action(&self, _name: &ActionName) -> control_plane_core::Result<()> {
         unreachable!("not exercised by resolve_governed")
     }
     async fn get_action(&self, _name: &ActionName) -> control_plane_core::Result<ActionDef> {
