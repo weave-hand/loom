@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use control_plane_core::{
     Action, ActionDef, ActionKind, ActionName, ConstraintViolation, ControlPlane,
     ControlPlaneError, DatasetRef, Decision, EventType, LineageEvent, ObjectType, PageReq, Policy,
-    PolicyTarget, PropertyValidator, RunId, SubjectId, resolve_logical,
+    PolicyTarget, PropertyDef, PropertyValidator, RunId, SubjectId, resolve_logical,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -162,9 +162,80 @@ fn check_param_property_types(
     }
 }
 
+/// A `crate::expr::TypeEnv` view over an action's params and the target's properties, tracking
+/// which properties have been resolved *earlier* in declared assignment order (for the
+/// forward-`@ref` rule). Params seed the resolved set (they are resolved before any assignment).
+struct ConformanceEnv<'a> {
+    action: &'a ActionDef,
+    target: &'a ObjectType,
+    resolved: std::collections::HashSet<String>,
+}
+
+impl crate::expr::TypeEnv for ConformanceEnv<'_> {
+    fn param_type(&self, name: &str) -> Option<control_plane_core::BaseType> {
+        self.action
+            .parameters
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| control_plane_core::resolve_logical(&p.ty))
+    }
+    fn prop_type(&self, name: &str) -> Option<control_plane_core::BaseType> {
+        self.target
+            .properties
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| control_plane_core::resolve_logical(&p.ty))
+    }
+    fn prop_resolved(&self, name: &str) -> bool {
+        self.resolved.contains(name)
+    }
+}
+
+/// Parse + type-check one expression assignment against `env`, checking the inferred type is
+/// assignable to `prop`. Appends a clear violation per failure mode.
+fn check_expr_assignment(
+    src: &str,
+    prop: &PropertyDef,
+    env: &ConformanceEnv<'_>,
+    target_name: &str,
+    property: &str,
+    violations: &mut Vec<String>,
+) {
+    let expr = match crate::expr::parse_expr(src) {
+        Ok(e) => e,
+        Err(e) => {
+            violations.push(format!("expression for property `{property}`: {e}"));
+            return;
+        }
+    };
+    let inferred = match crate::expr::typecheck(&expr, env) {
+        Ok(t) => t,
+        Err(e) => {
+            violations.push(format!("expression for property `{property}`: {e}"));
+            return;
+        }
+    };
+    let Some(prop_base) = control_plane_core::resolve_logical(&prop.ty) else {
+        violations.push(format!(
+            "property `{property}` of type `{target_name}` has unknown logical type `{}`",
+            prop.ty
+        ));
+        return;
+    };
+    if !crate::expr::assignable(inferred, prop_base) {
+        violations.push(format!(
+            "expression for property `{property}` has type {} which is not assignable to `{}`",
+            inferred.canonical_name(),
+            prop.ty
+        ));
+    }
+}
+
 /// Rule 2b & 3 (shared): every constant assignment names a real property and coerces to that
-/// property's logical type, and no property is written twice — by two params, a param and a
-/// constant, or two constants. Violations are appended to `violations`.
+/// property's logical type, every Expr assignment type-checks against the action's params and
+/// earlier-resolved properties (in declared order), and no property is written twice — by two
+/// params, a param and an assignment, or two assignments. Violations are appended to
+/// `violations`.
 fn check_assignments_and_binds(
     action: &ActionDef,
     target: &ObjectType,
@@ -183,10 +254,27 @@ fn check_assignments_and_binds(
             violations.push(dup(prop));
         }
     }
+
+    // Seed the resolved-property set with everything a param binds (params resolve before any
+    // assignment); assignments then resolve in declared order.
+    let mut env = ConformanceEnv {
+        action,
+        target,
+        resolved: action
+            .parameters
+            .iter()
+            .map(|p| p.binds_property().to_string())
+            .collect(),
+    };
+
     for a in &action.assignments {
-        match target.properties.iter().find(|prop| prop.name == a.property) {
+        match target
+            .properties
+            .iter()
+            .find(|prop| prop.name == a.property)
+        {
             None => violations.push(format!(
-                "constant assignment names property `{}`, which is not a property of type `{target_name}`",
+                "assignment names property `{}`, which is not a property of type `{target_name}`",
                 a.property
             )),
             Some(prop) => match &a.source {
@@ -195,14 +283,16 @@ fn check_assignments_and_binds(
                         violations.push(format!("constant for property `{}`: {e}", a.property));
                     }
                 }
-                control_plane_core::AssignmentSource::Expr(_) => {
-                    // Expression type-checking is wired in Task 6.
+                control_plane_core::AssignmentSource::Expr(src) => {
+                    check_expr_assignment(src, prop, &env, target_name, &a.property, violations);
                 }
             },
         }
         if !bound.insert(&a.property) {
             violations.push(dup(&a.property));
         }
+        // This property is now resolved for any later `@ref`.
+        env.resolved.insert(a.property.clone());
     }
 }
 
