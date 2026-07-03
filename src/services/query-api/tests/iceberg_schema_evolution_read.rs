@@ -7,7 +7,6 @@ use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
@@ -34,15 +33,6 @@ fn lineage() -> LineageEvent {
         outputs: vec![],
         payload: serde_json::json!({ "source": "read-evolution-test" }),
     }
-}
-fn encode(schema: &Arc<Schema>, batch: &RecordBatch) -> Vec<u8> {
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, schema).unwrap();
-        w.write(batch).unwrap();
-        w.finish().unwrap();
-    }
-    buf
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -76,7 +66,8 @@ async fn read_after_additive_land_returns_superset_with_nulls() {
         &catalog,
         &t,
         &ab,
-        &encode(&ab_schema, &ab_batch),
+        ab_schema,
+        vec![ab_batch],
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -111,7 +102,8 @@ async fn read_after_additive_land_returns_superset_with_nulls() {
         &catalog,
         &t,
         &abc,
-        &encode(&abc_schema, &abc_batch),
+        abc_schema,
+        vec![abc_batch],
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

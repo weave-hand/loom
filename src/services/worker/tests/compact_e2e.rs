@@ -31,22 +31,17 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// Encode `ids` as an Arrow IPC stream body (single `id: Int64` column).
-fn ipc_body(ids: &[i64]) -> Vec<u8> {
-    use arrow_ipc::writer::StreamWriter;
+/// A schema + batch (single `id: Int64` column) of `ids`. `land` now takes
+/// pre-decoded batches, so build these directly rather than round-tripping
+/// through an Arrow IPC encode/decode.
+fn ipc_body(ids: &[i64]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from(ids.to_vec()))],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
@@ -114,12 +109,14 @@ async fn worker_compacts_small_files_over_the_wire() {
 
     // Land 3 small files (1 row each). inline_byte_limit=0 forces real Parquet writes.
     for id in [1_i64, 2, 3] {
+        let (schema, batches) = ipc_body(&[id]);
         land(
             &pool,
             &catalog,
             &acc,
             &columns(),
-            &ipc_body(&[id]),
+            schema,
+            batches,
             InlineLimits {
                 inline_byte_limit: 0,           // always write real Parquet
                 flush_byte_threshold: i64::MAX, // no auto-enqueue
@@ -242,12 +239,14 @@ async fn worker_leaves_large_files_untouched() {
 
     // Three 1-row (small) files.
     for id in [1_i64, 2, 3] {
+        let (schema, batches) = ipc_body(&[id]);
         land(
             &pool,
             &catalog,
             &mixed,
             &columns(),
-            &ipc_body(&[id]),
+            schema,
+            batches,
             InlineLimits {
                 inline_byte_limit: 0,
                 flush_byte_threshold: i64::MAX,
@@ -260,12 +259,14 @@ async fn worker_leaves_large_files_untouched() {
 
     // One 200-row (large) file.
     let big_ids: Vec<i64> = (0..200).collect();
+    let (schema, batches) = ipc_body(&big_ids);
     land(
         &pool,
         &catalog,
         &mixed,
         &columns(),
-        &ipc_body(&big_ids),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
