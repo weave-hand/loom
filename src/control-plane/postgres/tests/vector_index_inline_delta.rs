@@ -5,7 +5,7 @@
 //! so the road-vector-build-decomposition fix can prove the Long path
 //! byte-identical. `int_identity_delta_batch_shape` is GREEN pre-fix.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
@@ -18,12 +18,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use control_plane_postgres::vector_index::inline_delta_batch;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn columns(id_ty: &str) -> Vec<ColumnSpec> {
     vec![
@@ -108,20 +103,6 @@ fn lineage_evt(table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Land `cold_ipc` as Parquet (limit 0), then `hot_ipc` INLINE (limit
 /// usize::MAX) — passed together as `(cold_ipc, hot_ipc)`. Returns
 /// (pool, s_cold, s_hot): the delta window is (s_cold, s_hot].
@@ -144,7 +125,7 @@ async fn seed(
         .await
         .expect("define_type");
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
     let s_cold = land(
         &pool,
         &catalog,

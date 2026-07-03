@@ -195,6 +195,8 @@ rust_library(
     srcs = ["tests/e2e_support.rs"],
     crate_root = "tests/e2e_support.rs",
     deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
         ":query-api",
         "//src/services/engine:engine",
         "//src/services/engine-serving:engine-serving",
@@ -461,6 +463,7 @@ loom_fixture_test(
     srcs = ["tests/engine_wire_serving_e2e.rs"],
     crate_root = "tests/engine_wire_serving_e2e.rs",
     deps = [
+        "//src/testing:flight",
         ":query-api",
         "//src/control-plane/postgres:postgres",
         "//src/services/engine:engine",
@@ -482,6 +485,8 @@ loom_fixture_test(
     srcs = ["tests/governed_flight_export_e2e.rs"],
     crate_root = "tests/governed_flight_export_e2e.rs",
     deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
         ":query-api",
         ":e2e-support",
         "//src/services/engine:engine",
@@ -583,6 +588,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_schema_evolution_read.rs"],
     crate_root = "tests/iceberg_schema_evolution_read.rs",
     deps = [
+        "//src/testing:seed",
         ":query-api",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",

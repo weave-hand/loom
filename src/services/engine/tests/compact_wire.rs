@@ -4,7 +4,7 @@
 //! Seeds ≥2 Iceberg files via `land`, then drives `list_files` + `compact_table`
 //! through `GrpcQueueClient` against a real UDS-bound EngineControlService.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,15 +13,10 @@ use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use tonic::transport::Server;
 
 // ---- helpers ---------------------------------------------------------------
@@ -62,20 +57,6 @@ fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Spawn an `EngineControlService` on a tmpdir UDS. Returns (sock_dir, sock_path).
 async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let wh = tempfile::tempdir().expect("warehouse dir");
@@ -86,8 +67,8 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let wh_str = wh.path().display().to_string();
-    let catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
-    let writer_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
+    let writer_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
     let writer = IcebergActionWriter::new(
         Arc::new(writer_catalog),
         pool.clone(),
@@ -135,7 +116,7 @@ async fn list_files_then_compact_over_the_wire() {
 
     // Separate catalog for the seeding land() calls (same Postgres DSN).
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
     let (_sock_dir, sock) = spawn_server(fx, &db).await;
 

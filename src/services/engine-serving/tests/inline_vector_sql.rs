@@ -4,88 +4,15 @@
 //! iss-pg-provider-vector-drift defect — RED until PgTableProvider shares the
 //! adapter's column_array), and the files∪inline UNION.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{Float32Array, Int64Array, ListArray, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, Field, Schema};
-use control_plane_core::{ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef};
+use arrow_array::{Float32Array, Int64Array, ListArray};
+use control_plane_core::{LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
-
-fn columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "embedding".into(),
-            ty: "vector(4)".into(),
-            nullable: false,
-        },
-    ]
-}
-
-/// Arrow IPC body with `id: long` + `embedding: list<float32>` (4 elements).
-fn ipc_body(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
-    let element = Arc::new(Field::new("item", DataType::Float32, false));
-    let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
-    let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
-    for (_, emb) in rows {
-        lb.values().append_slice(emb);
-        lb.append(true);
-    }
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("embedding", DataType::List(element), false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(Int64Array::from(ids)), Arc::new(lb.finish())],
-    )
-    .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
-}
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_ipc};
 
 fn lineage_evt(table: &TableRef) -> LineageEvent {
-    LineageEvent {
-        run_id: RunId(uuid::Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: time::OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(table).dataset_ref()],
-        payload: serde_json::json!({ "source": "test" }),
-    }
-}
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
+    test_lineage(RunId(uuid::Uuid::new_v4()), table)
 }
 
 /// Land `file_rows` as Parquet (inline_byte_limit 0) and `inline_rows` as live
@@ -99,7 +26,7 @@ async fn seed(
 ) -> (sqlx::PgPool, tempfile::TempDir) {
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(db).await;
-    let catalog = make_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
     let table = TableRef {
         schema: "wh".into(),
         name: "docs".into(),
@@ -109,8 +36,8 @@ async fn seed(
             &pool,
             &catalog,
             &table,
-            &columns(),
-            &ipc_body(file_rows),
+            &vec4_columns(),
+            &vec4_ipc(file_rows),
             InlineLimits {
                 inline_byte_limit: 0,
                 flush_byte_threshold: i64::MAX,
@@ -125,8 +52,8 @@ async fn seed(
             &pool,
             &catalog,
             &table,
-            &columns(),
-            &ipc_body(inline_rows),
+            &vec4_columns(),
+            &vec4_ipc(inline_rows),
             InlineLimits {
                 inline_byte_limit: usize::MAX,
                 flush_byte_threshold: i64::MAX,

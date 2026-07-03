@@ -5,83 +5,25 @@
 //! (CI-only fixture test — boots Postgres; cannot run under a bare
 //! `buck2 test //src/...` from a fresh environment without Postgres binaries.)
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use loom_test_flight::{EngineOpts, spawn_engine_uds};
+use loom_test_seed::{local_sql_catalog, vec4_columns, vec4_ipc};
 use std::time::Duration;
 
-use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{Int64Array, RecordBatch};
-use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ColumnSpec, ControlPlane, DatasetId,
-    EventType, IndexSpec, Job, JobId, LineageEvent, Metric, ObjectType, PropertyDef, RunId,
-    TableRef, TypeName, VectorIndexDef,
+    BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ControlPlane, DatasetId, EventType,
+    IndexSpec, Job, JobId, LineageEvent, Metric, ObjectType, PropertyDef, RunId, TableRef,
+    TypeName, VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use control_plane_postgres::vector_index::{BuiltIndex, build_vector_index, lookup_vector_index};
-use engine::flight::FlightDataService;
-use engine::service::EngineControlService;
-use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
-use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
-use tonic::transport::Server;
 use worker::handler::handle_build_vector_index;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "embedding".into(),
-            ty: "vector(4)".into(),
-            nullable: false,
-        },
-    ]
-}
-
-fn ipc_body(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
-    let element = Arc::new(Field::new("item", DataType::Float32, false));
-    let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
-    let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
-    for (_, emb) in rows {
-        lb.values().append_slice(emb);
-        lb.append(true);
-    }
-    let id_array = Int64Array::from(ids);
-    let emb_array = lb.finish();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("embedding", DataType::List(element), false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(id_array), Arc::new(emb_array)],
-    )
-    .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
-}
 
 fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
     LineageEvent {
@@ -92,72 +34,6 @@ fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
         outputs: vec![DatasetId::from(table).dataset_ref()],
         payload: serde_json::json!({ "source": "build-vector-index-e2e-test" }),
     }
-}
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
-/// Spawn an engine on the given warehouse path serving BOTH EngineControl and Arrow Flight.
-/// Returns (sock_dir, sock_path_string) — caller must hold `sock_dir` alive.
-async fn spawn_server(fx: &PgFixture, db: &str, wh_path: &str) -> (tempfile::TempDir, String) {
-    let sock_dir = tempfile::tempdir().expect("socket dir");
-    let sock_path = sock_dir.path().join("engine.sock");
-    let sock_str = sock_path.to_string_lossy().to_string();
-
-    let pool = fx.pool_for(db).await;
-    let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
-    let control_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let flight_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let writer_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let writer = IcebergActionWriter::new(
-        Arc::new(writer_catalog),
-        pool.clone(),
-        16 * 1024 * 1024,
-        i64::MAX,
-    );
-
-    let svc = EngineControlService {
-        cp,
-        catalog: control_catalog,
-        pool: pool.clone(),
-        retention: Duration::from_secs(7 * 24 * 3600),
-        writer,
-    };
-    let flight_svc = FlightDataService {
-        catalog: flight_catalog,
-        serving_catalog: IcebergCatalog::new(pool.clone()),
-        serving_store: None,
-        pool,
-    };
-
-    let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
-    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-
-    tokio::spawn(async move {
-        drop(
-            Server::builder()
-                .add_service(EngineControlServer::new(svc))
-                .add_service(FlightServiceServer::new(flight_svc))
-                .serve_with_incoming(incoming)
-                .await,
-        );
-    });
-
-    // Small pause so the server is ready to accept.
-    tokio::time::sleep(Duration::from_millis(20)).await;
-
-    (sock_dir, sock_str)
 }
 
 fn make_build_vector_index_job(schema: &str, name: &str, index_name: &str) -> Job {
@@ -194,7 +70,7 @@ async fn worker_builds_vector_index_over_the_wire() {
     let wh = tempfile::tempdir().expect("warehouse dir");
     let wh_str = wh.path().display().to_string();
 
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh_str).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
 
     let table = TableRef {
         schema: "main".into(),
@@ -261,8 +137,8 @@ async fn worker_builds_vector_index_over_the_wire() {
         &pool,
         &catalog,
         &table,
-        &columns(),
-        &ipc_body(rows),
+        &vec4_columns(),
+        &vec4_ipc(rows),
         InlineLimits {
             inline_byte_limit: 0,           // always write real Parquet
             flush_byte_threshold: i64::MAX, // no auto-enqueue
@@ -273,10 +149,19 @@ async fn worker_builds_vector_index_over_the_wire() {
     .expect("land");
 
     // Spawn engine (EngineControl + Flight on the same UDS).
-    let (_sock_dir, sock) = spawn_server(fx, &db, &wh_str).await;
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
 
     // Connect the GrpcQueueClient (the handler's engine-wire client).
-    let client = GrpcQueueClient::connect(&sock)
+    let client = GrpcQueueClient::connect(&eng.sock)
         .await
         .expect("connect control");
 
@@ -343,7 +228,7 @@ async fn worker_builds_vector_index_over_the_wire() {
     // Cross-check: run the direct primitive and compare covered_snapshot + row_count.
     // A second build sees the same snapshot (idempotent — same data, new puffin written).
     let direct: BuiltIndex = build_vector_index(
-        &make_catalog(fx.pg_dsn(&db), &wh_str).await,
+        &local_sql_catalog(fx.pg_dsn(&db), &wh_str).await,
         &pool,
         &table,
         "by_flat",
@@ -376,7 +261,7 @@ async fn build_with_unknown_index_name_fails() {
 
     let wh = tempfile::tempdir().expect("warehouse dir");
     let wh_str = wh.path().display().to_string();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh_str).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
 
     let table = TableRef {
         schema: "main".into(),
@@ -414,8 +299,8 @@ async fn build_with_unknown_index_name_fails() {
         &pool,
         &catalog,
         &table,
-        &columns(),
-        &ipc_body(rows),
+        &vec4_columns(),
+        &vec4_ipc(rows),
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -425,8 +310,17 @@ async fn build_with_unknown_index_name_fails() {
     .await
     .expect("land");
 
-    let (_sock_dir, sock) = spawn_server(fx, &db, &wh_str).await;
-    let client = GrpcQueueClient::connect(&sock)
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let client = GrpcQueueClient::connect(&eng.sock)
         .await
         .expect("connect control");
 

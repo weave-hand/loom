@@ -7,152 +7,24 @@
 //! (CI-only fixture test — boots Postgres; cannot run under `buck2 test //src/...`
 //! from a fresh environment without Postgres binaries.)
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use loom_test_flight::spawn_flight_uds;
+use loom_test_seed::{
+    distances_f32, ids_i64, local_sql_catalog, test_lineage, vec4_columns, vec4_ipc,
+};
 use std::time::Duration;
 
-use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{Float32Array, Int64Array, RecordBatch};
-use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
-    PropertyDef, RunId, TableRef, TypeName, VectorIndexDef,
+    ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
+    VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use control_plane_postgres::vector_index::build_vector_index;
-use engine::flight::FlightDataService;
 use engine_wire::flight::{FlightTableClient, VectorSearchTicket};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
-use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::Server;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "embedding".into(),
-            ty: "vector(4)".into(),
-            nullable: false,
-        },
-    ]
-}
-
-fn ipc_body(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
-    let element = Arc::new(Field::new("item", DataType::Float32, false));
-    let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
-    let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
-    for (_, emb) in rows {
-        lb.values().append_slice(emb);
-        lb.append(true);
-    }
-    let id_array = Int64Array::from(ids);
-    let emb_array = lb.finish();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("embedding", DataType::List(element), false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(id_array), Arc::new(emb_array)],
-    )
-    .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
-}
-
-fn lineage_evt(run: RunId, table: &TableRef) -> LineageEvent {
-    LineageEvent {
-        run_id: run,
-        event_type: EventType::Complete,
-        event_time: time::OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(table).dataset_ref()],
-        payload: serde_json::json!({ "source": "test" }),
-    }
-}
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
-/// Spawn a `FlightDataService` on a UDS. Returns the socket dir (keep alive)
-/// and the socket path string.
-async fn spawn_flight(fx: &PgFixture, db: &str, warehouse: &str) -> (tempfile::TempDir, String) {
-    let sock_dir = tempfile::tempdir().expect("socket dir");
-    let sock_path = sock_dir.path().join("engine.sock");
-    let sock_str = sock_path.to_string_lossy().to_string();
-
-    let pool = fx.pool_for(db).await;
-    let file_catalog = make_catalog(fx.pg_dsn(db), warehouse).await;
-    let svc = FlightDataService {
-        catalog: file_catalog,
-        serving_catalog: IcebergCatalog::new(pool.clone()),
-        serving_store: None,
-        pool,
-    };
-
-    let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
-    let incoming = UnixListenerStream::new(listener);
-    tokio::spawn(async move {
-        drop(
-            Server::builder()
-                .add_service(FlightServiceServer::new(svc))
-                .serve_with_incoming(incoming)
-                .await,
-        );
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    (sock_dir, sock_str)
-}
-
-fn ids(batch: &RecordBatch) -> Vec<i64> {
-    let col = batch
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .expect("identity column is Int64");
-    (0..col.len()).map(|i| col.value(i)).collect()
-}
-
-fn distances(batch: &RecordBatch) -> Vec<f32> {
-    let col = batch
-        .column(1)
-        .as_any()
-        .downcast_ref::<Float32Array>()
-        .expect("_distance column is Float32");
-    (0..col.len()).map(|i| col.value(i)).collect()
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -168,7 +40,7 @@ async fn vector_search_flight_top_k() {
     let (_cp_init, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(&db).await;
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let cp = PgControlPlane::new(pool.clone(), Duration::from_secs(5));
 
     let table = TableRef {
@@ -221,13 +93,13 @@ async fn vector_search_flight_top_k() {
         &pool,
         &catalog,
         &table,
-        &columns(),
-        &ipc_body(rows_1_2),
+        &vec4_columns(),
+        &vec4_ipc(rows_1_2),
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
         },
-        lineage_evt(run, &table),
+        test_lineage(run, &table),
     )
     .await
     .expect("land rows 1-2");
@@ -238,13 +110,13 @@ async fn vector_search_flight_top_k() {
         &pool,
         &catalog,
         &table,
-        &columns(),
-        &ipc_body(rows_3_4),
+        &vec4_columns(),
+        &vec4_ipc(rows_3_4),
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
         },
-        lineage_evt(run, &table),
+        test_lineage(run, &table),
     )
     .await
     .expect("land rows 3-4");
@@ -256,8 +128,10 @@ async fn vector_search_flight_top_k() {
         .expect("build_vector_index");
 
     // Spawn the Flight server.
-    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
-    let client = FlightTableClient::connect(&sock).await.expect("connect");
+    let eng = spawn_flight_uds(fx, &db, &wh.path().display().to_string()).await;
+    let client = FlightTableClient::connect(&eng.sock)
+        .await
+        .expect("connect");
 
     // Query: k=2, nearest to id=1's embedding [1,0,0,0].
     let batches = client
@@ -277,10 +151,10 @@ async fn vector_search_flight_top_k() {
     let batch = &batches[0];
     assert_eq!(batch.num_rows(), 2, "k=2 rows returned");
 
-    let id_vec = ids(batch);
+    let id_vec = ids_i64(batch);
     assert_eq!(id_vec[0], 1, "nearest is id=1 (cosine, exact match)");
 
-    let dists = distances(batch);
+    let dists = distances_f32(batch);
     assert!(dists[0] <= dists[1], "distances are ascending");
 }
 
@@ -295,7 +169,7 @@ async fn vector_search_no_index_is_not_found() {
     let (_cp_init, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(&db).await;
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let cp = PgControlPlane::new(pool.clone(), Duration::from_secs(5));
 
     let table = TableRef {
@@ -335,20 +209,22 @@ async fn vector_search_no_index_is_not_found() {
         &pool,
         &catalog,
         &table,
-        &columns(),
-        &ipc_body(rows),
+        &vec4_columns(),
+        &vec4_ipc(rows),
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
         },
-        lineage_evt(run, &table),
+        test_lineage(run, &table),
     )
     .await
     .expect("land row");
 
     // Spawn the Flight server.
-    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
-    let client = FlightTableClient::connect(&sock).await.expect("connect");
+    let eng = spawn_flight_uds(fx, &db, &wh.path().display().to_string()).await;
+    let client = FlightTableClient::connect(&eng.sock)
+        .await
+        .expect("connect");
 
     // Must get an error (not_found mapped from NoIndex).
     let err = client
@@ -385,7 +261,7 @@ async fn vector_search_dim_mismatch_is_invalid_argument() {
     let (_cp_init, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(&db).await;
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let cp = PgControlPlane::new(pool.clone(), Duration::from_secs(5));
 
     let table = TableRef {
@@ -432,13 +308,13 @@ async fn vector_search_dim_mismatch_is_invalid_argument() {
         &pool,
         &catalog,
         &table,
-        &columns(),
-        &ipc_body(rows),
+        &vec4_columns(),
+        &vec4_ipc(rows),
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
         },
-        lineage_evt(run, &table),
+        test_lineage(run, &table),
     )
     .await
     .expect("land rows");
@@ -452,8 +328,10 @@ async fn vector_search_dim_mismatch_is_invalid_argument() {
     .await
     .expect("build_vector_index");
 
-    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
-    let client = FlightTableClient::connect(&sock).await.expect("connect");
+    let eng = spawn_flight_uds(fx, &db, &wh.path().display().to_string()).await;
+    let client = FlightTableClient::connect(&eng.sock)
+        .await
+        .expect("connect");
 
     // Index dim is 4; query has length 2 -> DimMismatch (invalid_argument on the
     // wire), NOT NoIndex and NOT an opaque Engine error.

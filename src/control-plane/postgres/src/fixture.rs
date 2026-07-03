@@ -269,6 +269,7 @@ impl PgFixture {
     /// thread, never a per-test tokio worker (prctl(2): PDEATHSIG fires on
     /// spawning-THREAD death).
     fn start_with(pdeathsig: bool) -> Self {
+        let start = Instant::now();
         // Gate before initdb: bounds the number of live fixture clusters so the
         // whole-suite boot doesn't exhaust kernel SysV-semaphore resources
         // (`iss-fixture-boot-contention`). Held for the cluster's lifetime.
@@ -356,6 +357,11 @@ impl PgFixture {
             _slot,
         };
         fixture.wait_ready();
+        tracing::debug!("PgFixture: cluster booted");
+        if std::env::var("LOOM_FIXTURE_TIMING").is_ok() {
+            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            tracing::info!(elapsed_ms, "PgFixture boot timing");
+        }
         fixture
     }
 
@@ -413,6 +419,7 @@ impl PgFixture {
     /// Create a fresh database (migrated) and return a `PgControlPlane` bound to it
     /// together with the database name, so test-support writers can target the same db.
     pub async fn fresh_db(&self) -> (PgControlPlane, String) {
+        let start = Instant::now();
         let n = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let db = format!("loom_test_{}_{}", std::process::id(), n);
 
@@ -433,6 +440,12 @@ impl PgFixture {
         crate::run_embedded_migrations(&pool)
             .await
             .expect("run migrations");
+
+        tracing::debug!(db = %db, "fresh_db: created database and applied migrations");
+        if std::env::var("LOOM_FIXTURE_TIMING").is_ok() {
+            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            tracing::info!(db = %db, elapsed_ms, "fresh_db timing");
+        }
 
         (
             crate::PgControlPlane::new(pool, std::time::Duration::from_millis(300)),
