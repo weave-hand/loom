@@ -53,12 +53,11 @@ impl Tx for MemoryTx {
             // target that is not live -> Conflict (a concurrent compaction superseded
             // it), matching the postgres guard.
             for (table, expire, _write) in &self.staged_compactions {
-                let key = (table.schema.clone(), table.name.clone());
                 let expire_set: std::collections::HashSet<&str> =
                     expire.iter().map(|p| p.as_str()).collect();
                 let live_matched = cat
                     .files
-                    .get(&key)
+                    .get(table)
                     .map(|fs| {
                         fs.iter()
                             .filter(|f| f.end.is_none() && expire_set.contains(f.val.path.as_str()))
@@ -85,7 +84,7 @@ impl Tx for MemoryTx {
             // --- catalog ---
             // Apply staged table creations (idempotent: skip if already live).
             for (table, columns) in self.staged_tables {
-                let key = (table.schema.clone(), table.name.clone());
+                let key = table.clone();
                 if cat.tables.contains_key(&key) {
                     continue;
                 }
@@ -118,7 +117,7 @@ impl Tx for MemoryTx {
 
             // Apply staged file appends.
             for (table, files) in self.staged_files {
-                let key = (table.schema.clone(), table.name.clone());
+                let key = table.clone();
                 let s = cat.new_snapshot();
                 last_snapshot = Some(s);
                 for file in files {
@@ -137,7 +136,7 @@ impl Tx for MemoryTx {
             // Apply staged file replacements: expire the table's live files at a new
             // snapshot, then add the replacements live at that snapshot.
             for (table, files) in self.staged_replacements {
-                let key = (table.schema.clone(), table.name.clone());
+                let key = table.clone();
                 let s = cat.new_snapshot();
                 last_snapshot = Some(s);
                 if let Some(existing) = cat.files.get_mut(&key) {
@@ -164,7 +163,7 @@ impl Tx for MemoryTx {
             // files at a new snapshot and add the coalesced replacements. Unlike a
             // replacement, the table's other live files are untouched.
             for (table, expire, files) in self.staged_compactions {
-                let key = (table.schema.clone(), table.name.clone());
+                let key = table.clone();
                 let expire_set: std::collections::HashSet<&str> =
                     expire.iter().map(|p| p.as_str()).collect();
                 let s = cat.new_snapshot();

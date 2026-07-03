@@ -13,9 +13,9 @@ use crate::{MemoryControlPlane, Versioned};
 pub(crate) struct CatalogState {
     pub(crate) next_snapshot: i64,
     pub(crate) snapshots: Vec<Snapshot>,
-    pub(crate) tables: HashMap<(String, String), Versioned<()>>,
-    pub(crate) columns: HashMap<(String, String), Vec<Versioned<ColumnDef>>>,
-    pub(crate) files: HashMap<(String, String), Vec<Versioned<FileRef>>>,
+    pub(crate) tables: HashMap<TableRef, Versioned<()>>,
+    pub(crate) columns: HashMap<TableRef, Vec<Versioned<ColumnDef>>>,
+    pub(crate) files: HashMap<TableRef, Vec<Versioned<FileRef>>>,
 }
 
 impl CatalogState {
@@ -30,7 +30,7 @@ impl CatalogState {
         id
     }
 
-    fn latest_live(&self, key: &(String, String)) -> Option<i64> {
+    fn latest_live(&self, key: &TableRef) -> Option<i64> {
         let t = self.tables.get(key)?;
         self.snapshots
             .iter()
@@ -45,8 +45,7 @@ impl Catalog for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn current_snapshot(&self, table: &TableRef) -> Result<Snapshot> {
         let cat = self.catalog.lock();
-        let key = (table.schema.clone(), table.name.clone());
-        let s = cat.latest_live(&key).ok_or_else(|| {
+        let s = cat.latest_live(table).ok_or_else(|| {
             ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name))
         })?;
         cat.snapshots
@@ -59,8 +58,7 @@ impl Catalog for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
         let cat = self.catalog.lock();
-        let key = (table.schema.clone(), table.name.clone());
-        let t = cat.tables.get(&key).ok_or_else(|| {
+        let t = cat.tables.get(table).ok_or_else(|| {
             ControlPlaneError::NotFound(format!("{}.{}", table.schema, table.name))
         })?;
         Ok(Page::from_full(
@@ -80,8 +78,7 @@ impl Catalog for MemoryControlPlane {
         _page: PageReq,
     ) -> Result<Page<FileRef>> {
         let cat = self.catalog.lock();
-        let key = (table.schema.clone(), table.name.clone());
-        let live = cat.tables.get(&key).is_some_and(|t| t.live_at(at.0));
+        let live = cat.tables.get(table).is_some_and(|t| t.live_at(at.0));
         if !live {
             return Err(ControlPlaneError::NotFound(format!(
                 "{}.{} @ {}",
@@ -90,7 +87,7 @@ impl Catalog for MemoryControlPlane {
         }
         Ok(Page::from_full(
             cat.files
-                .get(&key)
+                .get(table)
                 .into_iter()
                 .flatten()
                 .filter(|f| f.live_at(at.0))
@@ -102,8 +99,7 @@ impl Catalog for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
         let cat = self.catalog.lock();
-        let key = (table.schema.clone(), table.name.clone());
-        let live = cat.tables.get(&key).is_some_and(|t| t.live_at(at.0));
+        let live = cat.tables.get(table).is_some_and(|t| t.live_at(at.0));
         if !live {
             return Err(ControlPlaneError::NotFound(format!(
                 "{}.{} @ {}",
@@ -112,7 +108,7 @@ impl Catalog for MemoryControlPlane {
         }
         let mut cols: Vec<ColumnDef> = cat
             .columns
-            .get(&key)
+            .get(table)
             .into_iter()
             .flatten()
             .filter(|c| c.live_at(at.0))

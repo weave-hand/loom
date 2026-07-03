@@ -1793,7 +1793,7 @@ already-`Eq + Hash` `TableRef`. Mechanical; compiler-driven.
 - Modify: `src/control-plane/memory/src/lib.rs` (key construction at `:117`
   in `seed_catalog` and `:169` in `drop_table_catalog`)
 
-- [ ] **Step 1: Pinning suites green pre-change**
+- [x] **Step 1: Pinning suites green pre-change**
 
 ```bash
 buck2 test //src/control-plane/memory:catalog //src/control-plane/memory:snapshot \
@@ -1801,7 +1801,7 @@ buck2 test //src/control-plane/memory:catalog //src/control-plane/memory:snapsho
   > /tmp/t10pre.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t10pre.log
 ```
 
-- [ ] **Step 2: Re-key the state**:
+- [x] **Step 2: Re-key the state**:
 
 ```rust
 #[derive(Default)]
@@ -1821,7 +1821,7 @@ either `cat.files.get(table)` directly (lookups take `&TableRef`) or
 (`catalog.rs`, `transaction.rs`, and `lib.rs`'s `seed_catalog:117` +
 `drop_table_catalog:169`); no logic changes.
 
-- [ ] **Step 3: Re-run Step 1's suites — green; commit**
+- [x] **Step 3: Re-run Step 1's suites — green; commit**
 
 ```bash
 buck2 test //src/control-plane/memory:catalog //src/control-plane/memory:snapshot \
