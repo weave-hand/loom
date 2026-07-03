@@ -9,8 +9,10 @@
 //! exists is an `error[E0583]` that breaks the whole crate.
 
 pub mod parse;
+pub mod typecheck;
 
 pub use parse::{ParseError, parse_expr};
+pub use typecheck::{TypeEnv, TypeError, assignable, typecheck};
 
 use control_plane_core::BaseType;
 

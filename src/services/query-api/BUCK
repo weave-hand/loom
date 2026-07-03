@@ -1045,6 +1045,18 @@ rust_test(
 )
 
 rust_test(
+    name = "expr-typecheck",
+    crate = "expr_typecheck",
+    srcs = ["tests/expr_typecheck.rs"],
+    crate_root = "tests/expr_typecheck.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
     name = "sql-dialect",
     crate = "sql_dialect",
     srcs = ["tests/sql_dialect.rs"],
