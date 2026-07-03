@@ -29,7 +29,9 @@ pub use auth::{
     Auth, LockoutPolicy, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount,
     ServiceToken, UserSummary,
 };
-pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
+pub use catalog::{
+    Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema, small_files,
+};
 pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
 pub use constraints::{
     ConstraintRule, ConstraintViolation, LengthConstraint, PropertyConstraints, PropertyValidator,

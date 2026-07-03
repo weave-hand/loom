@@ -38,6 +38,15 @@ pub struct FileRef {
     pub file_size_bytes: i64,
 }
 
+/// The subset of `files` smaller than `threshold_bytes` — the compaction candidate set.
+/// Pure — no I/O — so it is unit-testable without a catalog.
+pub fn small_files(files: &[FileRef], threshold_bytes: i64) -> Vec<&FileRef> {
+    files
+        .iter()
+        .filter(|f| f.file_size_bytes < threshold_bytes)
+        .collect()
+}
+
 /// One column of a table's schema at a snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnDef {

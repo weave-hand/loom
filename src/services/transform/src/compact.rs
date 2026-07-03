@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use control_plane_core::{ControlPlane, DataFile, FileRef, SnapshotId, TableRef};
+use control_plane_core::{ControlPlane, DataFile, FileRef, SnapshotId, TableRef, small_files};
 use datafusion::execution::context::SessionContext;
 use datafusion_io::{WriteConfig, absolute_data_files, scan_table, write_dataset};
 use object_store::ObjectStore;
@@ -31,15 +31,6 @@ pub enum CompactError {
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error("compact commit produced no snapshot id")]
     NoSnapshot,
-}
-
-/// Select the sub-threshold files among `files`. Pure — no I/O — so it is unit-testable
-/// without a catalog.
-pub fn small_files(files: &[FileRef], threshold_bytes: i64) -> Vec<&FileRef> {
-    files
-        .iter()
-        .filter(|f| f.file_size_bytes < threshold_bytes)
-        .collect()
 }
 
 /// Compact `table`'s small files. Returns the new snapshot id, or `Ok(None)` when there

@@ -3,13 +3,12 @@
 //! and commit the swap over CompactTable. Zero Postgres — the engine owns it.
 use std::sync::Arc;
 
-use control_plane_core::{CompactJob, DataFile, Job, JobFailure};
+use control_plane_core::{CompactJob, DataFile, Job, JobFailure, small_files};
 use datafusion_io::{WriteConfig, absolute_data_files, write_dataset};
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
 use loom_config::WorkerTuning;
 use store_config::WriteStore;
-use transform::small_files;
 
 #[derive(Clone)]
 pub struct CompactCtx {
