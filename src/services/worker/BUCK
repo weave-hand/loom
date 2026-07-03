@@ -61,6 +61,7 @@ loom_fixture_test(
     crate_root = "tests/e2e.rs",
     edition = "2024",
     deps = [
+        "//src/testing:seed",
         ":worker",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -95,6 +96,7 @@ loom_fixture_test(
     crate_root = "tests/flight_roundtrip.rs",
     edition = "2024",
     deps = [
+        "//src/testing:seed",
         ":worker",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -127,6 +129,8 @@ loom_fixture_test(
     crate_root = "tests/build_vector_index.rs",
     edition = "2024",
     deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
         ":worker",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -160,6 +164,8 @@ loom_fixture_test(
     crate_root = "tests/compact_e2e.rs",
     edition = "2024",
     deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
         ":worker",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",

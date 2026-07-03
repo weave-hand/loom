@@ -1287,14 +1287,14 @@ git commit -m "test(engine): migrate wire/vector suites onto the shared harness"
 - Consumes: `local_sql_catalog`, `vec4_columns`, `vec4_ipc`,
   `spawn_engine_uds`, `EngineOpts`, `EngineGuard`.
 
-- [ ] **Step 1: Baseline green**
+- [x] **Step 1: Baseline green**
 
 ```bash
 buck2 test //src/services/worker: -j 8 > /tmp/t7pre.log 2>&1; \
   grep -E "Tests finished|FAIL" /tmp/t7pre.log
 ```
 
-- [ ] **Step 2: `build_vector_index.rs`** — swap `columns`/`ipc_body`/
+- [x] **Step 2: `build_vector_index.rs`** — swap `columns`/`ipc_body`/
   `make_catalog` to the shared trio; the local `lineage` STAYS (its payload is
   `"build-vector-index-e2e-test"` — deliberate divergence). Its
   `spawn_server(fx, db, wh_path)` (verified: control+flight, writer
@@ -1319,7 +1319,7 @@ let eng = spawn_engine_uds(
 
 with `sock` uses → `eng.sock`. Delete `spawn_server` + its unused imports.
 
-- [ ] **Step 3: `e2e.rs`, `compact_e2e.rs`, `flight_roundtrip.rs`** —
+- [x] **Step 3: `e2e.rs`, `compact_e2e.rs`, `flight_roundtrip.rs`** —
   `make_catalog` swap always. For each file's spawn block: compare against
   the `spawn_engine_uds` construction (which services, writer limits,
   retention). Migrate only exact structural matches — pass differing writer
@@ -1328,7 +1328,7 @@ with `sock` uses → `eng.sock`. Delete `spawn_server` + its unused imports.
   retention driving a GC assertion), it STAYS LOCAL and is recorded for the
   close prose. Their id-column `columns`/`ipc_body(ids)` variants STAY LOCAL.
 
-- [ ] **Step 4: BUCK deps + run green**
+- [x] **Step 4: BUCK deps + run green**
 
 ```bash
 buck2 test //src/services/worker: -j 8 > /tmp/t7.log 2>&1; \
@@ -1338,7 +1338,7 @@ git diff src/services/worker/tests | grep -E "^[-+].*assert" | head
 
 Expected: `Fail 0`; ZERO assert-line changes.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek7.log 2>&1; grep -E "Failed" /tmp/prek7.log || echo CLEAN

@@ -2,12 +2,12 @@
 //! compact handler over the wire, assert the small files coalesce, the row set is
 //! preserved, and a prior snapshot still time-travels. Plus a no-op (<2 small files).
 
+use loom_test_flight::{EngineOpts, spawn_engine_uds};
+use loom_test_seed::local_sql_catalog;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     COMPACT_JOB_KIND, Catalog, ColumnSpec, CompactJob, DatasetId, EventType, Job, JobId,
@@ -16,19 +16,9 @@ use control_plane_core::{
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use engine::flight::FlightDataService;
-use engine::service::EngineControlService;
-use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
-use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use store_config::{ObjectStoreConfig, build_write_store};
-use tonic::transport::Server;
 use worker::compact::{CompactCtx, handle_compact};
 
 // ---- helpers ---------------------------------------------------------------
@@ -70,72 +60,6 @@ fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
-/// Spawn an engine on the given warehouse path serving BOTH EngineControl and Arrow Flight.
-/// Returns (sock_dir, sock_path_string) — caller must hold `sock_dir` alive.
-async fn spawn_server(fx: &PgFixture, db: &str, wh_path: &str) -> (tempfile::TempDir, String) {
-    let sock_dir = tempfile::tempdir().expect("socket dir");
-    let sock_path = sock_dir.path().join("engine.sock");
-    let sock_str = sock_path.to_string_lossy().to_string();
-
-    let pool = fx.pool_for(db).await;
-    let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
-    let control_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let flight_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let writer_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let writer = IcebergActionWriter::new(
-        Arc::new(writer_catalog),
-        pool.clone(),
-        16 * 1024 * 1024,
-        i64::MAX,
-    );
-
-    let svc = EngineControlService {
-        cp,
-        catalog: control_catalog,
-        pool: pool.clone(),
-        retention: Duration::from_secs(7 * 24 * 3600),
-        writer,
-    };
-    let flight_svc = FlightDataService {
-        catalog: flight_catalog,
-        serving_catalog: IcebergCatalog::new(pool.clone()),
-        serving_store: None,
-        pool,
-    };
-
-    let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
-    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-
-    tokio::spawn(async move {
-        drop(
-            Server::builder()
-                .add_service(EngineControlServer::new(svc))
-                .add_service(FlightServiceServer::new(flight_svc))
-                .serve_with_incoming(incoming)
-                .await,
-        );
-    });
-
-    // Small pause so the server is ready to accept.
-    tokio::time::sleep(Duration::from_millis(20)).await;
-
-    (sock_dir, sock_str)
-}
-
 fn make_compact_job(schema: &str, name: &str) -> Job {
     Job {
         id: JobId(uuid::Uuid::new_v4()),
@@ -170,9 +94,18 @@ async fn worker_compacts_small_files_over_the_wire() {
     let wh_str = wh.path().display().to_string();
 
     // Catalog for seeding (land calls).
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh_str).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
 
-    let (_sock_dir, sock) = spawn_server(fx, &db, &wh_str).await;
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
 
     let acc = TableRef {
         schema: "main".into(),
@@ -212,10 +145,10 @@ async fn worker_compacts_small_files_over_the_wire() {
     let store_cfg = ObjectStoreConfig::parse_from_env(&env_map).expect("store config");
     let write = Arc::new(build_write_store(&store_cfg).expect("write store"));
 
-    let control = GrpcQueueClient::connect(&sock)
+    let control = GrpcQueueClient::connect(&eng.sock)
         .await
         .expect("connect control");
-    let flight = FlightTableClient::connect(&sock)
+    let flight = FlightTableClient::connect(&eng.sock)
         .await
         .expect("connect flight");
 
@@ -249,7 +182,7 @@ async fn worker_compacts_small_files_over_the_wire() {
     // resolvable by the engine's Iceberg FileIO — a path-scheme or layout mismatch
     // would cause this to error, not just fail the count assert.
     let coalesced_path = after[0].path.clone();
-    let flight2 = FlightTableClient::connect(&sock)
+    let flight2 = FlightTableClient::connect(&eng.sock)
         .await
         .expect("connect flight 2");
     let batches = flight2

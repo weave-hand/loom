@@ -6,7 +6,7 @@
 //! (avoids the awkwardness of cancelling `Worker::run` after exactly one job),
 //! which still exercises the full wire path end-to-end.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,16 +22,11 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline::inline_append;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use engine::flight::FlightDataService;
 use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use tonic::transport::Server;
 use worker::handler::{handle_flush, handle_gc};
 
@@ -94,20 +89,6 @@ fn inline_lineage(run: RunId, table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Spawn an `EngineControlService` on a tmpdir UDS. Returns the sock_dir (held
 /// alive by the caller) and the socket path string.
 async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
@@ -119,9 +100,9 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let wh_str = wh.path().display().to_string();
-    let control_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
-    let flight_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
-    let writer_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
+    let control_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
+    let flight_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
+    let writer_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
     let writer = IcebergActionWriter::new(
         Arc::new(writer_catalog),
         pool.clone(),
@@ -352,7 +333,7 @@ async fn gc_job_flows_through_worker_and_reclaims_object() {
     // (4 rows; end-caps A). The mirror records absolute file:// paths, which the
     // engine's GC deletes by path regardless of which warehouse wrote them.
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let table = TableRef {
         schema: "wh".into(),
         name: "t".into(),
