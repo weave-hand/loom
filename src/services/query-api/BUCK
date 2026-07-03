@@ -688,6 +688,25 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "write-steps-e2e",
+    crate = "write_steps_e2e",
+    srcs = ["tests/write_steps_e2e.rs"],
+    crate_root = "tests/write_steps_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 rust_test(
     name = "render",
     crate = "render",

@@ -217,6 +217,28 @@ impl GrpcQueueClient {
         Ok(resp.snapshot_id)
     }
 
+    /// Stage N per-target writes + one lineage event in one transaction (one
+    /// snapshot) over the wire. Returns the new snapshot id. Each `steps` entry is a
+    /// `(schema, name, ipc, columns_json, overwrite)` tuple for one target; the single
+    /// `lineage_json` carries every target in its outputs.
+    pub async fn write_steps(
+        &self,
+        steps: Vec<pb::StepWrite>,
+        lineage_json: String,
+    ) -> Result<i64> {
+        let resp = self
+            .inner
+            .clone()
+            .write_steps(pb::WriteStepsRequest {
+                steps,
+                lineage_json,
+            })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok(resp.snapshot_id)
+    }
+
     /// Copy-on-write overwrite (UPDATE/DELETE) over the wire. Returns the new
     /// snapshot id. Empty `ipc` truncates the table.
     pub async fn overwrite_table(

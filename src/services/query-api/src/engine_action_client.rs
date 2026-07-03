@@ -9,7 +9,8 @@ use engine_wire::client::GrpcQueueClient;
 use engine_wire::convert::LineageWire;
 
 use crate::serving::{
-    ActionEngine, ServingError, SqlValue, build_object_batch, build_object_batches,
+    ActionEngine, ServingError, SqlValue, StepWrite, WriteMode, build_object_batch,
+    build_object_batches,
 };
 
 fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
@@ -201,6 +202,37 @@ impl ActionEngine for EngineActionClient {
                 lineage_json,
                 expected_version,
             )
+            .await
+            .map_err(to_serving_write)?;
+        Ok(control_plane_core::SnapshotId(id))
+    }
+
+    async fn write_steps(
+        &self,
+        writes: &[StepWrite],
+        event: control_plane_core::LineageEvent,
+    ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        // Build one wire `StepWrite` per target: its rows -> multi-row Arrow batch ->
+        // IPC stream, plus the `ColumnSpec` JSON. The single lineage event (carrying
+        // every target in its outputs) crosses once.
+        let lineage_json = serde_json::to_string(&LineageWire::from(&event)).map_err(to_serving)?;
+        let mut steps = Vec::with_capacity(writes.len());
+        for w in writes {
+            let (_schema, batch, specs) =
+                build_object_batches(&w.columns, &w.rows, &w.logical_types)?;
+            let ipc = encode_ipc_stream(&batch)?;
+            let columns_json = serde_json::to_string(&specs).map_err(to_serving)?;
+            steps.push(engine_wire::pb::StepWrite {
+                schema: w.table.schema.clone(),
+                name: w.table.name.clone(),
+                ipc,
+                columns_json,
+                overwrite: matches!(w.mode, WriteMode::Overwrite),
+            });
+        }
+        let id = self
+            .ctl
+            .write_steps(steps, lineage_json)
             .await
             .map_err(to_serving_write)?;
         Ok(control_plane_core::SnapshotId(id))
