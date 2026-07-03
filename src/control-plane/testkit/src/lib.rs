@@ -2105,6 +2105,97 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
     a.set_policy(&rid("reader"), Action::Read, table_ok)
         .await
         .expect("table-target structural ok");
+
+    // --- list_grants: content, order, NotFound, reflects revoke ---
+    let mgmt = RoleId("mgmt".into());
+    a.define_role(&mgmt).await.expect("define mgmt");
+    a.grant(
+        &mgmt,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Widget".into())),
+        Effect::Allow,
+    )
+    .await
+    .expect("grant read");
+    a.grant(
+        &mgmt,
+        Action::Write,
+        PolicyTarget::Type(TypeName("Widget".into())),
+        Effect::Allow,
+    )
+    .await
+    .expect("grant write");
+    let grants = a
+        .list_grants(&mgmt, PageReq::unbounded())
+        .await
+        .expect("list_grants");
+    assert_eq!(grants.items.len(), 2);
+    assert!(grants.next.is_none());
+    assert_eq!(grants.items[0].action, Action::Read, "action-ordered");
+    assert_eq!(grants.items[0].effect, Effect::Allow);
+    assert_eq!(
+        grants.items[0].target,
+        PolicyTarget::Type(TypeName("Widget".into()))
+    );
+    assert!(matches!(
+        a.list_grants(&RoleId("no-such-role".into()), PageReq::unbounded())
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    a.revoke(
+        &mgmt,
+        Action::Write,
+        &PolicyTarget::Type(TypeName("Widget".into())),
+    )
+    .await
+    .expect("revoke");
+    assert_eq!(
+        a.list_grants(&mgmt, PageReq::unbounded())
+            .await
+            .expect("relist")
+            .items
+            .len(),
+        1
+    );
+
+    // --- roles_of: after assign/unassign; NotFound on unknown subject ---
+    let who = SubjectId("mgmt-user".into());
+    a.define_subject(&who).await.expect("subject");
+    a.assign_role(&who, &mgmt).await.expect("assign");
+    let mine = a
+        .roles_of(&who, PageReq::unbounded())
+        .await
+        .expect("roles_of");
+    assert_eq!(mine.items, vec![mgmt.clone()]);
+    a.unassign_role(&who, &mgmt).await.expect("unassign");
+    assert!(
+        a.roles_of(&who, PageReq::unbounded())
+            .await
+            .expect("empty")
+            .items
+            .is_empty()
+    );
+    assert!(matches!(
+        a.roles_of(&SubjectId("no-such-subject".into()), PageReq::unbounded())
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // --- delete_role: cascade observed, idempotent, re-creatable ---
+    a.assign_role(&who, &mgmt).await.expect("re-assign");
+    a.delete_role(&mgmt).await.expect("delete");
+    assert!(!a.has_role(&who, &mgmt).await.expect("membership gone"));
+    assert!(!a.list_roles().await.expect("roles").contains(&mgmt));
+    a.delete_role(&mgmt).await.expect("idempotent");
+    a.define_role(&mgmt).await.expect("re-create after delete");
+    assert!(
+        a.list_grants(&mgmt, PageReq::unbounded())
+            .await
+            .expect("fresh")
+            .items
+            .is_empty(),
+        "re-created role has no stale grants"
+    );
 }
 
 /// Contract for the `Auth` ops. `a` must be freshly empty. Bound on `Acl` too so

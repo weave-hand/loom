@@ -11,8 +11,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionName, Auth, Catalog, ControlPlane, ControlPlaneError, Decision,
-    Effect, Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, Policy, PolicyTarget, Queue,
-    RoleId, SubjectId, TableRef, Tx, TypeName, VectorIndexDef,
+    Effect, Grant, Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, Policy, PolicyTarget,
+    Queue, RoleId, SubjectId, TableRef, Tx, TypeName, VectorIndexDef,
 };
 use engine_wire::client::GrpcQueueClient;
 
@@ -96,6 +96,23 @@ impl Acl for WireAcl {
 
     async fn revoke(&self, _r: &RoleId, _a: Action, _t: &PolicyTarget) -> Result<()> {
         Err(read_only("revoke"))
+    }
+
+    // Errors by design: there is no `gov_list_grants` wire RPC; the management
+    // read surface is served by the direct/postgres control plane, not this
+    // wire client — so this is never reached from that path.
+    async fn list_grants(&self, _r: &RoleId, _p: PageReq) -> Result<Page<Grant>> {
+        Err(read_only("list_grants"))
+    }
+
+    // Errors by design: no `gov_roles_of` wire RPC; unreached from the
+    // management surface for the same reason as `list_grants` above.
+    async fn roles_of(&self, _s: &SubjectId, _p: PageReq) -> Result<Page<RoleId>> {
+        Err(read_only("roles_of"))
+    }
+
+    async fn delete_role(&self, _r: &RoleId) -> Result<()> {
+        Err(read_only("delete_role"))
     }
 
     async fn set_policy(&self, _r: &RoleId, _a: Action, _p: Policy) -> Result<()> {

@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Decision, Effect, ObjectType, Ontology, Page, PageReq, Policy, PolicyTarget,
-    PropertyDef, Result as CpResult, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, Decision, Effect, Grant, ObjectType, Ontology, Page, PageReq, Policy,
+    PolicyTarget, PropertyDef, Result as CpResult, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object_page};
@@ -60,6 +60,15 @@ impl Acl for CountingAcl<'_> {
     }
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> CpResult<()> {
         self.inner.revoke(role, action, target).await
+    }
+    async fn list_grants(&self, role: &RoleId, page: PageReq) -> CpResult<Page<Grant>> {
+        self.inner.list_grants(role, page).await
+    }
+    async fn roles_of(&self, subject: &SubjectId, page: PageReq) -> CpResult<Page<RoleId>> {
+        self.inner.roles_of(subject, page).await
+    }
+    async fn delete_role(&self, role: &RoleId) -> CpResult<()> {
+        self.inner.delete_role(role).await
     }
     async fn set_policy(&self, role: &RoleId, action: Action, policy: Policy) -> CpResult<()> {
         self.inner.set_policy(role, action, policy).await

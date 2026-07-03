@@ -53,7 +53,7 @@ async fn delete_role(&self, role: &RoleId) -> Result<()>;
 ```
 `list_grants`: `NotFound` on unknown role; deterministic order `(action, target-key)`. `roles_of`: `NotFound` on unknown subject; id-ordered. `delete_role`: idempotent; memberships/grants/policies/inheritance edges all go.
 
-- [ ] **Step 1: Failing contract asserts.** In `acl_contract` at the **END of the fn** (~line 1900+; mid-fn insertion lands among the policy asserts), defining fresh ids as below (`Widget` is in scope — the contract is `<A: Acl + Ontology>` and defines it at ~:1417):
+- [x] **Step 1: Failing contract asserts.** In `acl_contract` at the **END of the fn** (~line 1900+; mid-fn insertion lands among the policy asserts), defining fresh ids as below (`Widget` is in scope — the contract is `<A: Acl + Ontology>` and defines it at ~:1417):
 
 ```rust
 // list_grants: content, order, NotFound, reflects revoke.
@@ -110,9 +110,9 @@ assert!(
 ```
 (The contract has an Ontology bound already for grant-target checks — `Widget` is the type it defines; verify the in-scope name and existing imports before writing.)
 
-- [ ] **Step 2: Verify red.** `buck2 test //src/control-plane/memory:acl --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "error|Tests finished" /tmp/t1.log | head` — expect E0599 (no method `list_grants`).
+- [x] **Step 2: Verify red.** `buck2 test //src/control-plane/memory:acl --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "error|Tests finished" /tmp/t1.log | head` — expect E0599 (no method `list_grants`).
 
-- [ ] **Step 3: Core + memory + postgres + wire.**
+- [x] **Step 3: Core + memory + postgres + wire.**
 Memory (state fields cited above; lock style per file):
 ```rust
 async fn list_grants(&self, role: &RoleId, _page: PageReq) -> Result<Page<Grant>> {
@@ -161,11 +161,11 @@ async fn list_grants(&self, role: &RoleId, _page: PageReq) -> Result<Page<Grant>
 `roles_of`: existence check on `acl.subject`, then `select role_id from acl.role_member where subject_id = $1 order by role_id`. `delete_role`: `delete from acl.role where id = $1` (children cascade per migrations 0003/0007/0011).
 WireAcl: three `Err(read_only("list_grants"))`-style rejections (reads too — served direct per spec; keep the message accurate, e.g. `read_only("list_grants (served direct)")` if `read_only` wording fits; otherwise mirror the existing pattern exactly).
 
-- [ ] **Step 4: `bash tools/sqlx-prepare.sh`; commit the `.sqlx` diff with the task.**
+- [x] **Step 4: `bash tools/sqlx-prepare.sh`; commit the `.sqlx` diff with the task.**
 
-- [ ] **Step 5: Green.** `buck2 test //src/control-plane/... //src/services/query-api:resolve-governed //src/services/query-api:read-page-single-resolve --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log` — expect PASS.
+- [x] **Step 5: Green.** `buck2 test //src/control-plane/... //src/services/query-api:resolve-governed //src/services/query-api:read-page-single-resolve --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log` — expect PASS.
 
-- [ ] **Step 6: prek; commit** `feat(acl): list_grants, roles_of, delete_role across adapters`.
+- [x] **Step 6: prek; commit** `feat(acl): list_grants, roles_of, delete_role across adapters`.
 
 ---
 

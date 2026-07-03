@@ -47,6 +47,22 @@ impl Action {
     }
 }
 
+impl std::str::FromStr for Action {
+    type Err = ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "read" => Ok(Action::Read),
+            "write" => Ok(Action::Write),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown action '{other}'"
+            ))),
+        }
+    }
+}
+
 /// What a grant or policy is bound to. Matched exactly as stored — P4 never
 /// resolves a `Type` to its backing `Table`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -67,6 +83,22 @@ impl PolicyTarget {
             PolicyTarget::Table(r) => ("table", r.schema.clone(), r.name.clone()),
         }
     }
+
+    /// Decode the canonical `(kind, a, b)` encoding back into a target — the
+    /// inverse of [`PolicyTarget::key_parts`]. An unknown `kind` is a loud
+    /// error (a corrupt row), never a silent default.
+    pub fn from_key_parts(kind: &str, a: &str, b: &str) -> Result<PolicyTarget> {
+        match kind {
+            "type" => Ok(PolicyTarget::Type(TypeName(a.to_string()))),
+            "table" => Ok(PolicyTarget::Table(TableRef {
+                schema: a.to_string(),
+                name: b.to_string(),
+            })),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown policy-target kind '{other}'"
+            ))),
+        }
+    }
 }
 
 /// The outcome of an authorization check.
@@ -78,7 +110,7 @@ pub enum Decision {
 
 /// Whether a grant permits or forbids its `(action, target)`. Deny wins over Allow
 /// in [`Acl::check`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Effect {
     Allow,
     Deny,
@@ -91,6 +123,22 @@ impl Effect {
         match self {
             Effect::Allow => "allow",
             Effect::Deny => "deny",
+        }
+    }
+}
+
+impl std::str::FromStr for Effect {
+    type Err = ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "allow" => Ok(Effect::Allow),
+            "deny" => Ok(Effect::Deny),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown effect '{other}'"
+            ))),
         }
     }
 }
@@ -161,6 +209,16 @@ pub struct Policy {
     /// Columns shown but value-masked (redacted to a marker). Distinct from
     /// `deny_columns`, which removes the column. Order unspecified.
     pub mask_columns: Vec<String>,
+}
+
+/// One coarse grant row as stored for a role — the read-side view of
+/// [`Acl::grant`]'s `(action, target, effect)` triple, returned by
+/// [`Acl::list_grants`].
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Grant {
+    pub action: Action,
+    pub target: PolicyTarget,
+    pub effect: Effect,
 }
 
 /// Validate a [`RowFilter`]'s well-formedness. Structural rules are always enforced;
@@ -304,6 +362,18 @@ pub trait Acl {
     ) -> Result<()>;
     /// Remove a grant. Idempotent (no-op if absent).
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()>;
+    /// All grants of `role`, ordered by `(action, target-key)`. Role must exist,
+    /// else `NotFound`. The `page` request is accepted but not yet enforced;
+    /// results are a single full page.
+    async fn list_grants(&self, role: &RoleId, page: PageReq) -> Result<Page<Grant>>;
+    /// All roles directly assigned to `subject`, sorted by id ascending. Subject
+    /// must exist, else `NotFound`. The `page` request is accepted but not yet
+    /// enforced; results are a single full page.
+    async fn roles_of(&self, subject: &SubjectId, page: PageReq) -> Result<Page<RoleId>>;
+    /// Delete a role and everything hanging off it — memberships, grants,
+    /// policies, and inheritance edges (both directions). Idempotent (no-op if
+    /// absent).
+    async fn delete_role(&self, role: &RoleId) -> Result<()>;
     /// Create or replace the row/column policy for `(role, action, policy.target)`. Role
     /// must exist, else `NotFound`. Upsert. Read and write policies are independent.
     async fn set_policy(&self, role: &RoleId, action: Action, policy: Policy) -> Result<()>;

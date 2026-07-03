@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
-    RoleId, SubjectId, check_grant_target, check_policy_write,
+    Acl, Action, ControlPlaneError, Decision, Effect, Grant, Page, PageReq, Policy, PolicyTarget,
+    Result, RoleId, SubjectId, check_grant_target, check_policy_write,
 };
 
 use crate::ontology::object_type_exists;
@@ -245,6 +245,72 @@ impl Acl for PgControlPlane {
         .execute(&self.pool)
         .await
         .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_grants(&self, role: &RoleId, _page: PageReq) -> Result<Page<Grant>> {
+        if !role_exists(&self.pool, &role.0).await? {
+            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        let rows = sqlx::query!(
+            "select action, target_kind, target_a, target_b, effect from acl.role_grant \
+             where role_id = $1 order by action, target_kind, target_a, target_b",
+            &role.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(Grant {
+                action: r.action.parse()?,
+                target: PolicyTarget::from_key_parts(&r.target_kind, &r.target_a, &r.target_b)?,
+                effect: r.effect.parse()?,
+            });
+        }
+        Ok(Page::from_full(out))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn roles_of(&self, subject: &SubjectId, _page: PageReq) -> Result<Page<RoleId>> {
+        let s_exists = sqlx::query_scalar!(
+            "select exists (select 1 from acl.subject where id = $1)",
+            &subject.0,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?
+        .unwrap_or(false);
+        if !s_exists {
+            return Err(ControlPlaneError::NotFound(format!(
+                "subject {}",
+                subject.0
+            )));
+        }
+        Ok(Page::from_full(
+            sqlx::query_scalar!(
+                "select role_id from acl.role_member where subject_id = $1 order by role_id",
+                &subject.0,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?
+            .into_iter()
+            .map(RoleId)
+            .collect(),
+        ))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn delete_role(&self, role: &RoleId) -> Result<()> {
+        // Memberships, grants, policies, and inheritance edges (both directions)
+        // go with the row — every child table references acl.role on delete cascade
+        // (migrations 0003/0007/0011).
+        sqlx::query!("delete from acl.role where id = $1", &role.0)
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
         Ok(())
     }
 
