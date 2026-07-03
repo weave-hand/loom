@@ -651,7 +651,7 @@ git commit -m "test(testing): loom_test_seed shared vector seed fixtures"
   - `async fn spawn_flight_uds(fx: &PgFixture, db: &str, warehouse: &str) -> EngineGuard`
 - Consumes: `loom_test_seed::local_sql_catalog`; `engine::flight::FlightDataService`, `engine::service::EngineControlService`, `engine_serving::IcebergActionWriter`, `engine_wire::pb::engine_control_server::EngineControlServer`, `control_plane_postgres::iceberg_catalog::IcebergCatalog`.
 
-- [ ] **Step 1: Write the failing smoke test.** Create
+- [x] **Step 1: Write the failing smoke test.** Create
   `src/testing/tests/flight_smoke.rs`:
 
 ```rust
@@ -734,14 +734,14 @@ loom_fixture_test(
 )
 ```
 
-- [ ] **Step 2: Run — expect RED** (`flight.rs` missing)
+- [x] **Step 2: Run — expect RED** (`flight.rs` missing)
 
 ```bash
 buck2 test //src/testing:flight-smoke -j 8 > /tmp/t2red.log 2>&1; \
   grep -E "error|Tests finished|FAIL" /tmp/t2red.log | head -5
 ```
 
-- [ ] **Step 3: Write the library.** Create `src/testing/flight.rs`. The
+- [x] **Step 3: Write the library.** Create `src/testing/flight.rs`. The
   service construction is the union of the tree's verified spawn bodies
   (engine `spawn_flight`, worker `spawn_server`, e2e-support `spawn_engine` —
   identical modulo which services they add); only the readiness sync is new:
@@ -902,7 +902,7 @@ async fn await_uds_ready(path: &Path) {
 }
 ```
 
-- [ ] **Step 4: Run — GREEN**
+- [x] **Step 4: Run — GREEN**
 
 ```bash
 buck2 test //src/testing:flight-smoke //src/testing:seed-smoke -j 8 \
@@ -914,7 +914,7 @@ tonic (it has existed since tonic 0.6 — it will be), fall back to a match on
 `(control, flight)` building the three concrete server shapes; do NOT add a
 sleep back.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek2.log 2>&1; grep -E "Failed" /tmp/prek2.log || echo CLEAN
