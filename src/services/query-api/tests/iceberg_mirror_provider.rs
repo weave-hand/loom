@@ -8,11 +8,9 @@ use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::snapshot::{ColumnStat, StatValue};
 use control_plane_postgres::iceberg_catalog::FileWithStats;
-use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{col, lit};
 use datafusion::prelude::SessionContext;
 use engine_serving::{IcebergMirrorTableProvider, prune_files};
-use object_store::local::LocalFileSystem;
 use parquet::arrow::ArrowWriter;
 use query_api::serving::SqlValue;
 use query_api::serving_datafusion::batches_to_rows;
@@ -97,13 +95,7 @@ async fn scan_over_survivors_returns_correct_rows() {
     ];
 
     let ctx = SessionContext::new();
-    ctx.register_object_store(
-        ObjectStoreUrl::local_filesystem().as_ref(),
-        Arc::new(LocalFileSystem::new()),
-    );
-    let provider = IcebergMirrorTableProvider::try_new(&ctx, files)
-        .await
-        .unwrap();
+    let provider = IcebergMirrorTableProvider::try_new_with_schema(files, schema());
     ctx.register_table("t", Arc::new(provider)).unwrap();
 
     // id = 3 lives only in file A; file B is pruned. Result must be exactly [3].

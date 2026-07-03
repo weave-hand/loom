@@ -15,10 +15,7 @@ use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
 use datafusion::common::{Column, DFSchema, TableReference};
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::listing::{
-    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl, PartitionedFile,
-};
+use datafusion::datasource::listing::{ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::context::{ExecutionProps, SessionContext};
@@ -420,10 +417,9 @@ impl TableProvider for IcebergMirrorTableProvider {
 /// plus their per-column stats. Unlike `ListingTable`, this skips opening files a
 /// query's predicates provably cannot match: `scan` prunes the file set with a
 /// `PruningPredicate` over the mirror stats, then builds a `DataSourceExec` over
-/// only the survivors. The schema is fixed up front: `try_new` infers it from the
-/// file set (same Parquet inference `listing_table` uses), while
-/// `try_new_with_schema` takes the mirror's authoritative schema so an evolved
-/// table's superset is served and files missing a newer column are null-filled.
+/// only the survivors. The schema is fixed up front via `try_new_with_schema`,
+/// which takes the mirror's authoritative schema so an evolved table's superset
+/// is served and files missing a newer column are null-filled.
 #[derive(Debug)]
 pub struct IcebergMirrorTableProvider {
     schema: SchemaRef,
@@ -431,29 +427,6 @@ pub struct IcebergMirrorTableProvider {
 }
 
 impl IcebergMirrorTableProvider {
-    /// Infer the arrow schema from `files` (the same `ParquetFormat` inference
-    /// `listing_table` uses) and store it alongside the file set. The
-    /// local-filesystem object store must already be registered on `ctx`.
-    pub async fn try_new(
-        ctx: &SessionContext,
-        files: Vec<FileWithStats>,
-    ) -> Result<Self, EngineServingError> {
-        let urls: Vec<ListingTableUrl> = files
-            .iter()
-            .map(|f| ListingTableUrl::parse(&f.path))
-            .collect::<Result<_, _>>()
-            .map_err(to_serving)?;
-        let format = ParquetFormat::default().with_force_view_types(false);
-        let opts = ListingOptions::new(Arc::new(format));
-        let cfg = ListingTableConfig::new_with_multi_paths(urls)
-            .with_listing_options(opts)
-            .infer_schema(&ctx.state())
-            .await
-            .map_err(to_serving)?;
-        let schema = ListingTable::try_new(cfg).map_err(to_serving)?.schema();
-        Ok(Self { schema, files })
-    }
-
     /// Build a provider whose authoritative schema is the mirror's (not inferred from
     /// Parquet footers), so an evolved table's superset schema is presented and files
     /// missing a newer column are null-filled by DataFusion's default schema adapter.
