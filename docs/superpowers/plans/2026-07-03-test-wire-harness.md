@@ -1458,7 +1458,7 @@ git commit -m "test(query-api): e2e-support delegates to the shared vector/wire 
 - Modify: `docs/ROADMAP.md` (`#road-test-wire-harness` — locate by id)
 - Modify: `docs/FUTURE.md` (new deferral item)
 
-- [ ] **Step 1: Re-run the census — prove the drop.** Same command as the
+- [x] **Step 1: Re-run the census — prove the drop.** Same command as the
   fresh census (file list = all `tests/*.rs` under the six packages):
 
 ```bash
@@ -1492,7 +1492,7 @@ pair whose block contains a byte-copy of a harness helper** (`make_catalog`,
 `vec4`-shaped `columns`/`ipc_body`, a spawn body) — that means a migration
 step was missed.
 
-- [ ] **Step 2: Affected-package sweep**
+- [x] **Step 2: Affected-package sweep**
 
 ```bash
 buck2 build -M none //src/... > /tmp/build9.log 2>&1; tail -3 /tmp/build9.log
@@ -1506,7 +1506,7 @@ Expected: build success; `Fail 0`. (Cloud sessions: keep `-M none`, keep the
 test list scoped exactly as above, and `buck2 clean` between heavy phases if
 disk pressure appears.)
 
-- [ ] **Step 3: Close the ROADMAP item** — replace the
+- [x] **Step 3: Close the ROADMAP item** — replace the
   `road-test-wire-harness` entry (checkbox, status, prose) with:
 
 ```markdown
@@ -1517,7 +1517,7 @@ disk pressure appears.)
 Replace `<record post-migration numbers>` with the Step 1 output before
 committing.
 
-- [ ] **Step 4: Record the deferral in `docs/FUTURE.md`** (under the test
+- [x] **Step 4: Record the deferral in `docs/FUTURE.md`** (under the test
   area, matching the register grammar):
 
 ```markdown
@@ -1525,7 +1525,7 @@ committing.
   The spec bullets of [[road-test-wire-harness]] that its TEST-ONLY ground rule excluded: `tracing` spans in `PgFixture::start()`/`fresh_db()` (slot-wait/initdb/migrate durations) + `LOOM_FIXTURE_TIMING=1` (edits `src/control-plane/postgres/src/fixture.rs`, a module of the production `:postgres` library); adopting `#[traced_test]`/`logs_contain` as the standard for error-path logging assertions; and the ingest router support trio (`ingest_router(fx, db)`, `sample_batch`, `post_ipc` — 2 copies today in `src/services/ingest/tests/`). Also any spawn blocks the migration left local for structural divergence (recorded in the road item's close prose).
 ```
 
-- [ ] **Step 5: Validate + prek + commit**
+- [x] **Step 5: Validate + prek + commit**
 
 ```bash
 bash tools/docs.sh validate
