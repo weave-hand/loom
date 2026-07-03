@@ -257,9 +257,32 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
         "create table if not exists {} (\
            loom_row_id bigserial primary key, \
            begin_snapshot bigint not null, \
-           end_snapshot bigint{cols})",
+           end_snapshot bigint, \
+           loom_tombstone boolean not null default false{cols})",
         inline_table_name(table_id),
     ))
+}
+
+/// Create the inline table if absent and guarantee the `loom_tombstone` column
+/// exists (pre-existing tables created before slice 1 lack it).
+async fn ensure_inline_schema(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    columns: &[ColumnSpec],
+) -> Result<()> {
+    sqlx::query(AssertSqlSafe(inline_ddl(tid, columns)?))
+        .execute(&mut *conn)
+        .await
+        .map_err(backend)?;
+    let alter = format!(
+        "alter table {} add column if not exists loom_tombstone boolean not null default false",
+        inline_table_name(tid),
+    );
+    sqlx::query(AssertSqlSafe(alter))
+        .execute(&mut *conn)
+        .await
+        .map_err(backend)?;
+    Ok(())
 }
 
 /// Land `batch` for `table` as inline rows: a mirror-only commit (snapshot + typed
@@ -319,10 +342,7 @@ pub async fn inline_append(
     }
 
     // 2. Ensure inline storage exists (transactional DDL).
-    sqlx::query(AssertSqlSafe(inline_ddl(tid, columns)?))
-        .execute(&mut *conn)
-        .await
-        .map_err(backend)?;
+    ensure_inline_schema(&mut *conn, tid, columns).await?;
 
     // 3. Insert each row with the new begin_snapshot.
     let col_list = columns
