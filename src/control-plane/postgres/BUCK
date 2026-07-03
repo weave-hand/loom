@@ -326,8 +326,11 @@ loom_fixture_test(
         ":postgres",
         "//src/control-plane/core:core",
         "//src/control-plane/testkit:testkit",
+        "//third-party:serde_json",
         "//third-party:sqlx",
+        "//third-party:time",
         "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 

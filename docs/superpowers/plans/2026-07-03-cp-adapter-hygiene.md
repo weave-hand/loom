@@ -2156,3 +2156,16 @@ finishing flow.
   covers `memory/src/lib.rs` (`seed_catalog`/`drop_table_catalog`) as the
   third file; `target_cols` has 6 sites; core `ontology.rs`/`acl.rs` need
   the `ControlPlaneError` import added.
+
+## Post-final-review addendum (2026-07-03)
+
+The final adversarial review found the Task 9 collapsed `events_for` query's
+naive bucketing (`direction != "input"` → outputs) silently MISFILED corrupt
+direction tokens into outputs, where the pre-branch per-event queries silently
+DROPPED them. Fixed on this branch as part of whitelist entry 1's fail-loud
+family: the bucketing now matches the token and errors
+(`unknown lineage direction '{other}'`, `ControlPlaneError::Validation`) on
+anything but `input`/`output`, mirroring the core enum codecs. Red-first
+corrupt-row test (`corrupt_direction_token_is_a_loud_error`, direct-SQL
+`'sideways'` token) proved the misfiling before the fix. Rust-side bucketing —
+SQL text untouched, zero `.sqlx` delta.

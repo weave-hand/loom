@@ -95,10 +95,16 @@ impl Lineage for PgControlPlane {
         let mut outputs: std::collections::HashMap<i64, Vec<DatasetRef>> =
             std::collections::HashMap::new();
         for d in ds_rows {
-            let bucket = if d.direction == "input" {
-                &mut inputs
-            } else {
-                &mut outputs
+            // Unknown tokens are a loud error (a corrupt row), never silently
+            // dropped or misfiled — mirrors the core enum codecs.
+            let bucket = match d.direction.as_str() {
+                "input" => &mut inputs,
+                "output" => &mut outputs,
+                other => {
+                    return Err(control_plane_core::ControlPlaneError::Validation(format!(
+                        "unknown lineage direction '{other}'"
+                    )));
+                }
             };
             bucket.entry(d.event_id).or_default().push(DatasetRef {
                 namespace: d.namespace,

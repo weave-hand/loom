@@ -82,3 +82,46 @@ async fn postgres_passes_events_for_hydration_contract() {
     let cp = fixture.fresh_control_plane().await;
     control_plane_testkit::events_for_hydration_contract(&cp).await;
 }
+
+#[tokio::test]
+async fn corrupt_direction_token_is_a_loud_error() {
+    use control_plane_core::{DatasetRef, EventType, Lineage, LineageEvent, PageReq, RunId};
+
+    let fixture = PgFixture::shared();
+    let (cp, db) = fixture.fresh_db().await;
+    let pool = fixture.pool_for(&db).await;
+
+    let run = RunId(uuid::Uuid::new_v4());
+    cp.emit(LineageEvent {
+        run_id: run,
+        event_type: EventType::Start,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![DatasetRef {
+            namespace: "main".into(),
+            name: "src".into(),
+        }],
+        outputs: vec![],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .unwrap();
+
+    // Corrupt the persisted direction token via direct SQL — unreachable through
+    // the public API, which only ever writes 'input'/'output'.
+    sqlx::query("update lineage.event_dataset set direction = 'sideways'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // A corrupt token must be a loud error, never silently dropped (pre-batch
+    // behavior) or misfiled into outputs (the collapsed query's naive bucketing).
+    let err = cp
+        .events_for(&run, PageReq::default())
+        .await
+        .expect_err("corrupt direction must not silently bucket");
+    assert!(
+        err.to_string()
+            .contains("unknown lineage direction 'sideways'"),
+        "unexpected error: {err}"
+    );
+}
