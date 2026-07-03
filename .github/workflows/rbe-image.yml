@@ -9,6 +9,11 @@ name: rbe-image
 on:
   workflow_dispatch:
 
+# Serialize dispatches so two runs can't race on the :latest tag / digest read.
+concurrency:
+  group: rbe-image
+  cancel-in-progress: false
+
 env:
   IMAGE: ghcr.io/weave-hand/loom-rbe-browser
 
@@ -37,7 +42,9 @@ jobs:
         run: tools/ci/rbe-browser/smoke.sh loom-rbe-browser:ci
 
       - name: Log in to ghcr
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
       - name: Tag and push
         id: push

@@ -97,7 +97,10 @@ time_t-transition variants, e.g. `libasound2t64`, `libatk-bridge2.0-0t64`,
 `libcups2t64`). The **publish-time smoke test (component 2) is the ground truth**
 that validates the closure is complete against the actual pinned binary; the
 plan iterates the list against it. The exact, verified package list is captured
-in the plan and the Dockerfile — not fixed in this design.
+in the plan and the Dockerfile — not fixed in this design. (Resolved: the closure
+finalized at **24 apt packages** — the "~36 runtime libraries" in the Problem
+section counts `.so` files, not packages, and `chrome-headless-shell` needs no
+GTK, so no `libgtk-3-0t64`; the smoke confirmed the closure without it.)
 
 ### 2. Publish workflow — `.github/workflows/rbe-image.yml` (`workflow_dispatch` only)
 
