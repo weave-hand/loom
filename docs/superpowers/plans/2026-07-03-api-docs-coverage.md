@@ -46,7 +46,7 @@
 **Interfaces:**
 - Produces: `async fn list_actions(&self, page: PageReq) -> Result<Page<ActionDef>>` on the `Ontology` trait; `gov_list_actions(page: &PageReq) -> Page<ActionDef>` on the wire client. Full set in one page (`next: None`), **name-ordered**; `page` accepted for future keyset paging (matching `list_types`).
 
-- [ ] **Step 1: Write the failing contract test.** In `testkit/src/lib.rs` inside `ontology_contract`, after the `get_action(NotFound)` assert (~line 992), add (reuse the target type already defined earlier in the contract — read the fn; the `createWidget` action defined at ~line 945 targets it):
+- [x] **Step 1: Write the failing contract test.** In `testkit/src/lib.rs` inside `ontology_contract`, after the `get_action(NotFound)` assert (~line 992), add (reuse the target type already defined earlier in the contract — read the fn; the `createWidget` action defined at ~line 945 targets it):
 
 ```rust
 // list_actions: full set in one page, name-ordered, faithful ActionDefs.
@@ -75,12 +75,12 @@ assert_eq!(
 
 (If `createWidget` was redefined later in the contract, compare against the *current* `get_action` result as above — the assert is self-consistent by construction. Deliberate narrowing vs. the spec's "empty page / keyset" bullets: keyset paging isn't implemented anywhere — `page` is accepted-for-future exactly like `list_types` — and an empty-set probe isn't possible at this point in the shared contract; ordering + single-full-page + fidelity is the contract.)
 
-- [ ] **Step 2: Run to verify it fails (compile error — method missing).**
+- [x] **Step 2: Run to verify it fails (compile error — method missing).**
 
 Run: `buck2 test //src/control-plane/memory:ontology --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "error|Tests finished|FAIL" /tmp/t1.log | head`
 Expected: compile error `no method named list_actions`.
 
-- [ ] **Step 3: Trait + memory + postgres impls.**
+- [x] **Step 3: Trait + memory + postgres impls.**
 
 `core/src/ontology.rs` (after `get_action`):
 ```rust
@@ -114,7 +114,7 @@ async fn list_actions(&self, _page: PageReq) -> Result<Page<ActionDef>> {
 }
 ```
 
-- [ ] **Step 4: Wire leg.** Proto (`engine_control.proto`, beside ListTypes):
+- [x] **Step 4: Wire leg.** Proto (`engine_control.proto`, beside ListTypes):
 ```proto
 rpc ListActions      (ListActionsRequest)      returns (ListActionsResponse);
 ...
@@ -128,21 +128,21 @@ async fn list_actions(&self, page: PageReq) -> Result<Page<ActionDef>> {
 }
 ```
 
-- [ ] **Step 5: Refresh `.sqlx`.** Run: `bash tools/sqlx-prepare.sh` — commit the new `query-*.json`.
+- [x] **Step 5: Refresh `.sqlx`.** Run: `bash tools/sqlx-prepare.sh` — commit the new `query-*.json`.
 
-- [ ] **Step 6: Wire e2e assert.** In `query-api/tests/wire_governance_e2e.rs`, where `gov_list_types`/ontology reads are exercised, define an action against an existing type (via the direct CP the fixture holds) and assert the wire client's `list_actions` returns it:
+- [x] **Step 6: Wire e2e assert.** In `query-api/tests/wire_governance_e2e.rs`, where `gov_list_types`/ontology reads are exercised, define an action against an existing type (via the direct CP the fixture holds) and assert the wire client's `list_actions` returns it:
 ```rust
 let acts = wire_cp.ontology().list_actions(PageReq::unbounded()).await.unwrap();
 assert!(acts.items.iter().any(|a| a.name.0 == "createThing"));
 ```
 (Adapt names to the fixture's seeded types; keep the assert on round-trip fidelity of `name`, `target`, `kind`, `parameters`.)
 
-- [ ] **Step 7: Run the touched targets.**
+- [x] **Step 7: Run the touched targets.**
 
 Run: `buck2 test //src/control-plane/... //src/services/engine-wire/... //src/services/engine:wire //src/services/query-api:wire-governance-e2e //src/services/query-api:resolve-governed --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
 Expected: PASS (note: postgres contract targets are fixture tests — they run under the shared PG fixture env automatically via their existing `loom_fixture_test` wiring).
 
-- [ ] **Step 8: prek, commit.**
+- [x] **Step 8: prek, commit.**
 ```bash
 git add -A && git commit -m "feat(ontology): list_actions across store adapters + engine wire"
 ```

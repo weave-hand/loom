@@ -546,6 +546,22 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         }))
     }
 
+    async fn list_actions(
+        &self,
+        req: Request<pb::ListActionsRequest>,
+    ) -> std::result::Result<Response<pb::ListActionsResponse>, Status> {
+        let page: control_plane_core::PageReq = de_arg(&req.into_inner().page_json, "page")?;
+        let actions = self
+            .cp
+            .ontology()
+            .list_actions(page)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::ListActionsResponse {
+            page_json: se_out(&actions)?,
+        }))
+    }
+
     async fn get_action(
         &self,
         req: Request<pb::GetActionRequest>,

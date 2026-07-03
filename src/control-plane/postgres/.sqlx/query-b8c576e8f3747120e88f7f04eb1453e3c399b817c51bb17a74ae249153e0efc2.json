@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name from ontology.action order by name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b8c576e8f3747120e88f7f04eb1453e3c399b817c51bb17a74ae249153e0efc2"
+}

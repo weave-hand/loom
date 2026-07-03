@@ -995,6 +995,31 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         Err(ControlPlaneError::NotFound(_))
     ));
 
+    // list_actions: full set in one page, name-ordered, faithful ActionDefs.
+    let listed = o
+        .list_actions(PageReq::unbounded())
+        .await
+        .expect("list_actions");
+    assert!(listed.next.is_none(), "single full page");
+    let names: Vec<&str> = listed.items.iter().map(|a| a.name.0.as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    // Byte-order comparison; the postgres `order by name` sorts under DB collation.
+    // They agree for the ASCII action names this contract defines — keep it that way.
+    assert_eq!(names, sorted, "list_actions is name-ordered");
+    let widget = listed
+        .items
+        .iter()
+        .find(|a| a.name.0 == "createWidget")
+        .expect("createWidget listed");
+    assert_eq!(
+        *widget,
+        o.get_action(&ActionName("createWidget".into()))
+            .await
+            .unwrap(),
+        "listed ActionDef is faithful to get_action"
+    );
+
     // --- Action param→property mapping (binds + constant assignments) ---
     o.define_type(ObjectType {
         name: tn("Gadget"),

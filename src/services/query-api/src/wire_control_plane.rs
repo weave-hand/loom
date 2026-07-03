@@ -150,6 +150,10 @@ impl Ontology for WireOntology {
         self.client.gov_list_types(&page).await
     }
 
+    async fn list_actions(&self, page: PageReq) -> Result<Page<ActionDef>> {
+        self.client.gov_list_actions(&page).await
+    }
+
     async fn define_type(&self, _ty: ObjectType) -> Result<()> {
         Err(read_only("define_type"))
     }
