@@ -235,6 +235,30 @@ rust_test(
 )
 
 rust_test(
+    name = "transform-job",
+    crate = "transform_job",
+    srcs = ["tests/transform_job.rs"],
+    crate_root = "tests/transform_job.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "conform",
+    crate = "conform",
+    srcs = ["tests/conform.rs"],
+    crate_root = "tests/conform.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "action_kind",
     crate = "action_kind",
     srcs = ["tests/action_kind.rs"],

@@ -92,7 +92,7 @@ pub struct TypedTransformJob {
 
 `OutputMode` moves verbatim except it **gains `serde::Serialize`** (jobs are now also constructed, not just parsed). Wire shape unchanged (`"append"`/`"overwrite"`, absent ⇒ Append).
 
-- [ ] **Step 1 (red):** wire the two `rust_test` BUCK targets (`:transform-job`, `:conform` — mirror `:page`) AND write `core/tests/transform_job.rs` — port the four `output_mode.rs` cases against `control_plane_core::OutputMode`, plus payload-compat pins:
+- [x] **Step 1 (red):** wire the two `rust_test` BUCK targets (`:transform-job`, `:conform` — mirror `:page`) AND write `core/tests/transform_job.rs` — port the four `output_mode.rs` cases against `control_plane_core::OutputMode`, plus payload-compat pins:
 
 ```rust
 // today's exact wire JSON parses into the core structs
@@ -117,11 +117,11 @@ assert_eq!(TYPED_TRANSFORM_JOB_KIND, "typed-transform");
 
 `core/tests/conform.rs`: move `transform/tests/conform.rs` content, imports → `control_plane_core::{check_conformance, Violation, ColumnSpec, PropertyDef}`.
 
-- [ ] **Step 2:** run the new targets, verify FAIL red (compile error — module absent): `buck2 test //src/control-plane/core:transform-job //src/control-plane/core:conform --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL|Error" /tmp/t1.log`
-- [ ] **Step 3:** create `core/src/transform_job.rs` + `core/src/conform.rs` (conform body verbatim from transform, `use crate::{ColumnSpec, PropertyDef, UnknownLogicalType, satisfies};`); wire `lib.rs`: `mod conform; mod transform_job; pub use conform::{Violation, check_conformance}; pub use transform_job::{OutputMode, TransformJob, TypedTransformJob, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND};`.
-- [ ] **Step 4:** re-point transform: `run.rs` deletes its `OutputMode` and re-exports core's; `transform/src/conform.rs` becomes the re-export shim; delete the two transform test files + BUCK targets.
-- [ ] **Step 5:** `buck2 build -M none //src/... > /tmp/b1.log 2>&1; grep -c "BUILD FAILED" /tmp/b1.log` (0) and re-run Step 2's tests (PASS) plus transform's remaining unit targets: `buck2 test //src/control-plane/core:transform-job //src/control-plane/core:conform //src/services/transform:run-unknown-input --unstable-allow-all-tests-on-re > /tmp/t1b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1b.log`
-- [ ] **Step 6:** prek; commit `refactor(core): move OutputMode, transform job payloads, and conformance into core`
+- [x] **Step 2:** run the new targets, verify FAIL red (compile error — module absent): `buck2 test //src/control-plane/core:transform-job //src/control-plane/core:conform --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL|Error" /tmp/t1.log`
+- [x] **Step 3:** create `core/src/transform_job.rs` + `core/src/conform.rs` (conform body verbatim from transform, `use crate::{ColumnSpec, PropertyDef, UnknownLogicalType, satisfies};`); wire `lib.rs`: `mod conform; mod transform_job; pub use conform::{Violation, check_conformance}; pub use transform_job::{OutputMode, TransformJob, TypedTransformJob, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND};`.
+- [x] **Step 4:** re-point transform: `run.rs` deletes its `OutputMode` and re-exports core's; `transform/src/conform.rs` becomes the re-export shim; delete the two transform test files + BUCK targets.
+- [x] **Step 5:** `buck2 build -M none //src/... > /tmp/b1.log 2>&1; grep -c "BUILD FAILED" /tmp/b1.log` (0) and re-run Step 2's tests (PASS) plus transform's remaining unit targets: `buck2 test //src/control-plane/core:transform-job //src/control-plane/core:conform //src/services/transform:run-unknown-input --unstable-allow-all-tests-on-re > /tmp/t1b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1b.log`
+- [x] **Step 6:** prek; commit `refactor(core): move OutputMode, transform job payloads, and conformance into core`
 
 ### Task 2: `datafusion_io::register_batches`
 

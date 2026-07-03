@@ -45,31 +45,6 @@ rust_binary(
     visibility = ["PUBLIC"],
 )
 
-rust_test(
-    name = "conform",
-    crate = "conform",
-    srcs = ["tests/conform.rs"],
-    crate_root = "tests/conform.rs",
-    edition = "2024",
-    deps = [
-        ":transform",
-        "//src/control-plane/core:core",
-    ],
-)
-
-rust_test(
-    name = "output-mode",
-    crate = "output_mode",
-    srcs = ["tests/output_mode.rs"],
-    crate_root = "tests/output_mode.rs",
-    edition = "2024",
-    deps = [
-        ":transform",
-        "//third-party:serde",
-        "//third-party:serde_json",
-    ],
-)
-
 loom_fixture_test(
     name = "iceberg-backend-e2e",
     crate = "iceberg_backend_e2e",

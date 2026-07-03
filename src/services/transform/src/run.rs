@@ -18,16 +18,10 @@ use object_store::ObjectStore;
 
 use crate::conform::{Violation, check_conformance};
 
-/// Where a transform's result lands relative to the output table's existing contents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputMode {
-    /// Add the result's files to the table (today's behavior).
-    #[default]
-    Append,
-    /// Replace the table's live contents with the result (older snapshots time-travel).
-    Overwrite,
-}
+/// Where a transform's result lands relative to the output table's existing
+/// contents. Moved to `control_plane_core`; re-exported so existing callers keep
+/// compiling.
+pub use control_plane_core::OutputMode;
 
 /// One input to a transform: a physical table plus the name it is registered under in
 /// DataFusion (what the SQL references). The physical path registers tables under their
