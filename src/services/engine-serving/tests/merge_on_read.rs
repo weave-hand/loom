@@ -224,3 +224,90 @@ async fn identity_less_type_unions_additively() {
         vec![(1, "file".to_string()), (1, "inline".to_string())]
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lone_inline_tombstone_hides_id_with_no_file_tier() {
+    // No file tier at all: exercises the `(None, Some(inline))` branch of the
+    // identity-dedup merge (build_serving_provider), which neither existing identity
+    // test reaches (both seed a file row).
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+
+    // A single inline row for id=1 (creates the inline tier, no file rows seeded),
+    // then mark it a TOMBSTONE — same raw-SQL technique as `tombstone_hides_file_row`.
+    writer
+        .inline("s4", "t4", &cols(), &[(1, "x")], Uuid::new_v4())
+        .await;
+    let mut conn = pool.acquire().await.expect("acquire");
+    let tid = live_table_id(&mut conn, "s4", "t4")
+        .await
+        .expect("live_table_id")
+        .expect("tid present");
+    drop(conn);
+    sqlx::query(AssertSqlSafe(format!(
+        "update iceberg_mirror.inline_{tid} set loom_tombstone = true where \"id\" = 1"
+    )))
+    .execute(&pool)
+    .await
+    .expect("set tombstone");
+
+    define_type(&cp, "s4", "t4", Some("id")).await;
+
+    let catalog = IcebergCatalog::new(pool);
+    let batches = engine_serving::execute_query(
+        &catalog,
+        "SELECT \"id\", \"name\" FROM \"s4\".\"t4\" ORDER BY \"id\"",
+        None,
+    )
+    .await
+    .expect("execute_query");
+
+    // No file tier and the lone inline row is tombstoned: id=1 is absent entirely.
+    assert!(
+        rows(&batches).is_empty(),
+        "expected no rows, got {:?}",
+        rows(&batches)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_only_dedup_keeps_latest_begin_snapshot_version() {
+    // No file tier: two inline VERSIONs of id=1 at different begin_snapshots (each
+    // `.inline()` call allocates the next mirror snapshot id, so the second call's
+    // rows carry a strictly greater begin_snapshot). Exercises intra-inline-tier
+    // dedup within the `(None, Some(inline))` branch: the greatest-precedence
+    // version must win even with no file tier present.
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+
+    let snap_low = writer
+        .inline("s5", "t5", &cols(), &[(1, "v1")], Uuid::new_v4())
+        .await;
+    let snap_high = writer
+        .inline("s5", "t5", &cols(), &[(1, "v9")], Uuid::new_v4())
+        .await;
+    assert!(
+        snap_high > snap_low,
+        "second inline call must allocate a later snapshot ({snap_low} vs {snap_high})"
+    );
+
+    define_type(&cp, "s5", "t5", Some("id")).await;
+
+    let catalog = IcebergCatalog::new(pool);
+    let batches = engine_serving::execute_query(
+        &catalog,
+        "SELECT \"id\", \"name\" FROM \"s5\".\"t5\" ORDER BY \"id\"",
+        None,
+    )
+    .await
+    .expect("execute_query");
+
+    // Exactly one row for id=1: the higher-begin_snapshot version ("v9") wins.
+    assert_eq!(rows(&batches), vec![(1, "v9".to_string())]);
+}

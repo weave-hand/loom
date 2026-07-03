@@ -132,10 +132,9 @@ pub async fn build_serving_provider(
     .await?;
 
     // Combine. Identity-less: file-only, inline-only, or an additive UNION ALL of both
-    // (the inline provider carries the authoritative mirror schema, while the file
-    // provider's is Parquet-footer-inferred, so a column's nullability may differ;
-    // `DataFrame::union` widens nullability, so this is fine — names + datatypes match
-    // because both derive from the same table schema). Identity-bearing: a plain file
+    // (the file provider presents the mirror schema; the union's nullability-widening
+    // is defensive here — names + datatypes match because both derive from the same
+    // table schema). Identity-bearing: a plain file
     // provider when there are no live inline rows (file rows are already identity-unique),
     // else the identity-dedup merge view.
     let provider: Arc<dyn datafusion::catalog::TableProvider> = match identity.as_deref() {
