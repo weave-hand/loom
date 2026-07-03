@@ -220,6 +220,8 @@ Add the preflight method inside `impl EmbeddedPg` (near `run_initdb`):
 ```
 
 > Note: the `?` after `.output().await` propagates a genuine spawn `io::Error` (e.g. the `postgres` binary is absent) as `EmbeddedPgError::Io` — acceptable and strictly better than today (start would fail at init anyway). The stub test's `postgres` exists and exits 127, so it reaches the classifier.
+>
+> Note (execution): `EmbeddedPg::start` checks `is_effective_root()` first, so the stub-script `start` test — like every embedded test in the tree — assumes non-root execution (the cloud shim routes `buck2 test` to the non-root RE user; local dev machines are non-root). On a genuinely-root local host without the shim it would short-circuit with `RunningAsRoot` before the preflight; that is the standard embedded-test constraint, not a new one.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -634,6 +636,8 @@ git commit -m "feat(runtime): PG-bin optional at parse, required at spawn; embed
 **Interfaces:**
 - Consumes: `service_runtime::{Config, build_pool_managed, build_pool, control_plane, create_admin::run_create_admin}`; `managed_postgres::EmbeddedPg`; the fixture-injected `POSTGRES_BIN_DIR` / `POSTGRES_LD_LIBRARY_PATH` env; `control_plane_core::{Acl, Auth}` (for the sealed/has-user assertions).
 
+> Coverage scope: this exercises the exact library sequence the `loom create-admin` CLI runs (`Config::from_map(no-bin)` → `build_pool(cfg.db)` → `control_plane` → `run_create_admin`, per `standalone/src/main.rs`), not a spawned `loom` subprocess. The CLI is a thin wrapper over that sequence, so this faithfully covers AC1 at the library level; call this out in the PR body rather than over-claiming binary-level e2e.
+
 - [ ] **Step 1: Write the failing end-to-end test**
 
 Create `src/services/runtime/tests/embedded_client_only.rs`:
@@ -791,22 +795,48 @@ to:
 
 - [ ] **Step 2: Drop the create-admin PG-var workaround**
 
-In the `loom create-admin` invocation (lines ~136–146), remove the `LOOM_PG_BIN_DIR`/`LOOM_PG_LD_LIBRARY_PATH` overrides that existed only to satisfy config parsing, and update the comment. The client connects via the (now-defaulted) socket. Change the invocation block so it no longer passes those two vars:
+Edit the `loom create-admin` invocation and its comment (current `tools/dev-up.sh:136–146`). This is a **surgical edit, not a rewrite**: delete ONLY the `LOOM_PG_BIN_DIR=… LOOM_PG_LD_LIBRARY_PATH=…` continuation line (145) and reword the comment (136–138). Keep `printf '%s' "$ADMIN_PASS"`, the exact `if … then … else … fi` structure, and the `echo "dev-up: created admin '$ADMIN_USER'"` success line verbatim.
+
+Change the comment (136–138) from:
 
 ```bash
 # `create-admin` connects to the already-running embedded Postgres as a client via
-# the defaulted embedded socket (it does not boot its own PG), so it needs no
-# LOOM_PG_BIN_DIR/LOOM_PG_LD_LIBRARY_PATH.
-if echo "$ADMIN_PASSWORD" | \
-   env "${common_env[@]}" \
+# the LOOM_DB_* socket in common_env (it does not boot its own PG); the PG bin/lib
+# vars are still required for `Config::from_map` to parse in embedded mode.
+```
+
+to:
+
+```bash
+# `create-admin` connects to the already-running embedded Postgres as a client via
+# the defaulted embedded socket in common_env (it does not boot its own PG), so it
+# needs neither the PG bin/lib vars nor LOOM_DB_* — Config::from_map defaults them.
+```
+
+Then change the invocation (144–150) from:
+
+```bash
+if printf '%s' "$ADMIN_PASS" | env "${common_env[@]}" \
+     LOOM_PG_BIN_DIR="$PGROOT/bin" LOOM_PG_LD_LIBRARY_PATH="$PGLD" \
      "$LOOM_BIN" create-admin --username "$ADMIN_USER" --password-stdin; then
-  :
+  echo "dev-up: created admin '$ADMIN_USER'"
 else
   echo "dev-up: create-admin skipped (instance already sealed?)"
 fi
 ```
 
-> Preserve the exact surrounding control flow (the `if ... then ... else ... fi` and the success branch body) as it currently exists — only the `env` line's PG-var overrides and the comment change. The serve-path invocation (lines ~125–132) KEEPS `LOOM_PG_BIN_DIR`/`LOOM_PG_LD_LIBRARY_PATH` (it boots the cluster) and the libxml2 shim (`PGLD`) stays untouched.
+to (only the second `env` line changes — the PG-var overrides are gone):
+
+```bash
+if printf '%s' "$ADMIN_PASS" | env "${common_env[@]}" \
+     "$LOOM_BIN" create-admin --username "$ADMIN_USER" --password-stdin; then
+  echo "dev-up: created admin '$ADMIN_USER'"
+else
+  echo "dev-up: create-admin skipped (instance already sealed?)"
+fi
+```
+
+> The serve-path invocation (lines ~125–132) KEEPS `LOOM_PG_BIN_DIR`/`LOOM_PG_LD_LIBRARY_PATH` (it boots the cluster) and the libxml2 shim (`PGLD`) stays untouched. Note the one intended value change from shedding the `common_env` placeholders (Step 1): the old placeholder `LOOM_DB_PASSWORD=postgres` becomes the embedded default `""` — harmless under socket trust auth (both `pg_connect_options()` and `pg_url()` connect over the same socket where the password is ignored).
 
 - [ ] **Step 3: Verify the script still parses**
 
