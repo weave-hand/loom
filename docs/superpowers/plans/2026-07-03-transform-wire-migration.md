@@ -422,14 +422,14 @@ pub async fn handle_typed_transform(ctx: &TransformCtx, job: Job) -> std::result
 
 (Byte-identical lineage payload to `typed.rs:70-84`; register_as = type name, matching `typed.rs:61-67`.)
 
-- [ ] **Step 1 (red):** `worker/tests/typed_transform_e2e.rs` — seed backing tables via `land`, define types via `pg.ontology().define_type(ObjectType{...})` — **copy the literal from `typed_transform_e2e.rs:182-190` verbatim; it also needs `derived: vec![]` and `identity: None`**, don't paraphrase the struct. BUCK target deps = `compact-e2e`'s list PLUS `//third-party:sqlx`. Three cases:
+- [x] **Step 1 (red):** `worker/tests/typed_transform_e2e.rs` — seed backing tables via `land`, define types via `pg.ontology().define_type(ObjectType{...})` — **copy the literal from `typed_transform_e2e.rs:182-190` verbatim; it also needs `derived: vec![]` and `identity: None`**, don't paraphrase the struct. BUCK target deps = `compact-e2e`'s list PLUS `//third-party:sqlx`. Three cases:
   1. `typed_transform_commits_with_type_named_lineage` — SQL in type terms; assert rows land in the output type's backing table, and — via the same raw-sqlx lineage read as Task 4 — the event's input/output dataset rows are TYPE refs (`loom:type` namespace) and `payload["input_tables"]`/`["output_table"]` name the physical tables (pins the byte-identical typed payload).
   2. `nonconforming_result_abandons_without_commit` — SQL yielding an extra column; assert Abandon mentioning `violation`, output table has no snapshot (`current_snapshot` ⇒ NotFound), and no lineage event for the output.
   3. `unknown_type_abandons` — input type not defined ⇒ Abandon `unknown ontology type`.
   Run: `buck2 test //src/services/worker:typed-transform-e2e --unstable-allow-all-tests-on-re > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t5.log` — FAIL.
-- [ ] **Step 2:** implement handler + main.rs kind/arm + BUCK target.
-- [ ] **Step 3:** rerun (PASS) + `buck2 test //src/services/worker: --unstable-allow-all-tests-on-re > /tmp/t5b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5b.log`.
-- [ ] **Step 4:** prek; commit `feat(worker): typed transform jobs over the engine wire`
+- [x] **Step 2:** implement handler + main.rs kind/arm + BUCK target.
+- [x] **Step 3:** rerun (PASS) + `buck2 test //src/services/worker: --unstable-allow-all-tests-on-re > /tmp/t5b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5b.log`.
+- [x] **Step 4:** prek; commit `feat(worker): typed transform jobs over the engine wire`
 
 ### Task 6: Delete the pool-owning transform crate
 

@@ -4,7 +4,8 @@
 //! `LOOM_LOCK_TIMEOUT_MS` (default: 5000), and `LOOM_WAREHOUSE_URI` (required for
 //! compaction). Connects to the engine over a UDS and runs the generic
 //! `control_plane_worker::Worker<GrpcQueueClient>` loop, draining `flush_table`,
-//! `gc_table`, `compact_table`, and `transform` jobs (dispatched by kind). No
+//! `gc_table`, `compact_table`, `transform`, and `typed-transform` jobs (dispatched
+//! by kind). No
 //! Postgres in the dep closure — the engine owns PG.
 
 use std::sync::Arc;
@@ -12,14 +13,14 @@ use std::time::Duration;
 
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, COMPACT_JOB_KIND, FLUSH_JOB_KIND, GC_JOB_KIND, JobFailure,
-    TRANSFORM_JOB_KIND,
+    TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND,
 };
 use control_plane_worker::Worker;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::FlightTableClient;
 use tokio_util::sync::CancellationToken;
 use worker::compact::{CompactCtx, handle_compact};
-use worker::transform::{TransformCtx, handle_transform};
+use worker::transform::{TransformCtx, handle_transform, handle_typed_transform};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -84,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 COMPACT_JOB_KIND.to_string(),
                 BUILD_VECTOR_INDEX_JOB_KIND.to_string(),
                 TRANSFORM_JOB_KIND.to_string(),
+                TYPED_TRANSFORM_JOB_KIND.to_string(),
             ],
             shutdown,
             move |job| {
@@ -100,6 +102,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         k if k == COMPACT_JOB_KIND => handle_compact(&cctx, job).await,
                         k if k == TRANSFORM_JOB_KIND => handle_transform(&tctx, job).await,
+                        k if k == TYPED_TRANSFORM_JOB_KIND => {
+                            handle_typed_transform(&tctx, job).await
+                        }
                         k if k == BUILD_VECTOR_INDEX_JOB_KIND => {
                             worker::handler::handle_build_vector_index(flush, worker_tuning, job)
                                 .await

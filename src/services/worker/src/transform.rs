@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use control_plane_core::{
-    DatasetRef, EventType, Job, JobFailure, LineageEvent, OutputMode, PropertyDef, RunId, TableRef,
-    TransformJob, check_conformance,
+    ControlPlaneError, DatasetRef, EventType, Job, JobFailure, LineageEvent, OutputMode,
+    PropertyDef, RunId, TableRef, TransformJob, TypeName, TypedTransformJob, check_conformance,
 };
 use datafusion::execution::context::SessionContext;
 use datafusion_io::{
@@ -56,6 +56,81 @@ pub async fn handle_transform(ctx: &TransformCtx, job: Job) -> std::result::Resu
             output: &parsed.output,
             sql: &parsed.sql,
             conform: None,
+            output_mode: parsed.output_mode,
+            lineage,
+        },
+    )
+    .await
+}
+
+/// Run one `"typed-transform"` job: SQL over ontology-type-named inputs. Each input
+/// TYPE resolves to its backing table (registered under the TYPE name, so the SQL is
+/// written in type terms) and the result must conform exactly to the output type's
+/// properties before anything is written or committed. Lineage is TYPE-named
+/// (`loom:type` dataset refs) with the physical tables retained in the payload.
+pub async fn handle_typed_transform(
+    ctx: &TransformCtx,
+    job: Job,
+) -> std::result::Result<(), JobFailure> {
+    let attempts = job.attempts;
+    let parsed: TypedTransformJob = serde_json::from_value(job.payload)
+        .map_err(|e| JobFailure::abandon(format!("bad typed-transform payload: {e}")))?;
+    // Resolve inputs: NotFound is deterministic (Abandon), other errors transient (Retry).
+    let mut inputs = Vec::new();
+    let mut input_types = Vec::new();
+    for name in &parsed.inputs {
+        let ty = TypeName(name.clone());
+        let table = ctx.control.gov_resolve(&ty).await.map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => {
+                JobFailure::abandon(format!("unknown ontology type {name}"))
+            }
+            other => JobFailure::retry(
+                ctx.worker_tuning.backoff(attempts),
+                format!("resolve: {other}"),
+            ),
+        })?;
+        inputs.push((name.clone(), table));
+        input_types.push(ty);
+    }
+    // The output type's properties are the conformance contract; its table is the
+    // write target (which need not yet exist — the commit's create is idempotent).
+    let out_ty = TypeName(parsed.output.clone());
+    let out_type = ctx
+        .control
+        .gov_get_type(&out_ty)
+        .await
+        .map_err(|e| match e {
+            ControlPlaneError::NotFound(_) => {
+                JobFailure::abandon(format!("unknown ontology type {}", parsed.output))
+            }
+            other => JobFailure::retry(
+                ctx.worker_tuning.backoff(attempts),
+                format!("get_type: {other}"),
+            ),
+        })?;
+    let lineage = LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: input_types.iter().map(DatasetRef::from).collect(),
+        outputs: vec![DatasetRef::from(&out_ty)],
+        payload: serde_json::json!({
+            "sql": parsed.sql,
+            "input_tables": inputs
+                .iter()
+                .map(|(_, t)| format!("{}.{}", t.schema, t.name))
+                .collect::<Vec<_>>(),
+            "output_table": format!("{}.{}", out_type.table.schema, out_type.table.name),
+        }),
+    };
+    run_wire_transform(
+        ctx,
+        attempts,
+        WireTransform {
+            inputs,
+            output: &out_type.table,
+            sql: &parsed.sql,
+            conform: Some(&out_type.properties),
             output_mode: parsed.output_mode,
             lineage,
         },

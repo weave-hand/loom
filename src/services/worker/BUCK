@@ -216,6 +216,46 @@ loom_fixture_test(
     ],
 )
 
+# Typed transform e2e: resolve ontology types over the wire (governance RPCs),
+# run type-term SQL through handle_typed_transform, conformance-gate the result,
+# and commit to the type's backing table with TYPE-named lineage
+# (loom:type dataset refs + physical tables in the payload).
+loom_fixture_test(
+    name = "typed-transform-e2e",
+    crate = "typed_transform_e2e",
+    srcs = ["tests/typed_transform_e2e.rs"],
+    crate_root = "tests/typed_transform_e2e.rs",
+    edition = "2024",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/worker:worker",
+        "//src/loom-config:loom-config",
+        "//src/services/datafusion-io:datafusion-io",
+        "//src/services/engine:engine",
+        "//src/services/engine-serving:engine-serving",
+        "//src/services/engine-wire:engine-wire",
+        "//src/services/store-config:store-config",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
 # Compaction e2e: land 3 small files, run the compact handler over the wire,
 # verify they coalesce into 1, rows are preserved, and prior snapshot time-travels.
 loom_fixture_test(
