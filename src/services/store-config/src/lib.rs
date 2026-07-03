@@ -68,6 +68,7 @@ pub struct S3Backend {
 
 impl ObjectStoreConfig {
     /// Construct an S3 config directly (test helper for fixtures that know the endpoint).
+    #[doc(hidden)]
     pub fn for_s3_test(
         warehouse_uri: String,
         bucket: String,
@@ -171,6 +172,27 @@ pub struct ServingStore {
     pub store: Arc<dyn ObjectStore>,
 }
 
+/// Build the S3/MinIO-backed [`ServingStore`] for `s`. Shared by
+/// [`build_serving_object_store`] (the DataFusion serving read path) and
+/// [`build_write_store`] (the writable coalesce path) so neither has to treat
+/// the S3 case as optional.
+fn s3_serving_store(s: &S3Backend) -> Result<ServingStore, StoreConfigError> {
+    let mut b = object_store::aws::AmazonS3Builder::new()
+        .with_bucket_name(&s.bucket)
+        .with_region(&s.region)
+        .with_access_key_id(&s.access_key_id)
+        .with_secret_access_key(&s.secret_access_key)
+        .with_virtual_hosted_style_request(!s.path_style);
+    if let Some(ep) = &s.endpoint {
+        b = b.with_endpoint(ep).with_allow_http(true);
+    }
+    let store = b.build().map_err(StoreConfigError::Store)?;
+    Ok(ServingStore {
+        bucket: s.bucket.clone(),
+        store: Arc::new(store),
+    })
+}
+
 /// Build the DataFusion serving read store for `s3://` warehouses. Returns the bucket
 /// name (for the `ObjectStoreUrl`) + the store, or `None` for local-filesystem reads.
 pub fn build_serving_object_store(
@@ -178,22 +200,7 @@ pub fn build_serving_object_store(
 ) -> Result<Option<ServingStore>, StoreConfigError> {
     match &cfg.backend {
         ObjectStoreBackend::Local => Ok(None),
-        ObjectStoreBackend::S3(s) => {
-            let mut b = object_store::aws::AmazonS3Builder::new()
-                .with_bucket_name(&s.bucket)
-                .with_region(&s.region)
-                .with_access_key_id(&s.access_key_id)
-                .with_secret_access_key(&s.secret_access_key)
-                .with_virtual_hosted_style_request(!s.path_style);
-            if let Some(ep) = &s.endpoint {
-                b = b.with_endpoint(ep).with_allow_http(true);
-            }
-            let store = b.build().map_err(StoreConfigError::Store)?;
-            Ok(Some(ServingStore {
-                bucket: s.bucket.clone(),
-                store: Arc::new(store),
-            }))
-        }
+        ObjectStoreBackend::S3(s) => Ok(Some(s3_serving_store(s)?)),
     }
 }
 
@@ -218,8 +225,8 @@ pub fn build_write_store(cfg: &ObjectStoreConfig) -> Result<WriteStore, StoreCon
                 root_url: cfg.warehouse_uri.clone(),
             })
         }
-        ObjectStoreBackend::S3(_) => {
-            let ss = build_serving_object_store(cfg)?.expect("S3 backend yields a serving store");
+        ObjectStoreBackend::S3(s) => {
+            let ss = s3_serving_store(s)?;
             Ok(WriteStore {
                 store: ss.store,
                 root_url: format!("s3://{}", ss.bucket),
