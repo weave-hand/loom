@@ -6,7 +6,9 @@
 //! one-kind contract). See
 //! docs/superpowers/specs/2026-07-02-pillar-idioms-audit-design.md.
 
-use control_plane_core::{FlatIndex, HnswIndex, IvfFlatIndex, Metric, VectorIndex, VectorKey, decode};
+use control_plane_core::{
+    FlatIndex, HnswIndex, IvfFlatIndex, Metric, VectorIndex, VectorKey, decode,
+};
 use proptest::prelude::*;
 
 fn metric() -> impl Strategy<Value = Metric> {

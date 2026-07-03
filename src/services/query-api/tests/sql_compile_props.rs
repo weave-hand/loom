@@ -29,7 +29,11 @@ fn ident() -> impl Strategy<Value = String> {
 /// (filter, not a regex char-class, to avoid depending on unicode-escape support).
 fn marked_text() -> impl Strategy<Value = SqlValue> {
     any::<String>().prop_map(|s| {
-        let suffix: String = s.chars().filter(|c| *c != ID_MARK && *c != VAL_MARK).take(16).collect();
+        let suffix: String = s
+            .chars()
+            .filter(|c| *c != ID_MARK && *c != VAL_MARK)
+            .take(16)
+            .collect();
         SqlValue::Text(format!("{VAL_MARK}{suffix}"))
     })
 }
@@ -48,16 +52,37 @@ fn scalar_operand() -> impl Strategy<Value = SqlValue> {
 /// so `compile_select` returns Ok and emits SQL.
 fn predicate() -> impl Strategy<Value = CallerPredicate> {
     let scalar_ops = prop_oneof![
-        Just(CompareOp::Eq), Just(CompareOp::Ne), Just(CompareOp::Lt),
-        Just(CompareOp::Le), Just(CompareOp::Gt), Just(CompareOp::Ge),
-        Just(CompareOp::Contains), Just(CompareOp::StartsWith), Just(CompareOp::EndsWith),
+        Just(CompareOp::Eq),
+        Just(CompareOp::Ne),
+        Just(CompareOp::Lt),
+        Just(CompareOp::Le),
+        Just(CompareOp::Gt),
+        Just(CompareOp::Ge),
+        Just(CompareOp::Contains),
+        Just(CompareOp::StartsWith),
+        Just(CompareOp::EndsWith),
     ];
-    let scalar_pred = (ident(), scalar_ops, scalar_operand())
-        .prop_map(|(column, op, v)| CallerPredicate { column, op, values: vec![v] });
-    let null_pred = (ident(), prop_oneof![Just(CompareOp::IsNull), Just(CompareOp::IsNotNull)])
-        .prop_map(|(column, op)| CallerPredicate { column, op, values: vec![] });
-    let between_pred = (ident(), scalar_operand(), scalar_operand())
-        .prop_map(|(column, a, b)| CallerPredicate { column, op: CompareOp::Between, values: vec![a, b] });
+    let scalar_pred =
+        (ident(), scalar_ops, scalar_operand()).prop_map(|(column, op, v)| CallerPredicate {
+            column,
+            op,
+            values: vec![v],
+        });
+    let null_pred = (
+        ident(),
+        prop_oneof![Just(CompareOp::IsNull), Just(CompareOp::IsNotNull)],
+    )
+        .prop_map(|(column, op)| CallerPredicate {
+            column,
+            op,
+            values: vec![],
+        });
+    let between_pred =
+        (ident(), scalar_operand(), scalar_operand()).prop_map(|(column, a, b)| CallerPredicate {
+            column,
+            op: CompareOp::Between,
+            values: vec![a, b],
+        });
     let set_pred = (
         ident(),
         prop_oneof![Just(CompareOp::In), Just(CompareOp::NotIn)],
@@ -149,18 +174,29 @@ proptest! {
 fn arb_row_filter() -> impl Strategy<Value = control_plane_core::RowFilter> {
     use control_plane_core::{CompareOp, RowFilter, ScalarValue};
     let op = prop_oneof![
-        Just(CompareOp::Eq), Just(CompareOp::Ne), Just(CompareOp::Lt),
-        Just(CompareOp::Le), Just(CompareOp::Gt), Just(CompareOp::Ge),
-        Just(CompareOp::In), Just(CompareOp::NotIn),
-        Just(CompareOp::IsNull), Just(CompareOp::IsNotNull),
+        Just(CompareOp::Eq),
+        Just(CompareOp::Ne),
+        Just(CompareOp::Lt),
+        Just(CompareOp::Le),
+        Just(CompareOp::Gt),
+        Just(CompareOp::Ge),
+        Just(CompareOp::In),
+        Just(CompareOp::NotIn),
+        Just(CompareOp::IsNull),
+        Just(CompareOp::IsNotNull),
     ];
     let value = prop_oneof![
         any::<String>().prop_map(ScalarValue::Text),
         any::<i64>().prop_map(ScalarValue::Int),
         any::<bool>().prop_map(ScalarValue::Bool),
-        prop::collection::vec(any::<i64>().prop_map(ScalarValue::Int), 0..3).prop_map(ScalarValue::List),
+        prop::collection::vec(any::<i64>().prop_map(ScalarValue::Int), 0..3)
+            .prop_map(ScalarValue::List),
     ];
-    let leaf = (".*", op, value).prop_map(|(property, op, value)| RowFilter::Compare { property, op, value });
+    let leaf = (".*", op, value).prop_map(|(property, op, value)| RowFilter::Compare {
+        property,
+        op,
+        value,
+    });
     leaf.prop_recursive(3, 16, 4, |inner| {
         prop_oneof![
             prop::collection::vec(inner.clone(), 0..4).prop_map(RowFilter::And),

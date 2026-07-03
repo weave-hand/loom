@@ -13,10 +13,17 @@ use query_api::path_parse::{parse_direction, parse_graph_mode, parse_path_hops};
 /// path and the UnknownLogicalType Err path are exercised.
 fn logical_ty() -> impl Strategy<Value = String> {
     prop_oneof![
-        Just("Integer".to_string()), Just("Long".to_string()), Just("Double".to_string()),
-        Just("Boolean".to_string()), Just("String".to_string()), Just("Date".to_string()),
-        Just("Timestamp".to_string()), Just("emailaddress".to_string()),
-        Just("url".to_string()), Just("phonenumber".to_string()), Just("vector(4)".to_string()),
+        Just("Integer".to_string()),
+        Just("Long".to_string()),
+        Just("Double".to_string()),
+        Just("Boolean".to_string()),
+        Just("String".to_string()),
+        Just("Date".to_string()),
+        Just("Timestamp".to_string()),
+        Just("emailaddress".to_string()),
+        Just("url".to_string()),
+        Just("phonenumber".to_string()),
+        Just("vector(4)".to_string()),
         ".{0,10}", // arbitrary / unknown (String)
     ]
 }
@@ -25,16 +32,34 @@ fn logical_ty() -> impl Strategy<Value = String> {
 fn raw_value() -> impl Strategy<Value = String> {
     prop_oneof![
         ".{0,16}",
-        (prop_oneof![
-            Just("gt"), Just("lt"), Just("ge"), Just("le"), Just("ne"), Just("eq"),
-            Just("in"), Just("nin"), Just("between"), Just("contains"),
-            Just("startswith"), Just("endswith"), Just("isnull"), Just("isnotnull"),
-        ], ".{0,16}").prop_map(|(op, rest)| format!("{op}:{rest}")),
+        (
+            prop_oneof![
+                Just("gt"),
+                Just("lt"),
+                Just("ge"),
+                Just("le"),
+                Just("ne"),
+                Just("eq"),
+                Just("in"),
+                Just("nin"),
+                Just("between"),
+                Just("contains"),
+                Just("startswith"),
+                Just("endswith"),
+                Just("isnull"),
+                Just("isnotnull"),
+            ],
+            ".{0,16}"
+        )
+            .prop_map(|(op, rest)| format!("{op}:{rest}")),
     ]
 }
 
 fn hop() -> impl Strategy<Value = Hop> {
-    (".{0,8}", prop_oneof![Just(Direction::Forward), Just(Direction::Inverse)])
+    (
+        ".{0,8}",
+        prop_oneof![Just(Direction::Forward), Just(Direction::Inverse)],
+    )
         .prop_map(|(link, direction)| Hop { link, direction })
 }
 
