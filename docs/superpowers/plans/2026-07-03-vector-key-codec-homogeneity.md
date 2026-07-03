@@ -1,6 +1,6 @@
 # Vector-Key Codec Homogeneity Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make mixed `VectorKey` kinds a loud `Validation` error at build and stray trailing bytes a loud decode error, so the LVIX identity block can never silently corrupt.
 
@@ -147,7 +147,7 @@ Then in each of the three `deserialize`s, after the `read_keys` line and before 
 Run: `buck2 test //src/control-plane/core:vector-index //src/control-plane/core:vector-index-codec //src/control-plane/core:vector-index-decode-props > /tmp/t4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t4.log`
 Expected: PASS, 0 failures.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run -v0 //tools:prek -- run --all-files > /tmp/p.log 2>&1; grep -c Failed /tmp/p.log  # expect 0
@@ -163,7 +163,7 @@ git commit -m "fix(vector-index): reject trailing bytes after the identity block
 **Interfaces:**
 - Consumes: Task 1's build error and Task 2's decode error.
 
-- [ ] **Step 1: Write the two properties** (red only if Tasks 1-2 regressed — they pin the invariant):
+- [x] **Step 1: Write the two properties** (red only if Tasks 1-2 regressed — they pin the invariant):
 
 ```rust
 /// Generator: rows with at least one Int AND one Str key (dim fixed small).
@@ -200,12 +200,12 @@ proptest! {
 
 Also rewrite the `dim_and_rows()` doc-comment note (line ~29, "…`iss-vector-index-mixed-key-kind-corrupts-decode`, not exercised here.") to state the invariant is now enforced at build and exercised by `mixed_keys_rejected_at_build`.
 
-- [ ] **Step 2: Run**
+- [x] **Step 2: Run**
 
 Run: `buck2 test //src/control-plane/core:vector-index-decode-props > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5.log`
 Expected: PASS.
 
-- [ ] **Step 3: prek + commit**
+- [x] **Step 3: prek + commit**
 
 ```bash
 buck2 run -v0 //tools:prek -- run --all-files > /tmp/p.log 2>&1; grep -c Failed /tmp/p.log  # expect 0

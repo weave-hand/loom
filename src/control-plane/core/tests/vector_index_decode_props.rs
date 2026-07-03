@@ -24,9 +24,9 @@ fn coord() -> impl Strategy<Value = f32> {
 /// `(dim, rows)` where every vector has length == dim (build's precondition) and
 /// all identity keys within one index share a kind. Homogeneous keys are the
 /// codec's documented contract (the identity column is a single logical type —
-/// see `codec.rs::write_keys`); mixed Int/Str keys within one index violate that
-/// precondition and are tracked separately as
-/// `iss-vector-index-mixed-key-kind-corrupts-decode`, not exercised here.
+/// see `codec.rs::write_keys`); the invariant is now enforced at build
+/// (`pack_rows` rejects mixed kinds with a `Validation` error) and exercised by
+/// `mixed_keys_rejected_at_build` below.
 fn dim_and_rows() -> impl Strategy<Value = (u32, Vec<(VectorKey, Vec<f32>)>)> {
     (1usize..=8, any::<bool>()).prop_flat_map(|(dim, str_keys)| {
         let key = if str_keys {
@@ -37,6 +37,30 @@ fn dim_and_rows() -> impl Strategy<Value = (u32, Vec<(VectorKey, Vec<f32>)>)> {
         let row = (key, prop::collection::vec(coord(), dim..=dim));
         prop::collection::vec(row, 0..6).prop_map(move |rows| (dim as u32, rows))
     })
+}
+
+/// Generator: rows with at least one Int AND one Str key (dim fixed small).
+/// Built on `dim_and_rows()`'s row shape with the payload length pinned to 1
+/// (matching the tests' `dim=1`, so the homogeneity check — not the dim check —
+/// is what fires): draw one guaranteed row of each key kind plus a mixed-kind
+/// tail, then shuffle.
+fn mixed_rows() -> impl Strategy<Value = Vec<(VectorKey, Vec<f32>)>> {
+    let key = prop_oneof![
+        any::<i64>().prop_map(VectorKey::Int),
+        ".{0,8}".prop_map(VectorKey::Str),
+    ];
+    let payload = || prop::collection::vec(coord(), 1..=1);
+    (
+        (any::<i64>().prop_map(VectorKey::Int), payload()),
+        (".{0,8}".prop_map(VectorKey::Str), payload()),
+        prop::collection::vec((key, payload()), 0..6),
+    )
+        .prop_map(|(int_row, str_row, mut rows)| {
+            rows.push(int_row);
+            rows.push(str_row);
+            rows
+        })
+        .prop_shuffle()
 }
 
 proptest! {
@@ -105,5 +129,27 @@ proptest! {
         let bytes = idx.serialize();
         let back = decode(&bytes).expect("decode of our own bytes");
         prop_assert_eq!(back.serialize(), bytes);
+    }
+
+    /// Key-kind homogeneity: every build rejects a mixed-kind row set loudly.
+    #[test]
+    fn mixed_keys_rejected_at_build(rows in mixed_rows()) {
+        // Assert the MESSAGE, not just is_err(): a mis-built generator (e.g.
+        // payload len != 1) would otherwise pass vacuously via dim-mismatch.
+        for e in [
+            FlatIndex::build(1, Metric::Cosine, rows.clone()).unwrap_err(),
+            IvfFlatIndex::build(1, Metric::Cosine, rows.clone(), None).unwrap_err(),
+            HnswIndex::build(1, Metric::Cosine, rows, None, None).unwrap_err(),
+        ] {
+            prop_assert!(e.to_string().contains("mixed identity key kinds"), "wrong error: {e}");
+        }
+    }
+
+    /// Full consumption: any non-empty suffix appended to a valid blob fails decode.
+    #[test]
+    fn trailing_suffix_never_decodes((dim, rows) in dim_and_rows(), m in metric(), suffix in prop::collection::vec(any::<u8>(), 1..16)) {
+        let mut blob = FlatIndex::build(dim, m, rows).expect("build").serialize();
+        blob.extend_from_slice(&suffix);
+        prop_assert!(decode(&blob).is_err());
     }
 }
