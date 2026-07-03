@@ -25,17 +25,21 @@ use prost::Message;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status, Streaming};
 
-/// The one total `EngineServingError` -> gRPC `Status` mapping for the engine's
-/// Flight data plane. Class-preserving: `Plan` (bad SQL — the client's fault) ->
-/// `invalid_argument`; `NoIndex` -> `not_found`; `DimMismatch` ->
-/// `invalid_argument`; `Engine` (execution/backend) -> `internal`. The
-/// NoIndex/DimMismatch arms carry the INNER message only (no enum prefix),
-/// preserving the wire messages the clients' inverse mappings decode.
+/// The one total `EngineServingError` -> gRPC `Status` mapping for the engine,
+/// shared by the Flight data/SQL plane (this module) and the `EngineControl`
+/// inline-delta write RPCs (`service.rs`). Class-preserving: `Plan` (bad SQL —
+/// the client's fault) -> `invalid_argument`; `NoIndex` -> `not_found`;
+/// `DimMismatch` -> `invalid_argument`; `Conflict` (inline-delta CAS lost a
+/// race) -> `aborted`, so callers can retry; `Engine` (execution/backend) ->
+/// `internal`. The NoIndex/DimMismatch/Conflict arms carry the INNER message
+/// only (no enum prefix), preserving the wire messages the clients' inverse
+/// mappings decode.
 pub fn serving_status(e: engine_serving::EngineServingError) -> Status {
     use engine_serving::EngineServingError as E;
     match e {
         E::NoIndex(m) => Status::not_found(m),
         E::DimMismatch(m) => Status::invalid_argument(m),
+        E::Conflict(m) => Status::aborted(m),
         e @ E::Plan(_) => Status::invalid_argument(e.to_string()),
         e @ E::Engine(_) => Status::internal(e.to_string()),
     }

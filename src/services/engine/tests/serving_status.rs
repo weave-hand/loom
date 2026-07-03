@@ -1,5 +1,6 @@
 //! Unit pins for `serving_status` — the one total `EngineServingError` -> gRPC
-//! `Status` mapping on the engine's Flight data plane. NoIndex/DimMismatch carry
+//! `Status` mapping shared by the engine's Flight data plane and the
+//! `EngineControl` inline-delta write RPCs. NoIndex/DimMismatch/Conflict carry
 //! the INNER message only (no enum prefix — the wire contract the clients'
 //! inverse mappings were built against); Plan/Engine carry their full Display.
 
@@ -39,4 +40,11 @@ fn engine_is_internal_with_full_display() {
     let s = serving_status(EngineServingError::Engine("boom".into()));
     assert_eq!(s.code(), tonic::Code::Internal);
     assert_eq!(s.message(), "engine serving: boom");
+}
+
+#[test]
+fn conflict_is_aborted_with_inner_message() {
+    let s = serving_status(EngineServingError::Conflict("expected version 3, saw 4".into()));
+    assert_eq!(s.code(), tonic::Code::Aborted);
+    assert_eq!(s.message(), "expected version 3, saw 4");
 }

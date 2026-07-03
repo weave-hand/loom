@@ -164,3 +164,16 @@ rust_test(
         "//third-party:tonic",
     ],
 )
+
+rust_test(
+    name = "write-status",
+    crate = "write_status",
+    srcs = ["tests/write_status.rs"],
+    crate_root = "tests/write_status.rs",
+    edition = "2024",
+    deps = [
+        ":engine-wire",
+        "//src/control-plane/core:core",
+        "//third-party:tonic",
+    ],
+)

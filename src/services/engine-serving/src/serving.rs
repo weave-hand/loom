@@ -54,6 +54,11 @@ pub enum EngineServingError {
     /// Callers should surface this as a 400/bad-request.
     #[error("dimension mismatch: {0}")]
     DimMismatch(String),
+    /// An inline-delta CAS lost a race: the identity's live version had already
+    /// moved past `expected_version` by the time the write was attempted. Callers
+    /// should surface this as a retryable conflict, never a generic 500.
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.
