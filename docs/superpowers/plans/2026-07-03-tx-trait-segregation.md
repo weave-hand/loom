@@ -28,7 +28,8 @@
 - Modify: `src/services/query-api/src/wire_control_plane.rs:191-221` (`auth()` → `self.direct.auth()`)
 - Modify: `src/services/transform/src/{run.rs:95+192, typed.rs:33, handler.rs:46+119, main.rs:39}` (`&dyn TableControlPlane` / `Arc<dyn TableControlPlane>`, `begin()` → `begin_table()`)
 - Modify: `src/control-plane/testkit/src/lib.rs` — retighten `snapshot_commit_contract` (:3247), `snapshot_replace_contract` (:3372), `snapshot_write_order_contract` (:3449), `snapshot_compact_contract` (:3519), `tx_atomic_rollback_contract` (:3056) to `TableControlPlane` + `begin_table()`; extend `control_plane_facade_contract` (:3185) with the auth probe
-- Modify: `src/services/transform/tests/run_unknown_input.rs:61+` (stub gains `TableControlPlane`/`TableTx` impls + `auth()`)
+- Modify: `src/services/transform/tests/run_unknown_input.rs:61+` (StubCp gains `impl TableControlPlane` with an `unreachable!` `begin_table` body and an `unreachable!` `auth()` — there is NO stub Tx type in the file and none is needed; do not invent one)
+- Modify (reviewer-verified additional callers — begin()→begin_table() and/or `Arc<dyn ControlPlane>`→`Arc<dyn TableControlPlane>` annotations): `src/control-plane/postgres/tests/iceberg_control_plane.rs` (:65/:82/:116/:130), `src/control-plane/postgres/tests/iceberg_tx_compact.rs` (:111-112), `src/services/transform/tests/transform_e2e_support.rs` (:129-131, :181-183), `transform_e2e.rs` (:107, :188-194), `iceberg_backend_e2e.rs` (:128-130, :249-251), `overwrite_e2e.rs` (:38), `typed_transform_e2e.rs` (:58, :242, :447) — `&dyn ControlPlane` does NOT coerce to `&dyn TableControlPlane`, so every handle feeding a transform handler must be re-annotated
 
 **Interfaces (produced, in `core/src/transaction.rs`):**
 
@@ -61,16 +62,16 @@ and on `ControlPlane` (with `use crate::auth::Auth;`):
 - [ ] **Step 1 (red-first probe): extend `control_plane_facade_contract`** — append an auth probe: resolve a session that cannot exist through the facade accessor and assert `Ok(None)`; mirror the contract's existing probe style, e.g.
 
 ```rust
-    // auth(): reachable through the facade; unknown session resolves to None.
+    // auth(): reachable through the facade; an unknown session resolves to None.
     let resolved = cp
         .auth()
-        .resolve_session("facade-probe-nonexistent-hash")
+        .resolve_session(&[0u8; 32], time::OffsetDateTime::now_utc())
         .await
         .expect("auth resolve through facade");
     assert!(resolved.is_none(), "unknown session must resolve to None");
 ```
 
-(Check `core/src/auth.rs:98`'s actual method names — use whichever read returns `Option` for an unknown credential/session; mirror `auth_contract`'s calls at testkit:1999. This does not compile until `auth()` exists — that IS the red step for the accessor half; the trait split's "red" is the compiler.)
+(Signature verified: `resolve_session(&self, token_sha256: &[u8; 32], now: OffsetDateTime) -> Result<Option<SubjectId>>` at core/src/auth.rs:123-127; testkit already has `time` in scope for auth_contract. NOTE: `control_plane_facade_contract` has exactly ONE runner — `memory/tests/facade.rs` — so the probe exercises Memory behaviorally; Pg/Iceberg/Wire `auth()` is compile-checked only. Do not claim multi-plane behavioral coverage; optionally note the missing postgres facade runner in the PR as observed doc rot — the contract's :3240 comment references a postgres facade test that does not exist.)
 
 - [ ] **Step 2: core** — move the four methods `Tx` → `TableTx` verbatim; add `TableControlPlane`; add `auth()` to `ControlPlane`; fix `commit`'s doc; export `TableTx`, `TableControlPlane` from `core/src/lib.rs` next to `Tx`/`ControlPlane`.
 - [ ] **Step 3: adapters** —
@@ -80,7 +81,7 @@ and on `ControlPlane` (with `use crate::auth::Auth;`):
   - `IcebergControlPlane`: `impl TableControlPlane` gets today's `begin()` body as `begin_table()`; `begin()` becomes `Ok(self.begin_table().await?)` (dyn upcast); `auth()` → `self.pg.auth()`.
   - `MemoryTx`/`MemoryControlPlane`: same split; `auth()` → `self` (memory `impl Auth` exists per spec).
   - `WireControlPlane`: `auth()` → `self.direct.auth()`; `begin()` untouched.
-- [ ] **Step 4: consumers** — transform's four signatures + `main.rs:39`'s `Arc<dyn ControlPlane>` → `Arc<dyn TableControlPlane>`, `cp.begin()` → `cp.begin_table()` (run.rs:192 and any sibling); testkit: the five staging contracts' bounds → `control_plane_core::TableControlPlane` + `begin_table()` (leave `queue_contract`/`lineage_contract`/`tx_isolation_contract` on `ControlPlane` — they run against `PgControlPlane`); `run_unknown_input.rs`'s `StubCp` gains `impl TableControlPlane` (begin_table returning its stub tx) + its stub tx gains `impl TableTx`, and `StubCp` gains an `auth()` (test code may `unimplemented!()` with a reason string).
+- [ ] **Step 4: consumers** — transform's four signatures + `main.rs:39`'s `Arc<dyn ControlPlane>` → `Arc<dyn TableControlPlane>`, `cp.begin()` → `cp.begin_table()` (run.rs:192 and any sibling); testkit: the five staging contracts' bounds → `control_plane_core::TableControlPlane` + `begin_table()` (leave `queue_contract`/`lineage_contract`/`tx_isolation_contract` on `ControlPlane` — queue/lineage run against `PgControlPlane`; tx_isolation runs against Memory but stages nothing); `run_unknown_input.rs`'s `StubCp` gains `impl TableControlPlane` with `begin_table` body `unreachable!("begin not reached — input resolution fails first")` (matching its existing `begin()` at :77-79) and an `unreachable!` `auth()`; NO stub Tx exists or is needed. Fix the additional test callers listed in Files (begin→begin_table, handle re-annotations).
 - [ ] **Step 5: compile + targeted suites**
 
 ```bash
@@ -89,6 +90,8 @@ buck2 test //src/control-plane/... //src/services/transform: --unstable-allow-al
 ```
 
 Expected: build succeeds; contracts (incl. the new auth probe on all planes' facade-contract runs) and transform suites PASS.
+
+- [ ] **Step 5b: doc-rot sweep** — reword alongside the split: `postgres/src/transaction.rs:1-7` module doc (describes the deleted stub-error behavior), `postgres/src/lib.rs:111-113` begin() comment ("table-write methods on this Tx error"), `iceberg_control_plane.rs:1-2` module doc ("makes `ControlPlane::begin()` genuinely polymorphic" → begin_table framing), `core/src/snapshot.rs:5` ("A column for `Tx::create_table`" → `TableTx::create_table`).
 
 - [ ] **Step 6: prek + commit**
 
@@ -108,6 +111,6 @@ git commit -m "refactor(core): split Tx/TableTx + TableControlPlane; auth() on t
 **Files:**
 - Modify: `docs/ROADMAP.md` (remove the `road-tx-trait-segregation` entry), `docs/system-capabilities/control-plane.md`, `docs/FUTURE.md` (only if a `[[road-tx-trait-segregation]]` link exists — check)
 
-- [ ] **Step 1:** Remove the ROADMAP entry (whole block); `grep -rn 'road-tx-trait-segregation\|fut-tx-trait-segregation' docs/ .claude/ src/` — rewrite any surviving `[[...]]` link as a `` `#id` `` span (the promotion prose in FUTURE's `fut-wider-tx-composition` and the capability docs' Known-gaps `#road-tx-trait-segregation` line in `build-and-test.md` must be handled: delete the gap bullet, and reword any "Do this before" sequencing prose to past tense). `bash tools/docs.sh validate` → OK.
+- [ ] **Step 1:** Remove the ROADMAP entry (whole block); `grep -rn 'road-tx-trait-segregation\|fut-tx-trait-segregation' docs/ .claude/ src/` — rewrite any surviving `[[...]]` link as a `` `#id` `` span (reviewer verified: NO `[[...]]` link exists anywhere and FUTURE's `fut-wider-tx-composition` never mentions this item — the only sequencing prose lives inside the ROADMAP entry being deleted. The one real reference is `build-and-test.md:223`'s Known-gaps bullet `#road-tx-trait-segregation` — delete it). `bash tools/docs.sh validate` → OK.
 - [ ] **Step 2:** `docs/system-capabilities/control-plane.md` — in the Tx/transactions theme: the split (`Tx` vs `TableTx`/`begin_table()`, PgTx honest at compile time) and the `auth()` facade accessor, `(#PRNUM)`.
 - [ ] **Step 3:** prek + commit `docs: close road-tx-trait-segregation`.
