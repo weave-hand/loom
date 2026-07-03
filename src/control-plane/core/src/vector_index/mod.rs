@@ -62,6 +62,28 @@ impl IndexSpec {
             )),
         }
     }
+
+    /// Build the index this spec describes over `rows` — THE single
+    /// authoritative spec→constructor routing (previously an inline match in
+    /// the postgres adapter's `build_vector_index`). Codec-neutral: each
+    /// constructor serializes through the unchanged codec, so built bytes stay
+    /// pinned by the codec goldens.
+    pub fn build(
+        &self,
+        dim: u32,
+        metric: Metric,
+        rows: Vec<(VectorKey, Vec<f32>)>,
+    ) -> Result<Box<dyn VectorIndex>> {
+        Ok(match self {
+            IndexSpec::Flat => Box::new(FlatIndex::build(dim, metric, rows)?),
+            IndexSpec::IvfFlat { nlist } => {
+                Box::new(IvfFlatIndex::build(dim, metric, rows, *nlist)?)
+            }
+            IndexSpec::Hnsw { m, ef_construction } => {
+                Box::new(HnswIndex::build(dim, metric, rows, *m, *ef_construction)?)
+            }
+        })
+    }
 }
 
 /// Distance metric, declared at build time and recorded with the index.

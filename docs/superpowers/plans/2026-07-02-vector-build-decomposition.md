@@ -1297,7 +1297,7 @@ git commit -m "fix(query): hot-delta identity decode via shared column_array (Lo
   Vec<(VectorKey, Vec<f32>)>) -> Result<Box<dyn VectorIndex>>` — Tasks 4-5's
   orchestrator calls `inputs.spec.build(dim, inputs.metric, all_rows)?`.
 
-- [ ] **Step 1: Write the failing test `core/tests/index_spec_build.rs`**
+- [x] **Step 1: Write the failing test `core/tests/index_spec_build.rs`**
 
 ```rust
 //! `IndexSpec::build` — the single authoritative spec→index constructor
@@ -1374,7 +1374,7 @@ fn constructor_errors_propagate() {
 }
 ```
 
-- [ ] **Step 2: Wire the BUCK target and observe RED (compile failure)**
+- [x] **Step 2: Wire the BUCK target and observe RED (compile failure)**
 
 Append to `src/control-plane/core/BUCK` after `vector-index-codec`:
 
@@ -1397,7 +1397,7 @@ buck2 test //src/control-plane/core:index-spec-build > /tmp/t3red.log 2>&1; \
 
 Expected: build failure — `no method named `build` found for enum IndexSpec`.
 
-- [ ] **Step 3: Implement `IndexSpec::build`** (append inside `impl IndexSpec`
+- [x] **Step 3: Implement `IndexSpec::build`** (append inside `impl IndexSpec`
   in `core/src/vector_index/mod.rs`, after `from_label`; the match bodies are
   the adapter's job 7 verbatim)
 
@@ -1425,7 +1425,7 @@ Expected: build failure — `no method named `build` found for enum IndexSpec`.
     }
 ```
 
-- [ ] **Step 4: Run — new target green AND the goldens byte-identical**
+- [x] **Step 4: Run — new target green AND the goldens byte-identical**
 
 ```bash
 buck2 test //src/control-plane/core:index-spec-build \
@@ -1437,7 +1437,7 @@ buck2 test //src/control-plane/core:index-spec-build \
 Expected: `Fail 0`. A golden failure means the codec was touched — revert;
 never update a golden.
 
-- [ ] **Step 5: Switch the adapter's job 7 to the core routing**
+- [x] **Step 5: Switch the adapter's job 7 to the core routing**
 
 In `build_vector_index` (`vector_index.rs:450-461`), replace:
 
@@ -1471,7 +1471,7 @@ and trim the now-unused imports at `:9-10`: remove `FlatIndex`, `HnswIndex`,
 `IvfFlatIndex` from the `control_plane_core::{...}` list (`IndexSpec` stays —
 it is the routing's receiver type via `def.spec`).
 
-- [ ] **Step 6: Run the build-path fixture suites**
+- [x] **Step 6: Run the build-path fixture suites**
 
 ```bash
 buck2 test //src/control-plane/postgres:vector-index-build \
@@ -1484,7 +1484,7 @@ buck2 test //src/control-plane/postgres:vector-index-build \
 Expected: `Fail 0` — the three kind-specific suites prove the routing arms
 (flat/ivf/hnsw mirror `index_kind`, decodable blobs) byte-identically.
 
-- [ ] **Step 7: prek + commit**
+- [x] **Step 7: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek3.log 2>&1; grep -E "Failed" /tmp/prek3.log || echo CLEAN

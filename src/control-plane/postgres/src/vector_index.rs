@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use control_plane_core::{
-    Catalog, ControlPlaneError, DatasetRef, EventType, FlatIndex, HnswIndex, IndexSpec,
-    IvfFlatIndex, LineageEvent, Result, RunId, SnapshotId, TableRef, VectorKey,
+    Catalog, ControlPlaneError, DatasetRef, EventType, LineageEvent, Result, RunId, SnapshotId,
+    TableRef, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool};
@@ -458,18 +458,12 @@ pub async fn build_vector_index(
             .unwrap_or(0)
     };
 
-    // 7. Build the chosen index (Flat exact, or IVF approximate). The `VectorIndex`
-    //    trait is `Send`, so the box may be held across `.await` points without
-    //    extracting fields early.
-    let index: Box<dyn control_plane_core::VectorIndex> = match index_spec {
-        IndexSpec::Flat => Box::new(FlatIndex::build(dim, metric, all_rows)?),
-        IndexSpec::IvfFlat { nlist } => {
-            Box::new(IvfFlatIndex::build(dim, metric, all_rows, nlist)?)
-        }
-        IndexSpec::Hnsw { m, ef_construction } => {
-            Box::new(HnswIndex::build(dim, metric, all_rows, m, ef_construction)?)
-        }
-    };
+    // 7. Build the chosen index via the core spec routing (`IndexSpec::build` —
+    //    Flat exact, IVF/HNSW approximate). The `VectorIndex` trait is `Send`,
+    //    so the box may be held across `.await` points without extracting
+    //    fields early.
+    let index: Box<dyn control_plane_core::VectorIndex> =
+        index_spec.build(dim, metric, all_rows)?;
     // dim may have been inferred as 0 for empty tables; prefer index's own dim.
     let dim = if index.dim() > 0 { index.dim() } else { dim };
 
