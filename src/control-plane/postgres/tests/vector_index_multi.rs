@@ -2,7 +2,7 @@
 //! same vector(8) property build independently into distinct Puffin blobs and
 //! each decodes + searches correctly by name.
 
-use std::collections::HashMap;
+use loom_test_seed::{local_sql_catalog, test_lineage};
 use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
@@ -10,18 +10,14 @@ use arrow_array::{Int64Array, RecordBatch};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
-    PropertyDef, RunId, TableRef, TypeName, VectorIndexDef, VectorKey,
+    ColumnSpec, ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef,
+    TypeName, VectorIndexDef, VectorKey,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use control_plane_postgres::puffin::read_vector_index;
 use control_plane_postgres::vector_index::{build_vector_index, lookup_vector_index};
-use iceberg::CatalogBuilder;
-use iceberg::io::{FileIO, LocalFsStorageFactory};
+use iceberg::io::FileIO;
 
 fn columns() -> Vec<ColumnSpec> {
     vec![
@@ -66,37 +62,12 @@ fn ipc_body(rows: &[(i64, [f32; 8])]) -> Vec<u8> {
     buf
 }
 
-fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
-    LineageEvent {
-        run_id: run,
-        event_type: EventType::Complete,
-        event_time: time::OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(table).dataset_ref()],
-        payload: serde_json::json!({ "source": "test" }),
-    }
-}
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_named_indexes_on_one_property_build_and_search_independently() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let table = TableRef {
         schema: "wh".into(),
@@ -178,7 +149,7 @@ async fn two_named_indexes_on_one_property_build_and_search_independently() {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
         },
-        lineage(run, &table),
+        test_lineage(run, &table),
     )
     .await
     .expect("land rows");

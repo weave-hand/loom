@@ -1071,7 +1071,7 @@ only** — postgres tests assert against the build/lookup primitives with
 per-file seed sequencing, so the `seed_docs_*` composites are NOT adopted
 here (their per-test land/define ordering is part of what each test pins).
 
-- [ ] **Step 1: Baseline green** (scope to the 7 targets; find their names by
+- [x] **Step 1: Baseline green** (scope to the 7 targets; find their names by
   `srcs` in the BUCK file — e.g. `vector-index-build` for
   `tests/vector_index_build.rs`):
 
@@ -1090,7 +1090,7 @@ buck2 test //src/control-plane/postgres:vector-index-build \
 `src/control-plane/postgres/BUCK` and use the target whose `srcs` matches the
 file; do not guess.)
 
-- [ ] **Step 2: Per-file swaps** (delete the local fn; import the shared one;
+- [x] **Step 2: Per-file swaps** (delete the local fn; import the shared one;
   rename call sites — nothing else changes):
 
 | File | Swaps |
@@ -1110,11 +1110,11 @@ sed -n '/fn lineage/,/^}/p' src/control-plane/postgres/tests/vector_index_build.
 and compare field-for-field against `test_lineage` in
 `src/testing/seed.rs` (only the fn name may differ).
 
-- [ ] **Step 3: BUCK deps** — add `"//src/testing:seed",` to each of the 7
+- [x] **Step 3: BUCK deps** — add `"//src/testing:seed",` to each of the 7
   targets in `src/control-plane/postgres/BUCK`; prune deps the file no longer
   imports (the build's unused-crate output is the checklist).
 
-- [ ] **Step 4: Run — the 7 targets green; assert-diff discipline**
+- [x] **Step 4: Run — the 7 targets green; assert-diff discipline**
 
 ```bash
 buck2 test //src/control-plane/postgres:vector-index-build \
@@ -1131,7 +1131,7 @@ git diff src/control-plane/postgres/tests | grep -E "^[-+].*assert" | head
 Expected: `Fail 0`; ZERO assert-line changes in this task (postgres files
 had no local `ids`/`distances`).
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek4.log 2>&1; grep -E "Failed" /tmp/prek4.log || echo CLEAN

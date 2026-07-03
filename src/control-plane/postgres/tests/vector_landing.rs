@@ -4,40 +4,18 @@
 //! the columnar Arrow path (`read_files_as_batches`) — the read path the consumer uses
 //! to hydrate an external index. No vector search, no per-object JSON serving.
 
-use std::collections::HashMap;
+use loom_test_seed::{local_sql_catalog, vec4_columns};
 use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Float32Array, Int64Array, ListArray, RecordBatch};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
-use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef,
-};
+use control_plane_core::{Catalog, DatasetId, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use control_plane_postgres::read_files_as_batches;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
-
-fn columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "embedding".into(),
-            ty: "vector(4)".into(),
-            nullable: false,
-        },
-    ]
-}
 
 /// Arrow IPC body: `id: long` + `embedding: list<float>` (non-null element), two
 /// rows each holding `width` floats (`width = 4` matches the declared `vector(4)`).
@@ -82,26 +60,12 @@ fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lands_and_reads_back_a_vector_column() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
 
     let t = TableRef {
@@ -113,7 +77,7 @@ async fn lands_and_reads_back_a_vector_column() {
         &pool,
         &catalog,
         &t,
-        &columns(),
+        &vec4_columns(),
         &ipc_body(4),
         InlineLimits {
             inline_byte_limit: 0,
@@ -171,19 +135,19 @@ async fn width_mismatch_is_rejected() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
 
     let t = TableRef {
         schema: "wh".into(),
         name: "bad".into(),
     };
-    // columns() declares vector(4) but the data carries 3-element rows.
+    // vec4_columns() declares vector(4) but the data carries 3-element rows.
     let r = land(
         &pool,
         &catalog,
         &t,
-        &columns(),
+        &vec4_columns(),
         &ipc_body(3),
         InlineLimits {
             inline_byte_limit: 0,
