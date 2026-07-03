@@ -158,7 +158,7 @@ git commit -m "fix(vector-index): overwrite commits enqueue declared index rebui
 **Files:**
 - Modify: `src/control-plane/postgres/src/iceberg_landing.rs:567-586` (`overwrite_truncate`), `tests/overwrite_vector_rebuild.rs`
 
-- [ ] **Step 1: Write the failing tests** — append to the test file:
+- [x] **Step 1: Write the failing tests** — append to the test file:
 
 ```rust
 #[tokio::test]
@@ -181,8 +181,8 @@ async fn pending_rebuild_dedupes_across_overwrites() {
 
 (Assemble the dedup test from flush_vector_rebuild.rs's TWO existing tests: `two_flushes_with_pending_build_enqueue_one` (:254, phases 1-2) and `flush_while_build_running_enqueues_a_fresh_pending` (:317, the running-state UPDATE at :345) — mirror with overwrite calls. Empty batch = `vec4_batches(&[]).1`.)
 
-- [ ] **Step 2: Run to verify the truncate test fails** (dedup test red only on its third phase if Task 2 shipped). Expected: `truncate_overwrite_enqueues_rebuilds` FAILS with 0 jobs.
-- [ ] **Step 3: Implement** — in `overwrite_truncate` (signature from Task 2: `jobs: &[NewJob]`), after the lineage emit and before `tx.commit()`:
+- [x] **Step 2: Run to verify the truncate test fails** (dedup test red only on its third phase if Task 2 shipped). Expected: `truncate_overwrite_enqueues_rebuilds` FAILS with 0 jobs.
+- [x] **Step 3: Implement** — in `overwrite_truncate` (signature from Task 2: `jobs: &[NewJob]`), after the lineage emit and before `tx.commit()`:
 
 ```rust
     for job in jobs {
@@ -192,8 +192,8 @@ async fn pending_rebuild_dedupes_across_overwrites() {
     }
 ```
 
-- [ ] **Step 4: Run to verify pass** — the file's three tests green. Expected: PASS.
-- [ ] **Step 5: prek + commit**
+- [x] **Step 4: Run to verify pass** — the file's three tests green. Expected: PASS.
+- [x] **Step 5: prek + commit**
 
 ```bash
 git add src/control-plane/postgres/src/iceberg_landing.rs src/control-plane/postgres/tests/overwrite_vector_rebuild.rs

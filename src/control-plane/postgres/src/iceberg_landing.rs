@@ -575,7 +575,7 @@ async fn overwrite_truncate(
     pool: &PgPool,
     table: &TableRef,
     lineage: Option<&LineageEvent>,
-    _jobs: &[NewJob],
+    jobs: &[NewJob],
 ) -> Result<SnapshotId> {
     use crate::iceberg_mirror::{end_cap_live_data_files, ensure_table, next_snapshot};
     use crate::lineage::pg_emit;
@@ -588,6 +588,11 @@ async fn overwrite_truncate(
     crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
     if let Some(ev) = lineage {
         pg_emit(&mut *conn, ev).await?;
+    }
+    for job in jobs {
+        // Same pending-dedup as CommitExtras.jobs; pg_notify is buffered until
+        // this tx commits, so a rolled-back truncate enqueues nothing.
+        crate::queue::pg_insert_if_absent(&mut *conn, job).await?;
     }
     tx.commit().await.map_err(backend)?;
     Ok(at)
