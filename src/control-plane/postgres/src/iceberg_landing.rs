@@ -50,6 +50,13 @@ pub struct InlineLimits {
 
 /// Land an Iceberg request, routing by in-memory size per `limits` (see
 /// [`InlineLimits`]). Returns the loom mirror snapshot id either way.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "eight cohesive positional params: routing target (pool/catalog/table/columns), \
+              pre-decoded payload (schema/batches — split from the single ipc_body: &[u8] this \
+              replaces), and behavior (limits/lineage); grouping any of these into a struct would \
+              obscure the mechanical 1:1 mapping callers already have to the removed decode step"
+)]
 pub async fn land(
     pool: &PgPool,
     catalog: &SqlCatalog,

@@ -19,6 +19,12 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::vector_index::inline_delta_batch;
 
+/// A decoded `land` payload: schema + batches, replacing the raw IPC bytes
+/// this test used to build and hand to `land` (which now takes pre-decoded
+/// batches directly). Named so `seed`'s `(cold, hot)` param doesn't trip
+/// `clippy::type_complexity`.
+type SchemaBatch = (Arc<Schema>, Vec<RecordBatch>);
+
 fn columns(id_ty: &str) -> Vec<ColumnSpec> {
     vec![
         ColumnSpec {
@@ -112,10 +118,7 @@ async fn seed(
     type_name: &str,
     id_ty_logical: &str,
     id_ty_property: &str,
-    (cold_ipc, hot_ipc): (
-        (Arc<Schema>, Vec<RecordBatch>),
-        (Arc<Schema>, Vec<RecordBatch>),
-    ),
+    (cold_ipc, hot_ipc): (SchemaBatch, SchemaBatch),
 ) -> (sqlx::PgPool, i64, i64) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(
