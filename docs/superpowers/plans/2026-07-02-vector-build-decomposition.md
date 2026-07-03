@@ -2065,7 +2065,7 @@ git commit -m "refactor(vector): extract write_sidecar/build_lineage_event/bind_
 - Modify: `docs/ISSUES.md` (`#iss-inline-delta-string-identity` — locate by
   id)
 
-- [ ] **Step 1: Whole-tree build + affected-package test sweep**
+- [x] **Step 1: Whole-tree build + affected-package test sweep**
 
 Core changed, so everything downstream rebuilds; test the consuming packages
 (engine/worker/query-api call `build_vector_index`/`vector_search` through
@@ -2083,7 +2083,7 @@ Expected: build success; `Fail 0`. (Locally the `-j 8` cap avoids postgres
 boot-slot starvation; in a cloud session do NOT widen this to a bare
 `buck2 test //src/...`.)
 
-- [ ] **Step 2: Close the ROADMAP item** — replace the
+- [x] **Step 2: Close the ROADMAP item** — replace the
   `road-vector-build-decomposition` entry (checkbox, status, prose) with:
 
 ```markdown
@@ -2091,7 +2091,7 @@ boot-slot starvation; in a cloud session do NOT widen this to a bare
   Done. `build_vector_index` (cc 41, 179 lines, 10 numbered jobs) decomposed onto named seams: `resolve_build_inputs` (snapshot anchor + declaration + identity), `collect_vectors` (cold Parquet + hot inline extraction), `declared_dim` (the spec's `infer_dim` — pure empty-table dim fallback, first-ever coverage via unit tests), `write_sidecar` (field-id + Puffin write, still BEFORE the tx), `build_lineage_event` (pure; the canonical `DatasetRef::from(table)` input now pinned at the unit level), and `bind_index_and_emit` (the one tx, `live_table_id` still resolved inside it). The `Box<dyn VectorIndex>` construction match moved to core as `IndexSpec::build(dim, metric, rows)` with byte-identity tests against the direct constructors — codec untouched, goldens byte-identical. Fixes [[iss-inline-delta-string-identity]] as the ONE whitelisted behavior change (see that entry); the [[iss-vector-build-lineage-ref]] half was pre-closed by #295. The spec's `identity_array` sketch was superseded by #301's `column_array`, which the fix delegates to instead. Everything else byte-identical; every pre-existing vector fixture suite passed unmodified.
 ```
 
-- [ ] **Step 3: Close the ISSUES defect** — replace the
+- [x] **Step 3: Close the ISSUES defect** — replace the
   `iss-inline-delta-string-identity` entry with:
 
 ```markdown
@@ -2099,7 +2099,7 @@ boot-slot starvation; in a cloud session do NOT widen this to a bare
   `postgres/src/vector_index.rs::inline_delta_batch` read the identity column as `Int64` only (`Int64Builder` + `try_get::<i64>` + a hardcoded `DataType::Int64` field) while `extract_rows` (the cold path) supports `Utf8` and `Int32` identities — a String (or Integer) identity made the hot-delta leg of vector search over unflushed inline rows fail with a sqlx mismatched-types decode error (loud at query time, silent at define/build time: the cold tier fully supports such identities, so the fault surfaced only once post-build inline rows existed). Fixed by [[road-vector-build-decomposition]]: the delta batch decodes identity and vector through the shared `column_array` PG→Arrow bridge keyed by the mirror schema's declared `BaseType`, and engine-serving's `score_inline_batch` gained the `Int32` arm mirroring `extract_rows`. Pinned by string/integer cold+hot merge e2es (`engine-serving/tests/vector_search_identity_kinds.rs`) and seam-level delta-batch contract tests (`postgres/tests/vector_index_inline_delta.rs`, incl. a Long-identity byte-shape pin added green-first).
 ```
 
-- [ ] **Step 4: Validate the registers**
+- [x] **Step 4: Validate the registers**
 
 ```bash
 bash tools/docs.sh validate
@@ -2109,7 +2109,7 @@ Expected: no errors. If the PR number is already known when this task runs
 (`gh pr view --json number` on the pushed branch), replace both `pr:-` with
 `pr:#<N>`; otherwise leave the placeholders for the finishing flow.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek6.log 2>&1; grep -E "Failed" /tmp/prek6.log || echo CLEAN
