@@ -166,7 +166,10 @@ pub fn local_store(data_path: &Path) -> Result<LocalFileSystem, StoreConfigError
 }
 
 /// Bucket name + object store handle returned by [`build_serving_object_store`].
-pub type ServingStore = (String, Arc<dyn ObjectStore>);
+pub struct ServingStore {
+    pub bucket: String,
+    pub store: Arc<dyn ObjectStore>,
+}
 
 /// Build the DataFusion serving read store for `s3://` warehouses. Returns the bucket
 /// name (for the `ObjectStoreUrl`) + the store, or `None` for local-filesystem reads.
@@ -186,7 +189,10 @@ pub fn build_serving_object_store(
                 b = b.with_endpoint(ep).with_allow_http(true);
             }
             let store = b.build().map_err(StoreConfigError::Store)?;
-            Ok(Some((s.bucket.clone(), Arc::new(store))))
+            Ok(Some(ServingStore {
+                bucket: s.bucket.clone(),
+                store: Arc::new(store),
+            }))
         }
     }
 }
@@ -213,11 +219,10 @@ pub fn build_write_store(cfg: &ObjectStoreConfig) -> Result<WriteStore, StoreCon
             })
         }
         ObjectStoreBackend::S3(_) => {
-            let (bucket, store) =
-                build_serving_object_store(cfg)?.expect("S3 backend yields a serving store");
+            let ss = build_serving_object_store(cfg)?.expect("S3 backend yields a serving store");
             Ok(WriteStore {
-                store,
-                root_url: format!("s3://{bucket}"),
+                store: ss.store,
+                root_url: format!("s3://{}", ss.bucket),
             })
         }
     }

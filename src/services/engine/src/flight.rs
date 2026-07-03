@@ -22,6 +22,7 @@ use control_plane_postgres::read_files_as_batches;
 use engine_wire::flight::EngineTicket;
 use futures::TryStreamExt; // for `.map_err` on the FlightDataEncoder stream
 use prost::Message;
+use service_runtime::ServingStore;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -47,8 +48,8 @@ pub struct FlightDataService {
     pub pool: PgPool,
     /// Flight SQL read plane: the live-table catalog the governed reads run against.
     pub serving_catalog: IcebergCatalog,
-    /// `Some((bucket, store))` for an S3 warehouse; `None` => local filesystem.
-    pub serving_store: Option<(String, Arc<dyn object_store::ObjectStore>)>,
+    /// `Some(ServingStore { bucket, store })` for an S3 warehouse; `None` => local filesystem.
+    pub serving_store: Option<ServingStore>,
 }
 
 impl FlightDataService {

@@ -29,6 +29,7 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::{Expr, col, lit};
 use datafusion::scalar::ScalarValue as DfScalar;
+use store_config::ServingStore;
 
 use crate::serving::{EngineServingError, build_serving_provider, to_serving};
 
@@ -289,7 +290,7 @@ pub async fn execute_governed_sql_stream(
     catalog: &IcebergCatalog,
     sql: &str,
     governed: &GovernedCatalog,
-    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
+    serving_store: Option<&ServingStore>,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
     let ctx = SessionContext::new();
     for table in catalog.live_tables().await.map_err(to_serving)? {

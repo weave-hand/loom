@@ -27,6 +27,7 @@ use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use datafusion::scalar::ScalarValue;
 use datafusion_io::object_store_url_for;
 use object_store::local::LocalFileSystem;
+use store_config::ServingStore;
 
 use crate::provider::PgTableProvider;
 
@@ -69,7 +70,7 @@ pub async fn build_serving_provider(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,
     table: &TableRef,
-    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
+    serving_store: Option<&ServingStore>,
 ) -> Result<Option<Arc<dyn TableProvider>>, EngineServingError> {
     use control_plane_core::Catalog;
 
@@ -80,7 +81,7 @@ pub async fn build_serving_provider(
         Arc::new(LocalFileSystem::new()),
     );
     // S3 store for s3:// warehouse paths, registered under s3://{bucket}.
-    if let Some((bucket, store)) = serving_store {
+    if let Some(ServingStore { bucket, store }) = serving_store {
         let url = ObjectStoreUrl::parse(format!("s3://{bucket}")).map_err(to_serving)?;
         ctx.register_object_store(url.as_ref(), store.clone());
     }
@@ -148,7 +149,7 @@ pub async fn register_iceberg_table(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,
     table: &TableRef,
-    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
+    serving_store: Option<&ServingStore>,
 ) -> Result<(), EngineServingError> {
     let Some(provider) = build_serving_provider(ctx, catalog, table, serving_store).await? else {
         return Ok(());
@@ -441,7 +442,7 @@ impl IcebergMirrorTableProvider {
 pub async fn execute_query(
     catalog: &IcebergCatalog,
     sql: &str,
-    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
+    serving_store: Option<&ServingStore>,
 ) -> Result<Vec<RecordBatch>, EngineServingError> {
     let ctx = SessionContext::new();
     for table in catalog.live_tables().await.map_err(to_serving)? {
@@ -461,7 +462,7 @@ pub async fn execute_query(
 pub async fn execute_query_stream(
     catalog: &IcebergCatalog,
     sql: &str,
-    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
+    serving_store: Option<&ServingStore>,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
     let ctx = SessionContext::new();
     for table in catalog.live_tables().await.map_err(to_serving)? {
