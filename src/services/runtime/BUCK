@@ -176,6 +176,7 @@ rust_test(
         "//src/control-plane/core:core",
         "//src/control-plane/memory:memory",
         "//third-party:axum",
+        "//third-party:http-body-util",
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tower",
