@@ -4,7 +4,7 @@ use control_plane_core::{
     decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,
 };
 
-use crate::{PgControlPlane, backend, event_type_from_str, event_type_to_str};
+use crate::{PgControlPlane, backend};
 
 pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
     ex: E,
@@ -26,7 +26,7 @@ pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
              select 'output', ord, ns, nm \
              from unnest($7::text[], $8::text[]) with ordinality as t(ns, nm, ord)) d",
         event.run_id.0,
-        event_type_to_str(event.event_type),
+        event.event_type.as_str(),
         event.event_time,
         &event.payload,
         &event
@@ -85,7 +85,7 @@ impl Lineage for PgControlPlane {
                 event_id,
                 LineageEvent {
                     run_id: *run,
-                    event_type: event_type_from_str(&r.event_type),
+                    event_type: r.event_type.parse()?,
                     event_time: r.event_time,
                     inputs: self.event_datasets(event_id, "input").await?,
                     outputs: self.event_datasets(event_id, "output").await?,

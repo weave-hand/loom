@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Catalog, ControlPlane, ControlPlaneError, Effect, EventType, Lineage,
-    Ontology, PolicyTarget, Queue, Result, Tx,
+    Acl, Catalog, ControlPlane, ControlPlaneError, Lineage, Ontology, PolicyTarget, Queue, Result,
+    Tx,
 };
 use sqlx::PgPool;
 
@@ -122,54 +122,6 @@ impl ControlPlane for PgControlPlane {
 
 fn backend(e: sqlx::Error) -> ControlPlaneError {
     ControlPlaneError::Backend(Box::new(e))
-}
-
-fn cardinality_to_str(c: Cardinality) -> &'static str {
-    match c {
-        Cardinality::One => "one",
-        Cardinality::Many => "many",
-    }
-}
-
-fn cardinality_from_str(s: &str) -> Cardinality {
-    match s {
-        "many" => Cardinality::Many,
-        _ => Cardinality::One,
-    }
-}
-
-fn event_type_to_str(t: EventType) -> &'static str {
-    match t {
-        EventType::Start => "start",
-        EventType::Running => "running",
-        EventType::Complete => "complete",
-        EventType::Abort => "abort",
-        EventType::Fail => "fail",
-    }
-}
-
-fn event_type_from_str(s: &str) -> EventType {
-    match s {
-        "running" => EventType::Running,
-        "complete" => EventType::Complete,
-        "abort" => EventType::Abort,
-        "fail" => EventType::Fail,
-        _ => EventType::Start,
-    }
-}
-
-fn action_to_str(a: Action) -> &'static str {
-    match a {
-        Action::Read => "read",
-        Action::Write => "write",
-    }
-}
-
-fn effect_to_str(effect: Effect) -> &'static str {
-    match effect {
-        Effect::Allow => "allow",
-        Effect::Deny => "deny",
-    }
 }
 
 /// `(kind, a, b)` column encoding of a target.

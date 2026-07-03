@@ -36,6 +36,17 @@ pub enum Action {
     Write,
 }
 
+impl Action {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Action::Read => "read",
+            Action::Write => "write",
+        }
+    }
+}
+
 /// What a grant or policy is bound to. Matched exactly as stored — P4 never
 /// resolves a `Type` to its backing `Table`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -57,6 +68,17 @@ pub enum Decision {
 pub enum Effect {
     Allow,
     Deny,
+}
+
+impl Effect {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effect::Allow => "allow",
+            Effect::Deny => "deny",
+        }
+    }
 }
 
 /// A comparison operator in a [`RowFilter::Compare`] leaf.

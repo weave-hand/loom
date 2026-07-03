@@ -5,7 +5,7 @@ use control_plane_core::{
 };
 
 use crate::ontology::object_type_exists;
-use crate::{PgControlPlane, action_to_str, backend, effect_to_str, target_cols};
+use crate::{PgControlPlane, backend, target_cols};
 
 /// Fixed advisory-lock key serializing role-inheritance edge inserts within one
 /// database, making the cycle check + insert in `add_role_inheritance` atomic
@@ -224,11 +224,11 @@ impl Acl for PgControlPlane {
              on conflict (role_id, action, target_kind, target_a, target_b) \
              do update set effect = excluded.effect",
             &role.0,
-            action_to_str(action),
+            action.as_str(),
             kind,
             &a,
             &b,
-            effect_to_str(effect),
+            effect.as_str(),
         )
         .execute(&self.pool)
         .await
@@ -243,7 +243,7 @@ impl Acl for PgControlPlane {
             "delete from acl.role_grant where role_id = $1 and action = $2 \
              and target_kind = $3 and target_a = $4 and target_b = $5",
             &role.0,
-            action_to_str(action),
+            action.as_str(),
             kind,
             &a,
             &b,
@@ -309,7 +309,7 @@ impl Acl for PgControlPlane {
                  deny_columns = excluded.deny_columns, \
                  mask_columns = excluded.mask_columns",
             &role.0,
-            action_to_str(action),
+            action.as_str(),
             kind,
             &a,
             &b,
@@ -335,7 +335,7 @@ impl Acl for PgControlPlane {
             "delete from acl.policy where role_id = $1 and action = $2 and target_kind = $3 \
              and target_a = $4 and target_b = $5",
             &role.0,
-            action_to_str(action),
+            action.as_str(),
             kind,
             &a,
             &b,
@@ -366,7 +366,7 @@ impl Acl for PgControlPlane {
              where g.action = $2 and g.target_kind = $3 \
                and g.target_a = $4 and g.target_b = $5",
             &subject.0,
-            action_to_str(action),
+            action.as_str(),
             kind,
             &a,
             &b,
@@ -402,7 +402,7 @@ impl Acl for PgControlPlane {
              from eff join acl.policy p on p.role_id = eff.role_id \
              where p.action = $2 and p.target_kind = $3 and p.target_a = $4 and p.target_b = $5",
             &subject.0,
-            action_to_str(action),
+            action.as_str(),
             kind,
             &a,
             &b,

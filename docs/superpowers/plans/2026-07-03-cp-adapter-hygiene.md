@@ -380,7 +380,7 @@ never parsed back). The postgres free fns (`lib.rs:127-174` + the two
   `Effect::as_str` (`"read"/"write"`, `"allow"/"deny"`).
 - Consumes (Task 1): the single `link_defs` mapping site.
 
-- [ ] **Step 1: Write the failing unit tests** — create
+- [x] **Step 1: Write the failing unit tests** — create
   `src/control-plane/core/tests/enum_wire_codecs.rs`:
 
 ```rust
@@ -465,7 +465,7 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run — expect RED** (compile failure: no `as_str`/`FromStr` on
+- [x] **Step 2: Run — expect RED** (compile failure: no `as_str`/`FromStr` on
   these types)
 
 ```bash
@@ -473,7 +473,7 @@ buck2 test //src/control-plane/core:enum-wire-codecs > /tmp/t2red.log 2>&1; \
   grep -E "error\[|no method|Tests finished|FAIL" /tmp/t2red.log | head -5
 ```
 
-- [ ] **Step 3: Implement the core impls.** In
+- [x] **Step 3: Implement the core impls.** In
   `src/control-plane/core/src/ontology.rs`, beside `Cardinality`:
 
 ```rust
@@ -540,14 +540,14 @@ missing: `core/src/ontology.rs` and `core/src/acl.rs` reference it ZERO times
 today (add `use crate::error::ControlPlaneError;` to each); `lineage.rs`
 already imports it.
 
-- [ ] **Step 4: Run — unit tests PASS**
+- [x] **Step 4: Run — unit tests PASS**
 
 ```bash
 buck2 test //src/control-plane/core:enum-wire-codecs > /tmp/t2a.log 2>&1; \
   grep -E "Tests finished|FAIL" /tmp/t2a.log
 ```
 
-- [ ] **Step 5: Append the corrupt-row red pin** to
+- [x] **Step 5: Append the corrupt-row red pin** to
   `src/control-plane/postgres/tests/ontology.rs` (seeding via the #304
   `ObjectType::build` DSL — `define_min_type` is testkit-internal, not pub):
 
@@ -623,7 +623,7 @@ buck2 test //src/control-plane/postgres:ontology -j 8 > /tmp/t2red2.log 2>&1; \
   grep -E "Tests finished|FAIL" /tmp/t2red2.log
 ```
 
-- [ ] **Step 6: Migrate the postgres adapter.** Delete the six free fns from
+- [x] **Step 6: Migrate the postgres adapter.** Delete the six free fns from
   `lib.rs:127-174` (`target_cols` stays until Task 3). Call-site conversions:
 
   - `ontology.rs` `define_link` insert: `cardinality_to_str(link.cardinality)`
@@ -669,7 +669,7 @@ fn link_defs(rows: Vec<LinkRow>) -> Result<Page<LinkDef>> {
     `effect_to_str(effect)` → `effect.as_str()`. Remove the deleted names from
     the `use crate::{...}` lists in all three files.
 
-- [ ] **Step 7: Run — red pin now GREEN, contracts green on both adapters**
+- [x] **Step 7: Run — red pin now GREEN, contracts green on both adapters**
 
 ```bash
 buck2 test //src/control-plane/core:enum-wire-codecs \
@@ -681,7 +681,7 @@ buck2 test //src/control-plane/core:enum-wire-codecs \
 git status --porcelain src/control-plane/postgres/.sqlx   # expect empty
 ```
 
-- [ ] **Step 8: prek + commit**
+- [x] **Step 8: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek2.log 2>&1; grep -E "Failed" /tmp/prek2.log || echo CLEAN

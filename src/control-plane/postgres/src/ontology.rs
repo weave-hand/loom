@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, Aggregation, ConstAssignment, ControlPlaneError,
-    DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq,
-    ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
+    ActionDef, ActionName, Aggregation, ConstAssignment, ControlPlaneError, DerivedPropertyDef,
+    IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef,
+    Result, TableRef, TypeName, VectorIndexDef,
 };
 
-use crate::{PgControlPlane, backend, cardinality_from_str, cardinality_to_str};
+use crate::{PgControlPlane, backend};
 
 #[async_trait]
 impl Ontology for PgControlPlane {
@@ -130,7 +130,7 @@ impl Ontology for PgControlPlane {
             link.name,
             link.from.0,
             link.to.0,
-            cardinality_to_str(link.cardinality),
+            link.cardinality.as_str(),
             bc.kind,
             bc.from_column,
             bc.to_column,
@@ -231,7 +231,7 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(link_defs(rows))
+        link_defs(rows)
     }
 
     async fn links_to(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
@@ -248,7 +248,7 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(link_defs(rows))
+        link_defs(rows)
     }
 
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {
@@ -279,17 +279,12 @@ impl Ontology for PgControlPlane {
                 action.name.0, action.target.0
             )));
         }
-        let kind = match action.kind {
-            ActionKind::Insert => "insert",
-            ActionKind::Update => "update",
-            ActionKind::Delete => "delete",
-        };
         sqlx::query!(
             "insert into ontology.action (name, target_type, kind) values ($1, $2, $3) \
              on conflict (name) do update set target_type = excluded.target_type, kind = excluded.kind",
             action.name.0,
             action.target.0,
-            kind,
+            action.kind.as_str(),
         )
         .execute(&mut *tx)
         .await
@@ -365,11 +360,6 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        let kind = match row.kind.as_str() {
-            "update" => ActionKind::Update,
-            "delete" => ActionKind::Delete,
-            _ => ActionKind::Insert,
-        };
         Ok(ActionDef {
             name: name.clone(),
             target: TypeName(row.target_type),
@@ -382,7 +372,7 @@ impl Ontology for PgControlPlane {
                     binds: r.binds,
                 })
                 .collect(),
-            kind,
+            kind: row.kind.parse()?,
             assignments: assignment_rows
                 .into_iter()
                 .map(|r| ConstAssignment {
@@ -532,27 +522,27 @@ struct LinkRow {
 }
 
 /// Map fetched link rows into a full (unpaginated) `Page<LinkDef>` — the
-/// shared tail of `links`/`links_to`.
-fn link_defs(rows: Vec<LinkRow>) -> Page<LinkDef> {
-    Page::from_full(
-        rows.into_iter()
-            .map(|r| LinkDef {
-                name: r.name,
-                from: TypeName(r.from_type),
-                to: TypeName(r.to_type),
-                cardinality: cardinality_from_str(r.cardinality.as_str()),
-                backing: backing_from_row(
-                    &r.backing_kind,
-                    r.from_column,
-                    r.to_column,
-                    r.from_key,
-                    r.to_key,
-                    r.join_table_schema,
-                    r.join_table_name,
-                ),
-            })
-            .collect(),
-    )
+/// shared tail of `links`/`links_to`. Errors on a corrupt cardinality token.
+fn link_defs(rows: Vec<LinkRow>) -> Result<Page<LinkDef>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        out.push(LinkDef {
+            name: r.name,
+            from: TypeName(r.from_type),
+            to: TypeName(r.to_type),
+            cardinality: r.cardinality.parse()?,
+            backing: backing_from_row(
+                &r.backing_kind,
+                r.from_column,
+                r.to_column,
+                r.from_key,
+                r.to_key,
+                r.join_table_schema,
+                r.join_table_name,
+            ),
+        });
+    }
+    Ok(Page::from_full(out))
 }
 
 /// Split an aggregation into its persisted `(agg_kind, agg_column)` pair.

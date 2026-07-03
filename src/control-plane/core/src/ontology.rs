@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 
 use crate::TableRef;
-use crate::error::Result;
+use crate::error::{ControlPlaneError, Result};
 use crate::page::{Page, PageReq};
 use crate::vector_index::{IndexSpec, Metric};
 
@@ -156,6 +156,33 @@ pub enum Cardinality {
     Many,
 }
 
+impl Cardinality {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Cardinality::One => "one",
+            Cardinality::Many => "many",
+        }
+    }
+}
+
+impl std::str::FromStr for Cardinality {
+    type Err = ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "one" => Ok(Cardinality::One),
+            "many" => Ok(Cardinality::Many),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown cardinality '{other}'"
+            ))),
+        }
+    }
+}
+
 /// How a link is physically realized as a join. Carried by `LinkDef`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LinkBacking {
@@ -254,6 +281,35 @@ pub enum ActionKind {
     Insert,
     Update,
     Delete,
+}
+
+impl ActionKind {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActionKind::Insert => "insert",
+            ActionKind::Update => "update",
+            ActionKind::Delete => "delete",
+        }
+    }
+}
+
+impl std::str::FromStr for ActionKind {
+    type Err = ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "insert" => Ok(ActionKind::Insert),
+            "update" => Ok(ActionKind::Update),
+            "delete" => Ok(ActionKind::Delete),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown action kind '{other}'"
+            ))),
+        }
+    }
 }
 
 /// A typed input to an action. `ty` is the ontology's logical vocabulary (like `PropertyDef.ty`).
