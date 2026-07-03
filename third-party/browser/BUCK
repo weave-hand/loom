@@ -1,7 +1,7 @@
 # Vendored headless Chromium + chromedriver (Chrome for Testing), pinned per the
 # single CHROME_FOR_TESTING_VERSION so browser and driver never desync (they must
-# share a Chrome major). x86_64-linux only — Chrome for Testing publishes no
-# linux-arm64 build; the aarch64 arm is a documented follow-up. Drives the
+# share a Chrome major). x86_64-linux only (amd64-only vendoring/RE — see the
+# arm64 note in the second paragraph below). Drives the
 # //src/ui/e2e:login fantoccini test. To bump: change CHROME_FOR_TESTING_VERSION
 # and refresh both sha256s (download the two linux64 zips and `sha256sum`).
 #
