@@ -85,7 +85,10 @@ _delete_ref_remote(){
 CLAIM_GRACE_MIN="${LOOM_CLAIM_GRACE_MIN:-240}"
 
 # Epoch seconds for an ISO-8601 UTC timestamp (0 on parse failure).
-_epoch(){ date -u -d "$1" +%s 2>/dev/null || echo 0; }
+# GNU date parses the EMPTY string as midnight today (not an error), which made
+# every claim whose tip is a work commit (no `since:` line) look ~hours stale
+# and get reaped mid-flight — so empty input must short-circuit to 0 explicitly.
+_epoch(){ [ -n "${1:-}" ] || { echo 0; return; }; date -u -d "$1" +%s 2>/dev/null || echo 0; }
 
 # Echo open|gone|none|unknown for the work branch PR of id $1 (gone = merged/closed).
 # Overridable for tests via LOOM_CLAIM_PR_PROBE (a command receiving the id and

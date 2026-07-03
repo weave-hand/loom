@@ -163,6 +163,19 @@ reaped="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" cla
 check "stale claim is reaped" 1 "$reaped"
 check "reap removed the stale ref" 0 "$(git -C "$WK" ls-remote origin refs/heads/work/iss-old | wc -l | tr -d ' ')"
 
+# A branch whose tip is a fresh WORK commit (no `since:` line in the message)
+# must date from the tip commit itself, not from GNU date's empty-string
+# "midnight today" parse — the bug that reaped a live mid-flight branch.
+WORKTREE="$(git -C "$WK" mktree </dev/null)"
+WORKC="$(printf 'feat: real work in progress
+' | git -C "$WK" commit-tree "$WORKTREE")"
+git -C "$WK" push -q origin "$WORKC:refs/heads/work/iss-live"
+livereap="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims --reap | grep -c 'reaped iss-live' || true)"
+check "work-tip claim (no since line) not reaped" 0 "$livereap"
+livestate="$(cd "$WK" && LOOM_CLAIM_PR_PROBE="$FIX/pr-none.sh" out bash "$DOCS" claims | grep 'iss-live' | grep -c 'PR pending' || true)"
+check "work-tip claim dates from tip commit" 1 "$livestate"
+git -C "$WK" push -q origin ":refs/heads/work/iss-live" 2>/dev/null || true
+
 # When gh is unavailable (PR state 'unknown'), an old claim is NOT reaped — we
 # cannot confirm there is no open PR, so reaping must not act on it.
 OLD2="$(printf 'claim: iss-old2\n\nid: iss-old2\nclaimant: ghost\nsince: 2000-01-01T00:00:00Z\nregister: issues\nspec: -\nbranch: work/iss-old2\n' | git -C "$WK" commit-tree "$OLDTREE")"
