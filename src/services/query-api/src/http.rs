@@ -136,7 +136,8 @@ async fn list_ontology_types(State(st): State<AppState>, _subject: Subject) -> i
 }
 
 /// Map a control-plane metadata-read fault: `NotFound` is the caller's 404 (the message
-/// echoes only the name/table the caller supplied); anything else is the opaque logged 500.
+/// carries the identifiers of the read — caller-supplied names, plus the resolved
+/// snapshot id on the schema read); anything else is the opaque logged 500.
 fn cp_read_error(context: &str, e: ControlPlaneError) -> axum::response::Response {
     match e {
         ControlPlaneError::NotFound(m) => (StatusCode::NOT_FOUND, m).into_response(),

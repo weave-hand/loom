@@ -360,9 +360,9 @@ Router: `.route("/admin/links", post(define_link_route))`, `.route("/admin/links
 - Modify: `docs/ROADMAP.md` (remove the `road-api-management-crud` entry — close in this PR; keep `fut-ontology-type-delete` in FUTURE as landed earlier on the branch)
 - Use `#PRNUM` placeholders; swap post-PR-creation (targeted sed on ONLY the files this branch owns).
 
-- [ ] **Step 1: Whole-tree affected sweep:** `buck2 build -M none //src/control-plane/... //src/services/... > /tmp/t6b.log 2>&1; tail -2 /tmp/t6b.log` then `buck2 test //src/control-plane/... //src/services/... --unstable-allow-all-tests-on-re > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log` — 0 fails (re-run individual targets on transient RE upload errors).
-- [ ] **Step 2: Docs edits + `bash tools/docs.sh validate`.**
-- [ ] **Step 3: prek; commit** `docs(api-management-crud): capability docs + register close`.
+- [x] **Step 1: Whole-tree affected sweep:** `buck2 build -M none //src/control-plane/... //src/services/... > /tmp/t6b.log 2>&1; tail -2 /tmp/t6b.log` then `buck2 test //src/control-plane/... //src/services/... --unstable-allow-all-tests-on-re > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log` — 0 fails (re-run individual targets on transient RE upload errors).
+- [x] **Step 2: Docs edits + `bash tools/docs.sh validate`.**
+- [x] **Step 3: prek; commit** `docs(api-management-crud): capability docs + register close`.
 
 ---
 

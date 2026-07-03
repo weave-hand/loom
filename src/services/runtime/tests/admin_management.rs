@@ -9,9 +9,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{
-    ADMIN_ROLE, Acl, Auth, NewUser, ObjectType, Ontology, RoleId, SubjectId,
-};
+use control_plane_core::{ADMIN_ROLE, Acl, Auth, NewUser, ObjectType, Ontology, RoleId, SubjectId};
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use service_runtime::{AdminState, AuthState, admin_routes, hash_password, token_sha256};
@@ -67,9 +65,13 @@ async fn seed_admin_session(cp: &MemoryControlPlane, username: &str) -> String {
 /// Define the `Widget` + `Gadget` types the link/action/grant bodies reference.
 async fn seed_types(cp: &MemoryControlPlane) {
     for (ty, table) in [("Widget", "widget"), ("Gadget", "gadget")] {
-        cp.define_type(ObjectType::build(ty, ("main", table)).prop("id", "Int").done())
-            .await
-            .unwrap();
+        cp.define_type(
+            ObjectType::build(ty, ("main", table))
+                .prop("id", "Int")
+                .done(),
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -175,11 +177,7 @@ async fn define_link_unknown_endpoint_type_is_404() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let token = seed_admin_session(&cp, ADMIN).await;
     // No types defined: the link's endpoints are unknown → NotFound → 404.
-    let (status, _) = send(
-        app(cp),
-        req_json("POST", "/admin/links", &token, LINK_BODY),
-    )
-    .await;
+    let (status, _) = send(app(cp), req_json("POST", "/admin/links", &token, LINK_BODY)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -263,7 +261,10 @@ async fn delete_role_idempotently() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["deleted"], serde_json::json!({"role": "temp"}));
     assert!(
-        !cp.list_roles().await.unwrap().contains(&RoleId("temp".into())),
+        !cp.list_roles()
+            .await
+            .unwrap()
+            .contains(&RoleId("temp".into())),
         "deleted role gone"
     );
 

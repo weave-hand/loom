@@ -215,7 +215,10 @@ handlers + `ToSchema` DTOs, secret fields never echoed outside the deliberate
 login/mint-token returns), and each service merges exactly the fragments for
 the routers it mounts — query-api all three, ingest auth + service-accounts —
 so `/auth/*` and `/admin/*` appear in each service's document without a single
-duplicated annotation (#344).
+duplicated annotation (#344). The admin fragment now spans the full management
+surface — link/action define+delete, grant list/revoke, role delete, user↔role
+assignment — and query-api's document adds the type-detail and dataset reads,
+all held to the same route-set drift guards (#PRNUM2).
 
 ## Known gaps
 

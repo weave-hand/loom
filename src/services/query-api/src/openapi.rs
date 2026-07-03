@@ -147,6 +147,10 @@ pub struct DatasetColumnView {
 pub struct DatasetDetailResponse {
     pub table: TableRefView,
     /// The table's current (latest live) snapshot id.
+    /// The mirror's own sequence-allocated snapshot id (migration 0013) — safe as a
+    /// JSON number because it is sequential and never approaches 2^53. Do NOT swap in
+    /// the random Iceberg-native `iceberg_snapshot_id` without moving to the string
+    /// encoding the wire uses for arbitrary int64s.
     pub snapshot_id: i64,
     /// RFC3339 timestamp of that snapshot.
     pub snapshot_time: String,
