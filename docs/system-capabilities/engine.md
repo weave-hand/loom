@@ -85,7 +85,10 @@ snapshots, zero orphans, all N files).
 snapshot, project the new files (with their stats), Iceberg append, and
 lineage with delete/insert change segments — all in one transaction, with
 prior snapshots still time-travelling to the replaced files (#152). Truncation
-(overwrite with zero files) is valid. This primitive is the basis of loom's
+(overwrite with zero files) is valid. Both overwrite shapes enqueue a deduped
+`build_vector_index` rebuild per index declared on the table, sharing the flush
+path's `rebuild_jobs_for` seam so k-NN never silently serves a pre-overwrite
+index (#PRNUM). This primitive is the basis of loom's
 governed UPDATE/DELETE **copy-on-write**: the `OverwriteTable` engine RPC
 performs UPDATE/DELETE via whole-table copy-on-write, and `WriteObject`
 performs the governed typed-insert — both relocated from query-api into
