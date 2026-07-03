@@ -79,6 +79,22 @@ async fn admin_fragment_documents_exactly_the_admin_routes() {
     assert_eq!(set, expected);
 }
 
+/// Every component name `$ref`'d by a documented response body, across all
+/// paths/methods/status codes of one fragment document.
+fn response_schema_names(json: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for (_path, item) in json["paths"].as_object().into_iter().flatten() {
+        for (_m, op) in item.as_object().into_iter().flatten() {
+            for (_code, resp) in op["responses"].as_object().into_iter().flatten() {
+                if let Some(r) = resp["content"]["application/json"]["schema"]["$ref"].as_str() {
+                    out.insert(r.rsplit('/').next().unwrap().to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 #[tokio::test]
 async fn no_response_schema_echoes_a_secret() {
     for doc in [
@@ -96,18 +112,7 @@ async fn no_response_schema_echoes_a_secret() {
             .as_object()
             .cloned()
             .unwrap_or_default();
-        let mut response_refs = std::collections::BTreeSet::new();
-        for (_path, item) in json["paths"].as_object().into_iter().flatten() {
-            for (_m, op) in item.as_object().into_iter().flatten() {
-                for (_code, resp) in op["responses"].as_object().into_iter().flatten() {
-                    if let Some(r) = resp["content"]["application/json"]["schema"]["$ref"].as_str()
-                    {
-                        response_refs.insert(r.rsplit('/').next().unwrap().to_string());
-                    }
-                }
-            }
-        }
-        for name in &response_refs {
+        for name in &response_schema_names(&json) {
             let props = schemas[name]["properties"]
                 .as_object()
                 .cloned()
