@@ -86,6 +86,13 @@ pub fn ontology_openapi(
   - **Request schema from the action's `ParamDef`s** (not the type's read
     schema): each parameter → `property_schema(&p.ty, p.required)`; the
     OpenAPI `required` array lists the `required: true` parameter names.
+    *(Amended after `road-action-multi-object` (#343) landed mid-flight:
+    `ActionDef` is now `{name, steps}`. The op takes the union of every step's
+    parameters — the handler projects one flat body per step — tags every
+    step's target so the op appears in each involved type's section, `$ref`s
+    the FIRST step's type in the 2xx body (`run_multi_step` returns the
+    primary object), and is skipped unless every step target is in the
+    snapshot.)*
   - **Summary/description by `ActionKind`**: Insert → "Insert a {Target}",
     Update → "Update a {Target} (identity-targeted PATCH)", Delete →
     "Delete a {Target} by identity".

@@ -178,10 +178,11 @@ fn orders_link() -> LinkDef {
 
 /// A well-formed Insert action against `customer()`: one required + one optional parameter.
 fn create_customer_action() -> ActionDef {
-    ActionDef {
-        name: ActionName("createCustomer".into()),
-        target: TypeName("Customer".into()),
-        parameters: vec![
+    ActionDef::single_step(
+        ActionName("createCustomer".into()),
+        TypeName("Customer".into()),
+        ActionKind::Insert,
+        vec![
             ParamDef {
                 name: "name".into(),
                 ty: "string".into(),
@@ -195,9 +196,8 @@ fn create_customer_action() -> ActionDef {
                 binds: None,
             },
         ],
-        kind: ActionKind::Insert,
-        assignments: vec![],
-    }
+        vec![],
+    )
 }
 
 // ---- generator -----------------------------------------------------------------------
@@ -339,20 +339,20 @@ fn generates_real_action_operations() {
 fn update_and_delete_actions_document_201_like_the_handler() {
     // `post_action` responds 201 for every kind (single Ok arm, http.rs) —
     // the generated document follows the handler, not REST convention.
-    let update = ActionDef {
-        name: ActionName("updateCustomer".into()),
-        target: TypeName("Customer".into()),
-        parameters: vec![],
-        kind: ActionKind::Update,
-        assignments: vec![],
-    };
-    let delete = ActionDef {
-        name: ActionName("deleteCustomer".into()),
-        target: TypeName("Customer".into()),
-        parameters: vec![],
-        kind: ActionKind::Delete,
-        assignments: vec![],
-    };
+    let update = ActionDef::single_step(
+        ActionName("updateCustomer".into()),
+        TypeName("Customer".into()),
+        ActionKind::Update,
+        vec![],
+        vec![],
+    );
+    let delete = ActionDef::single_step(
+        ActionName("deleteCustomer".into()),
+        TypeName("Customer".into()),
+        ActionKind::Delete,
+        vec![],
+        vec![],
+    );
     let (paths, _schemas) = ontology_openapi(&[customer()], &[], &[update, delete]);
 
     let up = op_json(&paths, "/actions/updateCustomer", "post");
@@ -368,6 +368,54 @@ fn update_and_delete_actions_document_201_like_the_handler() {
         "Delete documents the handler's 201"
     );
     assert!(del["responses"]["200"].is_null(), "no invented 200");
+}
+
+#[test]
+fn multi_step_action_documents_union_schema_and_all_target_tags() {
+    let action = ActionDef::build("onboardCustomer", "Customer", ActionKind::Insert)
+        .param_req("name", "string")
+        .step("Order", ActionKind::Insert)
+        .param_req("total", "integer")
+        .done();
+    let (paths, _schemas) = ontology_openapi(&[customer(), order()], &[], &[action]);
+
+    let op = op_json(&paths, "/actions/onboardCustomer", "post");
+    // One op in every involved type's section, primary (first step) first.
+    assert_eq!(
+        op["tags"],
+        serde_json::json!(["Customer", "Order"]),
+        "tagged by every step target, step order"
+    );
+    // Union request schema: one flat body carries every step's params.
+    let schema = &op["requestBody"]["content"]["application/json"]["schema"];
+    assert!(schema["properties"]["name"].is_object());
+    assert!(schema["properties"]["total"].is_object());
+    assert_eq!(schema["required"], serde_json::json!(["name", "total"]));
+    // 2xx body is the PRIMARY step's object; summary narrates the steps.
+    assert_eq!(
+        op["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+        serde_json::json!("#/components/schemas/Customer")
+    );
+    assert_eq!(
+        op["summary"],
+        serde_json::json!("Atomically insert Customer, insert Order")
+    );
+}
+
+#[test]
+fn multi_step_action_with_any_absent_step_target_is_skipped() {
+    // First step's target is in the snapshot, the second's is not — the whole op
+    // is skipped (its tag and any future per-step $ref would dangle).
+    let action = ActionDef::build("ghostly", "Customer", ActionKind::Insert)
+        .step("Ghost", ActionKind::Insert)
+        .done();
+    let (paths, _schemas) = ontology_openapi(&[customer()], &[], &[action]);
+    assert!(
+        !methods_and_paths(&paths)
+            .iter()
+            .any(|(_, p)| p == "/actions/ghostly"),
+        "op with an absent step target must be skipped"
+    );
 }
 
 #[test]

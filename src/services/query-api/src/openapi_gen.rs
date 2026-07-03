@@ -3,9 +3,11 @@
 //! hands it a snapshot. The type codec is faithful to `crate::render`'s wire rendering (e.g.
 //! Long is a decimal string, not a JSON integer — see `crate::render::render_cell`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use control_plane_core::{ActionDef, ActionKind, BaseType, LinkDef, ObjectType, resolve_logical};
+use control_plane_core::{
+    ActionDef, ActionKind, ActionStep, BaseType, LinkDef, ObjectType, resolve_logical,
+};
 use service_runtime::BEARER_SCHEME_NAME;
 use utoipa::openapi::path::{
     HttpMethod, Operation, OperationBuilder, PathItem, Paths, PathsBuilder,
@@ -155,39 +157,70 @@ fn link_op(from: &str, link_name: &str, to: &str) -> Operation {
         .build()
 }
 
-/// Request schema for an action: one property per parameter (`binds` renames the
-/// written property, not the wire parameter), `required` from the param flags.
+/// Request schema for an action: one property per parameter across every step,
+/// in step order — the handler takes one flat body and projects it per step
+/// (`binds` renames the written property, not the wire parameter). `required`
+/// from the param flags, deduped (steps may share a parameter name).
 fn action_request_schema(action: &ActionDef) -> RefOr<Schema> {
     let mut b = ObjectBuilder::new().schema_type(SchemaType::Type(Type::Object));
-    for p in &action.parameters {
+    for p in action.steps.iter().flat_map(|s| &s.parameters) {
         b = b.property(p.name.clone(), property_schema(&p.ty, p.required));
     }
-    for p in action.parameters.iter().filter(|p| p.required) {
-        b = b.required(p.name.clone());
+    let mut required = BTreeSet::new();
+    for p in action.steps.iter().flat_map(|s| &s.parameters) {
+        if p.required && required.insert(p.name.as_str()) {
+            b = b.required(p.name.clone());
+        }
     }
     RefOr::T(Schema::Object(b.build()))
+}
+
+/// The lowercase verb for a step kind, for multi-step summaries.
+fn kind_verb(kind: ActionKind) -> &'static str {
+    match kind {
+        ActionKind::Insert => "insert",
+        ActionKind::Update => "update",
+        ActionKind::Delete => "delete",
+    }
 }
 
 fn plain_response(description: &str) -> utoipa::openapi::Response {
     ResponseBuilder::new().description(description).build()
 }
 
-/// `POST /actions/{name}` for one defined action, tagged by its target type.
-/// Every kind documents `201`: `post_action`'s single Ok arm responds
-/// `StatusCode::CREATED` regardless of kind (`http.rs`), and a truthful
-/// document follows the handler. Kind-true statuses are a registered follow-up.
-fn action_op(action: &ActionDef) -> Operation {
-    let target = &action.target.0;
-    let (summary, ok_desc) = match action.kind {
-        ActionKind::Insert => (format!("Insert a {target}"), "Created object"),
-        ActionKind::Update => (
-            format!("Update a {target} (identity-targeted PATCH)"),
-            "Updated object",
-        ),
-        ActionKind::Delete => (
-            format!("Delete a {target} by identity"),
-            "Deleted object (pre-deletion values)",
-        ),
+/// `POST /actions/{name}` for one defined action, tagged by **every** step's
+/// target type (deduped, step order) so the op appears in each involved type's
+/// docs section. The 2xx body documents the FIRST step's object — the
+/// primary/root object the action minted, which is exactly what `run_action`
+/// returns for both the single-step and multi-step paths. Every kind documents
+/// `201`: `post_action`'s single Ok arm responds `StatusCode::CREATED`
+/// regardless of kind (`http.rs`), and a truthful document follows the
+/// handler. Kind-true statuses are a registered follow-up.
+fn action_op(action: &ActionDef, primary: &ActionStep) -> Operation {
+    let target = &primary.target.0;
+    let (summary, ok_desc) = if let [only] = action.steps.as_slice() {
+        let summary = match only.kind {
+            ActionKind::Insert => format!("Insert a {target}"),
+            ActionKind::Update => format!("Update a {target} (identity-targeted PATCH)"),
+            ActionKind::Delete => format!("Delete a {target} by identity"),
+        };
+        let desc = match only.kind {
+            ActionKind::Insert => "Created object",
+            ActionKind::Update => "Updated object",
+            ActionKind::Delete => "Deleted object (pre-deletion values)",
+        };
+        (summary, desc)
+    } else {
+        let steps = action
+            .steps
+            .iter()
+            .map(|s| format!("{} {}", kind_verb(s.kind), s.target.0))
+            .collect::<Vec<_>>()
+            .join(", ");
+        (
+            format!("Atomically {steps}"),
+            "Primary object (the first step's affected row)",
+        )
     };
     let body = RequestBodyBuilder::new()
         .content(
@@ -195,10 +228,14 @@ fn action_op(action: &ActionDef) -> Operation {
             Content::new(Some(action_request_schema(action))),
         )
         .build();
-    OperationBuilder::new()
-        .summary(Some(summary))
-        .tag(target)
-        .security(bearer())
+    let mut op = OperationBuilder::new().summary(Some(summary));
+    let mut tagged = BTreeSet::new();
+    for step in &action.steps {
+        if tagged.insert(step.target.0.as_str()) {
+            op = op.tag(step.target.0.clone());
+        }
+    }
+    op.security(bearer())
         .request_body(Some(body))
         .response(
             "201",
@@ -250,13 +287,19 @@ pub fn ontology_openapi(
         );
     }
     for a in actions {
-        // Same skew guard as links: the 2xx response `$ref`s the target type's schema.
-        if !schemas.contains_key(&a.target.0) {
+        // Same skew guard as links, extended to steps: the 2xx response `$ref`s
+        // the primary (first) step's schema and every step's target is a tag, so
+        // ALL step targets must be in the snapshot. A stepless ActionDef is a
+        // broken definition — skipped, never an invalid document.
+        let Some(primary) = a.steps.first() else {
+            continue;
+        };
+        if a.steps.iter().any(|s| !schemas.contains_key(&s.target.0)) {
             continue;
         }
         pb = pb.path(
             format!("/actions/{}", a.name.0),
-            PathItem::new(HttpMethod::Post, action_op(a)),
+            PathItem::new(HttpMethod::Post, action_op(a, primary)),
         );
     }
     (pb.build(), schemas)

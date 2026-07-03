@@ -204,10 +204,11 @@ definitions without a restart (#270). Every generated operation is **tagged by
 its type name**, so the docs UI shows one section per type holding its List
 operation, its real callable actions, and its outbound link traversals; the
 typed write is documented as the *actual* `POST /actions/{name}` op per defined
-action — request schema derived from the action's parameter list via the new
-`Ontology::list_actions`, statuses following the handler (`201` for every kind;
-see `#iss-action-kind-status`) — replacing the former phantom
-`POST /objects/{Type}` (#344). The runtime's own surface is documented too:
+action — request schema derived from the action's step parameter lists (one
+flat body, union across steps) via the new `Ontology::list_actions`, a
+multi-step op tagged into every involved type's section, statuses following
+the handler (`201` for every kind; see `#iss-action-kind-status`) — replacing
+the former phantom `POST /objects/{Type}` (#344). The runtime's own surface is documented too:
 `service_runtime` exports per-router-family OpenAPI **fragments**
 (`auth_openapi` / `service_account_openapi` / `admin_openapi`, utoipa-annotated
 handlers + `ToSchema` DTOs, secret fields never echoed outside the deliberate

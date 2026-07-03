@@ -228,15 +228,9 @@ async fn rpc_roundtrips_match_direct_reads() {
         .iter()
         .find(|a| a.name.0 == "createCustomer")
         .expect("createCustomer listed over the wire");
-    assert_eq!(listed.name, direct_action.name, "list_actions name parity");
     assert_eq!(
-        listed.target, direct_action.target,
-        "list_actions target parity"
-    );
-    assert_eq!(listed.kind, direct_action.kind, "list_actions kind parity");
-    assert_eq!(
-        listed.parameters, direct_action.parameters,
-        "list_actions parameters parity"
+        listed, &direct_action,
+        "list_actions parity (name + full step list)"
     );
 
     // links_to parity — exercises the inbound-link RPC (inbound to `order` via orders FK).
