@@ -22,20 +22,17 @@
 //! router via a oneshot request), and `ids_i64` (parse an `{objects:[…]}`
 //! body's `id`s as sorted `i64`s).
 
+use loom_test_seed::{vec4_columns, vec4_ipc};
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
-use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, Auth, Cardinality, ColumnSpec, ControlPlane,
-    ControlPlaneError, DatasetId, Effect, EventType, IndexSpec, LineageEvent, LinkBacking, LinkDef,
-    Metric, NewUser, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter,
-    RunId, SubjectId, TableRef, TypeName, VectorIndexDef,
+    Acl, Action, ActionDef, ActionKind, Auth, Cardinality, ControlPlane, ControlPlaneError,
+    DatasetId, Effect, EventType, IndexSpec, LineageEvent, LinkBacking, LinkDef, Metric, NewUser,
+    ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, RunId, SubjectId,
+    TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -675,52 +672,6 @@ pub async fn grant_read_columns(
     .unwrap();
 }
 
-/// The `Docs` vector-type columns: `id: long` + `embedding: vector(4)`.
-fn vector_columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "embedding".into(),
-            ty: "vector(4)".into(),
-            nullable: false,
-        },
-    ]
-}
-
-/// Build an Arrow IPC body with `id: long` + `embedding: list<float32>` (4 elements).
-/// Copied from `engine-serving/tests/vector_search.rs::ipc_body` (the canonical recipe).
-fn vector_ipc_body(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
-    let element = Arc::new(Field::new("item", DataType::Float32, false));
-    let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
-    let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
-    for (_, emb) in rows {
-        lb.values().append_slice(emb);
-        lb.append(true);
-    }
-    let id_array = arrow_array::Int64Array::from(ids);
-    let emb_array = lb.finish();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("embedding", DataType::List(element), false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(id_array), Arc::new(emb_array)],
-    )
-    .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
-}
-
 fn vector_lineage_evt(run: RunId, table: &TableRef) -> LineageEvent {
     LineageEvent {
         run_id: run,
@@ -792,8 +743,8 @@ pub async fn seed_vector_type(
         &pool,
         &build_catalog,
         &table,
-        &vector_columns(),
-        &vector_ipc_body(rows_1_2),
+        &vec4_columns(),
+        &vec4_ipc(rows_1_2),
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -807,8 +758,8 @@ pub async fn seed_vector_type(
         &pool,
         &build_catalog,
         &table,
-        &vector_columns(),
-        &vector_ipc_body(rows_3_4),
+        &vec4_columns(),
+        &vec4_ipc(rows_3_4),
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -954,20 +905,11 @@ pub async fn read_widget(
         .cloned()
 }
 
-/// Keeps the spawned engine server and its socket dir alive for the test's lifetime.
-pub struct EngineGuard {
-    _sock_dir: tempfile::TempDir,
-    handle: tokio::task::JoinHandle<()>,
-}
+pub use loom_test_flight::EngineGuard;
 
-impl Drop for EngineGuard {
-    fn drop(&mut self) {
-        self.handle.abort();
-    }
-}
-
-/// Spawn an `EngineControlService` on a UDS and return its socket path + keep-alive guard.
-/// The engine connects to the same Postgres + warehouse the test uses.
+/// Spawn an `EngineControlService` on a UDS and return its socket path +
+/// keep-alive guard. Now a facade over `loom_test_flight::spawn_engine_uds`
+/// (control-only), which adds connect-retry readiness.
 pub async fn spawn_engine(
     fx: &control_plane_postgres::fixture::PgFixture,
     db: &str,
@@ -975,73 +917,19 @@ pub async fn spawn_engine(
     inline_byte_limit: usize,
     flush_byte_threshold: i64,
 ) -> (String, EngineGuard) {
-    use control_plane_postgres::iceberg_sql_catalog::{
-        SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
-    };
-    use engine::service::EngineControlService;
-    use engine_serving::IcebergActionWriter;
-    use engine_wire::pb::engine_control_server::EngineControlServer;
-    use iceberg::CatalogBuilder;
-    use iceberg::io::LocalFsStorageFactory;
-    use std::time::Duration;
-    use tonic::transport::Server;
-
-    let mk_props = || {
-        let mut p = std::collections::HashMap::new();
-        p.insert(SQL_CATALOG_PROP_URI.to_string(), fx.pg_dsn(db));
-        p.insert(
-            SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-            format!("file://{}", warehouse.display()),
-        );
-        p
-    };
-    let build = || async {
-        SqlCatalogBuilder::default()
-            .with_storage_factory(std::sync::Arc::new(LocalFsStorageFactory))
-            .load("loom", mk_props())
-            .await
-            .expect("build SqlCatalog")
-    };
-
-    let pool = fx.pool_for(db).await;
-    let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
-    let catalog = build().await;
-    let writer = IcebergActionWriter::new(
-        std::sync::Arc::new(build().await),
-        pool.clone(),
-        inline_byte_limit,
-        flush_byte_threshold,
-    );
-    let svc = EngineControlService {
-        cp,
-        catalog,
-        pool,
-        retention: Duration::from_secs(7 * 24 * 3600),
-        writer,
-    };
-
-    let sock_dir = tempfile::tempdir().expect("sock dir");
-    let sock = sock_dir.path().join("engine.sock");
-    let sock_str = sock.to_string_lossy().to_string();
-    let listener = tokio::net::UnixListener::bind(&sock).expect("bind uds");
-    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-    let handle = tokio::spawn(async move {
-        drop(
-            Server::builder()
-                .add_service(EngineControlServer::new(svc))
-                .serve_with_incoming(incoming)
-                .await,
-        );
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-
-    (
-        sock_str,
-        EngineGuard {
-            _sock_dir: sock_dir,
-            handle,
+    let eng = loom_test_flight::spawn_engine_uds(
+        fx,
+        db,
+        &warehouse.display().to_string(),
+        loom_test_flight::EngineOpts {
+            control: true,
+            flight: false,
+            inline_byte_limit,
+            flush_byte_threshold,
         },
     )
+    .await;
+    (eng.sock.clone(), eng)
 }
 
 /// Connect a raw governance/queue client to a spawned engine socket.

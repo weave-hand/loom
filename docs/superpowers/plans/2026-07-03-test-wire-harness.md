@@ -1365,14 +1365,14 @@ git commit -m "test(worker): migrate e2e suites onto the shared harness"
   — its consumers (`vector_search_e2e.rs` and the wire e2es) keep compiling
   with zero edits.
 
-- [ ] **Step 1: Baseline green**
+- [x] **Step 1: Baseline green**
 
 ```bash
 buck2 test //src/services/query-api: -j 8 > /tmp/t8pre.log 2>&1; \
   grep -E "Tests finished|FAIL" /tmp/t8pre.log
 ```
 
-- [ ] **Step 2: Retire e2e-support's private fourth copy.** In
+- [x] **Step 2: Retire e2e-support's private fourth copy.** In
   `e2e_support.rs`: delete `vector_columns` and `vector_ipc_body` (the
   file's own comment marks them "Copied from
   `engine-serving/tests/vector_search.rs::ipc_body` (the canonical recipe)")
@@ -1384,7 +1384,7 @@ buck2 test //src/services/query-api: -j 8 > /tmp/t8pre.log 2>&1; \
   `{"source": "test"}`, delete it and use `test_lineage`. The columns/ipc
   swaps are the duplication win here either way.
 
-- [ ] **Step 3: Delegate the spawn fns.** Replace the bodies of
+- [x] **Step 3: Delegate the spawn fns.** Replace the bodies of
   `spawn_engine` / `spawn_engine_writer` (signatures unchanged) and the local
   `EngineGuard`:
 
@@ -1423,14 +1423,14 @@ change beyond the type re-export.) Precondition check: `grep -rn
 construction outside `e2e_support.rs`; if a test constructs the struct,
 keep the local type instead and convert.
 
-- [ ] **Step 4: The two flight e2es.** In `engine_wire_serving_e2e.rs` and
+- [x] **Step 4: The two flight e2es.** In `engine_wire_serving_e2e.rs` and
   `governed_flight_export_e2e.rs`: `make_catalog` → `local_sql_catalog`;
   local `spawn_flight` → `spawn_flight_uds` (their bodies differ from the
   canonical only in a `let _ = …` capture — semantics identical, migrate);
   `governed_flight_export_e2e.rs`'s `columns()`/`ipc_body(rows: usize)`
   variants STAY LOCAL; its non-readiness sleeps STAY.
 
-- [ ] **Step 5: BUCK deps + run green + assert-diff check**
+- [x] **Step 5: BUCK deps + run green + assert-diff check**
 
 ```bash
 buck2 test //src/services/query-api: -j 8 > /tmp/t8.log 2>&1; \
@@ -1442,7 +1442,7 @@ Expected: `Fail 0` (including `vector_search_e2e`, `wire_harness_smoke`, and
 every `update_delete*`/action e2e that deps `:e2e-support` — the public
 surface didn't move); ZERO assert-line changes.
 
-- [ ] **Step 6: prek + commit**
+- [x] **Step 6: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek8.log 2>&1; grep -E "Failed" /tmp/prek8.log || echo CLEAN

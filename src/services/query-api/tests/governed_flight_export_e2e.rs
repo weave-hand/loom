@@ -9,6 +9,8 @@
 //! (4) a column-masked scalar (`id`) is advertised AND streamed as `Utf8` with every value the
 //! literal `'***'`, while the unmasked `embedding` survives value-exact as `List<Float32>`.
 
+use loom_test_flight::{EngineGuard, spawn_flight_uds};
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
@@ -26,18 +28,11 @@ use control_plane_core::{
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use engine::flight::FlightDataService;
 use engine_wire::flight::FlightSqlClient;
 use futures::TryStreamExt;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use query_api::flight_export::{ExportCommand, FlightExportService};
-use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 /// The `vector(4)` dataset: `id` (long) + `embedding` (vector(4)), both non-null.
@@ -105,45 +100,6 @@ fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = std::collections::HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
-/// Boot a real engine `FlightDataService` over a UDS at a tempdir socket; returns the
-/// tempdir (keep alive) and the socket path string.
-async fn spawn_flight(fx: &PgFixture, db: &str, warehouse: &str) -> (tempfile::TempDir, String) {
-    let sock_dir = tempfile::tempdir().expect("socket dir");
-    let sock_path = sock_dir.path().join("engine.sock");
-    let sock_str = sock_path.to_string_lossy().to_string();
-    let pool = fx.pool_for(db).await;
-    let svc = FlightDataService {
-        catalog: make_catalog(fx.pg_dsn(db), warehouse).await,
-        serving_catalog: IcebergCatalog::new(pool.clone()),
-        serving_store: None,
-        pool,
-    };
-    let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
-    let incoming = UnixListenerStream::new(listener);
-    tokio::spawn(async move {
-        let _serve = Server::builder()
-            .add_service(FlightServiceServer::new(svc))
-            .serve_with_incoming(incoming)
-            .await;
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    (sock_dir, sock_str)
-}
-
 /// Wrap a Flight message in a `tonic::Request` carrying a `Bearer` authorization header.
 fn authed<T>(msg: T, token: &str) -> tonic::Request<T> {
     let mut req = tonic::Request::new(msg);
@@ -166,7 +122,7 @@ fn chunk_cmd() -> ExportCommand {
 /// Full harness: land the `vector(4)` dataset, register the `Chunk` ontology type, grant the
 /// `reader` role Read, boot the engine over a UDS, and stand the `FlightExportService` up on
 /// an ephemeral TCP port. Returns `(tcp addr, reader bearer token, control-plane handle, wh
-/// tempdir, socket tempdir)`. The two tempdirs MUST stay alive for the test's duration — the
+/// tempdir, engine guard)`. The tempdir and guard MUST stay alive for the test's duration — the
 /// engine reads the warehouse Parquet through the socket; dropping either pulls the files /
 /// listener out from under it.
 async fn setup(
@@ -176,7 +132,7 @@ async fn setup(
     String,
     Arc<PgControlPlane>,
     tempfile::TempDir,
-    tempfile::TempDir,
+    EngineGuard,
 ) {
     setup_with_cap(fx, 100_000).await
 }
@@ -190,7 +146,7 @@ async fn setup_with_cap(
     String,
     Arc<PgControlPlane>,
     tempfile::TempDir,
-    tempfile::TempDir,
+    EngineGuard,
 ) {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
@@ -204,7 +160,7 @@ async fn setup_with_cap(
         schema: "wh".into(),
         name: "chunks".into(),
     };
-    let catalog = make_catalog(dsn.clone(), &warehouse).await;
+    let catalog = local_sql_catalog(dsn.clone(), &warehouse).await;
     land(
         &pool,
         &catalog,
@@ -250,11 +206,11 @@ async fn setup_with_cap(
     let token = e2e_support::session_token(&cp, "reader").await;
 
     // Boot the engine over a UDS, then build the export service over a Flight-SQL client to it.
-    let (sock_dir, sock_str) = spawn_flight(fx, &db, &warehouse).await;
+    let eng = spawn_flight_uds(fx, &db, &warehouse).await;
     let cp = Arc::new(cp);
     let auth: Arc<dyn Auth + Send + Sync> = cp.clone();
     let cp_dyn: Arc<dyn ControlPlane> = cp.clone();
-    let flight_engine = FlightSqlClient::connect(sock_str)
+    let flight_engine = FlightSqlClient::connect(eng.sock.clone())
         .await
         .expect("engine connect");
     let export = FlightExportService::new(auth, cp_dyn, flight_engine, max_rows);
@@ -272,7 +228,7 @@ async fn setup_with_cap(
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    (addr, token, cp, wh, sock_dir)
+    (addr, token, cp, wh, eng)
 }
 
 /// Like [`setup`] but masks the scalar `id` column via a column policy, for the masked-export
@@ -285,7 +241,7 @@ async fn setup_with_mask(
     String,
     Arc<PgControlPlane>,
     tempfile::TempDir,
-    tempfile::TempDir,
+    EngineGuard,
 ) {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
@@ -297,7 +253,7 @@ async fn setup_with_mask(
         schema: "wh".into(),
         name: "chunks".into(),
     };
-    let catalog = make_catalog(dsn.clone(), &warehouse).await;
+    let catalog = local_sql_catalog(dsn.clone(), &warehouse).await;
     land(
         &pool,
         &catalog,
@@ -341,11 +297,11 @@ async fn setup_with_mask(
     e2e_support::grant_read_columns(&cp, &role, "Chunk", vec![], vec!["id".into()]).await;
     let token = e2e_support::session_token(&cp, "reader").await;
 
-    let (sock_dir, sock_str) = spawn_flight(fx, &db, &warehouse).await;
+    let eng = spawn_flight_uds(fx, &db, &warehouse).await;
     let cp = Arc::new(cp);
     let auth: Arc<dyn Auth + Send + Sync> = cp.clone();
     let cp_dyn: Arc<dyn ControlPlane> = cp.clone();
-    let flight_engine = FlightSqlClient::connect(sock_str)
+    let flight_engine = FlightSqlClient::connect(eng.sock.clone())
         .await
         .expect("engine connect");
     let export = FlightExportService::new(auth, cp_dyn, flight_engine, 100_000);
@@ -363,7 +319,7 @@ async fn setup_with_mask(
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    (addr, token, cp, wh, sock_dir)
+    (addr, token, cp, wh, eng)
 }
 
 /// Authed get_flight_info + do_get: all 1500 rows arrive, the embedding is carried natively
