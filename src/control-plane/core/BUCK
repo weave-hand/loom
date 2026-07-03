@@ -75,6 +75,20 @@ rust_test(
 )
 
 rust_test(
+    name = "lineage-completed",
+    crate = "lineage_completed",
+    srcs = ["tests/lineage_completed.rs"],
+    crate_root = "tests/lineage_completed.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+    ],
+)
+
+rust_test(
     name = "serde-roundtrip",
     crate = "serde_roundtrip",
     srcs = ["tests/serde_roundtrip.rs"],
@@ -314,6 +328,16 @@ rust_test(
     crate = "policy_write_checks",
     srcs = ["tests/policy_write_checks.rs"],
     crate_root = "tests/policy_write_checks.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
+    name = "aggregation-typing",
+    crate = "aggregation_typing",
+    srcs = ["tests/aggregation_typing.rs"],
+    crate_root = "tests/aggregation_typing.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
     deps = [":core"],

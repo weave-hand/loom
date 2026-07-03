@@ -527,14 +527,11 @@ async fn run_insert(
     //    post-hoc snapshot_id payload is dropped: the event now commits WITH the
     //    snapshot, so their linkage is structural, not a best-effort breadcrumb.
     let run_id = RunId(Uuid::new_v4());
-    let event = LineageEvent {
+    let event = LineageEvent::completed_with_run(
         run_id,
-        event_type: EventType::Complete,
-        event_time: time::OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(&action.target)],
-        payload: serde_json::json!({ "action": action_name }),
-    };
+        vec![DatasetRef::from(&action.target)],
+        serde_json::json!({ "action": action_name }),
+    );
 
     // 7. Atomic write: row + lineage in one transaction (no dangling slice). On any
     //    failure the Tx rolls back — no snapshot, no lineage, no partial state.

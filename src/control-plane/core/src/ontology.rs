@@ -12,6 +12,7 @@ use async_trait::async_trait;
 
 use crate::TableRef;
 use crate::error::{ControlPlaneError, Result};
+use crate::logical_type::BaseType;
 use crate::page::{Page, PageReq};
 use crate::vector_index::{IndexSpec, Metric};
 
@@ -264,6 +265,97 @@ pub struct DerivedPropertyDef {
     pub ty: String,
     pub link: String,
     pub agg: Aggregation,
+}
+
+/// The result-type expectation of an aggregation, resolved against the target
+/// column's base type. Pairs the acceptance predicate ([`ResultExpectation::accepts`])
+/// with the human description ([`ResultExpectation::description`]) used in violation
+/// messages, so the derived-property validator carries neither inline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResultExpectation {
+    /// A `Count`: an int64 in disguise — accept `Integer` or `Long`.
+    IntegerOrLong,
+    /// A `Sum`/`Avg`: any numeric base type.
+    Numeric,
+    /// A `Min`/`Max`: exactly the target column's own base type (`None` if that type
+    /// could not be resolved, which nothing then satisfies).
+    ExactColumn(Option<BaseType>),
+}
+
+impl ResultExpectation {
+    /// Whether a declared result type (resolved to a `BaseType`, or `None` if unknown)
+    /// is consistent with this category.
+    #[must_use]
+    pub fn accepts(&self, declared: Option<BaseType>) -> bool {
+        match self {
+            ResultExpectation::IntegerOrLong => {
+                matches!(declared, Some(BaseType::Integer | BaseType::Long))
+            }
+            ResultExpectation::Numeric => declared.is_some_and(BaseType::is_numeric),
+            ResultExpectation::ExactColumn(col) => declared.is_some() && declared == *col,
+        }
+    }
+
+    /// A human label for the expected result type, used in violation messages.
+    #[must_use]
+    pub fn description(&self) -> String {
+        match self {
+            ResultExpectation::IntegerOrLong => "integer or long".to_string(),
+            ResultExpectation::Numeric => "numeric".to_string(),
+            ResultExpectation::ExactColumn(Some(b)) => b.canonical_name(),
+            ResultExpectation::ExactColumn(None) => "the target column's type".to_string(),
+        }
+    }
+}
+
+impl Aggregation {
+    /// The target-type column this aggregation reads, or `None` for `Count` (which
+    /// aggregates rows, not a column).
+    #[must_use]
+    pub fn column(&self) -> Option<&str> {
+        match self {
+            Aggregation::Count => None,
+            Aggregation::Sum(c)
+            | Aggregation::Avg(c)
+            | Aggregation::Min(c)
+            | Aggregation::Max(c) => Some(c),
+        }
+    }
+
+    /// A human label for this aggregation, used in violation messages.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Aggregation::Count => "Count",
+            Aggregation::Sum(_) => "Sum",
+            Aggregation::Avg(_) => "Avg",
+            Aggregation::Min(_) => "Min",
+            Aggregation::Max(_) => "Max",
+        }
+    }
+
+    /// Whether this aggregation is applicable to a column of base type `col`
+    /// (`None` = unresolved). `Sum`/`Avg` need numeric; `Min`/`Max` need ordered;
+    /// `Count` takes no column and is always applicable.
+    #[must_use]
+    pub fn column_applicable(&self, col: Option<BaseType>) -> bool {
+        match self {
+            Aggregation::Sum(_) | Aggregation::Avg(_) => col.is_some_and(BaseType::is_numeric),
+            Aggregation::Min(_) | Aggregation::Max(_) => col.is_some_and(BaseType::is_ordered),
+            Aggregation::Count => true,
+        }
+    }
+
+    /// The result-type expectation for this aggregation given its target column's base
+    /// type `col` (used only by `Min`/`Max`).
+    #[must_use]
+    pub fn result_expectation(&self, col: Option<BaseType>) -> ResultExpectation {
+        match self {
+            Aggregation::Count => ResultExpectation::IntegerOrLong,
+            Aggregation::Sum(_) | Aggregation::Avg(_) => ResultExpectation::Numeric,
+            Aggregation::Min(_) | Aggregation::Max(_) => ResultExpectation::ExactColumn(col),
+        }
+    }
 }
 
 /// A named ontology action (e.g. "createCustomer").

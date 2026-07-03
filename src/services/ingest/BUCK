@@ -98,6 +98,19 @@ rust_test(
     ],
 )
 
+# Pure structural-violation collectors — no fakes, RE-eligible.
+rust_test(
+    name = "bind-structural",
+    crate = "bind_structural",
+    srcs = ["tests/bind_structural.rs"],
+    crate_root = "tests/bind_structural.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+    ],
+)
+
 rust_test(
     name = "gate",
     crate = "gate",
