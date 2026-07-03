@@ -1490,6 +1490,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "cow-inline-shadow-gov-e2e",
+    crate = "cow_inline_shadow_gov_e2e",
+    srcs = ["tests/cow_inline_shadow_gov_e2e.rs"],
+    crate_root = "tests/cow_inline_shadow_gov_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "action-client-wire",
     crate = "action_client_wire",
     srcs = ["tests/action_client_wire.rs"],
