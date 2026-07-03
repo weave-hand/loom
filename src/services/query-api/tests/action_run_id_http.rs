@@ -136,6 +136,7 @@ async fn created_response_carries_run_id_header() {
         serving,
         action_engine: engine.clone(),
         default_limit: 1000,
+        naming: query_api::lineage_filter::local_naming(),
     });
     let mut req = Request::builder()
         .method("POST")

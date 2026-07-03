@@ -136,6 +136,7 @@ async fn seeded_state() -> AppState {
         serving: Arc::new(StubServing),
         action_engine: Arc::new(OkEngine),
         default_limit: 1000,
+        naming: query_api::lineage_filter::local_naming(),
     }
 }
 
