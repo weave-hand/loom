@@ -1,7 +1,8 @@
 //! Pure unit tests for the ontology→OpenAPI generator and its type codec, plus the live
 //! per-request document. Memory-backed (no postgres): the generator is pure and the liveness
 //! handler reads any `ControlPlane`, so `MemoryControlPlane` exercises `list_types`/`links`/
-//! `define_type` identically to the postgres path for doc-generation purposes.
+//! `define_type`/`define_action`/`list_actions` identically to the postgres path for
+//! doc-generation purposes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -335,7 +336,9 @@ fn generates_real_action_operations() {
 }
 
 #[test]
-fn update_and_delete_actions_document_200() {
+fn update_and_delete_actions_document_201_like_the_handler() {
+    // `post_action` responds 201 for every kind (single Ok arm, http.rs) —
+    // the generated document follows the handler, not REST convention.
     let update = ActionDef {
         name: ActionName("updateCustomer".into()),
         target: TypeName("Customer".into()),
@@ -353,12 +356,18 @@ fn update_and_delete_actions_document_200() {
     let (paths, _schemas) = ontology_openapi(&[customer()], &[], &[update, delete]);
 
     let up = op_json(&paths, "/actions/updateCustomer", "post");
-    assert!(up["responses"]["200"].is_object(), "Update documents 200");
-    assert!(up["responses"]["201"].is_null(), "Update is not a create");
+    assert!(
+        up["responses"]["201"].is_object(),
+        "Update documents the handler's 201"
+    );
+    assert!(up["responses"]["200"].is_null(), "no invented 200");
 
     let del = op_json(&paths, "/actions/deleteCustomer", "post");
-    assert!(del["responses"]["200"].is_object(), "Delete documents 200");
-    assert!(del["responses"]["201"].is_null(), "Delete is not a create");
+    assert!(
+        del["responses"]["201"].is_object(),
+        "Delete documents the handler's 201"
+    );
+    assert!(del["responses"]["200"].is_null(), "no invented 200");
 }
 
 #[test]

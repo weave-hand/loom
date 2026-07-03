@@ -1,7 +1,7 @@
-//! query-api's static OpenAPI document. `build_openapi()` returns it as a value (the
-//! ontology hook: slice 2 will `.paths.extend(...)` ontology-derived operations into
-//! the same document). DTOs here are documentation shapes for the dynamic JSON the
-//! handlers actually emit (`render::objects_to_json` produces open object maps).
+//! query-api's static OpenAPI document. `build_openapi()` returns it as a value so the
+//! live document (`live_openapi`) can extend it with ontology-derived operations per
+//! request. DTOs here are documentation shapes for the dynamic JSON the handlers
+//! actually emit (`render::objects_to_json` produces open object maps).
 
 use utoipa::{OpenApi, ToSchema};
 

@@ -139,8 +139,10 @@ async fn every_op_requires_bearer_except_login() {
         let json = serde_json::to_value(&doc).unwrap();
         for (path, item) in json["paths"].as_object().into_iter().flatten() {
             for (method, op) in item.as_object().into_iter().flatten() {
-                if !["get", "post", "put", "delete", "patch", "head", "options", "trace"]
-                    .contains(&method.as_str())
+                if ![
+                    "get", "post", "put", "delete", "patch", "head", "options", "trace",
+                ]
+                .contains(&method.as_str())
                 {
                     continue;
                 }

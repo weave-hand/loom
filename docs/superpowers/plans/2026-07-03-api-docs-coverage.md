@@ -164,7 +164,7 @@ git add -A && git commit -m "feat(ontology): list_actions across store adapters 
   - Update every `ontology_openapi(...)` call site to pass a third arg (`&[]` where actions are irrelevant).
   - In `generates_per_type_operations`: **assert the phantom is gone** — `assert!(!mp.contains(&("post".into(), "/objects/Customer".into())))`.
   - Add a test `generates_real_action_operations`: build `ActionDef { name: ActionName("createCustomer".into()), target: TypeName("Customer".into()), parameters: vec![ParamDef{name: "name".into(), ty: "string".into(), required: true, binds: None}, ParamDef{name: "tier".into(), ty: "integer".into(), required: false, binds: None}], kind: ActionKind::Insert, assignments: vec![] }`; assert `("post", "/actions/createCustomer")` is present; serialize the doc to JSON and assert the op's `requestBody` schema has properties `name` + `tier` with `required == ["name"]`, response `201` `$ref`s `Customer`, and `tags == ["Customer"]`.
-  - Add kind coverage: an `ActionKind::Update` action documents `200` (not `201`); a `Delete` action documents `200`.
+  - Add kind coverage: Update and Delete actions document `201` like Insert — `post_action`'s single Ok arm is `StatusCode::CREATED` for every kind (`http.rs:695`); the doc follows the handler. (Corrected post-review from the spec's original `200`.)
   - Add skew guard: an action targeting an absent type emits no path.
   - Add tag coverage: generated GET `/objects/Customer` op and link op tags equal the type name (`["Customer"]`), not `"objects"`/`"links"`.
 
@@ -199,16 +199,16 @@ fn plain_response(description: &str) -> utoipa::openapi::Response {
 /// `POST /actions/{name}` for one defined action, tagged by its target type.
 fn action_op(action: &ActionDef) -> Operation {
     let target = &action.target.0;
-    let (summary, ok_status, ok_desc) = match action.kind {
-        ActionKind::Insert => (format!("Insert a {target}"), "201", "Created object"),
+    // Every kind responds 201 in `post_action` (single Ok arm, http.rs:695);
+    // the doc follows the handler. Kind-true statuses are a registered follow-up.
+    let (summary, ok_desc) = match action.kind {
+        ActionKind::Insert => (format!("Insert a {target}"), "Created object"),
         ActionKind::Update => (
             format!("Update a {target} (identity-targeted PATCH)"),
-            "200",
             "Updated object",
         ),
         ActionKind::Delete => (
             format!("Delete a {target} by identity"),
-            "200",
             "Deleted object (pre-deletion values)",
         ),
     };
@@ -220,7 +220,7 @@ fn action_op(action: &ActionDef) -> Operation {
         .tag(target)
         .security(bearer())
         .request_body(Some(body))
-        .response(ok_status, json_response(RefOr::Ref(Ref::from_schema_name(target)), ok_desc))
+        .response("201", json_response(RefOr::Ref(Ref::from_schema_name(target)), ok_desc))
         .response("400", plain_response("Malformed or undecodable request body"))
         .response("403", plain_response("Write denied by ACL policy"))
         .response("404", plain_response("Unknown action or target object"))

@@ -89,11 +89,13 @@ pub fn ontology_openapi(
   - **Summary/description by `ActionKind`**: Insert → "Insert a {Target}",
     Update → "Update a {Target} (identity-targeted PATCH)", Delete →
     "Delete a {Target} by identity".
-  - **Responses**: Insert → `201` with `$ref` to the target's component
-    schema; Update/Delete → `200` with the same `$ref` (delete returns the
-    row's pre-deletion values). All kinds also document `400`, `403`, `404`,
-    `422` in line with the static `post_action` annotation
-    (`http.rs:654–666`).
+  - **Responses**: every kind → `201` with `$ref` to the target's component
+    schema — `post_action`'s single Ok arm responds `StatusCode::CREATED`
+    regardless of kind (`http.rs:695`), and the document follows the handler
+    (delete's body is the row's pre-deletion values). Kind-true statuses for
+    Update/Delete are a registered follow-up, not this slice (no behavior
+    changes). All kinds also document `400`, `403`, `404`, `422` in line with
+    the static `post_action` annotation (`http.rs:654–666`).
   - An action path collides with nothing: the static doc documents the
     parameterized `POST /actions/{action_name}` template; generated concrete
     paths coexist the same way `/objects/{type_name}` coexists with
@@ -117,8 +119,10 @@ The handlers and DTOs live in `service_runtime`, so the annotations must too:
   `ListUsersResp`/`UserView`, `ResetPasswordReq`, `CreateRoleReq`, `GrantReq`,
   `DefineModelReq`/`TableReq`/`PropReq`). Every documented op that sits behind
   `require_auth`/`require_admin` carries `security(("bearer_auth" = []))`;
-  `POST /auth/login` alone is unauthenticated. Passwords/tokens appear only as
-  write-only request fields — no response DTO echoes a secret.
+  `POST /auth/login` alone is unauthenticated. Passwords appear only as
+  write-only request fields; the two deliberate secret-bearing responses are
+  `LoginResp` and `MintTokenResp` (the single moment each token is shown) —
+  no other response DTO echoes a secret.
 - Export one `#[derive(OpenApi)]` fragment per router family, matching the
   mount functions services already choose from:
   - `service_runtime::auth_openapi()` — `/auth/login`, `/auth/logout`,
@@ -137,9 +141,10 @@ The handlers and DTOs live in `service_runtime`, so the annotations must too:
 
 Documented responses come from the handlers as they are (grounded 2026-07-03):
 login `200`/`401`; logout `200`; password change `200`/`403`; create-account
-`201`/`200` idempotent; mint-token `201` (body `{token, token_id}`, the only
-time the secret appears); revoke-token `204`; create-user `201`/`200`/`400`;
-disable/enable `200`; reset-password `200`/`404`; create-role `201`;
+`200` always (idempotent); mint-token `200` (body `{token, token_id}`) plus
+`400` over-cap/zero TTL; revoke-token `200` plus `400` bad hex; create-user
+`201`/`200`/`400`; disable/enable `200`; reset-password `200`/`404`;
+create-role `201`;
 list-roles `200`; grant `201`; define-model `201`. If implementation finds a
 handler returning something else, the doc follows the handler — this slice
 changes no runtime behavior.

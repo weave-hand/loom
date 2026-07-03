@@ -173,18 +173,19 @@ fn plain_response(description: &str) -> utoipa::openapi::Response {
 }
 
 /// `POST /actions/{name}` for one defined action, tagged by its target type.
+/// Every kind documents `201`: `post_action`'s single Ok arm responds
+/// `StatusCode::CREATED` regardless of kind (`http.rs`), and a truthful
+/// document follows the handler. Kind-true statuses are a registered follow-up.
 fn action_op(action: &ActionDef) -> Operation {
     let target = &action.target.0;
-    let (summary, ok_status, ok_desc) = match action.kind {
-        ActionKind::Insert => (format!("Insert a {target}"), "201", "Created object"),
+    let (summary, ok_desc) = match action.kind {
+        ActionKind::Insert => (format!("Insert a {target}"), "Created object"),
         ActionKind::Update => (
             format!("Update a {target} (identity-targeted PATCH)"),
-            "200",
             "Updated object",
         ),
         ActionKind::Delete => (
             format!("Delete a {target} by identity"),
-            "200",
             "Deleted object (pre-deletion values)",
         ),
     };
@@ -200,7 +201,7 @@ fn action_op(action: &ActionDef) -> Operation {
         .security(bearer())
         .request_body(Some(body))
         .response(
-            ok_status,
+            "201",
             json_response(RefOr::Ref(Ref::from_schema_name(target)), ok_desc),
         )
         .response(
