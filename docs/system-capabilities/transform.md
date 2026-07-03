@@ -8,12 +8,12 @@ atomically. Transforms execute on the **zero-pool worker**
 (`src/services/worker/src/transform.rs`) — the worker holds no Postgres pool
 and no Iceberg catalog; inputs stream over Arrow Flight and the commit goes
 through a single `EngineControl::CommitTransform` RPC. The former pool-owning
-transform service (`src/services/transform/`) has been deleted (#PRNUM). The
+transform service (`src/services/transform/`) has been deleted (#342). The
 shared payload/conformance types live in `control_plane_core`
 (`transform_job.rs`, `conform.rs`) and the read/write compute layer is
 `datafusion-io`.
 
-_As of a266dbd2._
+_As of d54063e6._
 
 ## Queue-driven SQL transforms
 
@@ -32,7 +32,7 @@ any RPC. It runs the SQL, writes the result via the shared
 `datafusion_io::write_dataset` path, and commits — in one transaction on the
 engine side — the output table (idempotently created), the new data files, and
 a lineage event recording inputs → output with the SQL in the payload (#57,
-#PRNUM). Multi-input joins are supported. The end-to-end guarantee is
+#342). Multi-input joins are supported. The end-to-end guarantee is
 atomicity: either the snapshot, its files, and its lineage all commit, or
 nothing does.
 
@@ -44,7 +44,7 @@ RPC errors, Flight fetch races against compaction, object-store write faults)
 retry with `WorkerTuning::backoff` — the same capped exponential every other
 worker job uses, closing the old per-handler backoff drift (the old crate's
 `2^attempts`s formula, 64s cap; `#fut-transform-backoff-unify`, resolved by
-#PRNUM). A mid-handler drop race
+#342). A mid-handler drop race
 (an input vanishing between existence check and file read) surfaces as a
 transient wire error whose retry re-lists cleanly and converges to the
 unknown-input abandon. A panicking handler is backstopped by the worker loop's
@@ -55,7 +55,7 @@ table's declared schema (`ListFilesResponse.columns_json` →
 `logical_arrow_schema` + `register_empty_table`), so the SQL runs over an
 empty input — `SELECT count(*)` yields `0`, `SELECT *` commits an empty
 output — rather than failing inside DataFusion's schema inference (#147,
-carried onto the wire path by #PRNUM). The empty-input schema covers exactly
+carried onto the wire path by #342). The empty-input schema covers exactly
 the canonical scalar set the transform read/write path round-trips (boolean,
 integer, long, double, string); anything else is a deterministic abandon.
 
@@ -66,7 +66,7 @@ query-api. Who may author or enqueue a transform is not yet governed.
 ## Typed transforms (Type(s) → Type)
 
 `handle_typed_transform` (same module) is the Object-Model layer over the same
-orchestration (#59, #PRNUM): a `typed-transform` job
+orchestration (#59, #342): a `typed-transform` job
 (`control_plane_core::TypedTransformJob`) names input ontology **types**, one
 output **type**, and SQL written in type terms. The worker resolves each input
 type to its backing table over the wire (`gov_resolve`) and fetches the output
@@ -105,7 +105,7 @@ files with per-file stats, under a caller-unique run prefix, then absolutized
 against the worker's write-store root (`absolute_data_files`) so the committed
 mirror paths match what the serving engine resolves. The commit is one
 `EngineControl::CommitTransform` RPC mirroring `CompactTable`'s conventions
-(#PRNUM): the engine decodes the inferred output columns, the written
+(#342): the engine decodes the inferred output columns, the written
 `DataFile`s, and the `LineageWire` envelope (decode errors are
 `invalid_argument`), then runs the same staged transaction the old binary ran
 locally — `create_table` + `append_files`/`replace_files` + `emit` + `commit`
@@ -146,7 +146,7 @@ transforms are the full engine-wire compute pattern: list live files over
 gRPC, stream bytes over Arrow Flight (the bulk data plane), compute locally
 (coalesce for compaction, DataFusion SQL for transforms), rewrite to the
 object store, and commit the result through a single engine RPC
-(`CompactTable` / `CommitTransform`) — zero direct catalog access (#PRNUM).
+(`CompactTable` / `CommitTransform`) — zero direct catalog access (#342).
 Worker config parsing is strict: a malformed tuning knob fails startup instead
 of silently falling back to the default (#202). Job payloads and kind strings
 were wire-frozen across the migration, so jobs queued against the old binary

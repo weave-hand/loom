@@ -166,11 +166,11 @@ NOTIFY-bridged long-poll) plus maintenance and write RPCs (`FlushTable`,
 `CompactTable`, `GcTable`, `WriteObject`, `OverwriteTable`, and
 `CommitTransform` — the transform commit, mirroring `CompactTable`'s
 conventions, which stages create+append/replace+lineage in one engine-side
-transaction (#PRNUM)) — consumed by zero-pool workers via `GrpcQueueClient`
+transaction (#342)) — consumed by zero-pool workers via `GrpcQueueClient`
 (#108). `ListFiles` responses carry the table's declared schema as
 `columns_json` (absent ⟺ the table does not exist), so a wire consumer can
 register a zero-file table as an empty relation and distinguish it from an
-unknown table (#PRNUM). Bulk file data moves over an
+unknown table (#342). Bulk file data moves over an
 **Arrow Flight data plane** on the same socket: a `FlightTicket
 {schema, name, files}` streams a named file set as schema-first Arrow IPC, so
 a compaction worker streams exactly the small files it will coalesce, rewrites
