@@ -270,7 +270,7 @@ Expected: PASS.
   - service-accounts: `POST /auth/service-accounts`, `GET /auth/service-accounts`, `POST /auth/service-accounts/{id}/tokens`, `GET /auth/service-accounts/{id}/tokens`, `DELETE /auth/service-accounts/{id}/tokens/{token_id}`
   - admin: `POST /admin/users`, `GET /admin/users`, `POST /admin/users/{username}/disable`, `POST /admin/users/{username}/enable`, `POST /admin/users/{username}/password`, `POST /admin/models`, `POST /admin/roles`, `GET /admin/roles`, `POST /admin/roles/{role}/grants`
 
-- [ ] **Step 1: Write the failing test** (`tests/openapi_fragments.rs`). Copy the `documented()` helper **verbatim from `query-api/tests/openapi.rs:30–52`** — it filters path-item keys to the 8 HTTP methods (path items also serialize non-operation keys like `summary`/`parameters`, which a naive key scan would misreport). Then:
+- [x] **Step 1: Write the failing test** (`tests/openapi_fragments.rs`). Copy the `documented()` helper **verbatim from `query-api/tests/openapi.rs:30–52`** — it filters path-item keys to the 8 HTTP methods (path items also serialize non-operation keys like `summary`/`parameters`, which a naive key scan would misreport). Then:
 
 ```rust
 #[tokio::test]
@@ -360,12 +360,12 @@ async fn every_op_requires_bearer_except_login() {
 }
 ```
 
-- [ ] **Step 2: BUCK target + run to verify failure.** Mirror the runtime `openapi` test target (BUCK ~line 250) as `openapi-fragments` (deps: `:runtime`, `//third-party:utoipa`, `//third-party:serde_json`, `//third-party:tokio`).
+- [x] **Step 2: BUCK target + run to verify failure.** Mirror the runtime `openapi` test target (BUCK ~line 250) as `openapi-fragments` (deps: `:runtime`, `//third-party:utoipa`, `//third-party:serde_json`, `//third-party:tokio`).
 
 Run: `buck2 test //src/services/runtime:openapi-fragments --unstable-allow-all-tests-on-re > /tmp/t3.log 2>&1; grep -E "error|FAIL" /tmp/t3.log | head`
 Expected: compile error (`auth_openapi` not found).
 
-- [ ] **Step 3: Annotate + derive.** For every handler in the inventory add `#[utoipa::path(...)]` in the exact style of `query-api/src/http.rs:169–184`: method, path (utoipa `{param}` braces), `params(...)` for path params, `request_body = <DTO>` where a body exists, real response statuses (login `200` body `LoginResp` / `401`; logout `200`; password `200`/`403`; create-account `200` always — including fresh creates, `auth.rs:351–358`; mint-token `200` plus `400` for over-cap/zero TTL, `auth.rs:400–430`; revoke-token `200` plus `400` for bad hex, `auth.rs:481–492`; create-user `201`/`200`/`400`; disable/enable `200`; reset-password `200`/`404`; create-role `201`; list-roles `200`; grant `201`; define-model `201` — **verify each against the handler and follow the handler on any disagreement**), `security(("bearer_auth" = []))` on everything except `POST /auth/login`, and tags: `"auth"` / `"service-accounts"` / `"admin"`. Derive `utoipa::ToSchema` on the referenced DTOs (`LoginReq`, `LoginResp`, `ChangePasswordReq`, `CreateAccountReq`, `MintTokenReq`, `CreateUserReq`, `CreateUserResp`, `ListUsersResp`, `UserView`, `ResetPasswordReq`, `CreateRoleReq`, `GrantReq`, `DefineModelReq`, `TableReq`, `PropReq`, plus any response DTO a `body =` names). Then per module:
+- [x] **Step 3: Annotate + derive.** For every handler in the inventory add `#[utoipa::path(...)]` in the exact style of `query-api/src/http.rs:169–184`: method, path (utoipa `{param}` braces), `params(...)` for path params, `request_body = <DTO>` where a body exists, real response statuses (login `200` body `LoginResp` / `401`; logout `200`; password `200`/`403`; create-account `200` always — including fresh creates, `auth.rs:351–358`; mint-token `200` plus `400` for over-cap/zero TTL, `auth.rs:400–430`; revoke-token `200` plus `400` for bad hex, `auth.rs:481–492`; create-user `201`/`200`/`400`; disable/enable `200`; reset-password `200`/`404`; create-role `201`; list-roles `200`; grant `201`; define-model `201` — **verify each against the handler and follow the handler on any disagreement**), `security(("bearer_auth" = []))` on everything except `POST /auth/login`, and tags: `"auth"` / `"service-accounts"` / `"admin"`. Derive `utoipa::ToSchema` on the referenced DTOs (`LoginReq`, `LoginResp`, `ChangePasswordReq`, `CreateAccountReq`, `MintTokenReq`, `CreateUserReq`, `CreateUserResp`, `ListUsersResp`, `UserView`, `ResetPasswordReq`, `CreateRoleReq`, `GrantReq`, `DefineModelReq`, `TableReq`, `PropReq`, plus any response DTO a `body =` names). Then per module:
 
 ```rust
 #[derive(utoipa::OpenApi)]
@@ -383,12 +383,19 @@ pub fn auth_openapi() -> utoipa::openapi::OpenApi {
 ```
 (`ServiceAccountApiDoc` beside the service-account handlers in `auth.rs`; `AdminApiDoc` in `admin.rs`.) Re-export all three from `lib.rs` next to the existing openapi exports.
 
-- [ ] **Step 4: Run to green.**
+- [x] **Step 4: Run to green.**
 
 Run: `buck2 test //src/services/runtime:openapi-fragments //src/services/runtime:openapi --unstable-allow-all-tests-on-re > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log`
 Expected: PASS.
 
-- [ ] **Step 5: prek, commit** — `feat(runtime): OpenAPI fragments for auth, service-account, and admin routes`.
+(Deviation, handler-followed: `LoginResp { token }` joins `MintTokenResp` in the
+secret-echo test's exception list — the plan itself mandates `login 200 body =
+LoginResp`, and login is the single moment the session token is shown, same
+rationale as minting. Also documented the handler-coded statuses the plan's list
+omitted: `403` on the five admin-gated service-account ops (`ensure_admin`) and
+`400` on grant (`action must be read|write`).)
+
+- [x] **Step 5: prek, commit** — `feat(runtime): OpenAPI fragments for auth, service-account, and admin routes`.
 
 ---
 

@@ -53,7 +53,7 @@ pub async fn require_admin(State(st): State<AdminState>, req: Request, next: Nex
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct CreateUserReq {
     username: String,
     password: String,
@@ -61,7 +61,7 @@ struct CreateUserReq {
     roles: Vec<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 struct CreateUserResp {
     username: String,
     subject_id: String,
@@ -78,6 +78,17 @@ struct CreateUserResp {
 /// note a retry does NOT reset the stored password — `create_user` is the only
 /// non-idempotent step and is skipped once the user exists); an unknown role is a
 /// 400 that reports what already completed.
+#[utoipa::path(
+    post, path = "/admin/users",
+    request_body = CreateUserReq,
+    responses(
+        (status = 201, description = "User created with all roles assigned", body = CreateUserResp),
+        (status = 200, description = "User already existed; grants completed (password NOT reset)", body = CreateUserResp),
+        (status = 400, description = "Unknown role; reports what already completed", body = CreateUserResp),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn create_user(State(st): State<AdminState>, Json(req): Json<CreateUserReq>) -> Response {
     let Ok(phc) = hash_password(&req.password) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed").into_response();
@@ -137,7 +148,7 @@ async fn create_user(State(st): State<AdminState>, Json(req): Json<CreateUserReq
         .into_response()
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 struct UserView {
     username: String,
     subject_id: String,
@@ -145,7 +156,7 @@ struct UserView {
     created_at: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 struct ListUsersResp {
     users: Vec<UserView>,
 }
@@ -165,6 +176,14 @@ fn to_view(u: UserSummary) -> UserView {
 
 /// `GET /admin/users` — list all users (identity + activation + created-at), never
 /// the verifier.
+#[utoipa::path(
+    get, path = "/admin/users",
+    responses(
+        (status = 200, description = "All users (identity + activation + created-at)", body = ListUsersResp),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn list_users(State(st): State<AdminState>) -> Response {
     match st.auth.list_users(PageReq::unbounded()).await {
         Ok(page) => {
@@ -176,6 +195,13 @@ async fn list_users(State(st): State<AdminState>) -> Response {
 }
 
 /// `POST /admin/users/:username/disable` — deactivate (revokes sessions).
+#[utoipa::path(
+    post, path = "/admin/users/{username}/disable",
+    params(("username" = String, Path, description = "Username to deactivate")),
+    responses((status = 200, description = "User deactivated; sessions revoked")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn disable_user(State(st): State<AdminState>, Path(username): Path<String>) -> Response {
     match st.auth.set_user_disabled(&username, true).await {
         Ok(()) => StatusCode::OK.into_response(),
@@ -184,6 +210,13 @@ async fn disable_user(State(st): State<AdminState>, Path(username): Path<String>
 }
 
 /// `POST /admin/users/:username/enable` — reactivate (does not resurrect sessions).
+#[utoipa::path(
+    post, path = "/admin/users/{username}/enable",
+    params(("username" = String, Path, description = "Username to reactivate")),
+    responses((status = 200, description = "User reactivated (sessions are not resurrected)")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn enable_user(State(st): State<AdminState>, Path(username): Path<String>) -> Response {
     match st.auth.set_user_disabled(&username, false).await {
         Ok(()) => StatusCode::OK.into_response(),
@@ -191,7 +224,7 @@ async fn enable_user(State(st): State<AdminState>, Path(username): Path<String>)
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct ResetPasswordReq {
     new: String,
 }
@@ -200,6 +233,17 @@ struct ResetPasswordReq {
 /// with NO current-verify (operator-driven recovery), and revoke ALL that user's
 /// sessions (force re-login). `NotFound` (404) if the username is unknown. The
 /// subject id equals the username, mirroring `create_user` on this surface.
+#[utoipa::path(
+    post, path = "/admin/users/{username}/password",
+    params(("username" = String, Path, description = "Username whose password to reset")),
+    request_body = ResetPasswordReq,
+    responses(
+        (status = 200, description = "Password reset; ALL the user's sessions revoked"),
+        (status = 404, description = "Unknown username"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn reset_password(
     State(st): State<AdminState>,
     Path(username): Path<String>,
@@ -218,12 +262,19 @@ async fn reset_password(
     StatusCode::OK.into_response()
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct CreateRoleReq {
     role: String,
 }
 
 /// `POST /admin/roles` — declare a new role (governance target for grants).
+#[utoipa::path(
+    post, path = "/admin/roles",
+    request_body = CreateRoleReq,
+    responses((status = 201, description = "Role declared")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn create_role(State(st): State<AdminState>, Json(req): Json<CreateRoleReq>) -> Response {
     match st.cp.acl().define_role(&RoleId(req.role.clone())).await {
         Ok(()) => (
@@ -236,6 +287,12 @@ async fn create_role(State(st): State<AdminState>, Json(req): Json<CreateRoleReq
 }
 
 /// `GET /admin/roles` — list all declared role ids.
+#[utoipa::path(
+    get, path = "/admin/roles",
+    responses((status = 200, description = "All declared role ids, as `{\"roles\": [...]}`")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn list_roles(State(st): State<AdminState>) -> Response {
     match st.cp.acl().list_roles().await {
         Ok(roles) => Json(serde_json::json!({
@@ -246,7 +303,7 @@ async fn list_roles(State(st): State<AdminState>) -> Response {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct GrantReq {
     action: String,
     r#type: String,
@@ -255,6 +312,17 @@ struct GrantReq {
 /// `POST /admin/roles/:role/grants` — grant a role coarse `Read`/`Write` Allow
 /// on a type. An unknown grant-target type surfaces as 400 (the control plane
 /// returns `Validation`, mapped by `status_for`).
+#[utoipa::path(
+    post, path = "/admin/roles/{role}/grants",
+    params(("role" = String, Path, description = "Role receiving the grant")),
+    request_body = GrantReq,
+    responses(
+        (status = 201, description = "Granted"),
+        (status = 400, description = "action is not read|write, or unknown grant-target type"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn grant(
     State(st): State<AdminState>,
     Path(role): Path<String>,
@@ -283,7 +351,7 @@ async fn grant(
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct PropReq {
     name: String,
     ty: String,
@@ -291,13 +359,13 @@ struct PropReq {
     required: bool,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct TableReq {
     schema: String,
     name: String,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct DefineModelReq {
     name: String,
     table: TableReq,
@@ -306,6 +374,13 @@ struct DefineModelReq {
 }
 
 /// `POST /admin/models` — define a model (ontology type) over an existing table.
+#[utoipa::path(
+    post, path = "/admin/models",
+    request_body = DefineModelReq,
+    responses((status = 201, description = "Model (ontology type) defined")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
 async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelReq>) -> Response {
     let otype = ObjectType {
         name: TypeName(req.name.clone()),
@@ -349,4 +424,41 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         .with_state(admin.clone())
         .route_layer(axum::middleware::from_fn_with_state(admin, require_admin));
     protect(inner, auth)
+}
+
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(
+        create_user,
+        list_users,
+        disable_user,
+        enable_user,
+        reset_password,
+        create_role,
+        list_roles,
+        grant,
+        define_model
+    ),
+    components(schemas(
+        CreateUserReq,
+        CreateUserResp,
+        UserView,
+        ListUsersResp,
+        ResetPasswordReq,
+        CreateRoleReq,
+        GrantReq,
+        DefineModelReq,
+        TableReq,
+        PropReq
+    ))
+)]
+struct AdminApiDoc;
+
+/// OpenAPI fragment for the `admin_routes` surface. Mergeable into a service's
+/// document via `utoipa::openapi::OpenApi::merge`; the bearer security scheme
+/// the ops reference is registered by the serve seam (`register_bearer_scheme`),
+/// not here.
+#[must_use]
+pub fn admin_openapi() -> utoipa::openapi::OpenApi {
+    <AdminApiDoc as utoipa::OpenApi>::openapi()
 }
