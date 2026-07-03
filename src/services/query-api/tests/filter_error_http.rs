@@ -139,6 +139,9 @@ async fn get(cp: MemoryControlPlane, subject: &str, uri: &str) -> (StatusCode, S
 
 #[tokio::test(flavor = "multi_thread")]
 async fn uncoercible_value_is_structured_400() {
+    // Regression guard for iss-qa-search-badfiltervalue-classification: this caller-value
+    // coercion fault must stay a 400 — the reclassification only touches the two
+    // ENGINE-derived seams in `vector_search`'s post-filter, not this caller-filter path.
     let cp = seed(false).await;
     let (status, body) = get(cp, "analyst", "/objects/Order?amount=gt:abc").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
@@ -189,6 +192,20 @@ async fn denied_column_uncoercible_value_stays_bad_filter() {
         !body.contains("double"),
         "must not leak the column's declared type"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ids_uncoercible_value_is_400() {
+    // Caller-supplied `_ids` failing coercion against the declared identity type is the same
+    // caller-value fault class as an uncoercible filter value (see
+    // `uncoercible_value_is_structured_400` above) — a caller-facing 400, unaffected by the
+    // engine-derived-value reclassification in `vector_search`'s post-filter (iss-qa-search-
+    // badfiltervalue-classification), which only wraps the two ENGINE-derived seams.
+    let cp = seed(false).await;
+    let (status, body) = get(cp, "analyst", "/objects/Order?_ids=notanint").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    let json: serde_json::Value = serde_json::from_str(&body).expect("structured JSON body");
+    assert_eq!(json["error"], "bad_filter_value");
 }
 
 #[tokio::test(flavor = "multi_thread")]

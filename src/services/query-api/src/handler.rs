@@ -146,12 +146,34 @@ pub enum QueryError {
     /// closed — never emit a cursor over a masked/denied identity column.
     #[error("bad pagination: {0}")]
     BadPagination(String),
+    /// A server-side fault detected while processing engine-derived (non-caller)
+    /// values — e.g. a mirror-returned identity cell that fails `coerce_filter`
+    /// against its declared logical type, or a served vector type with no declared
+    /// identity. Never caller-forgeable: renders as an opaque 500, logged
+    /// server-side with the wrapped error's full detail.
+    #[error("internal fault: {context}: {source}")]
+    Internal {
+        context: &'static str,
+        source: Box<QueryError>,
+    },
     #[error(transparent)]
     ControlPlane(#[from] control_plane_core::ControlPlaneError),
     #[error(transparent)]
     Serving(#[from] crate::serving::ServingError),
     #[error(transparent)]
     Malformed(#[from] crate::sql::CompileError),
+}
+
+impl QueryError {
+    /// Reclassify a fault born from engine-derived (non-caller) input as an internal
+    /// fault, boxing the original as the `source` so its detail survives to the log.
+    #[must_use]
+    pub fn into_internal(self, context: &'static str) -> QueryError {
+        QueryError::Internal {
+            context,
+            source: Box::new(self),
+        }
+    }
 }
 
 pub use crate::governed::{
@@ -513,6 +535,7 @@ pub async fn read_object_page(
 }
 
 /// One ranked kNN hit: the identity value and its distance.
+#[derive(Debug)]
 pub struct VectorHit {
     pub id: SqlValue,
     pub distance: f64,
@@ -607,13 +630,22 @@ pub async fn vector_search(
     if g.row_filters.is_empty() {
         return Ok(hits);
     }
-    let identity = g
-        .otype
-        .identity
-        .clone()
-        .ok_or_else(|| QueryError::NoIdentity(g.otype.name.0.clone()))?;
+    let identity = g.otype.identity.clone().ok_or_else(|| {
+        // A served vector type with no declared identity is server ontology/config
+        // state, not caller-forgeable here — classify as internal, not a 400.
+        QueryError::NoIdentity(g.otype.name.0.clone())
+            .into_internal("vector-search post-filter: served vector type has no declared identity")
+    })?;
     let candidate_strs: Vec<String> = hits.iter().map(|h| sqlvalue_to_id_string(&h.id)).collect();
-    let Some(pred) = identity_in_predicate(&g.otype, &g.denied, &g.masked, &candidate_strs)? else {
+    // The candidate ids are the ENGINE's own hit identities, not caller input; a
+    // coercion failure here is server-data-integrity drift → internal, not a caller 400.
+    // (The `identity_governed()` guard above already returned Forbidden for the BadFilter arm,
+    // so only coercion errors can flow from here.)
+    let Some(pred) = identity_in_predicate(&g.otype, &g.denied, &g.masked, &candidate_strs)
+        .map_err(|e| {
+            e.into_internal("vector-search post-filter: engine hit identity failed coercion")
+        })?
+    else {
         return Ok(hits); // no candidates to scope (empty handled above; defensive)
     };
     let limit = u32::try_from(candidate_strs.len()).unwrap_or(u32::MAX);

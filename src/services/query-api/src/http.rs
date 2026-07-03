@@ -444,9 +444,10 @@ pub fn query_error_response(e: QueryError, context: &'static str) -> axum::respo
         QueryError::Serving(crate::serving::ServingError::Plan(m)) => {
             (StatusCode::BAD_REQUEST, m).into_response()
         }
-        e @ (QueryError::ControlPlane(_) | QueryError::Serving(_) | QueryError::Malformed(_)) => {
-            internal_error(context, e)
-        }
+        e @ (QueryError::ControlPlane(_)
+        | QueryError::Serving(_)
+        | QueryError::Malformed(_)
+        | QueryError::Internal { .. }) => internal_error(context, e),
     }
 }
 
