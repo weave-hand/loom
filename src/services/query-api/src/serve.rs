@@ -16,7 +16,7 @@ type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
 
 pub async fn serve(
-    _cfg: &service_runtime::Config,
+    cfg: &service_runtime::Config,
     direct: Arc<dyn ControlPlane>,
     auth: service_runtime::AuthState,
     engine_socket: String,
@@ -50,12 +50,17 @@ pub async fn serve(
     };
     let max_ttl = service_runtime::service_token_max_ttl(&env)?;
 
+    let naming = std::sync::Arc::new(lineage_naming::LineageNaming::from_object_store(
+        &cfg.object_store,
+    ));
+
     let app = service_runtime::protect(
         router(AppState {
             cp,
             serving,
             action_engine,
             default_limit: app_cfg.serving.default_limit,
+            naming,
         }),
         auth.clone(),
     )

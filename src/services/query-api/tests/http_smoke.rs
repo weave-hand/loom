@@ -104,6 +104,7 @@ async fn get_objects_returns_json_rows() {
         serving: Arc::new(StubServing),
         action_engine: Arc::new(StubAction),
         default_limit: 1000,
+        naming: query_api::lineage_filter::local_naming(),
     });
     let mut req = Request::builder()
         .uri("/objects/Order")

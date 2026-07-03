@@ -22,6 +22,7 @@ use axum::routing::{get, post};
 use control_plane_core::{
     ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, NewJob, PageReq, RunId,
 };
+use lineage_naming::LineageNaming;
 use service_runtime::Subject;
 
 /// Upper bound on a single `/search` request's `k` — caps per-request work.
@@ -68,6 +69,9 @@ pub struct AppState {
     pub serving: Arc<dyn ServingEngine>,
     pub action_engine: Arc<dyn ActionEngine>,
     pub default_limit: u32,
+    /// Deployment naming bridge: resolves a `DatasetRef` back to its governed
+    /// `Table`/`Type` (or External) so the `/lineage` reads can ACL-filter per node.
+    pub naming: Arc<LineageNaming>,
 }
 
 impl AppState {
@@ -800,35 +804,38 @@ async fn post_search(
     }
 }
 
-/// Which direction of the provenance closure a request walks.
-#[derive(Clone, Copy)]
-enum LineageDir {
-    Upstream,
-    Downstream,
-}
-
-/// Map a lineage read error to a status. A `Validation` fault (over-cap/zero depth,
-/// malformed cursor) is a caller error (400); anything else is an opaque 500 logged
-/// server-side. An unknown dataset is NOT an error — the capability returns an empty
-/// page, which serializes as `{ "datasets": [], "next_cursor": null }`.
-fn lineage_error(e: ControlPlaneError) -> axum::response::Response {
+/// Map a `LineageVisibility` fault to a status. Scan-cap over-run is a 422 (the
+/// closure is ungovernably large; never a partial page). A `Validation` fault
+/// (over-cap/zero depth, malformed cursor) is a caller 400; anything else is an
+/// opaque 500 logged server-side. Unknown / unreadable seed is NOT an error — the
+/// filter returns an empty page.
+fn lineage_visibility_error(
+    e: crate::lineage_filter::LineageVisibilityError,
+) -> axum::response::Response {
+    use crate::lineage_filter::LineageVisibilityError as E;
     match e {
-        ControlPlaneError::Validation(m) => (StatusCode::BAD_REQUEST, m).into_response(),
-        other => internal_error("lineage read fault", other),
+        E::ScanCapExceeded => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "provenance closure too large to govern; reduce depth",
+        )
+            .into_response(),
+        E::Cp(ControlPlaneError::Validation(m)) => (StatusCode::BAD_REQUEST, m).into_response(),
+        E::Cp(other) => internal_error("lineage read fault", other),
     }
 }
 
 /// Shared upstream/downstream handler: parse `depth` (default 1, forwarded to the
-/// capability which caps it), `after`/`limit` (-> `PageReq`), then call the closure
-/// read and serialize the page. `depth` beyond `LINEAGE_MAX_DEPTH` (or 0) is rejected
-/// BELOW by the capability as `Validation` -> 400 — the wire cannot trigger an
+/// capability which caps it), `after`/`limit` (-> `PageReq`), then call the governed
+/// closure read and serialize the page. `depth` beyond `LINEAGE_MAX_DEPTH` (or 0) is
+/// rejected BELOW by the filter as `Validation` -> 400 — the wire cannot trigger an
 /// unbounded walk.
 async fn lineage_closure(
     st: &AppState,
     namespace: String,
     name: String,
     params: Vec<(String, String)>,
-    dir: LineageDir,
+    dir: crate::lineage_filter::LineageDir,
+    subject: Subject,
 ) -> axum::response::Response {
     // Unknown params were ignored before the splitter; discarding the "filters" side keeps that.
     let (reserved, _) = crate::query_params::split_reserved(params, &["depth", "after", "limit"]);
@@ -842,15 +849,16 @@ async fn lineage_closure(
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
-    let ds = DatasetRef { namespace, name };
-    let lineage = st.cp.lineage();
-    let res = match dir {
-        LineageDir::Upstream => lineage.upstream(&ds, depth, page).await,
-        LineageDir::Downstream => lineage.downstream(&ds, depth, page).await,
-    };
+    let seed = DatasetRef { namespace, name };
+    let vis = crate::lineage_filter::LineageVisibility::new(
+        st.cp.acl(),
+        st.cp.lineage(),
+        st.naming.as_ref(),
+    );
+    let res = vis.visible_closure(&subject.0, &seed, depth, dir, &page).await;
     match res {
         Ok(page) => Json(crate::lineage_read::dataset_closure_body(page)).into_response(),
-        Err(e) => lineage_error(e),
+        Err(e) => lineage_visibility_error(e),
     }
 }
 
@@ -875,9 +883,17 @@ async fn get_lineage_upstream(
     State(st): State<AppState>,
     Path((namespace, name)): Path<(String, String)>,
     Query(params): Query<Vec<(String, String)>>,
-    _subject: Subject,
+    subject: Subject,
 ) -> axum::response::Response {
-    lineage_closure(&st, namespace, name, params, LineageDir::Upstream).await
+    lineage_closure(
+        &st,
+        namespace,
+        name,
+        params,
+        crate::lineage_filter::LineageDir::Upstream,
+        subject,
+    )
+    .await
 }
 
 #[utoipa::path(
@@ -901,9 +917,17 @@ async fn get_lineage_downstream(
     State(st): State<AppState>,
     Path((namespace, name)): Path<(String, String)>,
     Query(params): Query<Vec<(String, String)>>,
-    _subject: Subject,
+    subject: Subject,
 ) -> axum::response::Response {
-    lineage_closure(&st, namespace, name, params, LineageDir::Downstream).await
+    lineage_closure(
+        &st,
+        namespace,
+        name,
+        params,
+        crate::lineage_filter::LineageDir::Downstream,
+        subject,
+    )
+    .await
 }
 
 #[utoipa::path(
@@ -925,7 +949,7 @@ async fn get_lineage_run_events(
     State(st): State<AppState>,
     Path(run_id): Path<String>,
     Query(params): Query<Vec<(String, String)>>,
-    _subject: Subject,
+    subject: Subject,
 ) -> axum::response::Response {
     let Ok(uuid) = uuid::Uuid::parse_str(&run_id) else {
         return (StatusCode::BAD_REQUEST, "run_id must be a UUID").into_response();
@@ -938,7 +962,17 @@ async fn get_lineage_run_events(
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
     match st.cp.lineage().events_for(&RunId(uuid), page).await {
-        Ok(page) => Json(crate::lineage_read::run_events_body(page)).into_response(),
-        Err(e) => lineage_error(e),
+        Ok(page) => {
+            let vis = crate::lineage_filter::LineageVisibility::new(
+                st.cp.acl(),
+                st.cp.lineage(),
+                st.naming.as_ref(),
+            );
+            match vis.redact_events(&subject.0, page).await {
+                Ok(red) => Json(crate::lineage_read::run_events_body(red)).into_response(),
+                Err(e) => lineage_visibility_error(e),
+            }
+        }
+        Err(e) => lineage_visibility_error(crate::lineage_filter::LineageVisibilityError::Cp(e)),
     }
 }

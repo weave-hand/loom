@@ -177,6 +177,7 @@ async fn post_json_raw(
         serving: Arc::new(StubServing),
         action_engine: Arc::new(RecordingEngine { writes }),
         default_limit: 1000,
+        naming: query_api::lineage_filter::local_naming(),
     };
     let app = router(state);
     let mut req = Request::builder()
