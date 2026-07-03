@@ -11,7 +11,7 @@ use control_plane_postgres::iceberg_landing::land;
 use engine_serving::{EngineServingError, VectorQuery};
 use loom_test_seed::{
     cold_limits, distances_f32, hot_limits, ids_i64, land_vec4, local_sql_catalog,
-    seed_docs_vector, test_lineage, vec4_columns, vec4_batches,
+    seed_docs_vector, test_lineage, vec4_batches, vec4_columns,
 };
 
 /// Terse `VectorQuery` builder for the call sites in this file.

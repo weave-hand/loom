@@ -3,7 +3,7 @@
 //! run the build as of S, assert a Puffin sidecar exists and a vector_index mirror
 //! row + lineage event were written in one tx, covering all rows live at S.
 
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_batches};
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_batches, vec4_columns};
 
 use control_plane_core::{
     Catalog, ControlPlane, IndexSpec, Metric, ObjectType, PageReq, PropertyDef, RunId, TableRef,

@@ -9,7 +9,7 @@
 
 use loom_test_flight::spawn_flight_uds;
 use loom_test_seed::{
-    distances_f32, ids_i64, local_sql_catalog, test_lineage, vec4_columns, vec4_batches,
+    distances_f32, ids_i64, local_sql_catalog, test_lineage, vec4_batches, vec4_columns,
 };
 use std::time::Duration;
 

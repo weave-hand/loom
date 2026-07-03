@@ -6,7 +6,7 @@
 //! `buck2 test //src/...` from a fresh environment without Postgres binaries.)
 
 use loom_test_flight::{EngineOpts, spawn_engine_uds};
-use loom_test_seed::{local_sql_catalog, vec4_columns, vec4_batches};
+use loom_test_seed::{local_sql_catalog, vec4_batches, vec4_columns};
 use std::time::Duration;
 
 use control_plane_core::{

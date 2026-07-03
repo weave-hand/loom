@@ -2,7 +2,7 @@
 //! post-flush snapshot, then becomes visible again once the auto-enqueued rebuild runs.
 //! Proves the slice's user-visible guarantee across the real k-NN read path.
 
-use control_plane_core::IndexSpec;
+use control_plane_core::{IndexSpec, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use engine_serving::VectorQuery;
 use loom_test_seed::{hot_limits, ids_i64, land_vec4, seed_docs_vector};

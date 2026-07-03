@@ -156,6 +156,7 @@ async fn setup_with_cap(
         name: "chunks".into(),
     };
     let catalog = local_sql_catalog(dsn.clone(), &warehouse).await;
+    let (schema, batches) = ipc_body(1500);
     land(
         &pool,
         &catalog,
@@ -250,6 +251,7 @@ async fn setup_with_mask(
         name: "chunks".into(),
     };
     let catalog = local_sql_catalog(dsn.clone(), &warehouse).await;
+    let (schema, batches) = ipc_body(1500);
     land(
         &pool,
         &catalog,

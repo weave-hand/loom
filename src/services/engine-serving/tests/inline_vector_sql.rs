@@ -9,7 +9,7 @@ use control_plane_core::{LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_batches};
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_batches, vec4_columns};
 
 fn lineage_evt(table: &TableRef) -> LineageEvent {
     test_lineage(RunId(uuid::Uuid::new_v4()), table)

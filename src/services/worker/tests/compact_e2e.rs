@@ -228,9 +228,18 @@ async fn worker_leaves_large_files_untouched() {
     let wh = tempfile::tempdir().expect("warehouse dir");
     let wh_str = wh.path().display().to_string();
 
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh_str).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
 
-    let (_sock_dir, sock) = spawn_server(fx, &db, &wh_str).await;
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
 
     let mixed = TableRef {
         schema: "main".into(),
@@ -297,10 +306,10 @@ async fn worker_leaves_large_files_untouched() {
     let store_cfg = ObjectStoreConfig::parse_from_env(&env_map).expect("store config");
     let write = Arc::new(build_write_store(&store_cfg).expect("write store"));
 
-    let control = GrpcQueueClient::connect(&sock)
+    let control = GrpcQueueClient::connect(&eng.sock)
         .await
         .expect("connect control");
-    let flight = FlightTableClient::connect(&sock)
+    let flight = FlightTableClient::connect(&eng.sock)
         .await
         .expect("connect flight");
 

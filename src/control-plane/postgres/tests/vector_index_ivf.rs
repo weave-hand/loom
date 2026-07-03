@@ -2,7 +2,7 @@
 //! ivf_flat index, the mirror row records index_kind = "ivf_flat", and a search
 //! over the decoded index returns the exact match when every cluster is probed.
 
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_batches};
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_batches, vec4_columns};
 
 use control_plane_core::{
     ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,

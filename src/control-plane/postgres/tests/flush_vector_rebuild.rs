@@ -2,7 +2,7 @@
 //! when the flushed table has declared vector indexes, deduped against any pending
 //! (state='available') job for the same kind+payload.
 
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_batches};
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_batches, vec4_columns};
 
 use control_plane_core::{
     ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,

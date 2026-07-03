@@ -34,7 +34,6 @@ use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
 
-
 /// The inline-tier routing limits carried by [`land`]: at/below
 /// `inline_byte_limit` a request inlines (mirror-only typed rows) instead of
 /// writing real Parquet; at/above `flush_byte_threshold` live inline bytes an

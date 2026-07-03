@@ -22,7 +22,7 @@
 //! router via a oneshot request), and `ids_i64` (parse an `{objects:[…]}`
 //! body's `id`s as sorted `i64`s).
 
-use loom_test_seed::{vec4_columns, vec4_batches};
+use loom_test_seed::{vec4_batches, vec4_columns};
 use std::sync::Arc;
 
 use async_trait::async_trait;
