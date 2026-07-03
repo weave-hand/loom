@@ -41,6 +41,7 @@ fn compact_request_message_constructs() {
             record_count: 1,
             file_size_bytes: 2,
         }],
+        columns_json: None,
     };
     assert_eq!(lf.files[0].record_count, 1);
 }

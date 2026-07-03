@@ -266,15 +266,15 @@ async fn commit_transform(
 
 Engine `list_files` gains columns: in the `Ok(snap)` arm also fetch `ice.schema(&table, snap.id)`, map `ColumnDef -> ColumnSpec` (name/ty/nullable — the `transform/src/run.rs:141` mapping), serialize to `columns_json: Some(json)`; the `NotFound` arm returns `files: vec![], columns_json: None`.
 
-- [ ] **Step 1 (red):** write `src/services/engine/tests/transform_wire.rs` (mirror `engine/tests/write_wire.rs` boot pattern / `spawn_engine_uds` with `control: true`), four cases:
+- [x] **Step 1 (red):** write `src/services/engine/tests/transform_wire.rs` (mirror `engine/tests/write_wire.rs` boot pattern / `spawn_engine_uds` with `control: true`), four cases:
   1. `commit_transform_appends_and_emits_lineage` — seed nothing; call `client.commit_transform("main", "t_out", &cols, &files, &event, false)` where `files` come from `write_dataset` + `absolute_data_files` against a real warehouse tempdir; assert `Some(snapshot)`, `IcebergCatalog::current_snapshot` resolves, `files_with_stats` names the committed paths, and the lineage event round-trips (query via the pool-backed lineage concern, mirroring `transform_e2e.rs:173`).
   2. `commit_transform_replace_expires_prior_live_set` — append once, then `replace=true` with a new file; assert live set == new file only and the prior snapshot still time-travels (files at old snapshot id unchanged).
   3. `commit_transform_bad_lineage_json_is_invalid_argument` — raw `EngineControlClient` call with garbage `lineage_json`; assert `Code::InvalidArgument`.
   4. `list_files_reports_columns_and_absence` — for a seeded table: `columns == Some(declared)`; for an unknown table: `files` empty and `columns == None`; for a zero-file table (port `create_empty_table` from `transform/tests/transform_e2e.rs:188`): `columns == Some(declared)`, `files` empty.
   Run: `buck2 test //src/services/engine:transform-wire --unstable-allow-all-tests-on-re > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t3.log` — FAIL (rpc absent).
-- [ ] **Step 2:** proto + regen (build does it — `pb-gen` genrule), engine ctor widening, engine handler + list_files columns, client `TableFiles`/`list_files`/`commit_transform`, and all three pre-existing shape sites: compact.rs caller (`let live = ctx.control.list_files(...).await.map_err(...)?.files;`), `compact_wire.rs`'s two callers (`.files`), `compact_rpc.rs`'s response literal (`columns_json: None`).
-- [ ] **Step 3:** rerun Step 1 (PASS) + the untouched wire suites: `buck2 test //src/services/engine: //src/services/engine-wire: //src/services/worker:compact-e2e --unstable-allow-all-tests-on-re > /tmp/t3b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3b.log`
-- [ ] **Step 4:** prek; commit `feat(engine): CommitTransform RPC + declared columns on ListFiles`
+- [x] **Step 2:** proto + regen (build does it — `pb-gen` genrule), engine ctor widening, engine handler + list_files columns, client `TableFiles`/`list_files`/`commit_transform`, and all three pre-existing shape sites: compact.rs caller (`let live = ctx.control.list_files(...).await.map_err(...)?.files;`), `compact_wire.rs`'s two callers (`.files`), `compact_rpc.rs`'s response literal (`columns_json: None`).
+- [x] **Step 3:** rerun Step 1 (PASS) + the untouched wire suites: `buck2 test //src/services/engine: //src/services/engine-wire: //src/services/worker:compact-e2e --unstable-allow-all-tests-on-re > /tmp/t3b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3b.log`
+- [x] **Step 4:** prek; commit `feat(engine): CommitTransform RPC + declared columns on ListFiles`
 
 ### Task 4: Physical `transform` on the worker
 

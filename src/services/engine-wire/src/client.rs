@@ -103,6 +103,15 @@ macro_rules! gov_rpc {
     };
 }
 
+/// A table's live file set plus its declared schema. `columns` is `None` iff the
+/// table does not exist (the wire's `columns_json` was absent) — the discriminator
+/// that lets a live zero-file table register as an empty relation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableFiles {
+    pub files: Vec<control_plane_core::FileRef>,
+    pub columns: Option<Vec<control_plane_core::ColumnSpec>>,
+}
+
 /// A cloneable gRPC client for the engine's `EngineControl` service.
 /// Connects over a unix-domain socket; implements [`Queue`] by delegating to the
 /// remote server. `enqueue` is intentionally unsupported — workers don't enqueue.
@@ -146,12 +155,9 @@ impl GrpcQueueClient {
         Ok((resp.data_file_rows, resp.inline_rows, resp.objects_deleted))
     }
 
-    /// List a table's live files (path + counts) for worker-side small-file selection.
-    pub async fn list_files(
-        &self,
-        schema: String,
-        name: String,
-    ) -> Result<Vec<control_plane_core::FileRef>> {
+    /// List a table's live files (path + counts) plus its declared schema, for
+    /// worker-side small-file selection and transform input registration.
+    pub async fn list_files(&self, schema: String, name: String) -> Result<TableFiles> {
         let resp = self
             .inner
             .clone()
@@ -159,15 +165,24 @@ impl GrpcQueueClient {
             .await
             .map_err(be)?
             .into_inner();
-        Ok(resp
-            .files
-            .into_iter()
-            .map(|f| control_plane_core::FileRef {
-                path: f.path,
-                record_count: f.record_count,
-                file_size_bytes: f.file_size_bytes,
-            })
-            .collect())
+        let columns = resp
+            .columns_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(be)?;
+        Ok(TableFiles {
+            files: resp
+                .files
+                .into_iter()
+                .map(|f| control_plane_core::FileRef {
+                    path: f.path,
+                    record_count: f.record_count,
+                    file_size_bytes: f.file_size_bytes,
+                })
+                .collect(),
+            columns,
+        })
     }
 
     /// Build (or rebuild) the named vector index declared for `(schema, name)`.
@@ -331,6 +346,45 @@ impl GrpcQueueClient {
                 name,
                 expire,
                 write_json,
+            })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok(resp.snapshot_id)
+    }
+
+    /// Commit a transform's output: create the table (idempotent), register the
+    /// already-written `write` files (append, or replace the live set when
+    /// `replace`), and emit `lineage` — one atomic engine-side transaction.
+    /// Returns the new snapshot id (`None` if the commit produced no snapshot).
+    /// Each `DataFile` is sent as a JSON string in `write_json` (mirrors
+    /// `compact_table`); the lineage event rides as a `LineageWire` JSON.
+    pub async fn commit_transform(
+        &self,
+        schema: String,
+        name: String,
+        columns: &[control_plane_core::ColumnSpec],
+        write: &[control_plane_core::DataFile],
+        lineage: &control_plane_core::LineageEvent,
+        replace: bool,
+    ) -> Result<Option<i64>> {
+        let columns_json = serde_json::to_string(columns).map_err(be)?;
+        let write_json = write
+            .iter()
+            .map(|f| serde_json::to_string(f).map_err(be))
+            .collect::<Result<Vec<_>>>()?;
+        let lineage_json =
+            serde_json::to_string(&convert::LineageWire::from(lineage)).map_err(be)?;
+        let resp = self
+            .inner
+            .clone()
+            .commit_transform(pb::CommitTransformRequest {
+                schema,
+                name,
+                columns_json,
+                write_json,
+                lineage_json,
+                replace,
             })
             .await
             .map_err(be)?

@@ -40,14 +40,15 @@ pub struct IcebergControlPlane {
 
 impl IcebergControlPlane {
     /// Build over an existing `PgControlPlane` (its pool is reused for reads + writes)
-    /// and the vendored Iceberg `SqlCatalog` (for table creation at commit).
-    pub fn new(pg: PgControlPlane, catalog: SqlCatalog) -> Self {
+    /// and the vendored Iceberg `SqlCatalog` (for table creation at commit) —
+    /// owned or already-shared (`Arc`), e.g. the engine's shared catalog.
+    pub fn new(pg: PgControlPlane, catalog: impl Into<Arc<SqlCatalog>>) -> Self {
         let pool = pg.pool().clone();
         let ice = IcebergCatalog::new(pool.clone());
         Self {
             pg,
             ice,
-            catalog: Arc::new(catalog),
+            catalog: catalog.into(),
             pool,
         }
     }

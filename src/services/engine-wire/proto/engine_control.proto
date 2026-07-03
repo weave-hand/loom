@@ -11,6 +11,7 @@ service EngineControl {
   rpc GcTable      (GcTableRequest)      returns (GcTableResponse);
   rpc ListFiles    (ListFilesRequest)    returns (ListFilesResponse);
   rpc CompactTable (CompactTableRequest) returns (CompactTableResponse);
+  rpc CommitTransform (CommitTransformRequest) returns (CommitTransformResponse);
   rpc BuildVectorIndex (BuildVectorIndexRequest) returns (BuildVectorIndexResponse);
   rpc WriteObject    (WriteObjectRequest)    returns (WriteObjectResponse);
   rpc OverwriteTable (OverwriteTableRequest) returns (OverwriteTableResponse);
@@ -58,9 +59,25 @@ message GcTableResponse { uint64 data_file_rows = 1; uint64 inline_rows = 2; uin
 
 message FileMeta { string path = 1; int64 record_count = 2; int64 file_size_bytes = 3; }
 message ListFilesRequest  { string schema = 1; string name = 2; }
-message ListFilesResponse { repeated FileMeta files = 1; }
+message ListFilesResponse {
+  repeated FileMeta files = 1;
+  // Declared schema (serde_json Vec<ColumnSpec>) at the current snapshot.
+  // ABSENT <=> the table does not exist — the table-exists discriminator that
+  // lets a zero-file table register as an empty relation.
+  optional string columns_json = 2;
+}
 message CompactTableRequest  { string schema = 1; string name = 2; repeated string expire = 3; repeated string write_json = 4; }
 message CompactTableResponse { optional int64 snapshot_id = 1; }
+
+message CommitTransformRequest {
+  string schema = 1;              // output TableRef
+  string name = 2;
+  string columns_json = 3;        // serde_json Vec<ColumnSpec> — inferred output schema
+  repeated string write_json = 4; // one serde_json DataFile per written file
+  string lineage_json = 5;        // serde_json LineageWire
+  bool replace = 6;               // false = append_files; true = replace_files
+}
+message CommitTransformResponse { optional int64 snapshot_id = 1; }
 
 message BuildVectorIndexRequest  { string schema = 1; string name = 2; string index_name = 3; }
 message BuildVectorIndexResponse { int64 covered_snapshot = 1; string puffin_path = 2; int64 row_count = 3; }

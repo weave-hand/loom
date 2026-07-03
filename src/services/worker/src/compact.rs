@@ -34,7 +34,8 @@ pub async fn handle_compact(ctx: &CompactCtx, job: Job) -> std::result::Result<(
                 ctx.worker_tuning.backoff(attempts),
                 format!("list_files: {e}"),
             )
-        })?;
+        })?
+        .files;
     let small = small_files(&live, ctx.threshold_bytes);
     if small.len() < 2 {
         return Ok(()); // no-op: nothing worth coalescing (converges).
