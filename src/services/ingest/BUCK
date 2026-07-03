@@ -169,27 +169,6 @@ loom_fixture_test(
     ],
 )
 
-rust_test(
-    name = "materialize",
-    crate = "materialize",
-    srcs = ["tests/materialize.rs"],
-    crate_root = "tests/materialize.rs",
-    edition = "2024",
-    deps = [
-        ":ingest",
-        "//src/control-plane/core:core",
-        "//src/control-plane/memory:memory",
-        "//src/services/datafusion-io:datafusion-io",
-        "//third-party:arrow",
-        "//third-party:object_store",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
 loom_fixture_test(
     name = "http-land",
     crate = "http_land",

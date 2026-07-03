@@ -18,7 +18,6 @@ pub use serve::serve;
 
 pub use bind::{BindError, BindViolation, BindViolationReason, bind, bind_link};
 pub use gate::{ColumnShape, ModelShape, Violation, ViolationReason};
-pub use materialize::{MaterializeRequest, materialize};
 pub use model::{InferTypeError, infer_object_type, model_shape_from_type};
 
 /// Everything that can go wrong landing data. No partial catalog state is ever

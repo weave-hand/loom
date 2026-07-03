@@ -1,7 +1,8 @@
-//! HTTP landing surface for ingest. Decodes an Arrow IPC request into what
-//! `materialize` consumes (schema + batches + optional model gate + lineage),
-//! drives the in-process land pipeline, and maps the result to HTTP. All landing
-//! logic lives in `materialize`; this layer only does decode <-> HTTP mapping.
+//! HTTP landing surface for ingest. Decodes an Arrow IPC request into schema +
+//! batches, resolves the physical columns (optionally gated by a model, via
+//! `materialize::resolve_columns`), and dispatches the actual write through the
+//! `LandingMaterializer` port (`st.materializer.land(req)`); this layer only does
+//! decode <-> HTTP mapping plus that gate/resolve step.
 
 use std::sync::Arc;
 
