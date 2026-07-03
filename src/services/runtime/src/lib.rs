@@ -45,16 +45,43 @@ pub use loom_config::{
     req_var,
 };
 
-/// Embedded-Postgres settings, present only when `LOOM_PG_MODE=embedded`.
+/// Default application database name in embedded mode (used by both
+/// `DbConfig::from_map` and `EmbeddedSettings::from_map` so `cfg.db` and the
+/// embedded cluster's database agree by construction).
+const DEFAULT_EMBEDDED_DB_NAME: &str = "loom";
+
+/// The PG-binary paths needed only to *boot* an embedded cluster. Absent for
+/// processes that merely connect (e.g. `loom create-admin`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PgBinPaths {
+    /// Postgres `bin/` directory (holds initdb, postgres, pg_ctl).
+    pub bin_dir: PathBuf,
+    /// `LD_LIBRARY_PATH` for the spawned binaries.
+    pub ld_library_path: String,
+}
+
+/// Embedded-Postgres settings, present only when `LOOM_PG_MODE=embedded`. The
+/// data/socket dirs and database name derive from `data_path` + the (defaulted)
+/// DB name; `bin` is populated only when `LOOM_PG_BIN_DIR` is supplied — the
+/// spawn site (`build_pool_managed`) requires it, parse time does not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmbeddedSettings {
-    pub cfg: managed_postgres::EmbeddedPgConfig,
+    /// Persistent cluster data dir (`<data_path>/pgdata`).
+    pub data_dir: PathBuf,
+    /// Unix-socket directory (`<data_path>/pgrun`).
+    pub socket_dir: PathBuf,
+    /// Application database name (defaults to `loom` in embedded mode).
+    pub database: String,
+    /// PG-binary paths; `None` when no cluster is booted in-process.
+    pub bin: Option<PgBinPaths>,
 }
 
 impl EmbeddedSettings {
     /// Parse the embedded-PG settings from the env snapshot: `Some` only when
-    /// `LOOM_PG_MODE=embedded` (anything else, including absent, is external
-    /// mode). The data/socket dirs derive from `data_path` (`pgdata`/`pgrun`).
+    /// `LOOM_PG_MODE=embedded`. `LOOM_PG_BIN_DIR` is never required here — it is
+    /// captured into `bin` when present and left `None` otherwise. The database
+    /// name uses the same embedded default as `DbConfig::from_map` so the two are
+    /// consistent by construction.
     pub fn from_map(
         vars: &HashMap<String, String>,
         data_path: &Path,
@@ -62,17 +89,21 @@ impl EmbeddedSettings {
         if vars.get("LOOM_PG_MODE").map(String::as_str) != Some("embedded") {
             return Ok(None);
         }
+        let bin = vars.get("LOOM_PG_BIN_DIR").map(|dir| PgBinPaths {
+            bin_dir: PathBuf::from(dir),
+            ld_library_path: vars
+                .get("LOOM_PG_LD_LIBRARY_PATH")
+                .cloned()
+                .unwrap_or_default(),
+        });
         Ok(Some(EmbeddedSettings {
-            cfg: managed_postgres::EmbeddedPgConfig {
-                bin_dir: PathBuf::from(req_var(vars, "LOOM_PG_BIN_DIR")?),
-                ld_library_path: vars
-                    .get("LOOM_PG_LD_LIBRARY_PATH")
-                    .cloned()
-                    .unwrap_or_default(),
-                data_dir: data_path.join("pgdata"),
-                socket_dir: data_path.join("pgrun"),
-                database: req_var(vars, "LOOM_DB_NAME")?,
-            },
+            data_dir: data_path.join("pgdata"),
+            socket_dir: data_path.join("pgrun"),
+            database: vars
+                .get("LOOM_DB_NAME")
+                .cloned()
+                .unwrap_or_else(|| DEFAULT_EMBEDDED_DB_NAME.to_string()),
+            bin,
         }))
     }
 }
@@ -92,6 +123,10 @@ pub struct DbConfig {
 
 impl DbConfig {
     /// Parse the discrete `LOOM_DB_*` connection fields from the env snapshot.
+    /// In embedded mode (`LOOM_PG_MODE=embedded`) the five vars default to values
+    /// consistent with `EmbeddedPg::connect_options()` (socket under
+    /// `<LOOM_DATA_PATH>/pgrun`, user `postgres`, trust auth, db `loom`); explicit
+    /// vars still override. In external mode all five stay required.
     pub fn from_map(vars: &HashMap<String, String>) -> Result<DbConfig, ConfigError> {
         let max_connections = match vars.get("LOOM_DB_MAX_CONNECTIONS") {
             Some(s) => Some(
@@ -100,6 +135,30 @@ impl DbConfig {
             ),
             None => None,
         };
+        let embedded = vars.get("LOOM_PG_MODE").map(String::as_str) == Some("embedded");
+        if embedded {
+            // Socket dir matches EmbeddedSettings' `<data_path>/pgrun`. LOOM_DATA_PATH
+            // is required by Config::from_map before this runs, so req_var is safe.
+            let data_path = PathBuf::from(req_var(vars, "LOOM_DATA_PATH")?);
+            let default_host = data_path.join("pgrun").display().to_string();
+            return Ok(DbConfig {
+                host: vars.get("LOOM_DB_HOST").cloned().unwrap_or(default_host),
+                port: match vars.get("LOOM_DB_PORT") {
+                    Some(s) => s.parse::<u16>().map_err(|e| invalid("LOOM_DB_PORT", e))?,
+                    None => 5432,
+                },
+                user: vars
+                    .get("LOOM_DB_USER")
+                    .cloned()
+                    .unwrap_or_else(|| "postgres".to_string()),
+                password: vars.get("LOOM_DB_PASSWORD").cloned().unwrap_or_default(),
+                dbname: vars
+                    .get("LOOM_DB_NAME")
+                    .cloned()
+                    .unwrap_or_else(|| DEFAULT_EMBEDDED_DB_NAME.to_string()),
+                max_connections,
+            });
+        }
         Ok(DbConfig {
             host: req_var(vars, "LOOM_DB_HOST")?,
             port: req_var(vars, "LOOM_DB_PORT")?
@@ -291,9 +350,23 @@ pub async fn build_pool_managed(
             Ok((pool, None))
         }
         Some(e) => {
-            let pg = managed_postgres::EmbeddedPg::start(e.cfg.clone())
-                .await
-                .map_err(RuntimeError::Embedded)?;
+            let bin = e.bin.as_ref().ok_or_else(|| {
+                RuntimeError::Config(ConfigError::Invalid {
+                    var: "LOOM_PG_BIN_DIR".to_string(),
+                    detail: "required to boot the embedded Postgres cluster; client-only \
+                             tools that merely connect do not need it"
+                        .to_string(),
+                })
+            })?;
+            let pg = managed_postgres::EmbeddedPg::start(managed_postgres::EmbeddedPgConfig {
+                bin_dir: bin.bin_dir.clone(),
+                ld_library_path: bin.ld_library_path.clone(),
+                data_dir: e.data_dir.clone(),
+                socket_dir: e.socket_dir.clone(),
+                database: e.database.clone(),
+            })
+            .await
+            .map_err(RuntimeError::Embedded)?;
             let mut opts = PgPoolOptions::new();
             if let Some(n) = cfg.db.max_connections {
                 opts = opts.max_connections(n);

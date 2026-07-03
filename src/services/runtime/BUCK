@@ -210,6 +210,18 @@ rust_test(
 )
 
 rust_test(
+    name = "build-pool-managed",
+    crate = "build_pool_managed",
+    srcs = ["tests/build_pool_managed.rs"],
+    crate_root = "tests/build_pool_managed.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "serve-shutdown",
     crate = "serve_shutdown",
     srcs = ["tests/serve_shutdown.rs"],
