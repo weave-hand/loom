@@ -198,9 +198,23 @@ and render it at `/docs` (Scalar, chosen over swagger-ui because it needs no
 build-time asset download and so keeps the hermetic build intact), with a drift
 guard that fails CI when a route is mounted but undocumented (#246). query-api's
 document is regenerated per request from the **live ontology** — concrete
-per-type read/link/insert operations and property schemas, not opaque
+per-type read/link operations and property schemas, not opaque
 `/objects/{type}` templates — so the served contract tracks runtime type
-definitions without a restart (#270).
+definitions without a restart (#270). Every generated operation is **tagged by
+its type name**, so the docs UI shows one section per type holding its List
+operation, its real callable actions, and its outbound link traversals; the
+typed write is documented as the *actual* `POST /actions/{name}` op per defined
+action — request schema derived from the action's parameter list via the new
+`Ontology::list_actions`, statuses following the handler (`201` for every kind;
+see `#iss-action-kind-status`) — replacing the former phantom
+`POST /objects/{Type}` (#PRNUM). The runtime's own surface is documented too:
+`service_runtime` exports per-router-family OpenAPI **fragments**
+(`auth_openapi` / `service_account_openapi` / `admin_openapi`, utoipa-annotated
+handlers + `ToSchema` DTOs, secret fields never echoed outside the deliberate
+login/mint-token returns), and each service merges exactly the fragments for
+the routers it mounts — query-api all three, ingest auth + service-accounts —
+so `/auth/*` and `/admin/*` appear in each service's document without a single
+duplicated annotation (#PRNUM).
 
 ## Known gaps
 
@@ -228,10 +242,6 @@ definitions without a restart (#270).
   public) generated OpenAPI catalog.
 - `#fut-ingest-ontology-openapi` — ontology-derived land operations in ingest's
   OpenAPI document.
-- `#road-api-docs-coverage` — make the generated insert operation reference the
-  actually-callable action route (promoted from `#fut-openapi-per-type-insert-route`),
-  group generated ops per type, and document the runtime `/auth/*` + `/admin/*`
-  routes.
 - `#fut-python-bindings` — Python bindings for loom.
 - `#fut-codehealth-reflect` — a routine mining remediation-PR outcomes and
   register trends for higher-level patterns.

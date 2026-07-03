@@ -443,15 +443,15 @@ ingest's `build_openapi` identically minus `admin_openapi`. Update each fn's doc
 - Modify: `docs/system-capabilities/ui.md` (only if its `/openapi.json` note is stale — read it)
 - Modify: `docs/ROADMAP.md` (remove the `road-api-docs-coverage` entry — registers carry open work only; the close is recorded in this PR)
 
-- [ ] **Step 1: Affected-target sweep.** Build + test everything the branch touches:
+- [x] **Step 1: Affected-target sweep.** Build + test everything the branch touches:
 
 Run: `buck2 build -M none //src/control-plane/... //src/services/engine-wire/... //src/services/engine/... //src/services/query-api/... //src/services/ingest/... //src/services/runtime/... > /tmp/t5b.log 2>&1; tail -3 /tmp/t5b.log`
 Run: `buck2 test //src/control-plane/... //src/services/runtime/... //src/services/query-api/... //src/services/ingest/... //src/services/engine/... //src/services/engine-wire/... --unstable-allow-all-tests-on-re > /tmp/t5.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t5.log`
 Expected: build clean; `Tests finished` with 0 fails (includes `sqlx-cache-check` validating the committed `.sqlx`).
 
-- [ ] **Step 2: Docs + register edits** per the file list; then `bash tools/docs.sh validate`.
+- [x] **Step 2: Docs + register edits** per the file list; then `bash tools/docs.sh validate`.
 
-- [ ] **Step 3: prek, commit** — `docs(api-docs-coverage): capability docs + register close`.
+- [x] **Step 3: prek, commit** — `docs(api-docs-coverage): capability docs + register close`.
 
 ---
 
