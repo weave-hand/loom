@@ -90,8 +90,14 @@ fn forward_property_ref_rejected() {
 fn operator_type_mismatch_rejected() {
     assert!(matches!(ty("name + 1"), Err(TypeError::Mismatch(_))));
     assert!(matches!(ty("qty ++ \"x\""), Err(TypeError::Mismatch(_))));
-    assert!(matches!(ty("if qty then 1 else 2"), Err(TypeError::Mismatch(_))));
-    assert!(matches!(ty("if active then 1 else \"x\""), Err(TypeError::Mismatch(_))));
+    assert!(matches!(
+        ty("if qty then 1 else 2"),
+        Err(TypeError::Mismatch(_))
+    ));
+    assert!(matches!(
+        ty("if active then 1 else \"x\""),
+        Err(TypeError::Mismatch(_))
+    ));
 }
 
 #[test]
@@ -101,7 +107,10 @@ fn function_arity_rejected() {
     assert!(matches!(ty("length(name, 1)"), Err(TypeError::Arity(_))));
     assert!(matches!(ty("coalesce()"), Err(TypeError::Arity(_))));
     // substr indices must be integer, not double
-    assert!(matches!(ty("substr(name, unitPrice, 3)"), Err(TypeError::Mismatch(_))));
+    assert!(matches!(
+        ty("substr(name, unitPrice, 3)"),
+        Err(TypeError::Mismatch(_))
+    ));
 }
 
 #[test]

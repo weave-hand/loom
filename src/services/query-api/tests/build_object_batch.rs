@@ -68,6 +68,10 @@ fn rejects_value_type_mismatch() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "5_i64 widened into f64 is exactly representable"
+)]
 fn widens_int_into_double_column() {
     // An integer value into a Double column is valid (numeric widening), matching the
     // type-checker's Long/Integer -> Double rule; the evaluator emits `SqlValue::Int` for

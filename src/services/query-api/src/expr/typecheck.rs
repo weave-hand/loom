@@ -266,7 +266,9 @@ fn typecheck_call(func: Func, args: &[Expr], env: &dyn TypeEnv) -> Result<BaseTy
             Ok(BaseType::String)
         }
         (Func::Substr, _) => Err(TypeError::Arity("substr takes 3 arguments".into())),
-        (Func::Coalesce, []) => Err(TypeError::Arity("coalesce needs at least 1 argument".into())),
+        (Func::Coalesce, []) => Err(TypeError::Arity(
+            "coalesce needs at least 1 argument".into(),
+        )),
         (Func::Coalesce, [first, rest @ ..]) => {
             let mut acc = *first;
             for t in rest {
