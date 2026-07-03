@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, property_name, metric, index_kind, nlist, m, ef_construction from ontology.vector_index_definition where type_name = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "property_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "property_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "metric",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "metric"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "index_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "index_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "nlist",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "nlist"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "m",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "m"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "ef_construction",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "ef_construction"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "06b500782c687aefeb15d2cf58a2d99f20fe4eae6a8d08db48e30aba6c18af67"
+}

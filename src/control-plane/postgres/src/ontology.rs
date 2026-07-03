@@ -441,7 +441,8 @@ impl Ontology for PgControlPlane {
 
     async fn vector_indexes_for(&self, type_name: &TypeName) -> Result<Vec<VectorIndexDef>> {
         let rows = sqlx::query!(
-            "select name from ontology.vector_index_definition where type_name = $1",
+            "select name, property_name, metric, index_kind, nlist, m, ef_construction \
+             from ontology.vector_index_definition where type_name = $1",
             type_name.0,
         )
         .fetch_all(&self.pool)
@@ -449,9 +450,18 @@ impl Ontology for PgControlPlane {
         .map_err(backend)?;
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
-            if let Some(def) = vector_index_def_row(&self.pool, &type_name.0, &r.name).await? {
-                out.push(def);
-            }
+            out.push(VectorIndexDef {
+                name: r.name,
+                type_name: type_name.clone(),
+                property: r.property_name,
+                metric: r.metric.parse()?,
+                spec: IndexSpec::from_label(
+                    Some(r.index_kind.as_str()),
+                    r.nlist.map(|v| v as u32),
+                    r.m.map(|v| v as u32),
+                    r.ef_construction.map(|v| v as u32),
+                )?,
+            });
         }
         Ok(out)
     }

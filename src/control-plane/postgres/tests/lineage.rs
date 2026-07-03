@@ -75,3 +75,10 @@ async fn postgres_binding_edge_is_source_guarded() {
         "rebind appends a new edge; the old one is retained"
     );
 }
+
+#[tokio::test]
+async fn postgres_passes_events_for_hydration_contract() {
+    let fixture = PgFixture::shared();
+    let cp = fixture.fresh_control_plane().await;
+    control_plane_testkit::events_for_hydration_contract(&cp).await;
+}

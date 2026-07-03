@@ -1598,7 +1598,7 @@ FIRST, green against current code.
   `event_datasets`)
 - Modify: `src/control-plane/postgres/.sqlx/` (regenerated)
 
-- [ ] **Step 1: Add the pin (GREEN against current code).** Append to
+- [x] **Step 1: Add the pin (GREEN against current code).** Append to
   `testkit/src/lib.rs` (beside `lineage_pagination_contract`):
 
 ```rust
@@ -1670,7 +1670,7 @@ buck2 test //src/control-plane/postgres:lineage //src/control-plane/memory:linea
   > /tmp/t9pin.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t9pin.log
 ```
 
-- [ ] **Step 2: `vector_indexes_for` — one query.** Replace the postgres impl
+- [x] **Step 2: `vector_indexes_for` — one query.** Replace the postgres impl
   (`ontology.rs`), mirroring `vector_index_def_row`'s field mapping verbatim:
 
 ```rust
@@ -1706,7 +1706,7 @@ buck2 test //src/control-plane/postgres:lineage //src/control-plane/memory:linea
 fn uses `u32::try_from` instead of `as`, mirror it. `vector_index_def_row`
 itself is unchanged; `get_vector_index` still uses it.)
 
-- [ ] **Step 3: `events_for` — one hydration query.** Replace the per-event
+- [x] **Step 3: `events_for` — one hydration query.** Replace the per-event
   loop in postgres `lineage.rs` and delete `event_datasets`:
 
 ```rust
@@ -1757,7 +1757,7 @@ itself is unchanged; `get_vector_index` still uses it.)
 (The page-assembly tail — `Page::from_keyset` + the items/next remap — is
 unchanged. The first query and its cursor/fetch logic are unchanged.)
 
-- [ ] **Step 4: Refresh `.sqlx` (new queries in, `event_datasets`' entry out)
+- [x] **Step 4: Refresh `.sqlx` (new queries in, `event_datasets`' entry out)
   and run the pins**
 
 ```bash
@@ -1771,7 +1771,7 @@ buck2 test //src/control-plane/postgres:sqlx-cache-check \
 Expected: `Fail 0` — including the Step-1 hydration pin and the
 `vector_indexes_for` assertions inside `ontology_contract`.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek9.log 2>&1; grep -E "Failed" /tmp/prek9.log || echo CLEAN

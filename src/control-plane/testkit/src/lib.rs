@@ -2763,6 +2763,44 @@ pub async fn lineage_pagination_contract<CP: Lineage>(cp: &CP) {
     assert!(ended_with_null, "final page signals no next");
 }
 
+/// Contract: `events_for` hydrates every event's inputs/outputs completely
+/// and in ordinal order, however the adapter batches the reads (pins the
+/// per-event-N+1 → `event_id = any($1)` collapse). `cp` must be freshly empty.
+pub async fn events_for_hydration_contract<CP: Lineage>(cp: &CP) {
+    let ds = |n: &str| DatasetRef {
+        namespace: "w".to_string(),
+        name: n.to_string(),
+    };
+    let run = RunId(uuid::Uuid::new_v4());
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    for i in 0..3 {
+        cp.emit(LineageEvent {
+            run_id: run,
+            event_type: EventType::Complete,
+            event_time: ts,
+            inputs: vec![ds(&format!("in{i}.a")), ds(&format!("in{i}.b"))],
+            outputs: vec![ds(&format!("out{i}.a")), ds(&format!("out{i}.b"))],
+            payload: serde_json::json!({ "i": i }),
+        })
+        .await
+        .unwrap();
+    }
+    let page = cp.events_for(&run, PageReq::unbounded()).await.unwrap();
+    assert_eq!(page.items.len(), 3, "all three events returned in order");
+    for (i, e) in page.items.iter().enumerate() {
+        assert_eq!(
+            e.inputs,
+            vec![ds(&format!("in{i}.a")), ds(&format!("in{i}.b"))],
+            "event {i}: inputs hydrated in ordinal order"
+        );
+        assert_eq!(
+            e.outputs,
+            vec![ds(&format!("out{i}.a")), ds(&format!("out{i}.b"))],
+            "event {i}: outputs hydrated in ordinal order"
+        );
+    }
+}
+
 /// Contract for `Tx` isolation: while a transaction is open and uncommitted, the
 /// autocommit read path observes none of its writes; on commit the whole unit
 /// (enqueue + emit) becomes visible; on rollback nothing ever does. Deterministic —
