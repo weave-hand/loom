@@ -32,11 +32,14 @@
 - Modify: `src/control-plane/memory/src/acl.rs` (impls; state at lines 18–26)
 - Modify: `src/control-plane/postgres/src/acl.rs` (impls; grant/revoke SQL at 215–249)
 - Modify: `src/services/query-api/src/wire_control_plane.rs` (WireAcl: three `read_only(...)` rejections beside the existing ones)
-- Modify: `src/control-plane/testkit/src/lib.rs` (extend `acl_contract`, after ~line 1795)
+- Modify: `src/services/query-api/tests/read_page_single_resolve.rs` (`CountingAcl` at :27 is a full delegating `impl Acl` — add three one-line delegations to `self.inner` or it fails E0046)
+- Modify: `src/control-plane/testkit/src/lib.rs` (extend `acl_contract` at the END of the fn, ~line 1900+)
 - Run: `bash tools/sqlx-prepare.sh`
 
 **Interfaces (Produces):**
 ```rust
+// Effect (core/src/acl.rs:81) has NO serde derives today — ADD
+// `serde::Serialize, serde::Deserialize` to it (nothing else serializes it yet).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Grant {
     pub action: Action,
@@ -50,7 +53,7 @@ async fn delete_role(&self, role: &RoleId) -> Result<()>;
 ```
 `list_grants`: `NotFound` on unknown role; deterministic order `(action, target-key)`. `roles_of`: `NotFound` on unknown subject; id-ordered. `delete_role`: idempotent; memberships/grants/policies/inheritance edges all go.
 
-- [ ] **Step 1: Failing contract asserts.** In `acl_contract` after the existing grant/revoke/inheritance/policy asserts (~line 1795), using the roles/subjects already defined in the fn (read it — reuse in-scope names, or define fresh `role-mgmt-*` ids via `define_role`/`define_subject` to avoid entangling earlier asserts):
+- [ ] **Step 1: Failing contract asserts.** In `acl_contract` at the **END of the fn** (~line 1900+; mid-fn insertion lands among the policy asserts), defining fresh ids as below (`Widget` is in scope — the contract is `<A: Acl + Ontology>` and defines it at ~:1417):
 
 ```rust
 // list_grants: content, order, NotFound, reflects revoke.
@@ -117,21 +120,25 @@ async fn list_grants(&self, role: &RoleId, _page: PageReq) -> Result<Page<Grant>
     if !acl.roles.contains(&role.0) {
         return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
     }
-    let mut out: Vec<Grant> = acl
-        .grants
-        .iter()
-        .filter(|((r, _, _), _)| r == &role.0)
-        .map(|((_, action, key), effect)| Grant {
-            action: *action,
-            target: key.to_policy_target(),
-            effect: *effect,
-        })
-        .collect();
-    out.sort_by_key(|g| (g.action, g.target.key_parts()));
+    let mut out = Vec::new();
+    for ((r, action, (kind, ta, tb)), effect) in &acl.grants {
+        if r == &role.0 {
+            out.push(Grant {
+                action: *action,
+                target: PolicyTarget::from_key_parts(kind, ta, tb)?,
+                effect: *effect,
+            });
+        }
+    }
+    // Action is NOT Ord — sort by the string forms (matches postgres's
+    // `order by action, target_kind, ...` on the text columns: "read" < "write").
+    out.sort_by(|x, y| {
+        (x.action.as_str(), x.target.key_parts()).cmp(&(y.action.as_str(), y.target.key_parts()))
+    });
     Ok(Page::from_full(out))
 }
 ```
-(`TargetKey` is the memory adapter's internal key — read its shape; add a `to_policy_target()` helper on it, or map inline from its fields. If `Action`/`PolicyTarget::key_parts()` aren't `Ord`-friendly, sort by the `(action.as_str(), key_parts())` tuple instead.)
+(`TargetKey` (memory/src/acl.rs:12) is a tuple alias `(&'static str, String, String)` — an inherent helper on it is illegal. Instead add the SHARED decoder in **core** beside `key_parts`: `PolicyTarget::from_key_parts(kind: &str, a: &str, b: &str) -> Result<PolicyTarget>` plus `Action::parse(&str)`/`Effect::parse(&str)` next to their `as_str` — both adapters use them (no decode helper exists anywhere today; `policies_for` clones its input target rather than decoding rows).)
 `roles_of`: unknown-subject check against `acl.subjects`, then collect `members` pairs with matching subject, sort, `Page::from_full`. `delete_role`: remove from `roles`; `members.retain`, `grants.retain`, `policies.retain`, `inherits.retain` (both positions).
 Postgres:
 ```rust
@@ -150,13 +157,13 @@ async fn list_grants(&self, role: &RoleId, _page: PageReq) -> Result<Page<Grant>
     ...
 }
 ```
-(Reuse the file's existing role-existence check and the `(kind, a, b)` → `PolicyTarget` decode helper — grep for where `policies_for`/`check` decode target rows; if only an encode helper exists, add the decode next to it. `action`/`effect` decode via their existing `FromStr`/match, same as the file's other readers.)
+(`role_exists(&self.pool, &role.0)` exists at postgres/src/acl.rs:18 — reuse it. Decode rows via the new core helpers from Step 3's memory note: `PolicyTarget::from_key_parts` + `Action::parse`/`Effect::parse`.)
 `roles_of`: existence check on `acl.subject`, then `select role_id from acl.role_member where subject_id = $1 order by role_id`. `delete_role`: `delete from acl.role where id = $1` (children cascade per migrations 0003/0007/0011).
 WireAcl: three `Err(read_only("list_grants"))`-style rejections (reads too — served direct per spec; keep the message accurate, e.g. `read_only("list_grants (served direct)")` if `read_only` wording fits; otherwise mirror the existing pattern exactly).
 
 - [ ] **Step 4: `bash tools/sqlx-prepare.sh`; commit the `.sqlx` diff with the task.**
 
-- [ ] **Step 5: Green.** `buck2 test //src/control-plane/... //src/services/query-api:resolve-governed --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log` — expect PASS. (`resolve_governed.rs`'s `MissingType` stub implements `Ontology`, not `Acl` — no edit expected; the target is in the run to prove it.)
+- [ ] **Step 5: Green.** `buck2 test //src/control-plane/... //src/services/query-api:resolve-governed //src/services/query-api:read-page-single-resolve --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log` — expect PASS.
 
 - [ ] **Step 6: prek; commit** `feat(acl): list_grants, roles_of, delete_role across adapters`.
 
@@ -183,17 +190,38 @@ Both idempotent. Definitions only — physical columns/join tables untouched.
 ```rust
 // delete_link: gone from reads, idempotent, re-definable.
 // (use the actual in-scope link: its `from` type and name — read the contract)
-o.delete_link(&TypeName("Widget".into()), "made_of").await.expect("delete_link");
+// The contract's links are `customer` (Order→Customer) and `items`
+// (Customer→Order) — testkit ~:780–828. Delete `customer`, re-define it after.
+let order = TypeName("Order".into());
+let customer_link = o
+    .links(&order, PageReq::unbounded())
+    .await
+    .expect("links")
+    .items
+    .into_iter()
+    .find(|l| l.name == "customer")
+    .expect("customer link in scope");
+o.delete_link(&order, "customer").await.expect("delete_link");
 assert!(
-    !o.links(&TypeName("Widget".into()), PageReq::unbounded())
+    !o.links(&order, PageReq::unbounded())
         .await
         .expect("links")
         .items
         .iter()
-        .any(|l| l.name == "made_of"),
+        .any(|l| l.name == "customer"),
     "deleted link no longer listed"
 );
-o.delete_link(&TypeName("Widget".into()), "made_of").await.expect("idempotent");
+o.delete_link(&order, "customer").await.expect("idempotent");
+o.define_link(customer_link.clone()).await.expect("re-define after delete");
+assert!(
+    o.links(&order, PageReq::unbounded())
+        .await
+        .expect("links")
+        .items
+        .iter()
+        .any(|l| l.name == "customer"),
+    "re-defined link listed again"
+);
 
 // delete_action: gone from get + list, idempotent, re-definable.
 o.delete_action(&ActionName("createWidget".into())).await.expect("delete_action");
@@ -211,7 +239,15 @@ assert!(
     "deleted action not listed"
 );
 o.delete_action(&ActionName("createWidget".into())).await.expect("idempotent");
+// Re-define after delete works (fetch-before-delete like the link above, or
+// rebuild via ActionDef::single_step with the same shape the contract used).
+o.define_action(create_widget_again).await.expect("re-define after delete");
+assert!(
+    o.get_action(&ActionName("createWidget".into())).await.is_ok(),
+    "re-defined action readable"
+);
 ```
+(`create_widget_again`: capture the ActionDef via `get_action` BEFORE deleting.)
 **Placement caution:** these asserts REMOVE definitions earlier asserts created — insert them at the END of the contract (after every assert that still reads them), or define+delete fresh `mgmt-*` names instead. Read the tail of the fn first and choose whichever keeps every existing assert green.
 
 - [ ] **Step 2: Red** (same command shape, `//src/control-plane/memory:ontology`). Expect E0599.
@@ -253,21 +289,17 @@ assert!(
     "dropped table no longer live"
 );
 ```
-(Adapt `seeded_table` to the contract's actual variable; if the contract already drops that table later, order the asserts to respect it.)
+(The seeded variable is `t` (`main.events`, testkit:286). `catalog_contract` never drops — put the list+order+presence asserts at its end using `t`; put the "dropped table no longer listed" assert at the END of `catalog_delete_contract` (~:548), where `t` is already dropped — that also exercises the pg end-capped rows.)
 
 - [ ] **Step 2: Red** (memory catalog test target — find it in `src/control-plane/memory/BUCK`, likely `:catalog`).
 
-- [ ] **Step 3: Implement.** Memory: keys of `tables` whose `Versioned` is live (read the `Versioned` type for its end-bound field/liveness check — mirror how `files`/`columns` filter liveness), sorted by `(schema.clone(), name.clone())`, `Page::from_full`. Postgres:
+- [ ] **Step 3: Implement.** Memory: keys of `tables` whose `Versioned` is live (read the `Versioned` type for its end-bound field/liveness check — mirror how `files`/`columns` filter liveness), sorted by `(schema.clone(), name.clone())`, `Page::from_full`. Postgres: **delegate — do not write new SQL.** `IcebergCatalog::live_tables()` (postgres/src/iceberg_catalog.rs:138–154) is exactly this query already:
 ```rust
 async fn list_tables(&self, _page: PageReq) -> Result<Page<TableRef>> {
-    let rows = sqlx::query!(
-        "select table_namespace, table_name from iceberg_mirror.\"table\" \
-         where end_snapshot is null order by table_namespace, table_name"
-    )
-    ...
+    Ok(Page::from_full(self.live_tables().await?))
 }
 ```
-(Verify the exact mirror table identifier + quoting against `current_snapshot`'s query in the same file; map rows to `TableRef { schema: table_namespace, name: table_name }`.) Wire: replace the `catalog()` panic with `self.direct.catalog()` and rewrite the comment (catalog metadata reads are served by the direct control plane, like `queue()`/`lineage()`).
+(No new `.sqlx` entry — skip `sqlx-prepare` for this task unless another query changed.) Wire: replace the `catalog()` panic with `self.direct.catalog()` and rewrite the comment (catalog metadata reads are served by the direct control plane, like `queue()`/`lineage()`).
 
 - [ ] **Step 4: sqlx-prepare; Step 5: green** (`//src/control-plane/...` + the query-api build); **Step 6: prek; commit** `feat(catalog): list_tables + direct wire delegation`.
 
@@ -280,7 +312,7 @@ async fn list_tables(&self, _page: PageReq) -> Result<Page<TableRef>> {
 - Modify: `src/services/query-api/src/openapi.rs` (ApiDoc `paths(...)` + `components(schemas(...))` additions)
 - Modify: `src/services/query-api/tests/openapi.rs` (`expected()` +3)
 - Test: `src/services/query-api/tests/ontology_type_detail.rs` (new), `src/services/query-api/tests/datasets_routes.rs` (new)
-- Modify: `src/services/query-api/BUCK` (two new test targets — mirror an existing memory-backed http test target; if seeding the memory catalog needs the fixture instead, mirror a `loom_fixture_test` target — decide by reading how existing tests land tables against the memory CP, e.g. the testkit snapshot-commit path or `e2e_support::land`)
+- Modify: `src/services/query-api/BUCK` (two new **plain `rust_test`** targets mirroring `:http-smoke` — memory CP + `oneshot`. Seed the catalog via the PUBLIC `MemoryControlPlane::seed_catalog(&table, &cols, &batches)` / `drop_table_catalog` (memory/src/lib.rs:110; the `MemSeeder` precedent in memory/tests/catalog.rs:18–33). Deliberate divergence from the spec's "fixture-landed tables" wording: the pg `list_tables` path is contract-tested in Task 3, so route tests stay memory-fast.)
 
 **Routes (exact contracts from the spec):**
 - `GET /ontology/types/{name}` → 200 `TypeDetailResponse { name, table: {schema, name}, identity: Option<String>, properties: [{name, ty, required}], links: [LinkView], links_to: [LinkView] }`, `LinkView { name, from, to, cardinality }`; 404 unknown type. Handler reads `st.cp.ontology()` (wire-capable: `gov_get_type`/`gov_links`/`gov_links_to`). Map `NotFound` → 404, else the file's `internal_error`.
@@ -296,13 +328,13 @@ All three: `security(("bearer_auth" = []))`, tags `"ontology"` / `"datasets"`, D
 ### Task 5: runtime admin — define/delete links + actions, grants, roles, user↔role
 
 **Files:**
-- Modify: `src/services/runtime/src/admin.rs` (8 handlers, DTOs, router chain at ~line 415–427, `AdminApiDoc` at ~429–455)
-- Modify: `src/services/runtime/tests/openapi_fragments.rs` (admin route-set 9 → 17)
+- Modify: `src/services/runtime/src/admin.rs` (10 handlers, DTOs, router chain at ~line 415–427 — the grants line at :423 is REPLACED by the combined `post(grant).get(...).delete(...)` registration (a second `.route` re-registering `post` on the same path panics at router build); `use axum::routing::{delete, get, post, put};` — only `post` is imported today; `AdminApiDoc` at ~429–455)
+- Modify: `src/services/runtime/tests/openapi_fragments.rs` (admin route-set 9 → 19)
 - Test: `src/services/runtime/tests/admin_management.rs` (new; mirror the existing admin-routes test target in `src/services/runtime/BUCK`)
-- Modify: `src/services/query-api/tests/openapi.rs` (`expected()` +8 — the admin fragment is merged into query-api's doc; ingest is untouched, it mounts no admin router)
+- Modify: `src/services/query-api/tests/openapi.rs` (`expected()` +10 — the admin fragment is merged into query-api's doc; with Task 4's +3 the branch total is +13; ingest is untouched, it mounts no admin router)
 
 **Routes (contracts from the spec; every handler `#[utoipa::path]`-annotated, `tag = "admin"`, bearer + `require_admin` via the existing router chain):**
-- `POST /admin/links` body = `LinkDef` serde shape (`request_body = control_plane_core::LinkDef`? No — derive a local `ToSchema` DTO is wrong here; `LinkDef` lacks `ToSchema`. Annotate `request_body = serde_json::Value` with a description naming the `LinkDef` serde shape, deserialize to `LinkDef` in the handler — the exact pattern `post_action` uses for its open body) → 201 `"defined"`; `NotFound`/`Validation` from `define_link` → `status_for` (404/400 — follow the handler; document what `status_for` yields).
+- `POST /admin/links` body = `LinkDef` serde shape (`LinkDef` lacks `ToSchema` — annotate `request_body = serde_json::Value` with a description naming the `LinkDef` serde shape, deserialize to `LinkDef` in the handler, the `post_action` open-body pattern) → 201 `"defined"`. Errors follow `status_for`: unknown endpoint type is `NotFound` → **404** (the spec's "400" was wrong — the doc follows the handler), `Validation` → 400. Annotate both.
 - `POST /admin/actions` body = `ActionDef` serde shape, same open-body pattern → 201; validation errors per `status_for`.
 - `DELETE /admin/links/{from}/{name}` → `delete_link` → 200 `{"deleted": {"from": .., "name": ..}}`.
 - `DELETE /admin/actions/{name}` → 200 `{"deleted": {"name": ..}}`.
@@ -310,11 +342,11 @@ All three: `security(("bearer_auth" = []))`, tags `"ontology"` / `"datasets"`, D
 - `GET /admin/roles/{role}/grants` → `list_grants` → 200 `RoleGrantsResp { grants: Vec<GrantView> }`, `GrantView { action: String, target: serde_json::Value, effect: String }` (render via the core types' serde + `as_str()`); 404 unknown role.
 - `DELETE /admin/roles/{role}/grants` body = existing `GrantReq` → parse action exactly as the POST does (same 400 branch), `PolicyTarget::Type`, `revoke` → 200 `"revoked"`.
 - `PUT /admin/users/{username}/roles/{role}` → `assign_role(SubjectId(username), RoleId(role))` (username IS the subject id — `create_user` at admin.rs:92–99) → 200; `NotFound` → 404.
-- `DELETE /admin/users/{username}/roles/{role}` → `unassign_role` → 200 (idempotent; still 404 when the subject is undefined — match the trait's existence behavior, read it).
+- `DELETE /admin/users/{username}/roles/{role}` → 200 idempotent. **The trait gives no 404** — both adapters' `unassign_role` are unconditional `Ok(())` deletes. The handler produces the 404 itself: call `roles_of(&SubjectId(username), PageReq::unbounded())` first (`NotFound` → 404 unknown user), then `unassign_role` → 200.
 - `GET /admin/users/{username}/roles` → `roles_of` → 200 `{ "roles": [..] }`; 404 unknown user.
 Router: `.route("/admin/links", post(define_link_route))`, `.route("/admin/links/:from/:name", delete(delete_link_route))`, `.route("/admin/actions", post(define_action_route))`, `.route("/admin/actions/:name", delete(delete_action_route))`, `.route("/admin/roles/:role", delete(delete_role_route))`, `.route("/admin/roles/:role/grants", post(grant).get(list_role_grants).delete(revoke_grant))`, `.route("/admin/users/:username/roles", get(user_roles))`, `.route("/admin/users/:username/roles/:role", put(assign_user_role).delete(unassign_user_role))`.
 
-- [ ] **Step 1: Failing tests.** Extend the fragment route-set test to the 17-route admin inventory (9 existing + the 8 above with `{param}` braces). New `admin_management.rs` (memory CP + the admin router driven like the existing admin tests — mirror their setup): happy paths for all 8, 404s (unknown role grants-list, unknown user roles), 400 (bad revoke action string), idempotent second delete → 200, and grants list reflects grant→revoke.
+- [ ] **Step 1: Failing tests.** Extend the fragment route-set test to the 19-route admin inventory (9 existing + the 10 above with `{param}` braces). New `admin_management.rs` (memory CP + the admin router driven like the existing admin tests — mirror their setup): happy paths for all 10, 404s (unknown role grants-list, unknown user roles, unassign unknown user), 400 (bad revoke action string), idempotent second delete → 200, grants list reflects grant→revoke, and ONE non-admin-bearer request asserting the middleware 403 (the spec's spot assert).
 - [ ] **Step 2: Red.** **Step 3: Implement** handlers + `AdminApiDoc` additions (+ any new `ToSchema` DTOs) + query-api `expected()` +8. **Step 4: Green:** `//src/services/runtime/... //src/services/query-api:openapi --unstable-allow-all-tests-on-re`. **Step 5: prek; commit** `feat(runtime): management admin routes — links, actions, grants, roles, user-role`.
 
 ---
@@ -324,6 +356,7 @@ Router: `.route("/admin/links", post(define_link_route))`, `.route("/admin/links
 **Files:**
 - Modify: `docs/system-capabilities/control-plane.md` (new trait surface: list_grants/roles_of/delete_role, delete_link/delete_action, list_tables)
 - Modify: `docs/system-capabilities/query-api.md` (type-detail + dataset reads) and `docs/system-capabilities/build-and-test.md` (Self-documenting HTTP API paragraph: the admin fragment now carries the management surface — one sentence)
+- The control-plane or query-api capability doc also records the operator decision: **redefine via `POST /admin/models` upsert is the documented type-update path** (no evolution guard; type delete deferred to `fut-ontology-type-delete`)
 - Modify: `docs/ROADMAP.md` (remove the `road-api-management-crud` entry — close in this PR; keep `fut-ontology-type-delete` in FUTURE as landed earlier on the branch)
 - Use `#PRNUM` placeholders; swap post-PR-creation (targeted sed on ONLY the files this branch owns).
 
