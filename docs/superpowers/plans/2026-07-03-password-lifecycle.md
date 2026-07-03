@@ -23,7 +23,7 @@
 
 ```
 buck2 build -M none //src/control-plane/core:core //src/control-plane/memory:memory //src/control-plane/postgres:postgres //src/services/runtime:runtime //src/services/standalone:standalone //src/services/ingest:ingest //src/services/query-api:query-api
-buck2 test //src/control-plane/memory:auth //src/control-plane/postgres:auth //src/control-plane/postgres:sqlx-cache-check \
+buck2 test //src/control-plane/core:auth-types //src/control-plane/memory:auth //src/control-plane/postgres:auth //src/control-plane/postgres:sqlx-cache-check \
   //src/services/runtime:auth-routes //src/services/runtime:admin-routes //src/services/runtime:ttl \
   //src/services/runtime:password-routes //src/services/runtime:lockout \
   //src/services/query-api:auth-e2e //src/services/query-api:admin-e2e > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t.log
@@ -36,6 +36,7 @@ buck2 test //src/control-plane/memory:auth //src/control-plane/postgres:auth //s
 **Control plane (store layer):**
 - `src/control-plane/core/src/auth.rs` — add `LockoutPolicy` type, `PasswordCredential.locked_until` field, 5 new `Auth` trait methods.
 - `src/control-plane/core/src/lib.rs:28` — re-export `LockoutPolicy`.
+- `src/control-plane/core/tests/auth_types.rs:15` — add `locked_until: None` to the `PasswordCredential` literal (else `//src/control-plane/core:auth-types` fails to compile).
 - `src/control-plane/memory/src/auth.rs` — implement the 5 methods; add 3 lockout fields to `MemUser`.
 - `src/control-plane/postgres/src/auth.rs` — implement the 5 methods with `query!`; extend `find_password_credential`'s SELECT.
 - `src/control-plane/postgres/migrations/0027_auth_lockout.sql` — **new** lockout columns.
@@ -62,7 +63,7 @@ buck2 test //src/control-plane/memory:auth //src/control-plane/postgres:auth //s
 This is the atomic "store" unit: adding trait methods breaks both adapters until implemented, so core + memory + postgres + migration + `.sqlx` + contract land together and the tree stays green. TDD driver = the new testkit contract, run against both adapters.
 
 **Files:**
-- Modify: `src/control-plane/core/src/auth.rs`, `src/control-plane/core/src/lib.rs:28`
+- Modify: `src/control-plane/core/src/auth.rs`, `src/control-plane/core/src/lib.rs:28`, `src/control-plane/core/tests/auth_types.rs`
 - Modify: `src/control-plane/memory/src/auth.rs`
 - Modify: `src/control-plane/postgres/src/auth.rs`
 - Create: `src/control-plane/postgres/migrations/0027_auth_lockout.sql`
@@ -348,6 +349,16 @@ pub use auth::{
 };
 ```
 
+Fix the existing `PasswordCredential` literal in `src/control-plane/core/tests/auth_types.rs:15` — the new mandatory field breaks its compile. Add `locked_until: None`:
+```rust
+    let c = PasswordCredential {
+        subject_id: u.subject_id.clone(),
+        password_phc: u.password_phc.clone(),
+        locked_until: None,
+    };
+```
+(`//src/control-plane/core:auth-types` already deps `time`; no new import needed.)
+
 - [ ] **Step 4: Implement the memory adapter**
 
 In `src/control-plane/memory/src/auth.rs`:
@@ -573,9 +584,11 @@ Add the five methods to `impl Auth for PgControlPlane` (import `LockoutPolicy` i
         policy: LockoutPolicy,
     ) -> Result<()> {
         // Interval math is done in Rust so the SQL binds only concrete instants —
-        // no PgInterval. `new_count` is computed in the subquery from the CURRENT
-        // stored count, and the UPDATE writes it back atomically (correct under
-        // concurrency / replicas).
+        // no PgInterval. `new_count` is computed in the subquery from the current
+        // stored count and written back in a single statement. (Under READ
+        // COMMITTED two racing failures can under-count; acceptable for lockout.
+        // Store-backed so the counter survives restarts and is shared across
+        // replicas, unlike an in-memory counter an attacker could reset.)
         let window_cutoff = now - policy.window;
         let locked_until = now + policy.lockout_duration;
         let threshold = i32::try_from(policy.threshold).unwrap_or(i32::MAX);
@@ -729,7 +742,7 @@ fn lockout_malformed_threshold_is_startup_error() {
 }
 ```
 
-Add `use time;` if not present (the file may need `time` in `deps`). Confirm `time` is a dep of the `ttl` test target; if not, add `"//third-party:time"` to the `ttl` `rust_test` deps in `src/services/runtime/BUCK` (target `name = "ttl"`).
+These reference `time::Duration`, so `time` must be a dep of the `ttl` test target. Add `"//third-party:time"` to the `ttl` `rust_test` deps in `src/services/runtime/BUCK` (target `name = "ttl"`) and reference `time::Duration` directly — do **not** add a `use time;` line (a single-component path import trips `clippy::single_component_path_imports`, which test code is NOT exempt from).
 
 - [ ] **Step 2: Run — verify it fails**
 
@@ -791,11 +804,16 @@ In `bootstrap` (lib.rs ~366), read the policy before the pool boots and add it t
     };
 ```
 
-- [ ] **Step 5: Update `StandaloneTuning`**
+- [ ] **Step 5: Re-export `LockoutPolicy` from `service_runtime` + update `StandaloneTuning`**
 
-In `src/services/standalone/src/lib.rs`, add the field to `StandaloneTuning` (after `max_ttl`):
+First (required — Step 6 and every test site depend on it), add a re-export to `src/services/runtime/src/lib.rs` near the other re-exports so `service_runtime::LockoutPolicy` resolves everywhere in service/test code without each site depending on `control_plane_core`:
 ```rust
-    pub lockout: control_plane_core::LockoutPolicy,
+pub use control_plane_core::LockoutPolicy;
+```
+
+Then, in `src/services/standalone/src/lib.rs`, add the field to `StandaloneTuning` (after `max_ttl`):
+```rust
+    pub lockout: service_runtime::LockoutPolicy,
 ```
 Populate it in `from_map` (after `max_ttl:`):
 ```rust
@@ -805,13 +823,6 @@ And in `serve_composite`'s `AuthState` literal (line ~81), add:
 ```rust
         lockout: tuning.lockout,
 ```
-Confirm `standalone`'s BUCK depends on `//src/control-plane/core`; it does (it already references `service_runtime`). If `control_plane_core` is not a direct dep, use `service_runtime`'s re-export instead: import path `service_runtime::login_lockout` is already used, and for the type write `control_plane_core::LockoutPolicy` only if that crate is a dep — otherwise add `pub use control_plane_core::LockoutPolicy;` to `service_runtime/src/lib.rs` and reference `service_runtime::LockoutPolicy`.
-
-> To avoid the dependency question entirely, add this re-export to `src/services/runtime/src/lib.rs` and use `service_runtime::LockoutPolicy` everywhere in service/test code:
-> ```rust
-> pub use control_plane_core::LockoutPolicy;
-> ```
-> Place it near the other re-exports. Then `StandaloneTuning.lockout: service_runtime::LockoutPolicy`.
 
 - [ ] **Step 6: Update every test-only AuthState construction site**
 
@@ -1446,19 +1457,19 @@ git commit -m "feat(auth): admin password reset route"
 
 ---
 
-## Task 6: Postgres-backed e2e (self-service change, admin reset, lockout)
+## Task 6: Postgres-backed e2e (self-service change, admin reset)
 
-Prove the full HTTP + real-Postgres path for the headline flows via `loom_fixture_test`, extending the existing e2e files.
+Prove the full HTTP + real-Postgres path for the two headline write flows via `loom_fixture_test`, extending the existing e2e files. (Lockout is already covered end-to-end by Task 1's `password_lifecycle_contract` on the postgres adapter — the store layer — plus Task 3's HTTP enforcement on the memory adapter; a third postgres+HTTP lockout test would need a bespoke short-duration app builder + a real sleep for little added coverage, so it is intentionally out of this task.)
 
 **Files:**
-- Modify: `src/services/query-api/tests/auth_e2e.rs` (self-service change + lockout over postgres)
+- Modify: `src/services/query-api/tests/auth_e2e.rs` (self-service change over postgres)
 - Modify: `src/services/query-api/tests/admin_e2e.rs` (admin reset over postgres)
 
 **Interfaces consumed:** the routes from Tasks 3–5; the fixture helpers already in each file (`setup_iceberg`, `app`, `seed_admin_session`, `hash_password`, `token_sha256`).
 
 - [ ] **Step 1: Add the self-service-change e2e**
 
-Read `src/services/query-api/tests/auth_e2e.rs` for its `app(cp, eng)` builder (it merges `login_routes`; ensure it also merges `session_routes` — if not, add `.merge(service_runtime::session_routes(auth.clone()))` to the local `app` helper so `/auth/password` is mounted). Then add:
+Read `src/services/query-api/tests/auth_e2e.rs` for its `app(cp, eng)` builder. It currently ends `.merge(login_routes(auth))` (line ~44), which **moves** `auth`. To also mount `/auth/password`, change that line to `.merge(login_routes(auth.clone())).merge(service_runtime::session_routes(auth))` (note the `auth.clone()` — a literal `.merge(login_routes(auth)).merge(session_routes(auth))` is a use-after-move). Also add `lockout: service_runtime::LockoutPolicy::default(),` to that helper's `AuthState` literal (a Task 2 construction site). Then add:
 ```rust
 #[tokio::test]
 async fn self_service_change_over_postgres() {
@@ -1629,4 +1640,4 @@ Then the metric gate (part of the final review): `loom-complexity diff` and `loo
 - `POST /auth/password` self-service change (verify-current 403, revoke-others, keep-current) → Task 4.
 - `POST /admin/users/{username}/password` admin reset (revoke-all, 404 unknown, 403 non-admin) → Task 5.
 - Lockout enforcement in the login path + config seam (`LOOM_LOGIN_LOCKOUT_*`) → Tasks 2 & 3.
-- Testing 1 (update round-trip) & 2 (lockout counter) → Task 1 contract. Testing 3 (self-service e2e) → Tasks 4 & 6. Testing 4 (admin reset e2e) → Tasks 5 & 6. Testing 5 (lockout e2e) → Tasks 3 & 6. Testing 6 (no enumeration: locked == generic 401) → Task 3 (`login` returns the same `unauthorized()` for locked, bad-password, and unknown).
+- Testing 1 (update round-trip) & 2 (lockout counter) → Task 1 contract (both adapters). Testing 3 (self-service e2e) → Tasks 4 (memory HTTP) & 6 (postgres HTTP). Testing 4 (admin reset e2e) → Tasks 5 (memory HTTP) & 6 (postgres HTTP). Testing 5 (lockout e2e) → Task 1 contract (postgres store) + Task 3 (HTTP enforcement, memory) — the postgres store path and the HTTP enforcement path are both proven, just not in a single combined test (see Task 6 note). Testing 6 (no enumeration: locked == generic 401) → Task 3 (`login` returns the same `unauthorized()` for locked, bad-password, and unknown).
