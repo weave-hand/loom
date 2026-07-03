@@ -66,7 +66,7 @@ impl Lineage for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn events_for(&self, run: &RunId, page: PageReq) -> Result<Page<LineageEvent>> {
         let after = page.after.as_ref().map(decode_event_cursor).transpose()?;
-        let fetch = page.limit.map_or(i64::MAX, |l| i64::from(l) + 1);
+        let fetch = page.fetch_limit_i64();
         let rows = sqlx::query!(
             "select event_id, event_type, event_time, payload from lineage.event \
              where run_id = $1 and ($2::bigint is null or event_id > $2) \
@@ -169,7 +169,7 @@ impl PgControlPlane {
             None => (None, None),
         };
         let max_depth = i32::try_from(depth).unwrap_or(i32::MAX);
-        let fetch = page.limit.map_or(i64::MAX, |l| i64::from(l) + 1);
+        let fetch = page.fetch_limit_i64();
         let rows = sqlx::query!(
             "with recursive closure(namespace, name, depth) as ( \
                  select $1::text, $2::text, 0 \

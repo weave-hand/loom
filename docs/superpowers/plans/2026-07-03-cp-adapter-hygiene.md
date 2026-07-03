@@ -1508,7 +1508,7 @@ sites in two overflow styles. Two documented methods on `PageReq` own it.
 - Modify: `src/control-plane/postgres/src/lineage.rs` (2 sites)
 - Modify: `src/control-plane/memory/src/lineage.rs` (2 sites)
 
-- [ ] **Step 1: Append the failing tests** to `core/tests/page.rs`:
+- [x] **Step 1: Append the failing tests** to `core/tests/page.rs`:
 
 ```rust
 #[test]
@@ -1525,7 +1525,7 @@ fn fetch_limit_helpers_carry_the_plus_one_sentinel() {
 Run: `buck2 test //src/control-plane/core:page > /tmp/t8red.log 2>&1; grep -E "Tests finished|error" /tmp/t8red.log | head -3`
 — expect RED (missing methods).
 
-- [ ] **Step 2: Implement** in `core/src/page.rs` inside `impl PageReq`:
+- [x] **Step 2: Implement** in `core/src/page.rs` inside `impl PageReq`:
 
 ```rust
     /// Keyset fetch size as a SQL `LIMIT` bind: `limit + 1` — the "+1
@@ -1546,7 +1546,7 @@ Run: `buck2 test //src/control-plane/core:page > /tmp/t8red.log 2>&1; grep -E "T
     }
 ```
 
-- [ ] **Step 3: Migrate the four sites.** postgres `lineage.rs` (`events_for`
+- [x] **Step 3: Migrate the four sites.** postgres `lineage.rs` (`events_for`
   + `graph_closure`): `let fetch = page.limit.map_or(i64::MAX, |l|
   i64::from(l) + 1);` → `let fetch = page.fetch_limit_i64();`. Memory
   `lineage.rs` — `paginate_datasets`:
@@ -1563,7 +1563,7 @@ Run: `buck2 test //src/control-plane/core:page > /tmp/t8red.log 2>&1; grep -E "T
 
   (each replaces the whole `match page.limit { ... }` block).
 
-- [ ] **Step 4: Run — unit + both adapters' lineage contracts green**
+- [x] **Step 4: Run — unit + both adapters' lineage contracts green**
 
 ```bash
 buck2 test //src/control-plane/core:page //src/control-plane/postgres:lineage \
@@ -1571,7 +1571,7 @@ buck2 test //src/control-plane/core:page //src/control-plane/postgres:lineage \
   grep -E "Tests finished|FAIL" /tmp/t8.log
 ```
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek8.log 2>&1; grep -E "Failed" /tmp/prek8.log || echo CLEAN

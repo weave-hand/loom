@@ -48,6 +48,23 @@ impl PageReq {
             limit: None,
         }
     }
+
+    /// Keyset fetch size as a SQL `LIMIT` bind: `limit + 1` — the "+1
+    /// sentinel" [`Page::from_keyset`] consumes to detect a next page.
+    /// Unbounded → `i64::MAX`.
+    #[must_use]
+    pub fn fetch_limit_i64(&self) -> i64 {
+        self.limit.map_or(i64::MAX, |l| i64::from(l) + 1)
+    }
+
+    /// The same "+1 sentinel" as an iterator take-count. Unbounded →
+    /// `usize::MAX` (take-everything).
+    #[must_use]
+    pub fn fetch_take(&self) -> usize {
+        self.limit.map_or(usize::MAX, |l| {
+            usize::try_from(l).map_or(usize::MAX, |n| n.saturating_add(1))
+        })
+    }
 }
 
 /// One page of results. `next == None` means there are no more.
