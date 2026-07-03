@@ -190,6 +190,11 @@ fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayR
             let cell: Option<f64> = match v {
                 SqlValue::Null => None,
                 SqlValue::Double(f) => Some(*f),
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "widening an integer value into a Double column; matches the type-checker's numeric-widening rule"
+                )]
+                SqlValue::Int(i) => Some(*i as f64),
                 _ => return Err(mismatch()),
             };
             (DataType::Float64, Arc::new(Float64Array::from(vec![cell])))

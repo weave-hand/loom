@@ -1018,6 +1018,26 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "action-computed-e2e",
+    crate = "action_computed_e2e",
+    srcs = ["tests/action_computed_e2e.rs"],
+    crate_root = "tests/action_computed_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "params",
     crate = "params",
@@ -1028,6 +1048,42 @@ rust_test(
         ":query-api",
         "//src/control-plane/core:core",
         "//third-party:serde_json",
+        "//third-party:time",
+    ],
+)
+
+rust_test(
+    name = "expr-parse",
+    crate = "expr_parse",
+    srcs = ["tests/expr_parse.rs"],
+    crate_root = "tests/expr_parse.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
+    name = "expr-typecheck",
+    crate = "expr_typecheck",
+    srcs = ["tests/expr_typecheck.rs"],
+    crate_root = "tests/expr_typecheck.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
+    name = "expr-eval",
+    crate = "expr_eval",
+    srcs = ["tests/expr_eval.rs"],
+    crate_root = "tests/expr_eval.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
         "//third-party:time",
     ],
 )

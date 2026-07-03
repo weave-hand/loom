@@ -159,7 +159,7 @@ fn all_violations_are_collected() {
 
 // --- Param->property mapping: binds + constant assignments (slice 1) ---
 
-use control_plane_core::ConstAssignment;
+use control_plane_core::Assignment;
 
 /// Gadget: id (Long, required), name (String, optional), status (String, optional).
 fn gadget() -> ObjectType {
@@ -188,7 +188,7 @@ fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
     }
 }
 
-fn insert_action(params: Vec<ParamDef>, assignments: Vec<ConstAssignment>) -> ActionDef {
+fn insert_action(params: Vec<ParamDef>, assignments: Vec<Assignment>) -> ActionDef {
     ActionDef {
         name: ActionName("a".into()),
         target: TypeName("Gadget".into()),
@@ -210,10 +210,7 @@ fn rename_and_constant_conform() {
             pb("id", "Long", true, None),
             pb("displayName", "String", false, Some("name")),
         ],
-        vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!("active"),
-        }],
+        vec![Assignment::constant("status", serde_json::json!("active"))],
     );
     check_conformance(&a, &gadget()).expect("conforms");
 }
@@ -223,10 +220,7 @@ fn required_property_covered_by_constant_conforms() {
     // A REQUIRED property (`id`) covered ONLY by a constant is valid coverage.
     let a = insert_action(
         vec![],
-        vec![ConstAssignment {
-            property: "id".into(),
-            value: serde_json::json!("7"),
-        }],
+        vec![Assignment::constant("id", serde_json::json!("7"))],
     );
     check_conformance(&a, &gadget()).expect("constant covers required");
 }
@@ -247,10 +241,7 @@ fn binds_unknown_property_rejected() {
 fn constant_unknown_property_rejected() {
     let a = insert_action(
         vec![pb("id", "Long", true, None)],
-        vec![ConstAssignment {
-            property: "nope".into(),
-            value: serde_json::json!("x"),
-        }],
+        vec![Assignment::constant("nope", serde_json::json!("x"))],
     );
     assert!(is_misconfigured(check_conformance(&a, &gadget())));
 }
@@ -260,10 +251,7 @@ fn constant_type_mismatch_rejected() {
     // `status` is String; a bool constant is incompatible.
     let a = insert_action(
         vec![pb("id", "Long", true, None)],
-        vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!(true),
-        }],
+        vec![Assignment::constant("status", serde_json::json!(true))],
     );
     assert!(is_misconfigured(check_conformance(&a, &gadget())));
 }
@@ -276,10 +264,7 @@ fn double_bind_param_and_constant_rejected() {
             pb("id", "Long", true, None),
             pb("name", "String", false, None),
         ],
-        vec![ConstAssignment {
-            property: "name".into(),
-            value: serde_json::json!("x"),
-        }],
+        vec![Assignment::constant("name", serde_json::json!("x"))],
     );
     assert!(is_misconfigured(check_conformance(&a, &gadget())));
 }
@@ -305,4 +290,122 @@ fn uncovered_required_property_rejected() {
         vec![],
     );
     assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+// --- Computed (expression) assignments: define-time typing (slice 2) ---
+// NOTE: `Assignment` is already imported at the top of this file (Task 4 renamed the slice-1
+// `use control_plane_core::ConstAssignment;` import to `Assignment`). Do NOT re-import it here.
+
+/// Gadget has id (Long, req), name (String), status (String). Add a numeric prop for typing.
+fn gadget_with_total() -> ObjectType {
+    let mut g = gadget();
+    g.properties.push(prop("total", "Double", false));
+    g
+}
+
+#[test]
+fn valid_expression_conforms() {
+    // total = id + 1 : Long, assignable to the Double `total` property by widening -> conforms.
+    // (Only the required `id` param is declared; no stray param.)
+    let a = ActionDef {
+        name: ActionName("a".into()),
+        target: TypeName("Gadget".into()),
+        parameters: vec![pb("id", "Long", true, None)],
+        kind: ActionKind::Insert,
+        assignments: vec![Assignment::expr("total", "id + 1")],
+    };
+    check_conformance(&a, &gadget_with_total()).expect("computed assignment conforms");
+}
+
+#[test]
+fn expr_double_bind_rejected() {
+    // `status` is written by both a renamed param and an Expr assignment -> double-bind.
+    let a = insert_action(
+        vec![
+            pb("id", "Long", true, None),
+            pb("s", "String", false, Some("status")),
+        ],
+        vec![Assignment::expr("status", "upper(\"x\")")],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+#[test]
+fn unknown_reference_rejected() {
+    let a = insert_action(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("status", "nope ++ \"x\"")],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+#[test]
+fn type_mismatched_expression_rejected() {
+    // status is String; an arithmetic (numeric) result is not assignable.
+    let a = insert_action(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("status", "id + 1")],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &gadget())));
+}
+
+#[test]
+fn narrowing_expression_rejected() {
+    // total is Double; assigning a Double result to a Long prop would narrow. Add a Long prop.
+    let mut g = gadget();
+    g.properties.push(prop("count", "Long", false));
+    let a = insert_action(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("count", "cast(id as double)")],
+    );
+    assert!(is_misconfigured(check_conformance(&a, &g)));
+}
+
+#[test]
+fn unknown_function_or_arity_rejected() {
+    let a1 = insert_action(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("status", "bogus(id)")],
+    );
+    assert!(is_misconfigured(check_conformance(&a1, &gadget())));
+    let a2 = insert_action(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("status", "now(1)")],
+    );
+    assert!(is_misconfigured(check_conformance(&a2, &gadget())));
+}
+
+#[test]
+fn forward_property_ref_rejected() {
+    // status references @total, but total is assigned AFTER status here (declared order).
+    let a = ActionDef {
+        name: ActionName("a".into()),
+        target: TypeName("Gadget".into()),
+        parameters: vec![pb("id", "Long", true, None)],
+        kind: ActionKind::Insert,
+        assignments: vec![
+            Assignment::expr("status", "if @total > 1.0 then \"hi\" else \"lo\""),
+            Assignment::expr("total", "id + 1"),
+        ],
+    };
+    assert!(is_misconfigured(check_conformance(
+        &a,
+        &gadget_with_total()
+    )));
+}
+
+#[test]
+fn earlier_property_ref_conforms() {
+    // total assigned first, then status references @total — resolved-earlier, OK.
+    let a = ActionDef {
+        name: ActionName("a".into()),
+        target: TypeName("Gadget".into()),
+        parameters: vec![pb("id", "Long", true, None)],
+        kind: ActionKind::Insert,
+        assignments: vec![
+            Assignment::expr("total", "id + 1"),
+            Assignment::expr("status", "if @total > 1.0 then \"hi\" else \"lo\""),
+        ],
+    };
+    check_conformance(&a, &gadget_with_total()).expect("earlier @prop ref conforms");
 }
