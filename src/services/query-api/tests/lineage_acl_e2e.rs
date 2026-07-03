@@ -301,6 +301,40 @@ async fn events_redaction_omits_denied_refs_keeps_envelope() {
     );
     assert_eq!(ev["outputs"].as_array().unwrap().len(), 1, "OUT kept");
     assert_eq!(ev["event_type"], "complete", "envelope intact");
+    assert!(
+        ev["payload"].is_null(),
+        "SECRET denied ⇒ payload gated to null: {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn events_all_granted_returns_verbatim_payload() {
+    let fx = PgFixture::shared();
+    let cp = fresh(fx).await;
+    let run = RunId(uuid::Uuid::new_v4());
+    cp.lineage()
+        .emit(LineageEvent {
+            run_id: run,
+            event_type: EventType::Complete,
+            event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+            inputs: vec![ty("A")],
+            outputs: vec![ty("OUT")],
+            payload: serde_json::json!({ "k": 1 }),
+        })
+        .await
+        .unwrap();
+    // Grant both refs ⇒ nothing redacted ⇒ payload served verbatim.
+    let (_u, role) = subject_with_role(&cp, "u").await;
+    grant_types(&cp, &role, &["A", "OUT"]).await;
+    let uri = format!("/lineage/runs/{}/events", run.0);
+    let (status, body) = get(cp.clone(), Arc::new(NoServing), &uri, "u").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ev = &body["events"][0];
+    assert_eq!(
+        ev["payload"],
+        serde_json::json!({ "k": 1 }),
+        "all refs granted ⇒ verbatim payload: {body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

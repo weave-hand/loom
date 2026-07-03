@@ -321,7 +321,7 @@ async fn scan_cap_exceeded_is_its_own_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn redact_events_drops_denied_refs_keeps_envelope() {
+async fn redact_events_nulls_payload_when_any_ref_denied() {
     let cp = cp();
     let bridge = naming();
     let subj = subject_reading(&cp, "u", &["A"]).await; // reads A, not B
@@ -346,5 +346,67 @@ async fn redact_events_drops_denied_refs_keeps_envelope() {
     assert_eq!(e.inputs, vec![ty("A")], "denied B removed from inputs");
     assert!(e.outputs.is_empty(), "denied B removed from outputs");
     assert_eq!(e.run_id, run, "envelope intact");
-    assert_eq!(e.payload, serde_json::json!({ "k": 1 }), "payload verbatim");
+    assert!(
+        e.payload.is_null(),
+        "any redaction nulls the payload (least disclosure), got {:?}",
+        e.payload
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn redact_events_keeps_payload_when_all_refs_readable() {
+    let cp = cp();
+    let bridge = naming();
+    let subj = subject_reading(&cp, "u", &["A", "B"]).await; // reads every ref
+    let ev = LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+        inputs: vec![ty("A")],
+        outputs: vec![ty("B")],
+        payload: serde_json::json!({ "k": 1 }),
+    };
+    let page = control_plane_core::Page {
+        items: vec![ev],
+        next: None,
+    };
+    let red = vis_for(&cp, &bridge)
+        .redact_events(&subj, page)
+        .await
+        .unwrap();
+    let e = &red.items[0];
+    assert_eq!(e.inputs, vec![ty("A")], "nothing redacted");
+    assert_eq!(e.outputs, vec![ty("B")], "nothing redacted");
+    assert_eq!(
+        e.payload,
+        serde_json::json!({ "k": 1 }),
+        "all refs readable → payload verbatim"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn redact_events_stored_null_payload_stays_null() {
+    let cp = cp();
+    let bridge = naming();
+    let subj = subject_reading(&cp, "u", &["A", "B"]).await; // reads every ref → nothing redacted
+    let ev = LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+        inputs: vec![ty("A")],
+        outputs: vec![ty("B")],
+        payload: serde_json::Value::Null,
+    };
+    let page = control_plane_core::Page {
+        items: vec![ev],
+        next: None,
+    };
+    let red = vis_for(&cp, &bridge)
+        .redact_events(&subj, page)
+        .await
+        .unwrap();
+    assert!(
+        red.items[0].payload.is_null(),
+        "a stored-null payload with no redaction stays null (no false 'redacted' signal)"
+    );
 }

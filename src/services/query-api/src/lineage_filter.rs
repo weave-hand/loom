@@ -203,11 +203,15 @@ impl<'a> LineageVisibility<'a> {
             .await
     }
 
-    /// Redact denied refs *within* each event: drop any `DatasetRef` in `inputs`/
-    /// `outputs` the subject cannot read, keep the envelope. No row is dropped, so the
-    /// page shape and event cursor are untouched (the payoff of redact-within over
-    /// event-drop — it composes with the event-keyed cursor with zero pagination
-    /// interaction). The opaque `payload` is left verbatim (see spec Open questions).
+    /// Redact denied refs *within* each event and gate the opaque `payload`. Any
+    /// `DatasetRef` in `inputs`/`outputs` the subject cannot read is dropped, keeping
+    /// the envelope (no row is dropped, so the page shape and event cursor are
+    /// untouched). The `payload` is served verbatim **iff every typed ref was
+    /// readable**; if any ref was redacted it is replaced with `Value::Null`, because
+    /// loom's emitters embed dataset identifiers in the free-form `payload` and a
+    /// blocklist scrub of arbitrary JSON is fail-open by construction. A nulled payload
+    /// is indistinguishable from a stored-null one — it discloses nothing beyond what
+    /// the already-redacted `inputs`/`outputs` imply.
     pub async fn redact_events(
         &self,
         subject: &SubjectId,
@@ -216,8 +220,14 @@ impl<'a> LineageVisibility<'a> {
         let Page { items, next } = page;
         let mut out = Vec::with_capacity(items.len());
         for mut ev in items {
+            let inputs_len = ev.inputs.len();
+            let outputs_len = ev.outputs.len();
             ev.inputs = self.readable_only(subject, ev.inputs).await?;
             ev.outputs = self.readable_only(subject, ev.outputs).await?;
+            if ev.inputs.len() != inputs_len || ev.outputs.len() != outputs_len {
+                // Some ref was denied ⇒ the payload may name it in free-form text. Gate.
+                ev.payload = serde_json::Value::Null;
+            }
             out.push(ev);
         }
         Ok(Page { items: out, next })
