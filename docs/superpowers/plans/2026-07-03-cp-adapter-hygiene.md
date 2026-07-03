@@ -2078,7 +2078,7 @@ git commit -m "fix(memory): ordered staged-write log matches postgres tx replay 
 **Files:**
 - Modify: `docs/ROADMAP.md` (`#road-cp-adapter-hygiene` — locate by id)
 
-- [ ] **Step 1: Whole-tree build + affected-package sweep.** Core changed, so
+- [x] **Step 1: Whole-tree build + affected-package sweep.** Core changed, so
   every downstream service rebuilds; the adapters feed engine/worker/ingest/
   query-api through unchanged signatures but must be swept:
 
@@ -2095,7 +2095,7 @@ Expected: build success; `Fail 0`. (Local runs keep `-j 8`; in a cloud
 session do NOT widen to a bare whole-tree `buck2 test` and `buck2 clean`
 between heavy phases if disk pressure appears.)
 
-- [ ] **Step 2: Close the ROADMAP item** — replace the
+- [x] **Step 2: Close the ROADMAP item** — replace the
   `road-cp-adapter-hygiene` entry (checkbox, status, prose) with:
 
 ```markdown
@@ -2103,7 +2103,7 @@ between heavy phases if disk pressure appears.)
   Done, one commit per sub-item. Postgres: `role_exists`/`object_type_exists` over `PgExecutor` collapse the 10 duplicated exists checks (in-tx sites kept in-tx); `links`/`links_to` share `LinkRow` + `link_defs`; ONE generic source-carrying `backend()` boxing helper — deleted all five module-local variants (`iceberg_read::be`, `iceberg_landing::be`, `iceberg_mirror::iceberg_err`, `puffin::be`, and `vector_index`'s Display-flattening `backend` shadow) plus the inline `.to_string()` flattens; inline-table preamble → `inline_table_exists` + `mvcc_live_pred` + `quote_ident` (the `AssertSqlSafe` argument now lives in one place); `inline_append`'s statement text hoisted out of its row loop; `project_files` stat inserts batched via `unnest`; `vector_indexes_for` and `events_for` N+1s collapsed (one query / `event_id = any($1)`, pinned by the new `events_for_hydration_contract`; hydration follow-ups tracked by [[fut-lineage-events-page-hydration]]). Core: enum wire codecs (`Cardinality`/`EventType`/`ActionKind` `as_str`+`FromStr`, `Action`/`Effect` `as_str`) with FAIL-LOUD unknown tokens (was silent One/Start/Insert coercion — whitelisted); `PolicyTarget::key_parts()`; shared `check_grant_target`/`check_policy_write` write-time decisions (adapters supply lookups); `PageReq::{fetch_limit_i64,fetch_take}` own the keyset +1 sentinel; parse/dim failures (`Metric`/`IndexKind`/`from_label`/`pack_rows`) reclassified `Backend`→`Validation` (whitelisted honest-classification change; no status code changes on currently reachable planes; nothing pinned the old class). Memory: catalog keyed by `TableRef`; `MemoryTx` replays ONE ordered `StagedWrite` log matching postgres `IcebergTx` (whitelisted replay-order fix, pinned by the new `snapshot_write_order_contract`, proven green on postgres first). The spec's `dc!` sub-item was already shipped by #296 and dropped.
 ```
 
-- [ ] **Step 3: Validate + commit**
+- [x] **Step 3: Validate + commit**
 
 ```bash
 bash tools/docs.sh validate
