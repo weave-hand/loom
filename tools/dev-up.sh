@@ -27,14 +27,26 @@ INGEST_ADDR="${LOOM_INGEST_BIND_ADDR:-127.0.0.1:18081}"
 # Data dir. Postgres' Unix-domain socket path caps at ~107 bytes, so DATA_PATH
 # must stay short ("<DATA_PATH>/pgrun/.s.PGSQL.5432" has to fit). Default to a
 # short ephemeral /tmp dir; a caller-set LOOM_DATA_PATH persists across runs.
+EPHEMERAL=0
 if [[ -n "${LOOM_DATA_PATH:-}" ]]; then
   DATA_PATH="$LOOM_DATA_PATH"; mkdir -p "$DATA_PATH"
   echo "dev-up: persistent data dir $DATA_PATH"
 else
   DATA_PATH="$(mktemp -d -t loom-XXXXXX)"
+  EPHEMERAL=1
   echo "dev-up: ephemeral data dir $DATA_PATH (removed on exit)"
-  trap 'rm -rf "$DATA_PATH"' EXIT
 fi
+
+# Single EXIT handler: stop the composite (if started) and remove the ephemeral
+# data dir. Installed once so a later `trap … EXIT` can't clobber cleanup — the
+# server-kill trap used to overwrite the dir-removal trap and leak /tmp/loom-*.
+server_pid=""
+cleanup() {
+  [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null
+  (( EPHEMERAL )) && rm -rf "$DATA_PATH"
+  return 0
+}
+trap cleanup EXIT INT TERM
 if (( ${#DATA_PATH} > 80 )); then
   echo "dev-up: LOOM_DATA_PATH is ${#DATA_PATH} chars — too long for Postgres' ~107-byte" >&2
   echo "        Unix socket path. Use a shorter path (e.g. /tmp/loom)." >&2
@@ -42,12 +54,14 @@ if (( ${#DATA_PATH} > 80 )); then
 fi
 mkdir -p "$DATA_PATH/pgrun" "$DATA_PATH/warehouse" "$DATA_PATH/cache"
 
-echo "dev-up: building UI bundle + standalone binary (buck2)…"
-buck2 build //src/ui:bundle //src/services/standalone:loom 2>&1 | tail -1
+echo "dev-up: building UI bundle + standalone binary + seed emitter (buck2)…"
+buck2 build //src/ui:bundle //src/services/standalone:loom //src/testing:emit-employees 2>&1 | tail -1
 UI_DIR="$(buck2 build --show-full-output //src/ui:bundle 2>/dev/null | awk '{print $2}')"
 LOOM_BIN="$(buck2 build --show-full-output //src/services/standalone:loom 2>/dev/null | awk '{print $2}')"
+EMIT_BIN="$(buck2 build --show-full-output //src/testing:emit-employees 2>/dev/null | awk '{print $2}')"
 [[ -d "$UI_DIR" ]]   || { echo "dev-up: UI bundle dir not found ($UI_DIR)" >&2; exit 1; }
 [[ -x "$LOOM_BIN" ]] || { echo "dev-up: loom binary not found ($LOOM_BIN)" >&2; exit 1; }
+[[ -x "$EMIT_BIN" ]] || { echo "dev-up: seed emitter not found ($EMIT_BIN)" >&2; exit 1; }
 
 # Env shared by every boot of the composite. LOOM_BIND_ADDR is required by Config
 # but unused by the composite (the three real binds come from the addrs below).
@@ -117,7 +131,6 @@ env "${common_env[@]}" \
   LOOM_UI_DIR="$UI_DIR" \
   "$LOOM_BIN" &
 server_pid=$!
-trap 'kill "$server_pid" 2>/dev/null' EXIT INT TERM
 
 # Wait for the query-api port to accept connections, then create the first admin.
 # `create-admin` connects to the already-running embedded Postgres as a client via
@@ -135,5 +148,57 @@ if printf '%s' "$ADMIN_PASS" | env "${common_env[@]}" \
 else
   echo "dev-up: create-admin skipped (instance already sealed?)"
 fi
+
+# Seed one demo object type so the object-explorer has something to render on a
+# fresh boot. Best-effort — a failure here logs a warning and leaves the server
+# running. Flow, all over the same admin session token:
+#   1. log in as the admin
+#   2. define the `employees` ontology type  (POST /admin/models)
+#   3. self-grant the reserved `admin` role read+write on it
+#   4. land the demo Arrow batch into ingest's model endpoint
+# The order is forced: a grant's target type must already exist, and landing
+# requires a prior Write grant — so the type is declared explicitly first (its
+# physical `main.employees` table is created by the land in step 4). Idempotent:
+# skips if the type already exists (persistent LOOM_DATA_PATH re-run).
+seed_model='{"name":"employees","table":{"schema":"main","name":"employees"},"identity":"id","properties":[{"name":"id","ty":"long","required":true},{"name":"name","ty":"string","required":true},{"name":"department","ty":"string","required":true},{"name":"salary","ty":"double","required":true},{"name":"active","ty":"boolean","required":true}]}'
+seed_demo() {
+  local base="http://$QAPI_ADDR" ingest="http://$INGEST_ADDR" resp tok
+  resp="$(curl -fsS -X POST "$base/auth/login" \
+      -H 'content-type: application/json' \
+      -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}")" \
+    || { echo "dev-up: seed skipped (login failed)"; return 0; }
+  tok="$(printf '%s' "$resp" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+  [[ -n "$tok" ]] || { echo "dev-up: seed skipped (no session token)"; return 0; }
+
+  if curl -fsS -H "authorization: Bearer $tok" "$base/ontology/types" 2>/dev/null \
+       | grep -q '"employees"'; then
+    echo "dev-up: seed skipped (type 'employees' already present)"
+    return 0
+  fi
+
+  curl -fsS -o /dev/null -X POST "$base/admin/models" \
+      -H "authorization: Bearer $tok" -H 'content-type: application/json' \
+      -d "$seed_model" \
+    || { echo "dev-up: seed skipped (define type failed)"; return 0; }
+  for act in write read; do
+    curl -fsS -o /dev/null -X POST "$base/admin/roles/admin/grants" \
+        -H "authorization: Bearer $tok" -H 'content-type: application/json' \
+        -d "{\"action\":\"$act\",\"type\":\"employees\"}" \
+      || { echo "dev-up: seed skipped ($act grant failed)"; return 0; }
+  done
+
+  local fixture="$DATA_PATH/employees.arrow"
+  "$EMIT_BIN" "$fixture" >/dev/null 2>&1 \
+    || { echo "dev-up: seed skipped (fixture emit failed)"; return 0; }
+  if curl -fsS -o /dev/null -X POST "$ingest/models/employees" \
+       -H "authorization: Bearer $tok" \
+       -H 'content-type: application/vnd.apache.arrow.stream' \
+       --data-binary "@$fixture"; then
+    echo "dev-up: seeded demo type 'employees' (8 rows) — log in and open the explorer"
+  else
+    echo "dev-up: seed skipped (land failed)"
+  fi
+}
+seed_demo || true
 
 wait "$server_pid"
