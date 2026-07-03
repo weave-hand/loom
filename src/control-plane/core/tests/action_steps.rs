@@ -71,6 +71,50 @@ fn multi_step_round_trips() {
     assert_eq!(back, a);
 }
 
+// The fluent builder produces the same multi-step action (with a cross-step ref)
+// as the struct-literal form — the ergonomic define path for docs/callers.
+#[test]
+fn builder_defines_multi_step_with_cross_step_ref() {
+    let built = ActionDef::build("createOrderWithLines", "Order", ActionKind::Insert)
+        .param_bound("orderId", "Long", true, "id")
+        .bind("order")
+        .step("LineItem", ActionKind::Insert)
+        .param_req("sku", "String")
+        .assign_step_ref("orderId", "order", "id")
+        .done();
+
+    let expected = ActionDef {
+        name: ActionName("createOrderWithLines".into()),
+        steps: vec![
+            ActionStep {
+                target: tn("Order"),
+                kind: ActionKind::Insert,
+                parameters: vec![ParamDef {
+                    name: "orderId".into(),
+                    ty: "Long".into(),
+                    required: true,
+                    binds: Some("id".into()),
+                }],
+                assignments: vec![],
+                bind: Some("order".into()),
+            },
+            ActionStep {
+                target: tn("LineItem"),
+                kind: ActionKind::Insert,
+                parameters: vec![ParamDef {
+                    name: "sku".into(),
+                    ty: "String".into(),
+                    required: true,
+                    binds: None,
+                }],
+                assignments: vec![Assignment::step_ref("orderId", "order", "id")],
+                bind: None,
+            },
+        ],
+    };
+    assert_eq!(built, expected);
+}
+
 // Legacy flat JSON (no `steps` key) still deserializes into one implicit step.
 #[test]
 fn legacy_flat_json_lifts_to_one_step() {
