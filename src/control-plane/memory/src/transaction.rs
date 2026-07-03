@@ -14,6 +14,14 @@ use crate::catalog::CatalogState;
 use crate::lineage::LineageState;
 use crate::{MemoryControlPlane, Row};
 
+/// One staged catalog file write, in STAGING ORDER. Mirrors the postgres
+/// `IcebergTx`'s `WriteMode`-tagged log: append and replace stay one ordered
+/// sequence, so a replace end-caps only what is live before it in the log.
+pub(crate) enum StagedWrite {
+    Append(TableRef, Vec<DataFile>),
+    Replace(TableRef, Vec<DataFile>),
+}
+
 pub(crate) struct MemoryTx {
     pub(crate) rows: Arc<Mutex<Vec<Row>>>,
     pub(crate) notify: Arc<Notify>,
@@ -22,8 +30,7 @@ pub(crate) struct MemoryTx {
     pub(crate) staged: Vec<(Uuid, NewJob)>,
     pub(crate) staged_events: Vec<LineageEvent>,
     pub(crate) staged_tables: Vec<(TableRef, Vec<ColumnSpec>)>,
-    pub(crate) staged_files: Vec<(TableRef, Vec<DataFile>)>,
-    pub(crate) staged_replacements: Vec<(TableRef, Vec<DataFile>)>,
+    pub(crate) staged_writes: Vec<StagedWrite>,
     pub(crate) staged_compactions: Vec<(TableRef, Vec<String>, Vec<DataFile>)>,
 }
 
@@ -115,47 +122,48 @@ impl Tx for MemoryTx {
                 cat.columns.insert(key, cols);
             }
 
-            // Apply staged file appends.
-            for (table, files) in self.staged_files {
-                let key = table.clone();
-                let s = cat.new_snapshot();
-                last_snapshot = Some(s);
-                for file in files {
-                    cat.files.entry(key.clone()).or_default().push(Versioned {
-                        begin: s,
-                        end: None,
-                        val: FileRef {
-                            path: file.path,
-                            record_count: file.record_count,
-                            file_size_bytes: file.file_size_bytes,
-                        },
-                    });
-                }
-            }
-
-            // Apply staged file replacements: expire the table's live files at a new
-            // snapshot, then add the replacements live at that snapshot.
-            for (table, files) in self.staged_replacements {
-                let key = table.clone();
-                let s = cat.new_snapshot();
-                last_snapshot = Some(s);
-                if let Some(existing) = cat.files.get_mut(&key) {
-                    for f in existing.iter_mut() {
-                        if f.end.is_none() {
-                            f.end = Some(s);
+            // --- catalog file writes, replayed in STAGING order (matches the
+            // postgres IcebergTx: a replace end-caps only files live before
+            // it in the log; a later append stays live) ---
+            for write in self.staged_writes {
+                match write {
+                    StagedWrite::Append(table, files) => {
+                        let s = cat.new_snapshot();
+                        last_snapshot = Some(s);
+                        for file in files {
+                            cat.files.entry(table.clone()).or_default().push(Versioned {
+                                begin: s,
+                                end: None,
+                                val: FileRef {
+                                    path: file.path,
+                                    record_count: file.record_count,
+                                    file_size_bytes: file.file_size_bytes,
+                                },
+                            });
                         }
                     }
-                }
-                for file in files {
-                    cat.files.entry(key.clone()).or_default().push(Versioned {
-                        begin: s,
-                        end: None,
-                        val: FileRef {
-                            path: file.path,
-                            record_count: file.record_count,
-                            file_size_bytes: file.file_size_bytes,
-                        },
-                    });
+                    StagedWrite::Replace(table, files) => {
+                        let s = cat.new_snapshot();
+                        last_snapshot = Some(s);
+                        if let Some(existing) = cat.files.get_mut(&table) {
+                            for f in existing.iter_mut() {
+                                if f.end.is_none() {
+                                    f.end = Some(s);
+                                }
+                            }
+                        }
+                        for file in files {
+                            cat.files.entry(table.clone()).or_default().push(Versioned {
+                                begin: s,
+                                end: None,
+                                val: FileRef {
+                                    path: file.path,
+                                    record_count: file.record_count,
+                                    file_size_bytes: file.file_size_bytes,
+                                },
+                            });
+                        }
+                    }
                 }
             }
 
@@ -219,13 +227,14 @@ impl Tx for MemoryTx {
     }
 
     async fn append_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
-        self.staged_files.push((table.clone(), files.to_vec()));
+        self.staged_writes
+            .push(StagedWrite::Append(table.clone(), files.to_vec()));
         Ok(())
     }
 
     async fn replace_files(&mut self, table: &TableRef, files: &[DataFile]) -> Result<()> {
-        self.staged_replacements
-            .push((table.clone(), files.to_vec()));
+        self.staged_writes
+            .push(StagedWrite::Replace(table.clone(), files.to_vec()));
         Ok(())
     }
 

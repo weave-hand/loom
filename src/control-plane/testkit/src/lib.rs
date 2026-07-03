@@ -3287,6 +3287,76 @@ where
     assert_eq!(back.items[0].path, "a.parquet");
 }
 
+/// Contract: staged writes replay in STAGING ORDER within one `Tx`. A
+/// `replace_files` end-caps only what is live before it in the log, so a
+/// replace staged BEFORE an append leaves the append's files live — postgres
+/// `IcebergTx` semantics, which the memory fake must match. `cp` must be
+/// freshly empty.
+pub async fn snapshot_write_order_contract<C: control_plane_core::ControlPlane>(cp: &C) {
+    use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
+    let t = TableRef {
+        schema: "main".into(),
+        name: "write_order".into(),
+    };
+    let file = |path: &str, rows: i64| DataFile {
+        path: path.into(),
+        path_is_relative: true,
+        file_format: FileFormat::Parquet,
+        record_count: rows,
+        file_size_bytes: rows * 16,
+        column_stats: vec![],
+        parquet_footer_size: Some(10),
+    };
+    let cols = vec![ColumnSpec {
+        name: "id".into(),
+        ty: "long".into(),
+        nullable: false,
+    }];
+
+    // Seed: create + append f0.
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(&t, &cols).await.unwrap();
+    tx.append_files(&t, &[file("f0.parquet", 1)]).await.unwrap();
+    let s1 = tx.commit().await.unwrap().expect("seed snapshot");
+
+    // One tx: REPLACE with r.parquet, THEN APPEND a.parquet.
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(&t, &cols).await.unwrap(); // idempotent; IcebergTx resolves columns in-tx
+    tx.replace_files(&t, &[file("r.parquet", 2)]).await.unwrap();
+    tx.append_files(&t, &[file("a.parquet", 3)]).await.unwrap();
+    let s2 = tx.commit().await.unwrap().expect("write snapshot");
+
+    let mut live: Vec<String> = cp
+        .catalog()
+        .files(&t, s2, PageReq::unbounded())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    live.sort();
+    assert_eq!(
+        live,
+        vec!["a.parquet".to_string(), "r.parquet".to_string()],
+        "replace-then-append: the append (staged AFTER the replace) stays live"
+    );
+
+    // f0 was live before the replace -> end-capped; time travel still sees it.
+    let back: Vec<String> = cp
+        .catalog()
+        .files(&t, s1, PageReq::unbounded())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(
+        back,
+        vec!["f0.parquet".to_string()],
+        "prior snapshot time-travels"
+    );
+}
+
 /// Contract for `Tx::compact_files` (selective compaction). Append three files, then
 /// compact two of them into one: the current snapshot lists the untouched file plus the
 /// coalesced one (the two compacted files expired), the total record_count is preserved,

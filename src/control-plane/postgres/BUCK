@@ -574,6 +574,7 @@ loom_fixture_test(
     deps = [
         ":postgres",
         "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
         "//third-party:iceberg",
         "//third-party:tempfile",
         "//third-party:tokio",

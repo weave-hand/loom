@@ -1851,7 +1851,7 @@ not on postgres). Contract first, proven green on postgres.
   gains the testkit dep)
 - Modify: `src/control-plane/memory/src/transaction.rs`
 
-- [ ] **Step 1: Add the contract** (beside `snapshot_replace_contract`; note
+- [x] **Step 1: Add the contract** (beside `snapshot_replace_contract`; note
   it reads through `cp.catalog()` so it runs against BOTH
   `IcebergControlPlane` and `MemoryControlPlane`):
 
@@ -1923,7 +1923,7 @@ pub async fn snapshot_write_order_contract<C: control_plane_core::ControlPlane>(
 }
 ```
 
-- [ ] **Step 2: Wire postgres FIRST — must be GREEN (authority check).**
+- [x] **Step 2: Wire postgres FIRST — must be GREEN (authority check).**
   Append to `postgres/tests/iceberg_control_plane.rs` (reusing its
   `iceberg_cp` fixture helper):
 
@@ -1947,7 +1947,7 @@ buck2 test //src/control-plane/postgres:iceberg-control-plane -j 8 \
 Expected: `Fail 0`. **If this is red, STOP** — the divergence claim is
 inverted; re-verify `IcebergTx::commit`'s replay before touching memory.
 
-- [ ] **Step 3: Wire memory — expect RED.** Append to
+- [x] **Step 3: Wire memory — expect RED.** Append to
   `memory/tests/snapshot.rs`:
 
 ```rust
@@ -1966,7 +1966,7 @@ buck2 test //src/control-plane/memory:snapshot > /tmp/t11red.log 2>&1; \
 Expected: exactly ONE fail (the new test — memory applies appends before
 replacements, so `a.parquet` gets end-capped).
 
-- [ ] **Step 4: Restructure `MemoryTx`.** In `memory/src/transaction.rs`:
+- [x] **Step 4: Restructure `MemoryTx`.** In `memory/src/transaction.rs`:
 
 ```rust
 /// One staged catalog file write, in STAGING ORDER. Mirrors the postgres
@@ -2055,7 +2055,7 @@ compactions after all file writes), the `staged_any` notify. Update the
 `staged_any` computation if it referenced the deleted fields (it references
 `self.staged` — the queue — only; leave it).
 
-- [ ] **Step 5: Run — memory contract now GREEN; full memory + postgres tx
+- [x] **Step 5: Run — memory contract now GREEN; full memory + postgres tx
   suites green**
 
 ```bash
@@ -2063,7 +2063,7 @@ buck2 test //src/control-plane/memory: //src/control-plane/postgres:iceberg-cont
   > /tmp/t11.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t11.log
 ```
 
-- [ ] **Step 6: prek + commit**
+- [x] **Step 6: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek11.log 2>&1; grep -E "Failed" /tmp/prek11.log || echo CLEAN
