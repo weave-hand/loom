@@ -1,6 +1,6 @@
 # Vector-Key Codec Homogeneity Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make mixed `VectorKey` kinds a loud `Validation` error at build and stray trailing bytes a loud decode error, so the LVIX identity block can never silently corrupt.
 
@@ -29,7 +29,7 @@
 - Consumes: `pack_rows(dim, rows) -> Result<(Vec<VectorKey>, Vec<f32>)>` (existing, `pub(super)`).
 - Produces: same signature; new error `Validation("mixed identity key kinds: all index keys must be Int or all Str")`.
 
-- [ ] **Step 1: Write the failing tests** — append to `tests/vector_index.rs`:
+- [x] **Step 1: Write the failing tests** — append to `tests/vector_index.rs`:
 
 ```rust
 #[test]
@@ -57,12 +57,12 @@ fn mixed_key_kinds_rejected_at_build() {
 
 (Signatures verified: `FlatIndex::build(dim, metric, rows)`, `IvfFlatIndex::build(dim, metric, rows, nlist: Option<u32>)`, `HnswIndex::build(dim, metric, rows, m: Option<u32>, ef_construction: Option<u32>)`; `decode(bytes) -> Result<Box<dyn VectorIndex>>` and trait `serialize()` are re-exported via `control_plane_core::{decode, ...}` — the file convention is per-test LOCAL `use` blocks — e.g. `use control_plane_core::{IndexKind, decode};` at :259 and `use control_plane_core::{ControlPlaneError, ...};` at :622 — add `ControlPlaneError` (Task 1) and `decode` (Task 2) that way; both are re-exported at the crate root.)
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `buck2 test //src/control-plane/core:vector-index > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
 Expected: FAIL — all three builds return `Ok` today.
 
-- [ ] **Step 3: Implement** — in `pack_rows`, after the `dim` binding:
+- [x] **Step 3: Implement** — in `pack_rows`, after the `dim` binding:
 
 ```rust
     let expected_kind = rows.first().map(|(k, _)| std::mem::discriminant(k));
@@ -78,7 +78,7 @@ Expected: FAIL — all three builds return `Ok` today.
 
 (Restructure the existing loop accordingly; `expected_kind` computed once before it.) Update `pack_rows`'s doc comment to name both validations, and rewrite `write_keys`'s comment ("All vectors share one key_kind…") to cite the enforced `pack_rows` invariant rather than describing a hope.
 
-- [ ] **Step 4: Run to verify pass + goldens green**
+- [x] **Step 4: Run to verify pass + goldens green**
 
 Run: `buck2 test //src/control-plane/core:vector-index //src/control-plane/core:vector-index-codec > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t2.log`
 Expected: PASS, 0 failures (goldens byte-identical).
