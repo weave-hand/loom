@@ -8,6 +8,11 @@ only (resolved defects are recorded in git history, and the shipped behaviour in
 [`FUTURE.md`](FUTURE.md); committed work in [`ROADMAP.md`](ROADMAP.md). Grammar:
 `docs/superpowers/specs/2026-06-20-docs-registers-consolidation-design.md`.
 
+## ontology
+
+- [ ] **A multi-step action's response returns only the first step's object** `{#iss-multi-object-action-response area:ontology status:open from:2026-07-01-action-multi-object-design pr:- spec:-}`
+  `run_multi_step` (`#road-action-multi-object`, #343) commits every step's write atomically and its `LineageEvent.outputs` lists every step's target, but the HTTP action response (`ObjectRows`) carries only the **first** step's affected object — a caller invoking `createOrderWithLines` gets back the `Order`, not the `LineItem`s. The created child objects are readable via a subsequent governed read (and lineage records the whole graph), so this is an ergonomic gap, not a correctness one; the fix is a multi-object response envelope (all steps' affected rows keyed by bind/target) that the `post_action` handler serializes. Deferred as no caller yet needs the children inline.
+
 ## query
 
 - [ ] **/search can serve superseded or tombstoned cold hits after an inline-shadow mutation** `{#iss-search-cold-superseded-hits area:query status:open from:2026-07-03-overwrite-vector-rebuild-design pr:- spec:-}`
