@@ -228,8 +228,10 @@ definitions without a restart (#270).
   public) generated OpenAPI catalog.
 - `#fut-ingest-ontology-openapi` — ontology-derived land operations in ingest's
   OpenAPI document.
-- `#fut-openapi-per-type-insert-route` — make the generated insert operation
-  reference the actually-callable action route.
+- `#road-api-docs-coverage` — make the generated insert operation reference the
+  actually-callable action route (promoted from `#fut-openapi-per-type-insert-route`),
+  group generated ops per type, and document the runtime `/auth/*` + `/admin/*`
+  routes.
 - `#fut-python-bindings` — Python bindings for loom.
 - `#fut-codehealth-reflect` — a routine mining remediation-PR outcomes and
   register trends for higher-level patterns.
