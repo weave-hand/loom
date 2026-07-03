@@ -1,50 +1,63 @@
 # Transform capabilities
 
 This document describes what the transform subsystem of loom can do today: the
-queue-driven derivation pillar that reads committed table snapshots with
-DataFusion, runs SQL (physical table-to-table or typed, in the ontology's
-vocabulary), and commits the result as a new snapshot plus lineage, atomically.
-It covers the transform service (`src/services/transform/`), the shared
-`datafusion-io` read/write layer it is built on, and the two worker execution
-models (the pool-owning transform binary and the zero-pool gRPC/Flight worker
-in `src/services/worker/`), with guarantees, limits, and key decisions.
+queue-driven derivation pillar that reads committed table snapshots over the
+engine wire, runs SQL with DataFusion (physical table-to-table or typed, in the
+ontology's vocabulary), and commits the result as a new snapshot plus lineage,
+atomically. Transforms execute on the **zero-pool worker**
+(`src/services/worker/src/transform.rs`) — the worker holds no Postgres pool
+and no Iceberg catalog; inputs stream over Arrow Flight and the commit goes
+through a single `EngineControl::CommitTransform` RPC. The former pool-owning
+transform service (`src/services/transform/`) has been deleted (#342). The
+shared payload/conformance types live in `control_plane_core`
+(`transform_job.rs`, `conform.rs`) and the read/write compute layer is
+`datafusion-io`.
 
-_As of 4861433b._
+_As of d54063e6._
 
 ## Queue-driven SQL transforms
 
-The load-bearing primitive is `run_transform`
-(`src/services/transform/src/run.rs`): a job names input table(s), an output
-table, and a SQL query; a worker resolves each input's current snapshot, has
-DataFusion read its Parquet files (`datafusion_io::scan_table` registers the
-file set as a listing table on the loom object store), runs the SQL, writes the
-result, and commits — in one transaction — the output table (idempotently
-created), the new data files, and a lineage event recording inputs → output
-(#57). Multi-input joins are supported; each input is registered in DataFusion
-under a caller-chosen name (`TransformInput.register_as` — the table name on
-the physical path), and two inputs claiming the same SQL name is a
-deterministic `AmbiguousInput` error. The end-to-end guarantee is atomicity:
-either the snapshot, its files, and its lineage all commit, or nothing does.
+The load-bearing primitive is the worker's `run_wire_transform`
+(`src/services/worker/src/transform.rs`): a `transform` job
+(`control_plane_core::TransformJob` — inputs, output, SQL, optional
+`output_mode`) names input table(s), an output table, and a SQL query. The
+handler resolves each input over the wire with `ListFiles` — whose response
+carries the table's declared schema as `columns_json` (absent ⟺ the table does
+not exist, the unknown-input discriminator) — streams each non-empty input's
+live file set over Arrow Flight (`FlightTicket`), and registers the batches in
+a fresh DataFusion `SessionContext` (`datafusion_io::register_batches`) under a
+caller-chosen name (the table name on the physical path); two inputs claiming
+the same SQL name is a deterministic `AmbiguousInput` abandon, checked before
+any RPC. It runs the SQL, writes the result via the shared
+`datafusion_io::write_dataset` path, and commits — in one transaction on the
+engine side — the output table (idempotently created), the new data files, and
+a lineage event recording inputs → output with the SQL in the payload (#57,
+#342). Multi-input joins are supported. The end-to-end guarantee is
+atomicity: either the snapshot, its files, and its lineage all commit, or
+nothing does.
 
-Errors are classified by the handler into a retry taxonomy: deterministic
-failures (malformed payload, SQL errors, unknown or ambiguous input,
-schema-inference failure, conformance violations) abandon the job; transient
-failures (control-plane/DB errors, object-store IO, scan/write faults) retry
-with a capped exponential backoff derived from the job's attempt count. A
-panicking handler is backstopped by the worker loop's `catch_unwind` and
-abandoned.
+Errors are classified into the retry taxonomy: deterministic failures
+(malformed payload, unknown or ambiguous input, SQL/planning errors,
+schema-inference failure, registration errors, conformance violations, a
+commit that produces no snapshot) abandon the job; transient failures (wire
+RPC errors, Flight fetch races against compaction, object-store write faults)
+retry with `WorkerTuning::backoff` — the same capped exponential every other
+worker job uses, closing the old per-handler backoff drift (the old crate's
+`2^attempts`s formula, 64s cap; `#fut-transform-backoff-unify`, resolved by
+#342). A mid-handler drop race
+(an input vanishing between existence check and file read) surfaces as a
+transient wire error whose retry re-lists cleanly and converges to the
+unknown-input abandon. A panicking handler is backstopped by the worker loop's
+`catch_unwind` and abandoned.
 
-Two input-resolution edge cases were fixed after the first slice (#147): a
-missing input surfacing at `Catalog::files` (rather than `current_snapshot`)
-is now mapped to `UnknownInput` → abandon at every input read, instead of
-retrying a permanently-absent table forever; and an input table with zero
-files at its snapshot is registered as an **empty relation** with the table's
-declared schema (`logical_arrow_schema` + `register_empty_table`), so the SQL
-runs over an empty input — `SELECT count(*)` yields `0`, `SELECT *` commits an
-empty output — rather than failing inside DataFusion's schema inference. The
-empty-input schema covers exactly the canonical scalar set the transform
-read/write path round-trips (boolean, integer, long, double, string); anything
-else is a deterministic `Unsupported` → abandon.
+An input table with zero files registers as an **empty relation** with the
+table's declared schema (`ListFilesResponse.columns_json` →
+`logical_arrow_schema` + `register_empty_table`), so the SQL runs over an
+empty input — `SELECT count(*)` yields `0`, `SELECT *` commits an empty
+output — rather than failing inside DataFusion's schema inference (#147,
+carried onto the wire path by #342). The empty-input schema covers exactly
+the canonical scalar set the transform read/write path round-trips (boolean,
+integer, long, double, string); anything else is a deterministic abandon.
 
 By design, a transform reads **raw** tables and bypasses ACL/ontology — it is
 trusted pipeline code; governance reapplies when the output is read through
@@ -52,103 +65,94 @@ query-api. Who may author or enqueue a transform is not yet governed.
 
 ## Typed transforms (Type(s) → Type)
 
-`run_typed_transform` (`src/services/transform/src/typed.rs`) is the
-Object-Model layer over the same orchestration (#59): a `typed-transform` job
-names input ontology **types**, one output **type**, and SQL written in type
-terms. The worker resolves each input type to its backing table and registers
-it in DataFusion under the **type name** (so SQL reads
+`handle_typed_transform` (same module) is the Object-Model layer over the same
+orchestration (#59, #342): a `typed-transform` job
+(`control_plane_core::TypedTransformJob`) names input ontology **types**, one
+output **type**, and SQL written in type terms. The worker resolves each input
+type to its backing table over the wire (`gov_resolve`) and fetches the output
+type's contract (`gov_get_type`) — a gRPC `NotFound` from either is
+deterministic (unknown type → abandon), not retried. Inputs register in
+DataFusion under the **type name** (so SQL reads
 `SELECT ... FROM Customer JOIN "Order" ...` — no physical names leak into
-authored SQL), runs the SQL, and validates the result against the output
-type's property contract **before anything is written**.
+authored SQL), and the result is validated against the output type's property
+contract **before any rows are collected or written**.
 
-Conformance is exact-match (`transform::conform`): every property must have a
-same-named result column whose inferred physical type satisfies its logical
-type, a `required` property's column must be non-nullable, and no extra
-columns are allowed — all violations are collected, never short-circuited. A
-violation is `DoesNotConform` → abandon, with no write and no transaction, so
-every committed run is a faithful, append-compatible materialization of the
-Object Model it claims to produce. The output type must pre-exist
-(`define_type`); its backing table need not — the idempotent `create_table`
-brings it into being on first run. Type authoring is deliberately a separate
-action, not folded into the transform.
+Conformance is exact-match (`control_plane_core::check_conformance`): every
+property must have a same-named result column whose inferred physical type
+satisfies its logical type, a `required` property's column must be
+non-nullable, and no extra columns are allowed — all violations are collected,
+never short-circuited. A violation abandons the job with no write and no
+transaction, so every committed run is a faithful, append-compatible
+materialization of the Object Model it claims to produce. The output type must
+pre-exist (`define_type`); its backing table need not — the idempotent
+`create_table` brings it into being on first run. Type authoring is
+deliberately a separate action, not folded into the transform.
 
 Typed transforms emit **type-named lineage**: the event's inputs/outputs are
 `DatasetRef`s in the dedicated `loom:type` namespace (core's `TypeId`,
 parallel to `DatasetId`), so provenance nodes are the ontology types themselves
 and `upstream(OrderEnriched)` returns `{Customer, Order}`. The resolved
 backing-table refs and the SQL ride in the event payload so the type→table
-linkage stays traceable. Scope limits: one output type per job (multi-output
-is a follow-on), SQL authoring only.
+linkage stays traceable — byte-identical to the pre-migration payload shape.
+Scope limits: one output type per job (multi-output is a follow-on), SQL
+authoring only.
 
-## Output writing and tuning
+## Output writing and commit
 
 Transform output goes through the shared `datafusion_io::write_dataset` path:
 result batches are size-estimate repartitioned and written as N Snappy Parquet
-files with per-file stats, under a caller-unique run prefix. Two output modes
-exist on both the physical and typed paths, selected by an optional
-`output_mode` payload field:
+files with per-file stats, under a caller-unique run prefix, then absolutized
+against the worker's write-store root (`absolute_data_files`) so the committed
+mirror paths match what the serving engine resolves. The commit is one
+`EngineControl::CommitTransform` RPC mirroring `CompactTable`'s conventions
+(#342): the engine decodes the inferred output columns, the written
+`DataFile`s, and the `LineageWire` envelope (decode errors are
+`invalid_argument`), then runs the same staged transaction the old binary ran
+locally — `create_table` + `append_files`/`replace_files` + `emit` + `commit`
+through an `IcebergControlPlane` — mapping `Conflict` to `aborted` and the
+rest per the standard status mapping.
+
+Two output modes exist on both the physical and typed paths, selected by an
+optional `output_mode` payload field:
 
 - **Append** (the default — absent field means append, so pre-existing job
   payloads are unaffected): each run's files are added to the output table and
   re-runs accumulate.
 - **Overwrite**: the result becomes the table's entire live contents, via the
-  `Tx::replace_files` staging primitive — the currently-live files are expired
-  at the new snapshot (older snapshots still time-travel to the prior
+  `TableTx::replace_files` staging primitive — the currently-live files are
+  expired at the new snapshot (older snapshots still time-travel to the prior
   contents), table-level stats are reset to the new files rather than
   accumulated, and row-ids are never reused. On a brand-new output table,
   overwrite degenerates to create+write. A given table is either appended or
   replaced in one transaction, never both. Overwrite replaces data, not
-  schema; compaction and watermark-incremental output were deliberately
-  deferred (compaction has since shipped separately, on the worker path).
+  schema.
 
-Write tuning is uniform with the rest of the tree (#242): the transform binary
-composes `datafusion_io::WriteConfig` (target file bytes / max files /
-compression factor) from defaults < config file < `LOOM_WRITE_*` env, validates
-it at startup (a malformed value fails startup rather than silently falling
-back), and threads it through both handlers into `run_transform`'s
-`write_dataset` call — closing the earlier hole where the knobs were composed
-at startup but transform output was silently written with hardcoded defaults.
-With no `LOOM_WRITE_*` set, behavior equals the previous defaults.
+Write tuning is uniform with the rest of the tree (#242): the worker composes
+`datafusion_io::WriteConfig` (target file bytes / max files / compression
+factor) from defaults < config file < `LOOM_WRITE_*` env via the shared
+`JobConfig`, validates it at startup (a malformed value fails startup rather
+than silently falling back), and threads it through both transform handlers.
 
 ## Worker execution model
 
-Two execution models coexist, and the direction between them is settled.
-
-The **transform binary** (`src/services/transform/src/main.rs`) is
-queue-driven with no HTTP surface: it builds the control plane and object
-store from env config via `service_runtime`, then runs the generic
-`control_plane_worker::Worker` loop over the `transform` and `typed-transform`
-job kinds, dispatching by kind to the two handlers. The queue is dequeued
-through the Postgres control plane; the handlers commit output through an
-`IcebergControlPlane` so derived snapshots land in the Iceberg mirror, with
-data-file paths absolutized against the write store's warehouse root so the
-committed mirror paths match what the serving engine resolves. Its Iceberg
-catalog is built through the shared `service_runtime::build_storage_factory`,
-fixing an earlier defect where it hardcoded a local-filesystem factory and
-ignored the object-store config entirely — the binary could not commit to an
-S3 warehouse even though every other writer could (#328). The same sweep
-deleted the superseded in-transform `compact_table` path, hoisted the
-duplicated worker/transform config into the shared `JobConfig`, and moved
-`small_files` into core so the zero-pool worker carries no transform
-dependency (#328).
-
-The **zero-pool worker** (`src/services/worker/`) is the newer model and the
-recorded direction: the engine owns Postgres; the worker has **no Postgres in
-its dependency closure**. It connects to the engine over a UDS, runs the same
-generic worker loop against a gRPC queue client, and drains `flush_table`,
-`gc_table`, `compact_table`, and `build_vector_index` jobs. The single-RPC
-jobs share one shape (`run_wire_job`: parse the typed payload — parse error
-abandons; run one RPC — RPC error retries with the tuning's backoff).
-Compaction is the full pattern for engine-wire compute: list the table's live
-files over gRPC, pick the small ones, stream their bytes over Arrow Flight
-(the bulk data plane), rewrite them coalesced to the object store, and commit
-the swap through the engine's `CompactTable` RPC — zero direct catalog access.
-Worker config parsing is strict: a malformed `LOOM_COMPACT_THRESHOLD_BYTES`
-(or any tuning knob) fails startup instead of silently falling back to the
-default (#202). The transform binary is now the last pool-owning compute
-worker; migrating `run_transform`-shaped jobs onto the zero-pool worker is a
-tracked follow-on (below), and until then the standing rule is that **no new
-direct-PG job handlers** are added.
+There is one execution model: the **zero-pool worker** (`src/services/worker/`)
+— the engine owns Postgres; the worker has **no Postgres in its dependency
+closure** (a structural invariant pinned by the worker BUCK layout). It
+connects to the engine over a UDS, runs the generic `control_plane_worker`
+loop against a gRPC queue client, and drains `flush_table`, `gc_table`,
+`compact_table`, `build_vector_index`, `transform`, and `typed-transform`
+jobs. The single-RPC jobs share one shape (`run_wire_job`); compaction and
+transforms are the full engine-wire compute pattern: list live files over
+gRPC, stream bytes over Arrow Flight (the bulk data plane), compute locally
+(coalesce for compaction, DataFusion SQL for transforms), rewrite to the
+object store, and commit the result through a single engine RPC
+(`CompactTable` / `CommitTransform`) — zero direct catalog access (#342).
+Worker config parsing is strict: a malformed tuning knob fails startup instead
+of silently falling back to the default (#202). Job payloads and kind strings
+were wire-frozen across the migration, so jobs queued against the old binary
+were executable by either binary during cutover. Transform inputs are
+collected in worker memory like compaction's (streaming input scans are a
+recorded follow-up under `#fut-transform-followups`).
 
 ## Known gaps
 
@@ -157,17 +161,12 @@ direct-PG job handlers** are added.
 - `#fut-transform-authoring-auth` — transforms run as trusted pipeline code;
   authoring/enqueue authorization is ungoverned.
 - `#fut-transform-followups` — watermark/incremental output, DAG /
-  transactional enqueue-downstream, optional Ballista escalation.
+  transactional enqueue-downstream, optional Ballista escalation, streaming
+  input scans for the wire path.
 - `#fut-datafusion-type-coverage` — only the canonical scalar set round-trips;
   timestamps, dates, decimals, and small/unsigned ints abandon the job.
 - `#fut-scheduled-jobs` — no cron-like scheduled transforms; jobs are
   enqueue-driven only.
-- `#road-transform-wire-migration` — migrate transform jobs onto the zero-pool
-  worker (inputs over Flight, commit via an `EngineControl::CommitTransform`
-  RPC), retiring the last pool-owning worker.
-- `#fut-transform-backoff-unify` — the transform handler keeps its own retry
-  backoff formula instead of `WorkerTuning::backoff`; unifying changes retry
-  timing and needs its own decision.
 - `#fut-worker-lazy-compact-ctx` — the zero-pool worker builds its compaction
   context eagerly, so even a flush-only worker requires warehouse config and a
   reachable Flight endpoint at startup.

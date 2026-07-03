@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use control_plane_core::{FileRef, TableRef};
 use datafusion::common::TableReference;
@@ -53,8 +54,9 @@ pub async fn scan_table(
     // promoted by `absolute_data_files`: `file://…`/`s3://bucket/…`). `FileRef` drops
     // the authoritative `path_is_relative` flag on read-back, so infer from the path
     // string: a `"://"` marks an absolute URI. Register each distinct object store once.
-    // (`scan_table` is never called with an empty `files` slice — both callers guard it
-    // — so registering inside the loop loses no store the old unconditional register did.)
+    // (Callers must not pass an empty `files` slice — an empty input registers via
+    // `register_empty_table` instead — so registering inside the loop loses no store the
+    // old unconditional register did.)
     let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut paths: Vec<ListingTableUrl> = Vec::with_capacity(files.len());
     for f in files {
@@ -115,10 +117,21 @@ pub fn register_empty_table(
     name: &str,
     schema: SchemaRef,
 ) -> Result<(), ScanError> {
-    // One partition holding zero batches — `MemTable::try_new` rejects an empty
-    // partition list ("No partitions provided"), so the empty relation is a single
-    // empty partition, not zero partitions.
-    let provider = MemTable::try_new(schema, vec![vec![]])?;
+    register_batches(ctx, name, schema, Vec::new())
+}
+
+/// Register in-memory `batches` as table `name` (a `MemTable`). All batches must
+/// share `schema`. Sibling of `register_empty_table`, which is the zero-batch case.
+pub fn register_batches(
+    ctx: &SessionContext,
+    name: &str,
+    schema: SchemaRef,
+    batches: Vec<RecordBatch>,
+) -> Result<(), ScanError> {
+    // One partition holding the batches — `MemTable::try_new` rejects an empty
+    // partition list ("No partitions provided"), so even a zero-batch relation is a
+    // single empty partition, not zero partitions.
+    let provider = MemTable::try_new(schema, vec![batches])?;
     ctx.register_table(TableReference::bare(name), Arc::new(provider))?;
     Ok(())
 }

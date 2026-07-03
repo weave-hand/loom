@@ -163,8 +163,14 @@ regression test (#134).
 The engine exposes a typed gRPC `EngineControl` surface on its UDS —
 queue ops (`Dequeue`/`Complete`/`Fail`/`Heartbeat`/`AwaitJobs`, the last a
 NOTIFY-bridged long-poll) plus maintenance and write RPCs (`FlushTable`,
-`CompactTable`, `GcTable`, `WriteObject`, `OverwriteTable`) — consumed by
-zero-pool workers via `GrpcQueueClient` (#108). Bulk file data moves over an
+`CompactTable`, `GcTable`, `WriteObject`, `OverwriteTable`, and
+`CommitTransform` — the transform commit, mirroring `CompactTable`'s
+conventions, which stages create+append/replace+lineage in one engine-side
+transaction (#342)) — consumed by zero-pool workers via `GrpcQueueClient`
+(#108). `ListFiles` responses carry the table's declared schema as
+`columns_json` (absent ⟺ the table does not exist), so a wire consumer can
+register a zero-file table as an empty relation and distinguish it from an
+unknown table (#342). Bulk file data moves over an
 **Arrow Flight data plane** on the same socket: a `FlightTicket
 {schema, name, files}` streams a named file set as schema-first Arrow IPC, so
 a compaction worker streams exactly the small files it will coalesce, rewrites
@@ -227,9 +233,13 @@ fixture round-trip that lands and reads a table with `s3://` mirror paths
 (#182). Paths are opaque URLs end to end. Two path defects on transform
 chains were fixed: `write_dataset` output is absolutized at write time via
 `absolute_data_files` so relative paths can never reach the mirror, and
-`scan_table` is scheme-aware — an absolute `FileRef` path is used verbatim
-with its derived object store registered, sharing one `object_store_url_for`
-resolver with the serving engine (#245).
+`scan_table` was made scheme-aware — an absolute `FileRef` path used
+verbatim with its derived object store registered, sharing one
+`object_store_url_for` resolver with the serving engine (#245). With
+transforms on the engine wire, `scan_table` no longer sits on a production
+path — the wire path registers Flight-fetched batches via `register_batches`
+— so it survives as datafusion-io's tested read helper, while
+`object_store_url_for` remains the resolver the serving engine shares.
 
 ## GC
 

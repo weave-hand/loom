@@ -129,6 +129,36 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "transform-wire",
+    crate = "transform_wire",
+    srcs = ["tests/transform_wire.rs"],
+    crate_root = "tests/transform_wire.rs",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/datafusion-io:datafusion-io",
+        "//src/services/engine-serving:engine-serving",
+        "//src/services/engine-wire:engine-wire",
+        "//src/services/store-config:store-config",
+        "//third-party:arrow",
+        "//third-party:hyper-util",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:tower",
+        "//third-party:uuid",
+    ],
+)
+
 rust_test(
     name = "engine-tuning",
     crate = "engine_tuning",

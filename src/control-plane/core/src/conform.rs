@@ -3,7 +3,7 @@
 //! validation but ALSO rejects extra columns — a typed transform materializes the
 //! table, it is not a view over a wider one.
 
-use control_plane_core::{ColumnSpec, PropertyDef, UnknownLogicalType, satisfies};
+use crate::{ColumnSpec, PropertyDef, UnknownLogicalType, satisfies};
 
 /// One way a result schema fails to conform to the output type. Collected, not fatal.
 #[derive(Debug, Clone, PartialEq, Eq)]

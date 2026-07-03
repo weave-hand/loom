@@ -4,7 +4,9 @@ use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use control_plane_core::{FileRef, TableRef};
 use datafusion::execution::context::SessionContext;
-use datafusion_io::{WriteConfig, register_empty_table, scan_table, write_dataset};
+use datafusion_io::{
+    WriteConfig, register_batches, register_empty_table, scan_table, write_dataset,
+};
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
 
@@ -96,4 +98,53 @@ async fn register_empty_table_runs_sql_over_zero_rows() {
     let out = star.collect().await.unwrap();
     let data_rows: usize = out.iter().map(|b| b.num_rows()).sum();
     assert_eq!(data_rows, 0, "the relation is empty");
+}
+
+#[tokio::test]
+async fn register_batches_serves_rows_for_sql() {
+    let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let b1 =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
+    let b2 =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![3]))]).unwrap();
+    let ctx = SessionContext::new();
+    register_batches(&ctx, "input", schema, vec![b1, b2]).unwrap();
+
+    let df = ctx
+        .sql("SELECT count(*) AS n, sum(id) AS s FROM input")
+        .await
+        .unwrap();
+    let rows = df.collect().await.unwrap();
+    assert_eq!(rows.len(), 1, "one result batch");
+    let n = rows[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap()
+        .value(0);
+    let s = rows[0]
+        .column(1)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(n, 3, "count(*) sees all rows across both batches");
+    assert_eq!(s, 6, "sum(id) aggregates across both batches");
+}
+
+#[tokio::test]
+async fn register_batches_empty_matches_register_empty_table() {
+    let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let ctx = SessionContext::new();
+    register_batches(&ctx, "input", schema, Vec::new()).unwrap();
+
+    let df = ctx.sql("SELECT count(*) AS n FROM input").await.unwrap();
+    let rows = df.collect().await.unwrap();
+    let n = rows[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(n, 0, "an empty batch vec registers an empty relation");
 }

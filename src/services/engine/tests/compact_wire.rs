@@ -163,7 +163,8 @@ async fn list_files_then_compact_over_the_wire() {
     let files = client
         .list_files("main".into(), "t".into())
         .await
-        .expect("list_files");
+        .expect("list_files")
+        .files;
     assert_eq!(files.len(), 2, "expected 2 files after landing two batches");
 
     let total_rows: i64 = files.iter().map(|f| f.record_count).sum();
@@ -192,7 +193,8 @@ async fn list_files_then_compact_over_the_wire() {
     let after = client
         .list_files("main".into(), "t".into())
         .await
-        .expect("list_files after compact");
+        .expect("list_files after compact")
+        .files;
     assert_eq!(after.len(), 1, "expected exactly 1 file after compaction");
     assert_eq!(after[0].record_count, 5, "coalesced file must have 5 rows");
 }

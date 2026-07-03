@@ -1,7 +1,6 @@
 //! Unit tests for the exact-match conformance check. Pure logic — no fixtures.
 
-use control_plane_core::{ColumnSpec, PropertyDef};
-use transform::conform::{Violation, check_conformance};
+use control_plane_core::{ColumnSpec, PropertyDef, Violation, check_conformance};
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
     PropertyDef {

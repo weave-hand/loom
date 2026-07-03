@@ -169,7 +169,7 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 - [ ] **Transform-authoring authorization** `{#fut-transform-authoring-auth area:transform status:deferred from:2026-06-14-transform-workers-part1-design pr:#57 spec:-}`
   Transforms read raw tables as trusted pipeline code; governing who may author/run a transform is future work.
 - [ ] **Transform follow-ups (incremental, DAG, Ballista, wider types)** `{#fut-transform-followups area:transform status:deferred from:roadmap-step3 pr:- spec:-}`
-  Watermark/incremental output, DAG/transactional enqueue-downstream, optional Ballista escalation, and a wider output type set (canonical scalars only today). See [[fut-datafusion-type-coverage]].
+  Watermark/incremental output, DAG/transactional enqueue-downstream, optional Ballista escalation, a wider output type set (canonical scalars only today), and streaming (non-materializing) input scans / scan pushdown for the wire path — transform inputs are collected in worker memory over Flight (bytes hop engine -> worker -> object store), accepted for the migration slice. See [[fut-datafusion-type-coverage]].
 - [ ] **Wider DataFusion/DuckLake type coverage** `{#fut-datafusion-type-coverage area:transform status:deferred from:cross-cutting pr:- spec:-}`
   `datafusion-io` supports only a canonical scalar set; other Arrow types (timestamps, dates, decimals, unsigned/8/16-bit ints) error `InferError::Unsupported` and the job Abandons. Extend as pipelines need it.
 - [ ] **Scheduled jobs** `{#fut-scheduled-jobs area:transform status:deferred from:to-be-planned pr:- spec:-}`
@@ -232,8 +232,6 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   The binaries ship as a minimal `serve` with no graceful shutdown/signal handling, no TLS, and no connection-pool tuning knobs.
 - [ ] **YAML config-file format** `{#fut-config-yaml-format area:deploy status:deferred from:2026-06-25-config-seam-unification-design pr:- spec:-}`
   `#road-config-seam-unification` loads the structured config file as JSON (`serde_json`, already vendored). Adding YAML authoring is purely additive (JSON ⊂ YAML) but needs a *maintained* YAML crate — the de-facto `serde_yaml` is archived upstream — so the crate choice is its own decision, deferred until a deployment actually wants to hand-author YAML ConfigMaps.
-- [ ] **Unify the transform-handler retry backoff onto WorkerTuning** `{#fut-transform-backoff-unify area:transform status:deferred from:2026-06-25-config-seam-unification-design pr:- spec:-}`
-  The worker handler + compaction retry now source their capped-exponential backoff from `loom_config::WorkerTuning` (`LOOM_WORKER_BACKOFF_*`), but `transform/src/handler.rs` keeps its own `Duration::from_secs(2u64.saturating_pow(...))` formula (a 2s base, no explicit ceiling) so the two sites still drift. Folding transform onto `WorkerTuning::backoff` was deliberately deferred from `#road-config-seam-unification` because it would change transform's retry timing (1s base + 60s cap vs today's 2s base / 128s), violating that slice's "no default-value behavior change" — it needs its own behavior-change decision.
 
 ## test
 

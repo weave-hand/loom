@@ -5,6 +5,7 @@ mod acl;
 mod auth;
 mod catalog;
 mod compact_job;
+mod conform;
 mod constraints;
 mod error;
 mod flush;
@@ -18,6 +19,7 @@ mod page;
 mod queue;
 pub mod snapshot;
 mod transaction;
+mod transform_job;
 mod vector_index;
 mod vector_index_job;
 
@@ -33,6 +35,7 @@ pub use catalog::{
     Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema, small_files,
 };
 pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
+pub use conform::{Violation, check_conformance};
 pub use constraints::{
     ConstraintRule, ConstraintViolation, LengthConstraint, PropertyConstraints, PropertyValidator,
     RangeConstraint, validate_constraints,
@@ -62,6 +65,9 @@ pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use transaction::{ControlPlane, TableControlPlane, TableTx, Tx};
+pub use transform_job::{
+    OutputMode, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND, TransformJob, TypedTransformJob,
+};
 pub use vector_index::{
     FlatIndex, HnswIndex, IndexKind, IndexSpec, IvfFlatIndex, Metric, VectorIndex, VectorKey,
     decode, distance,

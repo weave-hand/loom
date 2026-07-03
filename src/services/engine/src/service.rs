@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use control_plane_core::{Catalog, ControlPlane, Queue, RetryPolicy, RunId, TableRef};
+use control_plane_core::{
+    Catalog, ControlPlane, Queue, RetryPolicy, RunId, TableControlPlane, TableRef,
+};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_gc::gc_table;
@@ -163,12 +165,27 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             name: r.name,
         };
         let ice = control_plane_postgres::iceberg_catalog::IcebergCatalog::new(self.pool.clone());
-        let files = match ice.current_snapshot(&table).await {
-            Ok(snap) => ice
-                .files_with_stats(&table, snap.id)
-                .await
-                .map_err(status)?,
-            Err(control_plane_core::ControlPlaneError::NotFound(_)) => Vec::new(),
+        let (files, columns_json) = match ice.current_snapshot(&table).await {
+            Ok(snap) => {
+                let files = ice
+                    .files_with_stats(&table, snap.id)
+                    .await
+                    .map_err(status)?;
+                let schema = ice.schema(&table, snap.id).await.map_err(status)?;
+                let columns: Vec<control_plane_core::ColumnSpec> = schema
+                    .columns
+                    .into_iter()
+                    .map(|c| control_plane_core::ColumnSpec {
+                        name: c.name,
+                        ty: c.ty,
+                        nullable: c.nullable,
+                    })
+                    .collect();
+                (files, Some(se_out(&columns)?))
+            }
+            // Absent columns_json <=> the table does not exist; a live zero-file
+            // table keeps its declared schema (the table-exists discriminator).
+            Err(control_plane_core::ControlPlaneError::NotFound(_)) => (Vec::new(), None),
             Err(e) => return Err(status(e)),
         };
         Ok(Response::new(pb::ListFilesResponse {
@@ -180,6 +197,7 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
                     file_size_bytes: f.file_size_bytes,
                 })
                 .collect(),
+            columns_json,
         }))
     }
 
@@ -231,6 +249,49 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         .await
         .map_err(status)?;
         Ok(Response::new(pb::CompactTableResponse {
+            snapshot_id: snap.map(|s| s.0),
+        }))
+    }
+
+    async fn commit_transform(
+        &self,
+        req: Request<pb::CommitTransformRequest>,
+    ) -> std::result::Result<Response<pb::CommitTransformResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let columns: Vec<control_plane_core::ColumnSpec> = serde_json::from_str(&r.columns_json)
+            .map_err(|e| Status::invalid_argument(format!("bad columns_json: {e}")))?;
+        let write: Vec<control_plane_core::DataFile> = r
+            .write_json
+            .iter()
+            .map(|s| {
+                serde_json::from_str(s)
+                    .map_err(|e| Status::invalid_argument(format!("bad write DataFile json: {e}")))
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let wire: engine_wire::convert::LineageWire = serde_json::from_str(&r.lineage_json)
+            .map_err(|e| Status::invalid_argument(format!("bad lineage_json: {e}")))?;
+        let lineage = control_plane_core::LineageEvent::try_from(wire)
+            .map_err(|e| Status::invalid_argument(format!("bad lineage: {e}")))?;
+        // The same tx sequence the transform binary ran locally (run.rs step 6):
+        // create_table (idempotent) + append/replace + emit lineage, one commit.
+        let icp = control_plane_postgres::iceberg_control_plane::IcebergControlPlane::new(
+            self.cp.clone(),
+            self.catalog.clone(),
+        );
+        let mut tx = icp.begin_table().await.map_err(status)?;
+        tx.create_table(&table, &columns).await.map_err(status)?;
+        if r.replace {
+            tx.replace_files(&table, &write).await.map_err(status)?;
+        } else {
+            tx.append_files(&table, &write).await.map_err(status)?;
+        }
+        tx.emit(lineage).await.map_err(status)?;
+        let snap = tx.commit().await.map_err(status)?;
+        Ok(Response::new(pb::CommitTransformResponse {
             snapshot_id: snap.map(|s| s.0),
         }))
     }
