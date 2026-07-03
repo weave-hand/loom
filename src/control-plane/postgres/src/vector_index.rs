@@ -10,7 +10,7 @@ use control_plane_core::{
     IvfFlatIndex, LineageEvent, Result, RunId, SnapshotId, TableRef, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
-use sqlx::{AssertSqlSafe, PgConnection, PgPool, Row};
+use sqlx::{AssertSqlSafe, PgConnection, PgPool};
 use time::OffsetDateTime;
 
 fn backend<E: std::fmt::Display>(e: E) -> ControlPlaneError {
@@ -261,14 +261,20 @@ fn extract_rows(
 ///
 /// Used by Task 7/8 (hot-delta path) to fetch the rows appended between S and Q
 /// so the serving layer can score them alongside the cold Puffin index.
+///
+/// The identity column is decoded per its DECLARED logical type (Long, Integer,
+/// or String — the same kinds the cold path's `extract_rows` accepts), through
+/// the shared `column_array` PG→Arrow bridge, so the delta batch can never
+/// drift from `inline_live_batch` (iss-inline-delta-string-identity).
 pub async fn inline_delta_batch(
     pool: &PgPool,
     table: &TableRef,
     born_after: i64,
     at: i64,
 ) -> Result<Option<RecordBatch>> {
-    use crate::iceberg_inline::inline_table_name;
+    use crate::iceberg_inline::{column_array, inline_table_name};
     use crate::iceberg_mirror::live_table_id;
+    use control_plane_core::resolve_logical;
 
     let mut conn = pool.acquire().await.map_err(backend)?;
     let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
@@ -287,30 +293,50 @@ pub async fn inline_delta_batch(
         return Ok(None);
     }
 
-    // Resolve identity + vector column names from the ontology.
+    // Resolve identity + vector column names AND logical types from the
+    // ontology/mirror. We look for a column whose type starts with "vector("
+    // in the current mirror snapshot (at SnapshotId(at)); the identity's
+    // BaseType drives the decode below.
     let identity_col = identity_column_for(pool, table).await?;
-    let vector_col = {
-        // Find which column of this table's mirror schema is a vector type.
-        // We look for a column whose iceberg_type starts with "vector(" in the
-        // current mirror snapshot (at SnapshotId(at)).
-        let ice = crate::iceberg_catalog::IcebergCatalog::new(pool.clone());
-        use control_plane_core::Catalog;
-        let schema = ice.schema(table, SnapshotId(at)).await?;
-        schema
-            .columns
-            .into_iter()
-            .find(|c| c.ty.starts_with("vector("))
-            .map(|c| c.name)
-            .ok_or_else(|| {
-                ControlPlaneError::Backend(
-                    format!(
-                        "no vector column in schema for {}.{}",
-                        table.schema, table.name
-                    )
-                    .into(),
+    let ice = crate::iceberg_catalog::IcebergCatalog::new(pool.clone());
+    let schema = ice.schema(table, SnapshotId(at)).await?;
+    let vec_def = schema
+        .columns
+        .iter()
+        .find(|c| c.ty.starts_with("vector("))
+        .ok_or_else(|| {
+            ControlPlaneError::Backend(
+                format!(
+                    "no vector column in schema for {}.{}",
+                    table.schema, table.name
                 )
-            })?
-    };
+                .into(),
+            )
+        })?;
+    let vector_col = vec_def.name.clone();
+    let vec_ty = resolve_logical(&vec_def.ty).ok_or_else(|| {
+        ControlPlaneError::Backend(
+            format!(
+                "unresolvable vector type {:?} for {}.{}",
+                vec_def.ty, table.schema, table.name
+            )
+            .into(),
+        )
+    })?;
+    let id_ty = schema
+        .columns
+        .iter()
+        .find(|c| c.name == identity_col)
+        .and_then(|c| resolve_logical(&c.ty))
+        .ok_or_else(|| {
+            ControlPlaneError::Backend(
+                format!(
+                    "identity column '{identity_col}' missing or unresolvable in schema for {}.{}",
+                    table.schema, table.name
+                )
+                .into(),
+            )
+        })?;
 
     // Runtime query: select only the identity + vector columns with the delta MVCC predicate.
     let id_quoted = format!("\"{}\"", identity_col.replace('"', "\"\""));
@@ -332,33 +358,18 @@ pub async fn inline_delta_batch(
         return Ok(None);
     }
 
-    // Build Arrow arrays: identity (Int64) + vector (List<Float32>).
-    use arrow_array::builder::{Float32Builder, Int64Builder, ListBuilder};
-    use arrow_schema::{DataType, Field, Schema};
+    // Decode through THE shared PG-row → Arrow bridge (`column_array`): the
+    // identity per its declared BaseType, the vector as List<Float32> with the
+    // canonical "item" child. Field data types come from the same BaseType map.
+    use arrow_schema::{Field, Schema};
 
-    let mut id_builder = Int64Builder::new();
-    let item_field = Arc::new(control_plane_core::vector_list_field());
-    let mut vec_builder = ListBuilder::new(Float32Builder::new()).with_field(item_field.clone());
-
-    for r in &rows {
-        // Identity
-        let id_val: i64 = r.try_get(0).map_err(backend)?;
-        id_builder.append_value(id_val);
-
-        // Vector: stored as a Postgres real[] (native f32) in the inline table.
-        let floats: Vec<f32> = r.try_get(1).map_err(backend)?;
-        vec_builder.values().append_slice(&floats);
-        vec_builder.append(true);
-    }
-
-    let id_array = Arc::new(id_builder.finish());
-    let vec_array = Arc::new(vec_builder.finish());
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new(&identity_col, DataType::Int64, false),
-        Field::new(&vector_col, DataType::List(item_field), false),
+    let id_array = column_array(&rows, 0, id_ty)?;
+    let vec_array = column_array(&rows, 1, vec_ty)?;
+    let out_schema = Arc::new(Schema::new(vec![
+        Field::new(&identity_col, id_ty.arrow_data_type(), false),
+        Field::new(&vector_col, vec_ty.arrow_data_type(), false),
     ]));
-    let batch = RecordBatch::try_new(schema, vec![id_array, vec_array])
+    let batch = RecordBatch::try_new(out_schema, vec![id_array, vec_array])
         .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
     Ok(Some(batch))
 }

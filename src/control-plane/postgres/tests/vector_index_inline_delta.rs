@@ -53,8 +53,8 @@ fn ipc_from(id_field: Field, id_array: Arc<dyn Array>, embs: &[[f32; 4]]) -> Vec
         id_field,
         Field::new("embedding", DataType::List(element), false),
     ]));
-    let batch = RecordBatch::try_new(schema.clone(), vec![id_array, Arc::new(lb.finish())])
-        .expect("batch");
+    let batch =
+        RecordBatch::try_new(schema.clone(), vec![id_array, Arc::new(lb.finish())]).expect("batch");
     let mut buf = Vec::new();
     {
         let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
@@ -191,7 +191,13 @@ async fn int_identity_delta_batch_shape() {
     let cold: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
     let hot: &[(i64, [f32; 4])] = &[(5, [0.9, 0.1, 0.0, 0.0])];
     let (pool, s_cold, s_hot) = seed(
-        fx, &db, &table, "LDocs", "long", "Long", (ipc_long(cold), ipc_long(hot)),
+        fx,
+        &db,
+        &table,
+        "LDocs",
+        "long",
+        "Long",
+        (ipc_long(cold), ipc_long(hot)),
     )
     .await;
 
@@ -237,4 +243,99 @@ async fn int_identity_delta_batch_shape() {
             .expect("delta at s_hot")
             .is_none()
     );
+}
+
+fn ipc_str(rows: &[(&str, [f32; 4])]) -> Vec<u8> {
+    let ids: Vec<&str> = rows.iter().map(|(id, _)| *id).collect();
+    let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
+    ipc_from(
+        Field::new("id", DataType::Utf8, false),
+        Arc::new(arrow_array::StringArray::from(ids)),
+        &embs,
+    )
+}
+
+fn ipc_int(rows: &[(i32, [f32; 4])]) -> Vec<u8> {
+    let ids: Vec<i32> = rows.iter().map(|(id, _)| *id).collect();
+    let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
+    ipc_from(
+        Field::new("id", DataType::Int32, false),
+        Arc::new(arrow_array::Int32Array::from(ids)),
+        &embs,
+    )
+}
+
+/// RED pre-fix: a String identity makes `inline_delta_batch` fail with a sqlx
+/// mismatched-types Backend error (`try_get::<i64>` on a PG `text` column).
+/// Desired: a Utf8 identity column, mirroring the cold path's Utf8 support
+/// (iss-inline-delta-string-identity).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn string_identity_delta_is_utf8() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "sdocs".into(),
+    };
+    let cold: &[(&str, [f32; 4])] = &[("a", [1.0, 0.0, 0.0, 0.0])];
+    let hot: &[(&str, [f32; 4])] = &[("hot", [0.9, 0.1, 0.0, 0.0])];
+    let (pool, s_cold, s_hot) = seed(
+        fx,
+        &db,
+        &table,
+        "SDocs",
+        "string",
+        "String",
+        (ipc_str(cold), ipc_str(hot)),
+    )
+    .await;
+
+    let batch = inline_delta_batch(&pool, &table, s_cold, s_hot)
+        .await
+        .expect("delta over string identity")
+        .expect("Some: one row born after s_cold");
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Utf8);
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::StringArray>()
+        .expect("Utf8 ids");
+    assert_eq!(ids.value(0), "hot");
+}
+
+/// RED pre-fix: an Integer identity fails the same way (PG `integer` never
+/// decodes as i64 under sqlx's strict typing). Desired: an Int32 identity
+/// column, mirroring extract_rows' Int32 arm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integer_identity_delta_is_int32() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "idocs".into(),
+    };
+    let cold: &[(i32, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
+    let hot: &[(i32, [f32; 4])] = &[(5, [0.9, 0.1, 0.0, 0.0])];
+    let (pool, s_cold, s_hot) = seed(
+        fx,
+        &db,
+        &table,
+        "IDocs",
+        "integer",
+        "Integer",
+        (ipc_int(cold), ipc_int(hot)),
+    )
+    .await;
+
+    let batch = inline_delta_batch(&pool, &table, s_cold, s_hot)
+        .await
+        .expect("delta over integer identity")
+        .expect("Some: one row born after s_cold");
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Int32);
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::Int32Array>()
+        .expect("Int32 ids");
+    assert_eq!(ids.value(0), 5);
 }

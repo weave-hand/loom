@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{Array, RecordBatch, StringArray};
+use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
@@ -52,8 +52,8 @@ fn ipc_from(id_field: Field, id_array: Arc<dyn Array>, embs: &[[f32; 4]]) -> Vec
         id_field,
         Field::new("embedding", DataType::List(element), false),
     ]));
-    let batch = RecordBatch::try_new(schema.clone(), vec![id_array, Arc::new(lb.finish())])
-        .expect("batch");
+    let batch =
+        RecordBatch::try_new(schema.clone(), vec![id_array, Arc::new(lb.finish())]).expect("batch");
     let mut buf = Vec::new();
     {
         let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
@@ -164,9 +164,15 @@ async fn seed_and_build(
     )
     .await
     .expect("land cold");
-    build_vector_index(&catalog, &pool, table, "by_flat", RunId(uuid::Uuid::new_v4()))
-        .await
-        .expect("build_vector_index");
+    build_vector_index(
+        &catalog,
+        &pool,
+        table,
+        "by_flat",
+        RunId(uuid::Uuid::new_v4()),
+    )
+    .await
+    .expect("build_vector_index");
     (catalog, pool, wh)
 }
 
@@ -201,7 +207,13 @@ async fn string_identity_cold_search() {
         name: "sdocs".into(),
     };
     let (catalog, pool, _wh) = seed_and_build(
-        fx, &db, &table, "SDocs", "string", "String", ipc_str(COLD_STR),
+        fx,
+        &db,
+        &table,
+        "SDocs",
+        "string",
+        "String",
+        ipc_str(COLD_STR),
     )
     .await;
 
@@ -218,4 +230,148 @@ async fn string_identity_cold_search() {
     .await
     .expect("cold search over string identity");
     assert_eq!(ids_str(&batch), vec!["a".to_string()], "nearest is 'a'");
+}
+
+fn ipc_int(rows: &[(i32, [f32; 4])]) -> Vec<u8> {
+    let ids: Vec<i32> = rows.iter().map(|(id, _)| *id).collect();
+    let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
+    ipc_from(
+        Field::new("id", DataType::Int32, false),
+        Arc::new(Int32Array::from(ids)),
+        &embs,
+    )
+}
+
+/// Identity column of the result batch as i64 (Int64 output — Integer
+/// identities widen through VectorKey::Int).
+fn ids_i64(batch: &RecordBatch) -> Vec<i64> {
+    batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("identity column is Int64")
+        .iter()
+        .map(|v| v.expect("non-null id"))
+        .collect()
+}
+
+/// RED pre-fix: with a String identity, an inline row born after the covered
+/// snapshot makes the WHOLE search error (the hot leg's Int64 hardcode).
+/// Desired: the hot row merges in first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn string_identity_cold_hot_merge() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "sdocs".into(),
+    };
+    let (catalog, pool, _wh) = seed_and_build(
+        fx,
+        &db,
+        &table,
+        "SDocs",
+        "string",
+        "String",
+        ipc_str(COLD_STR),
+    )
+    .await;
+
+    let hot: &[(&str, [f32; 4])] = &[("hot", [0.95, 0.05, 0.0, 0.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns("string"),
+        &ipc_str(hot),
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage_evt(&table),
+    )
+    .await
+    .expect("land inline hot row");
+
+    let batch = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "by_flat",
+        &[0.9_f32, 0.1, 0.0, 0.0],
+        2,
+        None,
+        None,
+    )
+    .await
+    .expect("cold+hot search over string identity");
+    assert_eq!(
+        ids_str(&batch),
+        vec!["hot".to_string(), "a".to_string()],
+        "hot inline row merges in first, cold 'a' second"
+    );
+}
+
+const COLD_INT: &[(i32, [f32; 4])] = &[
+    (1, [1.0, 0.0, 0.0, 0.0]),
+    (2, [0.0, 1.0, 0.0, 0.0]),
+    (3, [0.0, 0.0, 1.0, 0.0]),
+    (4, [0.0, 0.0, 0.0, 1.0]),
+];
+
+/// RED pre-fix: same defect class for Integer identities (int4 never decodes
+/// as i64). Desired: hot row merges; result ids widen to Int64 exactly as the
+/// cold tier's VectorKey::Int does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integer_identity_cold_hot_merge() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "idocs".into(),
+    };
+    let (catalog, pool, _wh) = seed_and_build(
+        fx,
+        &db,
+        &table,
+        "IDocs",
+        "integer",
+        "Integer",
+        ipc_int(COLD_INT),
+    )
+    .await;
+
+    let hot: &[(i32, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns("integer"),
+        &ipc_int(hot),
+        InlineLimits {
+            inline_byte_limit: usize::MAX,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage_evt(&table),
+    )
+    .await
+    .expect("land inline hot row");
+
+    let batch = engine_serving::vector_search(
+        &catalog,
+        &pool,
+        &table,
+        "by_flat",
+        &[0.9_f32, 0.1, 0.0, 0.0],
+        2,
+        None,
+        None,
+    )
+    .await
+    .expect("cold+hot search over integer identity");
+    assert_eq!(
+        ids_i64(&batch),
+        vec![5, 1],
+        "hot row first, cold row 1 second"
+    );
 }

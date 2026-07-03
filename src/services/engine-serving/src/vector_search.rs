@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Float32Array, Int64Array, ListArray, RecordBatch, StringArray};
+use arrow::array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{Metric, TableRef, VectorKey, distance};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -162,6 +162,10 @@ fn score_inline_batch(
     for row in 0..n {
         let key = if let Some(i64arr) = id_col.as_any().downcast_ref::<Int64Array>() {
             VectorKey::Int(i64arr.value(row))
+        } else if let Some(i32arr) = id_col.as_any().downcast_ref::<Int32Array>() {
+            // Mirrors extract_rows (the build path): Integer identities widen to
+            // VectorKey::Int so hot scoring agrees with the cold index keys.
+            VectorKey::Int(i64::from(i32arr.value(row)))
         } else if let Some(sarr) = id_col.as_any().downcast_ref::<StringArray>() {
             VectorKey::Str(sarr.value(row).to_string())
         } else {

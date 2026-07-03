@@ -851,7 +851,7 @@ git commit -m "test(vector): pin inline-delta batch contract + string-identity c
   born_after, at) -> Result<Option<RecordBatch>>`) now emits the identity
   column typed per the declared identity `BaseType`.
 
-- [ ] **Step 1: Append the seam-level red tests to `vector_index_inline_delta.rs`**
+- [x] **Step 1: Append the seam-level red tests to `vector_index_inline_delta.rs`**
 
 ```rust
 fn ipc_str(rows: &[(&str, [f32; 4])]) -> Vec<u8> {
@@ -938,7 +938,7 @@ async fn integer_identity_delta_is_int32() {
 }
 ```
 
-- [ ] **Step 2: Append the e2e red tests to `vector_search_identity_kinds.rs`**
+- [x] **Step 2: Append the e2e red tests to `vector_search_identity_kinds.rs`**
 
 First extend the Task 1 file's arrow import (the integer tests need the two
 extra array types — do NOT add them earlier; they would be unused imports and
@@ -1080,7 +1080,7 @@ async fn integer_identity_cold_hot_merge() {
 }
 ```
 
-- [ ] **Step 3: Run and observe RED**
+- [x] **Step 3: Run and observe RED**
 
 ```bash
 buck2 test //src/control-plane/postgres:vector-index-inline-delta \
@@ -1095,7 +1095,7 @@ mismatched-types text; `int_identity_delta_batch_shape` and
 passes, STOP — the defect claim is wrong; re-verify before touching
 production code.
 
-- [ ] **Step 4: Rewrite `inline_delta_batch`'s decode over `column_array`**
+- [x] **Step 4: Rewrite `inline_delta_batch`'s decode over `column_array`**
 
 Replace `inline_delta_batch` (`vector_index.rs:264-364`) with (signature,
 SQL text, and the three early-`None` returns unchanged; the doc comment
@@ -1230,7 +1230,7 @@ the `control_plane_core::vector_list_field()` call are deleted (the SQL-STYLE
 comment block at `:34-43` still describes the runtime query accurately). The
 existing `// SQL-STYLE` rationale and MVCC predicate are byte-identical.
 
-- [ ] **Step 5: Add the `Int32Array` arm to `score_inline_batch`**
+- [x] **Step 5: Add the `Int32Array` arm to `score_inline_batch`**
 
 In `src/services/engine-serving/src/vector_search.rs`, extend the import at
 `:11`:
@@ -1251,7 +1251,7 @@ and insert between the `Int64Array` and `StringArray` arms (`:163-165`):
         } else if let Some(sarr) = id_col.as_any().downcast_ref::<StringArray>() {
 ```
 
-- [ ] **Step 6: Run — reds green, pins still green, adjacent suites unmodified-green**
+- [x] **Step 6: Run — reds green, pins still green, adjacent suites unmodified-green**
 
 ```bash
 buck2 test //src/control-plane/postgres:vector-index-inline-delta \
@@ -1267,7 +1267,7 @@ Expected: `Fail 0`. The `vector-search` suite (Long-identity hot merges ×3
 index kinds) passing unmodified is the byte-identity proof for the Long path,
 alongside Task 1's shape pin.
 
-- [ ] **Step 7: prek + commit**
+- [x] **Step 7: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek2.log 2>&1; grep -E "Failed" /tmp/prek2.log || echo CLEAN
