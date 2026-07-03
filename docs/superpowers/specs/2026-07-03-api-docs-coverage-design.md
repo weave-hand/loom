@@ -52,11 +52,19 @@ The generator needs the ontology's actions. Add to the `Ontology` trait
 async fn list_actions(&self, page: PageReq) -> Result<Page<ActionDef>>;
 ```
 
-Implemented on both adapters (memory: BTreeMap scan like `list_types`;
-postgres: keyset-paged `query!` over the action tables, `.sqlx` refreshed via
-`tools/sqlx-prepare.sh`), contract-tested in testkit with the same
-paging/ordering contract as `list_types` (empty page, ordering, keyset
-resume, over-limit clamp — whatever the `list_types` contract asserts).
+Implemented on **three** implementors: the memory adapter (map scan, name-
+sorted), the postgres adapter (`select name from ontology.action order by
+name` + per-name `get_action`, exactly `list_types`'s shape at
+`postgres/src/ontology.rs:209`; `.sqlx` refreshed via
+`tools/sqlx-prepare.sh`), and the **engine-wire proxy** `WireOntology`
+(`query-api/src/wire_control_plane.rs:116`) — query-api reads governance over
+gRPC in wire mode, so the RPC gets the full `ListTypes` treatment
+(`engine_control.proto:27,149–150`): a `ListActions` message pair with
+`page_json` envelopes, the client macro method `gov_list_actions`, and the
+engine-service handler beside `list_types` (`engine/src/service.rs:505`).
+Like `list_types`, adapters return the full set in one page (`next: None`),
+name-ordered; `PageReq` is accepted for future keyset paging. Contract-tested
+in testkit's `ontology_contract` (runs against both store adapters).
 
 ### A2 — generator: real action ops, per-type tags
 
