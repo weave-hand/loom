@@ -101,15 +101,17 @@ Create `src/services/query-api/src/expr/mod.rs`:
 //! A bounded language over an action's params/earlier-resolved properties: arithmetic,
 //! comparison, boolean, string concat, `if`, and a whitelisted function set. No user code,
 //! no I/O, no loops — deterministic except `now()`. Parsed here, type-checked in
-//! `typecheck`, evaluated to a `SqlValue` in `eval`.
+//! `typecheck` (Task 2), evaluated to a `SqlValue` in `eval` (Task 3).
+//!
+//! IMPORTANT: this module grows one submodule per task. Task 1 declares ONLY `parse`. Task 2
+//! adds `pub mod typecheck;` + its re-export; Task 3 adds `pub mod eval;` + its re-export.
+//! Declaring `pub mod eval;`/`pub mod typecheck;` before those files exist is an
+//! `error[E0583]` that breaks the whole `query-api` crate — never declare a submodule ahead of
+//! the task that creates its file.
 
-pub mod eval;
 pub mod parse;
-pub mod typecheck;
 
-pub use eval::{EvalError, ValueEnv, eval};
 pub use parse::{ParseError, parse_expr};
-pub use typecheck::{TypeEnv, TypeError, typecheck};
 
 use control_plane_core::BaseType;
 
@@ -932,9 +934,18 @@ rust_test(
 Run: `buck2 test //src/services/query-api:expr-typecheck > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t.log`
 Expected: FAIL — `typecheck`/`TypeEnv`/`assignable` do not exist.
 
-- [ ] **Step 3: Implement the type-checker (`typecheck.rs`)**
+- [ ] **Step 3: Register the module in `mod.rs`, then implement `typecheck.rs`**
 
-Create `src/services/query-api/src/expr/typecheck.rs`:
+First, in `src/services/query-api/src/expr/mod.rs`, add the module declaration and re-export
+(Task 1 left `mod.rs` with only `parse`). After the `pub mod parse;` / `pub use parse::…` lines add:
+
+```rust
+pub mod typecheck;
+
+pub use typecheck::{TypeEnv, TypeError, assignable, typecheck};
+```
+
+Then create `src/services/query-api/src/expr/typecheck.rs`:
 
 ```rust
 //! Bottom-up type inference for computed-assignment expressions. Pure. Every ref must resolve
@@ -1375,9 +1386,18 @@ rust_test(
 Run: `buck2 test //src/services/query-api:expr-eval > /tmp/t.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t.log`
 Expected: FAIL — `eval`/`ValueEnv`/`EvalError` do not exist.
 
-- [ ] **Step 3: Implement the evaluator (`eval.rs`)**
+- [ ] **Step 3: Register the module in `mod.rs`, then implement `eval.rs`**
 
-Create `src/services/query-api/src/expr/eval.rs`. Implement `eval` per the runtime semantics section. Numeric ops: if either operand `Double` → `f64` math, else `i64`. `Div`/`Mod` by zero → `EvalError::DivByZero`. Null propagation for unary/binary ops and `upper/lower/substr/length`. `substr` uses 1-based `start`; out-of-range → `EvalError::Substr`. `cast` per the table. Reference implementation:
+First, in `src/services/query-api/src/expr/mod.rs`, add the module declaration and re-export
+(after the `typecheck` lines added in Task 2):
+
+```rust
+pub mod eval;
+
+pub use eval::{EvalError, ValueEnv, eval};
+```
+
+Then create `src/services/query-api/src/expr/eval.rs`. Implement `eval` per the runtime semantics section. Numeric ops: if either operand `Double` → `f64` math, else `i64`. `Div`/`Mod` by zero → `EvalError::DivByZero`. Null propagation for unary/binary ops and `upper/lower/substr/length`. `substr` uses 1-based `start`; out-of-range → `EvalError::Substr`. `cast` per the table. Reference implementation:
 
 ```rust
 //! Pure evaluation of a typed computed-assignment expression to a backend-neutral `SqlValue`.
