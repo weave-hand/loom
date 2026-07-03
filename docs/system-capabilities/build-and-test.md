@@ -218,7 +218,7 @@ so `/auth/*` and `/admin/*` appear in each service's document without a single
 duplicated annotation (#344). The admin fragment now spans the full management
 surface — link/action define+delete, grant list/revoke, role delete, user↔role
 assignment — and query-api's document adds the type-detail and dataset reads,
-all held to the same route-set drift guards (#PRNUM2).
+all held to the same route-set drift guards (#346).
 
 ## Known gaps
 

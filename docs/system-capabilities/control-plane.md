@@ -132,14 +132,14 @@ definitions are also deletable (`delete_link` by the `(name, from)` key,
 `delete_action` with steps/params/assignments cascading) — idempotent,
 definitions-only removals; physical columns and join tables are untouched, and
 a queued job naming a deleted action fails at resolve time exactly like any
-unknown action (#PRNUM2). **Type mutation is deliberately narrower:** redefining
+unknown action (#346). **Type mutation is deliberately narrower:** redefining
 a type via the `define_type` upsert (HTTP: `POST /admin/models`) is the
 documented update path — it clears and re-inserts properties with no schema-
 evolution guard — and type *deletion* stays deferred (`#fut-ontology-type-delete`:
 ACL grants/policies reference types with no FK, inbound links do not cascade,
 and data migration is an open ARCHITECTURE question). The catalog concern
 gained its first enumeration too: `Catalog::list_tables` returns the live
-mirror tables, `(schema, name)`-ordered (#PRNUM2).
+mirror tables, `(schema, name)`-ordered (#346).
 Authoring is validated at define time rather than failing at read time (#176):
 the `bind` conformance seam validates each derived property's link, target,
 aggregation column, and result type, and a sibling `bind_link` checks that a
@@ -217,7 +217,7 @@ any allow. Policies support row filters (a `Compare`/`And`/`Or`/`Not` predicate
 tree) and column masking (`mask_columns`, a read-render concept deliberately
 ignored on writes). Policies are action-scoped — keyed on `(role, action,
 target)` — so a role's read and write policies are independent rows, and
-clearing one leaves the other intact. The management surface (#PRNUM2) makes the
+clearing one leaves the other intact. The management surface (#346) makes the
 role model fully administrable: `list_grants` returns a role's coarse grant rows
 as `Grant {action, target, effect}` values (decoded via the shared
 `PolicyTarget::from_key_parts` inverse of `key_parts`, with `FromStr` on
