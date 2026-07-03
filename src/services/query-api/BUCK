@@ -10,6 +10,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/services/engine-wire:engine-wire",
+        "//src/services/lineage-naming:lineage-naming",
         "//src/services/runtime:runtime",
         "//src/loom-config:loom-config",
         "//third-party:arrow",
@@ -770,6 +771,19 @@ rust_test(
 )
 
 rust_test(
+    name = "sql-compile-props",
+    crate = "sql_compile_props",
+    srcs = ["tests/sql_compile_props.rs"],
+    crate_root = "tests/sql_compile_props.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:proptest",
+    ],
+)
+
+rust_test(
     name = "associations",
     crate = "associations",
     srcs = ["tests/associations.rs"],
@@ -1004,6 +1018,26 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "action-computed-e2e",
+    crate = "action_computed_e2e",
+    srcs = ["tests/action_computed_e2e.rs"],
+    crate_root = "tests/action_computed_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "params",
     crate = "params",
@@ -1014,6 +1048,42 @@ rust_test(
         ":query-api",
         "//src/control-plane/core:core",
         "//third-party:serde_json",
+        "//third-party:time",
+    ],
+)
+
+rust_test(
+    name = "expr-parse",
+    crate = "expr_parse",
+    srcs = ["tests/expr_parse.rs"],
+    crate_root = "tests/expr_parse.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
+    name = "expr-typecheck",
+    crate = "expr_typecheck",
+    srcs = ["tests/expr_typecheck.rs"],
+    crate_root = "tests/expr_typecheck.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+    ],
+)
+
+rust_test(
+    name = "expr-eval",
+    crate = "expr_eval",
+    srcs = ["tests/expr_eval.rs"],
+    crate_root = "tests/expr_eval.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
         "//third-party:time",
     ],
 )
@@ -1043,6 +1113,18 @@ rust_test(
     crate_root = "tests/path_parse.rs",
     edition = "2024",
     deps = [":query-api"],
+)
+
+rust_test(
+    name = "path-parse-props",
+    crate = "path_parse_props",
+    srcs = ["tests/path_parse_props.rs"],
+    crate_root = "tests/path_parse_props.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:proptest",
+    ],
 )
 
 rust_test(
@@ -1575,6 +1657,44 @@ loom_fixture_test(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "lineage-acl-e2e",
+    crate = "lineage_acl_e2e",
+    srcs = ["tests/lineage_acl_e2e.rs"],
+    crate_root = "tests/lineage_acl_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+rust_test(
+    name = "lineage-visibility",
+    crate = "lineage_visibility",
+    srcs = ["tests/lineage_visibility.rs"],
+    crate_root = "tests/lineage_visibility.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//src/services/lineage-naming:lineage-naming",
+        "//src/services/store-config:store-config",
         "//third-party:serde_json",
         "//third-party:time",
         "//third-party:tokio",

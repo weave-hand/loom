@@ -122,7 +122,7 @@ fn update_allows_partial_columns() {
 
 // --- UPDATE/DELETE param->property mapping (binds + assignments) ---
 
-use control_plane_core::ConstAssignment;
+use control_plane_core::Assignment;
 use query_api::action::ActionError;
 
 #[test]
@@ -182,10 +182,7 @@ fn delete_with_assignment_rejected() {
             binds: Some("sku".into()),
         }],
         kind: ActionKind::Delete,
-        assignments: vec![ConstAssignment {
-            property: "qty".into(),
-            value: serde_json::json!(1),
-        }],
+        assignments: vec![Assignment::constant("qty", serde_json::json!(1))],
     };
     assert!(matches!(
         check_conformance(&action, &widget(Some("sku"))),

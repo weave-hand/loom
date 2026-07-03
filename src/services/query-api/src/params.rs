@@ -55,17 +55,33 @@ pub fn resolve_action_row(
     action: &ActionDef,
     target: &ObjectType,
     body: &serde_json::Map<String, Value>,
+    now: time::PrimitiveDateTime,
 ) -> Result<Vec<(String, SqlValue)>, ParamError> {
     // Param leg: reuse parse_params (rejects unknown keys, enforces required, coerces by
     // param.ty), then remap each pair from param name → bound property. parse_params preserves
     // action.parameters order, so zipping the param refs onto its output is exact.
     let param_pairs = parse_params(&action.parameters, body)?;
+
+    // param name -> value (for bare-identifier refs in expressions).
+    let param_env: std::collections::HashMap<String, SqlValue> = action
+        .parameters
+        .iter()
+        .zip(&param_pairs)
+        .map(|(prm, (_, v))| (prm.name.clone(), v.clone()))
+        .collect();
+
     let mut out: Vec<(String, SqlValue)> =
         Vec::with_capacity(param_pairs.len() + action.assignments.len());
+    // property name -> value (params' bound properties, then earlier assignments), for @refs.
+    let mut prop_env: std::collections::HashMap<String, SqlValue> =
+        std::collections::HashMap::new();
     for (prm, (_, value)) in action.parameters.iter().zip(param_pairs) {
+        prop_env.insert(prm.binds_property().to_string(), value.clone());
         out.push((prm.binds_property().to_string(), value));
     }
-    // Constant leg: coerce each constant against its PROPERTY's logical type.
+
+    // Assignment leg: constants coerce against the PROPERTY's logical type; expressions parse +
+    // evaluate against the accumulating param/prop env, in declared order.
     for a in &action.assignments {
         let prop_ty = target
             .properties
@@ -75,15 +91,41 @@ pub fn resolve_action_row(
             .ok_or_else(|| {
                 ParamError::BadValue(
                     a.property.clone(),
-                    "constant names an unknown property".into(),
+                    "assignment names an unknown property".into(),
                 )
             })?;
-        out.push((
-            a.property.clone(),
-            parse_value(&a.property, prop_ty, &a.value)?,
-        ));
+        let value = match &a.source {
+            control_plane_core::AssignmentSource::Const(v) => parse_value(&a.property, prop_ty, v)?,
+            control_plane_core::AssignmentSource::Expr(src) => {
+                let expr = crate::expr::parse_expr(src).map_err(|e| {
+                    ParamError::BadValue(a.property.clone(), format!("expression parse: {e}"))
+                })?;
+                let env = RowEnv {
+                    params: &param_env,
+                    props: &prop_env,
+                };
+                crate::expr::eval(&expr, &env, now)
+                    .map_err(|e| ParamError::BadValue(a.property.clone(), e.to_string()))?
+            }
+        };
+        prop_env.insert(a.property.clone(), value.clone());
+        out.push((a.property.clone(), value));
     }
     Ok(out)
+}
+
+/// A `crate::expr::ValueEnv` over the resolved params + accumulated property values.
+struct RowEnv<'a> {
+    params: &'a std::collections::HashMap<String, SqlValue>,
+    props: &'a std::collections::HashMap<String, SqlValue>,
+}
+impl crate::expr::ValueEnv for RowEnv<'_> {
+    fn param(&self, name: &str) -> Option<SqlValue> {
+        self.params.get(name).cloned()
+    }
+    fn prop(&self, name: &str) -> Option<SqlValue> {
+        self.props.get(name).cloned()
+    }
 }
 
 /// Define-time guard for a constant assignment: the JSON `value` must be a scalar (not

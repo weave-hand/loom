@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    ActionDef, ActionName, Aggregation, ConstAssignment, ControlPlaneError, DerivedPropertyDef,
-    IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef,
-    Result, TableRef, TypeName, VectorIndexDef,
+    ActionDef, ActionName, Aggregation, Assignment, AssignmentSource, ControlPlaneError,
+    DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology, Page, PageReq,
+    ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
 };
 
 use crate::{PgControlPlane, backend};
@@ -319,13 +319,18 @@ impl Ontology for PgControlPlane {
         .await
         .map_err(backend)?;
         for (i, a) in action.assignments.iter().enumerate() {
+            let (value, expr): (Option<serde_json::Value>, Option<String>) = match &a.source {
+                AssignmentSource::Const(v) => (Some(v.clone()), None),
+                AssignmentSource::Expr(s) => (None, Some(s.clone())),
+            };
             sqlx::query!(
-                "insert into ontology.action_assignment (action_name, ordinal, property, value) \
-                 values ($1, $2, $3, $4)",
+                "insert into ontology.action_assignment (action_name, ordinal, property, value, expr) \
+                 values ($1, $2, $3, $4, $5)",
                 action.name.0,
                 i as i32,
                 a.property,
-                a.value,
+                value,
+                expr,
             )
             .execute(&mut *tx)
             .await
@@ -353,7 +358,7 @@ impl Ontology for PgControlPlane {
         .await
         .map_err(backend)?;
         let assignment_rows = sqlx::query!(
-            "select property, value from ontology.action_assignment \
+            "select property, value, expr from ontology.action_assignment \
              where action_name = $1 order by ordinal",
             name.0,
         )
@@ -375,9 +380,16 @@ impl Ontology for PgControlPlane {
             kind: row.kind.parse()?,
             assignments: assignment_rows
                 .into_iter()
-                .map(|r| ConstAssignment {
+                .map(|r| Assignment {
                     property: r.property,
-                    value: r.value,
+                    source: match (r.value, r.expr) {
+                        (_, Some(e)) => AssignmentSource::Expr(e),
+                        (Some(v), None) => AssignmentSource::Const(v),
+                        // The CHECK constraint (0027) guarantees exactly one of value/expr is
+                        // set, so this arm is unreachable; map defensively to a Null constant to
+                        // keep the mapping total without panicking.
+                        (None, None) => AssignmentSource::Const(serde_json::Value::Null),
+                    },
                 })
                 .collect(),
         })

@@ -16,10 +16,9 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use control_plane_core::{
     Action, COMPACT_JOB_KIND, CompactJob, ControlPlane, ControlPlaneError, DatasetId, DatasetRef,
-    Decision, EventType, LineageEvent, NewJob, PolicyTarget, RunId, TableRef, TypeName,
+    Decision, LineageEvent, NewJob, PolicyTarget, RunId, TableRef, TypeName,
 };
 use serde::Deserialize;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use std::borrow::Cow;
@@ -334,14 +333,10 @@ pub(crate) async fn land_model(
     let table = otype.table.clone();
     let type_label = type_name.0.clone();
     let file_prefix = Uuid::new_v4().to_string();
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(&type_name)],
-        payload: serde_json::json!({ "source": "http-model", "type": type_label }),
-    };
+    let lineage = LineageEvent::completed(
+        vec![DatasetRef::from(&type_name)],
+        serde_json::json!({ "source": "http-model", "type": type_label }),
+    );
     let req = LandRequest {
         table: &table,
         schema: schema.clone(),
@@ -418,14 +413,11 @@ pub(crate) async fn land(
         name: table_name,
     };
     let file_prefix = Uuid::new_v4().to_string();
-    let lineage = LineageEvent {
+    let lineage = LineageEvent::completed_with_run(
         run_id,
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(&table).dataset_ref()],
-        payload: serde_json::json!({ "source": "http-land" }),
-    };
+        vec![DatasetId::from(&table).dataset_ref()],
+        serde_json::json!({ "source": "http-land" }),
+    );
 
     // Gate + schema resolution: backend-agnostic, run once before dispatch.
     let columns = resolve_columns(&schema, gate.as_ref())

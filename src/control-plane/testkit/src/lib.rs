@@ -17,13 +17,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
-    CompareOp, ConstAssignment, ControlPlane, ControlPlaneError, DatasetRef, Decision,
-    DerivedPropertyDef, Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent,
-    LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType,
-    Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy,
-    RoleId, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
-    VectorIndexDef,
+    Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Assignment, Auth, Cardinality,
+    Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef,
+    Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef,
+    LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq,
+    ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
+    ScalarValue, SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -1043,10 +1042,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             },
         ],
         kind: ActionKind::Insert,
-        assignments: vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!("active"),
-        }],
+        assignments: vec![Assignment::constant("status", serde_json::json!("active"))],
     };
     o.define_action(create_gadget.clone())
         .await
@@ -1057,6 +1053,32 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             .unwrap(),
         create_gadget,
         "action round-trips with binds + constant assignments",
+    );
+
+    // Slice 2: an expression assignment round-trips through storage (define == get), alongside
+    // a constant. (Evaluation is a query-api concern; the adapter only persists the source.)
+    let computed = ActionDef {
+        name: ActionName("computeGadget".into()),
+        target: tn("Gadget"),
+        parameters: vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        kind: ActionKind::Insert,
+        assignments: vec![
+            Assignment::constant("status", serde_json::json!("active")),
+            Assignment::expr("name", "upper(\"g\")"),
+        ],
+    };
+    o.define_action(computed.clone()).await.unwrap();
+    assert_eq!(
+        o.get_action(&ActionName("computeGadget".into()))
+            .await
+            .unwrap(),
+        computed,
+        "action round-trips with a computed (expr) assignment"
     );
 
     // Redefining with an empty mapping clears binds + assignments (upsert replaces both).

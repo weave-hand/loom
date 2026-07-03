@@ -3,9 +3,9 @@
 //! guaranteed-serveable by the query read path. See the part-2b design doc.
 
 use control_plane_core::{
-    Aggregation, BaseType, Catalog, ControlPlaneError, DerivedPropertyDef, LinkBacking, LinkDef,
-    ObjectType, Ontology, PageReq, TableRef, TableSchema, TypeName, UnknownLogicalType,
-    resolve_logical, satisfies,
+    BaseType, Catalog, ControlPlaneError, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType,
+    Ontology, PageReq, TableRef, TableSchema, TypeName, UnknownLogicalType, resolve_logical,
+    satisfies,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -60,27 +60,45 @@ pub async fn bind(
     ontology: &dyn Ontology,
     type_def: ObjectType,
 ) -> Result<(), BindError> {
-    // 1. The table must be live in the catalog.
-    let snap = match catalog.current_snapshot(&type_def.table).await {
-        Ok(s) => s,
-        Err(ControlPlaneError::NotFound(_)) => {
-            return Err(BindError::TableNotFound(type_def.table.clone()));
+    // 1-2. The table must be live; take its physical schema at the current snapshot.
+    let schema = schema_of_table(catalog, &type_def.table).await?;
+
+    // 3. Pure structural validation (property type/nullability, identity, reserved
+    //    names). Extra physical columns are fine — a type is a view over the table.
+    let mut violations = structural_violations(&type_def, &schema);
+
+    // 4. Derived properties: validate each against the ontology + the link target's
+    //    physical schema (async — front-runs the read-time omission in query-api).
+    if !type_def.derived.is_empty() {
+        let links = match ontology.links(&type_def.name, PageReq::unbounded()).await {
+            Ok(p) => p.items,
+            // A not-yet-defined type has no links (NotFound -> empty), so every derived
+            // link reads as unknown — encoding the authoring order (types -> links ->
+            // bind-with-derived). Mirrors the read-time resolution in query-api's handler.rs.
+            Err(ControlPlaneError::NotFound(_)) => Vec::new(),
+            Err(e) => return Err(BindError::ControlPlane(e)),
+        };
+        for d in &type_def.derived {
+            validate_derived(catalog, ontology, &links, d, &mut violations).await?;
         }
-        Err(e) => return Err(BindError::ControlPlane(e)),
-    };
+    }
 
-    // 2. Its physical columns at that snapshot.
-    let schema = catalog.schema(&type_def.table, snap.id).await?;
+    if !violations.is_empty() {
+        return Err(BindError::DoesNotConform(violations));
+    }
 
-    // 3. Validate every declared property against its same-named physical column.
-    //    Extra physical columns are fine — a type is a view over the table.
-    // The type check and the nullability check are INDEPENDENT: a single property
-    // may yield up to two violations (e.g. a type mismatch AND a required-but-nullable
-    // column). We report both so the caller fixes everything in one pass rather than
-    // discovering problems one round-trip at a time. (A MissingColumn short-circuits —
-    // there's nothing to type/nullability-check.)
+    // 5. Persist — the type is now serveable by the governed read path.
+    ontology.define_type(type_def).await?;
+    Ok(())
+}
+
+/// Per-property structural checks against the physical schema: a `MissingColumn`
+/// (short-circuits), else an independent type check (`satisfies`) and nullability
+/// check. A single property may yield up to two violations. Pure — no catalog.
+#[must_use]
+pub fn property_violations(ty: &ObjectType, schema: &TableSchema) -> Vec<BindViolation> {
     let mut violations = Vec::new();
-    for p in &type_def.properties {
+    for p in &ty.properties {
         let Some(col) = schema.columns.iter().find(|c| c.name == p.name) else {
             violations.push(BindViolation {
                 property: p.name.clone(),
@@ -109,101 +127,87 @@ pub async fn bind(
             });
         }
     }
-
-    // Identity (if declared) must name a declared, required property — a primary key
-    // cannot be nullable. The violation's `property` is the named identity column.
-    if let Some(id) = &type_def.identity {
-        match type_def.properties.iter().find(|p| &p.name == id) {
-            None => violations.push(BindViolation {
-                property: id.clone(),
-                reason: BindViolationReason::BadIdentity("names no declared property".into()),
-            }),
-            Some(p) if !p.required => violations.push(BindViolation {
-                property: id.clone(),
-                reason: BindViolationReason::BadIdentity("names a non-required property".into()),
-            }),
-            Some(_) => {}
-        }
-    }
-
-    // Property and derived-property names beginning with `_` are reserved: the query
-    // surface prefixes control params with `_` (e.g. `_ids`, `_path`), so a `_`-named
-    // property would be unaddressable as a filter and could shadow a control param.
-    for p in &type_def.properties {
-        if p.name.starts_with('_') {
-            violations.push(BindViolation {
-                property: p.name.clone(),
-                reason: BindViolationReason::ReservedName,
-            });
-        }
-    }
-    for d in &type_def.derived {
-        if d.name.starts_with('_') {
-            violations.push(BindViolation {
-                property: d.name.clone(),
-                reason: BindViolationReason::ReservedName,
-            });
-        }
-    }
-
-    // Derived properties: validate each against the ontology + the link target's
-    // physical schema. This front-runs the read-time omission in query-api's
-    // handler (a missing link / target / agg column there silently drops the
-    // property — see `handler.rs`). The link must be defined on THIS type; if the
-    // type is not yet defined it has no links (`NotFound` -> empty), so every
-    // derived link is unknown, encoding the authoring order (types -> links ->
-    // bind-with-derived).
-    if !type_def.derived.is_empty() {
-        let links = match ontology.links(&type_def.name, PageReq::unbounded()).await {
-            Ok(p) => p.items,
-            Err(ControlPlaneError::NotFound(_)) => Vec::new(),
-            Err(e) => return Err(BindError::ControlPlane(e)),
-        };
-        for d in &type_def.derived {
-            validate_derived(catalog, ontology, &links, d, &mut violations).await?;
-        }
-    }
-
-    if !violations.is_empty() {
-        return Err(BindError::DoesNotConform(violations));
-    }
-
-    // 4. Persist — the type is now serveable by the governed read path.
-    ontology.define_type(type_def).await?;
-    Ok(())
+    violations
 }
 
-/// The target-type column an aggregation reads, or `None` for `Count` (which
-/// aggregates rows, not a column).
-fn agg_column(agg: &Aggregation) -> Option<&str> {
-    match agg {
-        Aggregation::Count => None,
-        Aggregation::Sum(c) | Aggregation::Avg(c) | Aggregation::Min(c) | Aggregation::Max(c) => {
-            Some(c)
-        }
+/// The identity check: a declared identity must name a declared, required property
+/// (a primary key cannot be nullable). `None` if there is no identity or it is valid.
+#[must_use]
+pub fn identity_violation(ty: &ObjectType) -> Option<BindViolation> {
+    let id = ty.identity.as_ref()?;
+    match ty.properties.iter().find(|p| &p.name == id) {
+        None => Some(BindViolation {
+            property: id.clone(),
+            reason: BindViolationReason::BadIdentity("names no declared property".into()),
+        }),
+        Some(p) if !p.required => Some(BindViolation {
+            property: id.clone(),
+            reason: BindViolationReason::BadIdentity("names a non-required property".into()),
+        }),
+        Some(_) => None,
     }
 }
 
-/// A human label for an aggregation, used in violation messages.
-fn agg_label(agg: &Aggregation) -> &'static str {
-    match agg {
-        Aggregation::Count => "Count",
-        Aggregation::Sum(_) => "Sum",
-        Aggregation::Avg(_) => "Avg",
-        Aggregation::Min(_) => "Min",
-        Aggregation::Max(_) => "Max",
+/// Property and derived-property names beginning with `_` are reserved (the query
+/// surface prefixes control params with `_`). Properties first, then derived — the
+/// original push order.
+#[must_use]
+pub fn reserved_name_violations(ty: &ObjectType) -> Vec<BindViolation> {
+    ty.properties
+        .iter()
+        .map(|p| p.name.as_str())
+        .chain(ty.derived.iter().map(|d| d.name.as_str()))
+        .filter(|name| name.starts_with('_'))
+        .map(|name| BindViolation {
+            property: name.to_string(),
+            reason: BindViolationReason::ReservedName,
+        })
+        .collect()
+}
+
+/// The three pure structural passes composed, in the original bind push order:
+/// property checks, then identity, then reserved names.
+#[must_use]
+pub fn structural_violations(ty: &ObjectType, schema: &TableSchema) -> Vec<BindViolation> {
+    let mut violations = property_violations(ty, schema);
+    violations.extend(identity_violation(ty));
+    violations.extend(reserved_name_violations(ty));
+    violations
+}
+
+/// The result of resolving an aggregation's target column. `Missing` is the three
+/// absent cases (target type, its live snapshot, or the column) the caller reports as
+/// a single [`BindViolationReason::MissingAggColumn`]; `Present` carries the column's
+/// resolved base type (`None` if its logical type is unknown — a present column, so
+/// NOT a `MissingAggColumn`).
+enum ColumnLookup {
+    Missing,
+    Present(Option<BaseType>),
+}
+
+/// Resolve `col_name` on `link`'s target type's table into a [`ColumnLookup`]. Any
+/// non-`NotFound` control-plane error propagates.
+async fn target_column_type(
+    catalog: &dyn Catalog,
+    ontology: &dyn Ontology,
+    link: &LinkDef,
+    col_name: &str,
+) -> Result<ColumnLookup, BindError> {
+    let target_table = match ontology.resolve(&link.to).await {
+        Ok(t) => t,
+        Err(ControlPlaneError::NotFound(_)) => return Ok(ColumnLookup::Missing),
+        Err(e) => return Err(BindError::ControlPlane(e)),
+    };
+    let snap = match catalog.current_snapshot(&target_table).await {
+        Ok(s) => s,
+        Err(ControlPlaneError::NotFound(_)) => return Ok(ColumnLookup::Missing),
+        Err(e) => return Err(BindError::ControlPlane(e)),
+    };
+    let schema = catalog.schema(&target_table, snap.id).await?;
+    match schema.columns.iter().find(|c| c.name == col_name) {
+        None => Ok(ColumnLookup::Missing),
+        Some(col) => Ok(ColumnLookup::Present(resolve_logical(&col.ty))),
     }
-}
-
-/// `Sum`/`Avg` apply only to numeric base types.
-fn is_numeric(b: BaseType) -> bool {
-    matches!(b, BaseType::Integer | BaseType::Long | BaseType::Double)
-}
-
-/// `Min`/`Max` apply to any totally-ordered base type — every base type except
-/// `Boolean`.
-fn is_ordered(b: BaseType) -> bool {
-    !matches!(b, BaseType::Boolean)
 }
 
 /// Validate one derived property against the type's outbound `links` and the link
@@ -229,85 +233,42 @@ async fn validate_derived(
     // 2. For column-bearing aggregations, resolve the target column and check the
     //    aggregation is applicable to its logical type. `Count` takes no column.
     let mut col_base: Option<BaseType> = None;
-    if let Some(col_name) = agg_column(&d.agg) {
-        // Resolve the link target type -> its physical table. A target type/table
-        // that no longer exists means the column cannot exist either.
-        let target_table = match ontology.resolve(&link.to).await {
-            Ok(t) => t,
-            Err(ControlPlaneError::NotFound(_)) => {
+    if let Some(col_name) = d.agg.column() {
+        match target_column_type(catalog, ontology, link, col_name).await? {
+            ColumnLookup::Missing => {
                 violations.push(BindViolation {
                     property: d.name.clone(),
                     reason: BindViolationReason::MissingAggColumn,
                 });
                 return Ok(());
             }
-            Err(e) => return Err(BindError::ControlPlane(e)),
-        };
-        let snap = match catalog.current_snapshot(&target_table).await {
-            Ok(s) => s,
-            Err(ControlPlaneError::NotFound(_)) => {
-                violations.push(BindViolation {
-                    property: d.name.clone(),
-                    reason: BindViolationReason::MissingAggColumn,
-                });
-                return Ok(());
+            ColumnLookup::Present(base) => {
+                col_base = base;
+                if !d.agg.column_applicable(col_base) {
+                    // Collect-all: keep going to also report a result-type mismatch.
+                    violations.push(BindViolation {
+                        property: d.name.clone(),
+                        reason: BindViolationReason::BadAggType {
+                            agg: d.agg.label().to_string(),
+                            column: col_name.to_string(),
+                        },
+                    });
+                }
             }
-            Err(e) => return Err(BindError::ControlPlane(e)),
-        };
-        let schema = catalog.schema(&target_table, snap.id).await?;
-        let Some(col) = schema.columns.iter().find(|c| c.name == col_name) else {
-            violations.push(BindViolation {
-                property: d.name.clone(),
-                reason: BindViolationReason::MissingAggColumn,
-            });
-            return Ok(());
-        };
-        col_base = resolve_logical(&col.ty);
-        let applicable = match &d.agg {
-            Aggregation::Sum(_) | Aggregation::Avg(_) => col_base.is_some_and(is_numeric),
-            Aggregation::Min(_) | Aggregation::Max(_) => col_base.is_some_and(is_ordered),
-            Aggregation::Count => true, // unreachable: Count has no column
-        };
-        if !applicable {
-            // Collect-all: keep going to also report a result-type mismatch.
-            violations.push(BindViolation {
-                property: d.name.clone(),
-                reason: BindViolationReason::BadAggType {
-                    agg: agg_label(&d.agg).to_string(),
-                    column: col_name.to_string(),
-                },
-            });
         }
     }
 
-    // 3. The declared result type must be a known logical type and consistent with
-    //    the aggregation's result category. (Existence + category only; the full
-    //    coercion lattice is deferred — see fut-coercion-taxonomy.)
+    // 3. The declared result type must be a known logical type and consistent with the
+    //    aggregation's result category. (Existence + category only; the full coercion
+    //    lattice is deferred — see fut-coercion-taxonomy.)
     let declared = resolve_logical(&d.ty);
-    let (ok, expected) = match &d.agg {
-        // A count is naturally an int64; accept Integer or Long. (The spec prose
-        // says "integer"; we relax to int-or-long — see the plan's spec note.)
-        Aggregation::Count => (
-            matches!(declared, Some(BaseType::Integer | BaseType::Long)),
-            "integer or long".to_string(),
-        ),
-        Aggregation::Sum(_) | Aggregation::Avg(_) => {
-            (declared.is_some_and(is_numeric), "numeric".to_string())
-        }
-        Aggregation::Min(_) | Aggregation::Max(_) => {
-            // Min/Max return the column's own type.
-            let expected = col_base
-                .map(|b| b.canonical_name().to_string())
-                .unwrap_or_else(|| "the target column's type".to_string());
-            (declared.is_some() && declared == col_base, expected)
-        }
-    };
-    if !ok {
+    let category = d.agg.result_expectation(col_base);
+    if !category.accepts(declared) {
         violations.push(BindViolation {
             property: d.name.clone(),
             reason: BindViolationReason::BadDerivedResultType {
                 declared: d.ty.clone(),
-                expected,
+                expected: category.description(),
             },
         });
     }

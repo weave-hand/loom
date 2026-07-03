@@ -268,6 +268,38 @@ async fn bind_rejects_max_over_a_non_ordered_column() {
 }
 
 #[tokio::test]
+async fn bind_collects_both_agg_type_and_result_type_on_one_derived_property() {
+    let cp = cp();
+    seed_graph(&cp).await;
+
+    // `active` is `boolean` -> Max not applicable (BadAggType), AND declaring the result
+    // as `Long` (!= the column's Boolean type) -> BadDerivedResultType. A single derived
+    // property must surface BOTH: the collect-all path does not return early after the
+    // applicability violation.
+    let err = bind(
+        &cp,
+        &cp,
+        customer_with(vec![derived(
+            "latestActive",
+            "Long",
+            "orders",
+            Aggregation::Max("active".into()),
+        )]),
+    )
+    .await
+    .unwrap_err();
+
+    let BindError::DoesNotConform(v) = err else {
+        panic!("expected DoesNotConform, got {err:?}");
+    };
+    assert!(v.iter().any(|x| x.property == "latestActive"
+        && matches!(&x.reason, BindViolationReason::BadAggType { agg, .. } if agg == "Max")));
+    assert!(v.iter().any(|x| x.property == "latestActive"
+        && matches!(&x.reason, BindViolationReason::BadDerivedResultType { declared, .. }
+            if declared == "Long")));
+}
+
+#[tokio::test]
 async fn bind_rejects_count_declared_as_a_non_integer_result() {
     let cp = cp();
     seed_graph(&cp).await;

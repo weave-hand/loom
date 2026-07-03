@@ -250,6 +250,7 @@ pub async fn get(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {
             auth: cp.clone(),
@@ -322,6 +323,7 @@ pub async fn get_unauth(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {
             auth: cp.clone(),
@@ -979,6 +981,7 @@ pub async fn post_search(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {
             auth: cp.clone(),

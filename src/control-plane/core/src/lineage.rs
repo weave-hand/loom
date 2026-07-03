@@ -141,6 +141,36 @@ pub struct LineageEvent {
     pub payload: serde_json::Value,
 }
 
+impl LineageEvent {
+    /// A completed (`EventType::Complete`) event with a freshly-minted `run_id`, the
+    /// current UTC time, and no inputs — the shape emitted by the ingest land/model
+    /// paths and query-api's create-from-params action. `outputs` are the datasets the
+    /// run produced; `payload` is the opaque OpenLineage body.
+    #[must_use]
+    pub fn completed(outputs: Vec<DatasetRef>, payload: serde_json::Value) -> Self {
+        Self::completed_with_run(RunId(Uuid::new_v4()), outputs, payload)
+    }
+
+    /// [`LineageEvent::completed`] against a caller-supplied `run_id` — used where the
+    /// caller owns the run id (hands it to the engine to commit row + event atomically,
+    /// or threads an `X-Loom-Run-Id` header through).
+    #[must_use]
+    pub fn completed_with_run(
+        run_id: RunId,
+        outputs: Vec<DatasetRef>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            run_id,
+            event_type: EventType::Complete,
+            event_time: OffsetDateTime::now_utc(),
+            inputs: Vec::new(),
+            outputs,
+            payload,
+        }
+    }
+}
+
 #[async_trait]
 pub trait Lineage {
     /// Record an event (append-only). Its own transaction.
