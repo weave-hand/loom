@@ -28,6 +28,29 @@ fn to_serving_write(e: control_plane_core::ControlPlaneError) -> ServingError {
     }
 }
 
+/// Build the `ColumnSpec` list for a zero-row `Overwrite` (truncate) step, where
+/// `build_object_batches` cannot run (it rejects empty rows) yet the engine still needs the
+/// schema to re-project the emptied table. Every field is nullable — the same spec shape
+/// `build_object_batches` produces from its `(columns, logical_types)`.
+fn empty_specs(
+    columns: &[String],
+    logical_types: &[String],
+) -> Result<Vec<control_plane_core::ColumnSpec>, ServingError> {
+    columns
+        .iter()
+        .zip(logical_types)
+        .map(|(name, logical)| {
+            let base = control_plane_core::resolve_logical(logical)
+                .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{logical}`")))?;
+            Ok(control_plane_core::ColumnSpec {
+                name: name.clone(),
+                ty: base.canonical_name(),
+                nullable: true,
+            })
+        })
+        .collect()
+}
+
 /// Encode a single record batch as an Arrow IPC stream body. (Moved verbatim from
 /// the old `serving_datafusion.rs`; stays client-side.)
 pub fn encode_ipc_stream(batch: &RecordBatch) -> Result<Vec<u8>, ServingError> {
@@ -218,16 +241,33 @@ impl ActionEngine for EngineActionClient {
         let lineage_json = serde_json::to_string(&LineageWire::from(&event)).map_err(to_serving)?;
         let mut steps = Vec::with_capacity(writes.len());
         for w in writes {
-            let (_schema, batch, specs) =
-                build_object_batches(&w.columns, &w.rows, &w.logical_types)?;
-            let ipc = encode_ipc_stream(&batch)?;
-            let columns_json = serde_json::to_string(&specs).map_err(to_serving)?;
+            let overwrite = matches!(w.mode, WriteMode::Overwrite);
+            // An empty-rows Overwrite (a multi-step Delete/Update that emptied the table) is a
+            // truncate for that target: send an EMPTY IPC body (`build_object_batches` rejects
+            // zero rows, so it must NOT be called) but the REAL column specs, so the engine
+            // re-projects the table's schema at the shared snapshot and it reads as empty (not
+            // as a missing table). Mirrors `overwrite_table`'s empty-body truncate, but keeps
+            // the schema since the multi-step commit registers a whole snapshot.
+            let (ipc, columns_json) = if overwrite && w.rows.is_empty() {
+                (
+                    Vec::new(),
+                    serde_json::to_string(&empty_specs(&w.columns, &w.logical_types)?)
+                        .map_err(to_serving)?,
+                )
+            } else {
+                let (_schema, batch, specs) =
+                    build_object_batches(&w.columns, &w.rows, &w.logical_types)?;
+                (
+                    encode_ipc_stream(&batch)?,
+                    serde_json::to_string(&specs).map_err(to_serving)?,
+                )
+            };
             steps.push(engine_wire::pb::StepWrite {
                 schema: w.table.schema.clone(),
                 name: w.table.name.clone(),
                 ipc,
                 columns_json,
-                overwrite: matches!(w.mode, WriteMode::Overwrite),
+                overwrite,
             });
         }
         let id = self

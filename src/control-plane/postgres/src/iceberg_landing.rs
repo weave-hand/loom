@@ -413,6 +413,20 @@ pub async fn write_steps(
     }
     let mut staged: Vec<Staged> = Vec::with_capacity(steps.len());
     for step in steps {
+        // A zero-row `Overwrite` (a multi-step Delete/Update that emptied the table) is a
+        // truncate: it writes NO Parquet, so skip the Iceberg table-create + Parquet write and
+        // stage zero files. Its `columns` are KEPT so Phase 2's `Overwrite` register still
+        // projects the schema at the shared snapshot — the emptied table then reads as empty
+        // (schema present, zero live files/inline rows), NOT as a missing table.
+        if step.overwrite && step.batches.iter().all(|b| b.num_rows() == 0) {
+            staged.push(Staged {
+                table: step.table,
+                columns: step.columns,
+                files: Vec::new(),
+                overwrite: true,
+            });
+            continue;
+        }
         ensure_iceberg_table(catalog, &step.table, &step.columns).await?;
         let files =
             write_object_data_files(catalog, &step.table, &step.columns, step.batches).await?;
@@ -426,7 +440,8 @@ pub async fn write_steps(
 
     // Phase 2 (one tx): one snapshot for the whole write; register every step's files,
     // emit the single lineage event, commit. Two steps targeting the same table both
-    // stage against this one snapshot (their file rows coexist, live at `at`).
+    // stage against this one snapshot (their file rows coexist, live at `at`). An empty-file
+    // `Overwrite` end-caps both tiers + re-projects the schema with zero files (a truncate).
     let mut tx = pool.begin().await.map_err(backend)?;
     let at = next_snapshot(&mut tx, None).await?;
     for s in &staged {

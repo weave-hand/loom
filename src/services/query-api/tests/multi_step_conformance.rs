@@ -153,6 +153,67 @@ fn ref_to_unknown_property_is_rejected() {
     );
 }
 
+// I-2 guard: an Update/Delete step whose target table is ALSO written by another step is
+// rejected at define time. A multi-step Overwrite reads the table's pre-action committed state,
+// so a sibling write to the same table would be a lost update / spurious NotFound. Here step0
+// inserts an Order and step1 DELETEs the same table.
+#[test]
+fn same_table_update_delete_alongside_another_step_is_rejected() {
+    let a = ActionDef {
+        name: ActionName("badSameTable".into()),
+        steps: vec![
+            ActionStep {
+                target: tn("Order"),
+                kind: ActionKind::Insert,
+                parameters: vec![param_bound("newId", "Long", true, "id")],
+                assignments: vec![],
+                bind: Some("order".into()),
+            },
+            ActionStep {
+                target: tn("Order"),
+                kind: ActionKind::Delete,
+                parameters: vec![param_bound("delId", "Long", true, "id")],
+                assignments: vec![],
+                bind: None,
+            },
+        ],
+    };
+    let m = err_msg(check_conformance_steps(&a, &[order(), order()]));
+    assert!(
+        m.contains("Update/Delete"),
+        "an Update/Delete step sharing a table with another step should be rejected, got: {m}"
+    );
+}
+
+// The allowed counterpart: two Insert steps to the SAME table coalesce as appends — the guard
+// must NOT fire for Insert+Insert.
+#[test]
+fn same_table_two_inserts_is_allowed() {
+    let a = ActionDef {
+        name: ActionName("twoInserts".into()),
+        steps: vec![
+            ActionStep {
+                target: tn("Order"),
+                kind: ActionKind::Insert,
+                parameters: vec![param_bound("id1", "Long", true, "id")],
+                assignments: vec![],
+                bind: None,
+            },
+            ActionStep {
+                target: tn("Order"),
+                kind: ActionKind::Insert,
+                parameters: vec![param_bound("id2", "Long", true, "id")],
+                assignments: vec![],
+                bind: None,
+            },
+        ],
+    };
+    assert!(
+        check_conformance_steps(&a, &[order(), order()]).is_ok(),
+        "two Insert steps to one table should be allowed (they coalesce as appends)"
+    );
+}
+
 // Case 5: a property double-bound within ONE step (a param and a constant both write `id`).
 // The existing intra-step "no double-write" rule must fire per step.
 #[test]

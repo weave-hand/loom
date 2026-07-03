@@ -150,6 +150,31 @@ pub fn check_conformance_steps(
             targets.len()
         )));
     }
+
+    // Same-table multi-mutation guard: a multi-step Update/Delete stages an `Overwrite` built from
+    // the table's CURRENT COMMITTED contents (nothing in the action has committed yet). So if ANY
+    // other step also writes that same table, the Overwrite reads pre-action state — either missing
+    // a sibling Insert's row (a spurious NotFound) or clobbering another step's post-image (a silent
+    // lost update). Reject it at define time. Insert+Insert to one table stays allowed (those
+    // coalesce as appends); only an Update/Delete step sharing a table with another step is rejected.
+    for (i, (step, target)) in action.steps.iter().zip(targets).enumerate() {
+        if !matches!(step.kind, ActionKind::Update | ActionKind::Delete) {
+            continue;
+        }
+        let clashes = action
+            .steps
+            .iter()
+            .zip(targets)
+            .enumerate()
+            .any(|(j, (_, t))| j != i && t.table == target.table);
+        if clashes {
+            return Err(ActionError::Misconfigured(format!(
+                "action `{}` cannot Update/Delete table `{}`.`{}` that another step writes",
+                action.name.0, target.table.schema, target.table.name
+            )));
+        }
+    }
+
     let mut bound_binds = BoundBinds::new();
     for (step, target) in action.steps.iter().zip(targets) {
         check_step(step, target, &bound_binds, &action.name.0)?;
@@ -516,26 +541,28 @@ pub async fn run_action(
             other => ActionError::ControlPlane(other),
         })?;
 
-    // 2. Resolve EVERY step's target type up front (for their tables + property logical types,
-    //    and so cross-step conformance can see each step's target). A missing target here is a
-    //    broken ActionDef (internal inconsistency), not a client error — propagate as a
-    //    ControlPlane fault (-> 500), not a 404. The sole/first step still drives the coarse gate
-    //    and single-step execution below (Task 5 iterates every step for execution).
-    let mut targets: Vec<ObjectType> = Vec::with_capacity(action.steps.len());
-    for step in &action.steps {
-        targets.push(deps.cp.ontology().get_type(&step.target).await?);
-    }
-    let step = action
-        .steps
-        .first()
-        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
-    let target = targets
-        .first()
-        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?
-        .clone();
+    // 2. Dispatch on step count. A lone bind-less step is EXACTLY today's single-object path
+    //    (byte-compatible, inline tiering preserved). Anything else (≥2 steps, or a single bound
+    //    step) is the multi-step orchestration, which resolves + governs EVERY step itself before
+    //    one atomic `write_steps`. Only the single-step path needs a target resolved here — the
+    //    multi-step path resolves each step's target inside `run_multi_step`.
+    let single = (action.steps.len() == 1)
+        .then(|| action.steps.first())
+        .flatten()
+        .filter(|s| s.bind.is_none());
+    let Some(single_step) = single else {
+        return run_multi_step(&action, body, subject, deps).await;
+    };
 
-    // 3. Govern: deny-by-default Write on the target type. First live use of Action::Write.
-    let policy_target = PolicyTarget::Type(step.target.clone());
+    // Single-step: resolve ONLY this step's target (its table + property logical types). A missing
+    // target is a broken ActionDef (internal inconsistency), not a client 404 — propagate as a
+    // ControlPlane fault (-> 500).
+    let target = deps.cp.ontology().get_type(&single_step.target).await?;
+
+    // Govern: deny-by-default coarse Write on the target type, THEN conformance (so a
+    // misconfigured ActionDef never leaks its definition-validity to an unauthorized caller),
+    // then dispatch on kind. The fine-grained write policy + the actual write differ per kind.
+    let policy_target = PolicyTarget::Type(single_step.target.clone());
     if deps
         .cp
         .acl()
@@ -545,31 +572,11 @@ pub async fn run_action(
     {
         return Err(ActionError::Forbidden);
     }
-
-    // 3b. Conformance: each step's parameters/assignments must mirror ITS target type's properties
-    //     (names, compatible logical types, required-property/identity coverage), and every
-    //     `StepRef` must reference a strictly-earlier bound step's real property. A misconfigured
-    //     ActionDef is surfaced here as a clear error instead of an opaque write-time fault. Runs
-    //     after the Write gate (no definition-validity leak to unauthorized callers), before any write.
-    check_conformance_steps(&action, &targets)?;
-
-    // 4. Dispatch on step count. A lone bind-less step is EXACTLY today's single-object path
-    //    (byte-compatible, inline tiering preserved) — run it unchanged on that step. Anything
-    //    else (≥2 steps, or a single bound step) is the multi-step orchestration: resolve +
-    //    govern EVERY step before one atomic `write_steps`. Never index `steps[0]`.
-    let single = (action.steps.len() == 1)
-        .then(|| action.steps.first())
-        .flatten()
-        .filter(|s| s.bind.is_none());
-    match single {
-        // The coarse Write gate + conformance above are shared; the fine-grained write policy
-        // and the actual write differ per kind.
-        Some(single_step) => match single_step.kind {
-            ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await,
-            ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await,
-            ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await,
-        },
-        None => run_multi_step(&action, &targets, body, subject, deps).await,
+    check_conformance(&action, &target)?;
+    match single_step.kind {
+        ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await,
+        ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await,
+        ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await,
     }
 }
 
@@ -947,6 +954,59 @@ pub fn enforce_mutate_policy(
     Ok(())
 }
 
+/// Compute the mutate post-image and run its governance — the shared core of BOTH mutate
+/// paths (the single-object inline-delta [`run_mutate`] and the multi-step file-tier
+/// [`govern_and_build_mutate`]). UPDATE builds `new_row` by cloning `existing` and
+/// overwriting each SET column in place; DELETE keeps `None`. It then runs the three ordered
+/// mutate policy legs ([`enforce_mutate_policy`]) on the existing/new image and the per-value
+/// constraint check on the SET values, returning the `ConstraintViolation` error on any
+/// violation. Returns the computed `new_row` (`None` for DELETE). Pure over its inputs; the
+/// single home for the PATCH + governance block both callers had verbatim.
+fn mutate_governance(
+    target: &ObjectType,
+    columns: &[String],
+    existing: &[SqlValue],
+    set_pairs: &[(String, SqlValue)],
+    write_policies: &[Policy],
+    action_name: &str,
+    is_update: bool,
+) -> Result<Option<Vec<SqlValue>>, ActionError> {
+    // UPDATE = existing with the SET columns overwritten; DELETE keeps `None`.
+    let new_row: Option<Vec<SqlValue>> = is_update.then(|| {
+        let mut row = existing.to_vec();
+        for (col, val) in set_pairs {
+            if let Some(ci) = columns.iter().position(|c| c == col)
+                && let Some(slot) = row.get_mut(ci)
+            {
+                *slot = val.clone();
+            }
+        }
+        row
+    });
+
+    // The three ordered mutate legs on the freshly-read existing/new image, then the
+    // per-value constraint check on the SET values (403 before 422, mirroring INSERT).
+    // DELETE sets nothing (`set_pairs` empty), so it is unaffected by the latter.
+    enforce_mutate_policy(
+        write_policies,
+        columns,
+        existing,
+        set_pairs,
+        new_row.as_deref(),
+        action_name,
+    )?;
+    let cviol = value_constraint_violations(target, set_pairs)?;
+    if !cviol.is_empty() {
+        tracing::info!(
+            action = action_name,
+            count = cviol.len(),
+            "update rejected: constraint violation"
+        );
+        return Err(ActionError::ConstraintViolation(cviol));
+    }
+    Ok(new_row)
+}
+
 /// UPDATE/DELETE via O(change) inline-delta copy-on-write. Reads the single targeted
 /// object by its declared identity through the identity-aware merge view (a privileged,
 /// ACL-unfiltered read), applies the mutation to that one row (DELETE ⇒ a tombstone;
@@ -1074,41 +1134,18 @@ async fn run_mutate(
             }
         };
 
-        // 3. Compute the resulting row (UPDATE = existing with the SET columns
-        //    overwritten; DELETE keeps `None`). Same PATCH logic as the whole-table path.
-        let new_row: Option<Vec<SqlValue>> = is_update.then(|| {
-            let mut row = existing.clone();
-            for (col, val) in &set_pairs {
-                if let Some(ci) = columns.iter().position(|c| c == col)
-                    && let Some(slot) = row.get_mut(ci)
-                {
-                    *slot = val.clone();
-                }
-            }
-            row
-        });
-
-        // 4. Governance + constraints — unchanged from the whole-table path. The three
-        //    ordered mutate legs run on the freshly-read `existing`/`new_row`, then the
-        //    per-value constraint check on the SET values (403 before 422, mirroring
-        //    INSERT). DELETE sets nothing (`set_pairs` empty), so it is unaffected.
-        enforce_mutate_policy(
-            &write_policies.items,
+        // 3/4. Compute the resulting row (UPDATE = existing PATCHed; DELETE keeps `None`)
+        //      and run governance + constraints on the freshly-read image — shared verbatim
+        //      with the whole-table path via `mutate_governance`.
+        let new_row = mutate_governance(
+            target,
             &columns,
             &existing,
             &set_pairs,
-            new_row.as_deref(),
+            &write_policies.items,
             action_name,
+            is_update,
         )?;
-        let cviol = value_constraint_violations(target, &set_pairs)?;
-        if !cviol.is_empty() {
-            tracing::info!(
-                action = action_name,
-                count = cviol.len(),
-                "update rejected: constraint violation"
-            );
-            return Err(ActionError::ConstraintViolation(cviol));
-        }
 
         // 5. Commit ONE inline delta, guarded by the CAS on `v0`. UPDATE writes the full
         //    post-PATCH row; DELETE writes a tombstone carrying only the identity (the
@@ -1210,7 +1247,6 @@ fn log_write_denied(action_name: &str, reason: &WriteDenialReason) {
 /// a follow-on.
 async fn run_multi_step(
     action: &ActionDef,
-    targets: &[ObjectType],
     body: &serde_json::Map<String, Value>,
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
@@ -1218,6 +1254,41 @@ async fn run_multi_step(
     let action_name = action.name.0.as_str();
     let now = request_now();
     let run_id = RunId(Uuid::new_v4());
+
+    // Resolve EVERY step's target type (for their tables + property logical types, and so
+    // cross-step conformance can see each step's target). A missing target is a broken ActionDef
+    // (internal inconsistency), not a client 404 — propagate as a ControlPlane fault (-> 500).
+    let mut targets: Vec<ObjectType> = Vec::with_capacity(action.steps.len());
+    for step in &action.steps {
+        targets.push(deps.cp.ontology().get_type(&step.target).await?);
+    }
+    let targets = targets.as_slice();
+
+    // Coarse Write gate on the FIRST step BEFORE conformance, so a misconfigured ActionDef never
+    // leaks its definition-validity to a caller unauthorized on the root target. The per-step loop
+    // below re-gates every step (including this one — deliberately, so each target is checked).
+    let first = action
+        .steps
+        .first()
+        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
+    if deps
+        .cp
+        .acl()
+        .check(
+            subject,
+            Action::Write,
+            &PolicyTarget::Type(first.target.clone()),
+        )
+        .await?
+        == Decision::Deny
+    {
+        return Err(ActionError::Forbidden);
+    }
+
+    // Conformance across every step: each step's parameters/assignments mirror ITS target's
+    // properties, every `StepRef` references a strictly-earlier bound step's real property, and no
+    // Update/Delete step shares a table with another step. Surfaced as a clear error before any write.
+    check_conformance_steps(action, targets)?;
 
     // Action-level unknown-key guard: the shared body is projected per step (each step sees only
     // ITS param keys), so a per-step `parse_params` never rejects a sibling step's key. Enforce
@@ -1424,37 +1495,17 @@ async fn govern_and_build_mutate(
     })?;
     let (target_idx, existing) = locate_unique_row(&live.rows, id_idx, &id_value, &idprop)?;
 
-    // The resulting row: UPDATE = existing with the SET columns overwritten; DELETE keeps `None`.
-    let new_row: Option<Vec<SqlValue>> = is_update.then(|| {
-        let mut row = existing.clone();
-        for (col, val) in &set_pairs {
-            if let Some(ci) = columns.iter().position(|c| c == col)
-                && let Some(slot) = row.get_mut(ci)
-            {
-                *slot = val.clone();
-            }
-        }
-        row
-    });
-
-    // Governance + constraints on the freshly-read existing/new image (identical to single-object).
-    enforce_mutate_policy(
-        &write_policies.items,
+    // The resulting row + governance/constraints on the freshly-read existing/new image —
+    // shared verbatim with the single-object path via `mutate_governance`.
+    let new_row = mutate_governance(
+        target,
         &columns,
         &existing,
         &set_pairs,
-        new_row.as_deref(),
+        &write_policies.items,
         action_name,
+        is_update,
     )?;
-    let cviol = value_constraint_violations(target, &set_pairs)?;
-    if !cviol.is_empty() {
-        tracing::info!(
-            action = action_name,
-            count = cviol.len(),
-            "update rejected: constraint violation"
-        );
-        return Err(ActionError::ConstraintViolation(cviol));
-    }
 
     // The full post-image: patch (UPDATE) or drop (DELETE) the targeted row, keep the rest verbatim.
     let mut rows = live.rows;

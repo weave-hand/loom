@@ -96,8 +96,16 @@ impl IcebergActionWriter {
     ) -> Result<SnapshotId, EngineServingError> {
         let mut steps = Vec::with_capacity(writes.len());
         for w in writes {
-            let (_schema, batches) = datafusion_io::decode_ipc(&w.ipc)
-                .map_err(|e| EngineServingError::Engine(e.to_string()))?;
+            // An empty `ipc` is a pure end-cap Overwrite (a multi-step Delete/Update that emptied
+            // the table): stage zero batches, exactly as `overwrite_table` treats an empty body as
+            // a truncate. `iceberg_landing::write_steps` end-caps that target at the shared snapshot.
+            let batches = if w.ipc.is_empty() {
+                Vec::new()
+            } else {
+                datafusion_io::decode_ipc(&w.ipc)
+                    .map_err(|e| EngineServingError::Engine(e.to_string()))?
+                    .1
+            };
             steps.push(iceberg_landing::StepLand {
                 table: w.table.clone(),
                 columns: w.columns.clone(),

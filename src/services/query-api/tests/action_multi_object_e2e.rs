@@ -604,6 +604,160 @@ async fn mixed_insert_and_update_commit_atomically() {
 }
 
 // ========================================================================================
+// Test 8 (I-1 regression): a multi-step Delete that empties a table (its ONLY row removed)
+// commits atomically alongside an Insert step — the empty-rows Overwrite end-caps that table
+// at the shared snapshot instead of erroring. Before the fix this returned a 500 (the empty
+// batch was rejected by `build_object_batches`).
+// ========================================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_step_delete_emptying_table_commits_atomically() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    define_order(&cp).await;
+    cp.ontology()
+        .define_type(
+            ObjectType::build("LineItem", ("main", "line_item"))
+                .prop_req("id", "Long")
+                .prop_req("orderId", "Long")
+                .identity("id")
+                .done(),
+        )
+        .await
+        .unwrap();
+
+    // A single-object seed action to create the ONE Order the multi-step action later deletes.
+    cp.ontology()
+        .define_action(
+            ActionDef::build("createOrder", "Order", ActionKind::Insert)
+                .param_req("id", "Long")
+                .param("note", "String")
+                .done(),
+        )
+        .await
+        .unwrap();
+    // closeOrder: step0 inserts a LineItem; step1 DELETEs the Order — which is the table's only
+    // row, so the staged Overwrite carries EMPTY rows (the single-row → empty end-cap case).
+    // Distinct tables, so the same-table multi-mutation guard does not fire.
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("closeOrder".into()),
+            steps: vec![
+                ActionStep {
+                    target: tn("LineItem"),
+                    kind: ActionKind::Insert,
+                    parameters: vec![
+                        param_bound("liId", "Long", true, "id"),
+                        param_bound("liOrderId", "Long", true, "orderId"),
+                    ],
+                    assignments: vec![],
+                    bind: None,
+                },
+                ActionStep {
+                    target: tn("Order"),
+                    kind: ActionKind::Delete,
+                    parameters: vec![param_bound("ordId", "Long", true, "id")],
+                    assignments: vec![],
+                    bind: None,
+                },
+            ],
+        })
+        .await
+        .unwrap();
+
+    let (subj, _role) = writer_on(&cp, &["Order", "LineItem"]).await;
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+
+    // Seed the one Order (id=1).
+    run_action(
+        "createOrder",
+        json!({ "id": "1", "note": "n" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("seed order");
+    assert_eq!(
+        read_objects(&cp, &pool, "Order", &subj).await.len(),
+        1,
+        "seed committed one Order"
+    );
+
+    // Insert LineItem 9 + delete the only Order in one atomic action.
+    let (_rows, run_id) = run_action(
+        "closeOrder",
+        json!({ "liId": "9", "liOrderId": "1", "ordId": "1" })
+            .as_object()
+            .unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("multi-step delete-to-empty + insert commits");
+
+    // (a) The Insert landed.
+    let lines = read_objects(&cp, &pool, "LineItem", &subj).await;
+    assert_eq!(lines.len(), 1, "one LineItem inserted");
+    assert_eq!(lines[0]["id"], json!("9"));
+
+    // (b) The Delete emptied the Order table — the empty-rows Overwrite end-capped both tiers.
+    //     A fully-emptied table is unregistered in the serving engine (see `update_delete_e2e`),
+    //     so the governed read-back ERRORS rather than reporting zero rows — that error IS the
+    //     "no live Order remains" signal (and proves the truncate committed, not a 500).
+    let serving2 = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let qdeps = QueryDeps {
+        ontology: cp.ontology(),
+        acl: cp.acl(),
+        serving: &serving2,
+        default_limit: 1000,
+    };
+    let order_read = read_object(
+        &ObjectQuery {
+            type_name: "Order".into(),
+            filters: vec![],
+            ids: vec![],
+            or_raw: Vec::new(),
+        },
+        &Subject(subj.clone()),
+        &qdeps,
+    )
+    .await;
+    assert!(
+        order_read.is_err(),
+        "the only Order was deleted, so its emptied table is unregistered and the read errors, got {order_read:?}"
+    );
+
+    // (c) One RunId whose lineage lists both step targets — the whole action is one snapshot.
+    let events = cp
+        .lineage()
+        .events_for(&run_id, PageReq::unbounded())
+        .await
+        .unwrap();
+    assert_eq!(events.items.len(), 1, "one lineage event for the action");
+    assert_eq!(
+        events.items[0].outputs,
+        vec![
+            DatasetRef::from(&tn("LineItem")),
+            DatasetRef::from(&tn("Order")),
+        ],
+        "lineage outputs list both the Insert and the Delete targets"
+    );
+
+    drop(warehouse);
+}
+
+// ========================================================================================
 // Test 7b: a vector-typed target still rejects a Delete step via `ensure_cow_supported`.
 // ========================================================================================
 
