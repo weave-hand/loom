@@ -6,7 +6,7 @@
 //! `buck2 test //src/...` from a fresh environment without Postgres binaries.)
 
 use loom_test_flight::{EngineOpts, spawn_engine_uds};
-use loom_test_seed::{local_sql_catalog, vec4_columns, vec4_ipc};
+use loom_test_seed::{local_sql_catalog, vec4_batches, vec4_columns};
 use std::time::Duration;
 
 use control_plane_core::{
@@ -133,12 +133,14 @@ async fn worker_builds_vector_index_over_the_wire() {
         (2, [0.0, 1.0, 0.0, 0.0]),
         (3, [0.0, 0.0, 1.0, 0.0]),
     ];
+    let (schema_rows, batches_rows) = vec4_batches(rows);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema_rows,
+        batches_rows,
         InlineLimits {
             inline_byte_limit: 0,           // always write real Parquet
             flush_byte_threshold: i64::MAX, // no auto-enqueue
@@ -295,12 +297,14 @@ async fn build_with_unknown_index_name_fails() {
 
     // Land a row so the mirror table exists.
     let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
+    let (schema_rows, batches_rows) = vec4_batches(rows);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema_rows,
+        batches_rows,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

@@ -92,38 +92,33 @@ pub async fn spawn_engine_uds(
     let sock_path = sock_dir.path().join("engine.sock");
     let sock = sock_path.to_string_lossy().to_string();
     let pool = fx.pool_for(db).await;
+    // One shared catalog, mirroring production `engine::run::run`.
+    let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), warehouse).await);
 
-    let control = if opts.control {
+    let control = opts.control.then(|| {
         let cp = PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
-        let catalog = local_sql_catalog(fx.pg_dsn(db), warehouse).await;
-        let writer_catalog = local_sql_catalog(fx.pg_dsn(db), warehouse).await;
         let writer = IcebergActionWriter::new(
-            Arc::new(writer_catalog),
+            catalog.clone(),
             pool.clone(),
             opts.inline_byte_limit,
             opts.flush_byte_threshold,
         );
-        Some(EngineControlServer::new(EngineControlService {
+        EngineControlServer::new(EngineControlService {
             cp,
-            catalog,
+            catalog: catalog.clone(),
             pool: pool.clone(),
             retention: Duration::from_secs(7 * 24 * 3600),
             writer,
-        }))
-    } else {
-        None
-    };
-    let flight = if opts.flight {
-        let catalog = local_sql_catalog(fx.pg_dsn(db), warehouse).await;
-        Some(FlightServiceServer::new(FlightDataService {
+        })
+    });
+    let flight = opts.flight.then(|| {
+        FlightServiceServer::new(FlightDataService {
             catalog,
             serving_catalog: IcebergCatalog::new(pool.clone()),
             serving_store: None,
             pool,
-        }))
-    } else {
-        None
-    };
+        })
+    });
 
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = UnixListenerStream::new(listener);

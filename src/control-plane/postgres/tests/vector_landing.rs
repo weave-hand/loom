@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Float32Array, Int64Array, ListArray, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{Catalog, DatasetId, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
@@ -17,9 +16,11 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::read_files_as_batches;
 
-/// Arrow IPC body: `id: long` + `embedding: list<float>` (non-null element), two
+/// Schema + batch: `id: long` + `embedding: list<float>` (non-null element), two
 /// rows each holding `width` floats (`width = 4` matches the declared `vector(4)`).
-fn ipc_body(width: usize) -> Vec<u8> {
+/// `land` now takes pre-decoded batches, so build these directly rather than
+/// round-tripping through an Arrow IPC encode/decode.
+fn ipc_body(width: usize) -> (Arc<Schema>, Vec<RecordBatch>) {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
     let row0: Vec<f32> = (0..width).map(|i| 0.1 * (i + 1) as f32).collect();
@@ -36,13 +37,7 @@ fn ipc_body(width: usize) -> Vec<u8> {
     ]));
     let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(id), Arc::new(embedding)])
         .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
@@ -73,12 +68,14 @@ async fn lands_and_reads_back_a_vector_column() {
         name: "chunks".into(),
     };
     // limit 0 -> force the real Parquet write path (the inline path is scalar-only).
+    let (schema, batches) = ipc_body(4);
     let snap = land(
         &pool,
         &catalog,
         &t,
         &vec4_columns(),
-        &ipc_body(4),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -143,12 +140,14 @@ async fn width_mismatch_is_rejected() {
         name: "bad".into(),
     };
     // vec4_columns() declares vector(4) but the data carries 3-element rows.
+    let (schema, batches) = ipc_body(3);
     let r = land(
         &pool,
         &catalog,
         &t,
         &vec4_columns(),
-        &ipc_body(3),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

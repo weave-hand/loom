@@ -9,7 +9,6 @@ use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use std::time::Duration;
 
@@ -36,21 +35,12 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// An Arrow IPC body of `rows` rows (`id: long` = `0..rows`), for `land`.
-fn ipc_body(rows: i64) -> Vec<u8> {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
-    )
-    .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+/// A schema + batch of `rows` rows (`id: long` = `0..rows`), for `land`. `land`
+/// now takes pre-decoded batches directly, so this reuses `batch` rather than
+/// round-tripping through an Arrow IPC encode/decode.
+fn ipc_body(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
+    let b = batch(rows);
+    (b.schema(), vec![b])
 }
 
 /// A bare `id: long` record batch of ids `0..rows`.
@@ -206,12 +196,14 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
         name: "t".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -348,12 +340,14 @@ async fn gc_is_a_noop_when_nothing_aged_out() {
         name: "fresh".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -394,12 +388,14 @@ async fn gc_serializes_with_concurrent_flush() {
 
     // Seed: land A (s1) → overwrite B (s2; end-caps A) → age s2 so gc reclaims A,
     // then add live inline rows so flush has work to drain.
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog_g,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -484,12 +480,14 @@ async fn gc_reclaims_a_dropped_table() {
     };
     let run = RunId(uuid::Uuid::new_v4());
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -565,12 +563,14 @@ async fn gc_preserves_a_within_window_dropped_table() {
         name: "recent".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -629,12 +629,14 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
     };
 
     // Incarnation 1: land, capture its file + tid, drop.
+    let (schema1, batches1) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema1,
+        batches1,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -649,12 +651,14 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
     catalog.drop_table(&ident).await.expect("drop1");
 
     // Incarnation 2 (live): re-land under the same name → new table_id.
+    let (schema2, batches2) = ipc_body(5);
     let s2 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(5),
+        schema2,
+        batches2,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -707,12 +711,14 @@ async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
         name: "twice".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -753,12 +759,14 @@ async fn gc_reclaims_a_dropped_table_with_vector_index() {
         name: "indexed".into(),
     };
 
+    let (schema, batches) = ipc_body(4);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(4),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

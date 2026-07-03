@@ -7,7 +7,6 @@ use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::Catalog;
 use control_plane_core::{
@@ -28,22 +27,13 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// An Arrow IPC body of `rows` rows, single `id: long` column (ids `0..rows`) —
+/// A schema + batch of `rows` rows, single `id: long` column (ids `0..rows`) —
 /// used to seed the initial append via `land` (limit 0 forces real Parquet).
-fn ipc_body(rows: i64) -> Vec<u8> {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
-    )
-    .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+/// `land` now takes pre-decoded batches, so this reuses `batch` rather than
+/// round-tripping through an Arrow IPC encode/decode.
+fn ipc_body(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
+    let b = batch(rows);
+    (b.schema(), vec![b])
 }
 
 /// A bare `id: long` record batch of ids `0..rows` — the replacement payload passed
@@ -90,12 +80,14 @@ async fn overwrite_expires_old_and_preserves_time_travel() {
     };
 
     // append a.parquet (10 rows) -> s1 (limit 0 forces real Parquet).
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -147,12 +139,14 @@ async fn replaced_files_carry_per_column_stats() {
         name: "stats".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -194,12 +188,14 @@ async fn truncate_overwrite_with_zero_files() {
         name: "trunc".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -239,12 +235,14 @@ async fn overwrite_emits_lineage() {
         name: "lin".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -300,12 +298,14 @@ async fn overwrite_atomicity_leaves_prior_set_intact() {
         name: "atomic".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

@@ -35,6 +35,16 @@ pub fn merge_topk(
     combined
 }
 
+/// Groups the six query-describing arguments to `vector_search`.
+pub struct VectorQuery<'a> {
+    pub table: &'a TableRef,
+    pub index_name: &'a str,
+    pub query: &'a [f32],
+    pub k: usize,
+    pub nprobe: Option<u32>,
+    pub ef_search: Option<u32>,
+}
+
 /// Exact k-NN search over the table's bound vector index, merging cold (Puffin)
 /// and hot (inline delta) results.
 ///
@@ -44,25 +54,23 @@ pub fn merge_topk(
 ///
 /// Errors with `EngineServingError::NoIndex` when no index has been built for
 /// `(table, column)` at the current snapshot.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "public API: catalog, pool, table, index, query, k, nprobe, ef_search are all required; a params struct is deferred"
-)]
 pub async fn vector_search(
     catalog: &SqlCatalog,
     pool: &PgPool,
-    table: &TableRef,
-    index_name: &str,
-    query: &[f32],
-    k: usize,
-    nprobe: Option<u32>,
-    ef_search: Option<u32>,
+    q: VectorQuery<'_>,
 ) -> Result<RecordBatch, EngineServingError> {
     use control_plane_core::Catalog;
 
+    let table = q.table;
+    let index_name = q.index_name;
+    let query = q.query;
+    let k = q.k;
+    let nprobe = q.nprobe;
+    let ef_search = q.ef_search;
+
     // 1. Snapshot Q: MVCC anchor for the search.
     let ice = IcebergCatalog::new(pool.clone());
-    let q: i64 = ice.current_snapshot(table).await.map_err(to_serving)?.id.0;
+    let qsnap: i64 = ice.current_snapshot(table).await.map_err(to_serving)?.id.0;
 
     // 2. Resolve the mirror table_id.
     let mut conn = pool.acquire().await.map_err(to_serving)?;
@@ -78,13 +86,13 @@ pub async fn vector_search(
     drop(conn);
 
     // 3. Look up the bound index (NoIndex error if none).
-    let row = lookup_vector_index(pool, table_id, index_name, q)
+    let row = lookup_vector_index(pool, table_id, index_name, qsnap)
         .await
         .map_err(to_serving)?
         .ok_or_else(|| {
             EngineServingError::NoIndex(format!(
                 "no vector index `{}` on {}.{} at snapshot {}",
-                index_name, table.schema, table.name, q
+                index_name, table.schema, table.name, qsnap
             ))
         })?;
     let column: &str = &row.column;
@@ -117,13 +125,14 @@ pub async fn vector_search(
     //    the index's covered snapshot S and alive at Q; they are brute-force scored
     //    and merged with the cold results.
     let metric: Metric = row.metric.parse().map_err(to_serving)?;
-    let hot: Vec<(VectorKey, f32)> = match inline_delta_batch(pool, table, row.covered_snapshot, q)
-        .await
-        .map_err(to_serving)?
-    {
-        None => vec![],
-        Some(batch) => score_inline_batch(&batch, query, metric, column)?,
-    };
+    let hot: Vec<(VectorKey, f32)> =
+        match inline_delta_batch(pool, table, row.covered_snapshot, qsnap)
+            .await
+            .map_err(to_serving)?
+        {
+            None => vec![],
+            Some(batch) => score_inline_batch(&batch, query, metric, column)?,
+        };
 
     // 6. Merge cold + hot, ascending distance, top-k.
     let merged = merge_topk(cold, hot, k);

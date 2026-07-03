@@ -2,9 +2,29 @@
 //! post-flush snapshot, then becomes visible again once the auto-enqueued rebuild runs.
 //! Proves the slice's user-visible guarantee across the real k-NN read path.
 
-use control_plane_core::IndexSpec;
+use control_plane_core::{IndexSpec, TableRef};
 use control_plane_postgres::fixture::PgFixture;
+use engine_serving::VectorQuery;
 use loom_test_seed::{hot_limits, ids_i64, land_vec4, seed_docs_vector};
+
+/// Terse `VectorQuery` builder for the call sites in this file.
+fn vq<'a>(
+    table: &'a TableRef,
+    index_name: &'a str,
+    query: &'a [f32],
+    k: usize,
+    nprobe: Option<u32>,
+    ef_search: Option<u32>,
+) -> VectorQuery<'a> {
+    VectorQuery {
+        table,
+        index_name,
+        query,
+        k,
+        nprobe,
+        ef_search,
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flushed_vector_is_missing_then_restored_by_auto_rebuild() {
@@ -30,7 +50,7 @@ async fn flushed_vector_is_missing_then_restored_by_auto_rebuild() {
 
     // Sanity (hot-delta merge): row 5 is the nearest and visible BEFORE the flush.
     let hot =
-        engine_serving::vector_search(&s.catalog, &s.pool, &table, "by_flat", q, 2, None, None)
+        engine_serving::vector_search(&s.catalog, &s.pool, vq(&table, "by_flat", q, 2, None, None))
             .await
             .expect("knn pre-flush");
     assert_eq!(ids_i64(&hot)[0], 5, "inline row is nearest before flush");
@@ -43,7 +63,7 @@ async fn flushed_vector_is_missing_then_restored_by_auto_rebuild() {
     // 4. GAP (the bug this slice fixes): row 5 left the hot delta (end-capped) and is not
     //    in the cold index (built at the older S) -> missing from k-NN.
     let gap =
-        engine_serving::vector_search(&s.catalog, &s.pool, &table, "by_flat", q, 2, None, None)
+        engine_serving::vector_search(&s.catalog, &s.pool, vq(&table, "by_flat", q, 2, None, None))
             .await
             .expect("knn post-flush");
     assert!(
@@ -73,7 +93,7 @@ async fn flushed_vector_is_missing_then_restored_by_auto_rebuild() {
     // 6. Fresh again: the rebuilt cold index (covered_snapshot advanced past the flush)
     //    once more makes row 5 the nearest.
     let fresh =
-        engine_serving::vector_search(&s.catalog, &s.pool, &table, "by_flat", q, 2, None, None)
+        engine_serving::vector_search(&s.catalog, &s.pool, vq(&table, "by_flat", q, 2, None, None))
             .await
             .expect("knn post-rebuild");
     assert_eq!(

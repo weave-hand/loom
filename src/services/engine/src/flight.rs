@@ -22,6 +22,7 @@ use control_plane_postgres::read_files_as_batches;
 use engine_wire::flight::EngineTicket;
 use futures::TryStreamExt; // for `.map_err` on the FlightDataEncoder stream
 use prost::Message;
+use service_runtime::ServingStore;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -43,12 +44,12 @@ pub fn serving_status(e: engine_serving::EngineServingError) -> Status {
 
 pub struct FlightDataService {
     /// File-ticket data plane (worker/compaction): a real Iceberg `SqlCatalog`.
-    pub catalog: SqlCatalog,
+    pub catalog: Arc<SqlCatalog>,
     pub pool: PgPool,
     /// Flight SQL read plane: the live-table catalog the governed reads run against.
     pub serving_catalog: IcebergCatalog,
-    /// `Some((bucket, store))` for an S3 warehouse; `None` => local filesystem.
-    pub serving_store: Option<(String, Arc<dyn object_store::ObjectStore>)>,
+    /// `Some(ServingStore { bucket, store })` for an S3 warehouse; `None` => local filesystem.
+    pub serving_store: Option<ServingStore>,
 }
 
 impl FlightDataService {
@@ -119,12 +120,14 @@ impl FlightDataService {
         let batch = engine_serving::vector_search(
             &self.catalog,
             &self.pool,
-            &table,
-            &vs.index_name,
-            &vs.query,
-            vs.k as usize,
-            vs.nprobe,
-            vs.ef_search,
+            engine_serving::VectorQuery {
+                table: &table,
+                index_name: &vs.index_name,
+                query: &vs.query,
+                k: vs.k as usize,
+                nprobe: vs.nprobe,
+                ef_search: vs.ef_search,
+            },
         )
         .await
         .map_err(serving_status)?;

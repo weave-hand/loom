@@ -9,7 +9,7 @@
 
 use loom_test_flight::spawn_flight_uds;
 use loom_test_seed::{
-    distances_f32, ids_i64, local_sql_catalog, test_lineage, vec4_columns, vec4_ipc,
+    distances_f32, ids_i64, local_sql_catalog, test_lineage, vec4_batches, vec4_columns,
 };
 use std::time::Duration;
 
@@ -89,12 +89,14 @@ async fn vector_search_flight_top_k() {
 
     // Land rows 1–2 (forced to Parquet: inline_byte_limit = 0).
     let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
+    let (schema_rows_1_2, batches_rows_1_2) = vec4_batches(rows_1_2);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows_1_2),
+        schema_rows_1_2,
+        batches_rows_1_2,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -106,12 +108,14 @@ async fn vector_search_flight_top_k() {
 
     // Land rows 3–4.
     let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
+    let (schema_rows_3_4, batches_rows_3_4) = vec4_batches(rows_3_4);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows_3_4),
+        schema_rows_3_4,
+        batches_rows_3_4,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -205,12 +209,14 @@ async fn vector_search_no_index_is_not_found() {
     // Land one row but skip build_vector_index.
     let run = RunId(uuid::Uuid::new_v4());
     let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
+    let (schema_rows, batches_rows) = vec4_batches(rows);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema_rows,
+        batches_rows,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -304,12 +310,14 @@ async fn vector_search_dim_mismatch_is_invalid_argument() {
 
     let run = RunId(uuid::Uuid::new_v4());
     let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
+    let (schema_rows, batches_rows) = vec4_batches(rows);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema_rows,
+        batches_rows,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

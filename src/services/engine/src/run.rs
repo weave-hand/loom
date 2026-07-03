@@ -71,22 +71,14 @@ pub async fn run(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
         cfg.object_store.warehouse_uri.clone(),
     );
-    let props_for_writer = props.clone();
-    let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
-        .load("loom", props.clone())
-        .await?;
-    let flight_catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
-        .load("loom", props)
-        .await?;
-
-    let writer_catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
-        .load("loom", props_for_writer)
-        .await?;
+    let catalog = std::sync::Arc::new(
+        SqlCatalogBuilder::default()
+            .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
+            .load("loom", props)
+            .await?,
+    );
     let writer = engine_serving::IcebergActionWriter::new(
-        std::sync::Arc::new(writer_catalog),
+        catalog.clone(),
         pool.clone(),
         tuning.inline_byte_limit,
         tuning.flush_byte_threshold,
@@ -94,13 +86,13 @@ pub async fn run(
 
     let control = EngineControlService {
         cp,
-        catalog,
+        catalog: catalog.clone(),
         pool: pool.clone(),
         retention: cfg.gc_retention,
         writer,
     };
     let flight = FlightDataService {
-        catalog: flight_catalog,
+        catalog,
         serving_catalog: IcebergCatalog::new(pool.clone()),
         serving_store: service_runtime::build_serving_object_store(&cfg.object_store)?,
         pool,

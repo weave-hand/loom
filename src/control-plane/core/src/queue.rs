@@ -52,6 +52,24 @@ pub struct JobFailure {
     pub policy: RetryPolicy,
 }
 
+impl JobFailure {
+    /// A terminal failure: move the job to `failed`, retained for inspection.
+    pub fn abandon(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            policy: RetryPolicy::Abandon,
+        }
+    }
+
+    /// A retryable failure: make the job available again after `delay`.
+    pub fn retry(delay: std::time::Duration, error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            policy: RetryPolicy::Retry { delay },
+        }
+    }
+}
+
 #[async_trait]
 pub trait Queue {
     /// Enqueue a job (autocommit). For transactional enqueue, use [`crate::Tx::enqueue`].

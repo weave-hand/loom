@@ -29,21 +29,17 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-fn ipc_body(ids: &[i64]) -> Vec<u8> {
-    use arrow_ipc::writer::StreamWriter;
+/// A schema + batch (single `id: Int64` column) of `ids`. `land` now takes
+/// pre-decoded batches, so build these directly rather than round-tripping
+/// through an Arrow IPC encode/decode.
+fn ipc_body(ids: &[i64]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from(ids.to_vec()))],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
@@ -67,7 +63,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let wh_str = wh.path().display().to_string();
-    let catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
+    let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), &wh_str).await);
     let writer_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
     let writer = IcebergActionWriter::new(
         Arc::new(writer_catalog),
@@ -126,12 +122,14 @@ async fn list_files_then_compact_over_the_wire() {
     };
 
     // Land batch a: 3 rows → forces a real Parquet file (inline_byte_limit = 0).
+    let (schema_a, batches_a) = ipc_body(&[1, 2, 3]);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(&[1, 2, 3]),
+        schema_a,
+        batches_a,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -142,12 +140,14 @@ async fn list_files_then_compact_over_the_wire() {
     .expect("land a");
 
     // Land batch b: 2 rows → second Parquet file.
+    let (schema_b, batches_b) = ipc_body(&[4, 5]);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(&[4, 5]),
+        schema_b,
+        batches_b,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

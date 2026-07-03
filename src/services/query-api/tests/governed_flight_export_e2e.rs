@@ -20,7 +20,6 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Auth, ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, ObjectType, Ontology,
@@ -55,7 +54,9 @@ fn columns() -> Vec<ColumnSpec> {
 /// rows of width-4 embeddings. Row 0 is the deterministic `[0.1, 0.2, 0.3, 0.4]` used for the
 /// value-exact assertion; the rest are derived from the row index (none can collide with row
 /// 0). 1500 rows proves the export carries past any 1000-row cap.
-fn ipc_body(rows: usize) -> Vec<u8> {
+/// `land` now takes pre-decoded batches; build the schema + batch directly
+/// rather than round-tripping through an Arrow IPC encode/decode.
+fn ipc_body(rows: usize) -> (Arc<Schema>, Vec<RecordBatch>) {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
     for r in 0..rows {
@@ -76,13 +77,7 @@ fn ipc_body(rows: usize) -> Vec<u8> {
     ]));
     let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(id), Arc::new(embedding)])
         .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
@@ -161,12 +156,14 @@ async fn setup_with_cap(
         name: "chunks".into(),
     };
     let catalog = local_sql_catalog(dsn.clone(), &warehouse).await;
+    let (schema, batches) = ipc_body(1500);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(1500),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -254,12 +251,14 @@ async fn setup_with_mask(
         name: "chunks".into(),
     };
     let catalog = local_sql_catalog(dsn.clone(), &warehouse).await;
+    let (schema, batches) = ipc_body(1500);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(1500),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

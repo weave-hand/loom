@@ -5,48 +5,23 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use control_plane_core::{ControlPlane, Job, JobFailure, RetryPolicy};
+use control_plane_core::{ControlPlane, Job, JobFailure};
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
 use control_plane_worker::Worker;
 use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use object_store::ObjectStore;
 use tokio_util::sync::CancellationToken;
 use transform::{transform_handler, typed_transform_handler};
 
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct TransformConfig {
-    worker: loom_config::WorkerTuning,
-    write: datafusion_io::WriteConfig,
-}
-
-impl loom_config::LayeredConfig for TransformConfig {
-    fn overlay_env(
-        &mut self,
-        env: &std::collections::HashMap<String, String>,
-    ) -> Result<(), loom_config::ConfigError> {
-        self.worker.overlay_env(env)?;
-        self.write.overlay_env(env)?;
-        Ok(())
-    }
-
-    fn validate(&self) -> Result<(), loom_config::ConfigError> {
-        self.worker.validate()?;
-        self.write.validate()?;
-        Ok(())
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = service_runtime::Config::from_env()?;
-    // Compose transform config as defaults < file < env (see `TransformConfig`'s `LayeredConfig`).
+    // Compose transform config as defaults < file < env (see `JobConfig`'s `LayeredConfig`).
     let env = service_runtime::env_map();
-    let tcfg: TransformConfig = service_runtime::load(&env)?;
+    let tcfg: datafusion_io::JobConfig = service_runtime::load(&env)?;
     let pool = service_runtime::build_pool(&cfg.db).await?;
     // The queue is backend-neutral (same Postgres tables either way), so the Worker
     // always dequeues through the `PgControlPlane`; the *handler's* `ControlPlane`
@@ -85,10 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "transform" => {
                             transform_handler(cp.as_ref(), store, &root_url, &write_cfg, job).await
                         }
-                        other => Err(JobFailure {
-                            error: format!("unknown job kind: {other}"),
-                            policy: RetryPolicy::Abandon,
-                        }),
+                        other => Err(JobFailure::abandon(format!("unknown job kind: {other}"))),
                     }
                 }
             },
@@ -97,8 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Construct the vendored Iceberg SQL catalog over the same Postgres + a `file://`
-/// warehouse rooted at the service data path (mirrors `ingest::build_iceberg_catalog`).
+/// Construct the vendored Iceberg SQL catalog over the same Postgres + the configured
+/// object-store warehouse (mirrors `ingest::build_iceberg_catalog`).
 async fn build_iceberg_catalog(
     cfg: &service_runtime::Config,
 ) -> Result<SqlCatalog, Box<dyn std::error::Error>> {
@@ -106,10 +78,10 @@ async fn build_iceberg_catalog(
     props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
     props.insert(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", cfg.data_path.display()),
+        cfg.object_store.warehouse_uri.clone(),
     );
     let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
+        .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props)
         .await?;
     Ok(catalog)

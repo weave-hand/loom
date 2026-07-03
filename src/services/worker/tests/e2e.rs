@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, GC_JOB_KIND, LineageEvent, NewJob,
@@ -30,21 +29,17 @@ use engine_wire::pb::engine_control_server::EngineControlServer;
 use tonic::transport::Server;
 use worker::handler::{handle_flush, handle_gc};
 
-/// An Arrow IPC body of `rows` rows (`id: long` = `0..rows`), for `land`.
-fn ipc_body(rows: i64) -> Vec<u8> {
+/// A schema + batch of `rows` rows (`id: long` = `0..rows`), for `land`. `land`
+/// now takes pre-decoded batches, so build these directly rather than
+/// round-tripping through an Arrow IPC encode/decode.
+fn ipc_body(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let b = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&b).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![b])
 }
 
 /// Strip a `file://` URL to a local filesystem path.
@@ -100,8 +95,8 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let wh_str = wh.path().display().to_string();
-    let control_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
-    let flight_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
+    let control_catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), &wh_str).await);
+    let flight_catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), &wh_str).await);
     let writer_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
     let writer = IcebergActionWriter::new(
         Arc::new(writer_catalog),
@@ -340,12 +335,14 @@ async fn gc_job_flows_through_worker_and_reclaims_object() {
     };
     let ice = IcebergCatalog::new(pool.clone());
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

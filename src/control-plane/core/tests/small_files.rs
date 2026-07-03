@@ -1,7 +1,6 @@
 //! Pure selection logic for compaction: which live files fall below the size threshold.
 
-use control_plane_core::FileRef;
-use transform::small_files;
+use control_plane_core::{FileRef, small_files};
 
 fn f(path: &str, size: i64) -> FileRef {
     FileRef {

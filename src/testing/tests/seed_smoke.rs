@@ -1,20 +1,18 @@
 //! Smoke for `loom_test_seed`: the shared vector seed prologue produces the
 //! same wh.docs world the per-file copies did — type defined, 4 cold rows
-//! landed, flat index built — and the IPC/extractor helpers round-trip.
+//! landed, flat index built — and the batch/extractor helpers round-trip.
 
-use arrow_ipc::reader::StreamReader;
 use control_plane_core::{IndexSpec, Metric};
 use control_plane_postgres::fixture::PgFixture;
 use loom_test_seed::{
-    assert_knn, hot_limits, ids_i64, land_vec4, seed_docs_vector, vec4_columns, vec4_ipc,
+    assert_knn, hot_limits, ids_i64, land_vec4, seed_docs_vector, vec4_batches, vec4_columns,
 };
 
 #[test]
-fn vec4_ipc_round_trips_ids() {
-    let body = vec4_ipc(&[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])]);
-    let reader = StreamReader::try_new(body.as_slice(), None).expect("reader");
-    let batches: Vec<_> = reader.collect::<Result<_, _>>().expect("batches");
+fn vec4_batches_round_trips_ids() {
+    let (schema, batches) = vec4_batches(&[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])]);
     assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].schema(), schema);
     assert_eq!(ids_i64(&batches[0]), vec![1, 2]);
     assert_eq!(vec4_columns().len(), 2);
 }

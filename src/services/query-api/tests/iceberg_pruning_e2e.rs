@@ -3,6 +3,9 @@
 //! are exactly the matching ones, and pruning never changes the governed result set.
 //! loom_fixture_test (Postgres + LocalFsStorage).
 
+use std::sync::Arc;
+
+use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{Catalog, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -85,10 +88,13 @@ async fn pruning_skips_files_and_preserves_governed_results() {
         .await
         .expect("files_with_stats");
     assert_eq!(files.len(), 2, "two appends -> two data files");
-    let provider = IcebergMirrorTableProvider::try_new(&ctx, files.clone())
-        .await
-        .expect("provider");
-    let schema = provider.schema();
+    // The mirror's authoritative schema, built directly from the columns this test
+    // seeded above (`cols`) rather than inferred from the Parquet footers.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+    ]));
+    let provider = IcebergMirrorTableProvider::try_new_with_schema(files.clone(), schema.clone());
     let kept = prune_files(&schema, &[col("id").eq(lit(v))], &files);
     assert_eq!(kept.len(), 1, "exactly one file survives id = 2");
     // The survivor is file A: its id range covers 2; file B's does not.

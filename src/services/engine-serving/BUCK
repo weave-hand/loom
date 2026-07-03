@@ -11,6 +11,7 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/services/datafusion-io:datafusion-io",
+        "//src/services/store-config:store-config",
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:datafusion",

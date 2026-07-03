@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
 
 # The worker library exposes the flush handler so the e2e test can import it.
@@ -13,9 +14,9 @@ rust_library(
         "//src/services/datafusion-io:datafusion-io",
         "//src/services/engine-wire:engine-wire",
         "//src/services/store-config:store-config",
-        "//src/services/transform:transform",
         "//third-party:arrow",
         "//third-party:object_store",
+        "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:uuid",
     ],
@@ -40,7 +41,6 @@ rust_binary(
         "//src/services/datafusion-io:datafusion-io",
         "//src/services/engine-wire:engine-wire",
         "//src/services/store-config:store-config",
-        "//src/services/transform:transform",
         "//third-party:arrow",
         "//third-party:object_store",
         "//third-party:serde",
@@ -50,6 +50,26 @@ rust_binary(
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
+)
+
+# Pure-logic test for the generic `run_wire_job` wrapper (parse-error => Abandon,
+# rpc-error => Retry, success passthrough) — no fixture needed.
+rust_test(
+    name = "run-wire-job",
+    crate = "run_wire_job",
+    srcs = ["tests/run_wire_job.rs"],
+    crate_root = "tests/run_wire_job.rs",
+    edition = "2024",
+    deps = [
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/loom-config:loom-config",
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
 )
 
 # End-to-end test: needs engine + postgres fixture to stand up the server,
@@ -176,7 +196,6 @@ loom_fixture_test(
         "//src/services/engine-serving:engine-serving",
         "//src/services/engine-wire:engine-wire",
         "//src/services/store-config:store-config",
-        "//src/services/transform:transform",
         "//third-party:arrow-array",
         "//third-party:arrow-flight",
         "//third-party:arrow-ipc",

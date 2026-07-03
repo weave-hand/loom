@@ -2,7 +2,7 @@
 //! when the flushed table has declared vector indexes, deduped against any pending
 //! (state='available') job for the same kind+payload.
 
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_ipc};
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_batches, vec4_columns};
 
 use control_plane_core::{
     ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
@@ -114,12 +114,14 @@ async fn flush_enqueues_one_build_job_per_declared_index() {
     let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
 
     // Land inline (usize::MAX forces the inline path for any size).
+    let (schema, batches) = vec4_batches(rows);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -156,12 +158,14 @@ async fn flush_without_declared_index_enqueues_nothing() {
     let run = RunId(uuid::Uuid::new_v4());
     let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
 
+    let (schema, batches) = vec4_batches(rows);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -254,12 +258,14 @@ async fn two_flushes_with_pending_build_enqueue_one() {
 
     // Land + flush → 1 available job.
     let rows1: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
+    let (schema1, batches1) = vec4_batches(rows1);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows1),
+        schema1,
+        batches1,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -279,12 +285,14 @@ async fn two_flushes_with_pending_build_enqueue_one() {
 
     // Land more rows + second flush while job is still available → dedup, still 1 job.
     let rows2: &[(i64, [f32; 4])] = &[(2, [0.0, 1.0, 0.0, 0.0])];
+    let (schema2, batches2) = vec4_batches(rows2);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows2),
+        schema2,
+        batches2,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -313,12 +321,14 @@ async fn flush_while_build_running_enqueues_a_fresh_pending() {
 
     // Land + flush → 1 available job.
     let rows1: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
+    let (schema1, batches1) = vec4_batches(rows1);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows1),
+        schema1,
+        batches1,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -340,12 +350,14 @@ async fn flush_while_build_running_enqueues_a_fresh_pending() {
 
     // Land more rows + flush again → job is running, not available → new job enqueued.
     let rows2: &[(i64, [f32; 4])] = &[(2, [0.0, 1.0, 0.0, 0.0])];
+    let (schema2, batches2) = vec4_batches(rows2);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows2),
+        schema2,
+        batches2,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,

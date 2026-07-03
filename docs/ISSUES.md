@@ -55,7 +55,7 @@ until `fixed` or `wontfix`. Deferred *capabilities* live in
 
 - [x] **Transform read-path edge cases** `{#iss-transform-read-edge-cases area:transform status:fixed from:transform-workers pr:#147 spec:2026-06-22-transform-read-edge-cases-design}`
   Two `run_transform` edge cases: a missing input surfacing at `Catalog::files` is classified transient (Retry) instead of `UnknownInput` (Abandon); and `scan_table` over an empty file list errors inside DataFusion (Retry) rather than yielding an empty input. Fixed: an `unknown_input` mapper applied at every input read maps `NotFound` → `UnknownInput` (Abandon); a zero-file input registers an empty relation (via `datafusion_io::logical_arrow_schema` + `register_empty_table`) so the SQL runs over an empty input.
-- [ ] **Transform binary's Iceberg catalog ignores the object-store config** `{#iss-transform-catalog-local-only area:transform status:open from:2026-07-02-pillar-idioms-audit-design pr:- spec:2026-07-02-pillar-idioms-audit-design}`
+- [x] **Transform binary's Iceberg catalog ignores the object-store config** `{#iss-transform-catalog-local-only area:transform status:fixed from:2026-07-02-pillar-idioms-audit-design pr:#328 spec:2026-07-02-pillar-idioms-audit-design}`
   `transform/src/main.rs::build_iceberg_catalog` hardcodes `LocalFsStorageFactory` + `file://{data_path}`, ignoring `cfg.object_store` — the transform binary cannot commit to an S3 warehouse even though every other writer (engine, ingest) goes through `service_runtime::build_storage_factory`. Fixed by [[road-dead-path-sweep]] (route through the shared factory, or mark the binary explicitly local-only pending [[fut-transform-wire-migration]]).
 
 ## iceberg
