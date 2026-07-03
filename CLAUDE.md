@@ -160,6 +160,11 @@ planned / broken":
 - `docs/FUTURE.md` — deliberately-deferred ideas (`status: deferred|promoted|dropped`).
 - `docs/ISSUES.md` — known defects/gaps in shipped code (`status: open|fixed|wontfix`).
 
+The registers carry **open work only**: when an item closes, its entry is
+removed in the closing PR and the landed capability is documented per subsystem
+in `docs/system-capabilities/` (see its README; git history keeps the
+item-by-item record).
+
 Each item is one markdown list entry with a backtick-wrapped tag block on the
 title line and prose below:
 `- [ ] **Title** ` + "`" + `{#id area:<a> status:<s> from:<f> pr:<p> spec:<sp>}` + "`".
