@@ -253,6 +253,30 @@ external-DB deploy, with no second backend:
   `sqlx::migrate!` and applied on boot — nothing to mount, and the same
   embedded migrator backs `LOOM_MIGRATE=apply` and the chart's migration Job.
 
+### Host prerequisites
+
+Embedded mode runs loom's own bundled Postgres, but loom embeds **only its own
+artifacts** — system libraries are the deployment environment's responsibility.
+The bundled `postgres`/`initdb` dynamically link `libxml2.so.2`, so the host must
+provide a system libxml2 exposing that soname (package `libxml2` on
+Wolfi/Debian/Ubuntu/Fedora). If it is missing, `loom` fails fast at cluster start
+with a named error —
+
+```
+embedded Postgres cannot start: missing shared library libxml2.so.2. loom bundles
+only its own Postgres artifacts, not system libraries — install it on the host …
+```
+
+— rather than a cryptic loader failure. Some distros ship a newer soname (Arch
+provides `libxml2.so.16`, not `.so.2`); `tools/dev-up.sh` carries a dev-only shim
+that symlinks the newest system `libxml2.so.*` as `libxml2.so.2`, but that is a
+local bridge, not a deployment posture.
+
+**Image posture:** no standalone `loom` OCI image exists yet (the `deploy/`
+images are the external-Postgres services, which do not need libxml2). When a
+`deploy//images/loom` standalone image is added, its `apko.yaml` MUST include the
+Wolfi `libxml2` package so the embedded cluster can boot.
+
 ### First-admin bootstrap (`loom create-admin`)
 
 There is **no env-driven admin auto-bootstrap** — the old

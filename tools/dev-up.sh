@@ -69,8 +69,8 @@ common_env=(
   LOOM_BIND_ADDR=127.0.0.1:0
   LOOM_PG_MODE=embedded
   LOOM_DATA_PATH="$DATA_PATH"
-  LOOM_DB_HOST="$DATA_PATH/pgrun" LOOM_DB_PORT=5432
-  LOOM_DB_USER=postgres LOOM_DB_PASSWORD=postgres LOOM_DB_NAME=loom
+  # LOOM_DB_* are defaulted in embedded mode (host <data>/pgrun, user postgres,
+  # trust auth, db loom) — see docs/deploy.md. No placeholders needed.
   LOOM_WAREHOUSE_URI="file://$DATA_PATH/warehouse"
 )
 
@@ -134,15 +134,14 @@ server_pid=$!
 
 # Wait for the query-api port to accept connections, then create the first admin.
 # `create-admin` connects to the already-running embedded Postgres as a client via
-# the LOOM_DB_* socket in common_env (it does not boot its own PG); the PG bin/lib
-# vars are still required for `Config::from_map` to parse in embedded mode.
+# the defaulted embedded socket in common_env (it does not boot its own PG), so it
+# needs neither the PG bin/lib vars nor LOOM_DB_* — Config::from_map defaults them.
 host="${QAPI_ADDR%:*}"; port="${QAPI_ADDR##*:}"
 for _ in $(seq 1 120); do
   (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null && { exec 3>&- 3<&-; break; }
   sleep 0.5
 done
 if printf '%s' "$ADMIN_PASS" | env "${common_env[@]}" \
-     LOOM_PG_BIN_DIR="$PGROOT/bin" LOOM_PG_LD_LIBRARY_PATH="$PGLD" \
      "$LOOM_BIN" create-admin --username "$ADMIN_USER" --password-stdin; then
   echo "dev-up: created admin '$ADMIN_USER'"
 else
