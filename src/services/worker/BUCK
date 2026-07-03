@@ -60,7 +60,6 @@ rust_test(
     srcs = ["tests/run_wire_job.rs"],
     crate_root = "tests/run_wire_job.rs",
     edition = "2024",
-    visibility = ["PUBLIC"],
     deps = [
         ":worker",
         "//src/control-plane/core:core",
