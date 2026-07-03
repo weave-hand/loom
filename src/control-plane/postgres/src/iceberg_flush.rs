@@ -4,8 +4,8 @@
 //! lock so two flushes can't both write Parquet for the same rows.
 
 use control_plane_core::{
-    BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ColumnSpec, ControlPlaneError,
-    DatasetId, EventType, LineageEvent, NewJob, Result, RunId, SnapshotId, TableRef,
+    Catalog, ColumnSpec, ControlPlaneError, DatasetId, EventType, LineageEvent, Result, RunId,
+    SnapshotId, TableRef,
 };
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -117,24 +117,9 @@ async fn flush_locked(
     // Enqueue one rebuild job per declared vector index, atomically with the
     // snapshot commit. Deduped against pending (state='available') jobs so a
     // second flush while a build is already queued doesn't double-enqueue.
-    let index_names = crate::vector_index::declared_vector_index_names(pool, table).await?;
-    let rebuild_jobs: Vec<NewJob> = index_names
-        .iter()
-        .map(|index_name| {
-            let payload = serde_json::to_value(BuildVectorIndexJob {
-                schema: table.schema.clone(),
-                name: table.name.clone(),
-                index_name: index_name.clone(),
-            })
-            .map_err(backend)?;
-            Ok(NewJob {
-                kind: BUILD_VECTOR_INDEX_JOB_KIND.to_string(),
-                payload,
-                run_at: None,
-                priority: 0,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    // Job construction is shared with the overwrite/replace commit path via
+    // `rebuild_jobs_for`, so the dedup keys always collide across paths.
+    let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;
 
     let snap = append_parquet_snapshot(
         pool,

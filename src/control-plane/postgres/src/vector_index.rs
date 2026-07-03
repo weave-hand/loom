@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use control_plane_core::{
-    Catalog, ControlPlaneError, DatasetRef, EventType, IndexSpec, LineageEvent, Metric, Result,
-    RunId, SnapshotId, TableRef, TableSchema, VectorKey,
+    BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ControlPlaneError, DatasetRef,
+    EventType, IndexSpec, LineageEvent, Metric, NewJob, Result, RunId, SnapshotId, TableRef,
+    TableSchema, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool};
@@ -144,6 +145,31 @@ pub(crate) async fn declared_vector_index_names(
     .fetch_all(pool)
     .await
     .map_err(backend)
+}
+
+/// One `build_vector_index` NewJob per vector index declared on the ontology
+/// type backing `table` (empty when the table has no type or no indexes) —
+/// the shared enqueue source for the flush AND overwrite/replace commit
+/// paths, so their pending-dedup keys always collide.
+pub(crate) async fn rebuild_jobs_for(pool: &PgPool, table: &TableRef) -> Result<Vec<NewJob>> {
+    let index_names = declared_vector_index_names(pool, table).await?;
+    index_names
+        .iter()
+        .map(|index_name| {
+            let payload = serde_json::to_value(BuildVectorIndexJob {
+                schema: table.schema.clone(),
+                name: table.name.clone(),
+                index_name: index_name.clone(),
+            })
+            .map_err(backend)?;
+            Ok(NewJob {
+                kind: BUILD_VECTOR_INDEX_JOB_KIND.to_string(),
+                payload,
+                run_at: None,
+                priority: 0,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 /// Resolve the ontology type name backing `(table.schema, table.name)`.

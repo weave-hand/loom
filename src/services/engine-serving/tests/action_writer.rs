@@ -7,8 +7,8 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetRef, EventType, LineageEvent, ObjectType, PropertyDef, RunId,
-    TableRef, TypeName,
+    BUILD_VECTOR_INDEX_JOB_KIND, ColumnSpec, ControlPlane, DatasetRef, EventType, IndexSpec,
+    LineageEvent, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -110,12 +110,44 @@ async fn e2e_seed_widget_table(cp: &PgControlPlane) {
                     required: false,
                     constraints: control_plane_core::PropertyConstraints::default(),
                 },
+                // Vector property so tests can declare indexes; landing derives
+                // the physical schema from the caller's `columns`, so tests that
+                // never write it are unaffected.
+                PropertyDef {
+                    name: "embedding".into(),
+                    ty: "vector(4)".into(),
+                    required: false,
+                    constraints: control_plane_core::PropertyConstraints::default(),
+                },
             ],
             derived: vec![],
             identity: None,
         })
         .await
         .unwrap();
+}
+
+/// Count `queue.jobs` rows with the given kind. Copied from
+/// `flush_vector_rebuild.rs`.
+async fn job_count(pool: &sqlx::PgPool, kind: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>("select count(*)::bigint from queue.jobs where kind = $1")
+        .bind(kind)
+        .fetch_one(pool)
+        .await
+        .expect("job_count")
+}
+
+/// Count `queue.jobs` rows with the given kind and state. Copied from
+/// `flush_vector_rebuild.rs`.
+async fn job_count_by_state(pool: &sqlx::PgPool, kind: &str, state: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "select count(*)::bigint from queue.jobs where kind = $1 and state = $2",
+    )
+    .bind(kind)
+    .bind(state)
+    .fetch_one(pool)
+    .await
+    .expect("job_count_by_state")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -155,4 +187,60 @@ async fn write_overwrite_truncate() {
         .await
         .expect("truncate");
     assert!(s3.0 > s2.0);
+}
+
+/// `overwrite_table` at the engine-serving writer seam enqueues one deduped
+/// `build_vector_index` job per index declared on the table's ontology type —
+/// pins the wiring proven at the postgres layer
+/// (`overwrite_vector_rebuild.rs`) through the writer's delegation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overwrite_table_enqueues_declared_index_rebuilds() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let warehouse = tempfile::tempdir().expect("warehouse");
+    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
+
+    e2e_seed_widget_table(&cp).await;
+    // Declare TWO vector indexes over the seeded `embedding` property.
+    for name in ["by_flat", "by_flat2"] {
+        cp.ontology()
+            .define_vector_index(VectorIndexDef {
+                name: name.into(),
+                type_name: TypeName("Widget".into()),
+                property: "embedding".into(),
+                metric: Metric::Cosine,
+                spec: IndexSpec::Flat,
+            })
+            .await
+            .expect("define_vector_index");
+    }
+
+    let table = TableRef {
+        schema: "main".into(),
+        name: "widget".into(),
+    };
+    // Large inline limit so the single row inlines (no flush job needed).
+    let writer = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+
+    writer
+        .write_object(&table, &cols(), &one_row_ipc(1, "a"), event("insert"))
+        .await
+        .expect("write_object");
+    assert_eq!(
+        job_count(&pool, BUILD_VECTOR_INDEX_JOB_KIND).await,
+        0,
+        "inline write must not enqueue rebuilds"
+    );
+
+    writer
+        .overwrite_table(&table, &cols(), &one_row_ipc(2, "b"), event("update"))
+        .await
+        .expect("overwrite_table");
+    assert_eq!(
+        job_count_by_state(&pool, BUILD_VECTOR_INDEX_JOB_KIND, "available").await,
+        2,
+        "one available rebuild job per declared index"
+    );
 }

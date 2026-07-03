@@ -15,8 +15,8 @@ use arrow_array::{Array, ArrayRef, ListArray, RecordBatch};
 use arrow_schema::{DataType, Schema, SchemaRef};
 use arrow_select::concat::concat_batches;
 use control_plane_core::{
-    Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, Result, SnapshotId,
-    TableRef,
+    Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, NewJob, Result,
+    SnapshotId, TableRef,
 };
 use iceberg::spec::{ListType, NestedField, PrimitiveType, Schema as IceSchema, Type};
 use iceberg::{Catalog as IceCatalog, NamespaceIdent, TableCreation, TableIdent};
@@ -533,6 +533,11 @@ async fn land_parquet(
 /// snapshot from an empty file set, so this takes a mirror-only branch that allocates
 /// a snapshot, end-caps all live files, and emits lineage — making the empty set the
 /// sole live set while preserving time travel.
+///
+/// Like the flush path, an overwrite commit enqueues one deduped
+/// `build_vector_index` rebuild job per vector index declared on the table's
+/// ontology type (via the shared `rebuild_jobs_for`), atomically with the
+/// commit, so replaced rows can't leave a stale index serving silently.
 pub async fn overwrite_parquet_snapshot(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -541,8 +546,9 @@ pub async fn overwrite_parquet_snapshot(
     batches: Vec<RecordBatch>,
     lineage: Option<&LineageEvent>,
 ) -> Result<SnapshotId> {
+    let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;
     if batches.iter().all(|b| b.num_rows() == 0) {
-        return overwrite_truncate(pool, table, lineage).await;
+        return overwrite_truncate(pool, table, lineage, &rebuild_jobs).await;
     }
     append_parquet_snapshot(
         pool,
@@ -553,6 +559,7 @@ pub async fn overwrite_parquet_snapshot(
         CommitExtras {
             lineage,
             overwrite: true,
+            jobs: &rebuild_jobs,
             ..CommitExtras::default()
         },
     )
@@ -568,6 +575,7 @@ async fn overwrite_truncate(
     pool: &PgPool,
     table: &TableRef,
     lineage: Option<&LineageEvent>,
+    jobs: &[NewJob],
 ) -> Result<SnapshotId> {
     use crate::iceberg_mirror::{end_cap_live_data_files, ensure_table, next_snapshot};
     use crate::lineage::pg_emit;
@@ -580,6 +588,11 @@ async fn overwrite_truncate(
     crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
     if let Some(ev) = lineage {
         pg_emit(&mut *conn, ev).await?;
+    }
+    for job in jobs {
+        // Same pending-dedup as CommitExtras.jobs; pg_notify is buffered until
+        // this tx commits, so a rolled-back truncate enqueues nothing.
+        crate::queue::pg_insert_if_absent(&mut *conn, job).await?;
     }
     tx.commit().await.map_err(backend)?;
     Ok(at)
