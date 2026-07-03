@@ -1608,6 +1608,25 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "lineage-acl-e2e",
+    crate = "lineage_acl_e2e",
+    srcs = ["tests/lineage_acl_e2e.rs"],
+    crate_root = "tests/lineage_acl_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 rust_test(
     name = "lineage-visibility",
     crate = "lineage_visibility",
