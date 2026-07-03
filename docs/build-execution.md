@@ -35,7 +35,7 @@ Two knobs tune the hybrid case:
   hold the outputs.
 
 A handful of actions are *pinned local* regardless: genrules labelled `uses_xz`
-(`libxml2`, `duckdb-cli`, `duckdb-extensions`) and the `uses_local_filesystem_abspaths`
+(`libxml2`) and the `uses_local_filesystem_abspaths`
 tool wrappers (`rustfmt`, `clippy`). Keep new `local_only` / `uses_local_*`
 actions **off the common build path** — every local action must materialize its
 inputs from CAS on a fresh runner, which is exactly the download we are trying to
@@ -43,36 +43,42 @@ avoid.
 
 ### 2. Test-run execution (the test *command*, after it is built)
 
-Separate from build placement. buck2 derives a test's run executor from the
-`remote_execution` attribute (`re_test_common`). loom uses exactly one value:
+Separate from build placement. buck2/tpx runs test-*run* actions on the **local
+executor by default** and only dispatches them to RE under
+`--unstable-allow-all-tests-on-re`; there is **no remote test-result cache**, so
+tests re-run on every invocation either way. loom sets no per-target
+`remote_execution` attribute — **placement is an invocation-level choice**:
 
-- **`remote_execution = "disabled"`** → run executor
-  `CommandExecutorConfig(local_enabled = True, remote_enabled = False)`. The test
-  *command* runs locally; **the build of the test binary is untouched** and still
-  uses axis 1 (RE).
+- **Non-root hosts** (dev machines, the non-root BuildBuddy CI runners): the
+  default local run executor is fine, including for hermetic-Postgres fixtures.
+- **Root hosts** (cloud sessions — `initdb`/`postgres` refuse to run as root):
+  pass `--unstable-allow-all-tests-on-re` so test runs go to the RE workers,
+  which execute as the non-root `buildbuddy` user (the platform's `dockerUser`,
+  `platforms/defs.bzl`). The cloud buck2 shim (`tools/ci/buck2-proxy-shim.sh`)
+  injects the flag for every `buck2 test`; CI passes it explicitly in
+  `buildbuddy.yaml`.
 
-This per-test local pin is what replaced the old global
-`env -u BUCK_PREFER_REMOTE buck2 test --local-only //src/...` ceremony.
+History: the old global `--local-only` ceremony was first replaced by a
+per-target `remote_execution = "disabled"` pin in the fixture macro; that pin
+was retired once the RE platform ran non-root — it would force fixtures onto RE
+in *every* environment and break local dev without an RE backend.
 
-## Fixture-test local routing
+## Fixture-test wiring
 
-The hermetic fixtures (`PgFixture`, `DuckLakeWriter`, the query-api
-`EmbeddedDuckDb`) boot real `initdb` / `postgres` / `duckdb` processes. Those
-**refuse to run as root**, and BuildBuddy's RE container runs as root — so a
-fixture test's *command* must run locally. Its *build* should still go to RE.
-
-That split is exactly axis 2 (`remote_execution = "disabled"`) without touching
-axis 1. To avoid hand-tagging — and forgetting to tag — every fixture target, the
-attribute lives in one macro:
+The hermetic fixture (`PgFixture`, plus MinIO where a test needs S3) boots real
+`initdb` / `postgres` processes, so a fixture test needs the pinned tool
+binaries and shared throttle state in its environment. To avoid hand-wiring —
+and mis-wiring — every fixture target, the env lives in one macro:
 
 **`loom_fixture_test`** (`src/control-plane/postgres/defs.bzl`) wraps `rust_test`,
-injecting the shared fixture `env` block (POSTGRES_*, and —
-with `duckdb = True` — the DUCKDB_* vars) **and** `remote_execution = "disabled"`.
-All 18 fixture targets across `src/control-plane/postgres`, `src/services/query-api`,
-and `src/control-plane/worker` use it; pure-logic tests (`sql-compile`,
-`http-smoke`, `worker_test`, the `control-plane-core` tests) stay plain
-`rust_test` and run on RE. **A new fixture test must use `loom_fixture_test`** or
-it will route to RE and fail as root.
+injecting the shared fixture `env` block (`POSTGRES_BIN_DIR`,
+`POSTGRES_LD_LIBRARY_PATH` incl. `libxml2`, the boot-throttle
+`LOOM_PG_FIXTURE_SLOT_DIR`, and — with `minio = True` — `MINIO_BIN`) plus the
+test panic-lint allowances. It deliberately sets **no** `remote_execution`
+profile (see axis 2 above). Fixture targets across `src/control-plane/postgres`,
+the services, and the worker use it; pure-logic tests stay plain `rust_test`.
+**A new fixture test must use `loom_fixture_test`** or it runs without the
+fixture env and fails to boot Postgres.
 
 ### Rejected alternative: `exec_compatible_with` + a local execution platform
 
@@ -86,8 +92,9 @@ exec-configuration trees, so the link fails with `E0463: can't find crate for
 control_plane_postgres`. This failed identically with and without RE, so it is
 fundamental to placing a `rust_test` on a different execution platform than its
 deps; fixing it would mean routing the whole dependency subgraph local, defeating
-RE. `remote_execution = "disabled"` avoids the problem entirely by changing only
-the run executor, not the build platform.
+RE. Steering only the *run executor* (the retired per-target pin then, the
+invocation-level `--unstable-allow-all-tests-on-re` now) avoids the problem
+entirely by never touching the build platform.
 
 ## The CI jobs
 
@@ -98,8 +105,8 @@ set `BUCK_PREFER_REMOTE: "true"`.
 
 | Action | Trigger | What it runs | Placement |
 | --- | --- | --- | --- |
-| `build-test` | pushes to `main` | `buck2 build -M none //src/...` then `buck2 test //src/...` | build on RE (no download); fixture tests local, logic tests RE |
-| `affected` | PRs | `//tools:supertd` snapshots the base graph from a persistent `_base` worktree, `//tools:btd` maps the diff to impacted targets, then `buck2 build -M none` + `buck2 test` on just those | same as above, scoped to impacted targets |
+| `build-test` | pushes to `main` | `buck2 build -M none //src/...` then `buck2 test //src/... --unstable-allow-all-tests-on-re` | build on RE (no download); test runs on RE (non-root workers, fixtures included) |
+| `affected` | PRs | `//tools:supertd` snapshots the base graph from a persistent `_base` worktree, `//tools:btd` maps the diff to impacted targets, then `buck2 build -M none` + `buck2 test --unstable-allow-all-tests-on-re` on just those | same as above, scoped to impacted targets |
 | `lint` | push + PR | `buck2 run //tools:prek -- run --all-files` (rustfmt, clippy, file hygiene, reindeer-in-sync) | hermetic via buck2 |
 
 Scope is `//src/...` (first-party + their third-party deps). The `//tools`
@@ -118,24 +125,23 @@ for things that must exist locally.
   materialize; the toolchain's `assemble_sysroot` action is RE-eligible (not
   `local_only`) so the rustc/std dists are not forced local. This took a cached
   build from ~4 GiB down to single-digit MiB.
-- **The test job downloads ~110 MiB on fixture-heavy runs.** Fixture tests run
-  *locally* (axis 2), so their test binaries **and** the real DB tool binaries
-  they `exec` must be materialized. This is *lower* than the old blanket
-  `--local-only`, which also pulled every non-fixture test's inputs.
-
-The ~110 MiB is dominated by pinned, rarely-changing tool binaries, not per-PR
-code:
+- **The CI test job materializes almost nothing.** With
+  `--unstable-allow-all-tests-on-re`, test-run actions execute on the RE
+  workers, so the runner never downloads the test binaries or the DB tool
+  binaries they `exec`.
+- **A *local* fixture run (dev machine, or a deliberate local invocation) pays
+  the fixture inputs**: the pinned, rarely-changing tool binaries plus each
+  fixture test binary.
 
 | Artifact | Materialized size | Changes when |
 | --- | --- | --- |
-| `duckdb-extensions` (ducklake + postgres_scanner) | ~90 MiB | `DUCKDB_VERSION` bump |
-| `duckdb-cli` | ~59 MiB | `DUCKDB_VERSION` bump |
 | `postgres-bin` (theseus-rs dist) | ~36 MiB | `PG_VERSION` bump |
+| `minio-bin` (S3 fixtures only) | tens of MiB | MinIO pin bump |
 | `libxml2` | ~1.5 MiB | ~never |
 | each fixture test binary (debug) | ~12 MiB | the relevant code changes |
 
-`DUCKDB_VERSION` (`v1.5.3`) and `PG_VERSION` (`17.9.0`) move only on a deliberate
-bump, so the heavyweight inputs are effectively constant across PRs.
+`PG_VERSION` (`17.9.0`) moves only on a deliberate bump, so the heavyweight
+inputs are effectively constant across invocations.
 
 ### Why we don't cache buck-out
 

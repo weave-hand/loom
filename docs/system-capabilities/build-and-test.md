@@ -26,12 +26,21 @@ pinned to carry the arrow/parquet 58 migration so the whole tree sits on one arr
 major.
 
 Compute runs on BuildBuddy remote execution. The key capability decision is
-*placement*: builds always go to RE, and test actions that boot hermetic
-Postgres route to the local executor automatically via the `loom_fixture_test`
-macro, so nothing needs manual `--local-only` flags. `docs/build-execution.md` is
-the reference for the placement rules and the materialization cost model
-(including why `buck-out` is not cached and why cloud routines build with
-`-M none`).
+*placement*: builds always go to RE (the RE platform's `dockerUser` is the
+non-root `buildbuddy` user — `platforms/defs.bzl`), while test *runs* land on
+the local executor by default — buck2/tpx only dispatches test-run actions to
+RE under `--unstable-allow-all-tests-on-re`, and there is no remote test-result
+cache. Placement is therefore an invocation-level choice, not a per-target
+attribute: non-root dev machines run hermetic-Postgres fixtures locally, and
+root hosts (cloud sessions, where local `initdb` would fail) route test runs to
+RE — the cloud buck2 shim injects the flag for `buck2 test` and CI passes it
+explicitly in `buildbuddy.yaml`. The `loom_fixture_test` macro
+(`src/control-plane/postgres/defs.bzl`) deliberately sets no `remote_execution`
+profile; its job is injecting the fixture env (PG binaries, `libxml2`, MinIO,
+the boot-throttle slot dir) so a new fixture test is wired correctly by
+construction. `docs/build-execution.md` is the reference for the
+materialization cost model (including why `buck-out` is not cached and why
+cloud routines build with `-M none`).
 
 The postgres adapter's SQL is verified at compile time: sqlx `query!` macros read
 a committed `.sqlx` cache, and a dedicated `sqlx-cache-check` test re-describes
