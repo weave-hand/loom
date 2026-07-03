@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
-    RoleId, SubjectId, validate_row_filter,
+    RoleId, SubjectId, check_grant_target, check_policy_write,
 };
 
 use crate::ontology::object_type_exists;
-use crate::{PgControlPlane, backend, target_cols};
+use crate::{PgControlPlane, backend};
 
 /// Fixed advisory-lock key serializing role-inheritance edge inserts within one
 /// database, making the cycle check + insert in `add_role_inheritance` atomic
@@ -201,23 +201,17 @@ impl Acl for PgControlPlane {
         target: PolicyTarget,
         effect: Effect,
     ) -> Result<()> {
-        let r_exists = role_exists(&self.pool, &role.0).await?;
-        if !r_exists {
+        if !role_exists(&self.pool, &role.0).await? {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
-        // A Type target must reference an existing ontology type (best-effort,
-        // non-transactional, like the role check above and set_policy). Table
-        // targets stay unvalidated (deferred).
-        if let PolicyTarget::Type(name) = &target {
-            let type_exists = object_type_exists(&self.pool, &name.0).await?;
-            if !type_exists {
-                return Err(ControlPlaneError::Validation(format!(
-                    "grant references unknown type `{}`",
-                    name.0
-                )));
-            }
-        }
-        let (kind, a, b) = target_cols(&target);
+        // Best-effort, non-transactional existence lookup (unchanged); the
+        // decision itself is the shared core check.
+        let type_exists = match &target {
+            PolicyTarget::Type(name) => object_type_exists(&self.pool, &name.0).await?,
+            PolicyTarget::Table(_) => true,
+        };
+        check_grant_target(&target, type_exists)?;
+        let (kind, a, b) = target.key_parts();
         sqlx::query!(
             "insert into acl.role_grant (role_id, action, target_kind, target_a, target_b, effect) \
              values ($1, $2, $3, $4, $5, $6) \
@@ -238,7 +232,7 @@ impl Acl for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn revoke(&self, role: &RoleId, action: Action, target: &PolicyTarget) -> Result<()> {
-        let (kind, a, b) = target_cols(target);
+        let (kind, a, b) = target.key_parts();
         sqlx::query!(
             "delete from acl.role_grant where role_id = $1 and action = $2 \
              and target_kind = $3 and target_a = $4 and target_b = $5",
@@ -256,25 +250,18 @@ impl Acl for PgControlPlane {
 
     #[tracing::instrument(skip(self, policy), level = "debug")]
     async fn set_policy(&self, role: &RoleId, action: Action, policy: Policy) -> Result<()> {
-        let r_exists = role_exists(&self.pool, &role.0).await?;
-        if !r_exists {
+        if !role_exists(&self.pool, &role.0).await? {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
-        // Best-effort, non-transactional validation (separate round-trips from the
-        // insert below, like the role-exists check above): a concurrent type deletion
-        // between this check and the insert is tolerated. Fine for current usage.
-        // A Type target's existence is checked *always* (independent of row_filter);
-        // the row-filter's columns are validated only when a row_filter is present.
-        match &policy.target {
+        // Best-effort, non-transactional lookups (unchanged semantics); the
+        // decision is `check_policy_write`. The property set is fetched only
+        // when a row_filter needs it — an existing type with no filter passes
+        // an empty set, which the check never reads.
+        let type_props: Option<std::collections::HashSet<String>> = match &policy.target {
             PolicyTarget::Type(name) => {
-                let type_exists = object_type_exists(&self.pool, &name.0).await?;
-                if !type_exists {
-                    return Err(ControlPlaneError::Validation(format!(
-                        "policy references unknown type {}",
-                        name.0
-                    )));
-                }
-                if let Some(f) = &policy.row_filter {
+                if !object_type_exists(&self.pool, &name.0).await? {
+                    None
+                } else if policy.row_filter.is_some() {
                     let names = sqlx::query_scalar!(
                         "select name from ontology.property where type_name = $1",
                         &name.0,
@@ -282,17 +269,15 @@ impl Acl for PgControlPlane {
                     .fetch_all(&self.pool)
                     .await
                     .map_err(backend)?;
-                    let set: std::collections::HashSet<String> = names.into_iter().collect();
-                    validate_row_filter(f, Some(&set)).map_err(ControlPlaneError::Validation)?;
+                    Some(names.into_iter().collect())
+                } else {
+                    Some(std::collections::HashSet::new())
                 }
             }
-            PolicyTarget::Table(_) => {
-                if let Some(f) = &policy.row_filter {
-                    validate_row_filter(f, None).map_err(ControlPlaneError::Validation)?;
-                }
-            }
-        }
-        let (kind, a, b) = target_cols(&policy.target);
+            PolicyTarget::Table(_) => None,
+        };
+        check_policy_write(&policy, type_props.as_ref())?;
+        let (kind, a, b) = policy.target.key_parts();
         let row_filter = match &policy.row_filter {
             Some(f) => Some(
                 serde_json::to_value(f)
@@ -330,7 +315,7 @@ impl Acl for PgControlPlane {
         action: Action,
         target: &PolicyTarget,
     ) -> Result<()> {
-        let (kind, a, b) = target_cols(target);
+        let (kind, a, b) = target.key_parts();
         sqlx::query!(
             "delete from acl.policy where role_id = $1 and action = $2 and target_kind = $3 \
              and target_a = $4 and target_b = $5",
@@ -352,7 +337,7 @@ impl Acl for PgControlPlane {
         action: Action,
         target: &PolicyTarget,
     ) -> Result<Decision> {
-        let (kind, a, b) = target_cols(target);
+        let (kind, a, b) = target.key_parts();
         let row = sqlx::query!(
             "with recursive eff(role_id) as ( \
                  select role_id from acl.role_member where subject_id = $1 \
@@ -390,7 +375,7 @@ impl Acl for PgControlPlane {
         target: &PolicyTarget,
         _page: PageReq,
     ) -> Result<Page<Policy>> {
-        let (kind, a, b) = target_cols(target);
+        let (kind, a, b) = target.key_parts();
         let rows = sqlx::query!(
             "with recursive eff(role_id) as ( \
                  select role_id from acl.role_member where subject_id = $1 \

@@ -308,3 +308,13 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "policy-write-checks",
+    crate = "policy_write_checks",
+    srcs = ["tests/policy_write_checks.rs"],
+    crate_root = "tests/policy_write_checks.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)

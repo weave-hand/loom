@@ -3,19 +3,16 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, Effect, Page, PageReq, Policy, PolicyTarget, Result,
-    RoleId, SubjectId, validate_row_filter,
+    RoleId, SubjectId, check_grant_target, check_policy_write,
 };
 
 use crate::MemoryControlPlane;
 
 /// Encoded `PolicyTarget` used as a map/set key: `(kind, a, b)`.
-type TargetKey = (String, String, String);
+type TargetKey = (&'static str, String, String);
 
 fn target_key(t: &PolicyTarget) -> TargetKey {
-    match t {
-        PolicyTarget::Type(n) => ("type".into(), n.0.clone(), String::new()),
-        PolicyTarget::Table(r) => ("table".into(), r.schema.clone(), r.name.clone()),
-    }
+    t.key_parts()
 }
 
 #[derive(Default)]
@@ -189,14 +186,11 @@ impl Acl for MemoryControlPlane {
         // A Type target must reference an existing type. Read the ontology map with
         // no acl lock held (acl->ontology order, like set_policy) to avoid a
         // lock-ordering deadlock. Table targets stay unvalidated (deferred).
-        if let PolicyTarget::Type(name) = &target
-            && !self.type_exists(&name.0)
-        {
-            return Err(ControlPlaneError::Validation(format!(
-                "grant references unknown type `{}`",
-                name.0
-            )));
-        }
+        let type_exists = match &target {
+            PolicyTarget::Type(name) => self.type_exists(&name.0),
+            PolicyTarget::Table(_) => true,
+        };
+        check_grant_target(&target, type_exists)?;
         self.acl
             .lock()
             .grants
@@ -223,28 +217,15 @@ impl Acl for MemoryControlPlane {
             }
         }
         // validation (may lock ontology) — no acl lock held here, to avoid a
-        // lock-ordering deadlock between the acl and ontology mutexes. A Type
-        // target's existence is checked *always* (independent of row_filter); the
-        // row-filter's columns are validated only when a row_filter is present.
-        match &policy.target {
-            PolicyTarget::Type(name) => {
-                let props = self.type_properties(&name.0).ok_or_else(|| {
-                    ControlPlaneError::Validation(format!(
-                        "policy references unknown type {}",
-                        name.0
-                    ))
-                })?;
-                if let Some(f) = &policy.row_filter {
-                    let set: HashSet<String> = props.into_iter().collect();
-                    validate_row_filter(f, Some(&set)).map_err(ControlPlaneError::Validation)?;
-                }
-            }
-            PolicyTarget::Table(_) => {
-                if let Some(f) = &policy.row_filter {
-                    validate_row_filter(f, None).map_err(ControlPlaneError::Validation)?;
-                }
-            }
-        }
+        // lock-ordering deadlock between the acl and ontology mutexes. The
+        // decision itself is the shared core check (`check_policy_write`).
+        let type_props: Option<HashSet<String>> = match &policy.target {
+            PolicyTarget::Type(name) => self
+                .type_properties(&name.0)
+                .map(|v| v.into_iter().collect()),
+            PolicyTarget::Table(_) => None,
+        };
+        check_policy_write(&policy, type_props.as_ref())?;
         // insert (short acl lock)
         let key = (role.0.clone(), action, target_key(&policy.target));
         self.acl.lock().policies.insert(key, policy);

@@ -716,7 +716,7 @@ supply the lookups — the `validate_constraints` pattern).
   (for a `Type` target, `type_props = None` means "type unknown"; for a
   `Table` target the argument is ignored).
 
-- [ ] **Step 1: Write the failing unit tests** — create
+- [x] **Step 1: Write the failing unit tests** — create
   `src/control-plane/core/tests/policy_write_checks.rs`:
 
 ```rust
@@ -818,14 +818,14 @@ rust_test(
 )
 ```
 
-- [ ] **Step 2: Run — expect RED** (missing symbols)
+- [x] **Step 2: Run — expect RED** (missing symbols)
 
 ```bash
 buck2 test //src/control-plane/core:policy-write-checks > /tmp/t3red.log 2>&1; \
   grep -E "error\[|cannot find|Tests finished" /tmp/t3red.log | head -5
 ```
 
-- [ ] **Step 3: Implement in `core/src/acl.rs`** (beside `PolicyTarget` /
+- [x] **Step 3: Implement in `core/src/acl.rs`** (beside `PolicyTarget` /
   `validate_row_filter`; error strings byte-identical to the adapters'
   current ones):
 
@@ -893,7 +893,7 @@ pub fn check_policy_write(
 Add `check_grant_target`, `check_policy_write` to the `pub use acl::{...}`
 list in `core/src/lib.rs`. Run Step 1's target — expect PASS.
 
-- [ ] **Step 4: Migrate postgres `acl.rs`.** Delete `target_cols` from
+- [x] **Step 4: Migrate postgres `acl.rs`.** Delete `target_cols` from
   `lib.rs` (and its import in `acl.rs`); every `let (kind, a, b) =
   target_cols(x);` becomes `let (kind, a, b) = x.key_parts();` (6 sites:
   `acl.rs:233,254,322,360,382,420`).
@@ -949,7 +949,7 @@ Add `check_grant_target`, `check_policy_write` to the
 `use control_plane_core::{...}` list; drop the now-unused
 `validate_row_filter` import if nothing else uses it.
 
-- [ ] **Step 5: Migrate memory `acl.rs`.** `TargetKey` becomes
+- [x] **Step 5: Migrate memory `acl.rs`.** `TargetKey` becomes
   `type TargetKey = (&'static str, String, String);` and
   `fn target_key(t: &PolicyTarget) -> TargetKey { t.key_parts() }`. `grant`'s
   Type-check block becomes:
@@ -978,7 +978,7 @@ the ontology lookup still happens with no acl lock held):
 Update imports (`check_grant_target`, `check_policy_write`; drop
 `validate_row_filter` if now unused).
 
-- [ ] **Step 6: Run the pinning contracts on BOTH adapters**
+- [x] **Step 6: Run the pinning contracts on BOTH adapters**
 
 ```bash
 buck2 test //src/control-plane/core:policy-write-checks \
@@ -990,7 +990,7 @@ buck2 test //src/control-plane/core:policy-write-checks \
 Expected: `Fail 0` (the contracts assert the exact `Validation` rejections and
 the Table-target deferred boundary).
 
-- [ ] **Step 7: prek + commit**
+- [x] **Step 7: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek3.log 2>&1; grep -E "Failed" /tmp/prek3.log || echo CLEAN

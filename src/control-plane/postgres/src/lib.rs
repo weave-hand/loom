@@ -12,8 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Catalog, ControlPlane, ControlPlaneError, Lineage, Ontology, PolicyTarget, Queue, Result,
-    Tx,
+    Acl, Catalog, ControlPlane, ControlPlaneError, Lineage, Ontology, Queue, Result, Tx,
 };
 use sqlx::PgPool;
 
@@ -122,12 +121,4 @@ impl ControlPlane for PgControlPlane {
 
 fn backend(e: sqlx::Error) -> ControlPlaneError {
     ControlPlaneError::Backend(Box::new(e))
-}
-
-/// `(kind, a, b)` column encoding of a target.
-fn target_cols(t: &PolicyTarget) -> (&'static str, String, String) {
-    match t {
-        PolicyTarget::Type(n) => ("type", n.0.clone(), String::new()),
-        PolicyTarget::Table(r) => ("table", r.schema.clone(), r.name.clone()),
-    }
 }
