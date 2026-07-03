@@ -234,12 +234,11 @@ impl ControlPlane for WireControlPlane {
         self.direct.auth()
     }
 
-    #[expect(
-        clippy::panic,
-        reason = "read-only governance client: query-api never reads the catalog through this plane"
-    )]
     fn catalog(&self) -> &(dyn Catalog + Send + Sync) {
-        panic!("WireControlPlane is a read-only governance client: catalog() is not supported")
+        // Catalog metadata reads are not carried over the engine wire; serve them
+        // from the direct Postgres plane, exactly as `queue()` and `lineage()` do.
+        // query-api's dataset read endpoints resolve table metadata here.
+        self.direct.catalog()
     }
 
     fn lineage(&self) -> &(dyn Lineage + Send + Sync) {

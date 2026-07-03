@@ -274,7 +274,7 @@ assert!(
 async fn list_tables(&self, page: PageReq) -> Result<Page<TableRef>>;
 ```
 
-- [ ] **Step 1: Failing contract asserts** in `catalog_contract` (it already seeds tables via `seeder.seed(SeedSpec{..})` and can `drop_table` — read the fn to reuse its seeded `TableRef`s):
+- [x] **Step 1: Failing contract asserts** in `catalog_contract` (it already seeds tables via `seeder.seed(SeedSpec{..})` and can `drop_table` — read the fn to reuse its seeded `TableRef`s):
 ```rust
 // list_tables: seeded tables listed, ordered; dropped tables disappear.
 let listed = catalog.list_tables(PageReq::unbounded()).await.expect("list_tables");
@@ -291,9 +291,9 @@ assert!(
 ```
 (The seeded variable is `t` (`main.events`, testkit:286). `catalog_contract` never drops — put the list+order+presence asserts at its end using `t`; put the "dropped table no longer listed" assert at the END of `catalog_delete_contract` (~:548), where `t` is already dropped — that also exercises the pg end-capped rows.)
 
-- [ ] **Step 2: Red** (memory catalog test target — find it in `src/control-plane/memory/BUCK`, likely `:catalog`).
+- [x] **Step 2: Red** (memory catalog test target — find it in `src/control-plane/memory/BUCK`, likely `:catalog`).
 
-- [ ] **Step 3: Implement.** Memory: keys of `tables` whose `Versioned` is live (read the `Versioned` type for its end-bound field/liveness check — mirror how `files`/`columns` filter liveness), sorted by `(schema.clone(), name.clone())`, `Page::from_full`. Postgres: **delegate — do not write new SQL.** `IcebergCatalog::live_tables()` (postgres/src/iceberg_catalog.rs:138–154) is exactly this query already:
+- [x] **Step 3: Implement.** Memory: keys of `tables` whose `Versioned` is live (read the `Versioned` type for its end-bound field/liveness check — mirror how `files`/`columns` filter liveness), sorted by `(schema.clone(), name.clone())`, `Page::from_full`. Postgres: **delegate — do not write new SQL.** `IcebergCatalog::live_tables()` (postgres/src/iceberg_catalog.rs:138–154) is exactly this query already:
 ```rust
 async fn list_tables(&self, _page: PageReq) -> Result<Page<TableRef>> {
     Ok(Page::from_full(self.live_tables().await?))
@@ -301,7 +301,7 @@ async fn list_tables(&self, _page: PageReq) -> Result<Page<TableRef>> {
 ```
 (No new `.sqlx` entry — skip `sqlx-prepare` for this task unless another query changed.) Wire: replace the `catalog()` panic with `self.direct.catalog()` and rewrite the comment (catalog metadata reads are served by the direct control plane, like `queue()`/`lineage()`).
 
-- [ ] **Step 4: sqlx-prepare; Step 5: green** (`//src/control-plane/...` + the query-api build); **Step 6: prek; commit** `feat(catalog): list_tables + direct wire delegation`.
+- [x] **Step 4: sqlx-prepare; Step 5: green** (`//src/control-plane/...` + the query-api build); **Step 6: prek; commit** `feat(catalog): list_tables + direct wire delegation`.
 
 ---
 

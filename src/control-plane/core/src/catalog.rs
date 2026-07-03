@@ -81,4 +81,8 @@ pub trait Catalog {
     /// `table`'s column schema at snapshot `at`, in column order. `NotFound` if
     /// the table is not live at `at`.
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema>;
+    /// Every table currently live in the mirror (no end-cap), `(schema, name)`-ordered.
+    /// The `page` request is accepted but not yet enforced; results are a single
+    /// full page.
+    async fn list_tables(&self, page: PageReq) -> Result<Page<TableRef>>;
 }

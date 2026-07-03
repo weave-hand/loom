@@ -402,6 +402,18 @@ where
         ),
         "missing table snapshots is NotFound"
     );
+
+    // list_tables: a single full `(schema, name)`-ordered page of the live tables,
+    // including the seeded one.
+    let listed = catalog
+        .list_tables(PageReq::unbounded())
+        .await
+        .expect("list_tables");
+    assert!(listed.next.is_none(), "single full page");
+    let mut sorted = listed.items.clone();
+    sorted.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
+    assert_eq!(listed.items, sorted, "(schema, name)-ordered");
+    assert!(listed.items.contains(&t), "seeded table listed");
 }
 
 /// Contract for the MVCC `end`-bound and before-existence branches of the catalog
@@ -545,6 +557,16 @@ where
         matches!(catalog.current_snapshot(&nope).await, Err(NotFound(_))),
         "never-existed table is NotFound"
     );
+
+    // list_tables sees the drop: the end-capped table is no longer live, while the
+    // untouched `other` table still is.
+    let listed = catalog
+        .list_tables(PageReq::unbounded())
+        .await
+        .expect("list_tables after drop")
+        .items;
+    assert!(!listed.contains(&t), "dropped table no longer listed");
+    assert!(listed.contains(&other), "unrelated table still listed");
 }
 
 /// Contract for the `Ontology` read+write surface. Self-seeds via `define_*`

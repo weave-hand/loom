@@ -280,4 +280,11 @@ impl Catalog for IcebergCatalog {
             .collect::<Result<Vec<_>>>()?;
         Ok(TableSchema { columns })
     }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_tables(&self, _page: PageReq) -> Result<Page<TableRef>> {
+        // `live_tables` is already this exact query: end-cap-free rows,
+        // `(table_namespace, table_name)`-ordered.
+        Ok(Page::from_full(self.live_tables().await?))
+    }
 }
