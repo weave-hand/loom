@@ -40,6 +40,9 @@ impl IcebergActionWriter {
     }
 
     /// Governed typed-insert: land one IPC-encoded row + its lineage atomically.
+    /// A typed insert always carries >= 1 row, so an empty/malformed `ipc` body
+    /// surfaces as a decode error here — there is no meaningful empty-insert case
+    /// (unlike `overwrite_table`, where empty is a valid truncate-all signal).
     pub async fn write_object(
         &self,
         table: &TableRef,
@@ -47,12 +50,15 @@ impl IcebergActionWriter {
         ipc: &[u8],
         event: LineageEvent,
     ) -> Result<SnapshotId, EngineServingError> {
+        let (schema, batches) = datafusion_io::decode_ipc(ipc)
+            .map_err(|e| EngineServingError::Engine(e.to_string()))?;
         iceberg_landing::land(
             &self.pool,
             &self.catalog,
             table,
             columns,
-            ipc,
+            schema,
+            batches,
             iceberg_landing::InlineLimits {
                 inline_byte_limit: self.inline_byte_limit,
                 flush_byte_threshold: self.flush_byte_threshold,

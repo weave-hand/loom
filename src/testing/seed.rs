@@ -13,7 +13,7 @@
 //!
 //! THE shared home for the seed prologue previously hand-rolled per test
 //! file across control-plane/postgres, engine-serving, engine, worker, and
-//! query-api: the vec4 docs table (`vec4_columns`/`vec4_ipc`), the local-fs
+//! query-api: the vec4 docs table (`vec4_columns`/`vec4_batches`), the local-fs
 //! `SqlCatalog` (`local_sql_catalog` — 25+ byte-identical `make_catalog`
 //! copies collapsed), the seed/build composite (`seed_docs_table`/
 //! `seed_docs_vector`, built on the #304 `ObjectType::build` DSL), and the
@@ -30,8 +30,7 @@ use std::time::Duration;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Float32Array, Int64Array, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
     RunId, TableRef, TypeName, VectorIndexDef,
@@ -62,8 +61,10 @@ pub fn vec4_columns() -> Vec<ColumnSpec> {
     ]
 }
 
-/// Build an Arrow IPC body with `id: long` + `embedding: list<float32>` (4 elements).
-pub fn vec4_ipc(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
+/// Build a schema + one batch with `id: long` + `embedding: list<float32>`
+/// (4 elements). `land` takes pre-decoded batches, so build these directly
+/// rather than round-tripping through an Arrow IPC encode/decode.
+pub fn vec4_batches(rows: &[(i64, [f32; 4])]) -> (SchemaRef, Vec<RecordBatch>) {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
     let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
@@ -82,13 +83,7 @@ pub fn vec4_ipc(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
         vec![Arc::new(id_array), Arc::new(emb_array)],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 /// A minimal Complete lineage event targeting `table` (payload
@@ -215,12 +210,14 @@ pub async fn seed_docs_table(fx: &PgFixture, db: &str) -> VectorSeed {
     let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
     let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
     for rows in [rows_1_2, rows_3_4] {
+        let (schema, batches) = vec4_batches(rows);
         land(
             &pool,
             &catalog,
             &table,
             &vec4_columns(),
-            &vec4_ipc(rows),
+            schema,
+            batches,
             cold_limits(),
             test_lineage(run, &table),
         )
@@ -272,12 +269,14 @@ pub async fn seed_docs_vector(
 /// Land more vec4 rows into a seeded world (fresh run id, canonical lineage) —
 /// `hot_limits()` for the classic "row 5 inline after the covered snapshot".
 pub async fn land_vec4(s: &VectorSeed, rows: &[(i64, [f32; 4])], limits: InlineLimits) {
+    let (schema, batches) = vec4_batches(rows);
     land(
         &s.pool,
         &s.catalog,
         &s.table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema,
+        batches,
         limits,
         test_lineage(RunId(uuid::Uuid::new_v4()), &s.table),
     )

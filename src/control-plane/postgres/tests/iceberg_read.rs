@@ -5,7 +5,6 @@ use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::Catalog;
 use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, TableRef};
@@ -21,21 +20,17 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// An Arrow IPC body of `rows` rows, single `id: long` column (ids `0..rows`).
-fn ipc_body(rows: i64) -> Vec<u8> {
+/// A schema + batch of `rows` rows, single `id: long` column (ids `0..rows`).
+/// `land` now takes pre-decoded batches, so build these directly rather than
+/// round-tripping through an Arrow IPC encode/decode.
+fn ipc_body(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
@@ -69,12 +64,14 @@ async fn reads_landed_file_back_to_exact_rows() {
     };
 
     // Land 3 rows (limit 0 forces real Parquet).
+    let (land_schema, land_batches) = ipc_body(3);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(3),
+        land_schema,
+        land_batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

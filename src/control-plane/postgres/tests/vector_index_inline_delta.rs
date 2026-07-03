@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Array, Float32Array, Int64Array, ListArray, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, ObjectType, PropertyDef, RunId,
@@ -35,9 +34,15 @@ fn columns(id_ty: &str) -> Vec<ColumnSpec> {
     ]
 }
 
-/// IPC body from a prebuilt identity array + embeddings (shared by the
-/// per-identity-kind wrappers below and Task 2's appends).
-fn ipc_from(id_field: Field, id_array: Arc<dyn Array>, embs: &[[f32; 4]]) -> Vec<u8> {
+/// Schema + batch from a prebuilt identity array + embeddings (shared by the
+/// per-identity-kind wrappers below and Task 2's appends). `land` now takes
+/// pre-decoded batches, so build these directly rather than round-tripping
+/// through an Arrow IPC encode/decode.
+fn ipc_from(
+    id_field: Field,
+    id_array: Arc<dyn Array>,
+    embs: &[[f32; 4]],
+) -> (Arc<Schema>, Vec<RecordBatch>) {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
     for emb in embs {
@@ -50,16 +55,10 @@ fn ipc_from(id_field: Field, id_array: Arc<dyn Array>, embs: &[[f32; 4]]) -> Vec
     ]));
     let batch =
         RecordBatch::try_new(schema.clone(), vec![id_array, Arc::new(lb.finish())]).expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
-fn ipc_long(rows: &[(i64, [f32; 4])]) -> Vec<u8> {
+fn ipc_long(rows: &[(i64, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
     let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
     ipc_from(
@@ -113,7 +112,10 @@ async fn seed(
     type_name: &str,
     id_ty_logical: &str,
     id_ty_property: &str,
-    (cold_ipc, hot_ipc): (Vec<u8>, Vec<u8>),
+    (cold_ipc, hot_ipc): (
+        (Arc<Schema>, Vec<RecordBatch>),
+        (Arc<Schema>, Vec<RecordBatch>),
+    ),
 ) -> (sqlx::PgPool, i64, i64) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(
@@ -126,12 +128,14 @@ async fn seed(
         .expect("define_type");
     let wh = tempfile::tempdir().expect("wh");
     let catalog = local_sql_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
+    let (cold_schema, cold_batches) = cold_ipc;
     let s_cold = land(
         &pool,
         &catalog,
         table,
         &columns(id_ty_logical),
-        &cold_ipc,
+        cold_schema,
+        cold_batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -140,12 +144,14 @@ async fn seed(
     )
     .await
     .expect("land cold");
+    let (hot_schema, hot_batches) = hot_ipc;
     let s_hot = land(
         &pool,
         &catalog,
         table,
         &columns(id_ty_logical),
-        &hot_ipc,
+        hot_schema,
+        hot_batches,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -226,7 +232,7 @@ async fn int_identity_delta_batch_shape() {
     );
 }
 
-fn ipc_str(rows: &[(&str, [f32; 4])]) -> Vec<u8> {
+fn ipc_str(rows: &[(&str, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let ids: Vec<&str> = rows.iter().map(|(id, _)| *id).collect();
     let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
     ipc_from(
@@ -236,7 +242,7 @@ fn ipc_str(rows: &[(&str, [f32; 4])]) -> Vec<u8> {
     )
 }
 
-fn ipc_int(rows: &[(i32, [f32; 4])]) -> Vec<u8> {
+fn ipc_int(rows: &[(i32, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let ids: Vec<i32> = rows.iter().map(|(id, _)| *id).collect();
     let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
     ipc_from(

@@ -2,7 +2,7 @@
 //! index, the mirror row records index_kind = "hnsw", and a search over the
 //! decoded index returns the nearest match.
 
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_ipc};
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_batches};
 
 use control_plane_core::{
     ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
@@ -71,12 +71,14 @@ async fn hnsw_build_writes_decodable_blob_and_mirror_kind() {
         (3, [0.0, 0.0, 1.0, 0.0]),
         (4, [0.0, 0.0, 0.0, 1.0]),
     ];
+    let (schema, batches) = vec4_batches(rows);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

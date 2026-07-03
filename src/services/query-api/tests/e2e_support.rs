@@ -22,7 +22,7 @@
 //! router via a oneshot request), and `ids_i64` (parse an `{objects:[…]}`
 //! body's `id`s as sorted `i64`s).
 
-use loom_test_seed::{vec4_columns, vec4_ipc};
+use loom_test_seed::{vec4_columns, vec4_batches};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -745,12 +745,14 @@ pub async fn seed_vector_type(
     let build_catalog = writer.sql_catalog().await;
     let run = RunId(uuid::Uuid::new_v4());
     let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
+    let (schema_rows_1_2, batches_rows_1_2) = vec4_batches(rows_1_2);
     land(
         &pool,
         &build_catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows_1_2),
+        schema_rows_1_2,
+        batches_rows_1_2,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -760,12 +762,14 @@ pub async fn seed_vector_type(
     .await
     .expect("land rows 1-2");
     let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
+    let (schema_rows_3_4, batches_rows_3_4) = vec4_batches(rows_3_4);
     land(
         &pool,
         &build_catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows_3_4),
+        schema_rows_3_4,
+        batches_rows_3_4,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
@@ -57,7 +56,13 @@ fn columns(id_ty: &str) -> Vec<ColumnSpec> {
     ]
 }
 
-fn ipc_from(id_field: Field, id_array: Arc<dyn Array>, embs: &[[f32; 4]]) -> Vec<u8> {
+/// `land` now takes pre-decoded batches, so build these directly rather than
+/// round-tripping through an Arrow IPC encode/decode.
+fn ipc_from(
+    id_field: Field,
+    id_array: Arc<dyn Array>,
+    embs: &[[f32; 4]],
+) -> (Arc<Schema>, Vec<RecordBatch>) {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
     for emb in embs {
@@ -70,16 +75,10 @@ fn ipc_from(id_field: Field, id_array: Arc<dyn Array>, embs: &[[f32; 4]]) -> Vec
     ]));
     let batch =
         RecordBatch::try_new(schema.clone(), vec![id_array, Arc::new(lb.finish())]).expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
-fn ipc_str(rows: &[(&str, [f32; 4])]) -> Vec<u8> {
+fn ipc_str(rows: &[(&str, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let ids: Vec<&str> = rows.iter().map(|(id, _)| *id).collect();
     let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
     ipc_from(
@@ -132,7 +131,7 @@ async fn seed_and_build(
     type_name: &str,
     id_ty_logical: &str,
     id_ty_property: &str,
-    cold_ipc: Vec<u8>,
+    cold_ipc: (Arc<Schema>, Vec<RecordBatch>),
 ) -> (SqlCatalog, sqlx::PgPool, tempfile::TempDir) {
     let pool = fx.pool_for(db).await;
     let wh = tempfile::tempdir().expect("wh");
@@ -152,12 +151,14 @@ async fn seed_and_build(
         })
         .await
         .expect("define_vector_index");
+    let (cold_schema, cold_batches) = cold_ipc;
     land(
         &pool,
         &catalog,
         table,
         &columns(id_ty_logical),
-        &cold_ipc,
+        cold_schema,
+        cold_batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -229,7 +230,7 @@ async fn string_identity_cold_search() {
     assert_eq!(ids_str(&batch), vec!["a".to_string()], "nearest is 'a'");
 }
 
-fn ipc_int(rows: &[(i32, [f32; 4])]) -> Vec<u8> {
+fn ipc_int(rows: &[(i32, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let ids: Vec<i32> = rows.iter().map(|(id, _)| *id).collect();
     let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
     ipc_from(
@@ -275,12 +276,14 @@ async fn string_identity_cold_hot_merge() {
     .await;
 
     let hot: &[(&str, [f32; 4])] = &[("hot", [0.95, 0.05, 0.0, 0.0])];
+    let (schema, batches) = ipc_str(hot);
     land(
         &pool,
         &catalog,
         &table,
         &columns("string"),
-        &ipc_str(hot),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -334,12 +337,14 @@ async fn integer_identity_cold_hot_merge() {
     .await;
 
     let hot: &[(i32, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
+    let (schema, batches) = ipc_int(hot);
     land(
         &pool,
         &catalog,
         &table,
         &columns("integer"),
-        &ipc_int(hot),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,

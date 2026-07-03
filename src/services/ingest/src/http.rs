@@ -332,7 +332,6 @@ pub(crate) async fn land_model(
         schema: schema.clone(),
         columns: &columns,
         batches: &batches,
-        ipc_body: body.as_ref(),
         file_prefix: &file_prefix,
         lineage,
     };
@@ -418,7 +417,6 @@ pub(crate) async fn land(
         schema: schema.clone(),
         columns: &columns,
         batches: &batches,
-        ipc_body: body.as_ref(),
         file_prefix: &file_prefix,
         lineage,
     };

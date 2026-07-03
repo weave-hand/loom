@@ -11,7 +11,7 @@ use control_plane_postgres::iceberg_landing::land;
 use engine_serving::{EngineServingError, VectorQuery};
 use loom_test_seed::{
     cold_limits, distances_f32, hot_limits, ids_i64, land_vec4, local_sql_catalog,
-    seed_docs_vector, test_lineage, vec4_columns, vec4_ipc,
+    seed_docs_vector, test_lineage, vec4_columns, vec4_batches,
 };
 
 /// Terse `VectorQuery` builder for the call sites in this file.
@@ -141,12 +141,14 @@ async fn no_bound_index_is_deterministic_error() {
     // Land one row (Parquet), but skip build_vector_index.
     let run = RunId(uuid::Uuid::new_v4());
     let rows: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0])];
+    let (schema, batches) = vec4_batches(rows);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows),
+        schema,
+        batches,
         cold_limits(),
         test_lineage(run, &table),
     )

@@ -5,7 +5,6 @@ use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     ControlPlane, DataFile, DatasetId, EventType, FileFormat, LineageEvent, RunId, TableRef,
@@ -23,20 +22,16 @@ fn columns() -> Vec<control_plane_core::ColumnSpec> {
     }]
 }
 
-fn ipc_body(rows: i64) -> Vec<u8> {
+/// `land` now takes pre-decoded batches; build the schema + batch directly
+/// rather than round-tripping through an Arrow IPC encode/decode.
+fn ipc_body(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
@@ -67,12 +62,14 @@ async fn iceberg_tx_compact_files_swaps_subset() {
         name: "t".into(),
     };
 
+    let (schema_a, batches_a) = ipc_body(10);
     land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema_a,
+        batches_a,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -81,12 +78,14 @@ async fn iceberg_tx_compact_files_swaps_subset() {
     )
     .await
     .expect("a");
+    let (schema_b, batches_b) = ipc_body(2);
     let before = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(2),
+        schema_b,
+        batches_b,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

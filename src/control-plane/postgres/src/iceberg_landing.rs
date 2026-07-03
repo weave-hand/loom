@@ -1,19 +1,18 @@
-//! The Iceberg landing entrypoint: decode an Arrow IPC body, route by
+//! The Iceberg landing entrypoint: take pre-decoded Arrow batches, route by
 //! in-memory size between an inline (mirror-only) write and a real Parquet write,
 //! and return the loom mirror snapshot id. Both branches emit lineage atomically.
 //!
 //! This lives in the postgres crate (not ingest) because it owns the iceberg
-//! writer chain and the mirror projection; the ingest `IcebergMaterializer`
-//! forwards the raw IPC body here. (Historically this crate was arrow-57 while
+//! writer chain and the mirror projection; callers decode the Arrow IPC body
+//! themselves (via `datafusion_io::decode_ipc` on the umbrella-arrow side) and
+//! pass the schema + batches in. (Historically this crate was arrow-57 while
 //! ingest was arrow-58; the arrow-58 converge removed that split — the whole tree
 //! now shares one arrow major — but the landing path stays here by ownership.)
 
-use std::io::Cursor;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, ListArray, RecordBatch};
-use arrow_ipc::reader::StreamReader;
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use arrow_select::concat::concat_batches;
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, Result, SnapshotId,
@@ -35,15 +34,6 @@ use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
 
-/// Decode an Arrow IPC stream body into its arrow schema + batches.
-fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
-    let reader = StreamReader::try_new(Cursor::new(body), None).map_err(backend)?;
-    let schema = reader.schema();
-    let batches = reader
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(backend)?;
-    Ok((schema, batches))
-}
 
 /// The inline-tier routing limits carried by [`land`]: at/below
 /// `inline_byte_limit` a request inlines (mirror-only typed rows) instead of
@@ -65,11 +55,11 @@ pub async fn land(
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
-    ipc_body: &[u8],
+    schema: SchemaRef,
+    batches: Vec<RecordBatch>,
     limits: InlineLimits,
     lineage: LineageEvent,
 ) -> Result<SnapshotId> {
-    let (schema, batches) = decode_ipc(ipc_body)?;
     // Project the decoded columns to `columns` order, by name. Both downstream
     // branches align columns POSITIONALLY (inline indexes `columns[c]` against
     // batch column `c`; the Parquet branch re-wraps under the table's schema in

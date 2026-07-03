@@ -9,7 +9,7 @@ use control_plane_core::{LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_ipc};
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_batches};
 
 fn lineage_evt(table: &TableRef) -> LineageEvent {
     test_lineage(RunId(uuid::Uuid::new_v4()), table)
@@ -32,12 +32,14 @@ async fn seed(
         name: "docs".into(),
     };
     if !file_rows.is_empty() {
+        let (schema, batches) = vec4_batches(file_rows);
         land(
             &pool,
             &catalog,
             &table,
             &vec4_columns(),
-            &vec4_ipc(file_rows),
+            schema,
+            batches,
             InlineLimits {
                 inline_byte_limit: 0,
                 flush_byte_threshold: i64::MAX,
@@ -48,12 +50,14 @@ async fn seed(
         .expect("land file rows");
     }
     if !inline_rows.is_empty() {
+        let (schema, batches) = vec4_batches(inline_rows);
         land(
             &pool,
             &catalog,
             &table,
             &vec4_columns(),
-            &vec4_ipc(inline_rows),
+            schema,
+            batches,
             InlineLimits {
                 inline_byte_limit: usize::MAX,
                 flush_byte_threshold: i64::MAX,

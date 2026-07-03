@@ -3,7 +3,7 @@
 //! run the build as of S, assert a Puffin sidecar exists and a vector_index mirror
 //! row + lineage event were written in one tx, covering all rows live at S.
 
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_ipc};
+use loom_test_seed::{local_sql_catalog, test_lineage, vec4_columns, vec4_batches};
 
 use control_plane_core::{
     Catalog, ControlPlane, IndexSpec, Metric, ObjectType, PageReq, PropertyDef, RunId, TableRef,
@@ -75,12 +75,14 @@ async fn build_covers_all_rows_live_at_s() {
     let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
     let rows_3_4: &[(i64, [f32; 4])] = &[(3, [0.0, 0.0, 1.0, 0.0]), (4, [0.0, 0.0, 0.0, 1.0])];
     // First batch: rows 1-2 (limit 0 forces Parquet).
+    let (schema_1_2, batches_1_2) = vec4_batches(rows_1_2);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows_1_2),
+        schema_1_2,
+        batches_1_2,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -91,12 +93,14 @@ async fn build_covers_all_rows_live_at_s() {
     .expect("land rows 1-2");
 
     // Second batch: rows 3-4 (also Parquet).
+    let (schema_3_4, batches_3_4) = vec4_batches(rows_3_4);
     land(
         &pool,
         &catalog,
         &table,
         &vec4_columns(),
-        &vec4_ipc(rows_3_4),
+        schema_3_4,
+        batches_3_4,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

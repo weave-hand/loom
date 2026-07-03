@@ -15,19 +15,17 @@ use sqlx::PgPool;
 use crate::IngestError;
 
 /// One landing request: the model gate has already passed, `columns` is the
-/// resolved physical schema, and `lineage` is built. Iceberg uses `ipc_body` (the
-/// postgres crate, which owns the Iceberg writer chain, re-decodes it there); the
-/// `schema`/`batches` fields remain on the request for callers that pre-decode.
+/// resolved physical schema, and `lineage` is built. The caller has already
+/// decoded the Arrow IPC body (via `datafusion_io::decode_ipc`); `schema`/
+/// `batches` are forwarded to the postgres-crate landing entrypoint as-is.
 pub struct LandRequest<'a> {
     pub table: &'a TableRef,
-    /// arrow schema of the decoded batches (for callers that pre-decode).
+    /// arrow schema of the decoded batches.
     pub schema: Arc<Schema>,
     /// Resolved physical schema (model-supplied or inferred).
     pub columns: &'a [ColumnSpec],
-    /// arrow batches (for callers that pre-decode).
+    /// arrow batches.
     pub batches: &'a [RecordBatch],
-    /// Raw Arrow IPC body (Iceberg path; re-decoded in the postgres crate).
-    pub ipc_body: &'a [u8],
     /// Caller-unique prefix (subdirectory) for this call's files, e.g. a run id.
     pub file_prefix: &'a str,
     pub lineage: LineageEvent,
@@ -41,10 +39,10 @@ pub trait LandingMaterializer: Send + Sync {
 }
 
 /// Lands to Iceberg via the loom-native landing path. A thin forwarder: it passes
-/// the raw IPC body (re-decoded inside the postgres crate, which owns the Iceberg
-/// writer chain), the resolved columns, the byte limit, and the lineage event. Small
-/// requests inline (mirror-only rows); large requests write real Parquet — both
-/// emit lineage atomically and return the loom mirror snapshot id.
+/// the pre-decoded schema/batches, the resolved columns, the byte limit, and the
+/// lineage event. Small requests inline (mirror-only rows); large requests write
+/// real Parquet — both emit lineage atomically and return the loom mirror
+/// snapshot id.
 pub struct IcebergMaterializer {
     pub catalog: Arc<SqlCatalog>,
     pub pool: PgPool,
@@ -61,7 +59,8 @@ impl LandingMaterializer for IcebergMaterializer {
             &self.catalog,
             req.table,
             req.columns,
-            req.ipc_body,
+            req.schema.clone(),
+            req.batches.to_vec(),
             InlineLimits {
                 inline_byte_limit: self.inline_byte_limit,
                 flush_byte_threshold: self.flush_byte_threshold,
