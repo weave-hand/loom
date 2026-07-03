@@ -23,12 +23,15 @@ mod vector_index_job;
 
 pub use acl::{
     ADMIN_ROLE, Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter,
-    ScalarValue, SubjectId, validate_row_filter,
+    ScalarValue, SubjectId, check_grant_target, check_policy_write, validate_row_filter,
 };
 pub use auth::{
-    Auth, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount, ServiceToken, UserSummary,
+    Auth, LockoutPolicy, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount,
+    ServiceToken, UserSummary,
 };
-pub use catalog::{Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema};
+pub use catalog::{
+    Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema, small_files,
+};
 pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
 pub use constraints::{
     ConstraintRule, ConstraintViolation, LengthConstraint, PropertyConstraints, PropertyValidator,
@@ -51,9 +54,9 @@ pub use logical_type::{
     vector_list_field,
 };
 pub use ontology::{
-    ActionDef, ActionDefBuilder, ActionKind, ActionName, Aggregation, Cardinality, ConstAssignment,
-    DerivedPropertyDef, LinkBacking, LinkDef, ObjectType, ObjectTypeBuilder, Ontology, ParamDef,
-    PropertyDef, TypeName, VectorIndexDef,
+    ActionDef, ActionDefBuilder, ActionKind, ActionName, Aggregation, Assignment, AssignmentSource,
+    Cardinality, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType, ObjectTypeBuilder, Ontology,
+    ParamDef, PropertyDef, ResultExpectation, TypeName, VectorIndexDef,
 };
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};

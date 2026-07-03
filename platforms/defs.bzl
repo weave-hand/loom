@@ -9,7 +9,7 @@ def _executor_config():
             use_limited_hybrid = not remote_only,
             remote_execution_properties = {
                 "OSFamily": "Linux",
-                "container-image": "docker://gcr.io/flame-public/rbe-ubuntu24-04:latest",
+                "container-image": "docker://ghcr.io/weave-hand/loom-rbe-browser@sha256:99cada5b232b5d23d16800c3c85d3f959427151856bcf7d249051cc5169042ce",
                 "dockerUser": "buildbuddy",
             },
             remote_execution_use_case = "buck2-default",

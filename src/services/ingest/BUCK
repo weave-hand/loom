@@ -98,6 +98,19 @@ rust_test(
     ],
 )
 
+# Pure structural-violation collectors — no fakes, RE-eligible.
+rust_test(
+    name = "bind-structural",
+    crate = "bind_structural",
+    srcs = ["tests/bind_structural.rs"],
+    crate_root = "tests/bind_structural.rs",
+    edition = "2024",
+    deps = [
+        ":ingest",
+        "//src/control-plane/core:core",
+    ],
+)
+
 rust_test(
     name = "gate",
     crate = "gate",
@@ -152,27 +165,6 @@ loom_fixture_test(
         "//third-party:tempfile",
         "//third-party:tokio",
         "//third-party:tower",
-        "//third-party:uuid",
-    ],
-)
-
-rust_test(
-    name = "materialize",
-    crate = "materialize",
-    srcs = ["tests/materialize.rs"],
-    crate_root = "tests/materialize.rs",
-    edition = "2024",
-    deps = [
-        ":ingest",
-        "//src/control-plane/core:core",
-        "//src/control-plane/memory:memory",
-        "//src/services/datafusion-io:datafusion-io",
-        "//third-party:arrow",
-        "//third-party:object_store",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:time",
-        "//third-party:tokio",
         "//third-party:uuid",
     ],
 )

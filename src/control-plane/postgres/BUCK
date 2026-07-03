@@ -268,7 +268,13 @@ loom_fixture_test(
     crate = "ontology",
     srcs = ["tests/ontology.rs"],
     crate_root = "tests/ontology.rs",
-    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
 )
 
 loom_fixture_test(
@@ -328,8 +334,11 @@ loom_fixture_test(
         ":postgres",
         "//src/control-plane/core:core",
         "//src/control-plane/testkit:testkit",
+        "//third-party:serde_json",
         "//third-party:sqlx",
+        "//third-party:time",
         "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 
@@ -414,6 +423,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_landing.rs"],
     crate_root = "tests/iceberg_landing.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
@@ -435,6 +445,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_gc.rs"],
     crate_root = "tests/iceberg_gc.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
@@ -456,6 +467,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_overwrite.rs"],
     crate_root = "tests/iceberg_overwrite.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
@@ -477,6 +489,7 @@ loom_fixture_test(
     srcs = ["tests/overwrite_end_caps_inline.rs"],
     crate_root = "tests/overwrite_end_caps_inline.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-array",
         "//third-party:arrow-schema",
         ":postgres",
@@ -497,6 +510,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_compact.rs"],
     crate_root = "tests/iceberg_compact.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
@@ -518,6 +532,7 @@ loom_fixture_test(
     srcs = ["tests/sqlcatalog_execute_commit.rs"],
     crate_root = "tests/sqlcatalog_execute_commit.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//third-party:iceberg",
         "//third-party:sqlx",
@@ -532,6 +547,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_tx_compact.rs"],
     crate_root = "tests/iceberg_tx_compact.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
@@ -553,6 +569,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_schema_evolution_land.rs"],
     crate_root = "tests/iceberg_schema_evolution_land.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
@@ -574,8 +591,10 @@ loom_fixture_test(
     srcs = ["tests/iceberg_control_plane.rs"],
     crate_root = "tests/iceberg_control_plane.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
         "//third-party:iceberg",
         "//third-party:tempfile",
         "//third-party:tokio",
@@ -588,6 +607,7 @@ loom_fixture_test(
     srcs = ["tests/vector_landing.rs"],
     crate_root = "tests/vector_landing.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
@@ -608,6 +628,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_write_roundtrip.rs"],
     crate_root = "tests/iceberg_write_roundtrip.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -721,6 +742,7 @@ loom_fixture_test(
     srcs = ["tests/iceberg_flush.rs"],
     crate_root = "tests/iceberg_flush.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
@@ -817,6 +839,7 @@ loom_fixture_test(
     srcs = ["tests/inline_flush_trigger.rs"],
     crate_root = "tests/inline_flush_trigger.rs",
     deps = [
+        "//src/testing:seed",
         "//third-party:parquet",
         ":postgres",
         "//src/control-plane/core:core",
@@ -904,6 +927,7 @@ loom_fixture_test(
     crate_root = "tests/iceberg_read.rs",
     edition = "2024",
     deps = [
+        "//src/testing:seed",
         "//third-party:arrow-ipc",
         ":postgres",
         "//src/control-plane/core:core",
@@ -937,6 +961,7 @@ loom_fixture_test(
     srcs = ["tests/vector_index_build.rs"],
     crate_root = "tests/vector_index_build.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -958,6 +983,7 @@ loom_fixture_test(
     srcs = ["tests/flush_vector_rebuild.rs"],
     crate_root = "tests/flush_vector_rebuild.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -979,6 +1005,7 @@ loom_fixture_test(
     srcs = ["tests/vector_index_ivf.rs"],
     crate_root = "tests/vector_index_ivf.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -1000,6 +1027,7 @@ loom_fixture_test(
     srcs = ["tests/vector_index_hnsw.rs"],
     crate_root = "tests/vector_index_hnsw.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -1033,6 +1061,7 @@ loom_fixture_test(
     srcs = ["tests/vector_index_multi.rs"],
     crate_root = "tests/vector_index_multi.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
@@ -1049,11 +1078,25 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "fixture-timing",
+    crate = "fixture_timing",
+    srcs = ["tests/fixture_timing.rs"],
+    crate_root = "tests/fixture_timing.rs",
+    deps = [
+        ":postgres",
+        "//third-party:tokio",
+        "//third-party:tracing",
+        "//third-party:tracing-test",
+    ],
+)
+
+loom_fixture_test(
     name = "vector-index-inline-delta",
     crate = "vector_index_inline_delta",
     srcs = ["tests/vector_index_inline_delta.rs"],
     crate_root = "tests/vector_index_inline_delta.rs",
     deps = [
+        "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",

@@ -1,6 +1,8 @@
 //! e2e: the engine's do_get dispatches a GovernedStatementQuery ticket to the governed
 //! path, applying the row filter/deny/mask regardless of the client SQL.
 
+use std::sync::Arc;
+
 use arrow_array::{Array, Int64Array};
 use arrow_flight::Ticket;
 use arrow_flight::flight_service_server::FlightService;
@@ -9,30 +11,11 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use engine::flight::FlightDataService;
 use engine_wire::flight::GovernedStatementQuery;
 use futures::TryStreamExt;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
-use std::sync::Arc;
+use loom_test_seed::local_sql_catalog;
 use tonic::Request;
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = std::collections::HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn do_get_governed_applies_policy() {
@@ -49,7 +32,7 @@ async fn do_get_governed_applies_policy() {
     let writer = IcebergWriter::new(pool.clone(), dsn.clone());
     writer.seed("s", "orders", &cols, &[5]).await; // ids 0..4
 
-    let file_catalog = make_catalog(dsn, &wh.path().display().to_string()).await;
+    let file_catalog = Arc::new(local_sql_catalog(dsn, &wh.path().display().to_string()).await);
     let svc = FlightDataService {
         catalog: file_catalog,
         serving_catalog: IcebergCatalog::new(pool.clone()),

@@ -17,12 +17,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
-    CompareOp, ConstAssignment, ControlPlane, ControlPlaneError, DatasetRef, Decision,
-    DerivedPropertyDef, Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent,
-    LinkBacking, LinkDef, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page,
-    PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter,
-    RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
+    Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Assignment, Auth, Cardinality,
+    Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef,
+    Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef,
+    LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq,
+    ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
+    ScalarValue, SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -1042,10 +1042,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             },
         ],
         kind: ActionKind::Insert,
-        assignments: vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!("active"),
-        }],
+        assignments: vec![Assignment::constant("status", serde_json::json!("active"))],
     };
     o.define_action(create_gadget.clone())
         .await
@@ -1056,6 +1053,32 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             .unwrap(),
         create_gadget,
         "action round-trips with binds + constant assignments",
+    );
+
+    // Slice 2: an expression assignment round-trips through storage (define == get), alongside
+    // a constant. (Evaluation is a query-api concern; the adapter only persists the source.)
+    let computed = ActionDef {
+        name: ActionName("computeGadget".into()),
+        target: tn("Gadget"),
+        parameters: vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        kind: ActionKind::Insert,
+        assignments: vec![
+            Assignment::constant("status", serde_json::json!("active")),
+            Assignment::expr("name", "upper(\"g\")"),
+        ],
+    };
+    o.define_action(computed.clone()).await.unwrap();
+    assert_eq!(
+        o.get_action(&ActionName("computeGadget".into()))
+            .await
+            .unwrap(),
+        computed,
+        "action round-trips with a computed (expr) assignment"
     );
 
     // Redefining with an empty mapping clears binds + assignments (upsert replaces both).
@@ -2279,6 +2302,137 @@ pub async fn service_account_contract<A: Auth + Acl>(a: &A) {
     );
 }
 
+/// Contract for the password-lifecycle `Auth` ops (update, per-subject session
+/// revoke, failed-login lockout). `a` must be freshly empty.
+pub async fn password_lifecycle_contract<A: Auth + Acl>(a: &A) {
+    let sid = |s: &str| SubjectId(s.to_string());
+    let h = |b: u8| -> [u8; 32] { [b; 32] };
+
+    a.create_user(&NewUser {
+        subject_id: sid("u-al"),
+        username: "al".into(),
+        password_phc: "phc-1".into(),
+    })
+    .await
+    .unwrap();
+
+    // --- update_password round-trip (keyed by subject) ---
+    assert_eq!(
+        a.password_phc_for_subject(&sid("u-al")).await.unwrap(),
+        Some("phc-1".to_string())
+    );
+    a.update_password(&sid("u-al"), "phc-2").await.unwrap();
+    assert_eq!(
+        a.password_phc_for_subject(&sid("u-al")).await.unwrap(),
+        Some("phc-2".to_string()),
+        "update replaced the stored PHC"
+    );
+    // the login read reflects the new PHC too
+    let cred = a.find_password_credential("al").await.unwrap().unwrap();
+    assert_eq!(cred.password_phc, "phc-2");
+    assert!(cred.locked_until.is_none(), "unlocked by default");
+    // unknown subject → NotFound
+    assert!(matches!(
+        a.update_password(&sid("ghost"), "x").await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(
+        a.password_phc_for_subject(&sid("ghost"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // --- revoke_subject_sessions (keep one / all) ---
+    let now = OffsetDateTime::now_utc();
+    let future = now + time::Duration::hours(1);
+    a.create_session(&sid("u-al"), &h(1), future).await.unwrap();
+    a.create_session(&sid("u-al"), &h(2), future).await.unwrap();
+    a.create_session(&sid("u-al"), &h(3), future).await.unwrap();
+    // keep h(2): the others are revoked, h(2) survives
+    a.revoke_subject_sessions(&sid("u-al"), Some(&h(2)))
+        .await
+        .unwrap();
+    assert!(a.resolve_session(&h(1), now).await.unwrap().is_none());
+    assert_eq!(
+        a.resolve_session(&h(2), now).await.unwrap(),
+        Some(sid("u-al")),
+        "kept session survives"
+    );
+    assert!(a.resolve_session(&h(3), now).await.unwrap().is_none());
+    // revoke all
+    a.revoke_subject_sessions(&sid("u-al"), None).await.unwrap();
+    assert!(a.resolve_session(&h(2), now).await.unwrap().is_none());
+
+    // --- lockout: threshold, window reset, clear-on-success ---
+    let policy = LockoutPolicy {
+        threshold: 3,
+        window: time::Duration::minutes(10),
+        lockout_duration: time::Duration::minutes(15),
+    };
+    let t0 = OffsetDateTime::now_utc();
+    // two failures inside the window: not yet locked
+    a.record_failed_login("al", t0, policy).await.unwrap();
+    a.record_failed_login("al", t0 + time::Duration::seconds(1), policy)
+        .await
+        .unwrap();
+    assert!(
+        a.find_password_credential("al")
+            .await
+            .unwrap()
+            .unwrap()
+            .locked_until
+            .is_none(),
+        "below threshold: not locked"
+    );
+    // third failure reaches the threshold → locked, lock in the future
+    let t_lock = t0 + time::Duration::seconds(2);
+    a.record_failed_login("al", t_lock, policy).await.unwrap();
+    let locked = a
+        .find_password_credential("al")
+        .await
+        .unwrap()
+        .unwrap()
+        .locked_until
+        .expect("locked at threshold");
+    assert!(locked > t_lock, "lock expiry is in the future");
+
+    // reset clears the lock + counter
+    a.reset_failed_logins("al").await.unwrap();
+    assert!(
+        a.find_password_credential("al")
+            .await
+            .unwrap()
+            .unwrap()
+            .locked_until
+            .is_none(),
+        "reset cleared the lock"
+    );
+
+    // stale window: a failure far past the window resets the counter to 1, so a
+    // single later failure does not lock.
+    a.record_failed_login("al", t0, policy).await.unwrap();
+    a.record_failed_login("al", t0 + time::Duration::seconds(1), policy)
+        .await
+        .unwrap();
+    let stale = t0 + time::Duration::hours(2); // > window since last failure
+    a.record_failed_login("al", stale, policy).await.unwrap();
+    assert!(
+        a.find_password_credential("al")
+            .await
+            .unwrap()
+            .unwrap()
+            .locked_until
+            .is_none(),
+        "stale window reset the count instead of locking"
+    );
+
+    // record/reset on an unknown username are no-ops (lockout protects existing
+    // accounts only), never an error.
+    a.record_failed_login("ghost", t0, policy).await.unwrap();
+    a.reset_failed_logins("ghost").await.unwrap();
+}
+
 /// Both-adapter contract for type-existence validation on the three loom-owned
 /// write paths that store a reference to an ontology type: `Acl::grant`,
 /// `Acl::set_policy`, and `Ontology::define_action`. Each must reject a
@@ -2761,6 +2915,44 @@ pub async fn lineage_pagination_contract<CP: Lineage>(cp: &CP) {
         "all events returned across pages, none duplicated/dropped"
     );
     assert!(ended_with_null, "final page signals no next");
+}
+
+/// Contract: `events_for` hydrates every event's inputs/outputs completely
+/// and in ordinal order, however the adapter batches the reads (pins the
+/// per-event-N+1 → `event_id = any($1)` collapse). `cp` must be freshly empty.
+pub async fn events_for_hydration_contract<CP: Lineage>(cp: &CP) {
+    let ds = |n: &str| DatasetRef {
+        namespace: "w".to_string(),
+        name: n.to_string(),
+    };
+    let run = RunId(uuid::Uuid::new_v4());
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    for i in 0..3 {
+        cp.emit(LineageEvent {
+            run_id: run,
+            event_type: EventType::Complete,
+            event_time: ts,
+            inputs: vec![ds(&format!("in{i}.a")), ds(&format!("in{i}.b"))],
+            outputs: vec![ds(&format!("out{i}.a")), ds(&format!("out{i}.b"))],
+            payload: serde_json::json!({ "i": i }),
+        })
+        .await
+        .unwrap();
+    }
+    let page = cp.events_for(&run, PageReq::unbounded()).await.unwrap();
+    assert_eq!(page.items.len(), 3, "all three events returned in order");
+    for (i, e) in page.items.iter().enumerate() {
+        assert_eq!(
+            e.inputs,
+            vec![ds(&format!("in{i}.a")), ds(&format!("in{i}.b"))],
+            "event {i}: inputs hydrated in ordinal order"
+        );
+        assert_eq!(
+            e.outputs,
+            vec![ds(&format!("out{i}.a")), ds(&format!("out{i}.b"))],
+            "event {i}: outputs hydrated in ordinal order"
+        );
+    }
 }
 
 /// Contract for `Tx` isolation: while a transaction is open and uncommitted, the
@@ -3247,6 +3439,76 @@ where
         "prior snapshot retains its file (time travel)"
     );
     assert_eq!(back.items[0].path, "a.parquet");
+}
+
+/// Contract: staged writes replay in STAGING ORDER within one `Tx`. A
+/// `replace_files` end-caps only what is live before it in the log, so a
+/// replace staged BEFORE an append leaves the append's files live — postgres
+/// `IcebergTx` semantics, which the memory fake must match. `cp` must be
+/// freshly empty.
+pub async fn snapshot_write_order_contract<C: control_plane_core::ControlPlane>(cp: &C) {
+    use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
+    let t = TableRef {
+        schema: "main".into(),
+        name: "write_order".into(),
+    };
+    let file = |path: &str, rows: i64| DataFile {
+        path: path.into(),
+        path_is_relative: true,
+        file_format: FileFormat::Parquet,
+        record_count: rows,
+        file_size_bytes: rows * 16,
+        column_stats: vec![],
+        parquet_footer_size: Some(10),
+    };
+    let cols = vec![ColumnSpec {
+        name: "id".into(),
+        ty: "long".into(),
+        nullable: false,
+    }];
+
+    // Seed: create + append f0.
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(&t, &cols).await.unwrap();
+    tx.append_files(&t, &[file("f0.parquet", 1)]).await.unwrap();
+    let s1 = tx.commit().await.unwrap().expect("seed snapshot");
+
+    // One tx: REPLACE with r.parquet, THEN APPEND a.parquet.
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(&t, &cols).await.unwrap(); // idempotent; IcebergTx resolves columns in-tx
+    tx.replace_files(&t, &[file("r.parquet", 2)]).await.unwrap();
+    tx.append_files(&t, &[file("a.parquet", 3)]).await.unwrap();
+    let s2 = tx.commit().await.unwrap().expect("write snapshot");
+
+    let mut live: Vec<String> = cp
+        .catalog()
+        .files(&t, s2, PageReq::unbounded())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    live.sort();
+    assert_eq!(
+        live,
+        vec!["a.parquet".to_string(), "r.parquet".to_string()],
+        "replace-then-append: the append (staged AFTER the replace) stays live"
+    );
+
+    // f0 was live before the replace -> end-capped; time travel still sees it.
+    let back: Vec<String> = cp
+        .catalog()
+        .files(&t, s1, PageReq::unbounded())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(
+        back,
+        vec!["f0.parquet".to_string()],
+        "prior snapshot time-travels"
+    );
 }
 
 /// Contract for `Tx::compact_files` (selective compaction). Append three files, then

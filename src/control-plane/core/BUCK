@@ -75,6 +75,20 @@ rust_test(
 )
 
 rust_test(
+    name = "lineage-completed",
+    crate = "lineage_completed",
+    srcs = ["tests/lineage_completed.rs"],
+    crate_root = "tests/lineage_completed.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+    ],
+)
+
+rust_test(
     name = "serde-roundtrip",
     crate = "serde_roundtrip",
     srcs = ["tests/serde_roundtrip.rs"],
@@ -287,6 +301,39 @@ rust_test(
 )
 
 rust_test(
+    name = "vector-index-decode-props",
+    crate = "vector_index_decode_props",
+    srcs = ["tests/vector_index_decode_props.rs"],
+    crate_root = "tests/vector_index_decode_props.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:proptest",
+    ],
+)
+
+rust_test(
+    name = "job-failure",
+    crate = "job_failure",
+    srcs = ["tests/job_failure.rs"],
+    crate_root = "tests/job_failure.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
+    name = "small-files",
+    crate = "small_files",
+    srcs = ["tests/small_files.rs"],
+    crate_root = "tests/small_files.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "column-spec-serde",
     crate = "column_spec_serde",
     srcs = ["tests/column_spec_serde.rs"],
@@ -297,4 +344,34 @@ rust_test(
         ":core",
         "//third-party:serde_json",
     ],
+)
+
+rust_test(
+    name = "enum-wire-codecs",
+    crate = "enum_wire_codecs",
+    srcs = ["tests/enum_wire_codecs.rs"],
+    crate_root = "tests/enum_wire_codecs.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
+    name = "policy-write-checks",
+    crate = "policy_write_checks",
+    srcs = ["tests/policy_write_checks.rs"],
+    crate_root = "tests/policy_write_checks.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
+    name = "aggregation-typing",
+    crate = "aggregation_typing",
+    srcs = ["tests/aggregation_typing.rs"],
+    crate_root = "tests/aggregation_typing.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
 )

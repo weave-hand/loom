@@ -9,10 +9,8 @@
 //! values — a column declared non-nullable can still carry nulls in the batch;
 //! value/null-constraint enforcement is a later slice.
 
-use arrow::array::{
-    Array, Float64Array, Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray,
-};
-use arrow::datatypes::{DataType, Schema};
+use arrow::array::{Array, AsArray, RecordBatch};
+use arrow::datatypes::{DataType, Float64Type, Int32Type, Int64Type, Schema};
 
 use control_plane_core::{PropertyConstraints, PropertyValidator};
 use datafusion_io::arrow_logical_type;
@@ -121,53 +119,33 @@ pub fn validate_values(shape: &ModelShape, batches: &[RecordBatch]) -> Result<()
             let mut cv = Vec::new();
             match array.data_type() {
                 DataType::Utf8 => {
-                    if let Some(a) = array.as_any().downcast_ref::<StringArray>() {
-                        for i in 0..a.len() {
-                            if !a.is_null(i) {
-                                validator.check_str(a.value(i), &mut cv);
-                            }
-                        }
+                    for s in array.as_string::<i32>().iter().flatten() {
+                        validator.check_str(s, &mut cv);
                     }
                 }
                 DataType::LargeUtf8 => {
-                    if let Some(a) = array.as_any().downcast_ref::<LargeStringArray>() {
-                        for i in 0..a.len() {
-                            if !a.is_null(i) {
-                                validator.check_str(a.value(i), &mut cv);
-                            }
-                        }
+                    for s in array.as_string::<i64>().iter().flatten() {
+                        validator.check_str(s, &mut cv);
                     }
                 }
                 DataType::Int32 => {
-                    if let Some(a) = array.as_any().downcast_ref::<Int32Array>() {
-                        for i in 0..a.len() {
-                            if !a.is_null(i) {
-                                validator.check_num(f64::from(a.value(i)), &mut cv);
-                            }
-                        }
+                    for v in array.as_primitive::<Int32Type>().iter().flatten() {
+                        validator.check_num(f64::from(v), &mut cv);
                     }
                 }
                 DataType::Int64 => {
-                    if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
-                        for i in 0..a.len() {
-                            if !a.is_null(i) {
-                                #[expect(
-                                    clippy::cast_precision_loss,
-                                    reason = "i64->f64 acceptable for range validation"
-                                )]
-                                let v = a.value(i) as f64;
-                                validator.check_num(v, &mut cv);
-                            }
-                        }
+                    for v in array.as_primitive::<Int64Type>().iter().flatten() {
+                        #[expect(
+                            clippy::cast_precision_loss,
+                            reason = "i64->f64 acceptable for range validation"
+                        )]
+                        let f = v as f64;
+                        validator.check_num(f, &mut cv);
                     }
                 }
                 DataType::Float64 => {
-                    if let Some(a) = array.as_any().downcast_ref::<Float64Array>() {
-                        for i in 0..a.len() {
-                            if !a.is_null(i) {
-                                validator.check_num(a.value(i), &mut cv);
-                            }
-                        }
+                    for v in array.as_primitive::<Float64Type>().iter().flatten() {
+                        validator.check_num(v, &mut cv);
                     }
                 }
                 _ => {}

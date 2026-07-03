@@ -126,7 +126,7 @@ async fn flush_locked(
                 name: table.name.clone(),
                 index_name: index_name.clone(),
             })
-            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+            .map_err(backend)?;
             Ok(NewJob {
                 kind: BUILD_VECTOR_INDEX_JOB_KIND.to_string(),
                 payload,

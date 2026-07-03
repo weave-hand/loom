@@ -198,9 +198,10 @@ pub(super) fn pack_rows(
     let mut data = Vec::with_capacity(rows.len() * d);
     for (key, v) in rows {
         if v.len() != d {
-            return Err(ControlPlaneError::Backend(
-                format!("vector dim mismatch: expected {d}, got {}", v.len()).into(),
-            ));
+            return Err(ControlPlaneError::Validation(format!(
+                "vector dim mismatch: expected {d}, got {}",
+                v.len()
+            )));
         }
         keys.push(key);
         data.extend_from_slice(&v);

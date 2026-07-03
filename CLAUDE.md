@@ -189,7 +189,7 @@ or `#N[,#N...]`; `[[id]]` cross-links items. The `[ ]`/`[x]` checkbox makes
   (claimant/since), based on `origin/main` when present (so it is a ready PR
   branch the claimant just adds commits to) or a parentless empty-tree marker
   otherwise. `claims` lists live claims (`refs/heads/work/*`) and `claims --reap`
-  deletes stale ones (no open `work/<id>` PR past a 60-min grace); `release <id>`
+  deletes stale ones (no open `work/<id>` PR past a 240-min grace); `release <id>`
   deletes the branch. The upstream `loom-work-plan` skill gets an item to a
   claimable (spec-on-disk) state. **Cloud sessions:** the `refs/heads/*` namespace
   is deliberate. The web/cloud git proxy 403s pushes to any *other* namespace and

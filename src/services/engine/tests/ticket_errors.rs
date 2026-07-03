@@ -4,24 +4,13 @@
 //! byte-identical when the dispatch moves onto `engine_wire::flight::EngineTicket`
 //! (road-engine-wire-dedup). Green against the pre-refactor code.
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use arrow_flight::Ticket;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt, TicketStatementQuery};
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
-};
-use engine::flight::FlightDataService;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
+use loom_test_flight::{EngineGuard, spawn_flight_uds};
 use prost::Message;
-use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::{Endpoint, Server, Uri};
+use tonic::transport::{Endpoint, Uri};
 
 /// Boot a `FlightDataService` on a UDS and return a RAW `FlightServiceClient`
 /// (the wrapper clients only send well-formed tickets; these pins need to put
@@ -30,44 +19,9 @@ async fn spawn_raw(
     fx: &PgFixture,
     db: &str,
     warehouse: &str,
-) -> (
-    tempfile::TempDir,
-    FlightServiceClient<tonic::transport::Channel>,
-) {
-    let sock_dir = tempfile::tempdir().expect("socket dir");
-    let sock_path = sock_dir.path().join("engine.sock");
-    let sock = sock_path.to_string_lossy().to_string();
-
-    let pool = fx.pool_for(db).await;
-    let mut props = std::collections::HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), fx.pg_dsn(db));
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog");
-    let svc = FlightDataService {
-        catalog,
-        serving_catalog: IcebergCatalog::new(pool.clone()),
-        serving_store: None,
-        pool,
-    };
-
-    let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
-    let incoming = UnixListenerStream::new(listener);
-    tokio::spawn(async move {
-        drop(
-            Server::builder()
-                .add_service(FlightServiceServer::new(svc))
-                .serve_with_incoming(incoming)
-                .await,
-        );
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+) -> (EngineGuard, FlightServiceClient<tonic::transport::Channel>) {
+    let eng = spawn_flight_uds(fx, db, warehouse).await;
+    let sock = eng.sock.clone();
 
     let channel = Endpoint::try_from("http://[::]:50051")
         .expect("endpoint")
@@ -80,7 +34,7 @@ async fn spawn_raw(
         }))
         .await
         .expect("connect uds");
-    (sock_dir, FlightServiceClient::new(channel))
+    (eng, FlightServiceClient::new(channel))
 }
 
 async fn do_get_err(

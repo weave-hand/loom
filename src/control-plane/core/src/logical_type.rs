@@ -103,6 +103,20 @@ impl BaseType {
             BaseType::Vector(_) => DataType::List(std::sync::Arc::new(vector_list_field())),
         }
     }
+
+    /// `Sum`/`Avg` apply only to numeric base types.
+    #[must_use]
+    pub fn is_numeric(self) -> bool {
+        matches!(self, BaseType::Integer | BaseType::Long | BaseType::Double)
+    }
+
+    /// `Min`/`Max` apply to any totally-ordered base type — every base type except
+    /// `Boolean`. (Preserves the pre-decomposition bind.rs semantics: `Vector`,
+    /// `String`, `Date`, `Timestamp` are all treated as ordered here.)
+    #[must_use]
+    pub fn is_ordered(self) -> bool {
+        !matches!(self, BaseType::Boolean)
+    }
 }
 
 /// The Arrow list-child field of every loom `Vector(N)` column, in memory and on

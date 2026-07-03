@@ -3,19 +3,13 @@
 //! `DataFile`'s carried stats), and `IcebergCatalog` reads resolve through the mirror,
 //! so these use synthetic `DataFile`s with precomputed stats.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use loom_test_seed::local_sql_catalog;
 
 use control_plane_core::{
     ColumnSpec, ColumnStat, ControlPlane, DataFile, FileFormat, PageReq, StatValue, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn cols() -> Vec<ColumnSpec> {
     vec![ColumnSpec {
@@ -43,24 +37,10 @@ fn data_file(path: &str, rows: i64) -> DataFile {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 async fn iceberg_cp(fx: &PgFixture) -> (IcebergControlPlane, tempfile::TempDir) {
     let (pg, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     (IcebergControlPlane::new(pg, catalog), wh)
 }
 
@@ -160,4 +140,11 @@ async fn failed_commit_leaves_no_snapshot() {
         cp.catalog().current_snapshot(&t).await.is_err(),
         "a rolled-back commit leaves the table with no live snapshot"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_order_contract() {
+    let fx = PgFixture::shared();
+    let (cp, _wh) = iceberg_cp(fx).await;
+    control_plane_testkit::snapshot_write_order_contract(&cp).await;
 }

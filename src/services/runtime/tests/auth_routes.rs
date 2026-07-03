@@ -15,6 +15,7 @@ fn state(cp: Arc<MemoryControlPlane>) -> AuthState {
     AuthState {
         auth: cp,
         session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     }
 }
 

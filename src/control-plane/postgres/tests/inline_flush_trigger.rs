@@ -3,7 +3,7 @@
 //! Constructors (RunId, ColumnSpec, LineageEvent, fixture) verified against
 //! tests/iceberg_flush.rs.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
@@ -13,11 +13,6 @@ use control_plane_core::{ColumnSpec, DatasetId, EventType, LineageEvent, RunId, 
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_inline::inline_append;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn one_long_col() -> Vec<ColumnSpec> {
     vec![ColumnSpec {
@@ -155,20 +150,6 @@ async fn none_threshold_never_enqueues() {
     assert_eq!(job_count(&pool, FLUSH_JOB_KIND).await, 0);
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 async fn trigger_row(pool: &sqlx::PgPool, schema: &str, name: &str) -> Option<(i64, bool)> {
     let tid: Option<i64> = sqlx::query_scalar(
         "select table_id from iceberg_mirror.\"table\" \
@@ -194,7 +175,7 @@ async fn flush_resets_trigger_on_some() {
     let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let table = TableRef {
         schema: "wh".into(),
@@ -235,7 +216,7 @@ async fn noop_flush_disarms_the_flag() {
     let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let table = TableRef {
         schema: "wh".into(),

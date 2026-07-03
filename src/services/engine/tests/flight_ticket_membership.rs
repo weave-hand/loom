@@ -4,65 +4,13 @@
 //!   * negative — A's ticket naming B's file path is rejected (no bytes), the
 //!     case that fails on `main` today.
 
-use std::sync::Arc;
-use std::time::Duration;
+use loom_test_flight::spawn_flight_uds;
 
 use arrow_array::{Array, Int64Array};
-use arrow_flight::flight_service_server::FlightServiceServer;
 use control_plane_core::{Catalog, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use engine::flight::FlightDataService;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
-use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::Server;
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = std::collections::HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
-async fn spawn_flight(fx: &PgFixture, db: &str, warehouse: &str) -> (tempfile::TempDir, String) {
-    let sock_dir = tempfile::tempdir().expect("socket dir");
-    let sock_path = sock_dir.path().join("engine.sock");
-    let sock_str = sock_path.to_string_lossy().to_string();
-
-    let pool = fx.pool_for(db).await;
-    let file_catalog = make_catalog(fx.pg_dsn(db), warehouse).await;
-    let svc = FlightDataService {
-        catalog: file_catalog,
-        serving_catalog: IcebergCatalog::new(pool.clone()),
-        serving_store: None,
-        pool,
-    };
-
-    let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
-    let incoming = UnixListenerStream::new(listener);
-    tokio::spawn(async move {
-        drop(
-            Server::builder()
-                .add_service(FlightServiceServer::new(svc))
-                .serve_with_incoming(incoming)
-                .await,
-        );
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    (sock_dir, sock_str)
-}
 
 /// Capture a table's live-snapshot data-file paths from the mirror.
 async fn live_files(pool: &sqlx::PgPool, table: &TableRef) -> Vec<String> {
@@ -110,8 +58,10 @@ async fn rejects_ticket_naming_files_outside_live_snapshot() {
         "table B must have at least one live file"
     );
 
-    let (_sock_dir, sock) = spawn_flight(fx, &db, &wh.path().display().to_string()).await;
-    let client = FlightTableClient::connect(&sock).await.expect("connect");
+    let eng = spawn_flight_uds(fx, &db, &wh.path().display().to_string()).await;
+    let client = FlightTableClient::connect(&eng.sock)
+        .await
+        .expect("connect");
 
     // Positive: A's ticket naming A's own live files streams A's rows.
     let ok = client

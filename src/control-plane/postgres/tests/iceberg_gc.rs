@@ -5,11 +5,10 @@
 //! inline rows are physically reclaimed, in-window rows are protected, an
 //! unaged table is a no-op, and GC serializes with a concurrent flush.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use std::time::Duration;
 
@@ -22,12 +21,8 @@ use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_gc::{GcSummary, gc_table};
 use control_plane_postgres::iceberg_inline::inline_append;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use control_plane_postgres::vector_index::{VectorIndexRow, insert_vector_index};
-use iceberg::io::LocalFsStorageFactory;
-use iceberg::{Catalog as _, CatalogBuilder, NamespaceIdent, TableIdent};
+use iceberg::{Catalog as _, NamespaceIdent, TableIdent};
 use time::OffsetDateTime;
 
 const SEVEN_DAYS: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -40,21 +35,12 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// An Arrow IPC body of `rows` rows (`id: long` = `0..rows`), for `land`.
-fn ipc_body(rows: i64) -> Vec<u8> {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
-    )
-    .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+/// A schema + batch of `rows` rows (`id: long` = `0..rows`), for `land`. `land`
+/// now takes pre-decoded batches directly, so this reuses `batch` rather than
+/// round-tripping through an Arrow IPC encode/decode.
+fn ipc_body(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
+    let b = batch(rows);
+    (b.schema(), vec![b])
 }
 
 /// A bare `id: long` record batch of ids `0..rows`.
@@ -80,20 +66,6 @@ fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
         outputs: vec![DatasetId::from(&out).dataset_ref()],
         payload: serde_json::json!({ "source": "test" }),
     }
-}
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
 }
 
 /// Strip a `file://` URL to a local filesystem path.
@@ -189,7 +161,7 @@ async fn delete_file_removes_object_and_is_idempotent() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
     let obj = wh.path().join("victim.parquet");
     std::fs::write(&obj, b"bytes").expect("write object");
@@ -216,7 +188,7 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
@@ -224,12 +196,14 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
         name: "t".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -313,7 +287,7 @@ async fn gc_reclaims_aged_inline_rows() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
@@ -358,7 +332,7 @@ async fn gc_is_a_noop_when_nothing_aged_out() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
@@ -366,12 +340,14 @@ async fn gc_is_a_noop_when_nothing_aged_out() {
         name: "fresh".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -400,8 +376,8 @@ async fn gc_serializes_with_concurrent_flush() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog_g = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let catalog_f = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog_g = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog_f = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "wh".into(),
@@ -412,12 +388,14 @@ async fn gc_serializes_with_concurrent_flush() {
 
     // Seed: land A (s1) → overwrite B (s2; end-caps A) → age s2 so gc reclaims A,
     // then add live inline rows so flush has work to drain.
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog_g,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -493,7 +471,7 @@ async fn gc_reclaims_a_dropped_table() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
@@ -502,12 +480,14 @@ async fn gc_reclaims_a_dropped_table() {
     };
     let run = RunId(uuid::Uuid::new_v4());
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -575,7 +555,7 @@ async fn gc_preserves_a_within_window_dropped_table() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
@@ -583,12 +563,14 @@ async fn gc_preserves_a_within_window_dropped_table() {
         name: "recent".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -638,7 +620,7 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
@@ -647,12 +629,14 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
     };
 
     // Incarnation 1: land, capture its file + tid, drop.
+    let (schema1, batches1) = ipc_body(10);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema1,
+        batches1,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -667,12 +651,14 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
     catalog.drop_table(&ident).await.expect("drop1");
 
     // Incarnation 2 (live): re-land under the same name → new table_id.
+    let (schema2, batches2) = ipc_body(5);
     let s2 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(5),
+        schema2,
+        batches2,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -718,19 +704,21 @@ async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "wh".into(),
         name: "twice".into(),
     };
 
+    let (schema, batches) = ipc_body(10);
     land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(10),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -764,19 +752,21 @@ async fn gc_reclaims_a_dropped_table_with_vector_index() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "wh".into(),
         name: "indexed".into(),
     };
 
+    let (schema, batches) = ipc_body(4);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        &ipc_body(4),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

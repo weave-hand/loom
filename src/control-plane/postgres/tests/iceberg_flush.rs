@@ -2,7 +2,7 @@
 //! Iceberg Parquet snapshot, retires the inline rows at the same snapshot, and emits
 //! a compaction lineage event — atomically, exactly-once, time-travel-correct.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
@@ -14,11 +14,6 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_inline::inline_append;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn columns() -> Vec<ColumnSpec> {
     vec![ColumnSpec {
@@ -44,20 +39,6 @@ fn inline_lineage(run: RunId, table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// After flushing an inline-only table: there must be at least one real Parquet file
 /// at the current snapshot, and there must be no live inline rows (i.e. the inline
 /// rows were end-capped). That pair proves exactly-once delivery at current.
@@ -66,7 +47,7 @@ async fn flush_inline_only_makes_rows_file_backed_exactly_once() {
     let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let run = RunId(uuid::Uuid::new_v4());
     let table = TableRef {
@@ -127,7 +108,7 @@ async fn flush_with_no_live_rows_is_a_noop() {
     let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let run = RunId(uuid::Uuid::new_v4());
     let table = TableRef {
@@ -149,7 +130,7 @@ async fn flush_emits_compaction_lineage() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let inline_run = RunId(uuid::Uuid::new_v4());
     let flush_run = RunId(uuid::Uuid::new_v4());
@@ -196,7 +177,7 @@ async fn flush_preserves_time_travel() {
     let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let run = RunId(uuid::Uuid::new_v4());
     let table = TableRef {
@@ -273,7 +254,7 @@ async fn flush_leaves_later_inline_rows_live() {
     let fx = PgFixture::shared();
     let (_, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let run = RunId(uuid::Uuid::new_v4());
     let table = TableRef {

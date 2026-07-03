@@ -22,11 +22,35 @@ pub struct NewUser {
     pub password_phc: String,
 }
 
+/// Failed-login lockout parameters (service-layer config, passed to the store so
+/// the increment-and-maybe-lock decision is a single operation). `threshold`
+/// consecutive failures within `window` lock the account for `lockout_duration`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockoutPolicy {
+    pub threshold: u32,
+    pub window: time::Duration,
+    pub lockout_duration: time::Duration,
+}
+
+impl Default for LockoutPolicy {
+    fn default() -> Self {
+        LockoutPolicy {
+            threshold: 5,
+            window: time::Duration::minutes(15),
+            lockout_duration: time::Duration::minutes(15),
+        }
+    }
+}
+
 /// A username's stored password verifier, returned for login.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PasswordCredential {
     pub subject_id: SubjectId,
     pub password_phc: String,
+    /// When the account is locked (failed-login threshold reached), the instant the
+    /// lock expires; `None` if not locked. The login path rejects while
+    /// `locked_until > now`.
+    pub locked_until: Option<OffsetDateTime>,
 }
 
 /// A user as surfaced by an admin listing: identity + activation state, never the
@@ -124,6 +148,43 @@ pub trait Auth {
     /// sessions are revoked immediately. `NotFound` if the username is unknown.
     /// Idempotent for a fixed target state.
     async fn set_user_disabled(&self, username: &str, disabled: bool) -> Result<()>;
+
+    /// Replace `subject`'s stored password verifier (and bump `updated_at`). Shared by
+    /// the self-service change and the admin reset — the verify-current decision is a
+    /// service-layer concern, consistent with this trait's no-cryptography contract.
+    /// `NotFound` if the subject has no password credential.
+    async fn update_password(&self, subject: &SubjectId, new_phc: &str) -> Result<()>;
+
+    /// The stored PHC for `subject`, or `None` if the subject has no credential. Lets
+    /// the self-service change verify the current password when the caller is
+    /// identified by their session subject rather than a username.
+    async fn password_phc_for_subject(&self, subject: &SubjectId) -> Result<Option<String>>;
+
+    /// Revoke `subject`'s sessions. `keep = Some(hash)` preserves that one session
+    /// (self-service change keeps the caller logged in); `None` revokes all (admin
+    /// reset). Idempotent.
+    async fn revoke_subject_sessions(
+        &self,
+        subject: &SubjectId,
+        keep: Option<&[u8; 32]>,
+    ) -> Result<()>;
+
+    /// Record a failed login for `username` under `policy`: increment the
+    /// failed-attempt counter (resetting it to 1 first if the time since
+    /// `last_failed_at` exceeded `policy.window`), stamp `last_failed_at = now`, and
+    /// set `locked_until = now + policy.lockout_duration` once the counter reaches
+    /// `policy.threshold`. No-op if the username is unknown — lockout is keyed by
+    /// username and protects existing accounts only.
+    async fn record_failed_login(
+        &self,
+        username: &str,
+        now: OffsetDateTime,
+        policy: LockoutPolicy,
+    ) -> Result<()>;
+
+    /// Clear `username`'s failed-attempt counter and lock, on a successful login.
+    /// Idempotent; no-op if the username is unknown.
+    async fn reset_failed_logins(&self, username: &str) -> Result<()>;
 
     /// Create a service account bound to `account.subject_id`. Ensures the ACL
     /// subject exists (so the account is immediately a valid ACL principal, exactly

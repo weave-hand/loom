@@ -96,6 +96,39 @@ pub enum EventType {
     Fail,
 }
 
+impl EventType {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EventType::Start => "start",
+            EventType::Running => "running",
+            EventType::Complete => "complete",
+            EventType::Abort => "abort",
+            EventType::Fail => "fail",
+        }
+    }
+}
+
+impl std::str::FromStr for EventType {
+    type Err = ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "start" => Ok(EventType::Start),
+            "running" => Ok(EventType::Running),
+            "complete" => Ok(EventType::Complete),
+            "abort" => Ok(EventType::Abort),
+            "fail" => Ok(EventType::Fail),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown event type '{other}'"
+            ))),
+        }
+    }
+}
+
 /// A lineage event: a typed envelope (the fields loom indexes/queries) plus the
 /// full OpenLineage event stored opaquely in `payload`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +139,36 @@ pub struct LineageEvent {
     pub inputs: Vec<DatasetRef>,
     pub outputs: Vec<DatasetRef>,
     pub payload: serde_json::Value,
+}
+
+impl LineageEvent {
+    /// A completed (`EventType::Complete`) event with a freshly-minted `run_id`, the
+    /// current UTC time, and no inputs — the shape emitted by the ingest land/model
+    /// paths and query-api's create-from-params action. `outputs` are the datasets the
+    /// run produced; `payload` is the opaque OpenLineage body.
+    #[must_use]
+    pub fn completed(outputs: Vec<DatasetRef>, payload: serde_json::Value) -> Self {
+        Self::completed_with_run(RunId(Uuid::new_v4()), outputs, payload)
+    }
+
+    /// [`LineageEvent::completed`] against a caller-supplied `run_id` — used where the
+    /// caller owns the run id (hands it to the engine to commit row + event atomically,
+    /// or threads an `X-Loom-Run-Id` header through).
+    #[must_use]
+    pub fn completed_with_run(
+        run_id: RunId,
+        outputs: Vec<DatasetRef>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            run_id,
+            event_type: EventType::Complete,
+            event_time: OffsetDateTime::now_utc(),
+            inputs: Vec::new(),
+            outputs,
+            payload,
+        }
+    }
 }
 
 #[async_trait]

@@ -1,19 +1,18 @@
-//! The Iceberg landing entrypoint: decode an Arrow IPC body, route by
+//! The Iceberg landing entrypoint: take pre-decoded Arrow batches, route by
 //! in-memory size between an inline (mirror-only) write and a real Parquet write,
 //! and return the loom mirror snapshot id. Both branches emit lineage atomically.
 //!
 //! This lives in the postgres crate (not ingest) because it owns the iceberg
-//! writer chain and the mirror projection; the ingest `IcebergMaterializer`
-//! forwards the raw IPC body here. (Historically this crate was arrow-57 while
+//! writer chain and the mirror projection; callers decode the Arrow IPC body
+//! themselves (via `datafusion_io::decode_ipc` on the umbrella-arrow side) and
+//! pass the schema + batches in. (Historically this crate was arrow-57 while
 //! ingest was arrow-58; the arrow-58 converge removed that split — the whole tree
 //! now shares one arrow major — but the landing path stays here by ownership.)
 
-use std::io::Cursor;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, ListArray, RecordBatch};
-use arrow_ipc::reader::StreamReader;
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use arrow_select::concat::concat_batches;
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, Result, SnapshotId,
@@ -23,6 +22,7 @@ use iceberg::spec::{ListType, NestedField, PrimitiveType, Schema as IceSchema, T
 use iceberg::{Catalog as IceCatalog, NamespaceIdent, TableCreation, TableIdent};
 use sqlx::PgPool;
 
+use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_inline::inline_append;
 use crate::iceberg_mirror::{
@@ -33,21 +33,6 @@ use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
-
-/// Boxing helper: wrap any boxable error as a control-plane `Backend` fault.
-fn be<E: std::error::Error + Send + Sync + 'static>(e: E) -> ControlPlaneError {
-    ControlPlaneError::Backend(Box::new(e))
-}
-
-/// Decode an Arrow IPC stream body into its arrow schema + batches.
-fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>)> {
-    let reader = StreamReader::try_new(Cursor::new(body), None).map_err(be)?;
-    let schema = reader.schema();
-    let batches = reader
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(be)?;
-    Ok((schema, batches))
-}
 
 /// The inline-tier routing limits carried by [`land`]: at/below
 /// `inline_byte_limit` a request inlines (mirror-only typed rows) instead of
@@ -64,16 +49,23 @@ pub struct InlineLimits {
 
 /// Land an Iceberg request, routing by in-memory size per `limits` (see
 /// [`InlineLimits`]). Returns the loom mirror snapshot id either way.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "eight cohesive positional params: routing target (pool/catalog/table/columns), \
+              pre-decoded payload (schema/batches — split from the single ipc_body: &[u8] this \
+              replaces), and behavior (limits/lineage); grouping any of these into a struct would \
+              obscure the mechanical 1:1 mapping callers already have to the removed decode step"
+)]
 pub async fn land(
     pool: &PgPool,
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
-    ipc_body: &[u8],
+    schema: SchemaRef,
+    batches: Vec<RecordBatch>,
     limits: InlineLimits,
     lineage: LineageEvent,
 ) -> Result<SnapshotId> {
-    let (schema, batches) = decode_ipc(ipc_body)?;
     // Project the decoded columns to `columns` order, by name. Both downstream
     // branches align columns POSITIONALLY (inline indexes `columns[c]` against
     // batch column `c`; the Parquet branch re-wraps under the table's schema in
@@ -83,7 +75,7 @@ pub async fn land(
     let (schema, batches) = align_to_columns(&schema, batches, columns)?;
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
     if bytes <= limits.inline_byte_limit {
-        let batch = concat_batches(&schema, &batches).map_err(be)?;
+        let batch = concat_batches(&schema, &batches).map_err(backend)?;
         inline_append(
             pool,
             table,
@@ -137,7 +129,7 @@ fn align_to_columns(
         .into_iter()
         .map(|b| {
             let cols: Vec<_> = indices.iter().map(|&i| b.column(i).clone()).collect();
-            RecordBatch::try_new(projected.clone(), cols).map_err(be)
+            RecordBatch::try_new(projected.clone(), cols).map_err(backend)
         })
         .collect::<Result<Vec<_>>>()?;
     Ok((projected, batches))
@@ -165,7 +157,7 @@ pub(crate) async fn append_parquet_snapshot(
     let icb = IcebergCatalog::new(pool.clone());
     let (live, current) = match icb.current_snapshot(table).await {
         Ok(snap) => {
-            let mut conn = pool.acquire().await.map_err(be)?;
+            let mut conn = pool.acquire().await.map_err(backend)?;
             // `live_columns_for` resolves the tid internally and reads columns live at
             // `snap.id` (its predicate is `begin_snapshot <= $2`, no +1).
             (
@@ -188,7 +180,7 @@ pub(crate) async fn append_parquet_snapshot(
                 // let the flush job run first, so mirror and inline table never diverge. Until
                 // additive-on-inline is implemented (`fut-iceberg-additive-inline`).
                 if let Some(at) = current {
-                    let mut conn = pool.acquire().await.map_err(be)?;
+                    let mut conn = pool.acquire().await.map_err(backend)?;
                     if crate::iceberg_inline::has_live_inline_rows(&mut conn, table, at).await? {
                         return Err(ControlPlaneError::Validation(
                             "schema evolution unsupported: flush inline rows before an additive land"
@@ -204,7 +196,7 @@ pub(crate) async fn append_parquet_snapshot(
 
     let ns = NamespaceIdent::new(table.schema.clone());
     let ident = TableIdent::new(ns, table.name.clone());
-    let ice_table = catalog.load_table(&ident).await.map_err(be)?;
+    let ice_table = catalog.load_table(&ident).await.map_err(backend)?;
 
     // A decoded IPC body carries a bare arrow schema; the iceberg writer chain needs
     // the table's arrow schema (which carries the iceberg field-id metadata) or it
@@ -214,7 +206,7 @@ pub(crate) async fn append_parquet_snapshot(
     // `align_to_columns` upstream.
     let ice_arrow = Arc::new(
         iceberg::arrow::schema_to_arrow_schema(ice_table.metadata().current_schema())
-            .map_err(be)?,
+            .map_err(backend)?,
     );
     let batches = batches
         .into_iter()
@@ -223,7 +215,7 @@ pub(crate) async fn append_parquet_snapshot(
 
     append_batches_with_extras(catalog, &ice_table, batches, extras)
         .await
-        .map_err(be)?;
+        .map_err(backend)?;
 
     Ok(IcebergCatalog::new(pool.clone())
         .current_snapshot(table)
@@ -287,7 +279,7 @@ fn coerce_batch_to_ice(
             _ => Ok(batch.column(i).clone()),
         })
         .collect::<Result<Vec<_>>>()?;
-    RecordBatch::try_new(ice_arrow.clone(), cols).map_err(be)
+    RecordBatch::try_new(ice_arrow.clone(), cols).map_err(backend)
 }
 
 /// The additive landing path (mirror-only). Writes the landing `batches` as Parquet
@@ -316,9 +308,9 @@ async fn land_additive(
     // into the Parquet footer.
     let ns = NamespaceIdent::new(table.schema.clone());
     let ident = TableIdent::new(ns, table.name.clone());
-    let ice_table = catalog.load_table(&ident).await.map_err(be)?;
+    let ice_table = catalog.load_table(&ident).await.map_err(backend)?;
     let superset = ice_schema(columns)?;
-    let ice_arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&superset).map_err(be)?);
+    let ice_arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&superset).map_err(backend)?);
     let batches = batches
         .into_iter()
         .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
@@ -328,7 +320,7 @@ async fn land_additive(
     let ice_files =
         crate::iceberg_writer::write_parquet_with_schema(&ice_table, superset.into(), batches)
             .await
-            .map_err(be)?;
+            .map_err(backend)?;
 
     // Convert iceberg DataFiles -> loom DataFiles, computing per-column stats from each
     // written file's bytes (exactly like `iceberg_mirror::added_files_of`).
@@ -338,10 +330,10 @@ async fn land_additive(
         let bytes = ice_table
             .file_io()
             .new_input(df.file_path())
-            .map_err(be)?
+            .map_err(backend)?
             .read()
             .await
-            .map_err(be)?;
+            .map_err(backend)?;
         let column_stats = crate::iceberg_stats::column_stats_from_parquet(bytes, &names)?;
         loom_files.push(DataFile {
             path: df.file_path().to_string(),
@@ -357,11 +349,11 @@ async fn land_additive(
     // One snapshot: project new columns (reconcile gate) + files, end-cap any flushed
     // inline rows, emit lineage, stamp schema_version (the last inside `register_files`).
     // `WriteMode::Append` so the prior files stay live (additive does not end-cap data).
-    let mut tx = pool.begin().await.map_err(be)?;
+    let mut tx = pool.begin().await.map_err(backend)?;
     let at = next_snapshot(&mut tx, None).await?;
     register_files(&mut tx, table, columns, &loom_files, WriteMode::Append, at).await?;
     crate::iceberg_sql_catalog::apply_commit_extras(&mut tx, at, &extras).await?;
-    tx.commit().await.map_err(be)?;
+    tx.commit().await.map_err(backend)?;
     Ok(at)
 }
 
@@ -375,19 +367,19 @@ pub(crate) async fn ensure_iceberg_table(
     columns: &[ColumnSpec],
 ) -> Result<()> {
     let ns = NamespaceIdent::new(table.schema.clone());
-    if !catalog.namespace_exists(&ns).await.map_err(be)? {
+    if !catalog.namespace_exists(&ns).await.map_err(backend)? {
         catalog
             .create_namespace(&ns, Default::default())
             .await
-            .map_err(be)?;
+            .map_err(backend)?;
     }
     let ident = TableIdent::new(ns.clone(), table.name.clone());
-    if !catalog.table_exists(&ident).await.map_err(be)? {
+    if !catalog.table_exists(&ident).await.map_err(backend)? {
         let creation = TableCreation::builder()
             .name(table.name.clone())
             .schema(ice_schema(columns)?)
             .build();
-        catalog.create_table(&ns, creation).await.map_err(be)?;
+        catalog.create_table(&ns, creation).await.map_err(backend)?;
     }
     Ok(())
 }
@@ -580,7 +572,7 @@ async fn overwrite_truncate(
     use crate::iceberg_mirror::{end_cap_live_data_files, ensure_table, next_snapshot};
     use crate::lineage::pg_emit;
 
-    let mut tx = pool.begin().await.map_err(be)?;
+    let mut tx = pool.begin().await.map_err(backend)?;
     let conn = &mut *tx;
     let at = next_snapshot(conn, None).await?;
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
@@ -589,7 +581,7 @@ async fn overwrite_truncate(
     if let Some(ev) = lineage {
         pg_emit(&mut *conn, ev).await?;
     }
-    tx.commit().await.map_err(be)?;
+    tx.commit().await.map_err(backend)?;
     Ok(at)
 }
 
@@ -634,7 +626,10 @@ fn ice_schema(columns: &[ColumnSpec]) -> Result<IceSchema> {
             Ok(Arc::new(field))
         })
         .collect::<Result<Vec<_>>>()?;
-    IceSchema::builder().with_fields(fields).build().map_err(be)
+    IceSchema::builder()
+        .with_fields(fields)
+        .build()
+        .map_err(backend)
 }
 
 /// loom logical type name -> iceberg `PrimitiveType` (the physical mapping reuses

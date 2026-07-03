@@ -108,6 +108,7 @@ async fn iceberg_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
         ))),
         action_engine: Arc::new(action_client),
         default_limit: 1000,
+        naming: query_api::lineage_filter::local_naming(),
     });
 
     (WireBackend { ingest, query, cp }, Box::new((warehouse, eg)))
@@ -143,6 +144,7 @@ async fn run_wire_vertical(backend: WireBackend) {
     let auth = AuthState {
         auth: backend.cp.clone(),
         session_ttl: std::time::Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     };
     let protected_query = protect(backend.query, auth);
 

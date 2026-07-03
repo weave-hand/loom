@@ -15,6 +15,7 @@ fn new_user_and_credential_construct() {
     let c = PasswordCredential {
         subject_id: u.subject_id.clone(),
         password_phc: u.password_phc.clone(),
+        locked_until: None,
     };
     assert_eq!(c.subject_id, u.subject_id);
     assert_eq!(c.password_phc, u.password_phc);

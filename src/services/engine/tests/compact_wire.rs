@@ -4,7 +4,7 @@
 //! Seeds ≥2 Iceberg files via `land`, then drives `list_files` + `compact_table`
 //! through `GrpcQueueClient` against a real UDS-bound EngineControlService.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,15 +13,10 @@ use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use tonic::transport::Server;
 
 // ---- helpers ---------------------------------------------------------------
@@ -34,21 +29,17 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-fn ipc_body(ids: &[i64]) -> Vec<u8> {
-    use arrow_ipc::writer::StreamWriter;
+/// A schema + batch (single `id: Int64` column) of `ids`. `land` now takes
+/// pre-decoded batches, so build these directly rather than round-tripping
+/// through an Arrow IPC encode/decode.
+fn ipc_body(ids: &[i64]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from(ids.to_vec()))],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
@@ -62,20 +53,6 @@ fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Spawn an `EngineControlService` on a tmpdir UDS. Returns (sock_dir, sock_path).
 async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let wh = tempfile::tempdir().expect("warehouse dir");
@@ -86,8 +63,8 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let wh_str = wh.path().display().to_string();
-    let catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
-    let writer_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
+    let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), &wh_str).await);
+    let writer_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
     let writer = IcebergActionWriter::new(
         Arc::new(writer_catalog),
         pool.clone(),
@@ -135,7 +112,7 @@ async fn list_files_then_compact_over_the_wire() {
 
     // Separate catalog for the seeding land() calls (same Postgres DSN).
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
     let (_sock_dir, sock) = spawn_server(fx, &db).await;
 
@@ -145,12 +122,14 @@ async fn list_files_then_compact_over_the_wire() {
     };
 
     // Land batch a: 3 rows → forces a real Parquet file (inline_byte_limit = 0).
+    let (schema_a, batches_a) = ipc_body(&[1, 2, 3]);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(&[1, 2, 3]),
+        schema_a,
+        batches_a,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -161,12 +140,14 @@ async fn list_files_then_compact_over_the_wire() {
     .expect("land a");
 
     // Land batch b: 2 rows → second Parquet file.
+    let (schema_b, batches_b) = ipc_body(&[4, 5]);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(&[4, 5]),
+        schema_b,
+        batches_b,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

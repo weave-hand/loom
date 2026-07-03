@@ -6,7 +6,7 @@
 //! to land files and resolve file paths; the streaming path goes through
 //! `FlightTableClient` with no Postgres connection on the client side.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,16 +19,11 @@ use control_plane_core::{
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use engine::flight::FlightDataService;
 use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
 use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use tonic::transport::Server;
 
 // ---- helpers ---------------------------------------------------------------
@@ -41,22 +36,17 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// Encode `ids` as an Arrow IPC stream body (single `id: Int64` column).
-fn ipc_body(ids: &[i64]) -> Vec<u8> {
-    use arrow_ipc::writer::StreamWriter;
+/// A schema + batch (single `id: Int64` column) of `ids`. `land` now takes
+/// pre-decoded batches, so build these directly rather than round-tripping
+/// through an Arrow IPC encode/decode.
+fn ipc_body(ids: &[i64]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from(ids.to_vec()))],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
@@ -70,20 +60,6 @@ fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Spawn an engine on a tmpdir UDS serving BOTH EngineControl and Arrow Flight.
 /// Returns (sock_dir, sock_path_string) — caller must hold `sock_dir` alive.
 async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
@@ -95,9 +71,9 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let wh_str = wh.path().display().to_string();
-    let control_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
-    let flight_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
-    let writer_catalog = make_catalog(fx.pg_dsn(db), &wh_str).await;
+    let control_catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), &wh_str).await);
+    let flight_catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), &wh_str).await);
+    let writer_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
     let writer = IcebergActionWriter::new(
         Arc::new(writer_catalog),
         pool.clone(),
@@ -162,7 +138,7 @@ async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
     // Parquet files this catalog wrote under `wh`. The warehouse only matters for
     // *where new files are written*, never for reads.
     let wh = tempfile::tempdir().expect("warehouse dir");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
     let (_sock_dir, sock) = spawn_server(fx, &db).await;
 
@@ -173,12 +149,14 @@ async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
 
     // Land ids [1, 2, 3] into the first Parquet file (inline_byte_limit = 0
     // forces a real Parquet write rather than an inline-only write).
+    let (schema1, batches1) = ipc_body(&[1, 2, 3]);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(&[1, 2, 3]),
+        schema1,
+        batches1,
         InlineLimits {
             inline_byte_limit: 0,           // always write real Parquet
             flush_byte_threshold: i64::MAX, // no auto-enqueue
@@ -189,12 +167,14 @@ async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
     .expect("land batch 1");
 
     // Land ids [4, 5] into a second Parquet file.
+    let (schema2, batches2) = ipc_body(&[4, 5]);
     land(
         &pool,
         &catalog,
         &table,
         &columns(),
-        &ipc_body(&[4, 5]),
+        schema2,
+        batches2,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

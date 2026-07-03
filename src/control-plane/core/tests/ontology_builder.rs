@@ -2,7 +2,7 @@
 //! builder output == literal, field for field, including ordering.
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, Aggregation, ConstAssignment, DerivedPropertyDef,
+    ActionDef, ActionKind, ActionName, Aggregation, Assignment, DerivedPropertyDef,
     LengthConstraint, ObjectType, ParamDef, PropertyConstraints, PropertyDef, TableRef, TypeName,
 };
 
@@ -119,10 +119,7 @@ fn action_def_builder_binds_and_assignment_hooks() {
     assert!(!a.parameters[1].required);
     assert_eq!(
         a.assignments,
-        vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!("active"),
-        }]
+        vec![Assignment::constant("status", serde_json::json!("active"))]
     );
     assert_eq!(a.kind, ActionKind::Update);
 }

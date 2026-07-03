@@ -87,10 +87,7 @@ impl SqlCatalog {
     /// capability on the catalog — used by GC to reclaim the Parquet of end-capped
     /// data files; read/write paths are untouched.
     pub async fn delete_file(&self, path: &str) -> control_plane_core::Result<()> {
-        self.fileio
-            .delete(path)
-            .await
-            .map_err(|e| control_plane_core::ControlPlaneError::Backend(Box::new(e)))
+        self.fileio.delete(path).await.map_err(crate::backend)
     }
 
     /// Write the mirror rows for an already-committed table state, in the caller's

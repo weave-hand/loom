@@ -72,13 +72,7 @@ fn paginate_datasets(sorted: Vec<DatasetRef>, page: &PageReq) -> Result<Page<Dat
         Some(a) => sorted.into_iter().filter(|d| *d > a).collect(),
         None => sorted,
     };
-    let limited: Vec<DatasetRef> = match page.limit {
-        Some(l) => {
-            let take = usize::try_from(l).unwrap_or(usize::MAX).saturating_add(1);
-            filtered.into_iter().take(take).collect()
-        }
-        None => filtered,
-    };
+    let limited: Vec<DatasetRef> = filtered.into_iter().take(page.fetch_take()).collect();
     Ok(Page::from_keyset(
         limited,
         page.limit,
@@ -109,13 +103,7 @@ impl Lineage for MemoryControlPlane {
         if let Some(a) = after {
             keyed.retain(|(i, _)| *i > a);
         }
-        let limited: Vec<(i64, LineageEvent)> = match page.limit {
-            Some(l) => {
-                let take = usize::try_from(l).unwrap_or(usize::MAX).saturating_add(1);
-                keyed.into_iter().take(take).collect()
-            }
-            None => keyed,
-        };
+        let limited: Vec<(i64, LineageEvent)> = keyed.into_iter().take(page.fetch_take()).collect();
         let paged = Page::from_keyset(limited, page.limit, |(i, _)| encode_event_cursor(*i));
         Ok(Page {
             items: paged.items.into_iter().map(|(_, e)| e).collect(),

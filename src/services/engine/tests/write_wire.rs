@@ -1,7 +1,7 @@
 //! Engine wire test for the governed-write RPCs: drive WriteObject / OverwriteTable
 //! over the UDS and assert committed snapshots.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,34 +13,15 @@ use control_plane_core::{
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::convert::LineageWire;
 use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use tonic::transport::Server;
 use uuid::Uuid;
 
 // ---- helpers ---------------------------------------------------------------
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
 
 fn one_row_ipc(id: i64, name: &str) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![
@@ -144,8 +125,8 @@ async fn write_object_over_wire() {
     let pool = fx.pool_for(&db).await;
     let cp2 =
         control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh_str).await;
-    let writer_catalog = Arc::new(make_catalog(fx.pg_dsn(&db), &wh_str).await);
+    let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh_str).await);
+    let writer_catalog = Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh_str).await);
     let writer = IcebergActionWriter::new(writer_catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
 
     let svc = EngineControlService {

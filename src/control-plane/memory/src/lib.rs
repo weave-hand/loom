@@ -114,7 +114,7 @@ impl MemoryControlPlane {
         batches: &[usize],
     ) -> Vec<SnapshotId> {
         let mut cat = self.catalog.lock();
-        let key = (table.schema.clone(), table.name.clone());
+        let key = table.clone();
 
         if !cat.tables.contains_key(&key) {
             let s = cat.new_snapshot();
@@ -166,7 +166,7 @@ impl MemoryControlPlane {
     /// file/column level (not just short-circuited by the table-liveness gate).
     pub fn drop_table_catalog(&self, table: &TableRef) -> SnapshotId {
         let mut cat = self.catalog.lock();
-        let key = (table.schema.clone(), table.name.clone());
+        let key = table.clone();
         let d = cat.new_snapshot();
         if let Some(t) = cat.tables.get_mut(&key) {
             t.end = Some(d);
@@ -211,8 +211,7 @@ impl ControlPlane for MemoryControlPlane {
             staged: Vec::new(),
             staged_events: Vec::new(),
             staged_tables: Vec::new(),
-            staged_files: Vec::new(),
-            staged_replacements: Vec::new(),
+            staged_writes: Vec::new(),
             staged_compactions: Vec::new(),
         }))
     }

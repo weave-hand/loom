@@ -103,6 +103,7 @@ fn protected(state: AppState, pg: Arc<PgControlPlane>) -> Router {
         AuthState {
             auth: pg,
             session_ttl: Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
         },
     )
 }

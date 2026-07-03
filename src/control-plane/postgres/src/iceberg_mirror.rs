@@ -12,11 +12,6 @@ use sqlx::PgConnection;
 use crate::backend;
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 
-/// Map an `iceberg` error into the control-plane backend error.
-fn iceberg_err(e: iceberg::Error) -> ControlPlaneError {
-    ControlPlaneError::Backend(Box::new(e))
-}
-
 /// A neutral view of one committed Iceberg data file the projection writes.
 pub struct ProjectedFile {
     pub path: String,
@@ -123,13 +118,23 @@ pub async fn project_columns(
     Ok(())
 }
 
-/// Write the data-file rows for loom snapshot `at`.
+/// Write the data-file rows for loom snapshot `at`, plus every file's
+/// per-column footer stats in ONE batched insert (previously one INSERT per
+/// stat row — an N×M loop), all in the caller's transaction so a written file
+/// always carries its stats.
 pub async fn project_files(
     conn: &mut PgConnection,
     table_id: i64,
     at: SnapshotId,
     files: &[ProjectedFile],
 ) -> Result<()> {
+    let mut stat_file_ids: Vec<i64> = Vec::new();
+    let mut stat_columns: Vec<String> = Vec::new();
+    let mut stat_null_counts: Vec<i64> = Vec::new();
+    let mut stat_sizes: Vec<i64> = Vec::new();
+    let mut stat_mins: Vec<Option<String>> = Vec::new();
+    let mut stat_maxs: Vec<Option<String>> = Vec::new();
+
     for f in files {
         let data_file_id = sqlx::query_scalar!(
             "insert into iceberg_mirror.data_file \
@@ -146,26 +151,32 @@ pub async fn project_files(
         .await
         .map_err(backend)?;
 
-        // Per-column footer stats, in the same transaction as the data-file row so
-        // a written file always carries its stats (no second pass to backfill).
         for s in &f.column_stats {
-            let min = s.min.as_ref().map(crate::iceberg_stats::stat_to_text);
-            let max = s.max.as_ref().map(crate::iceberg_stats::stat_to_text);
-            sqlx::query!(
-                "insert into iceberg_mirror.data_file_column_stat \
-                 (data_file_id, column_name, null_count, column_size_bytes, min_value, max_value) \
-                 values ($1, $2, $3, $4, $5, $6)",
-                data_file_id,
-                s.column_name,
-                s.null_count,
-                s.column_size_bytes,
-                min,
-                max,
-            )
-            .execute(&mut *conn)
-            .await
-            .map_err(backend)?;
+            stat_file_ids.push(data_file_id);
+            stat_columns.push(s.column_name.clone());
+            stat_null_counts.push(s.null_count);
+            stat_sizes.push(s.column_size_bytes);
+            stat_mins.push(s.min.as_ref().map(crate::iceberg_stats::stat_to_text));
+            stat_maxs.push(s.max.as_ref().map(crate::iceberg_stats::stat_to_text));
         }
+    }
+
+    if !stat_file_ids.is_empty() {
+        sqlx::query!(
+            "insert into iceberg_mirror.data_file_column_stat \
+             (data_file_id, column_name, null_count, column_size_bytes, min_value, max_value) \
+             select * from unnest($1::bigint[], $2::text[], $3::bigint[], $4::bigint[], \
+                                  $5::text[], $6::text[])",
+            &stat_file_ids,
+            &stat_columns,
+            &stat_null_counts,
+            &stat_sizes,
+            &stat_mins as &[Option<String>],
+            &stat_maxs as &[Option<String>],
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(backend)?;
     }
     Ok(())
 }
@@ -323,7 +334,7 @@ pub async fn mark_dropped(
 /// Errors if the stored schema holds something loom cannot project — a `list`
 /// column missing its `vector(N)` doc, or an unsupported column type. loom owns
 /// the schema, so these are trusted-substrate invariant violations; they surface
-/// as `Backend` (matching `iceberg_err`) so callers abort the mirror op cleanly
+/// as `Backend` (matching `backend`) so callers abort the mirror op cleanly
 /// rather than panicking.
 pub fn columns_of(table: &Table) -> Result<Vec<ProjectedColumn>> {
     table
@@ -380,7 +391,7 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
         .manifest_list_reader(snapshot)
         .load()
         .await
-        .map_err(iceberg_err)?;
+        .map_err(backend)?;
     // Column names in table schema order — the same order Iceberg writes columns to
     // the Parquet file, so `column_stats_from_parquet` records each by name.
     let names: Vec<String> = columns_of(table)?.into_iter().map(|c| c.name).collect();
@@ -389,7 +400,7 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
         let manifest = manifest_file
             .load_manifest(table.file_io())
             .await
-            .map_err(iceberg_err)?;
+            .map_err(backend)?;
         for entry in manifest.entries() {
             if entry.snapshot_id() == Some(snapshot.snapshot_id()) {
                 let df = entry.data_file();
@@ -398,10 +409,10 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
                 let bytes = table
                     .file_io()
                     .new_input(df.file_path())
-                    .map_err(iceberg_err)?
+                    .map_err(backend)?
                     .read()
                     .await
-                    .map_err(iceberg_err)?;
+                    .map_err(backend)?;
                 let column_stats = crate::iceberg_stats::column_stats_from_parquet(bytes, &names)?;
                 files.push(ProjectedFile {
                     path: df.file_path().to_string(),

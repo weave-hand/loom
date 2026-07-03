@@ -70,3 +70,16 @@ fn from_keyset_unbounded_is_final_page() {
     assert_eq!(p.items, vec![1, 2, 3]);
     assert_eq!(p.next, None);
 }
+
+#[test]
+fn fetch_limit_helpers_carry_the_plus_one_sentinel() {
+    use control_plane_core::PageReq;
+    assert_eq!(PageReq::limit(3).fetch_limit_i64(), 4);
+    assert_eq!(PageReq::unbounded().fetch_limit_i64(), i64::MAX);
+    assert_eq!(
+        PageReq::limit(u32::MAX).fetch_limit_i64(),
+        i64::from(u32::MAX) + 1
+    );
+    assert_eq!(PageReq::limit(3).fetch_take(), 4);
+    assert_eq!(PageReq::unbounded().fetch_take(), usize::MAX);
+}

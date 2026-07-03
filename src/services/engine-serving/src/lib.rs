@@ -19,4 +19,4 @@ pub use serving::{
     EngineServingError, IcebergMirrorTableProvider, build_serving_provider, execute_query,
     execute_query_stream, prune_files, register_iceberg_table,
 };
-pub use vector_search::{merge_topk, vector_search};
+pub use vector_search::{VectorQuery, merge_topk, vector_search};

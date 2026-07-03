@@ -1,22 +1,16 @@
 //! Additive happy-path (write side) + non-additive rejection, driven through the real
 //! landing entrypoint `land` (inline limit 0 forces real Parquet). Asserts mirror state,
 //! not reads (the read path is Task 6). Setup mirrors tests/iceberg_overwrite.rs.
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::Catalog;
 use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, SnapshotId, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn col(name: &str, ty: &str, nullable: bool) -> ColumnSpec {
     ColumnSpec {
@@ -37,8 +31,10 @@ fn lineage(run: RunId) -> LineageEvent {
     }
 }
 
-/// IPC body for (a long, b string) of `rows` rows.
-fn ipc_ab(rows: i64) -> Vec<u8> {
+/// Schema + batch for (a long, b string) of `rows` rows. `land` now takes
+/// pre-decoded batches, so build these directly rather than round-tripping
+/// through an Arrow IPC encode/decode.
+fn ipc_ab(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("a", DataType::Int64, false),
         Field::new("b", DataType::Utf8, true),
@@ -53,11 +49,11 @@ fn ipc_ab(rows: i64) -> Vec<u8> {
         ],
     )
     .unwrap();
-    encode(&schema, &batch)
+    (schema, vec![batch])
 }
 
-/// IPC body for (a long, b string, c long-nullable) of `rows` rows.
-fn ipc_abc(rows: i64) -> Vec<u8> {
+/// Schema + batch for (a long, b string, c long-nullable) of `rows` rows.
+fn ipc_abc(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("a", DataType::Int64, false),
         Field::new("b", DataType::Utf8, true),
@@ -76,23 +72,23 @@ fn ipc_abc(rows: i64) -> Vec<u8> {
         ],
     )
     .unwrap();
-    encode(&schema, &batch)
+    (schema, vec![batch])
 }
 
-/// IPC body for (a long) only — used to test a dropped column.
-fn ipc_a(rows: i64) -> Vec<u8> {
+/// Schema + batch for (a long) only — used to test a dropped column.
+fn ipc_a(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
     )
     .unwrap();
-    encode(&schema, &batch)
+    (schema, vec![batch])
 }
 
-/// IPC body for (id long, name string, extra long-nullable) of `rows` rows — the
-/// additive superset over the inline `(id, name)` schema.
-fn ipc_id_name_extra(rows: i64) -> Vec<u8> {
+/// Schema + batch for (id long, name string, extra long-nullable) of `rows` rows
+/// — the additive superset over the inline `(id, name)` schema.
+fn ipc_id_name_extra(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("name", DataType::Utf8, false),
@@ -111,31 +107,7 @@ fn ipc_id_name_extra(rows: i64) -> Vec<u8> {
         ],
     )
     .unwrap();
-    encode(&schema, &batch)
-}
-
-fn encode(schema: &Arc<Schema>, batch: &RecordBatch) -> Vec<u8> {
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, schema).unwrap();
-        w.write(batch).unwrap();
-        w.finish().unwrap();
-    }
-    buf
-}
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
+    (schema, vec![batch])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -143,7 +115,7 @@ async fn additive_land_evolves_mirror_and_bumps_schema_version() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "s".into(),
@@ -156,12 +128,14 @@ async fn additive_land_evolves_mirror_and_bumps_schema_version() {
         col("c", "long", true),
     ];
 
+    let (schema1, batches1) = ipc_ab(3);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &ab,
-        &ipc_ab(3),
+        schema1,
+        batches1,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -170,12 +144,14 @@ async fn additive_land_evolves_mirror_and_bumps_schema_version() {
     )
     .await
     .expect("base land");
+    let (schema2, batches2) = ipc_abc(2);
     let s2 = land(
         &pool,
         &catalog,
         &t,
         &abc,
-        &ipc_abc(2),
+        schema2,
+        batches2,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -241,7 +217,7 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "s".into(),
@@ -249,12 +225,14 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
     };
     let ab = vec![col("a", "long", false), col("b", "string", true)];
 
+    let (schema1, batches1) = ipc_ab(3);
     let s1 = land(
         &pool,
         &catalog,
         &t,
         &ab,
-        &ipc_ab(3),
+        schema1,
+        batches1,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -266,12 +244,14 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
 
     // Drop b: land only (a long).
     let only_a = vec![col("a", "long", false)];
+    let (schema_a, batches_a) = ipc_a(2);
     let err = land(
         &pool,
         &catalog,
         &t,
         &only_a,
-        &ipc_a(2),
+        schema_a,
+        batches_a,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -291,7 +271,7 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
         col("b", "string", true),
         col("d", "long", false),
     ];
-    let body = {
+    let (body_schema, body_batches) = {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Utf8, true),
@@ -306,14 +286,15 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
             ],
         )
         .unwrap();
-        encode(&schema, &batch)
+        (schema, vec![batch])
     };
     let err2 = land(
         &pool,
         &catalog,
         &t,
         &abd_req,
-        &body,
+        body_schema,
+        body_batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -351,7 +332,7 @@ async fn additive_land_rejected_while_live_inline_rows_exist() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "s".into(),
@@ -382,12 +363,14 @@ async fn additive_land_rejected_while_live_inline_rows_exist() {
         col("name", "string", false),
         col("extra", "long", true),
     ];
+    let (schema, batches) = ipc_id_name_extra(2);
     let err = land(
         &pool,
         &catalog,
         &t,
         &abc,
-        &ipc_id_name_extra(2),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

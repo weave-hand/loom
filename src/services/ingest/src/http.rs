@@ -1,13 +1,11 @@
-//! HTTP landing surface for ingest. Decodes an Arrow IPC request into what
-//! `materialize` consumes (schema + batches + optional model gate + lineage),
-//! drives the in-process land pipeline, and maps the result to HTTP. All landing
-//! logic lives in `materialize`; this layer only does decode <-> HTTP mapping.
+//! HTTP landing surface for ingest. Decodes an Arrow IPC request into schema +
+//! batches, resolves the physical columns (optionally gated by a model, via
+//! `materialize::resolve_columns`), and dispatches the actual write through the
+//! `LandingMaterializer` port (`st.materializer.land(req)`); this layer only does
+//! decode <-> HTTP mapping plus that gate/resolve step.
 
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::Schema;
-use arrow::ipc::reader::StreamReader;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -16,10 +14,9 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use control_plane_core::{
     Action, COMPACT_JOB_KIND, CompactJob, ControlPlane, ControlPlaneError, DatasetId, DatasetRef,
-    Decision, EventType, LineageEvent, NewJob, PolicyTarget, RunId, TableRef, TypeName,
+    Decision, LineageEvent, NewJob, PolicyTarget, RunId, TableRef, TypeName,
 };
 use serde::Deserialize;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use std::borrow::Cow;
@@ -160,14 +157,6 @@ pub(crate) async fn compact(
         .into_response())
 }
 
-/// Decode an Arrow IPC stream into its schema and record batches.
-fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>), arrow::error::ArrowError> {
-    let reader = StreamReader::try_new(std::io::Cursor::new(body), None)?;
-    let schema = reader.schema();
-    let batches = reader.collect::<Result<Vec<_>, _>>()?;
-    Ok((schema, batches))
-}
-
 /// Parse an optional request header via `parse`: absent → `Ok(None)`, present and
 /// parseable → `Ok(Some(_))`, present but unparseable → `Err(ApiError::BadRequest(err))`.
 /// Collapses the per-header `match headers.get(..)` ladders into one shape.
@@ -279,7 +268,7 @@ pub(crate) async fn land_model(
     }
 
     // 2. Decode the Arrow IPC body. Needed by both branches (inference reads the schema).
-    let (schema, batches) = match decode_ipc(&body) {
+    let (schema, batches) = match datafusion_io::decode_ipc(&body) {
         Ok(sb) => sb,
         // Bad IPC is a client error (malformed request body), not a backend fault;
         // 400 without logging, exactly as before.
@@ -334,20 +323,15 @@ pub(crate) async fn land_model(
     let table = otype.table.clone();
     let type_label = type_name.0.clone();
     let file_prefix = Uuid::new_v4().to_string();
-    let lineage = LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(&type_name)],
-        payload: serde_json::json!({ "source": "http-model", "type": type_label }),
-    };
+    let lineage = LineageEvent::completed(
+        vec![DatasetRef::from(&type_name)],
+        serde_json::json!({ "source": "http-model", "type": type_label }),
+    );
     let req = LandRequest {
         table: &table,
         schema: schema.clone(),
         columns: &columns,
         batches: &batches,
-        ipc_body: body.as_ref(),
         file_prefix: &file_prefix,
         lineage,
     };
@@ -402,7 +386,7 @@ pub(crate) async fn land(
     })?
     .unwrap_or_else(|| RunId(Uuid::new_v4()));
 
-    let (schema, batches) = match decode_ipc(&body) {
+    let (schema, batches) = match datafusion_io::decode_ipc(&body) {
         Ok(sb) => sb,
         // Bad IPC is a client error (malformed request body), not a backend fault;
         // 400 without logging, exactly as before.
@@ -418,14 +402,11 @@ pub(crate) async fn land(
         name: table_name,
     };
     let file_prefix = Uuid::new_v4().to_string();
-    let lineage = LineageEvent {
+    let lineage = LineageEvent::completed_with_run(
         run_id,
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(&table).dataset_ref()],
-        payload: serde_json::json!({ "source": "http-land" }),
-    };
+        vec![DatasetId::from(&table).dataset_ref()],
+        serde_json::json!({ "source": "http-land" }),
+    );
 
     // Gate + schema resolution: backend-agnostic, run once before dispatch.
     let columns = resolve_columns(&schema, gate.as_ref())
@@ -436,7 +417,6 @@ pub(crate) async fn land(
         schema: schema.clone(),
         columns: &columns,
         batches: &batches,
-        ipc_body: body.as_ref(),
         file_prefix: &file_prefix,
         lineage,
     };

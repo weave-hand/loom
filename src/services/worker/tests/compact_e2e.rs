@@ -2,12 +2,12 @@
 //! compact handler over the wire, assert the small files coalesce, the row set is
 //! preserved, and a prior snapshot still time-travels. Plus a no-op (<2 small files).
 
+use loom_test_flight::{EngineOpts, spawn_engine_uds};
+use loom_test_seed::local_sql_catalog;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
-use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     COMPACT_JOB_KIND, Catalog, ColumnSpec, CompactJob, DatasetId, EventType, Job, JobId,
@@ -16,19 +16,9 @@ use control_plane_core::{
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use engine::flight::FlightDataService;
-use engine::service::EngineControlService;
-use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightTableClient, FlightTicket};
-use engine_wire::pb::engine_control_server::EngineControlServer;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use store_config::{ObjectStoreConfig, build_write_store};
-use tonic::transport::Server;
 use worker::compact::{CompactCtx, handle_compact};
 
 // ---- helpers ---------------------------------------------------------------
@@ -41,22 +31,17 @@ fn columns() -> Vec<ColumnSpec> {
     }]
 }
 
-/// Encode `ids` as an Arrow IPC stream body (single `id: Int64` column).
-fn ipc_body(ids: &[i64]) -> Vec<u8> {
-    use arrow_ipc::writer::StreamWriter;
+/// A schema + batch (single `id: Int64` column) of `ids`. `land` now takes
+/// pre-decoded batches, so build these directly rather than round-tripping
+/// through an Arrow IPC encode/decode.
+fn ipc_body(ids: &[i64]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(Int64Array::from(ids.to_vec()))],
     )
     .expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
 fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
@@ -68,72 +53,6 @@ fn lineage(run: RunId, table: &TableRef) -> LineageEvent {
         outputs: vec![DatasetId::from(table).dataset_ref()],
         payload: serde_json::json!({ "source": "compact-e2e-test" }),
     }
-}
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
-/// Spawn an engine on the given warehouse path serving BOTH EngineControl and Arrow Flight.
-/// Returns (sock_dir, sock_path_string) — caller must hold `sock_dir` alive.
-async fn spawn_server(fx: &PgFixture, db: &str, wh_path: &str) -> (tempfile::TempDir, String) {
-    let sock_dir = tempfile::tempdir().expect("socket dir");
-    let sock_path = sock_dir.path().join("engine.sock");
-    let sock_str = sock_path.to_string_lossy().to_string();
-
-    let pool = fx.pool_for(db).await;
-    let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
-    let control_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let flight_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let writer_catalog = make_catalog(fx.pg_dsn(db), wh_path).await;
-    let writer = IcebergActionWriter::new(
-        Arc::new(writer_catalog),
-        pool.clone(),
-        16 * 1024 * 1024,
-        i64::MAX,
-    );
-
-    let svc = EngineControlService {
-        cp,
-        catalog: control_catalog,
-        pool: pool.clone(),
-        retention: Duration::from_secs(7 * 24 * 3600),
-        writer,
-    };
-    let flight_svc = FlightDataService {
-        catalog: flight_catalog,
-        serving_catalog: IcebergCatalog::new(pool.clone()),
-        serving_store: None,
-        pool,
-    };
-
-    let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
-    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-
-    tokio::spawn(async move {
-        drop(
-            Server::builder()
-                .add_service(EngineControlServer::new(svc))
-                .add_service(FlightServiceServer::new(flight_svc))
-                .serve_with_incoming(incoming)
-                .await,
-        );
-    });
-
-    // Small pause so the server is ready to accept.
-    tokio::time::sleep(Duration::from_millis(20)).await;
-
-    (sock_dir, sock_str)
 }
 
 fn make_compact_job(schema: &str, name: &str) -> Job {
@@ -170,9 +89,18 @@ async fn worker_compacts_small_files_over_the_wire() {
     let wh_str = wh.path().display().to_string();
 
     // Catalog for seeding (land calls).
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh_str).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
 
-    let (_sock_dir, sock) = spawn_server(fx, &db, &wh_str).await;
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
 
     let acc = TableRef {
         schema: "main".into(),
@@ -181,12 +109,14 @@ async fn worker_compacts_small_files_over_the_wire() {
 
     // Land 3 small files (1 row each). inline_byte_limit=0 forces real Parquet writes.
     for id in [1_i64, 2, 3] {
+        let (schema, batches) = ipc_body(&[id]);
         land(
             &pool,
             &catalog,
             &acc,
             &columns(),
-            &ipc_body(&[id]),
+            schema,
+            batches,
             InlineLimits {
                 inline_byte_limit: 0,           // always write real Parquet
                 flush_byte_threshold: i64::MAX, // no auto-enqueue
@@ -212,10 +142,10 @@ async fn worker_compacts_small_files_over_the_wire() {
     let store_cfg = ObjectStoreConfig::parse_from_env(&env_map).expect("store config");
     let write = Arc::new(build_write_store(&store_cfg).expect("write store"));
 
-    let control = GrpcQueueClient::connect(&sock)
+    let control = GrpcQueueClient::connect(&eng.sock)
         .await
         .expect("connect control");
-    let flight = FlightTableClient::connect(&sock)
+    let flight = FlightTableClient::connect(&eng.sock)
         .await
         .expect("connect flight");
 
@@ -249,7 +179,7 @@ async fn worker_compacts_small_files_over_the_wire() {
     // resolvable by the engine's Iceberg FileIO — a path-scheme or layout mismatch
     // would cause this to error, not just fail the count assert.
     let coalesced_path = after[0].path.clone();
-    let flight2 = FlightTableClient::connect(&sock)
+    let flight2 = FlightTableClient::connect(&eng.sock)
         .await
         .expect("connect flight 2");
     let batches = flight2
@@ -283,4 +213,132 @@ async fn worker_compacts_small_files_over_the_wire() {
         .await
         .expect("snapshot after no-op");
     assert_eq!(head2.id, head.id, "no-op created no new snapshot");
+}
+
+/// Worker compact e2e (mixed sizes): land three small files plus one large file, pin
+/// the threshold to the large file's exact size (`file_size_bytes < threshold` is false
+/// at equality, so it is excluded), and assert the small files coalesce into one while
+/// the large file stays live with its path unchanged and the full row set survives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_leaves_large_files_untouched() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    let mixed = TableRef {
+        schema: "main".into(),
+        name: "mixed".into(),
+    };
+
+    // Three 1-row (small) files.
+    for id in [1_i64, 2, 3] {
+        let (schema, batches) = ipc_body(&[id]);
+        land(
+            &pool,
+            &catalog,
+            &mixed,
+            &columns(),
+            schema,
+            batches,
+            InlineLimits {
+                inline_byte_limit: 0,
+                flush_byte_threshold: i64::MAX,
+            },
+            lineage(RunId(uuid::Uuid::new_v4()), &mixed),
+        )
+        .await
+        .expect("land small");
+    }
+
+    // One 200-row (large) file.
+    let big_ids: Vec<i64> = (0..200).collect();
+    let (schema, batches) = ipc_body(&big_ids);
+    land(
+        &pool,
+        &catalog,
+        &mixed,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(RunId(uuid::Uuid::new_v4()), &mixed),
+    )
+    .await
+    .expect("land large");
+
+    // Verify 4 files were seeded; the largest pins the compaction threshold.
+    let ice = IcebergCatalog::new(pool.clone());
+    let before = ice.current_snapshot(&mixed).await.expect("snapshot before");
+    let files_before = ice
+        .files_with_stats(&mixed, before.id)
+        .await
+        .expect("files before");
+    assert_eq!(files_before.len(), 4, "four files before compaction");
+    let large = files_before
+        .iter()
+        .max_by_key(|f| f.file_size_bytes)
+        .expect("a largest file")
+        .clone();
+
+    // Build CompactCtx pointing at the same warehouse, threshold pinned to the
+    // large file's exact size so only the three small files qualify.
+    let mut env_map = HashMap::new();
+    env_map.insert("LOOM_WAREHOUSE_URI".to_string(), format!("file://{wh_str}"));
+    let store_cfg = ObjectStoreConfig::parse_from_env(&env_map).expect("store config");
+    let write = Arc::new(build_write_store(&store_cfg).expect("write store"));
+
+    let control = GrpcQueueClient::connect(&eng.sock)
+        .await
+        .expect("connect control");
+    let flight = FlightTableClient::connect(&eng.sock)
+        .await
+        .expect("connect flight");
+
+    let ctx = CompactCtx {
+        control,
+        flight,
+        write,
+        threshold_bytes: large.file_size_bytes,
+        write_cfg: datafusion_io::WriteConfig::default(),
+        worker_tuning: loom_config::WorkerTuning::default(),
+    };
+
+    handle_compact(&ctx, make_compact_job("main", "mixed"))
+        .await
+        .expect("compact");
+
+    // After: the large file is still live (path unchanged) plus one coalesced file.
+    let head = ice.current_snapshot(&mixed).await.expect("snapshot after");
+    let after = ice
+        .files_with_stats(&mixed, head.id)
+        .await
+        .expect("files after");
+    assert_eq!(after.len(), 2, "large file untouched + one coalesced file");
+    assert!(
+        after.iter().any(|f| f.path == large.path),
+        "the large file is left live with its path unchanged"
+    );
+
+    // Row set preserved: 3 small + 200 large = 203.
+    let total: i64 = after.iter().map(|f| f.record_count).sum();
+    assert_eq!(total, 203, "compaction over a mixed set preserves all rows");
 }

@@ -1,4 +1,4 @@
-use control_plane_core::{ActionDef, ActionKind, ActionName, ConstAssignment, ParamDef, TypeName};
+use control_plane_core::{ActionDef, ActionKind, ActionName, Assignment, ParamDef, TypeName};
 
 fn param(name: &str, ty: &str, binds: Option<&str>) -> ParamDef {
     ParamDef {
@@ -28,10 +28,7 @@ fn action_def_carries_binds_and_assignments_through_serde() {
         target: TypeName("Gadget".into()),
         parameters: vec![param("displayName", "String", Some("name"))],
         kind: ActionKind::Insert,
-        assignments: vec![ConstAssignment {
-            property: "status".into(),
-            value: serde_json::json!("active"),
-        }],
+        assignments: vec![Assignment::constant("status", serde_json::json!("active"))],
     };
     let json = serde_json::to_string(&a).expect("serialize");
     let back: ActionDef = serde_json::from_str(&json).expect("deserialize");

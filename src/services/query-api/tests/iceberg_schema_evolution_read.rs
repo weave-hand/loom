@@ -3,23 +3,17 @@
 //! Lands through `control_plane_postgres::iceberg_landing::land` (inline limit 0 forces
 //! Parquet), reads through `register_iceberg_table` + the embedded engine. Setup mirrors
 //! tests/iceberg_pruning_e2e.rs + tests/iceberg_action_e2e.rs.
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
 use datafusion::prelude::SessionContext;
 use engine_serving::register_iceberg_table;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use query_api::serving::SqlValue;
 use query_api::serving_datafusion::batches_to_rows;
 
@@ -40,35 +34,13 @@ fn lineage() -> LineageEvent {
         payload: serde_json::json!({ "source": "read-evolution-test" }),
     }
 }
-fn encode(schema: &Arc<Schema>, batch: &RecordBatch) -> Vec<u8> {
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, schema).unwrap();
-        w.write(batch).unwrap();
-        w.finish().unwrap();
-    }
-    buf
-}
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn read_after_additive_land_returns_superset_with_nulls() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "s".into(),
@@ -94,7 +66,8 @@ async fn read_after_additive_land_returns_superset_with_nulls() {
         &catalog,
         &t,
         &ab,
-        &encode(&ab_schema, &ab_batch),
+        ab_schema,
+        vec![ab_batch],
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -129,7 +102,8 @@ async fn read_after_additive_land_returns_superset_with_nulls() {
         &catalog,
         &t,
         &abc,
-        &encode(&abc_schema, &abc_batch),
+        abc_schema,
+        vec![abc_batch],
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,

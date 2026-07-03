@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update auth.user set failed_attempt_count = 0, locked_until = null, last_failed_at = null where username = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1fa288ab21063ffadccbe4336ba3c128c590298a7ace73c2640491983bcb1ffd"
+}

@@ -36,6 +36,7 @@ fn app(cp: Arc<PgControlPlane>) -> axum::Router {
     let auth = AuthState {
         auth: cp as Arc<dyn Auth + Send + Sync>,
         session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     };
     admin_routes(admin, auth)
 }
@@ -53,6 +54,7 @@ fn full_app(
     let auth = AuthState {
         auth: cp.clone() as Arc<dyn Auth + Send + Sync>,
         session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     };
     let qapi = protect(
         router(AppState {
@@ -60,6 +62,7 @@ fn full_app(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
         }),
         auth.clone(),
     );
@@ -420,4 +423,48 @@ async fn governance_routes_end_to_end() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Admin password reset over real Postgres: the victim's sessions are all revoked
+/// and the new password is what verifies afterward.
+#[tokio::test]
+async fn admin_reset_over_postgres() {
+    let fx = PgFixture::shared();
+    let cp = Arc::new(fx.fresh_control_plane().await);
+    let admin_token = seed_admin_session(&cp, ADMIN).await;
+    let victim_token = seed_session(&cp, "victim").await;
+
+    let res = app(cp.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/users/victim/password")
+                .header(AUTHORIZATION, format!("Bearer {admin_token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"new":"reset-pw"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // victim's sessions revoked; the new password is what verifies afterward.
+    assert!(
+        cp.resolve_session(
+            &token_sha256(&victim_token),
+            time::OffsetDateTime::now_utc()
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let cred = cp
+        .find_password_credential("victim")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(service_runtime::verify_password(
+        "reset-pw",
+        &cred.password_phc
+    ));
 }

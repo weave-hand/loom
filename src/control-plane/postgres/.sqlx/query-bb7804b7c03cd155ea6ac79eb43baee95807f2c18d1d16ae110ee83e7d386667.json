@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update auth.user u set failed_attempt_count = nc.new_count, last_failed_at = $2, locked_until = case when nc.new_count >= $4 then $5 else u.locked_until end from ( select case when last_failed_at is null or last_failed_at < $3 then 1 else failed_attempt_count + 1 end as new_count from auth.user where username = $1 ) nc where u.username = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bb7804b7c03cd155ea6ac79eb43baee95807f2c18d1d16ae110ee83e7d386667"
+}

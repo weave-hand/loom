@@ -4,13 +4,11 @@
 //! (iss-inline-delta-string-identity). The cold pin here is GREEN pre-fix;
 //! Task 2 appends the *_cold_hot_merge red tests.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
@@ -19,12 +17,29 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
+use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::vector_index::build_vector_index;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
+use engine_serving::VectorQuery;
+use loom_test_seed::local_sql_catalog;
+
+/// Terse `VectorQuery` builder for the call sites in this file.
+fn vq<'a>(
+    table: &'a TableRef,
+    index_name: &'a str,
+    query: &'a [f32],
+    k: usize,
+    nprobe: Option<u32>,
+    ef_search: Option<u32>,
+) -> VectorQuery<'a> {
+    VectorQuery {
+        table,
+        index_name,
+        query,
+        k,
+        nprobe,
+        ef_search,
+    }
+}
 
 fn columns(id_ty: &str) -> Vec<ColumnSpec> {
     vec![
@@ -41,7 +56,13 @@ fn columns(id_ty: &str) -> Vec<ColumnSpec> {
     ]
 }
 
-fn ipc_from(id_field: Field, id_array: Arc<dyn Array>, embs: &[[f32; 4]]) -> Vec<u8> {
+/// `land` now takes pre-decoded batches, so build these directly rather than
+/// round-tripping through an Arrow IPC encode/decode.
+fn ipc_from(
+    id_field: Field,
+    id_array: Arc<dyn Array>,
+    embs: &[[f32; 4]],
+) -> (Arc<Schema>, Vec<RecordBatch>) {
     let element = Arc::new(Field::new("item", DataType::Float32, false));
     let mut lb = ListBuilder::new(Float32Builder::new()).with_field(element.clone());
     for emb in embs {
@@ -54,16 +75,10 @@ fn ipc_from(id_field: Field, id_array: Arc<dyn Array>, embs: &[[f32; 4]]) -> Vec
     ]));
     let batch =
         RecordBatch::try_new(schema.clone(), vec![id_array, Arc::new(lb.finish())]).expect("batch");
-    let mut buf = Vec::new();
-    {
-        let mut w = StreamWriter::try_new(&mut buf, &schema).expect("writer");
-        w.write(&batch).expect("write");
-        w.finish().expect("finish");
-    }
-    buf
+    (schema, vec![batch])
 }
 
-fn ipc_str(rows: &[(&str, [f32; 4])]) -> Vec<u8> {
+fn ipc_str(rows: &[(&str, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let ids: Vec<&str> = rows.iter().map(|(id, _)| *id).collect();
     let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
     ipc_from(
@@ -107,20 +122,6 @@ fn lineage_evt(table: &TableRef) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Define the type + a flat cosine index, land `cold_ipc` as Parquet, build.
 /// The warehouse TempDir is returned — the cold search reads its Parquet.
 async fn seed_and_build(
@@ -130,11 +131,11 @@ async fn seed_and_build(
     type_name: &str,
     id_ty_logical: &str,
     id_ty_property: &str,
-    cold_ipc: Vec<u8>,
+    cold_ipc: (Arc<Schema>, Vec<RecordBatch>),
 ) -> (SqlCatalog, sqlx::PgPool, tempfile::TempDir) {
     let pool = fx.pool_for(db).await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
     let cp = PgControlPlane::new(pool.clone(), Duration::from_secs(5));
     cp.ontology()
         .define_type(object_type(type_name, table, id_ty_property))
@@ -150,12 +151,14 @@ async fn seed_and_build(
         })
         .await
         .expect("define_vector_index");
+    let (cold_schema, cold_batches) = cold_ipc;
     land(
         &pool,
         &catalog,
         table,
         &columns(id_ty_logical),
-        &cold_ipc,
+        cold_schema,
+        cold_batches,
         InlineLimits {
             inline_byte_limit: 0,
             flush_byte_threshold: i64::MAX,
@@ -220,19 +223,14 @@ async fn string_identity_cold_search() {
     let batch = engine_serving::vector_search(
         &catalog,
         &pool,
-        &table,
-        "by_flat",
-        &[1.0_f32, 0.0, 0.0, 0.0],
-        1,
-        None,
-        None,
+        vq(&table, "by_flat", &[1.0_f32, 0.0, 0.0, 0.0], 1, None, None),
     )
     .await
     .expect("cold search over string identity");
     assert_eq!(ids_str(&batch), vec!["a".to_string()], "nearest is 'a'");
 }
 
-fn ipc_int(rows: &[(i32, [f32; 4])]) -> Vec<u8> {
+fn ipc_int(rows: &[(i32, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
     let ids: Vec<i32> = rows.iter().map(|(id, _)| *id).collect();
     let embs: Vec<[f32; 4]> = rows.iter().map(|(_, e)| *e).collect();
     ipc_from(
@@ -278,12 +276,14 @@ async fn string_identity_cold_hot_merge() {
     .await;
 
     let hot: &[(&str, [f32; 4])] = &[("hot", [0.95, 0.05, 0.0, 0.0])];
+    let (schema, batches) = ipc_str(hot);
     land(
         &pool,
         &catalog,
         &table,
         &columns("string"),
-        &ipc_str(hot),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -296,12 +296,7 @@ async fn string_identity_cold_hot_merge() {
     let batch = engine_serving::vector_search(
         &catalog,
         &pool,
-        &table,
-        "by_flat",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("cold+hot search over string identity");
@@ -342,12 +337,14 @@ async fn integer_identity_cold_hot_merge() {
     .await;
 
     let hot: &[(i32, [f32; 4])] = &[(5, [0.95, 0.05, 0.0, 0.0])];
+    let (schema, batches) = ipc_int(hot);
     land(
         &pool,
         &catalog,
         &table,
         &columns("integer"),
-        &ipc_int(hot),
+        schema,
+        batches,
         InlineLimits {
             inline_byte_limit: usize::MAX,
             flush_byte_threshold: i64::MAX,
@@ -360,12 +357,7 @@ async fn integer_identity_cold_hot_merge() {
     let batch = engine_serving::vector_search(
         &catalog,
         &pool,
-        &table,
-        "by_flat",
-        &[0.9_f32, 0.1, 0.0, 0.0],
-        2,
-        None,
-        None,
+        vq(&table, "by_flat", &[0.9_f32, 0.1, 0.0, 0.0], 2, None, None),
     )
     .await
     .expect("cold+hot search over integer identity");

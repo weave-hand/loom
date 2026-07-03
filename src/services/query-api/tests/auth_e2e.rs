@@ -20,7 +20,8 @@ use control_plane_postgres::fixture::PgFixture;
 use http_body_util::BodyExt;
 use serde_json::json;
 use service_runtime::{
-    AuthState, generate_session_token, hash_password, login_routes, protect, token_sha256,
+    AuthState, generate_session_token, hash_password, login_routes, protect, session_routes,
+    token_sha256,
 };
 use tower::ServiceExt;
 
@@ -31,6 +32,7 @@ fn app(cp: Arc<PgControlPlane>, eng: Arc<dyn query_api::serving::ServingEngine>)
     let auth = AuthState {
         auth: cp.clone() as Arc<dyn Auth + Send + Sync>,
         session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     };
     protect(
         query_api::http::router(query_api::http::AppState {
@@ -38,10 +40,12 @@ fn app(cp: Arc<PgControlPlane>, eng: Arc<dyn query_api::serving::ServingEngine>)
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
         }),
         auth.clone(),
     )
-    .merge(login_routes(auth))
+    .merge(login_routes(auth.clone()))
+    .merge(session_routes(auth))
 }
 
 /// Case 1: valid session token → governed GET /objects/Customer → 200.
@@ -199,4 +203,76 @@ async fn authn_ok_acl_denied_403() {
     // Consume body to avoid warnings.
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let _ = bytes;
+}
+
+/// Self-service change over real Postgres: log in, POST /auth/password, then the new
+/// password authenticates and the old one does not.
+#[tokio::test]
+async fn self_service_change_over_postgres() {
+    let fx = PgFixture::shared();
+    let (cp, eng, _writer) = setup_iceberg(fx).await;
+    let cp = Arc::new(cp);
+    cp.create_user(&NewUser {
+        subject_id: SubjectId("al".into()),
+        username: "al".into(),
+        password_phc: hash_password("orig").expect("hash"),
+    })
+    .await
+    .unwrap();
+
+    // log in to get a real session token
+    let login_body = json!({ "username": "al", "password": "orig" });
+    let res = app(cp.clone(), eng.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/login")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&login_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let token = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // change the password
+    let body = json!({ "current": "orig", "new": "fresh" });
+    let res = app(cp.clone(), eng.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/password")
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // new password logs in, old does not
+    for (pw, want) in [
+        ("fresh", StatusCode::OK),
+        ("orig", StatusCode::UNAUTHORIZED),
+    ] {
+        let b = json!({ "username": "al", "password": pw });
+        let res = app(cp.clone(), eng.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&b).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), want, "login with {pw}");
+    }
 }

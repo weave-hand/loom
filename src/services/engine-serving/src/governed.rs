@@ -12,8 +12,8 @@ use control_plane_core::{
     CompareOp, GovernedCatalog, RowFilter, ScalarValue, TableRef, validate_row_filter,
 };
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
-use datafusion::common::{DFSchema, TableReference};
+use datafusion::catalog::{Session, TableProvider};
+use datafusion::common::DFSchema;
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::execution::context::{ExecutionProps, SessionContext};
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType, not};
@@ -29,8 +29,9 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::{Expr, col, lit};
 use datafusion::scalar::ScalarValue as DfScalar;
+use store_config::ServingStore;
 
-use crate::serving::{EngineServingError, build_serving_provider, to_serving};
+use crate::serving::{EngineServingError, build_serving_provider, register_qualified, to_serving};
 
 /// The redaction marker a masked column's every value is replaced with. Kept local
 /// to engine-serving (query-api owns its own private copy) so the enforcing path has
@@ -289,7 +290,7 @@ pub async fn execute_governed_sql_stream(
     catalog: &IcebergCatalog,
     sql: &str,
     governed: &GovernedCatalog,
-    serving_store: Option<&(String, Arc<dyn object_store::ObjectStore>)>,
+    serving_store: Option<&ServingStore>,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
     let ctx = SessionContext::new();
     for table in catalog.live_tables().await.map_err(to_serving)? {
@@ -298,23 +299,8 @@ pub async fn execute_governed_sql_stream(
             continue;
         };
         let policy = policy_for(governed, &table);
-        let provider = Arc::new(GovernedTableProvider::new(inner, policy)?);
-
-        // Ensure the schema exists in the default catalog, then register the governed
-        // provider schema-qualified so `"schema"."table"` resolves (mirrors
-        // `register_iceberg_table`).
-        let cat = ctx
-            .catalog("datafusion")
-            .ok_or_else(|| EngineServingError::Engine("no default datafusion catalog".into()))?;
-        if cat.schema(&table.schema).is_none() {
-            cat.register_schema(&table.schema, Arc::new(MemorySchemaProvider::new()))
-                .map_err(to_serving)?;
-        }
-        ctx.register_table(
-            TableReference::partial(table.schema.clone(), table.name.clone()),
-            provider,
-        )
-        .map_err(to_serving)?;
+        let provider: Arc<dyn TableProvider> = Arc::new(GovernedTableProvider::new(inner, policy)?);
+        register_qualified(&ctx, &table.schema, &table.name, provider)?;
     }
     let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
     df.execute_stream().await.map_err(to_serving)

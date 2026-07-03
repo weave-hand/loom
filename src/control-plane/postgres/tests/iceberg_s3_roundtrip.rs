@@ -124,16 +124,16 @@ async fn s3_write_and_read_roundtrip() {
 
     // --- Assertion (b): read back through DataFusion against the S3 store ---
     // Register the S3 object store under s3://{bucket}, then scan the mirror's Parquet files.
-    let (store_bucket, store) = build_serving_object_store(&os_cfg)
+    let serving = build_serving_object_store(&os_cfg)
         .expect("build_serving_object_store ok")
         .expect("S3 backend returns Some");
 
     let ctx = SessionContext::new();
     ctx.register_object_store(
-        ObjectStoreUrl::parse(format!("s3://{store_bucket}"))
+        ObjectStoreUrl::parse(format!("s3://{}", serving.bucket))
             .expect("parse s3 url")
             .as_ref(),
-        store,
+        serving.store,
     );
 
     // Use the paths from the mirror to scan via DataFusion.

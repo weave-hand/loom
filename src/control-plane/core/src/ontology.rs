@@ -11,7 +11,8 @@
 use async_trait::async_trait;
 
 use crate::TableRef;
-use crate::error::Result;
+use crate::error::{ControlPlaneError, Result};
+use crate::logical_type::BaseType;
 use crate::page::{Page, PageReq};
 use crate::vector_index::{IndexSpec, Metric};
 
@@ -156,6 +157,33 @@ pub enum Cardinality {
     Many,
 }
 
+impl Cardinality {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Cardinality::One => "one",
+            Cardinality::Many => "many",
+        }
+    }
+}
+
+impl std::str::FromStr for Cardinality {
+    type Err = ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "one" => Ok(Cardinality::One),
+            "many" => Ok(Cardinality::Many),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown cardinality '{other}'"
+            ))),
+        }
+    }
+}
+
 /// How a link is physically realized as a join. Carried by `LinkDef`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LinkBacking {
@@ -239,6 +267,97 @@ pub struct DerivedPropertyDef {
     pub agg: Aggregation,
 }
 
+/// The result-type expectation of an aggregation, resolved against the target
+/// column's base type. Pairs the acceptance predicate ([`ResultExpectation::accepts`])
+/// with the human description ([`ResultExpectation::description`]) used in violation
+/// messages, so the derived-property validator carries neither inline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResultExpectation {
+    /// A `Count`: an int64 in disguise — accept `Integer` or `Long`.
+    IntegerOrLong,
+    /// A `Sum`/`Avg`: any numeric base type.
+    Numeric,
+    /// A `Min`/`Max`: exactly the target column's own base type (`None` if that type
+    /// could not be resolved, which nothing then satisfies).
+    ExactColumn(Option<BaseType>),
+}
+
+impl ResultExpectation {
+    /// Whether a declared result type (resolved to a `BaseType`, or `None` if unknown)
+    /// is consistent with this category.
+    #[must_use]
+    pub fn accepts(&self, declared: Option<BaseType>) -> bool {
+        match self {
+            ResultExpectation::IntegerOrLong => {
+                matches!(declared, Some(BaseType::Integer | BaseType::Long))
+            }
+            ResultExpectation::Numeric => declared.is_some_and(BaseType::is_numeric),
+            ResultExpectation::ExactColumn(col) => declared.is_some() && declared == *col,
+        }
+    }
+
+    /// A human label for the expected result type, used in violation messages.
+    #[must_use]
+    pub fn description(&self) -> String {
+        match self {
+            ResultExpectation::IntegerOrLong => "integer or long".to_string(),
+            ResultExpectation::Numeric => "numeric".to_string(),
+            ResultExpectation::ExactColumn(Some(b)) => b.canonical_name(),
+            ResultExpectation::ExactColumn(None) => "the target column's type".to_string(),
+        }
+    }
+}
+
+impl Aggregation {
+    /// The target-type column this aggregation reads, or `None` for `Count` (which
+    /// aggregates rows, not a column).
+    #[must_use]
+    pub fn column(&self) -> Option<&str> {
+        match self {
+            Aggregation::Count => None,
+            Aggregation::Sum(c)
+            | Aggregation::Avg(c)
+            | Aggregation::Min(c)
+            | Aggregation::Max(c) => Some(c),
+        }
+    }
+
+    /// A human label for this aggregation, used in violation messages.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Aggregation::Count => "Count",
+            Aggregation::Sum(_) => "Sum",
+            Aggregation::Avg(_) => "Avg",
+            Aggregation::Min(_) => "Min",
+            Aggregation::Max(_) => "Max",
+        }
+    }
+
+    /// Whether this aggregation is applicable to a column of base type `col`
+    /// (`None` = unresolved). `Sum`/`Avg` need numeric; `Min`/`Max` need ordered;
+    /// `Count` takes no column and is always applicable.
+    #[must_use]
+    pub fn column_applicable(&self, col: Option<BaseType>) -> bool {
+        match self {
+            Aggregation::Sum(_) | Aggregation::Avg(_) => col.is_some_and(BaseType::is_numeric),
+            Aggregation::Min(_) | Aggregation::Max(_) => col.is_some_and(BaseType::is_ordered),
+            Aggregation::Count => true,
+        }
+    }
+
+    /// The result-type expectation for this aggregation given its target column's base
+    /// type `col` (used only by `Min`/`Max`).
+    #[must_use]
+    pub fn result_expectation(&self, col: Option<BaseType>) -> ResultExpectation {
+        match self {
+            Aggregation::Count => ResultExpectation::IntegerOrLong,
+            Aggregation::Sum(_) | Aggregation::Avg(_) => ResultExpectation::Numeric,
+            Aggregation::Min(_) | Aggregation::Max(_) => ResultExpectation::ExactColumn(col),
+        }
+    }
+}
+
 /// A named ontology action (e.g. "createCustomer").
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ActionName(pub String);
@@ -254,6 +373,35 @@ pub enum ActionKind {
     Insert,
     Update,
     Delete,
+}
+
+impl ActionKind {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActionKind::Insert => "insert",
+            ActionKind::Update => "update",
+            ActionKind::Delete => "delete",
+        }
+    }
+}
+
+impl std::str::FromStr for ActionKind {
+    type Err = ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "insert" => Ok(ActionKind::Insert),
+            "update" => Ok(ActionKind::Update),
+            "delete" => Ok(ActionKind::Delete),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown action kind '{other}'"
+            ))),
+        }
+    }
 }
 
 /// A typed input to an action. `ty` is the ontology's logical vocabulary (like `PropertyDef.ty`).
@@ -291,15 +439,42 @@ pub struct VectorIndexDef {
     pub spec: IndexSpec,
 }
 
-/// A declared constant filling a property when no parameter supplies it (the
-/// default/fixed-value case, e.g. `status = "active"`). `value` is the JSON wire form of a
-/// scalar — the canonical representation the query-api write path coerces to the property's
-/// logical type (the same path parameters take); it is validated against the property type at
-/// invocation-time conformance. Not `Eq` because `serde_json::Value` is not `Eq`.
+/// The source of a property's [`Assignment`]: either a fixed constant (the JSON wire form of a
+/// scalar, coerced to the property's logical type on the write path) or a bounded expression
+/// over the action's params / earlier-resolved properties (computed at invocation, slice 2).
+/// Not `Eq` because `serde_json::Value` is not `Eq`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ConstAssignment {
+pub enum AssignmentSource {
+    Const(serde_json::Value),
+    Expr(String),
+}
+
+/// A declared assignment filling a property when no parameter supplies it. `Const` is the
+/// default/fixed-value case (e.g. `status = "active"`); `Expr` computes the value from the
+/// action's inputs (e.g. `total = qty * unitPrice`). Ordered within `ActionDef.assignments`;
+/// an `Expr` may reference a property assigned *earlier* in that order.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Assignment {
     pub property: String,
-    pub value: serde_json::Value,
+    pub source: AssignmentSource,
+}
+
+impl Assignment {
+    /// A fixed-constant assignment (the slice-1 shape).
+    pub fn constant(property: impl Into<String>, value: serde_json::Value) -> Self {
+        Assignment {
+            property: property.into(),
+            source: AssignmentSource::Const(value),
+        }
+    }
+
+    /// A computed-expression assignment (slice 2); `source` is the raw expression string.
+    pub fn expr(property: impl Into<String>, source: impl Into<String>) -> Self {
+        Assignment {
+            property: property.into(),
+            source: AssignmentSource::Expr(source.into()),
+        }
+    }
 }
 
 /// A named ontology operation. Slice-1 semantics: insert/update/delete one instance of
@@ -316,7 +491,7 @@ pub struct ActionDef {
     pub kind: ActionKind,
     /// Ordered constant property assignments (the default/fixed-value case).
     #[serde(default)]
-    pub assignments: Vec<ConstAssignment>,
+    pub assignments: Vec<Assignment>,
 }
 
 impl ActionDef {
@@ -398,13 +573,21 @@ impl ActionDefBuilder {
         self
     }
 
-    /// Append a declared constant assignment ([`ConstAssignment`]) filling
-    /// `property` with `value` when no parameter supplies it.
+    /// Append a declared constant assignment filling `property` with `value` when no
+    /// parameter supplies it.
     pub fn assign(mut self, property: impl Into<String>, value: serde_json::Value) -> Self {
-        self.inner.assignments.push(ConstAssignment {
-            property: property.into(),
-            value,
-        });
+        self.inner
+            .assignments
+            .push(Assignment::constant(property, value));
+        self
+    }
+
+    /// Append a declared computed-expression assignment: `property` is set by evaluating
+    /// `source` (the closed grammar) over the action's inputs.
+    pub fn assign_expr(mut self, property: impl Into<String>, source: impl Into<String>) -> Self {
+        self.inner
+            .assignments
+            .push(Assignment::expr(property, source));
         self
     }
 

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update auth.password_credential set password_phc = $2, updated_at = now() where subject_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "546f0af18fc26df03b7ac95891cc731e896496b06f908f0214a71c0b6bf85f53"
+}

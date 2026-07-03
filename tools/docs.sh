@@ -82,7 +82,7 @@ _delete_ref_remote(){
   git push origin ":$1" >/dev/null 2>&1
 }
 
-CLAIM_GRACE_MIN="${LOOM_CLAIM_GRACE_MIN:-60}"
+CLAIM_GRACE_MIN="${LOOM_CLAIM_GRACE_MIN:-240}"
 
 # Epoch seconds for an ISO-8601 UTC timestamp (0 on parse failure).
 _epoch(){ date -u -d "$1" +%s 2>/dev/null || echo 0; }

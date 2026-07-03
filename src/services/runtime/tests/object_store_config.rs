@@ -112,8 +112,8 @@ fn build_storage_factory_s3_for_s3_backend() {
     let cfg = Config::from_map(&m).unwrap();
     let f = build_storage_factory(&cfg.object_store).unwrap();
     assert!(format!("{f:?}").contains("S3StorageFactory"));
-    let (bucket, _store) = build_serving_object_store(&cfg.object_store)
+    let serving = build_serving_object_store(&cfg.object_store)
         .unwrap()
         .unwrap();
-    assert_eq!(bucket, "warehouse");
+    assert_eq!(serving.bucket, "warehouse");
 }

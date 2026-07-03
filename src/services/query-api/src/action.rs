@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use control_plane_core::{
     Action, ActionDef, ActionKind, ActionName, ConstraintViolation, ControlPlane,
     ControlPlaneError, DatasetRef, Decision, EventType, LineageEvent, ObjectType, PageReq, Policy,
-    PolicyTarget, PropertyValidator, RunId, SubjectId, resolve_logical,
+    PolicyTarget, PropertyDef, PropertyValidator, RunId, SubjectId, resolve_logical,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -105,6 +105,12 @@ impl WriteDenialReason {
     }
 }
 
+/// The request-time clock threaded to `resolve_action_row` for `now()` in computed assignments.
+fn request_now() -> time::PrimitiveDateTime {
+    let n = time::OffsetDateTime::now_utc();
+    time::PrimitiveDateTime::new(n.date(), n.time())
+}
+
 /// Validate that `action`'s parameters conform to `target`'s properties. Dispatches on
 /// `action.kind`: Insert enforces full required-property coverage; Update/Delete enforce
 /// identity-based mutate rules. Pure; collects ALL violations into one message so an operator
@@ -162,9 +168,80 @@ fn check_param_property_types(
     }
 }
 
+/// A `crate::expr::TypeEnv` view over an action's params and the target's properties, tracking
+/// which properties have been resolved *earlier* in declared assignment order (for the
+/// forward-`@ref` rule). Params seed the resolved set (they are resolved before any assignment).
+struct ConformanceEnv<'a> {
+    action: &'a ActionDef,
+    target: &'a ObjectType,
+    resolved: std::collections::HashSet<String>,
+}
+
+impl crate::expr::TypeEnv for ConformanceEnv<'_> {
+    fn param_type(&self, name: &str) -> Option<control_plane_core::BaseType> {
+        self.action
+            .parameters
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| control_plane_core::resolve_logical(&p.ty))
+    }
+    fn prop_type(&self, name: &str) -> Option<control_plane_core::BaseType> {
+        self.target
+            .properties
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| control_plane_core::resolve_logical(&p.ty))
+    }
+    fn prop_resolved(&self, name: &str) -> bool {
+        self.resolved.contains(name)
+    }
+}
+
+/// Parse + type-check one expression assignment against `env`, checking the inferred type is
+/// assignable to `prop`. Appends a clear violation per failure mode.
+fn check_expr_assignment(
+    src: &str,
+    prop: &PropertyDef,
+    env: &ConformanceEnv<'_>,
+    target_name: &str,
+    property: &str,
+    violations: &mut Vec<String>,
+) {
+    let expr = match crate::expr::parse_expr(src) {
+        Ok(e) => e,
+        Err(e) => {
+            violations.push(format!("expression for property `{property}`: {e}"));
+            return;
+        }
+    };
+    let inferred = match crate::expr::typecheck(&expr, env) {
+        Ok(t) => t,
+        Err(e) => {
+            violations.push(format!("expression for property `{property}`: {e}"));
+            return;
+        }
+    };
+    let Some(prop_base) = control_plane_core::resolve_logical(&prop.ty) else {
+        violations.push(format!(
+            "property `{property}` of type `{target_name}` has unknown logical type `{}`",
+            prop.ty
+        ));
+        return;
+    };
+    if !crate::expr::assignable(inferred, prop_base) {
+        violations.push(format!(
+            "expression for property `{property}` has type {} which is not assignable to `{}`",
+            inferred.canonical_name(),
+            prop.ty
+        ));
+    }
+}
+
 /// Rule 2b & 3 (shared): every constant assignment names a real property and coerces to that
-/// property's logical type, and no property is written twice — by two params, a param and a
-/// constant, or two constants. Violations are appended to `violations`.
+/// property's logical type, every Expr assignment type-checks against the action's params and
+/// earlier-resolved properties (in declared order), and no property is written twice — by two
+/// params, a param and an assignment, or two assignments. Violations are appended to
+/// `violations`.
 fn check_assignments_and_binds(
     action: &ActionDef,
     target: &ObjectType,
@@ -183,21 +260,45 @@ fn check_assignments_and_binds(
             violations.push(dup(prop));
         }
     }
+
+    // Seed the resolved-property set with everything a param binds (params resolve before any
+    // assignment); assignments then resolve in declared order.
+    let mut env = ConformanceEnv {
+        action,
+        target,
+        resolved: action
+            .parameters
+            .iter()
+            .map(|p| p.binds_property().to_string())
+            .collect(),
+    };
+
     for a in &action.assignments {
-        match target.properties.iter().find(|prop| prop.name == a.property) {
+        match target
+            .properties
+            .iter()
+            .find(|prop| prop.name == a.property)
+        {
             None => violations.push(format!(
-                "constant assignment names property `{}`, which is not a property of type `{target_name}`",
+                "assignment names property `{}`, which is not a property of type `{target_name}`",
                 a.property
             )),
-            Some(prop) => {
-                if let Err(e) = crate::params::validate_const(&a.property, &prop.ty, &a.value) {
-                    violations.push(format!("constant for property `{}`: {e}", a.property));
+            Some(prop) => match &a.source {
+                control_plane_core::AssignmentSource::Const(v) => {
+                    if let Err(e) = crate::params::validate_const(&a.property, &prop.ty, v) {
+                        violations.push(format!("constant for property `{}`: {e}", a.property));
+                    }
                 }
-            }
+                control_plane_core::AssignmentSource::Expr(src) => {
+                    check_expr_assignment(src, prop, &env, target_name, &a.property, violations);
+                }
+            },
         }
         if !bound.insert(&a.property) {
             violations.push(dup(&a.property));
         }
+        // This property is now resolved for any later `@ref`.
+        env.resolved.insert(a.property.clone());
     }
 }
 
@@ -220,8 +321,8 @@ fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(
             .parameters
             .iter()
             .any(|p| p.binds_property() == prop.name && p.required);
-        let by_constant = action.assignments.iter().any(|a| a.property == prop.name);
-        if by_required_param || by_constant {
+        let by_assignment = action.assignments.iter().any(|a| a.property == prop.name);
+        if by_required_param || by_assignment {
             continue;
         }
         if let Some(p) = action
@@ -461,7 +562,8 @@ async fn run_insert(
 
     // 4. Resolve the write row: parse+validate the typed params, remap each to its bound
     //    property, and append the action's constant assignments (property-keyed pairs).
-    let pairs = crate::params::resolve_action_row(action, target, body)?;
+    let now = request_now();
+    let pairs = crate::params::resolve_action_row(action, target, body, now)?;
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
     let values: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
 
@@ -527,14 +629,11 @@ async fn run_insert(
     //    post-hoc snapshot_id payload is dropped: the event now commits WITH the
     //    snapshot, so their linkage is structural, not a best-effort breadcrumb.
     let run_id = RunId(Uuid::new_v4());
-    let event = LineageEvent {
+    let event = LineageEvent::completed_with_run(
         run_id,
-        event_type: EventType::Complete,
-        event_time: time::OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetRef::from(&action.target)],
-        payload: serde_json::json!({ "action": action_name }),
-    };
+        vec![DatasetRef::from(&action.target)],
+        serde_json::json!({ "action": action_name }),
+    );
 
     // 7. Atomic write: row + lineage in one transaction (no dangling slice). On any
     //    failure the Tx rolls back — no snapshot, no lineage, no partial state.
@@ -744,7 +843,8 @@ async fn run_mutate(
     let idprop = target.identity.clone().ok_or_else(|| {
         ActionError::Misconfigured(format!("type `{}` has no declared identity", target.name.0))
     })?;
-    let pairs = crate::params::resolve_action_row(action, target, body)?;
+    let now = request_now();
+    let pairs = crate::params::resolve_action_row(action, target, body, now)?;
     let id_value = pairs
         .iter()
         .find(|(c, _)| c == &idprop)
