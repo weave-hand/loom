@@ -20,6 +20,16 @@ pub(super) fn bad(m: &str) -> ControlPlaneError {
     ControlPlaneError::Backend(format!("vector index decode: {m}").into())
 }
 
+/// Final-step decode guard: the identity block ends every LVIX format, so any
+/// unread byte means a corrupt/padded blob (or a mixed-kind blob written by a
+/// pre-fix loom whose two encodings happened to sum compatibly).
+pub(super) fn expect_eof(r: &ByteReader<'_>) -> Result<()> {
+    if r.remaining() > 0 {
+        return Err(bad("trailing bytes after identity block"));
+    }
+    Ok(())
+}
+
 /// Bounds-checked little-endian reader over a serialized index blob.
 ///
 /// (Formerly the module-private `Cursor` — renamed because it shadowed
@@ -146,8 +156,10 @@ pub(super) fn read_f32_section(
 }
 
 /// Write the identity block: u8 key_kind (0=int from `keys.first()` — empty ⇒
-/// 0 — 1=str), then per key: i64 LE, or u32 len LE + utf8 bytes. All vectors
-/// share one key_kind (the identity column's logical type).
+/// 0 — 1=str), then per key: i64 LE, or u32 len LE + utf8 bytes. All keys share
+/// one key_kind (the identity column's logical type) — enforced by `pack_rows`,
+/// the single rows→columns seam every build goes through, so a mixed-kind
+/// `keys` slice can never reach this writer.
 pub(super) fn write_keys(out: &mut Vec<u8>, keys: &[VectorKey]) {
     let key_kind: u8 = match keys.first() {
         Some(VectorKey::Str(_)) => 1,
@@ -188,15 +200,24 @@ pub(super) fn read_keys(r: &mut ByteReader<'_>, row_count: usize) -> Result<Vec<
 
 /// Pack `(identity, vector)` rows into the parallel `(keys, row-major data)`
 /// columns all three builds use, validating every vector length against `dim`
-/// (error: "vector dim mismatch: expected {d}, got {n}").
+/// (error: "vector dim mismatch: expected {d}, got {n}") and that every
+/// identity key shares the first row's kind (error: "mixed identity key kinds:
+/// all index keys must be Int or all Str") — the codec's one-key-kind wire
+/// invariant (`write_keys` encodes a single key_kind byte for the whole index).
 pub(super) fn pack_rows(
     dim: u32,
     rows: Vec<(VectorKey, Vec<f32>)>,
 ) -> Result<(Vec<VectorKey>, Vec<f32>)> {
     let d = dim as usize;
+    let expected_kind = rows.first().map(|(k, _)| std::mem::discriminant(k));
     let mut keys = Vec::with_capacity(rows.len());
     let mut data = Vec::with_capacity(rows.len() * d);
     for (key, v) in rows {
+        if Some(std::mem::discriminant(&key)) != expected_kind {
+            return Err(ControlPlaneError::Validation(
+                "mixed identity key kinds: all index keys must be Int or all Str".to_string(),
+            ));
+        }
         if v.len() != d {
             return Err(ControlPlaneError::Validation(format!(
                 "vector dim mismatch: expected {d}, got {}",

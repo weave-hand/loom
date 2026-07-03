@@ -618,6 +618,58 @@ fn apply_query_knobs_is_noop_on_flat() {
 }
 
 #[test]
+fn mixed_key_kinds_rejected_at_build() {
+    use control_plane_core::ControlPlaneError;
+    let mixed = |a, b| vec![(a, vec![0.0]), (b, vec![0.0])];
+    let cases = [
+        mixed(VectorKey::Int(0), VectorKey::Str("\0".into())),
+        mixed(VectorKey::Str("\0".into()), VectorKey::Int(0)),
+    ];
+    for rows in cases {
+        for err in [
+            FlatIndex::build(1, Metric::Cosine, rows.clone()).err(),
+            IvfFlatIndex::build(1, Metric::Cosine, rows.clone(), None).err(),
+            HnswIndex::build(1, Metric::Cosine, rows.clone(), None, None).err(),
+        ] {
+            let e = err.expect("mixed key kinds must fail build");
+            assert!(
+                matches!(e, ControlPlaneError::Validation(ref m) if m.contains("mixed identity key kinds")),
+                "wrong error: {e}"
+            );
+        }
+    }
+}
+
+#[test]
+fn trailing_bytes_rejected_at_decode() {
+    use control_plane_core::decode;
+    let rows = vec![
+        (VectorKey::Int(1), vec![0.5]),
+        (VectorKey::Int(2), vec![0.25]),
+    ];
+    let blobs = [
+        FlatIndex::build(1, Metric::Cosine, rows.clone())
+            .expect("build")
+            .serialize(),
+        IvfFlatIndex::build(1, Metric::Cosine, rows.clone(), None)
+            .expect("build")
+            .serialize(),
+        HnswIndex::build(1, Metric::Cosine, rows, None, None)
+            .expect("build")
+            .serialize(),
+    ];
+    for mut blob in blobs {
+        blob.push(0xAB);
+        let e = decode(&blob).err().expect("trailing byte must fail decode");
+        assert!(
+            e.to_string()
+                .contains("trailing bytes after identity block"),
+            "wrong error: {e}"
+        );
+    }
+}
+
+#[test]
 fn parse_and_dim_failures_are_validation() {
     use control_plane_core::{ControlPlaneError, IndexKind, IndexSpec, Metric};
     use std::str::FromStr;

@@ -1,8 +1,8 @@
 //! Exact (flat/brute-force) vector index.
 
 use super::codec::{
-    ByteReader, F32Section, KIND_FLAT, pack_rows, read_f32_section, read_header, read_keys,
-    write_f32s, write_header, write_keys,
+    ByteReader, F32Section, KIND_FLAT, expect_eof, pack_rows, read_f32_section, read_header,
+    read_keys, write_f32s, write_header, write_keys,
 };
 use super::{IndexKind, Metric, VectorIndex, VectorKey, distance};
 use crate::error::Result;
@@ -77,6 +77,7 @@ impl FlatIndex {
         let row_count = r.u32()?;
         let data = read_f32_section(&mut r, row_count as usize, dim as usize, F32Section::Data)?;
         let keys = read_keys(&mut r, row_count as usize)?;
+        expect_eof(&r)?;
         Ok(FlatIndex {
             dim,
             metric,

@@ -1,8 +1,8 @@
 //! HnswIndex — approximate HNSW graph index with deterministic build.
 
 use super::codec::{
-    ByteReader, F32Section, KIND_HNSW, bad, pack_rows, read_f32_section, read_header, read_keys,
-    write_f32s, write_header, write_keys,
+    ByteReader, F32Section, KIND_HNSW, bad, expect_eof, pack_rows, read_f32_section, read_header,
+    read_keys, write_f32s, write_header, write_keys,
 };
 use super::{IndexKind, Metric, SplitMix64, VectorIndex, VectorKey, distance, row_slice};
 use crate::error::Result;
@@ -422,6 +422,7 @@ impl HnswIndex {
             return Err(bad("max_layer exceeds entry point height"));
         }
         let keys = read_keys(&mut r, rc)?;
+        expect_eof(&r)?;
         Ok(HnswIndex {
             dim,
             metric,
