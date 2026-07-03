@@ -1156,6 +1156,49 @@ async fn external_source_is_default_allowed() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(names(&body), vec!["landing.csv".to_string()], "external allowed, SECRET denied: {body}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn downstream_closure_is_governed_and_cuts() {
+    let fx = PgFixture::shared();
+    let cp = fresh(fx).await;
+    // A -> B -> C (input->output edges; downstream walks them forward).
+    for (i, o) in [("A", "B"), ("B", "C")] {
+        cp.lineage().emit(edge(ty(i), ty(o))).await.unwrap();
+    }
+    // Define A,B,C once; grant per subject (two subjects share the type set).
+    for t in ["A", "B", "C"] {
+        deftype(&cp, t).await;
+    }
+    // u reads everything: downstream(A, depth=2) = {B, C}.
+    let (_u, urole) = subject_with_role(&cp, "u").await;
+    for t in ["A", "B", "C"] {
+        grant_read(&cp, &urole, t).await;
+    }
+    let (status, body) = get(
+        cp.clone(),
+        Arc::new(NoServing),
+        "/lineage/datasets/loom:type/A/downstream?depth=2",
+        "u",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(names(&body), vec!["B".to_string(), "C".to_string()], "downstream descendants: {body}");
+
+    // v cannot read B: cut → C is unreachable downstream from A.
+    let (_v, vrole) = subject_with_role(&cp, "v").await;
+    for t in ["A", "C"] {
+        grant_read(&cp, &vrole, t).await;
+    }
+    let (status2, body2) = get(
+        cp.clone(),
+        Arc::new(NoServing),
+        "/lineage/datasets/loom:type/A/downstream?depth=2",
+        "v",
+    )
+    .await;
+    assert_eq!(status2, StatusCode::OK, "{body2}");
+    assert_eq!(names(&body2), Vec::<String>::new(), "denied B cuts C from downstream: {body2}");
+}
 ```
 
 - [ ] **Step 2: Wire the fixture test target + run it.**
