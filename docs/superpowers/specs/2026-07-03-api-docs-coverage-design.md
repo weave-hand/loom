@@ -57,8 +57,10 @@ sorted), the postgres adapter (`select name from ontology.action order by
 name` + per-name `get_action`, exactly `list_types`'s shape at
 `postgres/src/ontology.rs:209`; `.sqlx` refreshed via
 `tools/sqlx-prepare.sh`), and the **engine-wire proxy** `WireOntology`
-(`query-api/src/wire_control_plane.rs:116`) — query-api reads governance over
-gRPC in wire mode, so the RPC gets the full `ListTypes` treatment
+(`query-api/src/wire_control_plane.rs:116`) — a trait method must land on all
+implementors, and the ontology read surface stays symmetric over the wire
+(the docs endpoint itself reads the direct control plane,
+`query-api/src/serve.rs:76–83`), so the RPC gets the full `ListTypes` treatment
 (`engine_control.proto:27,149–150`): a `ListActions` message pair with
 `page_json` envelopes, the client macro method `gov_list_actions`, and the
 engine-service handler beside `list_types` (`engine/src/service.rs:505`).

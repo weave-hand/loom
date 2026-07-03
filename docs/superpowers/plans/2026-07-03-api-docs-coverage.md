@@ -38,7 +38,9 @@
 - Modify: `src/services/engine-wire/src/client.rs` (client method, mirror the `gov_list_types` macro entry at lines 452–455)
 - Modify: `src/services/engine/src/service.rs` (handler, mirror `list_types` at lines 505–509)
 - Modify: `src/services/query-api/src/wire_control_plane.rs` (WireOntology impl, ~line 151)
-- Modify: `src/services/query-api/tests/wire_governance_e2e.rs` (wire round-trip assert)
+- Modify: `src/services/query-api/tests/resolve_governed.rs` (the `MissingType` test stub at :23 implements `Ontology` — add `async fn list_actions(&self, _page: PageReq) -> control_plane_core::Result<Page<ActionDef>> { unreachable!("not exercised by resolve_governed") }` or it fails E0046)
+- Modify: `src/services/query-api/tests/wire_governance_e2e.rs` (wire round-trip assert; the fixture already seeds a `createCustomer` action — only the assert is needed)
+- Modify: `src/services/query-api/src/serve.rs` (:77–78 comment "the wire governance client does not implement `list_types`" is already false — update it while here; note `live_openapi` receives the **direct** CP, so the RPC leg exists for `WireOntology` trait-completeness + wire symmetry, exercised by the e2e assert, not for docs serving)
 - Run: `bash tools/sqlx-prepare.sh` (new `query_scalar!`)
 
 **Interfaces:**
@@ -56,6 +58,8 @@ assert!(listed.next.is_none(), "single full page");
 let names: Vec<&str> = listed.items.iter().map(|a| a.name.0.as_str()).collect();
 let mut sorted = names.clone();
 sorted.sort_unstable();
+// Byte-order comparison; the postgres `order by name` sorts under DB collation.
+// They agree for the ASCII action names this contract defines — keep it that way.
 assert_eq!(names, sorted, "list_actions is name-ordered");
 let widget = listed
     .items
@@ -69,7 +73,7 @@ assert_eq!(
 );
 ```
 
-(If `createWidget` was redefined later in the contract, compare against the *current* `get_action` result as above — the assert is self-consistent by construction.)
+(If `createWidget` was redefined later in the contract, compare against the *current* `get_action` result as above — the assert is self-consistent by construction. Deliberate narrowing vs. the spec's "empty page / keyset" bullets: keyset paging isn't implemented anywhere — `page` is accepted-for-future exactly like `list_types` — and an empty-set probe isn't possible at this point in the shared contract; ordering + single-full-page + fidelity is the contract.)
 
 - [ ] **Step 2: Run to verify it fails (compile error — method missing).**
 
@@ -135,7 +139,7 @@ assert!(acts.items.iter().any(|a| a.name.0 == "createThing"));
 
 - [ ] **Step 7: Run the touched targets.**
 
-Run: `buck2 test //src/control-plane/... //src/services/engine-wire/... //src/services/engine:wire //src/services/query-api:wire-governance-e2e --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
+Run: `buck2 test //src/control-plane/... //src/services/engine-wire/... //src/services/engine:wire //src/services/query-api:wire-governance-e2e //src/services/query-api:resolve-governed --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log`
 Expected: PASS (note: postgres contract targets are fixture tests — they run under the shared PG fixture env automatically via their existing `loom_fixture_test` wiring).
 
 - [ ] **Step 8: prek, commit.**
@@ -170,6 +174,7 @@ Run: `buck2 test //src/services/query-api:openapi-gen --unstable-allow-all-tests
 Expected: compile error (arity) then assertion failures.
 
 - [ ] **Step 3: Implement.** In `openapi_gen.rs`:
+  - Extend the `control_plane_core` import with `ActionDef, ActionKind` (the tests additionally need `ActionName, ParamDef`).
   - Delete `insert_op` and the `merge_operations` POST in the type loop (the type loop emits GET only).
   - `get_objects_op(type_name)`: `.tag("objects")` → `.tag(type_name)`. `link_op(from, ..)`: `.tag("links")` → `.tag(from)`.
   - Add:
@@ -265,22 +270,9 @@ Expected: PASS.
   - service-accounts: `POST /auth/service-accounts`, `GET /auth/service-accounts`, `POST /auth/service-accounts/{id}/tokens`, `GET /auth/service-accounts/{id}/tokens`, `DELETE /auth/service-accounts/{id}/tokens/{token_id}`
   - admin: `POST /admin/users`, `GET /admin/users`, `POST /admin/users/{username}/disable`, `POST /admin/users/{username}/enable`, `POST /admin/users/{username}/password`, `POST /admin/models`, `POST /admin/roles`, `GET /admin/roles`, `POST /admin/roles/{role}/grants`
 
-- [ ] **Step 1: Write the failing test** (`tests/openapi_fragments.rs`), reusing the `documented()` helper style from `query-api/tests/openapi.rs:9–27`:
+- [ ] **Step 1: Write the failing test** (`tests/openapi_fragments.rs`). Copy the `documented()` helper **verbatim from `query-api/tests/openapi.rs:30–52`** — it filters path-item keys to the 8 HTTP methods (path items also serialize non-operation keys like `summary`/`parameters`, which a naive key scan would misreport). Then:
 
 ```rust
-use std::collections::BTreeSet;
-
-fn documented(doc: &utoipa::openapi::OpenApi) -> BTreeSet<(String, String)> {
-    let json = serde_json::to_value(doc).unwrap();
-    let mut out = BTreeSet::new();
-    for (path, item) in json["paths"].as_object().unwrap() {
-        for method in item.as_object().unwrap().keys() {
-            out.insert((method.clone(), path.clone()));
-        }
-    }
-    out
-}
-
 #[tokio::test]
 async fn auth_fragment_documents_exactly_the_auth_routes() {
     let set = documented(&service_runtime::auth_openapi());
@@ -305,15 +297,63 @@ async fn no_response_schema_echoes_a_secret() {
         service_runtime::admin_openapi(),
     ] {
         let json = serde_json::to_value(&doc).unwrap();
-        let schemas = &json["components"]["schemas"];
-        for (name, schema) in schemas.as_object().into_iter().flatten() {
-            // Request DTOs may carry passwords; response DTOs must not.
-            if name.ends_with("Resp") || name.ends_with("Response") || name.ends_with("View") {
-                let props = schema["properties"].as_object().cloned().unwrap_or_default();
+        // Walk every documented RESPONSE body schema ref, resolve it in
+        // components, and reject secret fields. MintTokenResp is the one
+        // deliberate exception: minting is the single moment the raw token
+        // is shown. Request DTOs may carry passwords; responses must not.
+        let schemas = json["components"]["schemas"].as_object().cloned().unwrap_or_default();
+        let mut response_refs = std::collections::BTreeSet::new();
+        for (_path, item) in json["paths"].as_object().into_iter().flatten() {
+            for (_m, op) in item.as_object().into_iter().flatten() {
+                for (_code, resp) in op["responses"].as_object().into_iter().flatten() {
+                    if let Some(r) = resp["content"]["application/json"]["schema"]["$ref"].as_str() {
+                        response_refs.insert(r.rsplit('/').next().unwrap().to_string());
+                    }
+                }
+            }
+        }
+        for name in &response_refs {
+            let props = schemas[name]["properties"].as_object().cloned().unwrap_or_default();
+            assert!(
+                !props.contains_key("password") && !props.contains_key("current"),
+                "response schema {name} echoes a password field"
+            );
+            if name != "MintTokenResp" {
                 assert!(
-                    !props.contains_key("password") && !props.contains_key("current"),
-                    "response schema {name} echoes a secret field"
+                    !props.contains_key("token"),
+                    "response schema {name} echoes a token"
                 );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_op_requires_bearer_except_login() {
+    // The scheme COMPONENT is registered by the serve seam
+    // (`register_bearer_scheme`, runtime/src/openapi.rs:41), not by the raw
+    // fragments — assert the per-op security REQUIREMENT here instead.
+    for doc in [
+        service_runtime::auth_openapi(),
+        service_runtime::service_account_openapi(),
+        service_runtime::admin_openapi(),
+    ] {
+        let json = serde_json::to_value(&doc).unwrap();
+        for (path, item) in json["paths"].as_object().into_iter().flatten() {
+            for (method, op) in item.as_object().into_iter().flatten() {
+                if !["get", "post", "put", "delete", "patch", "head", "options", "trace"]
+                    .contains(&method.as_str())
+                {
+                    continue;
+                }
+                let requires_bearer = op["security"]
+                    .as_array()
+                    .is_some_and(|reqs| reqs.iter().any(|r| r.get("bearer_auth").is_some()));
+                if path == "/auth/login" {
+                    assert!(!requires_bearer, "login must be unauthenticated");
+                } else {
+                    assert!(requires_bearer, "{method} {path} must require bearer auth");
+                }
             }
         }
     }
@@ -325,7 +365,7 @@ async fn no_response_schema_echoes_a_secret() {
 Run: `buck2 test //src/services/runtime:openapi-fragments --unstable-allow-all-tests-on-re > /tmp/t3.log 2>&1; grep -E "error|FAIL" /tmp/t3.log | head`
 Expected: compile error (`auth_openapi` not found).
 
-- [ ] **Step 3: Annotate + derive.** For every handler in the inventory add `#[utoipa::path(...)]` in the exact style of `query-api/src/http.rs:169–184`: method, path (utoipa `{param}` braces), `params(...)` for path params, `request_body = <DTO>` where a body exists, real response statuses (login `200` body `LoginResp` / `401`; logout `200`; password `200`/`403`; create-account `201`/`200`; mint-token `201`; revoke-token `204`; create-user `201`/`200`/`400`; disable/enable `200`; reset-password `200`/`404`; create-role `201`; list-roles `200`; grant `201`; define-model `201` — **verify each against the handler and follow the handler on any disagreement**), `security(("bearer_auth" = []))` on everything except `POST /auth/login`, and tags: `"auth"` / `"service-accounts"` / `"admin"`. Derive `utoipa::ToSchema` on the referenced DTOs (`LoginReq`, `LoginResp`, `ChangePasswordReq`, `CreateAccountReq`, `MintTokenReq`, `CreateUserReq`, `CreateUserResp`, `ListUsersResp`, `UserView`, `ResetPasswordReq`, `CreateRoleReq`, `GrantReq`, `DefineModelReq`, `TableReq`, `PropReq`, plus any response DTO a `body =` names). Then per module:
+- [ ] **Step 3: Annotate + derive.** For every handler in the inventory add `#[utoipa::path(...)]` in the exact style of `query-api/src/http.rs:169–184`: method, path (utoipa `{param}` braces), `params(...)` for path params, `request_body = <DTO>` where a body exists, real response statuses (login `200` body `LoginResp` / `401`; logout `200`; password `200`/`403`; create-account `200` always — including fresh creates, `auth.rs:351–358`; mint-token `200` plus `400` for over-cap/zero TTL, `auth.rs:400–430`; revoke-token `200` plus `400` for bad hex, `auth.rs:481–492`; create-user `201`/`200`/`400`; disable/enable `200`; reset-password `200`/`404`; create-role `201`; list-roles `200`; grant `201`; define-model `201` — **verify each against the handler and follow the handler on any disagreement**), `security(("bearer_auth" = []))` on everything except `POST /auth/login`, and tags: `"auth"` / `"service-accounts"` / `"admin"`. Derive `utoipa::ToSchema` on the referenced DTOs (`LoginReq`, `LoginResp`, `ChangePasswordReq`, `CreateAccountReq`, `MintTokenReq`, `CreateUserReq`, `CreateUserResp`, `ListUsersResp`, `UserView`, `ResetPasswordReq`, `CreateRoleReq`, `GrantReq`, `DefineModelReq`, `TableReq`, `PropReq`, plus any response DTO a `body =` names). Then per module:
 
 ```rust
 #[derive(utoipa::OpenApi)]
