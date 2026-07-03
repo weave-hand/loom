@@ -142,8 +142,8 @@ pub fn register_batches(
 ) -> Result<(), ScanError>
 ```
 
-- [ ] **Step 1 (red):** in `tests/scan.rs` add `register_batches_serves_rows_for_sql` (build a two-batch `id: Int64` table, `SELECT count(*)`/`sum(id)` over it, assert values) and `register_batches_empty_matches_register_empty_table` (empty vec ⇒ `count(*) == 0`). Run: `buck2 test //src/services/datafusion-io:scan --unstable-allow-all-tests-on-re > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t2.log` — FAIL (fn missing).
-- [ ] **Step 2:** implement in `scan.rs`:
+- [x] **Step 1 (red):** in `tests/scan.rs` add `register_batches_serves_rows_for_sql` (build a two-batch `id: Int64` table, `SELECT count(*)`/`sum(id)` over it, assert values) and `register_batches_empty_matches_register_empty_table` (empty vec ⇒ `count(*) == 0`). Run: `buck2 test //src/services/datafusion-io:scan --unstable-allow-all-tests-on-re > /tmp/t2.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/t2.log` — FAIL (fn missing).
+- [x] **Step 2:** implement in `scan.rs`:
 
 ```rust
 pub fn register_batches(
@@ -160,8 +160,8 @@ pub fn register_batches(
 
 and rewrite `register_empty_table`'s body as `register_batches(ctx, name, schema, Vec::new())` (keeping its doc). Export from `lib.rs` next to `register_empty_table`.
 
-- [ ] **Step 3:** rerun Step 1 (PASS, incl. the existing `register_empty_table` case).
-- [ ] **Step 4:** prek; commit `feat(datafusion-io): register_batches — MemTable registration for wire-fetched inputs`
+- [x] **Step 3:** rerun Step 1 (PASS, incl. the existing `register_empty_table` case).
+- [x] **Step 4:** prek; commit `feat(datafusion-io): register_batches — MemTable registration for wire-fetched inputs`
 
 ### Task 3: `CommitTransform` RPC + `ListFilesResponse.columns_json` (proto, engine, client)
 

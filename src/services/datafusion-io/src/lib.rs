@@ -16,7 +16,9 @@ pub use infer::{
 };
 pub use ipc::decode_ipc;
 pub use job_config::JobConfig;
-pub use scan::{ScanError, object_store_url_for, register_empty_table, scan_table};
+pub use scan::{
+    ScanError, object_store_url_for, register_batches, register_empty_table, scan_table,
+};
 pub use write::{
     WriteConfig, WriteError, WrittenFile, absolute_data_files, estimate_partitions,
     file_stats_from_bytes, write_dataset,

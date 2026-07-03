@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use control_plane_core::{FileRef, TableRef};
 use datafusion::common::TableReference;
@@ -115,10 +116,21 @@ pub fn register_empty_table(
     name: &str,
     schema: SchemaRef,
 ) -> Result<(), ScanError> {
-    // One partition holding zero batches — `MemTable::try_new` rejects an empty
-    // partition list ("No partitions provided"), so the empty relation is a single
-    // empty partition, not zero partitions.
-    let provider = MemTable::try_new(schema, vec![vec![]])?;
+    register_batches(ctx, name, schema, Vec::new())
+}
+
+/// Register in-memory `batches` as table `name` (a `MemTable`). All batches must
+/// share `schema`. Sibling of `register_empty_table`, which is the zero-batch case.
+pub fn register_batches(
+    ctx: &SessionContext,
+    name: &str,
+    schema: SchemaRef,
+    batches: Vec<RecordBatch>,
+) -> Result<(), ScanError> {
+    // One partition holding the batches — `MemTable::try_new` rejects an empty
+    // partition list ("No partitions provided"), so even a zero-batch relation is a
+    // single empty partition, not zero partitions.
+    let provider = MemTable::try_new(schema, vec![batches])?;
     ctx.register_table(TableReference::bare(name), Arc::new(provider))?;
     Ok(())
 }
