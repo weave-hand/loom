@@ -250,8 +250,6 @@ time-travellable vanishes (#266).
 
 ## Known gaps
 
-- `#iss-qa-search-badfiltervalue-classification` — engine-side identity
-  coercion fault surfaces as a caller 400 with no operator log.
 - `#fut-external-sql-wire` — the external SQL wire (TCP listener + auth over
   the governed-catalog engine path).
 - `#fut-flight-sql-surface` — the rest of the Flight SQL command surface
