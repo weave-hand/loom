@@ -1162,6 +1162,24 @@ rust_test(
 )
 
 rust_test(
+    name = "search-fault-classification",
+    crate = "search_fault_classification",
+    srcs = ["tests/search_fault_classification.rs"],
+    crate_root = "tests/search_fault_classification.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:tokio",
+        "//third-party:tracing",
+        "//third-party:tracing-subscriber",
+    ],
+)
+
+rust_test(
     name = "seed-predicates",
     crate = "seed_predicates",
     srcs = ["tests/seed_predicates.rs"],
