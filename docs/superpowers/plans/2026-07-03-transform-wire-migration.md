@@ -438,10 +438,10 @@ pub async fn handle_typed_transform(ctx: &TransformCtx, job: Job) -> std::result
 
 Coverage accounting before deletion (all already ported): `output_mode`/`conform` → core (Task 1); `run_unknown_input`'s table-absent classification → worker e2e case 2 (Task 4) — its mid-handler drop-RACE class is deliberately reclassified to converging-Retry (see Global Constraints deviation 2; name it in the PR body); `transform_e2e` happy/empty → Task 4 cases 1/4; `overwrite_e2e` → Task 4 case 5; `typed_transform_e2e` → Task 5 (its query-api governed read-back of the typed output is dropped — governed reads over typed tables are pinned by query-api's own e2e suite; note in the PR body); `iceberg_backend_e2e`'s commit-sequence coverage → engine `transform_wire.rs` (Task 3). `transform_chain_e2e`'s absolute-path re-read: add the explicit chain as case 6 in `transform_e2e.rs`: second job `SELECT * FROM dst` into `main.dst2`, assert rows (input registered from absolute-path files exercises the wire read of an absolute live set).
 
-- [ ] **Step 1:** add the chain case (it should pass immediately; it pins the ported behavior): `buck2 test //src/services/worker:transform-e2e --unstable-allow-all-tests-on-re > /tmp/t6a.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6a.log`
-- [ ] **Step 2:** `git rm -r src/services/transform`; `grep -rn "services/transform" src/ deploy/ buildbuddy.yaml .github/ third-party/BUCK` — expect zero hits (docs handled in Task 7).
-- [ ] **Step 3:** whole-suite sweep (spec acceptance): `buck2 build -M none //src/... > /tmp/b6.log 2>&1; grep -c "BUILD FAILED" /tmp/b6.log` (0), then `buck2 test //src/... --unstable-allow-all-tests-on-re > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log` — PASS.
-- [ ] **Step 4:** prek; commit `refactor(worker)!: delete the pool-owning transform service — transforms run on the zero-pool worker`
+- [x] **Step 1:** add the chain case (it should pass immediately; it pins the ported behavior): `buck2 test //src/services/worker:transform-e2e --unstable-allow-all-tests-on-re > /tmp/t6a.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6a.log`
+- [x] **Step 2:** `git rm -r src/services/transform`; `grep -rn "services/transform" src/ deploy/ buildbuddy.yaml .github/ third-party/BUCK` — expect zero hits (docs handled in Task 7).
+- [x] **Step 3:** whole-suite sweep (spec acceptance): `buck2 build -M none //src/... > /tmp/b6.log 2>&1; grep -c "BUILD FAILED" /tmp/b6.log` (0), then `buck2 test //src/... --unstable-allow-all-tests-on-re > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log` — PASS.
+- [x] **Step 4:** prek; commit `refactor(worker)!: delete the pool-owning transform service — transforms run on the zero-pool worker`
 
 ### Task 7: Register close + capability docs
 

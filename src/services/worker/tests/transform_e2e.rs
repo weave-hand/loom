@@ -409,6 +409,101 @@ async fn empty_input_counts_zero() {
     );
 }
 
+/// Chaining: a second transform reads the FIRST transform's output. Landed inputs
+/// carry warehouse-relative file paths, but a transform's own output is committed
+/// with ABSOLUTE `file://` URIs (`absolute_data_files`) — so registering `main.dst`
+/// as the second job's input pins the wire read of an absolute-path live set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transform_chains_read_prior_output() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    let src = tref("main", "src");
+    let (schema, batches) = ipc_body(&[1, 2, 3]);
+    land(
+        &pool,
+        &catalog,
+        &src,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&src),
+    )
+    .await
+    .expect("land");
+
+    // First hop: src -> dst (the transform commits dst's files as absolute URIs).
+    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let dst = tref("main", "dst");
+    handle_transform(
+        &ctx,
+        make_transform_job(
+            std::slice::from_ref(&src),
+            &dst,
+            "SELECT id FROM src WHERE id >= 2",
+            OutputMode::Append,
+        ),
+    )
+    .await
+    .expect("first transform");
+
+    // Premise check: the chained input's live files really are absolute URIs.
+    let ice = IcebergCatalog::new(pool);
+    let snap1 = ice.current_snapshot(&dst).await.expect("dst snapshot");
+    let dst_files = ice
+        .files_with_stats(&dst, snap1.id)
+        .await
+        .expect("dst files");
+    assert!(
+        !dst_files.is_empty() && dst_files.iter().all(|f| f.path.contains("://")),
+        "first transform's output files are absolute URIs, got {:?}",
+        dst_files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+    );
+
+    // Second hop: dst -> dst2, reading the prior output over the wire.
+    let dst2 = tref("main", "dst2");
+    handle_transform(
+        &ctx,
+        make_transform_job(
+            std::slice::from_ref(&dst),
+            &dst2,
+            "SELECT * FROM dst",
+            OutputMode::Append,
+        ),
+    )
+    .await
+    .expect("chained transform");
+
+    let snap2 = ice.current_snapshot(&dst2).await.expect("dst2 snapshot");
+    let ids = read_i64s(&ctx.flight, &ice, &dst2, snap2.id).await;
+    assert_eq!(
+        ids,
+        HashSet::from([2, 3]),
+        "the chained transform re-read the prior transform's output"
+    );
+}
+
 /// `output_mode: overwrite` replaces the output's live contents (the live set serves
 /// only the new result) while the pre-overwrite snapshot's file list is unchanged
 /// (time travel).

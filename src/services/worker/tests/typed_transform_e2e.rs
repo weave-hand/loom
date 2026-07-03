@@ -255,9 +255,14 @@ async fn typed_transform_commits_with_type_named_lineage() {
         .await
         .expect("dequeue")
         .expect("a queued typed-transform job");
-    assert_eq!(job.kind, TYPED_TRANSFORM_JOB_KIND, "kind survives the queue");
+    assert_eq!(
+        job.kind, TYPED_TRANSFORM_JOB_KIND,
+        "kind survives the queue"
+    );
 
-    handle_typed_transform(&ctx, job).await.expect("typed transform");
+    handle_typed_transform(&ctx, job)
+        .await
+        .expect("typed transform");
 
     // Rows land in the OUTPUT TYPE's backing table, readable over Flight.
     let ice = IcebergCatalog::new(pool.clone());
