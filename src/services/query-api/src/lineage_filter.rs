@@ -218,6 +218,9 @@ impl<'a> LineageVisibility<'a> {
             let outputs_len = ev.outputs.len();
             ev.inputs = self.readable_only(subject, ev.inputs).await?;
             ev.outputs = self.readable_only(subject, ev.outputs).await?;
+            // A length shrink is exactly "a ref was denied" because `readable_only`
+            // filters without deduping (cardinality per ref is preserved). If it ever
+            // deduped, the gate would only over-null (fail-safe), never leak.
             if ev.inputs.len() != inputs_len || ev.outputs.len() != outputs_len {
                 // Some ref was denied ⇒ the payload may name it in free-form text. Gate.
                 ev.payload = serde_json::Value::Null;
