@@ -162,7 +162,7 @@ direct-PG job handlers** are added.
   timestamps, dates, decimals, and small/unsigned ints abandon the job.
 - `#fut-scheduled-jobs` — no cron-like scheduled transforms; jobs are
   enqueue-driven only.
-- `#fut-transform-wire-migration` — migrate transform jobs onto the zero-pool
+- `#road-transform-wire-migration` — migrate transform jobs onto the zero-pool
   worker (inputs over Flight, commit via an `EngineControl::CommitTransform`
   RPC), retiring the last pool-owning worker.
 - `#fut-transform-backoff-unify` — the transform handler keeps its own retry

@@ -220,7 +220,7 @@ definitions without a restart (#270).
   `BindViolation`/`Violation` enums into core.
 - `#fut-clippy-promote-pedantic` — promote the allowlisted cheap-mechanical
   pedantic lints to enforced.
-- `#fut-tx-trait-segregation` — split `Tx`/`TableTx` and decide `Auth`'s place
+- `#road-tx-trait-segregation` — split `Tx`/`TableTx` and decide `Auth`'s place
   on the `ControlPlane` facade.
 - `#fut-service-runtime-error-idiom` — hoist ingest's `ApiError` idiom into
   `service_runtime` for all governance-fronted services.

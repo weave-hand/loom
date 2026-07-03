@@ -279,14 +279,14 @@ connection — supply the same values as the server process (see *Known gaps*,
 | --- | --- | --- | --- |
 | `LOOM_DATA_PATH` | yes | — | Root for Parquet/Iceberg data **and** the embedded-Postgres cache (`<path>/cache/pg-<version>/`). |
 | `LOOM_ENGINE_SOCKET` | yes | — | Path to the Unix-domain socket the engine listens on and the other two services connect to. |
-| `LOOM_BIND_ADDR` | yes | — | Required by config parsing but **unused by `loom`** (the composite binds the two dedicated addrs below); set any value. Tracked for removal — see *Known gaps* (`fut-embedded-pg-db-vars-optional`). |
+| `LOOM_BIND_ADDR` | yes | — | Required by config parsing but **unused by `loom`** (the composite binds the two dedicated addrs below); set any value. Tracked for removal — see *Known gaps* (`#iss-embedded-config-requires-pg-bin-dir`). |
 | `LOOM_PG_MODE` | no | `external` | Set to `embedded` to start the bundled Postgres automatically. |
 | `LOOM_QUERY_API_BIND_ADDR` | no | `0.0.0.0:8080` | TCP address for the query-api HTTP listener. |
 | `LOOM_INGEST_BIND_ADDR` | no | `0.0.0.0:8081` | TCP address for the ingest HTTP listener. |
 | `LOOM_FLIGHT_BIND_ADDR` | no | — | If set, also exposes the engine's Arrow Flight SQL endpoint on this address. |
 | `LOOM_PG_BIN_DIR` | no | — | Path to an external `pg_ctl`/`postgres` install. **Optional in embedded mode** — the binary self-extracts its baked-in Postgres distribution to `<LOOM_DATA_PATH>/cache/pg-<version>/` and wires it automatically. |
 | `LOOM_MIGRATE` | no | — | Set to `apply` to run schema migrations and exit immediately (useful with an external/managed Postgres before starting the full process). |
-| `LOOM_DB_HOST`, `LOOM_DB_PORT`, `LOOM_DB_USER`, `LOOM_DB_PASSWORD`, `LOOM_DB_NAME` | yes | — | Control-plane database connection vars. In **embedded** mode `LOOM_DB_NAME` names the database created inside the bundled cluster; the connection uses the embedded socket at `<LOOM_DATA_PATH>/pgrun` as the `postgres` superuser, so `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD` are **required by config parsing but ignored** (supply any placeholder). In **external** mode all five are the real connection settings. Reducing this verbosity for embedded mode is tracked — see *Known gaps* (`fut-embedded-pg-db-vars-optional`). |
+| `LOOM_DB_HOST`, `LOOM_DB_PORT`, `LOOM_DB_USER`, `LOOM_DB_PASSWORD`, `LOOM_DB_NAME` | yes | — | Control-plane database connection vars. In **embedded** mode `LOOM_DB_NAME` names the database created inside the bundled cluster; the connection uses the embedded socket at `<LOOM_DATA_PATH>/pgrun` as the `postgres` superuser, so `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD` are **required by config parsing but ignored** (supply any placeholder). In **external** mode all five are the real connection settings. Reducing this verbosity for embedded mode is tracked — see *Known gaps* (`#iss-embedded-config-requires-pg-bin-dir`). |
 | `LOOM_WAREHOUSE_URI` | no | — | Object-store warehouse URI (e.g. `s3://bucket/prefix` or a local `file://` path under `LOOM_DATA_PATH`). |
 
 ### Minimal quick-start
@@ -316,7 +316,7 @@ values above are required by config parsing but not used to connect (the
 composite binds the two dedicated HTTP addrs and talks to the bundled Postgres
 over its Unix socket). Trimming this required-but-ignored set for the embedded
 single-binary path is deferred follow-up work
-(`fut-embedded-pg-db-vars-optional`).
+(`#iss-embedded-config-requires-pg-bin-dir`).
 
 ### Using an external Postgres
 
@@ -343,12 +343,11 @@ full context):
 - `#iss-embedded-pg-libxml2` — the self-extracted PG lacks `libxml2.so.2`, so
   a fresh embedded boot fails on hosts without it (`tools/dev-up.sh` shims a
   symlink as a workaround; the self-extract path is not CI-covered).
-- `#iss-embedded-config-requires-pg-bin-dir` — client-only invocations (e.g.
-  `loom create-admin`) still require `LOOM_PG_BIN_DIR`/
-  `LOOM_PG_LD_LIBRARY_PATH` in embedded mode despite never spawning Postgres.
-- `#fut-embedded-pg-db-vars-optional` — embedded mode still requires
-  placeholder `LOOM_BIND_ADDR` + `LOOM_DB_HOST/PORT/USER/PASSWORD` values that
-  config parsing demands but the composite ignores.
+- `#iss-embedded-config-requires-pg-bin-dir` — embedded-mode config hygiene:
+  client-only invocations (e.g. `loom create-admin`) still require
+  `LOOM_PG_BIN_DIR`/`LOOM_PG_LD_LIBRARY_PATH` despite never spawning Postgres,
+  and embedded mode demands placeholder `LOOM_BIND_ADDR` + `LOOM_DB_*` values
+  that config parsing requires but the composite ignores.
 - `#fut-embedded-pg-cache-gc` — stale `pg-<version>/` extract caches are never
   swept after a version-pin bump (bounded disk leak).
 - `#fut-embedded-postgres-pg-upgrade` — no `pg_upgrade` story when a PG major
