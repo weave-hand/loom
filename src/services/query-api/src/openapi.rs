@@ -121,10 +121,16 @@ pub struct OntologyTypesResponse {
 pub struct ApiDoc;
 
 /// Build the static OpenAPI document. Returns a value (not a constant) so the live document
-/// (`live_openapi`) can merge ontology-derived operations through this same seam.
+/// (`live_openapi`) can merge ontology-derived operations through this same seam. The
+/// service's own paths are merged with the `service_runtime` fragments for the runtime
+/// routes this service mounts (`serve.rs`): auth, service-account, and admin.
 #[must_use]
 pub fn build_openapi() -> utoipa::openapi::OpenApi {
-    ApiDoc::openapi()
+    let mut doc = ApiDoc::openapi();
+    doc.merge(service_runtime::auth_openapi());
+    doc.merge(service_runtime::service_account_openapi());
+    doc.merge(service_runtime::admin_openapi());
+    doc
 }
 
 /// Bound on `list_types`/`list_actions` page draining — a defensive cap so a misbehaving

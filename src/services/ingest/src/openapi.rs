@@ -113,8 +113,13 @@ impl From<&Violation> for WireViolation {
 )]
 pub struct ApiDoc;
 
-/// Build the static OpenAPI document (a value — the slice-2 ontology hook).
+/// Build the static OpenAPI document (a value — the slice-2 ontology hook). The service's
+/// own paths are merged with the `service_runtime` fragments for the runtime routes this
+/// service mounts (`serve.rs`): auth and service-account — ingest mounts no admin router.
 #[must_use]
 pub fn build_openapi() -> utoipa::openapi::OpenApi {
-    ApiDoc::openapi()
+    let mut doc = ApiDoc::openapi();
+    doc.merge(service_runtime::auth_openapi());
+    doc.merge(service_runtime::service_account_openapi());
+    doc
 }

@@ -409,14 +409,14 @@ omitted: `403` on the five admin-gated service-account ops (`ensure_admin`) and
 **Interfaces:**
 - Consumes: Task 3's three fragment fns; utoipa's `OpenApi::merge(&mut self, other: OpenApi)`.
 
-- [ ] **Step 1: Extend both `expected()` sets (failing).** query-api's `expected()` (`tests/openapi.rs:9–27`) gains all 17 runtime routes (auth 3 + service-accounts 5 + admin 9); ingest's (`tests/openapi.rs:6–15`) gains the 8 non-admin routes.
+- [x] **Step 1: Extend both `expected()` sets (failing).** query-api's `expected()` (`tests/openapi.rs:9–27`) gains all 17 runtime routes (auth 3 + service-accounts 5 + admin 9); ingest's (`tests/openapi.rs:6–15`) gains the 8 non-admin routes.
 
-- [ ] **Step 2: Run to verify failure.**
+- [x] **Step 2: Run to verify failure.**
 
 Run: `buck2 test //src/services/query-api:openapi //src/services/ingest:openapi --unstable-allow-all-tests-on-re > /tmp/t4.log 2>&1; grep -E "FAIL|Tests finished" /tmp/t4.log`
 Expected: FAIL (documented ≠ expected).
 
-- [ ] **Step 3: Merge.** query-api `openapi.rs`:
+- [x] **Step 3: Merge.** query-api `openapi.rs`:
 ```rust
 pub fn build_openapi() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
@@ -428,9 +428,9 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
 ```
 ingest's `build_openapi` identically minus `admin_openapi`. Update each fn's doc comment (the merged doc now covers the runtime routes the service mounts).
 
-- [ ] **Step 4: Run to green** (same command as Step 2). Expected: PASS. Also run the doc-serving integration targets: `buck2 test //src/services/runtime:openapi //src/services/query-api:openapi-gen --unstable-allow-all-tests-on-re`.
+- [x] **Step 4: Run to green** (same command as Step 2). Expected: PASS. Also run the doc-serving integration targets: `buck2 test //src/services/runtime:openapi //src/services/query-api:openapi-gen --unstable-allow-all-tests-on-re`.
 
-- [ ] **Step 5: prek, commit** — `feat(openapi): merge runtime auth/admin fragments into service documents`.
+- [x] **Step 5: prek, commit** — `feat(openapi): merge runtime auth/admin fragments into service documents`.
 
 ---
 
