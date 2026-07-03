@@ -1,7 +1,7 @@
 //! build_object_batch: a one-row Arrow batch + schema + ColumnSpec list from an
 //! aligned (columns, values, logical_types) triple. Pure logic (no DB).
 
-use arrow::array::{Array, Int64Array, StringArray};
+use arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use query_api::serving::{SqlValue, build_object_batch};
 
 #[test]
@@ -65,6 +65,26 @@ fn rejects_value_type_mismatch() {
     )
     .unwrap_err();
     assert!(format!("{err}").contains("does not match"), "got {err}");
+}
+
+#[test]
+fn widens_int_into_double_column() {
+    // An integer value into a Double column is valid (numeric widening), matching the
+    // type-checker's Long/Integer -> Double rule; the evaluator emits `SqlValue::Int` for
+    // all-integer computed expressions even when the target column is Double.
+    let (_schema, batch, _specs) = build_object_batch(
+        &["total".to_string()],
+        &[SqlValue::Int(5)],
+        &["Double".to_string()],
+    )
+    .expect("an integer value widens into a Double column");
+
+    let total = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    assert_eq!(total.value(0), 5.0);
 }
 
 #[test]

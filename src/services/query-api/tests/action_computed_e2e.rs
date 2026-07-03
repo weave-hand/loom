@@ -238,6 +238,57 @@ async fn arithmetic_expression_writes_product() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn all_integer_expression_widens_into_double_column() {
+    let fx = PgFixture::shared();
+    let GadgetWriter {
+        cp,
+        pool,
+        gadget,
+        subj,
+        engine,
+        role: _,
+        _eg,
+        warehouse,
+    } = setup_gadget_writer(fx).await;
+
+    // `qty + 1` is an all-integer expression (evaluates to `SqlValue::Int`), assigned into the
+    // Double `total` column. The type-checker allows the widening; this pins that the write
+    // path (`one_cell`) also accepts it instead of 500ing on a Double/Int mismatch.
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("create".into()),
+            target: gadget,
+            parameters: vec![
+                param("id", "Long", true, None),
+                param("qty", "Long", false, None),
+            ],
+            kind: ActionKind::Insert,
+            assignments: vec![Assignment::expr("total", "qty + 1")],
+        })
+        .await
+        .unwrap();
+
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+    run_action(
+        "create",
+        json!({"id": "1", "qty": "4"}).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("an all-integer computed value widens into a Double column");
+
+    let got = read_gadgets(&cp, &pool, &subj).await;
+    assert_eq!(got["objects"][0]["total"], json!(5.0));
+    drop(warehouse);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn conditional_and_string_expressions() {
     let fx = PgFixture::shared();
     let GadgetWriter {

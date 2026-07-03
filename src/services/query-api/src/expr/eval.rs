@@ -238,7 +238,7 @@ fn eval_cast(v: &SqlValue, target: BaseType) -> Result<SqlValue, EvalError> {
         return Ok(SqlValue::Null);
     }
     match target {
-        BaseType::Integer | BaseType::Long => match v {
+        BaseType::Long => match v {
             SqlValue::Int(i) => Ok(SqlValue::Int(*i)),
             #[expect(
                 clippy::cast_possible_truncation,
@@ -255,6 +255,28 @@ fn eval_cast(v: &SqlValue, target: BaseType) -> Result<SqlValue, EvalError> {
                 .trim()
                 .parse::<i64>()
                 .map(SqlValue::Int)
+                .map_err(|e| EvalError::Cast(format!("`{s}` as integer: {e}"))),
+            _ => Err(EvalError::Cast("value not castable to integer".into())),
+        },
+        BaseType::Integer => match v {
+            SqlValue::Int(i) => i32::try_from(*i)
+                .map(|_| SqlValue::Int(*i))
+                .map_err(|e| EvalError::Cast(format!("{i} out of i32 range: {e}"))),
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "explicit cast(x as integer) truncates toward zero by contract"
+            )]
+            SqlValue::Double(d) => {
+                if d.is_finite() && *d >= f64::from(i32::MIN) && *d <= f64::from(i32::MAX) {
+                    Ok(SqlValue::Int(*d as i64))
+                } else {
+                    Err(EvalError::Cast(format!("{d} out of i32 range")))
+                }
+            }
+            SqlValue::Text(s) => s
+                .trim()
+                .parse::<i32>()
+                .map(|n| SqlValue::Int(i64::from(n)))
                 .map_err(|e| EvalError::Cast(format!("`{s}` as integer: {e}"))),
             _ => Err(EvalError::Cast("value not castable to integer".into())),
         },

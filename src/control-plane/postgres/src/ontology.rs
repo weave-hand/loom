@@ -385,8 +385,9 @@ impl Ontology for PgControlPlane {
                     source: match (r.value, r.expr) {
                         (_, Some(e)) => AssignmentSource::Expr(e),
                         (Some(v), None) => AssignmentSource::Const(v),
-                        // The CHECK constraint guarantees one is set; a NULL/NULL row is a
-                        // corrupt catalog — fail loud rather than fabricate a value.
+                        // The CHECK constraint (0027) guarantees exactly one of value/expr is
+                        // set, so this arm is unreachable; map defensively to a Null constant to
+                        // keep the mapping total without panicking.
                         (None, None) => AssignmentSource::Const(serde_json::Value::Null),
                     },
                 })

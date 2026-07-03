@@ -38,6 +38,7 @@ fn env() -> Env {
             ("unitPrice".into(), SqlValue::Double(2.5)),
             ("first".into(), SqlValue::Text("ada".into())),
             ("missing".into(), SqlValue::Null),
+            ("big".into(), SqlValue::Int(5_000_000_000)),
         ]),
         props: HashMap::from([("total".into(), SqlValue::Double(10.0))]),
     }
@@ -94,6 +95,20 @@ fn null_propagates_and_coalesce() {
     assert_eq!(
         ev("coalesce(missing, \"fallback\")", &env()).unwrap(),
         SqlValue::Text("fallback".into())
+    );
+}
+
+#[test]
+fn cast_to_integer_range_checks_to_i32() {
+    // Out of i32 range -> a Cast fault, not a silent truncation.
+    assert!(matches!(
+        ev("cast(big as integer)", &env()),
+        Err(EvalError::Cast(_))
+    ));
+    // In range -> succeeds as an Int.
+    assert_eq!(
+        ev("cast(qty as integer)", &env()).unwrap(),
+        SqlValue::Int(4)
     );
 }
 
