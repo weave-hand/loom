@@ -111,20 +111,75 @@ fn request_now() -> time::PrimitiveDateTime {
     time::PrimitiveDateTime::new(n.date(), n.time())
 }
 
-/// Validate that `action`'s parameters conform to `target`'s properties. Dispatches on
-/// `action.kind`: Insert enforces full required-property coverage; Update/Delete enforce
-/// identity-based mutate rules. Pure; collects ALL violations into one message so an operator
-/// sees every problem at once. `Ok(())` if conformant, else `ActionError::Misconfigured`.
+/// The cross-step binding environment: each earlier bound step's `bind` name mapped to the set
+/// of property names on that step's target, used to validate a `StepRef { bind, prop }`.
+type BoundBinds = std::collections::BTreeMap<String, std::collections::HashSet<String>>;
+
+/// Validate that a single-step `action`'s parameters conform to `target`'s properties, against an
+/// EMPTY cross-step binding environment — the single-step convenience entry (checks only the
+/// first step). Dispatches on the step's kind: Insert enforces full required-property coverage;
+/// Update/Delete enforce identity-based mutate rules. Multi-step actions are validated via
+/// [`check_conformance_steps`], which resolves every step's target and threads the growing bind
+/// environment. Pure; collects ALL violations into one message. `Ok(())` if conformant, else
+/// `ActionError::Misconfigured`.
 pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
-    use control_plane_core::ActionKind;
     let step = action
         .steps
         .first()
         .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
+    let bound_binds = BoundBinds::new();
+    check_step(step, target, &bound_binds, &action.name.0)
+}
+
+/// Validate every step of `action` against its resolved `target` (aligned by index to
+/// `action.steps`), threading a growing set of `bind -> that step's target property-set`. Each
+/// step runs the single-step conformance checks against its OWN target; a `StepRef { bind, prop }`
+/// assignment additionally requires `bind` to name a strictly-earlier bound step and `prop` to be
+/// a real property of that step's target. A step's own `bind` is added to the environment only
+/// AFTER its checks, so a self-reference is rejected. Pure. `Ok(())` if every step conforms, else
+/// the first non-conforming step's `ActionError::Misconfigured`.
+pub fn check_conformance_steps(
+    action: &ActionDef,
+    targets: &[ObjectType],
+) -> Result<(), ActionError> {
+    if action.steps.len() != targets.len() {
+        return Err(ActionError::Misconfigured(format!(
+            "action `{}` has {} steps but {} resolved targets",
+            action.name.0,
+            action.steps.len(),
+            targets.len()
+        )));
+    }
+    let mut bound_binds = BoundBinds::new();
+    for (step, target) in action.steps.iter().zip(targets) {
+        check_step(step, target, &bound_binds, &action.name.0)?;
+        if let Some(b) = &step.bind {
+            bound_binds.insert(
+                b.clone(),
+                target.properties.iter().map(|p| p.name.clone()).collect(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Dispatch one step's conformance on its `kind` against `target`, with the cross-step binding
+/// environment `bound_binds` (bind -> that step's target property-set) available for `StepRef`
+/// validation. `action_name` is threaded only for the violation message.
+fn check_step(
+    step: &ActionStep,
+    target: &ObjectType,
+    bound_binds: &BoundBinds,
+    action_name: &str,
+) -> Result<(), ActionError> {
     match step.kind {
-        ActionKind::Insert => check_insert_conformance(action, target),
-        ActionKind::Update => check_mutate_conformance(action, target, true),
-        ActionKind::Delete => check_mutate_conformance(action, target, false),
+        ActionKind::Insert => check_insert_conformance(step, target, bound_binds, action_name),
+        ActionKind::Update => {
+            check_mutate_conformance(step, target, true, bound_binds, action_name)
+        }
+        ActionKind::Delete => {
+            check_mutate_conformance(step, target, false, bound_binds, action_name)
+        }
     }
 }
 
@@ -132,15 +187,11 @@ pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), 
 /// property of a compatible (same-BaseType) logical type. Violations are appended to
 /// `violations`.
 fn check_param_property_types(
-    action: &ActionDef,
+    step: &ActionStep,
     target: &ObjectType,
     violations: &mut Vec<String>,
 ) {
     let target_name = &target.name.0;
-    let Some(step) = action.steps.first() else {
-        violations.push("action has no steps".into());
-        return;
-    };
     for p in &step.parameters {
         let bound = p.binds_property();
         match target.properties.iter().find(|prop| prop.name == bound) {
@@ -251,16 +302,13 @@ fn check_expr_assignment(
 /// params, a param and an assignment, or two assignments. Violations are appended to
 /// `violations`.
 fn check_assignments_and_binds(
-    action: &ActionDef,
+    step: &ActionStep,
     target: &ObjectType,
+    bound_binds: &BoundBinds,
     violations: &mut Vec<String>,
 ) {
     let target_name = &target.name.0;
-    let Some(step) = action.steps.first() else {
-        violations.push("action has no steps".into());
-        return;
-    };
-    let mut bound: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let dup = |prop: &str| {
         format!(
             "property `{prop}` of type `{target_name}` is written by more than one parameter/constant"
@@ -268,7 +316,7 @@ fn check_assignments_and_binds(
     };
     for p in &step.parameters {
         let prop = p.binds_property();
-        if !bound.insert(prop) {
+        if !written.insert(prop) {
             violations.push(dup(prop));
         }
     }
@@ -304,9 +352,23 @@ fn check_assignments_and_binds(
                 control_plane_core::AssignmentSource::Expr(src) => {
                     check_expr_assignment(src, prop, &env, target_name, &a.property, violations);
                 }
+                control_plane_core::AssignmentSource::StepRef {
+                    bind,
+                    prop: ref_prop,
+                } => match bound_binds.get(bind) {
+                    None => violations.push(format!(
+                        "assignment for property `{}` references step `{bind}`, which is not a strictly-earlier bound step",
+                        a.property
+                    )),
+                    Some(props) if !props.contains(ref_prop) => violations.push(format!(
+                        "assignment for property `{}` references property `{ref_prop}` of step `{bind}`, which is not a property of that step's target",
+                        a.property
+                    )),
+                    Some(_) => {}
+                },
             },
         }
-        if !bound.insert(&a.property) {
+        if !written.insert(&a.property) {
             violations.push(dup(&a.property));
         }
         // This property is now resolved for any later `@ref`.
@@ -317,16 +379,17 @@ fn check_assignments_and_binds(
 /// INSERT conformance: rules 1 & 2 (param/constant name+type), rule 2b/3 (constants +
 /// no double-bind), plus rule 4: every required property is covered by exactly one of
 /// {a required param binding it, a constant assignment}.
-fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), ActionError> {
+fn check_insert_conformance(
+    step: &ActionStep,
+    target: &ObjectType,
+    bound_binds: &BoundBinds,
+    action_name: &str,
+) -> Result<(), ActionError> {
     let target_name = &target.name.0;
     let mut violations: Vec<String> = Vec::new();
-    let step = action
-        .steps
-        .first()
-        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
 
-    check_param_property_types(action, target, &mut violations);
-    check_assignments_and_binds(action, target, &mut violations);
+    check_param_property_types(step, target, &mut violations);
+    check_assignments_and_binds(step, target, bound_binds, &mut violations);
 
     // Rule 4: every required property is covered by a required param binding it, or a constant.
     for prop in &target.properties {
@@ -362,8 +425,7 @@ fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(
         Ok(())
     } else {
         Err(ActionError::Misconfigured(format!(
-            "action `{}` does not conform to type `{target_name}`: {}",
-            action.name.0,
+            "action `{action_name}` does not conform to type `{target_name}`: {}",
             violations.join("; ")
         )))
     }
@@ -374,19 +436,17 @@ fn check_insert_conformance(action: &ActionDef, target: &ObjectType) -> Result<(
 /// DELETE takes ONLY the identity parameter (no extras). UPDATE relaxes required-property
 /// coverage (PATCH semantics) — only the supplied params are validated.
 fn check_mutate_conformance(
-    action: &ActionDef,
+    step: &ActionStep,
     target: &ObjectType,
     is_update: bool,
+    bound_binds: &BoundBinds,
+    action_name: &str,
 ) -> Result<(), ActionError> {
     let target_name = &target.name.0;
     let mut violations: Vec<String> = Vec::new();
-    let step = action
-        .steps
-        .first()
-        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
 
-    check_param_property_types(action, target, &mut violations);
-    check_assignments_and_binds(action, target, &mut violations);
+    check_param_property_types(step, target, &mut violations);
+    check_assignments_and_binds(step, target, bound_binds, &mut violations);
 
     match &target.identity {
         None => violations.push(format!(
@@ -428,8 +488,7 @@ fn check_mutate_conformance(
         Ok(())
     } else {
         Err(ActionError::Misconfigured(format!(
-            "action `{}` does not conform to type `{target_name}`: {}",
-            action.name.0,
+            "action `{action_name}` does not conform to type `{target_name}`: {}",
             violations.join("; ")
         )))
     }
@@ -457,16 +516,23 @@ pub async fn run_action(
             other => ActionError::ControlPlane(other),
         })?;
 
-    // Single-step semantics: the sole step carries target/kind. Task 3/5 iterate every step.
+    // 2. Resolve EVERY step's target type up front (for their tables + property logical types,
+    //    and so cross-step conformance can see each step's target). A missing target here is a
+    //    broken ActionDef (internal inconsistency), not a client error — propagate as a
+    //    ControlPlane fault (-> 500), not a 404. The sole/first step still drives the coarse gate
+    //    and single-step execution below (Task 5 iterates every step for execution).
+    let mut targets: Vec<ObjectType> = Vec::with_capacity(action.steps.len());
+    for step in &action.steps {
+        targets.push(deps.cp.ontology().get_type(&step.target).await?);
+    }
     let step = action
         .steps
         .first()
         .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
-
-    // 2. Resolve the target type (for its table + property logical types). A missing
-    //    target here is a broken ActionDef (internal inconsistency), not a client error —
-    //    propagate as a ControlPlane fault (-> 500), not a 404.
-    let target = deps.cp.ontology().get_type(&step.target).await?;
+    let target = targets
+        .first()
+        .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?
+        .clone();
 
     // 3. Govern: deny-by-default Write on the target type. First live use of Action::Write.
     let policy_target = PolicyTarget::Type(step.target.clone());
@@ -480,11 +546,12 @@ pub async fn run_action(
         return Err(ActionError::Forbidden);
     }
 
-    // 3b. Conformance: the action's parameters must mirror the target type's properties (names,
-    //     compatible logical types, required-property/identity coverage). A misconfigured ActionDef
-    //     is surfaced here as a clear error instead of an opaque write-time fault. Runs after the
-    //     Write gate (no definition-validity leak to unauthorized callers) and before any write.
-    check_conformance(&action, &target)?;
+    // 3b. Conformance: each step's parameters/assignments must mirror ITS target type's properties
+    //     (names, compatible logical types, required-property/identity coverage), and every
+    //     `StepRef` must reference a strictly-earlier bound step's real property. A misconfigured
+    //     ActionDef is surfaced here as a clear error instead of an opaque write-time fault. Runs
+    //     after the Write gate (no definition-validity leak to unauthorized callers), before any write.
+    check_conformance_steps(&action, &targets)?;
 
     // 4. Dispatch on the mutation kind. The coarse Write gate + conformance above are shared;
     //    the fine-grained write policy and the actual write differ per kind.
@@ -591,9 +658,12 @@ async fn run_insert(
     let policy_target = PolicyTarget::Type(step.target.clone());
 
     // 4. Resolve the write row: parse+validate the typed params, remap each to its bound
-    //    property, and append the action's constant assignments (property-keyed pairs).
+    //    property, and append the action's constant assignments (property-keyed pairs). The
+    //    single-step path has no prior-step bindings, so the step env is empty (Task 5 populates
+    //    it across steps).
     let now = request_now();
-    let pairs = crate::params::resolve_action_row(action, target, body, now)?;
+    let step_env = crate::params::StepEnv::new();
+    let pairs = crate::params::resolve_action_row(action, target, body, now, &step_env)?;
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
     let values: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
 
@@ -878,7 +948,9 @@ async fn run_mutate(
         ActionError::Misconfigured(format!("type `{}` has no declared identity", target.name.0))
     })?;
     let now = request_now();
-    let pairs = crate::params::resolve_action_row(action, target, body, now)?;
+    // Single-step mutate: no prior-step bindings (Task 5 populates the env across steps).
+    let step_env = crate::params::StepEnv::new();
+    let pairs = crate::params::resolve_action_row(action, target, body, now, &step_env)?;
     let id_value = pairs
         .iter()
         .find(|(c, _)| c == &idprop)

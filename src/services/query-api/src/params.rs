@@ -3,10 +3,18 @@
 //! string, Double as a number, Boolean as a bool, String as a string, Date/Timestamp as
 //! ISO strings. Pure logic, no I/O.
 
+use std::collections::BTreeMap;
+
 use control_plane_core::{ActionDef, JsonRepr, ObjectType, ParamDef, json_repr_of};
 use serde_json::Value;
 
 use crate::serving::SqlValue;
+
+/// The cross-step binding environment at invocation: each earlier step's `bind` name mapped to
+/// its resolved row (`property -> value`, including its identity). A `StepRef { bind, prop }`
+/// assignment reads `env[bind][prop]`. The single-step path passes an empty env; Task 5 populates
+/// it as it resolves steps in order.
+pub type StepEnv = BTreeMap<String, BTreeMap<String, SqlValue>>;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ParamError {
@@ -56,10 +64,11 @@ pub fn resolve_action_row(
     target: &ObjectType,
     body: &serde_json::Map<String, Value>,
     now: time::PrimitiveDateTime,
+    step_env: &StepEnv,
 ) -> Result<Vec<(String, SqlValue)>, ParamError> {
     // Single-step semantics: read the sole step's params/assignments. A well-formed action
     // always carries ≥1 step (construction-impossible empty), reported as a loud error rather
-    // than a panic. Task 3/5 generalize this to iterate every step.
+    // than a panic. Task 5 iterates every step, populating `step_env` as it goes.
     let step = action
         .steps
         .first()
@@ -115,6 +124,16 @@ pub fn resolve_action_row(
                 crate::expr::eval(&expr, &env, now)
                     .map_err(|e| ParamError::BadValue(a.property.clone(), e.to_string()))?
             }
+            control_plane_core::AssignmentSource::StepRef { bind, prop } => step_env
+                .get(bind)
+                .and_then(|row| row.get(prop))
+                .cloned()
+                .ok_or_else(|| {
+                    ParamError::BadValue(
+                        a.property.clone(),
+                        format!("cross-step reference @{bind}.{prop} is unresolved"),
+                    )
+                })?,
         };
         prop_env.insert(a.property.clone(), value.clone());
         out.push((a.property.clone(), value));

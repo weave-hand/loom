@@ -1246,6 +1246,19 @@ rust_test(
 )
 
 rust_test(
+    name = "multi-step-conformance",
+    crate = "multi_step_conformance",
+    srcs = ["tests/multi_step_conformance.rs"],
+    crate_root = "tests/multi_step_conformance.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "action-conformance-handler",
     crate = "action_conformance_handler",
     srcs = ["tests/action_conformance_handler.rs"],

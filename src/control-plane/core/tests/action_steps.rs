@@ -59,7 +59,8 @@ fn multi_step_round_trips() {
                     required: true,
                     binds: None,
                 }],
-                assignments: vec![],
+                // A cross-step reference: LineItem.orderId = @order.id.
+                assignments: vec![Assignment::step_ref("orderId", "order", "id")],
                 bind: None,
             },
         ],

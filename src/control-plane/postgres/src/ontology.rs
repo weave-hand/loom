@@ -350,14 +350,20 @@ impl Ontology for PgControlPlane {
                 .map_err(backend)?;
             }
             for (i, a) in step.assignments.iter().enumerate() {
-                // Task 2 handles Const/Expr; the ref_bind/ref_prop columns exist for
-                // Task 3's StepRef and stay NULL here.
-                let (value, expr): (Option<serde_json::Value>, Option<String>) = match &a.source {
-                    AssignmentSource::Const(v) => (Some(v.clone()), None),
-                    AssignmentSource::Expr(s) => (None, Some(s.clone())),
+                // Exactly one source is written; the CHECK constraint (0030) enforces the
+                // mutual exclusion. StepRef writes (ref_bind, ref_prop); Const/Expr leave them NULL.
+                let (value, expr, ref_bind, ref_prop): (
+                    Option<serde_json::Value>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ) = match &a.source {
+                    AssignmentSource::Const(v) => (Some(v.clone()), None, None, None),
+                    AssignmentSource::Expr(s) => (None, Some(s.clone()), None, None),
+                    AssignmentSource::StepRef { bind, prop } => {
+                        (None, None, Some(bind.clone()), Some(prop.clone()))
+                    }
                 };
-                let ref_bind: Option<String> = None;
-                let ref_prop: Option<String> = None;
                 sqlx::query!(
                     "insert into ontology.action_assignment \
                      (action_name, step_ordinal, ordinal, property, value, expr, ref_bind, ref_prop) \
@@ -429,14 +435,17 @@ impl Ontology for PgControlPlane {
                     .into_iter()
                     .map(|r| Assignment {
                         property: r.property,
-                        // Task 2 reconstructs Const/Expr; the ref_bind/ref_prop pair (Task 3's
-                        // StepRef) is always NULL here. The CHECK constraint (0030) guarantees
-                        // exactly one source is set, so the fallthrough is unreachable in
-                        // practice; map it to a Null constant to keep the mapping total.
-                        source: match (r.value, r.expr) {
-                            (_, Some(e)) => AssignmentSource::Expr(e),
-                            (Some(v), None) => AssignmentSource::Const(v),
-                            (None, None) => AssignmentSource::Const(serde_json::Value::Null),
+                        // The CHECK constraint (0030) guarantees exactly one source is set.
+                        // Reconstruct StepRef when ref_bind is present, else Expr, else Const; the
+                        // all-NULL fallthrough is unreachable in practice — map it to a Null
+                        // constant to keep the mapping total.
+                        source: match (r.value, r.expr, r.ref_bind, r.ref_prop) {
+                            (_, _, Some(bind), Some(prop)) => {
+                                AssignmentSource::StepRef { bind, prop }
+                            }
+                            (_, Some(e), _, _) => AssignmentSource::Expr(e),
+                            (Some(v), None, _, _) => AssignmentSource::Const(v),
+                            _ => AssignmentSource::Const(serde_json::Value::Null),
                         },
                     })
                     .collect(),

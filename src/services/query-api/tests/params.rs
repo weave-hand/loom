@@ -118,7 +118,7 @@ fn invalid_iso_date_is_an_error() {
 use control_plane_core::{
     ActionDef, ActionKind, ActionName, Assignment, ObjectType, PropertyDef, TableRef, TypeName,
 };
-use query_api::params::resolve_action_row;
+use query_api::params::{StepEnv, resolve_action_row};
 
 fn gadget() -> ObjectType {
     let prop = |name: &str, ty: &str, required: bool| PropertyDef {
@@ -176,6 +176,7 @@ fn resolve_maps_binds_to_property() {
         &gadget(),
         &body(json!({ "id": "7", "displayName": "Widget A" })),
         now(),
+        &StepEnv::new(),
     )
     .unwrap();
     // keyed by PROPERTY, not param name:
@@ -193,7 +194,14 @@ fn resolve_appends_constants() {
         vec![pb("id", "Long", true, None)],
         vec![Assignment::constant("status", json!("active"))],
     );
-    let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" })), now()).unwrap();
+    let pairs = resolve_action_row(
+        &action,
+        &gadget(),
+        &body(json!({ "id": "7" })),
+        now(),
+        &StepEnv::new(),
+    )
+    .unwrap();
     assert!(
         pairs
             .iter()
@@ -210,7 +218,14 @@ fn resolve_back_compat_no_binds_no_constants() {
         ],
         vec![],
     );
-    let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" })), now()).unwrap();
+    let pairs = resolve_action_row(
+        &action,
+        &gadget(),
+        &body(json!({ "id": "7" })),
+        now(),
+        &StepEnv::new(),
+    )
+    .unwrap();
     assert_eq!(
         pairs
             .iter()
@@ -234,7 +249,8 @@ fn resolve_rejects_unknown_body_key() {
             &action,
             &gadget(),
             &body(json!({ "id": "7", "nope": "x" })),
-            now()
+            now(),
+            &StepEnv::new(),
         ),
         Err(ParamError::Unknown(_))
     ));
@@ -273,6 +289,7 @@ fn computed_expression_writes_value() {
         &gadget_with_total(),
         &body(json!({ "id": "7" })),
         now(),
+        &StepEnv::new(),
     )
     .unwrap();
     let total = pairs
@@ -296,7 +313,14 @@ fn computed_now_uses_injected_clock() {
         vec![pb("id", "Long", true, None)],
         vec![Assignment::expr("createdAt", "now()")],
     );
-    let pairs = resolve_action_row(&action, &g, &body(json!({ "id": "1" })), now()).unwrap();
+    let pairs = resolve_action_row(
+        &action,
+        &g,
+        &body(json!({ "id": "1" })),
+        now(),
+        &StepEnv::new(),
+    )
+    .unwrap();
     let created = pairs
         .iter()
         .find(|(c, _)| c == "createdAt")
@@ -315,6 +339,7 @@ fn computed_runtime_fault_is_bad_value() {
         &gadget_with_total(),
         &body(json!({ "id": "7" })),
         now(),
+        &StepEnv::new(),
     )
     .unwrap_err();
     assert!(matches!(err, ParamError::BadValue(_, _)));

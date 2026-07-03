@@ -447,6 +447,13 @@ pub struct VectorIndexDef {
 pub enum AssignmentSource {
     Const(serde_json::Value),
     Expr(String),
+    /// A reference to an earlier step's resolved property (`@<bind>.<prop>`). Define-time
+    /// validated (the `bind` must name a strictly-earlier bound step and `prop` a real property
+    /// of that step's target); resolved at invocation from the prior-step binding environment.
+    StepRef {
+        bind: String,
+        prop: String,
+    },
 }
 
 /// A declared assignment filling a property when no parameter supplies it. `Const` is the
@@ -473,6 +480,22 @@ impl Assignment {
         Assignment {
             property: property.into(),
             source: AssignmentSource::Expr(source.into()),
+        }
+    }
+
+    /// A cross-step reference assignment (`property = @<bind>.<prop>`): fill `property` from the
+    /// resolved value of `prop` on the earlier step bound as `bind`.
+    pub fn step_ref(
+        property: impl Into<String>,
+        bind: impl Into<String>,
+        prop: impl Into<String>,
+    ) -> Self {
+        Assignment {
+            property: property.into(),
+            source: AssignmentSource::StepRef {
+                bind: bind.into(),
+                prop: prop.into(),
+            },
         }
     }
 }
