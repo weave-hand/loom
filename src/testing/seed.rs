@@ -29,7 +29,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{Float32Array, Int64Array, RecordBatch};
+use arrow_array::{BooleanArray, Float32Array, Float64Array, Int64Array, RecordBatch, StringArray};
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
@@ -84,6 +85,74 @@ pub fn vec4_batches(rows: &[(i64, [f32; 4])]) -> (SchemaRef, Vec<RecordBatch>) {
     )
     .expect("batch");
     (schema, vec![batch])
+}
+
+/// A small, human-legible demo object table: 8 rows of scalar-only columns
+/// (`id: long` identity, `name`/`department: string`, `salary: double`,
+/// `active: boolean`) whose Arrow types are all in `arrow_logical_type`'s
+/// supported set, so ingest's `land_model` infers a clean object type from
+/// the schema. Backs the `tools/dev-up.sh` local seed (so a freshly booted
+/// stack has something for the object-explorer to render) and any e2e that
+/// wants a governed non-vector object to read back.
+pub fn employees_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("department", DataType::Utf8, false),
+        Field::new("salary", DataType::Float64, false),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let id = Int64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    let name = StringArray::from(vec![
+        "Ada Lovelace",
+        "Alan Turing",
+        "Grace Hopper",
+        "Katherine Johnson",
+        "Dennis Ritchie",
+        "Barbara Liskov",
+        "Edsger Dijkstra",
+        "Radia Perlman",
+    ]);
+    let department = StringArray::from(vec![
+        "Research",
+        "Research",
+        "Engineering",
+        "Mathematics",
+        "Engineering",
+        "Research",
+        "Research",
+        "Networking",
+    ]);
+    let salary = Float64Array::from(vec![
+        185_000.0, 192_000.0, 178_000.0, 171_000.0, 180_000.0, 196_000.0, 199_000.0, 175_000.0,
+    ]);
+    let active = BooleanArray::from(vec![true, true, true, false, true, true, false, true]);
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(id),
+            Arc::new(name),
+            Arc::new(department),
+            Arc::new(salary),
+            Arc::new(active),
+        ],
+    )
+    .expect("employees batch")
+}
+
+/// [`employees_batch`] encoded as an Arrow IPC **stream** (what
+/// `datafusion_io::decode_ipc`/`land_model` expect on the ingest wire). The
+/// `tools/dev-up.sh` emitter writes these bytes to a file and `curl`s them
+/// into `POST /models/employees`.
+pub fn employees_ipc() -> Vec<u8> {
+    let batch = employees_batch();
+    let mut buf = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut buf, &batch.schema()).expect("ipc writer");
+        writer.write(&batch).expect("ipc write batch");
+        writer.finish().expect("ipc finish");
+    }
+    buf
 }
 
 /// A minimal Complete lineage event targeting `table` (payload

@@ -1,3 +1,4 @@
+load("//src:loom_test.bzl", "rust_test")
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
 
 # Cross-crate vector/wire test harness (road-test-wire-harness): the shared
@@ -24,6 +25,34 @@ rust_library(
         "//third-party:tempfile",
         "//third-party:time",
         "//third-party:uuid",
+    ],
+)
+
+# Dev-only emitter: writes the `employees` demo fixture (loom_test_seed::
+# employees_ipc) to a file as an Arrow IPC stream, for `tools/dev-up.sh` to
+# `curl` into ingest's `POST /models/employees`. Not a shipped service.
+rust_binary(
+    name = "emit-employees",
+    crate = "emit_employees",
+    srcs = ["emit_employees.rs"],
+    crate_root = "emit_employees.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":seed"],
+)
+
+# Pure-logic guard: the `employees` fixture stays a valid Arrow IPC stream
+# decoding to the schema land_model infers from. No fixture — runs on RE.
+rust_test(
+    name = "employees-ipc",
+    crate = "employees_ipc",
+    srcs = ["tests/employees_ipc.rs"],
+    crate_root = "tests/employees_ipc.rs",
+    edition = "2024",
+    deps = [
+        ":seed",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
     ],
 )
 
