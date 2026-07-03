@@ -368,6 +368,6 @@ Router: `.route("/admin/links", post(define_link_route))`, `.route("/admin/links
 
 ### Final gate (orchestrator)
 
-- [ ] Metric gate: `loom-complexity diff` + `loom-duplication diff`; fix or justify new findings.
-- [ ] Whole-branch final review subagent (spec: `2026-07-03-api-management-crud-design.md`).
+- [x] Metric gate: `loom-complexity diff` + `loom-duplication diff`; fix or justify new findings.
+- [x] Whole-branch final review subagent (spec: `2026-07-03-api-management-crud-design.md`).
 - [ ] Lease-check, push, PR from `work/road-api-management-crud`, `#PRNUM` swap + push, CI via commit-status endpoint (+ BuildBuddy MCP on failure), squash-merge on green.
