@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 
 use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
+use crate::iceberg_inline::has_shadow;
 use crate::iceberg_landing::append_parquet_snapshot;
 use crate::iceberg_mirror::{live_table_id, reset_inline_trigger};
 use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
@@ -67,6 +68,21 @@ async fn flush_locked(
         Err(ControlPlaneError::NotFound(_)) => return Ok(None),
         Err(e) => return Err(e),
     };
+
+    // Shadow guard (belt and suspenders): a table carrying inline shadow deltas must
+    // never be drained by the byte-trigger flush — flushing a row-version/tombstone
+    // into Parquet would duplicate or resurrect a file row. `inline_append` already
+    // refuses to enqueue this job for a shadowed table, but a flush job can have been
+    // enqueued BEFORE the mutation landed, so this is the backstop. Mirrors the
+    // no-live-rows self-heal below: reset the trigger and report the no-op.
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    if let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await?
+        && has_shadow(&mut conn, tid).await?
+    {
+        reset_inline_trigger(&mut conn, tid).await?;
+        return Ok(None);
+    }
+    drop(conn);
 
     // Capture the live inline rows + their ids (+ the inline table id) at current.
     let Some((tid, row_ids, batch)) = ice.inline_live_batch(table, current.id).await? else {

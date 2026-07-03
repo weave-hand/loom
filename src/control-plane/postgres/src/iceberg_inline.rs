@@ -393,7 +393,13 @@ pub async fn inline_append(
     if let Some(threshold) = flush_threshold {
         let add = batch.get_array_memory_size() as i64;
         let st = bump_inline_trigger(&mut *conn, tid, add, threshold).await?;
-        if st.live_bytes >= st.effective && !st.enqueued {
+        // A table already carrying inline shadow deltas must never be enqueued for
+        // the byte-trigger flush: draining it would flush a row-version/tombstone
+        // into Parquet, duplicating or resurrecting a file row. Skip the enqueue AND
+        // the arm so the trigger stays disarmed (and can re-fire once slice-2
+        // consolidation clears the flag) rather than getting stuck "enqueued" for a
+        // job that was deliberately never queued.
+        if st.live_bytes >= st.effective && !st.enqueued && !has_shadow(&mut *conn, tid).await? {
             let job = NewJob {
                 kind: control_plane_core::FLUSH_JOB_KIND.to_string(),
                 payload: serde_json::json!({ "schema": table.schema, "name": table.name }),
