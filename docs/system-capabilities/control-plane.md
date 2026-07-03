@@ -127,7 +127,7 @@ binding from a type to its backing Iceberg table via `Ontology::resolve`.
 Actions are enumerable as well as fetchable: `Ontology::list_actions` returns
 every defined action in one name-ordered page on all three implementors
 (memory, postgres, and the engine-wire `WireOntology` via the `ListActions`
-RPC), feeding the generated per-action API docs (#PRNUM).
+RPC), feeding the generated per-action API docs (#344).
 Authoring is validated at define time rather than failing at read time (#176):
 the `bind` conformance seam validates each derived property's link, target,
 aggregation column, and result type, and a sibling `bind_link` checks that a

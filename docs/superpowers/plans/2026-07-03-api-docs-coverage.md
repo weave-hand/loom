@@ -459,4 +459,4 @@ Expected: build clean; `Tests finished` with 0 fails (includes `sqlx-cache-check
 
 - [x] Metric gate: `loom-complexity diff` + `loom-duplication diff`; report any NEW hotspot (cc>15 / cog>15 / MI<20 / SLOC>100) or NEW ≥20-line duplication pair — fix or justify in the PR body.
 - [x] Whole-branch final review subagent (spec: `2026-07-03-api-docs-coverage-design.md`).
-- [ ] Lease-check (`git ls-remote origin work/road-api-docs-coverage` tip is an ancestor), push, PR from `work/road-api-docs-coverage`, poll CI via commit-status endpoint + BuildBuddy MCP (never `gh pr checks`), squash-merge on green.
+- [x] Lease-check (`git ls-remote origin work/road-api-docs-coverage` tip is an ancestor), push, PR from `work/road-api-docs-coverage`, poll CI via commit-status endpoint + BuildBuddy MCP (never `gh pr checks`), squash-merge on green.

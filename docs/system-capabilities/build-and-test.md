@@ -207,14 +207,14 @@ typed write is documented as the *actual* `POST /actions/{name}` op per defined
 action — request schema derived from the action's parameter list via the new
 `Ontology::list_actions`, statuses following the handler (`201` for every kind;
 see `#iss-action-kind-status`) — replacing the former phantom
-`POST /objects/{Type}` (#PRNUM). The runtime's own surface is documented too:
+`POST /objects/{Type}` (#344). The runtime's own surface is documented too:
 `service_runtime` exports per-router-family OpenAPI **fragments**
 (`auth_openapi` / `service_account_openapi` / `admin_openapi`, utoipa-annotated
 handlers + `ToSchema` DTOs, secret fields never echoed outside the deliberate
 login/mint-token returns), and each service merges exactly the fragments for
 the routers it mounts — query-api all three, ingest auth + service-accounts —
 so `/auth/*` and `/admin/*` appear in each service's document without a single
-duplicated annotation (#PRNUM).
+duplicated annotation (#344).
 
 ## Known gaps
 
