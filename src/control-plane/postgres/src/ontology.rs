@@ -319,23 +319,18 @@ impl Ontology for PgControlPlane {
         .await
         .map_err(backend)?;
         for (i, a) in action.assignments.iter().enumerate() {
-            let value = match &a.source {
-                AssignmentSource::Const(v) => v.clone(),
-                // Expr persistence lands in migration 0027 (Task 5); until then, no caller
-                // produces an Expr through the postgres adapter.
-                AssignmentSource::Expr(_) => {
-                    return Err(ControlPlaneError::Validation(
-                        "expression assignments are not yet persisted".into(),
-                    ));
-                }
+            let (value, expr): (Option<serde_json::Value>, Option<String>) = match &a.source {
+                AssignmentSource::Const(v) => (Some(v.clone()), None),
+                AssignmentSource::Expr(s) => (None, Some(s.clone())),
             };
             sqlx::query!(
-                "insert into ontology.action_assignment (action_name, ordinal, property, value) \
-                 values ($1, $2, $3, $4)",
+                "insert into ontology.action_assignment (action_name, ordinal, property, value, expr) \
+                 values ($1, $2, $3, $4, $5)",
                 action.name.0,
                 i as i32,
                 a.property,
                 value,
+                expr,
             )
             .execute(&mut *tx)
             .await
@@ -363,7 +358,7 @@ impl Ontology for PgControlPlane {
         .await
         .map_err(backend)?;
         let assignment_rows = sqlx::query!(
-            "select property, value from ontology.action_assignment \
+            "select property, value, expr from ontology.action_assignment \
              where action_name = $1 order by ordinal",
             name.0,
         )
@@ -385,7 +380,16 @@ impl Ontology for PgControlPlane {
             kind: row.kind.parse()?,
             assignments: assignment_rows
                 .into_iter()
-                .map(|r| Assignment::constant(r.property, r.value))
+                .map(|r| Assignment {
+                    property: r.property,
+                    source: match (r.value, r.expr) {
+                        (_, Some(e)) => AssignmentSource::Expr(e),
+                        (Some(v), None) => AssignmentSource::Const(v),
+                        // The CHECK constraint guarantees one is set; a NULL/NULL row is a
+                        // corrupt catalog — fail loud rather than fabricate a value.
+                        (None, None) => AssignmentSource::Const(serde_json::Value::Null),
+                    },
+                })
                 .collect(),
         })
     }

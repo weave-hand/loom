@@ -1055,6 +1055,32 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "action round-trips with binds + constant assignments",
     );
 
+    // Slice 2: an expression assignment round-trips through storage (define == get), alongside
+    // a constant. (Evaluation is a query-api concern; the adapter only persists the source.)
+    let computed = ActionDef {
+        name: ActionName("computeGadget".into()),
+        target: tn("Gadget"),
+        parameters: vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        kind: ActionKind::Insert,
+        assignments: vec![
+            Assignment::constant("status", serde_json::json!("active")),
+            Assignment::expr("name", "upper(\"g\")"),
+        ],
+    };
+    o.define_action(computed.clone()).await.unwrap();
+    assert_eq!(
+        o.get_action(&ActionName("computeGadget".into()))
+            .await
+            .unwrap(),
+        computed,
+        "action round-trips with a computed (expr) assignment"
+    );
+
     // Redefining with an empty mapping clears binds + assignments (upsert replaces both).
     o.define_action(ActionDef {
         name: ActionName("createGadget".into()),
