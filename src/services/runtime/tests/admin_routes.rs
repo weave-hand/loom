@@ -270,14 +270,24 @@ async fn admin_reset_revokes_all_sessions_and_sets_new_password() {
 
     // all the victim's prior sessions are revoked
     assert!(
-        cp.resolve_session(&token_sha256(&victim_token), time::OffsetDateTime::now_utc())
-            .await
-            .unwrap()
-            .is_none()
+        cp.resolve_session(
+            &token_sha256(&victim_token),
+            time::OffsetDateTime::now_utc()
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     // the new password verifies
-    let cred = cp.find_password_credential("victim").await.unwrap().unwrap();
-    assert!(service_runtime::verify_password("reset-pw", &cred.password_phc));
+    let cred = cp
+        .find_password_credential("victim")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(service_runtime::verify_password(
+        "reset-pw",
+        &cred.password_phc
+    ));
 }
 
 #[tokio::test]
@@ -286,7 +296,11 @@ async fn admin_reset_unknown_user_is_404() {
     let admin_token = seed_admin_session(&cp, ADMIN).await;
     let (status, _) = send(
         app(cp),
-        post_json("/admin/users/ghost/password", &admin_token, r#"{"new":"x"}"#),
+        post_json(
+            "/admin/users/ghost/password",
+            &admin_token,
+            r#"{"new":"x"}"#,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);

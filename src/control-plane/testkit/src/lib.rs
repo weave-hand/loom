@@ -21,9 +21,9 @@ use control_plane_core::{
     CompareOp, ConstAssignment, ControlPlane, ControlPlaneError, DatasetRef, Decision,
     DerivedPropertyDef, Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent,
     LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType,
-    Ontology, Page,
-    PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter,
-    RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
+    Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy,
+    RoleId, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName,
+    VectorIndexDef,
 };
 use time::OffsetDateTime;
 

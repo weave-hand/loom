@@ -279,13 +279,10 @@ impl Auth for PgControlPlane {
                 .map_err(backend)?;
             }
             None => {
-                sqlx::query!(
-                    "delete from auth.session where subject_id = $1",
-                    &subject.0,
-                )
-                .execute(self.pool())
-                .await
-                .map_err(backend)?;
+                sqlx::query!("delete from auth.session where subject_id = $1", &subject.0,)
+                    .execute(self.pool())
+                    .await
+                    .map_err(backend)?;
             }
         }
         Ok(())

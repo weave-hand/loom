@@ -256,7 +256,10 @@ async fn self_service_change_over_postgres() {
     assert_eq!(res.status(), StatusCode::OK);
 
     // new password logs in, old does not
-    for (pw, want) in [("fresh", StatusCode::OK), ("orig", StatusCode::UNAUTHORIZED)] {
+    for (pw, want) in [
+        ("fresh", StatusCode::OK),
+        ("orig", StatusCode::UNAUTHORIZED),
+    ] {
         let b = json!({ "username": "al", "password": pw });
         let res = app(cp.clone(), eng.clone())
             .oneshot(

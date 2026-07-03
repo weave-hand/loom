@@ -107,8 +107,14 @@ async fn right_current_rotates_revokes_others_keeps_current() {
     );
     // new password verifies, old does not
     let cred = cp.find_password_credential("al").await.unwrap().unwrap();
-    assert!(service_runtime::verify_password("fresh", &cred.password_phc));
-    assert!(!service_runtime::verify_password("orig", &cred.password_phc));
+    assert!(service_runtime::verify_password(
+        "fresh",
+        &cred.password_phc
+    ));
+    assert!(!service_runtime::verify_password(
+        "orig",
+        &cred.password_phc
+    ));
 }
 
 #[tokio::test]

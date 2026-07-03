@@ -449,11 +449,21 @@ async fn admin_reset_over_postgres() {
 
     // victim's sessions revoked; the new password is what verifies afterward.
     assert!(
-        cp.resolve_session(&token_sha256(&victim_token), time::OffsetDateTime::now_utc())
-            .await
-            .unwrap()
-            .is_none()
+        cp.resolve_session(
+            &token_sha256(&victim_token),
+            time::OffsetDateTime::now_utc()
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
-    let cred = cp.find_password_credential("victim").await.unwrap().unwrap();
-    assert!(service_runtime::verify_password("reset-pw", &cred.password_phc));
+    let cred = cp
+        .find_password_credential("victim")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(service_runtime::verify_password(
+        "reset-pw",
+        &cred.password_phc
+    ));
 }
