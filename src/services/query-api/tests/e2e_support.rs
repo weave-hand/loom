@@ -954,6 +954,65 @@ pub async fn read_widget(
         .cloned()
 }
 
+/// The sorted set of LIVE `iceberg_mirror.data_file` paths for the table `(schema,
+/// name)` — the Parquet files a read scans. An O(change) inline-shadow UPDATE/DELETE
+/// writes only inline rows and NEVER touches `data_file`, so this set is invariant
+/// across such a mutation; a whole-table copy-on-write (the old path) would end-cap the
+/// old file and add a new one, changing it. The oracle for "no Parquet rewrite".
+///
+/// Runtime sqlx (untyped) — the `iceberg_mirror` tables are not in query-api's `.sqlx`
+/// cache, and this is test-support, not a production query path.
+pub async fn data_file_paths(pool: &sqlx::PgPool, schema: &str, name: &str) -> Vec<String> {
+    let paths: Vec<String> = sqlx::query_scalar(
+        "select f.path from iceberg_mirror.data_file f \
+         join iceberg_mirror.table t on t.table_id = f.table_id \
+         where t.table_namespace = $1 and t.table_name = $2 \
+           and t.end_snapshot is null and f.end_snapshot is null \
+         order by f.path",
+    )
+    .bind(schema)
+    .bind(name)
+    .fetch_all(pool)
+    .await
+    .expect("query live data_file paths");
+    paths
+}
+
+/// Count the LIVE inline rows for the table `(schema, name)`. Inline delta rows are
+/// never end-capped, so "live" = `end_snapshot is null`. Returns `0` when the table has
+/// no inline storage yet (a file-only object). Used to assert that a COW mutation added
+/// exactly the expected number of inline shadow rows. Runtime sqlx (dynamic
+/// `inline_<table_id>` name, spliced via `AssertSqlSafe`).
+pub async fn count_live_inline_rows(pool: &sqlx::PgPool, schema: &str, name: &str) -> i64 {
+    let tid: Option<i64> = sqlx::query_scalar(
+        "select table_id from iceberg_mirror.table \
+         where table_namespace = $1 and table_name = $2 and end_snapshot is null",
+    )
+    .bind(schema)
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .expect("resolve live table_id");
+    let Some(tid) = tid else {
+        return 0;
+    };
+    let exists: Option<String> = sqlx::query_scalar("select to_regclass($1)::text")
+        .bind(format!("iceberg_mirror.inline_{tid}"))
+        .fetch_one(pool)
+        .await
+        .expect("probe inline relation");
+    if exists.is_none() {
+        return 0;
+    }
+    let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select count(*) from iceberg_mirror.inline_{tid} where end_snapshot is null"
+    )))
+    .fetch_one(pool)
+    .await
+    .expect("count live inline rows");
+    n
+}
+
 /// Keeps the spawned engine server and its socket dir alive for the test's lifetime.
 pub struct EngineGuard {
     _sock_dir: tempfile::TempDir,

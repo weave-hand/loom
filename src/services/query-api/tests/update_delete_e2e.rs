@@ -194,9 +194,15 @@ async fn not_found() {
 // ---------------------------------------------------------------------------
 // Corrupt-PK guard: a duplicated identity (two live rows with id=1 — the insert
 // path append-writes without PK enforcement, so corrupt/landed data can carry
-// duplicates) is a corrupt invariant. The mutate locate phase must surface it
+// duplicates) is a corrupt invariant. The mutate's targeted read must surface it
 // as a Backend fault (the operator's 500) — NOT NotFound, and NOT a silent
 // pick-one mutate.
+//
+// The duplicate must be in the FILE tier (`inline_byte_limit = 0`): the O(change)
+// mutate reads through the identity-aware merge view, which deterministically
+// resolves duplicate *inline* rows to the latest version — so only duplicate live
+// *file* rows (which the merge cannot dedup — file rows synthesize a single
+// precedence 0) remain a corrupt-PK invariant the guard must catch.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -209,9 +215,10 @@ async fn duplicate_identity_is_a_backend_fault() {
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
 
+    // FILE tier: each insert lands as its own Parquet file, so two inserts of id=1
+    // leave two live file rows the merge view cannot dedup.
     let (engine, _eg) =
-        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
-            .await;
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 0, i64::MAX).await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let deps = ActionDeps {
         cp: &cp,
@@ -219,7 +226,7 @@ async fn duplicate_identity_is_a_backend_fault() {
         serving: &serving,
     };
 
-    // Seed the SAME identity twice.
+    // Seed the SAME identity twice (two file rows).
     run_action(
         "createWidget",
         json!({ "id": "1", "name": "a", "qty": "1" })
