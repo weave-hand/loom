@@ -175,6 +175,7 @@ fn resolve_maps_binds_to_property() {
         &action,
         &gadget(),
         &body(json!({ "id": "7", "displayName": "Widget A" })),
+        now(),
     )
     .unwrap();
     // keyed by PROPERTY, not param name:
@@ -192,7 +193,7 @@ fn resolve_appends_constants() {
         vec![pb("id", "Long", true, None)],
         vec![Assignment::constant("status", json!("active"))],
     );
-    let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" }))).unwrap();
+    let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" })), now()).unwrap();
     assert!(
         pairs
             .iter()
@@ -209,7 +210,7 @@ fn resolve_back_compat_no_binds_no_constants() {
         ],
         vec![],
     );
-    let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" }))).unwrap();
+    let pairs = resolve_action_row(&action, &gadget(), &body(json!({ "id": "7" })), now()).unwrap();
     assert_eq!(
         pairs
             .iter()
@@ -229,7 +230,92 @@ fn resolve_back_compat_no_binds_no_constants() {
 fn resolve_rejects_unknown_body_key() {
     let action = insert(vec![pb("id", "Long", true, None)], vec![]);
     assert!(matches!(
-        resolve_action_row(&action, &gadget(), &body(json!({ "id": "7", "nope": "x" }))),
+        resolve_action_row(
+            &action,
+            &gadget(),
+            &body(json!({ "id": "7", "nope": "x" })),
+            now()
+        ),
         Err(ParamError::Unknown(_))
     ));
+}
+
+// --- resolve_action_row: computed `Expr` assignments (slice 2) ---
+
+fn now() -> time::PrimitiveDateTime {
+    time::PrimitiveDateTime::new(
+        time::Date::from_calendar_date(2026, time::Month::July, 3).unwrap(),
+        time::Time::from_hms(9, 0, 0).unwrap(),
+    )
+}
+
+/// `gadget()` + a `total: Double` property, for computed-assignment tests.
+fn gadget_with_total() -> ObjectType {
+    let mut g = gadget();
+    g.properties.push(PropertyDef {
+        name: "total".into(),
+        ty: "Double".into(),
+        required: false,
+        constraints: control_plane_core::PropertyConstraints::default(),
+    });
+    g
+}
+
+#[test]
+fn computed_expression_writes_value() {
+    // total = id + 1 : Long(8), assignable to the Double `total` property.
+    let action = insert(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("total", "id + 1")],
+    );
+    let pairs = resolve_action_row(
+        &action,
+        &gadget_with_total(),
+        &body(json!({ "id": "7" })),
+        now(),
+    )
+    .unwrap();
+    let total = pairs
+        .iter()
+        .find(|(c, _)| c == "total")
+        .map(|(_, v)| v.clone());
+    assert_eq!(total, Some(SqlValue::Int(8)));
+}
+
+#[test]
+fn computed_now_uses_injected_clock() {
+    // createdAt = now() lands exactly the injected clock (deterministic).
+    let mut g = gadget();
+    g.properties.push(PropertyDef {
+        name: "createdAt".into(),
+        ty: "Timestamp".into(),
+        required: false,
+        constraints: control_plane_core::PropertyConstraints::default(),
+    });
+    let action = insert(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("createdAt", "now()")],
+    );
+    let pairs = resolve_action_row(&action, &g, &body(json!({ "id": "1" })), now()).unwrap();
+    let created = pairs
+        .iter()
+        .find(|(c, _)| c == "createdAt")
+        .map(|(_, v)| v.clone());
+    assert_eq!(created, Some(SqlValue::Timestamp(now())));
+}
+
+#[test]
+fn computed_runtime_fault_is_bad_value() {
+    let action = insert(
+        vec![pb("id", "Long", true, None)],
+        vec![Assignment::expr("total", "id / 0")],
+    );
+    let err = resolve_action_row(
+        &action,
+        &gadget_with_total(),
+        &body(json!({ "id": "7" })),
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, ParamError::BadValue(_, _)));
 }

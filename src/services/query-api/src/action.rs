@@ -105,6 +105,12 @@ impl WriteDenialReason {
     }
 }
 
+/// The request-time clock threaded to `resolve_action_row` for `now()` in computed assignments.
+fn request_now() -> time::PrimitiveDateTime {
+    let n = time::OffsetDateTime::now_utc();
+    time::PrimitiveDateTime::new(n.date(), n.time())
+}
+
 /// Validate that `action`'s parameters conform to `target`'s properties. Dispatches on
 /// `action.kind`: Insert enforces full required-property coverage; Update/Delete enforce
 /// identity-based mutate rules. Pure; collects ALL violations into one message so an operator
@@ -556,7 +562,8 @@ async fn run_insert(
 
     // 4. Resolve the write row: parse+validate the typed params, remap each to its bound
     //    property, and append the action's constant assignments (property-keyed pairs).
-    let pairs = crate::params::resolve_action_row(action, target, body)?;
+    let now = request_now();
+    let pairs = crate::params::resolve_action_row(action, target, body, now)?;
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
     let values: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
 
@@ -803,7 +810,8 @@ async fn run_mutate(
     let idprop = target.identity.clone().ok_or_else(|| {
         ActionError::Misconfigured(format!("type `{}` has no declared identity", target.name.0))
     })?;
-    let pairs = crate::params::resolve_action_row(action, target, body)?;
+    let now = request_now();
+    let pairs = crate::params::resolve_action_row(action, target, body, now)?;
     let id_value = pairs
         .iter()
         .find(|(c, _)| c == &idprop)
