@@ -218,14 +218,14 @@ git commit -m "test(vector-index): property-pin key-kind homogeneity and full-co
 **Files:**
 - Modify: `docs/ISSUES.md` (remove the `iss-vector-index-mixed-key-kind-corrupts-decode` entry), `docs/system-capabilities/vector-search.md` (codec section gains the enforced invariant + decode guard, PR ref added at PR time)
 
-- [ ] **Step 1: Close the register item** per `loom-docs-update`: delete the entry block; check no surviving `[[iss-vector-index-mixed-key-kind-corrupts-decode]]` links remain (rewrite any as `` `#id` `` spans — `dim_and_rows` doc and the spec name it in prose only, fine). `bash tools/docs.sh validate` → OK.
-- [ ] **Step 2: Update `docs/system-capabilities/vector-search.md`** — in the codec theme: one sentence that key-kind homogeneity is validated at build and decode requires full buffer consumption (cite `(#N)` once the PR number exists). ALSO delete the `#iss-vector-index-mixed-key-kind-corrupts-decode` bullet from its `## Known gaps` (line ~41) — `docs.sh validate` does not scan capability docs, so this dangles silently if forgotten.
-- [ ] **Step 3: Fixture backstop** — run the postgres vector suites the spec names:
+- [x] **Step 1: Close the register item** per `loom-docs-update`: delete the entry block; check no surviving `[[iss-vector-index-mixed-key-kind-corrupts-decode]]` links remain (rewrite any as `` `#id` `` spans — `dim_and_rows` doc and the spec name it in prose only, fine). `bash tools/docs.sh validate` → OK.
+- [x] **Step 2: Update `docs/system-capabilities/vector-search.md`** — in the codec theme: one sentence that key-kind homogeneity is validated at build and decode requires full buffer consumption (cite `(#N)` once the PR number exists). ALSO delete the `#iss-vector-index-mixed-key-kind-corrupts-decode` bullet from its `## Known gaps` (line ~41) — `docs.sh validate` does not scan capability docs, so this dangles silently if forgotten.
+- [x] **Step 3: Fixture backstop** — run the postgres vector suites the spec names:
 
 `buck2 test //src/control-plane/postgres:puffin-roundtrip //src/control-plane/postgres:vector-index-build //src/control-plane/postgres:vector-index-multi --unstable-allow-all-tests-on-re > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log` (adjust target names to the BUCK file; if running locally use `-j 8`).
 Expected: PASS.
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 ```bash
 git add docs/ISSUES.md docs/system-capabilities/vector-search.md
