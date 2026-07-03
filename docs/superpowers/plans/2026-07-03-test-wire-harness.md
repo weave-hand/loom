@@ -192,7 +192,7 @@ asserted behavior):
   - `async fn land_vec4(s: &VectorSeed, rows: &[(i64, [f32; 4])], limits: InlineLimits)`
 - Consumes: `PgFixture::shared()/pool_for/pg_dsn`, `iceberg_landing::{land, InlineLimits}`, `vector_index::build_vector_index`, the #304 `ObjectType::build` DSL.
 
-- [ ] **Step 1: Write the BUCK file and the failing smoke test.** Create
+- [x] **Step 1: Write the BUCK file and the failing smoke test.** Create
   `src/testing/BUCK`:
 
 ```python
@@ -305,14 +305,14 @@ fn assert_knn_checks_the_four_shared_predicates() {
 }
 ```
 
-- [ ] **Step 2: Run — expect RED** (build failure: `seed.rs` does not exist)
+- [x] **Step 2: Run — expect RED** (build failure: `seed.rs` does not exist)
 
 ```bash
 buck2 test //src/testing:seed-smoke -j 8 > /tmp/t1red.log 2>&1; \
   grep -E "error|Tests finished|FAIL" /tmp/t1red.log | head -5
 ```
 
-- [ ] **Step 3: Write the library.** Create `src/testing/seed.rs`. Every body
+- [x] **Step 3: Write the library.** Create `src/testing/seed.rs`. Every body
   below is the canonical copy from
   `src/services/engine-serving/tests/vector_search.rs` (verified byte-identical
   in the census), renamed to the spec's names:
@@ -615,7 +615,7 @@ to the actual DSL surface; the DSL's parity tests guarantee output identical
 to the old handwritten `ObjectType` literal, which is what the migrated files
 constructed.
 
-- [ ] **Step 4: Run — GREEN**
+- [x] **Step 4: Run — GREEN**
 
 ```bash
 buck2 test //src/testing:seed-smoke -j 8 > /tmp/t1.log 2>&1; \
@@ -626,7 +626,7 @@ Expected: `Fail 0` (3 tests). If `define_type` via the DSL rejects
 `vector(4)` (it must not — postgres vector tests define the same property
 type), STOP and check the DSL parity tests before proceeding.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek1.log 2>&1; grep -E "Failed" /tmp/prek1.log || echo CLEAN

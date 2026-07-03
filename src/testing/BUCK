@@ -1,0 +1,45 @@
+load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+
+# Cross-crate vector/wire test harness (road-test-wire-harness): the shared
+# home for the seed prologues previously hand-rolled per test file. `:seed`
+# stays service-free (deps only core/postgres/arrow) so control-plane tests
+# can use it without building any service crate; the engine-UDS spawn harness
+# lives in the sibling `:flight` target.
+rust_library(
+    name = "seed",
+    crate = "loom_test_seed",
+    srcs = ["seed.rs"],
+    crate_root = "seed.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "seed-smoke",
+    crate = "seed_smoke",
+    srcs = ["tests/seed_smoke.rs"],
+    crate_root = "tests/seed_smoke.rs",
+    deps = [
+        ":seed",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
