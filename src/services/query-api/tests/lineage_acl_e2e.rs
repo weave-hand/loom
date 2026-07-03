@@ -1,8 +1,9 @@
 //! End-to-end proof that `/lineage` reads are least-disclosure: cut-not-skip,
 //! per-subject flat-set diff, seed gating, pagination completeness, events
-//! redaction, external default-allow, and the scan-cap 422. Seeds `loom:type`
-//! provenance refs (each resolves to an ontology `Type`, gated by `grant_read`) via
-//! `Lineage::emit`; drives the real query-api router + auth gate + Postgres adapter.
+//! redaction, external default-allow, and downstream governed + cut. Seeds
+//! `loom:type` provenance refs (each resolves to an ontology `Type`, gated by
+//! `grant_read`) via `Lineage::emit`; drives the real query-api router + auth
+//! gate + Postgres adapter.
 
 use std::sync::Arc;
 
@@ -249,7 +250,10 @@ async fn pagination_pages_every_visible_ref_once() {
             seen.push(d["name"].as_str().unwrap().to_string());
         }
         match body["next_cursor"].as_str() {
-            Some(c) => after = Some(c.to_string()),
+            Some(c) => {
+                assert_eq!(page.len(), 2, "non-final page is full: {body}");
+                after = Some(c.to_string());
+            }
             None => break,
         }
     }
