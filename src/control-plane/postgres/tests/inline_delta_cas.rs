@@ -328,3 +328,82 @@ async fn file_only_object_tombstone_first_lifecycle() {
     .expect("tombstone existence check");
     assert!(tomb, "a live tombstone row for id=1 must exist");
 }
+
+/// Concurrent first-time provisioning of the inline tier must not race.
+///
+/// A file-only object has no `inline_<tid>` yet, so the FIRST mutation of any
+/// identity provisions it lazily via `CREATE TABLE IF NOT EXISTS`. Postgres's
+/// `IF NOT EXISTS` is NOT concurrency-safe: two sessions that both find the table
+/// absent then both create it — one aborts with `relation "inline_<tid>" already
+/// exists` / a `pg_type` unique violation, poisoning its whole transaction. Several
+/// concurrent first mutations of DISTINCT identities (distinct advisory keys → no
+/// per-identity serialization) all hit that shared first-create window. The
+/// savepoint-guarded idempotent DDL (`run_idempotent_ddl`) absorbs the lost race, so
+/// every writer commits. Without the guard, all-but-one would error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_provisioning_of_distinct_identities() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let table = table();
+
+    // Land a real Parquet file: a live mirror table exists, but NO inline storage yet
+    // (the file-only starting state, the primary copy-on-write target). `qty` nullable.
+    let seed_cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("qty".to_string(), "long".to_string(), true),
+    ];
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    writer
+        .seed_arrays(
+            &table.schema,
+            &table.name,
+            &seed_cols,
+            &[SeedCol::Long(vec![0]), SeedCol::Long(vec![0])],
+        )
+        .await;
+
+    // Fire N concurrent version deltas, each for a DISTINCT identity so they do NOT
+    // serialize on the per-identity advisory lock — they race the shared first CREATE.
+    const N: i64 = 8;
+    let cols = vec![id_spec(), qty_spec()];
+    let mut handles = Vec::new();
+    for id in 1..=N {
+        let pool = pool.clone();
+        let table = table.clone();
+        let cols = cols.clone();
+        handles.push(tokio::spawn(async move {
+            iceberg_inline::write_inline_delta(
+                &pool,
+                &table,
+                &cols,
+                "id",
+                false,
+                &full_row_batch(id, id),
+                lin(),
+                0,
+            )
+            .await
+        }));
+    }
+    for (i, h) in handles.into_iter().enumerate() {
+        h.await.expect("task join").unwrap_or_else(|e| {
+            panic!("concurrent first-provisioning writer {i} must succeed: {e:?}")
+        });
+    }
+
+    // Every distinct-identity delta committed exactly one live inline row (the table
+    // was provisioned once, and no writer aborted on the concurrent-create race).
+    let tid = tid_of(&pool).await;
+    let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select count(*) from iceberg_mirror.inline_{tid} where end_snapshot is null"
+    )))
+    .fetch_one(&pool)
+    .await
+    .expect("count live inline rows");
+    assert_eq!(
+        n, N,
+        "all {N} concurrent distinct-identity deltas committed a live row"
+    );
+}

@@ -279,25 +279,83 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
     ))
 }
 
+/// True if `e` is a Postgres "object already exists" race on concurrent DDL:
+/// `duplicate_table` (42P07), `duplicate_column` (42701), or a `unique_violation`
+/// (23505) on the system catalog when two sessions create the same relation at
+/// once. `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` are NOT
+/// concurrency-safe in Postgres — the existence check and the catalog insert are
+/// not atomic against a concurrent creator — so this is a benign lost race: the
+/// object now exists.
+fn is_duplicate_object_race(e: &sqlx::Error) -> bool {
+    e.as_database_error()
+        .and_then(|db| db.code())
+        .is_some_and(|code| matches!(code.as_ref(), "42P07" | "42701" | "23505"))
+}
+
+/// Execute one idempotent `IF NOT EXISTS` DDL statement, tolerating Postgres's
+/// concurrent-create race (see [`is_duplicate_object_race`]). The statement runs
+/// inside a SAVEPOINT, so a lost race rolls back only the savepoint — the object
+/// now exists and the caller's OUTER transaction survives (a raw duplicate error
+/// would otherwise poison the whole transaction). On the winning path the
+/// savepoint simply releases; a genuinely-different failure is restored and
+/// surfaced. AssertSqlSafe: static savepoint control + a caller-trusted DDL.
+async fn run_idempotent_ddl(conn: &mut sqlx::PgConnection, ddl: String) -> Result<()> {
+    sqlx::query(AssertSqlSafe("savepoint loom_ddl"))
+        .execute(&mut *conn)
+        .await
+        .map_err(backend)?;
+    match sqlx::query(AssertSqlSafe(ddl)).execute(&mut *conn).await {
+        Ok(_) => {
+            sqlx::query(AssertSqlSafe("release savepoint loom_ddl"))
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            Ok(())
+        }
+        // A concurrent creator won the race: undo the failed statement (the object
+        // it tried to create already exists) and continue the outer transaction.
+        Err(e) if is_duplicate_object_race(&e) => {
+            sqlx::query(AssertSqlSafe("rollback to savepoint loom_ddl"))
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            sqlx::query(AssertSqlSafe("release savepoint loom_ddl"))
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            Ok(())
+        }
+        // A real failure: restore the pre-statement state so the outer transaction
+        // is usable, then surface the error.
+        Err(e) => {
+            sqlx::query(AssertSqlSafe("rollback to savepoint loom_ddl"))
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            Err(backend(e))
+        }
+    }
+}
+
 /// Create the inline table if absent and guarantee the `loom_tombstone` column
 /// exists (pre-existing tables created before slice 1 lack it).
+///
+/// Concurrency: the first mutation of a file-only object provisions `inline_<tid>`
+/// lazily, so two writers (any identities) can race the first-time creation. Each
+/// idempotent DDL runs via [`run_idempotent_ddl`], which absorbs the Postgres
+/// concurrent-create race in a savepoint — the loser proceeds against the table the
+/// winner created, WITHOUT any table-wide lock (per-identity concurrency is intact).
 async fn ensure_inline_schema(
     conn: &mut sqlx::PgConnection,
     tid: i64,
     columns: &[ColumnSpec],
 ) -> Result<()> {
-    sqlx::query(AssertSqlSafe(inline_ddl(tid, columns)?))
-        .execute(&mut *conn)
-        .await
-        .map_err(backend)?;
+    run_idempotent_ddl(&mut *conn, inline_ddl(tid, columns)?).await?;
     let alter = format!(
         "alter table {} add column if not exists loom_tombstone boolean not null default false",
         inline_table_name(tid),
     );
-    sqlx::query(AssertSqlSafe(alter))
-        .execute(&mut *conn)
-        .await
-        .map_err(backend)?;
+    run_idempotent_ddl(&mut *conn, alter).await?;
     Ok(())
 }
 
