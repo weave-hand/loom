@@ -155,7 +155,10 @@ async fn commit_transform_appends_and_emits_lineage() {
     let ice = IcebergCatalog::new(pool.clone());
     let cur = ice.current_snapshot(&out).await.expect("current snapshot");
     assert_eq!(cur.id.0, snap, "current snapshot is the committed one");
-    let live = ice.files_with_stats(&out, cur.id).await.expect("live files");
+    let live = ice
+        .files_with_stats(&out, cur.id)
+        .await
+        .expect("live files");
     let live_paths: HashSet<String> = live.iter().map(|f| f.path.clone()).collect();
     assert_eq!(
         live_paths,
