@@ -6,26 +6,12 @@
 
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
 use control_plane_core::{ColumnSpec, LineageEvent, SnapshotId, TableRef};
 use control_plane_postgres::iceberg_landing;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use sqlx::PgPool;
 
 use crate::serving::EngineServingError;
-
-/// Decode an Arrow IPC stream body into its record batches. An empty body yields
-/// an empty vector (the truncate / delete-all signal for overwrite).
-fn decode_ipc(ipc: &[u8]) -> Result<Vec<RecordBatch>, EngineServingError> {
-    if ipc.is_empty() {
-        return Ok(Vec::new());
-    }
-    let reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(ipc), None)
-        .map_err(|e| EngineServingError::Engine(e.to_string()))?;
-    reader
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| EngineServingError::Engine(e.to_string()))
-}
 
 /// The relocated `ActionEngine` executor. Holds the same dependencies the old
 /// query-api writer held: an Iceberg `SqlCatalog`, a `PgPool`, and the inline/flush
@@ -87,7 +73,13 @@ impl IcebergActionWriter {
         ipc: &[u8],
         event: LineageEvent,
     ) -> Result<SnapshotId, EngineServingError> {
-        let batches = decode_ipc(ipc)?;
+        let batches = if ipc.is_empty() {
+            Vec::new()
+        } else {
+            datafusion_io::decode_ipc(ipc)
+                .map_err(|e| EngineServingError::Engine(e.to_string()))?
+                .1
+        };
         iceberg_landing::overwrite_parquet_snapshot(
             &self.pool,
             &self.catalog,

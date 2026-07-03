@@ -6,9 +6,6 @@
 
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::Schema;
-use arrow::ipc::reader::StreamReader;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -160,14 +157,6 @@ pub(crate) async fn compact(
         .into_response())
 }
 
-/// Decode an Arrow IPC stream into its schema and record batches.
-fn decode_ipc(body: &[u8]) -> Result<(Arc<Schema>, Vec<RecordBatch>), arrow::error::ArrowError> {
-    let reader = StreamReader::try_new(std::io::Cursor::new(body), None)?;
-    let schema = reader.schema();
-    let batches = reader.collect::<Result<Vec<_>, _>>()?;
-    Ok((schema, batches))
-}
-
 /// Parse an optional request header via `parse`: absent → `Ok(None)`, present and
 /// parseable → `Ok(Some(_))`, present but unparseable → `Err(ApiError::BadRequest(err))`.
 /// Collapses the per-header `match headers.get(..)` ladders into one shape.
@@ -279,7 +268,7 @@ pub(crate) async fn land_model(
     }
 
     // 2. Decode the Arrow IPC body. Needed by both branches (inference reads the schema).
-    let (schema, batches) = match decode_ipc(&body) {
+    let (schema, batches) = match datafusion_io::decode_ipc(&body) {
         Ok(sb) => sb,
         // Bad IPC is a client error (malformed request body), not a backend fault;
         // 400 without logging, exactly as before.
@@ -398,7 +387,7 @@ pub(crate) async fn land(
     })?
     .unwrap_or_else(|| RunId(Uuid::new_v4()));
 
-    let (schema, batches) = match decode_ipc(&body) {
+    let (schema, batches) = match datafusion_io::decode_ipc(&body) {
         Ok(sb) => sb,
         // Bad IPC is a client error (malformed request body), not a backend fault;
         // 400 without logging, exactly as before.
