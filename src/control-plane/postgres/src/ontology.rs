@@ -111,15 +111,7 @@ impl Ontology for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_link(&self, link: LinkDef) -> Result<()> {
         for endpoint in [&link.from, &link.to] {
-            let exists: bool = sqlx::query_scalar!(
-                "select exists (select 1 from ontology.object_type where name = $1)",
-                endpoint.0,
-            )
-            .fetch_one(&self.pool)
-            .await
-            .map_err(backend)?
-            .unwrap_or(false);
-            if !exists {
+            if !object_type_exists(&self.pool, &endpoint.0).await? {
                 return Err(ControlPlaneError::NotFound(format!("type {}", endpoint.0)));
             }
         }
@@ -226,18 +218,11 @@ impl Ontology for PgControlPlane {
     }
 
     async fn links(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
-        let exists: bool = sqlx::query_scalar!(
-            "select exists (select 1 from ontology.object_type where name = $1)",
-            name.0,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(backend)?
-        .unwrap_or(false);
-        if !exists {
+        if !object_type_exists(&self.pool, &name.0).await? {
             return Err(ControlPlaneError::NotFound(name.0.clone()));
         }
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as!(
+            LinkRow,
             "select name, from_type, to_type, cardinality, backing_kind, from_column, \
                     to_column, from_key, to_key, join_table_schema, join_table_name \
              from ontology.link where from_type = $1",
@@ -246,40 +231,15 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(Page::from_full(
-            rows.into_iter()
-                .map(|r| LinkDef {
-                    name: r.name,
-                    from: TypeName(r.from_type),
-                    to: TypeName(r.to_type),
-                    cardinality: cardinality_from_str(r.cardinality.as_str()),
-                    backing: backing_from_row(
-                        &r.backing_kind,
-                        r.from_column,
-                        r.to_column,
-                        r.from_key,
-                        r.to_key,
-                        r.join_table_schema,
-                        r.join_table_name,
-                    ),
-                })
-                .collect(),
-        ))
+        Ok(link_defs(rows))
     }
 
     async fn links_to(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> {
-        let exists: bool = sqlx::query_scalar!(
-            "select exists (select 1 from ontology.object_type where name = $1)",
-            name.0,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(backend)?
-        .unwrap_or(false);
-        if !exists {
+        if !object_type_exists(&self.pool, &name.0).await? {
             return Err(ControlPlaneError::NotFound(name.0.clone()));
         }
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as!(
+            LinkRow,
             "select name, from_type, to_type, cardinality, backing_kind, from_column, \
                     to_column, from_key, to_key, join_table_schema, join_table_name \
              from ontology.link where to_type = $1",
@@ -288,25 +248,7 @@ impl Ontology for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        Ok(Page::from_full(
-            rows.into_iter()
-                .map(|r| LinkDef {
-                    name: r.name,
-                    from: TypeName(r.from_type),
-                    to: TypeName(r.to_type),
-                    cardinality: cardinality_from_str(r.cardinality.as_str()),
-                    backing: backing_from_row(
-                        &r.backing_kind,
-                        r.from_column,
-                        r.to_column,
-                        r.from_key,
-                        r.to_key,
-                        r.join_table_schema,
-                        r.join_table_name,
-                    ),
-                })
-                .collect(),
-        ))
+        Ok(link_defs(rows))
     }
 
     async fn resolve(&self, name: &TypeName) -> Result<TableRef> {
@@ -330,14 +272,7 @@ impl Ontology for PgControlPlane {
         // The target type must exist. The explicit check makes the error a clear
         // `Validation` (matching the memory fake) instead of a raw FK backend error;
         // the FK (0009_actions.sql) stays as the atomic backstop inside this tx.
-        let target_exists = sqlx::query_scalar!(
-            "select exists (select 1 from ontology.object_type where name = $1)",
-            action.target.0,
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(backend)?
-        .unwrap_or(false);
+        let target_exists = object_type_exists(&mut *tx, &action.target.0).await?;
         if !target_exists {
             return Err(ControlPlaneError::Validation(format!(
                 "action `{}` references unknown target type `{}`",
@@ -561,6 +496,63 @@ pub async fn vector_index_def_row(
             r.ef_construction.map(|v| v as u32),
         )?,
     }))
+}
+
+/// True if an ontology object type named `name` exists. THE single existence
+/// probe shared by the ontology reads/writes (`define_link`, `links`,
+/// `links_to`, `define_action`) and the ACL write-time target checks
+/// (`grant`, `set_policy`) — previously six verbatim copies of the same
+/// `select exists` query.
+pub(crate) async fn object_type_exists(ex: impl sqlx::PgExecutor<'_>, name: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar!(
+        "select exists (select 1 from ontology.object_type where name = $1)",
+        name,
+    )
+    .fetch_one(ex)
+    .await
+    .map_err(backend)?
+    .unwrap_or(false))
+}
+
+/// One `ontology.link` row. `links` and `links_to` run the same projection,
+/// differing only in which endpoint column they filter on — `query_as!` into
+/// this named row lets them share one mapping (`link_defs`).
+struct LinkRow {
+    name: String,
+    from_type: String,
+    to_type: String,
+    cardinality: String,
+    backing_kind: String,
+    from_column: String,
+    to_column: String,
+    from_key: Option<String>,
+    to_key: Option<String>,
+    join_table_schema: Option<String>,
+    join_table_name: Option<String>,
+}
+
+/// Map fetched link rows into a full (unpaginated) `Page<LinkDef>` — the
+/// shared tail of `links`/`links_to`.
+fn link_defs(rows: Vec<LinkRow>) -> Page<LinkDef> {
+    Page::from_full(
+        rows.into_iter()
+            .map(|r| LinkDef {
+                name: r.name,
+                from: TypeName(r.from_type),
+                to: TypeName(r.to_type),
+                cardinality: cardinality_from_str(r.cardinality.as_str()),
+                backing: backing_from_row(
+                    &r.backing_kind,
+                    r.from_column,
+                    r.to_column,
+                    r.from_key,
+                    r.to_key,
+                    r.join_table_schema,
+                    r.join_table_name,
+                ),
+            })
+            .collect(),
+    )
 }
 
 /// Split an aggregation into its persisted `(agg_kind, agg_column)` pair.

@@ -172,7 +172,7 @@ and `links`/`links_to` share one `LinkRow` + `link_defs` mapping.
   (in `acl.rs`); private `struct LinkRow` + `fn link_defs(rows: Vec<LinkRow>) -> Page<LinkDef>`
   (in `ontology.rs`; Task 2 makes `link_defs` fallible).
 
-- [ ] **Step 1: Run the pinning suites green against the unmodified tree**
+- [x] **Step 1: Run the pinning suites green against the unmodified tree**
 
 ```bash
 buck2 test //src/control-plane/postgres:ontology //src/control-plane/postgres:acl \
@@ -183,7 +183,7 @@ buck2 test //src/control-plane/postgres:ontology //src/control-plane/postgres:ac
 
 Expected: `Fail 0`.
 
-- [ ] **Step 2: Add the helpers** — in `ontology.rs` (module level, near
+- [x] **Step 2: Add the helpers** — in `ontology.rs` (module level, near
   `backing_from_row`):
 
 ```rust
@@ -229,7 +229,7 @@ async fn role_exists(ex: impl sqlx::PgExecutor<'_>, id: &str) -> Result<bool> {
 `"select exists (select 1 from acl.role where id"` before deleting) — the
 `.sqlx` cache is untouched.
 
-- [ ] **Step 3: Convert the ten sites.** Each inline
+- [x] **Step 3: Convert the ten sites.** Each inline
   `sqlx::query_scalar!(...).fetch_one(...).await.map_err(backend)?.unwrap_or(false)`
   block becomes a helper call; the surrounding `if !exists { return Err(...) }`
   logic, its message strings, AND each site's executor (pool vs in-tx) stay
@@ -252,7 +252,7 @@ async fn role_exists(ex: impl sqlx::PgExecutor<'_>, id: &str) -> Result<bool> {
     stays transactional (the executor-generic helper exists precisely for
     this; do NOT move it to `&self.pool`).
 
-- [ ] **Step 4: Dedup `links`/`links_to`.** In `ontology.rs`, add beside
+- [x] **Step 4: Dedup `links`/`links_to`.** In `ontology.rs`, add beside
   `backing_from_row`:
 
 ```rust
@@ -322,7 +322,7 @@ async fn links(&self, name: &TypeName, _page: PageReq) -> Result<Page<LinkDef>> 
 
 `links_to` is identical with `where to_type = $1`.
 
-- [ ] **Step 5: Build + pinning suites green; no `.sqlx` delta**
+- [x] **Step 5: Build + pinning suites green; no `.sqlx` delta**
 
 ```bash
 buck2 build //src/control-plane/postgres:postgres > /tmp/b1.log 2>&1; tail -2 /tmp/b1.log
@@ -337,7 +337,7 @@ Expected: build OK, `Fail 0`, no `.sqlx` change. If `query_as!` surprises with
 a cache miss (offline-build failure naming a missing query hash), STOP — the
 SQL text drifted; restore it byte-identical.
 
-- [ ] **Step 6: prek + commit**
+- [x] **Step 6: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek1.log 2>&1; grep -E "Failed" /tmp/prek1.log || echo CLEAN

@@ -4,6 +4,7 @@ use control_plane_core::{
     RoleId, SubjectId, validate_row_filter,
 };
 
+use crate::ontology::object_type_exists;
 use crate::{PgControlPlane, action_to_str, backend, effect_to_str, target_cols};
 
 /// Fixed advisory-lock key serializing role-inheritance edge inserts within one
@@ -11,6 +12,18 @@ use crate::{PgControlPlane, action_to_str, backend, effect_to_str, target_cols};
 /// against concurrent opposite-edge writes. Arbitrary but stable (ASCII "acl_inhr"),
 /// and distinct from `snapshot.rs`'s catalog lock so the two never contend.
 const ROLE_INHERITS_LOCK_KEY: i64 = 0x6163_6c5f_696e_6872u64 as i64;
+
+/// True if an ACL role with `id` exists. Shared by `assign_role`/`grant`/
+/// `set_policy` (pool executor) and `add_inheritance` (in-tx executor).
+async fn role_exists(ex: impl sqlx::PgExecutor<'_>, id: &str) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar!("select exists (select 1 from acl.role where id = $1)", id,)
+            .fetch_one(ex)
+            .await
+            .map_err(backend)?
+            .unwrap_or(false),
+    )
+}
 
 #[async_trait]
 impl Acl for PgControlPlane {
@@ -54,14 +67,7 @@ impl Acl for PgControlPlane {
                 subject.0
             )));
         }
-        let r_exists = sqlx::query_scalar!(
-            "select exists (select 1 from acl.role where id = $1)",
-            &role.0,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(backend)?
-        .unwrap_or(false);
+        let r_exists = role_exists(&self.pool, &role.0).await?;
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
@@ -133,12 +139,7 @@ impl Acl for PgControlPlane {
             .map_err(backend)?;
 
         for id in [&role.0, &inherits.0] {
-            let exists =
-                sqlx::query_scalar!("select exists (select 1 from acl.role where id = $1)", id,)
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(backend)?
-                    .unwrap_or(false);
+            let exists = role_exists(&mut *tx, id).await?;
             if !exists {
                 return Err(ControlPlaneError::NotFound(format!("role {id}")));
             }
@@ -200,14 +201,7 @@ impl Acl for PgControlPlane {
         target: PolicyTarget,
         effect: Effect,
     ) -> Result<()> {
-        let r_exists = sqlx::query_scalar!(
-            "select exists (select 1 from acl.role where id = $1)",
-            &role.0,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(backend)?
-        .unwrap_or(false);
+        let r_exists = role_exists(&self.pool, &role.0).await?;
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
@@ -215,14 +209,7 @@ impl Acl for PgControlPlane {
         // non-transactional, like the role check above and set_policy). Table
         // targets stay unvalidated (deferred).
         if let PolicyTarget::Type(name) = &target {
-            let type_exists = sqlx::query_scalar!(
-                "select exists (select 1 from ontology.object_type where name = $1)",
-                &name.0,
-            )
-            .fetch_one(&self.pool)
-            .await
-            .map_err(backend)?
-            .unwrap_or(false);
+            let type_exists = object_type_exists(&self.pool, &name.0).await?;
             if !type_exists {
                 return Err(ControlPlaneError::Validation(format!(
                     "grant references unknown type `{}`",
@@ -269,14 +256,7 @@ impl Acl for PgControlPlane {
 
     #[tracing::instrument(skip(self, policy), level = "debug")]
     async fn set_policy(&self, role: &RoleId, action: Action, policy: Policy) -> Result<()> {
-        let r_exists = sqlx::query_scalar!(
-            "select exists (select 1 from acl.role where id = $1)",
-            &role.0,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(backend)?
-        .unwrap_or(false);
+        let r_exists = role_exists(&self.pool, &role.0).await?;
         if !r_exists {
             return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
         }
@@ -287,14 +267,7 @@ impl Acl for PgControlPlane {
         // the row-filter's columns are validated only when a row_filter is present.
         match &policy.target {
             PolicyTarget::Type(name) => {
-                let type_exists = sqlx::query_scalar!(
-                    "select exists (select 1 from ontology.object_type where name = $1)",
-                    &name.0,
-                )
-                .fetch_one(&self.pool)
-                .await
-                .map_err(backend)?
-                .unwrap_or(false);
+                let type_exists = object_type_exists(&self.pool, &name.0).await?;
                 if !type_exists {
                     return Err(ControlPlaneError::Validation(format!(
                         "policy references unknown type {}",
