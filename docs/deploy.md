@@ -253,6 +253,30 @@ external-DB deploy, with no second backend:
   `sqlx::migrate!` and applied on boot — nothing to mount, and the same
   embedded migrator backs `LOOM_MIGRATE=apply` and the chart's migration Job.
 
+### Host prerequisites
+
+Embedded mode runs loom's own bundled Postgres, but loom embeds **only its own
+artifacts** — system libraries are the deployment environment's responsibility.
+The bundled `postgres`/`initdb` dynamically link `libxml2.so.2`, so the host must
+provide a system libxml2 exposing that soname (package `libxml2` on
+Wolfi/Debian/Ubuntu/Fedora). If it is missing, `loom` fails fast at cluster start
+with a named error —
+
+```
+embedded Postgres cannot start: missing shared library libxml2.so.2. loom bundles
+only its own Postgres artifacts, not system libraries — install it on the host …
+```
+
+— rather than a cryptic loader failure. Some distros ship a newer soname (Arch
+provides `libxml2.so.16`, not `.so.2`); `tools/dev-up.sh` carries a dev-only shim
+that symlinks the newest system `libxml2.so.*` as `libxml2.so.2`, but that is a
+local bridge, not a deployment posture.
+
+**Image posture:** no standalone `loom` OCI image exists yet (the `deploy/`
+images are the external-Postgres services, which do not need libxml2). When a
+`deploy//images/loom` standalone image is added, its `apko.yaml` MUST include the
+Wolfi `libxml2` package so the embedded cluster can boot.
+
 ### First-admin bootstrap (`loom create-admin`)
 
 There is **no env-driven admin auto-bootstrap** — the old
@@ -267,10 +291,10 @@ It seeds the first admin (a normal identity holding the reserved `admin`
 role, not an ACL-bypass superuser) and **seals** the instance in one sequence;
 a second `create-admin` against the same database is refused. Run it against
 the running instance's database (`tools/dev-up.sh` does this automatically
-after boot). Note: in embedded mode the config parser currently still demands
-`LOOM_PG_BIN_DIR`/`LOOM_PG_LD_LIBRARY_PATH` even for this client-only
-connection — supply the same values as the server process (see *Known gaps*,
-`iss-embedded-config-requires-pg-bin-dir`). A chart-level one-shot
+after boot). In embedded mode `create-admin` is a client-only connection: it
+needs neither the PG-binary vars (`LOOM_PG_BIN_DIR`/`LOOM_PG_LD_LIBRARY_PATH`)
+nor the `LOOM_DB_*` vars — config defaults them to the embedded socket, so
+`LOOM_PG_MODE=embedded` + `LOOM_DATA_PATH` is enough. A chart-level one-shot
 `create-admin` Job does not exist yet (`fut-helm-create-admin-job`).
 
 ### Environment variables
@@ -279,14 +303,14 @@ connection — supply the same values as the server process (see *Known gaps*,
 | --- | --- | --- | --- |
 | `LOOM_DATA_PATH` | yes | — | Root for Parquet/Iceberg data **and** the embedded-Postgres cache (`<path>/cache/pg-<version>/`). |
 | `LOOM_ENGINE_SOCKET` | yes | — | Path to the Unix-domain socket the engine listens on and the other two services connect to. |
-| `LOOM_BIND_ADDR` | yes | — | Required by config parsing but **unused by `loom`** (the composite binds the two dedicated addrs below); set any value. Tracked for removal — see *Known gaps* (`#iss-embedded-config-requires-pg-bin-dir`). |
+| `LOOM_BIND_ADDR` | yes | — | Required by config parsing but **unused by `loom`** (the composite binds the two dedicated addrs below); set any value. |
 | `LOOM_PG_MODE` | no | `external` | Set to `embedded` to start the bundled Postgres automatically. |
 | `LOOM_QUERY_API_BIND_ADDR` | no | `0.0.0.0:8080` | TCP address for the query-api HTTP listener. |
 | `LOOM_INGEST_BIND_ADDR` | no | `0.0.0.0:8081` | TCP address for the ingest HTTP listener. |
 | `LOOM_FLIGHT_BIND_ADDR` | no | — | If set, also exposes the engine's Arrow Flight SQL endpoint on this address. |
 | `LOOM_PG_BIN_DIR` | no | — | Path to an external `pg_ctl`/`postgres` install. **Optional in embedded mode** — the binary self-extracts its baked-in Postgres distribution to `<LOOM_DATA_PATH>/cache/pg-<version>/` and wires it automatically. |
 | `LOOM_MIGRATE` | no | — | Set to `apply` to run schema migrations and exit immediately (useful with an external/managed Postgres before starting the full process). |
-| `LOOM_DB_HOST`, `LOOM_DB_PORT`, `LOOM_DB_USER`, `LOOM_DB_PASSWORD`, `LOOM_DB_NAME` | yes | — | Control-plane database connection vars. In **embedded** mode `LOOM_DB_NAME` names the database created inside the bundled cluster; the connection uses the embedded socket at `<LOOM_DATA_PATH>/pgrun` as the `postgres` superuser, so `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD` are **required by config parsing but ignored** (supply any placeholder). In **external** mode all five are the real connection settings. Reducing this verbosity for embedded mode is tracked — see *Known gaps* (`#iss-embedded-config-requires-pg-bin-dir`). |
+| `LOOM_DB_HOST`, `LOOM_DB_PORT`, `LOOM_DB_USER`, `LOOM_DB_PASSWORD`, `LOOM_DB_NAME` | external only | — | Control-plane database connection vars. In **external** mode all five are required and are the real connection settings. In **embedded** mode they are **optional** — they default to the bundled cluster's socket (`LOOM_DB_HOST` → `<LOOM_DATA_PATH>/pgrun`, `LOOM_DB_PORT` → `5432`, `LOOM_DB_USER` → `postgres`, trust password, `LOOM_DB_NAME` → `loom`); set `LOOM_DB_NAME` to rename the database, otherwise omit them. |
 | `LOOM_WAREHOUSE_URI` | no | — | Object-store warehouse URI (e.g. `s3://bucket/prefix` or a local `file://` path under `LOOM_DATA_PATH`). |
 
 ### Minimal quick-start
@@ -298,11 +322,6 @@ LOOM_PG_MODE=embedded \
 LOOM_DATA_PATH=/tmp/loom-data \
 LOOM_ENGINE_SOCKET=/tmp/loom-data/engine.sock \
 LOOM_BIND_ADDR=0.0.0.0:0 \
-LOOM_DB_HOST=/tmp/loom-data/pgrun \
-LOOM_DB_PORT=5432 \
-LOOM_DB_USER=postgres \
-LOOM_DB_PASSWORD=postgres \
-LOOM_DB_NAME=loom \
 ./loom
 ```
 
@@ -311,12 +330,11 @@ starts accepting traffic on ports 8080 (query-api) and 8081 (ingest). The
 extracted Postgres distribution is cached under
 `/tmp/loom-data/cache/pg-<version>/` and reused on subsequent starts.
 
-In embedded mode the `LOOM_BIND_ADDR` and `LOOM_DB_HOST`/`PORT`/`USER`/`PASSWORD`
-values above are required by config parsing but not used to connect (the
-composite binds the two dedicated HTTP addrs and talks to the bundled Postgres
-over its Unix socket). Trimming this required-but-ignored set for the embedded
-single-binary path is deferred follow-up work
-(`#iss-embedded-config-requires-pg-bin-dir`).
+In embedded mode the `LOOM_DB_*` connection vars are optional — config defaults
+them to the bundled Postgres socket (see the table above), so they are omitted
+here. `LOOM_BIND_ADDR` is still required by config parsing but unused by the
+composite (it binds the two dedicated HTTP addrs and talks to Postgres over its
+Unix socket).
 
 ### Using an external Postgres
 
@@ -340,14 +358,6 @@ init container.
 Open deploy-area register items (see `docs/ISSUES.md` / `docs/FUTURE.md` for
 full context):
 
-- `#iss-embedded-pg-libxml2` — the self-extracted PG lacks `libxml2.so.2`, so
-  a fresh embedded boot fails on hosts without it (`tools/dev-up.sh` shims a
-  symlink as a workaround; the self-extract path is not CI-covered).
-- `#iss-embedded-config-requires-pg-bin-dir` — embedded-mode config hygiene:
-  client-only invocations (e.g. `loom create-admin`) still require
-  `LOOM_PG_BIN_DIR`/`LOOM_PG_LD_LIBRARY_PATH` despite never spawning Postgres,
-  and embedded mode demands placeholder `LOOM_BIND_ADDR` + `LOOM_DB_*` values
-  that config parsing requires but the composite ignores.
 - `#fut-embedded-pg-cache-gc` — stale `pg-<version>/` extract caches are never
   swept after a version-pin bump (bounded disk leak).
 - `#fut-embedded-postgres-pg-upgrade` — no `pg_upgrade` story when a PG major
