@@ -32,7 +32,7 @@ use crate::iceberg_mirror::{
     live_table_id, next_snapshot, project_columns,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
-use crate::iceberg_type::{mirror_column_type, pg_type_for};
+use crate::iceberg_type::{logical_from_iceberg, mirror_column_type, pg_type_for};
 use crate::lineage::pg_emit;
 
 /// The Postgres name of a table's inline storage. `table_id` is an internal i64.
@@ -147,6 +147,22 @@ pub(crate) enum Cell {
     /// A dense f32 vector cell, bound as Postgres `real[]` / decoded from it.
     /// `None` is SQL NULL.
     Vec(Option<Vec<f32>>),
+}
+
+impl Cell {
+    /// True if this cell is SQL NULL (its wrapped `Option` is `None`).
+    fn is_null(&self) -> bool {
+        match self {
+            Cell::I32(v) => v.is_none(),
+            Cell::I64(v) => v.is_none(),
+            Cell::F64(v) => v.is_none(),
+            Cell::Bool(v) => v.is_none(),
+            Cell::Str(v) => v.is_none(),
+            Cell::Date(v) => v.is_none(),
+            Cell::Ts(v) => v.is_none(),
+            Cell::Vec(v) => v.is_none(),
+        }
+    }
 }
 
 /// Pull cell `(col, row)` out of an arrow batch, typed per the logical column.
@@ -438,14 +454,35 @@ pub async fn has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool>
 /// The id value never crosses a crate boundary as a `Cell`/`SqlValue`: callers pass
 /// it inside an Arrow batch and name the id column, and this locates it by name.
 fn extract_id_cell(columns: &[ColumnSpec], id_column: &str, batch: &RecordBatch) -> Result<Cell> {
-    let (idx, spec) = columns
+    // Logical type from the passed specs (by name) ...
+    let spec = columns
         .iter()
-        .enumerate()
-        .find(|(_, c)| c.name == id_column)
+        .find(|c| c.name == id_column)
         .ok_or_else(|| {
-            ControlPlaneError::Backend(format!("id column {id_column} not in batch").into())
+            ControlPlaneError::Backend(format!("id column {id_column} not in columns").into())
         })?;
+    // ... but the physical position from the BATCH's own schema, so a one-cell
+    // tombstone batch (whose layout need not match `columns`) still resolves the id
+    // cell instead of indexing `columns`' position into a shorter batch.
+    let idx = batch.schema().index_of(id_column).map_err(|e| {
+        ControlPlaneError::Backend(format!("id column {id_column} not in batch: {e}").into())
+    })?;
     cell_from_arrow(batch, idx, 0, &spec.ty)
+}
+
+/// True if the physical `inline_<tid>` relation exists. A file-only object (landed
+/// as Parquet, no inline write yet) has none — `to_regclass` returns NULL for an
+/// absent relation. Shared by the read guards so an absent inline tier reads as
+/// "no rows" instead of erroring with `relation ... does not exist`.
+async fn inline_relation_exists(conn: &mut PgConnection, tid: i64) -> Result<bool> {
+    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "select to_regclass('{}')::text",
+        inline_table_name(tid)
+    )))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(exists.is_some())
 }
 
 /// `coalesce(max(begin_snapshot), 0)` over the LIVE inline rows of one identity —
@@ -460,6 +497,20 @@ async fn read_max_version(
     id_column: &str,
     id: &Cell,
 ) -> Result<i64> {
+    // A file-only object has a live `iceberg_mirror.table` row but no `inline_<tid>`
+    // table yet; its inline version is 0. Guard the read the same way
+    // `has_live_inline_rows`/`inline_live_batch` do so this returns 0 rather than
+    // erroring — this is what makes the file-only first-mutation path (reached via
+    // `current_inline_version`) safe.
+    if !inline_relation_exists(&mut *conn, tid).await? {
+        return Ok(0);
+    }
+    // A SQL NULL id makes `"id" = $1` silently false, so `max` reads 0 and the CAS
+    // would never detect a concurrent mutation. The identity column is non-nullable
+    // in practice; reject a NULL id defensively rather than mis-reading version 0.
+    if id.is_null() {
+        return Err(ControlPlaneError::Backend("identity value is null".into()));
+    }
     let sql = format!(
         "select coalesce(max(begin_snapshot), 0) as v from {} \
          where \"{}\" = $1 and end_snapshot is null",
@@ -545,6 +596,45 @@ pub async fn current_inline_version(
     read_max_version(&mut conn, tid, id_column, &id_cell).await
 }
 
+/// The table's FULL live column set from the mirror, as `ColumnSpec`s — the
+/// authoritative inline-table shape, independent of the (possibly one-column)
+/// `columns` a given mutation passes. Selects the currently-live
+/// `iceberg_mirror.column` rows (`end_snapshot is null`), so no snapshot bound is
+/// needed. The stored `column_type` is the Iceberg physical name (e.g. `int`);
+/// convert it back to the canonical loom logical name the inline DDL / cell codec
+/// understand, exactly as `IcebergCatalog::schema` does.
+///
+/// AssertSqlSafe: static query against a fixed mirror table; the `.sqlx` cache
+/// cannot be regenerated in this env (initdb refuses to run as root).
+async fn full_live_column_specs(conn: &mut PgConnection, tid: i64) -> Result<Vec<ColumnSpec>> {
+    let rows = sqlx::query(AssertSqlSafe(
+        "select column_name, column_type, nulls_allowed from iceberg_mirror.column \
+         where table_id = $1 and end_snapshot is null order by column_order",
+    ))
+    .bind(tid)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(backend)?;
+    rows.into_iter()
+        .map(|r| {
+            let name: String = r.try_get("column_name").map_err(backend)?;
+            let column_type: String = r.try_get("column_type").map_err(backend)?;
+            let nullable: bool = r.try_get("nulls_allowed").map_err(backend)?;
+            let ty = logical_from_iceberg(&column_type)
+                .map(BaseType::canonical_name)
+                .ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        format!(
+                            "inline: mirror column type {column_type:?} has no loom logical type"
+                        )
+                        .into(),
+                    )
+                })?;
+            Ok(ColumnSpec { name, ty, nullable })
+        })
+        .collect()
+}
+
 /// Write ONE inline delta row (a row-version or a tombstone) for a single identity,
 /// guarded by a per-identity compare-and-swap. Returns the new snapshot id, or
 /// `ControlPlaneError::Conflict` if a newer version for the identity already exists.
@@ -586,8 +676,14 @@ pub async fn write_inline_delta(
             )
         })?;
 
-    // Ensure inline storage (+ loom_tombstone) exists if the object was file-only.
-    ensure_inline_schema(&mut tx, tid, columns).await?;
+    // Provision inline storage (+ loom_tombstone) with the table's FULL live column
+    // set, NOT the possibly-one-column `columns` arg. A tombstone passes only
+    // `[id spec]`; since `create table if not exists` never adds columns later, a
+    // tombstone-first write on a file-only object would otherwise create
+    // `inline_<tid>` with just the id column, breaking every later full-column read
+    // (`inline_live_batch` / merge-on-read select the full logical column list).
+    let full_cols = full_live_column_specs(&mut tx, tid).await?;
+    ensure_inline_schema(&mut tx, tid, &full_cols).await?;
     let id_cell = extract_id_cell(columns, id_column, batch)?;
 
     // Per-identity serialization: a transaction-scoped advisory lock keyed by

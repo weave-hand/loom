@@ -6,7 +6,8 @@ use std::sync::Arc;
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{ColumnSpec, ControlPlaneError, EventType, LineageEvent, RunId, TableRef};
-use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline;
 
 fn table() -> TableRef {
@@ -230,4 +231,100 @@ async fn tombstone_delta_marks_deleted() {
         flagged,
         "a mutated table must be flagged as having a shadow"
     );
+}
+
+/// A FILE-ONLY object — landed as a real Parquet data_file, so it has a live mirror
+/// `table` + `column` rows but NO `inline_<tid>` table yet — is the PRIMARY
+/// copy-on-write target. This exercises the two file-only lifecycle bugs:
+///   - Bug #1: `current_inline_version` must return `Ok(0)` (not error) when the
+///     inline relation is absent.
+///   - Bug #2: a tombstone-FIRST `write_inline_delta` (columns = `[id spec]`) must
+///     provision `inline_<tid>` with the table's FULL live column set, so a later
+///     full-column read (`inline_live_batch`) does not fail on a missing column.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_only_object_tombstone_first_lifecycle() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+
+    let table = table();
+
+    // Land a real Parquet file {id:1, qty:5} via the writer chain. This projects the
+    // mirror table + both column rows (id, qty) + a data_file row, but creates NO
+    // inline table — the file-only starting state. `qty` is NULLABLE, modelling a
+    // realistic identity type (only the identity is required; other properties are
+    // optional): a tombstone nulls the non-id columns, so the full-column read must
+    // reconstruct `qty` as a nullable field.
+    let seed_cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("qty".to_string(), "long".to_string(), true),
+    ];
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    writer
+        .seed_arrays(
+            &table.schema,
+            &table.name,
+            &seed_cols,
+            &[SeedCol::Long(vec![1]), SeedCol::Long(vec![5])],
+        )
+        .await;
+
+    // Bug #1: no inline table exists, so the identity's inline version is 0 — the
+    // read must NOT error with `relation ... does not exist`.
+    let v0 = iceberg_inline::current_inline_version(
+        &pool,
+        &table,
+        &[id_spec()],
+        "id",
+        &id_batch("id", 1),
+    )
+    .await
+    .expect("current_inline_version on a file-only object must be Ok(0), not an error");
+    assert_eq!(v0, 0, "a file-only object has inline version 0");
+
+    // Bug #2: a tombstone is the FIRST inline op. It passes columns = [id spec], but
+    // write_inline_delta must provision inline_<tid> with the FULL live column set.
+    let at = iceberg_inline::write_inline_delta(
+        &pool,
+        &table,
+        &[id_spec()],
+        "id",
+        true,
+        &id_batch("id", 1),
+        lin(),
+        v0,
+    )
+    .await
+    .expect("tombstone-first delta on a file-only object must succeed");
+
+    // The full-column read must NOT error: `inline_live_batch` selects the full
+    // logical column list (id + qty). Under-provisioning (id column only) would fail
+    // here with `column "qty" does not exist`.
+    let catalog = IcebergCatalog::new(pool.clone());
+    let (tid, row_ids, batch) = catalog
+        .inline_live_batch(&table, at)
+        .await
+        .expect("inline_live_batch must not error after a tombstone-first provision")
+        .expect("the live tombstone row must be present");
+    assert_eq!(
+        batch.num_columns(),
+        2,
+        "inline_<tid> was provisioned with the FULL column set (id, qty)"
+    );
+    assert_eq!(
+        row_ids.len(),
+        1,
+        "exactly one live inline row (the tombstone)"
+    );
+
+    // The delete is recorded: a live tombstone row for id=1 exists in inline_<tid>.
+    let tomb: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select exists(select 1 from iceberg_mirror.inline_{tid} \
+         where loom_tombstone = true and \"id\" = 1 and end_snapshot is null)"
+    )))
+    .fetch_one(&pool)
+    .await
+    .expect("tombstone existence check");
+    assert!(tomb, "a live tombstone row for id=1 must exist");
 }
