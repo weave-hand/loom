@@ -12,11 +12,6 @@ use sqlx::PgConnection;
 use crate::backend;
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 
-/// Map an `iceberg` error into the control-plane backend error.
-fn iceberg_err(e: iceberg::Error) -> ControlPlaneError {
-    ControlPlaneError::Backend(Box::new(e))
-}
-
 /// A neutral view of one committed Iceberg data file the projection writes.
 pub struct ProjectedFile {
     pub path: String,
@@ -323,7 +318,7 @@ pub async fn mark_dropped(
 /// Errors if the stored schema holds something loom cannot project — a `list`
 /// column missing its `vector(N)` doc, or an unsupported column type. loom owns
 /// the schema, so these are trusted-substrate invariant violations; they surface
-/// as `Backend` (matching `iceberg_err`) so callers abort the mirror op cleanly
+/// as `Backend` (matching `backend`) so callers abort the mirror op cleanly
 /// rather than panicking.
 pub fn columns_of(table: &Table) -> Result<Vec<ProjectedColumn>> {
     table
@@ -380,7 +375,7 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
         .manifest_list_reader(snapshot)
         .load()
         .await
-        .map_err(iceberg_err)?;
+        .map_err(backend)?;
     // Column names in table schema order — the same order Iceberg writes columns to
     // the Parquet file, so `column_stats_from_parquet` records each by name.
     let names: Vec<String> = columns_of(table)?.into_iter().map(|c| c.name).collect();
@@ -389,7 +384,7 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
         let manifest = manifest_file
             .load_manifest(table.file_io())
             .await
-            .map_err(iceberg_err)?;
+            .map_err(backend)?;
         for entry in manifest.entries() {
             if entry.snapshot_id() == Some(snapshot.snapshot_id()) {
                 let df = entry.data_file();
@@ -398,10 +393,10 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
                 let bytes = table
                     .file_io()
                     .new_input(df.file_path())
-                    .map_err(iceberg_err)?
+                    .map_err(backend)?
                     .read()
                     .await
-                    .map_err(iceberg_err)?;
+                    .map_err(backend)?;
                 let column_stats = crate::iceberg_stats::column_stats_from_parquet(bytes, &names)?;
                 files.push(ProjectedFile {
                     path: df.file_path().to_string(),

@@ -4,8 +4,8 @@
 use std::collections::HashSet;
 
 use control_plane_core::{
-    CompareOp, ControlPlaneError, Policy, PolicyTarget, RowFilter, ScalarValue, TableRef,
-    TypeName, check_grant_target, check_policy_write,
+    CompareOp, ControlPlaneError, Policy, PolicyTarget, RowFilter, ScalarValue, TableRef, TypeName,
+    check_grant_target, check_policy_write,
 };
 
 fn ttype(n: &str) -> PolicyTarget {

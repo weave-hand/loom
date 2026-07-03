@@ -86,10 +86,7 @@ pub fn embedded_migrator() -> sqlx::migrate::Migrator {
 /// Apply the embedded migrations (tracked in `_sqlx_migrations`; idempotent —
 /// re-runs as a no-op).
 pub async fn run_embedded_migrations(pool: &PgPool) -> Result<()> {
-    embedded_migrator()
-        .run(pool)
-        .await
-        .map_err(|e| ControlPlaneError::Backend(Box::new(e)))?;
+    embedded_migrator().run(pool).await.map_err(backend)?;
     Ok(())
 }
 
@@ -119,6 +116,11 @@ impl ControlPlane for PgControlPlane {
     }
 }
 
-fn backend(e: sqlx::Error) -> ControlPlaneError {
+/// Box a concrete error as `ControlPlaneError::Backend`, carrying the source.
+/// THE single boxing helper — call sites use `map_err(backend)` (or a
+/// domain-mapping helper like `auth::conflict_or_backend`); never flatten via
+/// `.to_string()`, which severs the source chain. `Backend` is
+/// `#[error(transparent)]`, so the Display text is the source's own.
+fn backend<E: std::error::Error + Send + Sync + 'static>(e: E) -> ControlPlaneError {
     ControlPlaneError::Backend(Box::new(e))
 }

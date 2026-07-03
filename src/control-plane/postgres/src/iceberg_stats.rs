@@ -8,10 +8,12 @@
 //! core::snapshot::{ColumnStat, StatValue}.
 
 use bytes::Bytes; // impl parquet ChunkReader; the type iceberg's InputFile::read() yields
+use control_plane_core::Result;
 use control_plane_core::snapshot::{ColumnStat, StatValue};
-use control_plane_core::{ControlPlaneError, Result};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::file::statistics::Statistics;
+
+use crate::backend;
 
 /// Typed lower bound of a row-group column's `Statistics`, as a neutral `StatValue`.
 /// Only the primitive types loom prunes on carry a bound; others -> `None`.
@@ -65,8 +67,7 @@ fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<std::cmp::Ordering> 
 /// columns in schema order, so pass `columns_of(table)`-ordered names). Takes the
 /// `Bytes` by value so it feeds `SerializedFileReader::new` directly.
 pub fn column_stats_from_parquet(bytes: Bytes, column_names: &[String]) -> Result<Vec<ColumnStat>> {
-    let reader =
-        SerializedFileReader::new(bytes).map_err(|e| ControlPlaneError::Backend(Box::new(e)))?;
+    let reader = SerializedFileReader::new(bytes).map_err(backend)?;
     let meta = reader.metadata();
     let mut out = Vec::with_capacity(column_names.len());
     for (i, name) in column_names.iter().enumerate() {

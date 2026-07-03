@@ -343,11 +343,7 @@ impl Auth for PgControlPlane {
                 // The bytea is always 32 bytes (every insert writes a [u8; 32]), but
                 // convert fallibly — no panic path — to satisfy the panic-safety lints.
                 // Carry the source error rather than discarding it (map_err_ignore).
-                let hash: [u8; 32] = r
-                    .token_sha256
-                    .as_slice()
-                    .try_into()
-                    .map_err(|e| ControlPlaneError::Backend(Box::new(e)))?;
+                let hash: [u8; 32] = r.token_sha256.as_slice().try_into().map_err(backend)?;
                 Ok(ServiceToken {
                     token_sha256: hash,
                     subject_id: SubjectId(r.subject_id),

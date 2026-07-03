@@ -1038,7 +1038,7 @@ Backend-boxing fn in the crate):**
   `src/control-plane/postgres/src/iceberg_sql_catalog/commit_mirror.rs`
   (inline boxing/flattening closures → `map_err(backend)`)
 
-- [ ] **Step 1: Generalize the helper** in `lib.rs`:
+- [x] **Step 1: Generalize the helper** in `lib.rs`:
 
 ```rust
 /// Box a concrete error as `ControlPlaneError::Backend`, carrying the source.
@@ -1054,7 +1054,7 @@ fn backend<E: std::error::Error + Send + Sync + 'static>(e: E) -> ControlPlaneEr
 Every existing `map_err(backend)` site keeps compiling (inference picks
 `E = sqlx::Error`).
 
-- [ ] **Step 2: Delete the five module-local variants** (census above):
+- [x] **Step 2: Delete the five module-local variants** (census above):
 
   - `iceberg_read.rs`: delete `be`, add `use crate::backend;`, rename its 8
     `map_err(be)` → `map_err(backend)` (types: `iceberg::Error`, arrow/parquet
@@ -1082,7 +1082,7 @@ Every existing `map_err(backend)` site keeps compiling (inference picks
     `RecordBatch::try_new`), `:472` (`iceberg::Error` from
     `TableIdent::from_strs`), `:476` (`iceberg::Error` from `load_table`).
 
-- [ ] **Step 3: Convert the remaining inline sites.** `iceberg_flush.rs:113`
+- [x] **Step 3: Convert the remaining inline sites.** `iceberg_flush.rs:113`
   (`serde_json::Error`) and any other
   `.map_err(|e| ControlPlaneError::Backend(e.to_string().into()))` /
   `.map_err(|e| ControlPlaneError::Backend(Box::new(e)))` /
@@ -1104,7 +1104,7 @@ grep -rn "fn be\b\|fn be<\|fn iceberg_err\|fn backend" src/control-plane/postgre
   (`commit_mirror.rs:93` needs `use crate::backend;` — it lives in a
   submodule directory.)
 
-- [ ] **Step 4: Full postgres-crate build + suite** (error paths are spread
+- [x] **Step 4: Full postgres-crate build + suite** (error paths are spread
   across the crate; the fixture suites pin observable messages)
 
 ```bash
@@ -1115,7 +1115,7 @@ buck2 test //src/control-plane/postgres: -j 8 > /tmp/t4.log 2>&1; \
 
 Expected: `Fail 0`.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek4.log 2>&1; grep -E "Failed" /tmp/prek4.log || echo CLEAN

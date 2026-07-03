@@ -55,7 +55,7 @@ pub(crate) async fn end_cap_live_inline_rows(
         .bind(&name)
         .fetch_one(&mut *conn)
         .await
-        .map_err(|e| control_plane_core::ControlPlaneError::Backend(Box::new(e)))?;
+        .map_err(backend)?;
     if exists.is_none() {
         return Ok(());
     }
@@ -66,7 +66,7 @@ pub(crate) async fn end_cap_live_inline_rows(
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .execute(&mut *conn)
         .await
-        .map_err(|e| control_plane_core::ControlPlaneError::Backend(Box::new(e)))?;
+        .map_err(backend)?;
     Ok(())
 }
 
@@ -250,8 +250,7 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
             ControlPlaneError::Backend(format!("inline: no pg type for {:?}", c.ty).into())
         })?;
         // Column names come from the trusted schema; quote to preserve case.
-        write!(cols, ", \"{}\" {}", c.name.replace('"', "\"\""), pg)
-            .map_err(|e| ControlPlaneError::Backend(e.into()))?;
+        write!(cols, ", \"{}\" {}", c.name.replace('"', "\"\""), pg).map_err(backend)?;
     }
     Ok(format!(
         "create table if not exists {} (\
@@ -554,8 +553,7 @@ impl IcebergCatalog {
             arrays.push(column_array(&rows, i + 1, *ty)?);
         }
         let arrow_schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(arrow_schema, arrays)
-            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+        let batch = RecordBatch::try_new(arrow_schema, arrays).map_err(backend)?;
         Ok(Some((tid, row_ids, batch)))
     }
 }

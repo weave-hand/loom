@@ -13,9 +13,7 @@ use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool};
 use time::OffsetDateTime;
 
-fn backend<E: std::fmt::Display>(e: E) -> ControlPlaneError {
-    ControlPlaneError::Backend(e.to_string().into())
-}
+use crate::backend;
 
 /// A bound vector index: the metadata loom needs to find and decode the sidecar.
 #[derive(Clone, Debug)]
@@ -195,14 +193,8 @@ fn extract_rows(
     vector_col: &str,
     identity_col: &str,
 ) -> Result<Vec<(VectorKey, Vec<f32>)>> {
-    let vec_idx = batch
-        .schema()
-        .index_of(vector_col)
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-    let id_idx = batch
-        .schema()
-        .index_of(identity_col)
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+    let vec_idx = batch.schema().index_of(vector_col).map_err(backend)?;
+    let id_idx = batch.schema().index_of(identity_col).map_err(backend)?;
 
     let vec_col = batch.column(vec_idx);
     let id_col = batch.column(id_idx);
@@ -369,8 +361,7 @@ pub async fn inline_delta_batch(
         Field::new(&identity_col, id_ty.arrow_data_type(), false),
         Field::new(&vector_col, vec_ty.arrow_data_type(), false),
     ]));
-    let batch = RecordBatch::try_new(out_schema, vec![id_array, vec_array])
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+    let batch = RecordBatch::try_new(out_schema, vec![id_array, vec_array]).map_err(backend)?;
     Ok(Some(batch))
 }
 
@@ -468,12 +459,9 @@ async fn write_sidecar(
     column: &str,
     identity_col: &str,
 ) -> Result<String> {
-    let ident = TableIdent::from_strs([table.schema.as_str(), table.name.as_str()])
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-    let tbl = catalog
-        .load_table(&ident)
-        .await
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+    let ident =
+        TableIdent::from_strs([table.schema.as_str(), table.name.as_str()]).map_err(backend)?;
+    let tbl = catalog.load_table(&ident).await.map_err(backend)?;
     // Use the Schema::field_id_by_name accessor (available on the iceberg-rust
     // pinned main commit). Falls back to 0 if the accessor returns None (e.g.
     // if the Iceberg schema uses a different field name than expected — purely
