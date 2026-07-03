@@ -1771,7 +1771,7 @@ git commit -m "refactor(vector): extract resolve_build_inputs/collect_vectors/de
   - `async fn bind_index_and_emit(pool: &PgPool, table: &TableRef, binding:
     IndexBinding, lineage: &LineageEvent) -> Result<()>` (private)
 
-- [ ] **Step 1: Append the failing `build_lineage_event` unit test**
+- [x] **Step 1: Append the failing `build_lineage_event` unit test**
 
 Append to `tests/vector_index_unit.rs` (imports extend to
 `control_plane_core::{ColumnDef, DatasetRef, EventType, RunId, TableRef,
@@ -1806,7 +1806,7 @@ Run: `buck2 test //src/control-plane/postgres:vector-index-unit >
 /tmp/t5red.log 2>&1; grep -E "cannot find|Tests finished|FAIL" /tmp/t5red.log`
 — expected: compile failure (`build_lineage_event` missing).
 
-- [ ] **Step 2: Add the three seams** (below `declared_dim`; bodies are jobs
+- [x] **Step 2: Add the three seams** (below `declared_dim`; bodies are jobs
   8-10 + the lineage literal moved verbatim, comments included)
 
 ```rust
@@ -1947,7 +1947,7 @@ async fn bind_index_and_emit(
 }
 ```
 
-- [ ] **Step 3: Slim the orchestrator** — `build_vector_index` becomes (doc
+- [x] **Step 3: Slim the orchestrator** — `build_vector_index` becomes (doc
   comment `:366-375` unchanged; signature unchanged):
 
 ```rust
@@ -2025,7 +2025,7 @@ line, `write_sidecar` uses both; `OffsetDateTime` stays for
 `build_lineage_event`). Task 4's temporary local aliases (`column`, `metric`,
 `index_spec`, `identity_col`) disappear — `inputs.*` is read directly.
 
-- [ ] **Step 4: Run — unit tests green, ALL vector fixture suites green**
+- [x] **Step 4: Run — unit tests green, ALL vector fixture suites green**
 
 ```bash
 buck2 test //src/control-plane/postgres:vector-index-unit > /tmp/t5a.log 2>&1; \
@@ -2046,7 +2046,7 @@ Expected: `Fail 0` in both. The `vector-index-build` suite's lineage
 assertions (exactly one event, canonical input ref, puffin-path output) prove
 `build_lineage_event` + `bind_index_and_emit` emit identically.
 
-- [ ] **Step 5: prek + commit**
+- [x] **Step 5: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek5.log 2>&1; grep -E "Failed" /tmp/prek5.log || echo CLEAN
