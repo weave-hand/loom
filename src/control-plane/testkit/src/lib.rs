@@ -20,7 +20,8 @@ use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Auth, Cardinality, Catalog,
     CompareOp, ConstAssignment, ControlPlane, ControlPlaneError, DatasetRef, Decision,
     DerivedPropertyDef, Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent,
-    LinkBacking, LinkDef, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page,
+    LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType,
+    Ontology, Page,
     PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter,
     RunId, ScalarValue, SnapshotId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
@@ -2277,6 +2278,137 @@ pub async fn service_account_contract<A: Auth + Acl>(a: &A) {
             .unwrap()
             .is_empty()
     );
+}
+
+/// Contract for the password-lifecycle `Auth` ops (update, per-subject session
+/// revoke, failed-login lockout). `a` must be freshly empty.
+pub async fn password_lifecycle_contract<A: Auth + Acl>(a: &A) {
+    let sid = |s: &str| SubjectId(s.to_string());
+    let h = |b: u8| -> [u8; 32] { [b; 32] };
+
+    a.create_user(&NewUser {
+        subject_id: sid("u-al"),
+        username: "al".into(),
+        password_phc: "phc-1".into(),
+    })
+    .await
+    .unwrap();
+
+    // --- update_password round-trip (keyed by subject) ---
+    assert_eq!(
+        a.password_phc_for_subject(&sid("u-al")).await.unwrap(),
+        Some("phc-1".to_string())
+    );
+    a.update_password(&sid("u-al"), "phc-2").await.unwrap();
+    assert_eq!(
+        a.password_phc_for_subject(&sid("u-al")).await.unwrap(),
+        Some("phc-2".to_string()),
+        "update replaced the stored PHC"
+    );
+    // the login read reflects the new PHC too
+    let cred = a.find_password_credential("al").await.unwrap().unwrap();
+    assert_eq!(cred.password_phc, "phc-2");
+    assert!(cred.locked_until.is_none(), "unlocked by default");
+    // unknown subject → NotFound
+    assert!(matches!(
+        a.update_password(&sid("ghost"), "x").await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(
+        a.password_phc_for_subject(&sid("ghost"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // --- revoke_subject_sessions (keep one / all) ---
+    let now = OffsetDateTime::now_utc();
+    let future = now + time::Duration::hours(1);
+    a.create_session(&sid("u-al"), &h(1), future).await.unwrap();
+    a.create_session(&sid("u-al"), &h(2), future).await.unwrap();
+    a.create_session(&sid("u-al"), &h(3), future).await.unwrap();
+    // keep h(2): the others are revoked, h(2) survives
+    a.revoke_subject_sessions(&sid("u-al"), Some(&h(2)))
+        .await
+        .unwrap();
+    assert!(a.resolve_session(&h(1), now).await.unwrap().is_none());
+    assert_eq!(
+        a.resolve_session(&h(2), now).await.unwrap(),
+        Some(sid("u-al")),
+        "kept session survives"
+    );
+    assert!(a.resolve_session(&h(3), now).await.unwrap().is_none());
+    // revoke all
+    a.revoke_subject_sessions(&sid("u-al"), None).await.unwrap();
+    assert!(a.resolve_session(&h(2), now).await.unwrap().is_none());
+
+    // --- lockout: threshold, window reset, clear-on-success ---
+    let policy = LockoutPolicy {
+        threshold: 3,
+        window: time::Duration::minutes(10),
+        lockout_duration: time::Duration::minutes(15),
+    };
+    let t0 = OffsetDateTime::now_utc();
+    // two failures inside the window: not yet locked
+    a.record_failed_login("al", t0, policy).await.unwrap();
+    a.record_failed_login("al", t0 + time::Duration::seconds(1), policy)
+        .await
+        .unwrap();
+    assert!(
+        a.find_password_credential("al")
+            .await
+            .unwrap()
+            .unwrap()
+            .locked_until
+            .is_none(),
+        "below threshold: not locked"
+    );
+    // third failure reaches the threshold → locked, lock in the future
+    let t_lock = t0 + time::Duration::seconds(2);
+    a.record_failed_login("al", t_lock, policy).await.unwrap();
+    let locked = a
+        .find_password_credential("al")
+        .await
+        .unwrap()
+        .unwrap()
+        .locked_until
+        .expect("locked at threshold");
+    assert!(locked > t_lock, "lock expiry is in the future");
+
+    // reset clears the lock + counter
+    a.reset_failed_logins("al").await.unwrap();
+    assert!(
+        a.find_password_credential("al")
+            .await
+            .unwrap()
+            .unwrap()
+            .locked_until
+            .is_none(),
+        "reset cleared the lock"
+    );
+
+    // stale window: a failure far past the window resets the counter to 1, so a
+    // single later failure does not lock.
+    a.record_failed_login("al", t0, policy).await.unwrap();
+    a.record_failed_login("al", t0 + time::Duration::seconds(1), policy)
+        .await
+        .unwrap();
+    let stale = t0 + time::Duration::hours(2); // > window since last failure
+    a.record_failed_login("al", stale, policy).await.unwrap();
+    assert!(
+        a.find_password_credential("al")
+            .await
+            .unwrap()
+            .unwrap()
+            .locked_until
+            .is_none(),
+        "stale window reset the count instead of locking"
+    );
+
+    // record/reset on an unknown username are no-ops (lockout protects existing
+    // accounts only), never an error.
+    a.record_failed_login("ghost", t0, policy).await.unwrap();
+    a.reset_failed_logins("ghost").await.unwrap();
 }
 
 /// Both-adapter contract for type-existence validation on the three loom-owned

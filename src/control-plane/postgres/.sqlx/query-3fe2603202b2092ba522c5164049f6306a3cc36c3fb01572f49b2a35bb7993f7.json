@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select password_phc from auth.password_credential where subject_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "password_phc",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "auth.password_credential",
+            "name": "password_phc"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3fe2603202b2092ba522c5164049f6306a3cc36c3fb01572f49b2a35bb7993f7"
+}
