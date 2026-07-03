@@ -43,7 +43,7 @@ pub fn serving_status(e: engine_serving::EngineServingError) -> Status {
 
 pub struct FlightDataService {
     /// File-ticket data plane (worker/compaction): a real Iceberg `SqlCatalog`.
-    pub catalog: SqlCatalog,
+    pub catalog: Arc<SqlCatalog>,
     pub pool: PgPool,
     /// Flight SQL read plane: the live-table catalog the governed reads run against.
     pub serving_catalog: IcebergCatalog,

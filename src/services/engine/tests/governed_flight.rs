@@ -1,6 +1,8 @@
 //! e2e: the engine's do_get dispatches a GovernedStatementQuery ticket to the governed
 //! path, applying the row filter/deny/mask regardless of the client SQL.
 
+use std::sync::Arc;
+
 use arrow_array::{Array, Int64Array};
 use arrow_flight::Ticket;
 use arrow_flight::flight_service_server::FlightService;
@@ -30,7 +32,7 @@ async fn do_get_governed_applies_policy() {
     let writer = IcebergWriter::new(pool.clone(), dsn.clone());
     writer.seed("s", "orders", &cols, &[5]).await; // ids 0..4
 
-    let file_catalog = local_sql_catalog(dsn, &wh.path().display().to_string()).await;
+    let file_catalog = Arc::new(local_sql_catalog(dsn, &wh.path().display().to_string()).await);
     let svc = FlightDataService {
         catalog: file_catalog,
         serving_catalog: IcebergCatalog::new(pool.clone()),

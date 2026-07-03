@@ -2,6 +2,8 @@
 //! Delegates queue operations to a `PgControlPlane` and flush_table to
 //! `iceberg_flush::flush_table`.
 
+use std::sync::Arc;
+
 use control_plane_core::{Catalog, ControlPlane, Queue, RetryPolicy, RunId, TableRef};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_flush::flush_table;
@@ -42,7 +44,7 @@ fn se_out<T: serde::Serialize>(v: &T) -> std::result::Result<String, Status> {
 /// The engine's gRPC service implementation.
 pub struct EngineControlService {
     pub cp: PgControlPlane,
-    pub catalog: SqlCatalog,
+    pub catalog: Arc<SqlCatalog>,
     pub pool: PgPool,
     /// Retention window for `gc_table` (from `LOOM_GC_RETENTION_SECS`).
     pub retention: std::time::Duration,

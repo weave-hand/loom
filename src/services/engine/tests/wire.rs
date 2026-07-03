@@ -61,7 +61,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     let pool = fx.pool_for(db).await;
     let cp = control_plane_postgres::PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
     let wh_str = wh.path().display().to_string();
-    let catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
+    let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), &wh_str).await);
     let writer_catalog = local_sql_catalog(fx.pg_dsn(db), &wh_str).await;
     let writer = IcebergActionWriter::new(
         Arc::new(writer_catalog),
@@ -252,7 +252,7 @@ async fn flush_over_wire() {
         let cp2 =
             control_plane_postgres::PgControlPlane::new(pool2.clone(), Duration::from_millis(5000));
         let wh2_str = wh.path().display().to_string();
-        let catalog2 = local_sql_catalog(fx.pg_dsn(&db), &wh2_str).await;
+        let catalog2 = Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh2_str).await);
         let writer_catalog2 = local_sql_catalog(fx.pg_dsn(&db), &wh2_str).await;
         let writer2 = IcebergActionWriter::new(
             Arc::new(writer_catalog2),
