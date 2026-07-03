@@ -314,6 +314,16 @@ rust_test(
 )
 
 rust_test(
+    name = "job-failure",
+    crate = "job_failure",
+    srcs = ["tests/job_failure.rs"],
+    crate_root = "tests/job_failure.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "column-spec-serde",
     crate = "column_spec_serde",
     srcs = ["tests/column_spec_serde.rs"],
