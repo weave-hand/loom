@@ -264,6 +264,16 @@ rust_test(
 )
 
 rust_test(
+    name = "index-spec-build",
+    crate = "index_spec_build",
+    srcs = ["tests/index_spec_build.rs"],
+    crate_root = "tests/index_spec_build.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "vector-index-job",
     crate = "vector_index_job",
     srcs = ["tests/vector_index_job.rs"],

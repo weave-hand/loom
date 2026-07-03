@@ -145,6 +145,28 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "vector-search-identity-kinds",
+    crate = "vector_search_identity_kinds",
+    srcs = ["tests/vector_search_identity_kinds.rs"],
+    crate_root = "tests/vector_search_identity_kinds.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "action-writer",
     crate = "action_writer",
     srcs = ["tests/action_writer.rs"],

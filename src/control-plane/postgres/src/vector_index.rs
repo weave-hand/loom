@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
 use control_plane_core::{
-    Catalog, ControlPlaneError, DatasetRef, EventType, FlatIndex, HnswIndex, IndexSpec,
-    IvfFlatIndex, LineageEvent, Result, RunId, SnapshotId, TableRef, VectorKey,
+    Catalog, ControlPlaneError, DatasetRef, EventType, IndexSpec, LineageEvent, Metric, Result,
+    RunId, SnapshotId, TableRef, TableSchema, VectorKey,
 };
 use iceberg::{Catalog as IceCatalog, TableIdent};
-use sqlx::{AssertSqlSafe, PgConnection, PgPool, Row};
+use sqlx::{AssertSqlSafe, PgConnection, PgPool};
 use time::OffsetDateTime;
 
 fn backend<E: std::fmt::Display>(e: E) -> ControlPlaneError {
@@ -261,14 +261,20 @@ fn extract_rows(
 ///
 /// Used by Task 7/8 (hot-delta path) to fetch the rows appended between S and Q
 /// so the serving layer can score them alongside the cold Puffin index.
+///
+/// The identity column is decoded per its DECLARED logical type (Long, Integer,
+/// or String — the same kinds the cold path's `extract_rows` accepts), through
+/// the shared `column_array` PG→Arrow bridge, so the delta batch can never
+/// drift from `inline_live_batch` (iss-inline-delta-string-identity).
 pub async fn inline_delta_batch(
     pool: &PgPool,
     table: &TableRef,
     born_after: i64,
     at: i64,
 ) -> Result<Option<RecordBatch>> {
-    use crate::iceberg_inline::inline_table_name;
+    use crate::iceberg_inline::{column_array, inline_table_name};
     use crate::iceberg_mirror::live_table_id;
+    use control_plane_core::resolve_logical;
 
     let mut conn = pool.acquire().await.map_err(backend)?;
     let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
@@ -287,30 +293,50 @@ pub async fn inline_delta_batch(
         return Ok(None);
     }
 
-    // Resolve identity + vector column names from the ontology.
+    // Resolve identity + vector column names AND logical types from the
+    // ontology/mirror. We look for a column whose type starts with "vector("
+    // in the current mirror snapshot (at SnapshotId(at)); the identity's
+    // BaseType drives the decode below.
     let identity_col = identity_column_for(pool, table).await?;
-    let vector_col = {
-        // Find which column of this table's mirror schema is a vector type.
-        // We look for a column whose iceberg_type starts with "vector(" in the
-        // current mirror snapshot (at SnapshotId(at)).
-        let ice = crate::iceberg_catalog::IcebergCatalog::new(pool.clone());
-        use control_plane_core::Catalog;
-        let schema = ice.schema(table, SnapshotId(at)).await?;
-        schema
-            .columns
-            .into_iter()
-            .find(|c| c.ty.starts_with("vector("))
-            .map(|c| c.name)
-            .ok_or_else(|| {
-                ControlPlaneError::Backend(
-                    format!(
-                        "no vector column in schema for {}.{}",
-                        table.schema, table.name
-                    )
-                    .into(),
+    let ice = crate::iceberg_catalog::IcebergCatalog::new(pool.clone());
+    let schema = ice.schema(table, SnapshotId(at)).await?;
+    let vec_def = schema
+        .columns
+        .iter()
+        .find(|c| c.ty.starts_with("vector("))
+        .ok_or_else(|| {
+            ControlPlaneError::Backend(
+                format!(
+                    "no vector column in schema for {}.{}",
+                    table.schema, table.name
                 )
-            })?
-    };
+                .into(),
+            )
+        })?;
+    let vector_col = vec_def.name.clone();
+    let vec_ty = resolve_logical(&vec_def.ty).ok_or_else(|| {
+        ControlPlaneError::Backend(
+            format!(
+                "unresolvable vector type {:?} for {}.{}",
+                vec_def.ty, table.schema, table.name
+            )
+            .into(),
+        )
+    })?;
+    let id_ty = schema
+        .columns
+        .iter()
+        .find(|c| c.name == identity_col)
+        .and_then(|c| resolve_logical(&c.ty))
+        .ok_or_else(|| {
+            ControlPlaneError::Backend(
+                format!(
+                    "identity column '{identity_col}' missing or unresolvable in schema for {}.{}",
+                    table.schema, table.name
+                )
+                .into(),
+            )
+        })?;
 
     // Runtime query: select only the identity + vector columns with the delta MVCC predicate.
     let id_quoted = format!("\"{}\"", identity_col.replace('"', "\"\""));
@@ -332,35 +358,237 @@ pub async fn inline_delta_batch(
         return Ok(None);
     }
 
-    // Build Arrow arrays: identity (Int64) + vector (List<Float32>).
-    use arrow_array::builder::{Float32Builder, Int64Builder, ListBuilder};
-    use arrow_schema::{DataType, Field, Schema};
+    // Decode through THE shared PG-row → Arrow bridge (`column_array`): the
+    // identity per its declared BaseType, the vector as List<Float32> with the
+    // canonical "item" child. Field data types come from the same BaseType map.
+    use arrow_schema::{Field, Schema};
 
-    let mut id_builder = Int64Builder::new();
-    let item_field = Arc::new(control_plane_core::vector_list_field());
-    let mut vec_builder = ListBuilder::new(Float32Builder::new()).with_field(item_field.clone());
-
-    for r in &rows {
-        // Identity
-        let id_val: i64 = r.try_get(0).map_err(backend)?;
-        id_builder.append_value(id_val);
-
-        // Vector: stored as a Postgres real[] (native f32) in the inline table.
-        let floats: Vec<f32> = r.try_get(1).map_err(backend)?;
-        vec_builder.values().append_slice(&floats);
-        vec_builder.append(true);
-    }
-
-    let id_array = Arc::new(id_builder.finish());
-    let vec_array = Arc::new(vec_builder.finish());
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new(&identity_col, DataType::Int64, false),
-        Field::new(&vector_col, DataType::List(item_field), false),
+    let id_array = column_array(&rows, 0, id_ty)?;
+    let vec_array = column_array(&rows, 1, vec_ty)?;
+    let out_schema = Arc::new(Schema::new(vec![
+        Field::new(&identity_col, id_ty.arrow_data_type(), false),
+        Field::new(&vector_col, vec_ty.arrow_data_type(), false),
     ]));
-    let batch = RecordBatch::try_new(schema, vec![id_array, vec_array])
+    let batch = RecordBatch::try_new(out_schema, vec![id_array, vec_array])
         .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
     Ok(Some(batch))
+}
+
+/// The pre-read inputs of a vector-index build: the MVCC anchor snapshot S
+/// (captured BEFORE any data read so cold and hot reads are consistent as of
+/// S), the named declaration's column/metric/spec (authoritative), and the
+/// ontology-declared identity column.
+struct BuildInputs {
+    at: SnapshotId,
+    column: String,
+    metric: Metric,
+    spec: IndexSpec,
+    identity_col: String,
+}
+
+/// Jobs 1-2 of the build: snapshot anchor, declaration resolution, identity
+/// column. Resolution order (snapshot -> declaration -> identity) is
+/// load-bearing for error precedence and preserved from the inline code.
+async fn resolve_build_inputs(
+    ice: &crate::iceberg_catalog::IcebergCatalog,
+    pool: &PgPool,
+    table: &TableRef,
+    index_name: &str,
+) -> Result<BuildInputs> {
+    let at = ice.current_snapshot(table).await?.id;
+    let type_name = type_name_for(pool, table).await?;
+    let def = crate::ontology::vector_index_def_row(pool, &type_name, index_name)
+        .await?
+        .ok_or_else(|| {
+            ControlPlaneError::NotFound(format!(
+                "no vector index definition `{index_name}` on type `{type_name}`"
+            ))
+        })?;
+    let identity_col = identity_column_for(pool, table).await?;
+    Ok(BuildInputs {
+        at,
+        column: def.property,
+        metric: def.metric,
+        spec: def.spec,
+        identity_col,
+    })
+}
+
+/// Jobs 3-5: read the cold Parquet files and hot inline rows live at `at`,
+/// and extract `(VectorKey, vector)` rows from both tiers.
+async fn collect_vectors(
+    catalog: &crate::iceberg_sql_catalog::SqlCatalog,
+    ice: &crate::iceberg_catalog::IcebergCatalog,
+    table: &TableRef,
+    at: SnapshotId,
+    column: &str,
+    identity_col: &str,
+) -> Result<Vec<(VectorKey, Vec<f32>)>> {
+    let files = ice.files_with_stats(table, at).await?;
+    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+    let (_, cold_batches) = crate::read_files_as_batches(catalog, table, &paths).await?;
+    let hot_batch: Option<RecordBatch> = ice.inline_live_batch(table, at).await?.map(|(_, _, b)| b);
+
+    let mut all_rows: Vec<(VectorKey, Vec<f32>)> = Vec::new();
+    for batch in cold_batches.iter().chain(hot_batch.iter()) {
+        all_rows.extend(extract_rows(batch, column, identity_col)?);
+    }
+    Ok(all_rows)
+}
+
+/// The declared `vector(N)` dimension of `column` in `schema`, or 0 when the
+/// column is missing or its type is not a well-formed `vector(N)` — the
+/// build's fallback when the table has no rows to infer from (job 6's
+/// legacy `unwrap_or(0)`).
+#[must_use]
+pub fn declared_dim(schema: &TableSchema, column: &str) -> u32 {
+    schema
+        .columns
+        .iter()
+        .find(|c| c.name == column)
+        .and_then(|c| {
+            // ty is e.g. "vector(4)"
+            c.ty.strip_prefix("vector(")
+                .and_then(|s| s.strip_suffix(')'))
+                .and_then(|s| s.parse::<u32>().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// Jobs 8-9: resolve the vector column's Iceberg field id (informational),
+/// mint a fresh sidecar path under the table's metadata location, and write
+/// the Puffin file. The object-store write happens BEFORE the Postgres tx —
+/// a failed build leaves an orphan sidecar, never a dangling mirror row.
+/// `write_vector_index` is the single source of the 7-key property map.
+async fn write_sidecar(
+    catalog: &crate::iceberg_sql_catalog::SqlCatalog,
+    table: &TableRef,
+    index: &dyn control_plane_core::VectorIndex,
+    covered_snapshot: i64,
+    column: &str,
+    identity_col: &str,
+) -> Result<String> {
+    let ident = TableIdent::from_strs([table.schema.as_str(), table.name.as_str()])
+        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+    let tbl = catalog
+        .load_table(&ident)
+        .await
+        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+    // Use the Schema::field_id_by_name accessor (available on the iceberg-rust
+    // pinned main commit). Falls back to 0 if the accessor returns None (e.g.
+    // if the Iceberg schema uses a different field name than expected — purely
+    // informational for Puffin footer decode in slice 1).
+    let field_id: i32 = tbl
+        .metadata()
+        .current_schema()
+        .field_id_by_name(column)
+        .unwrap_or(0);
+
+    let puffin_path = format!(
+        "{}/metadata/loom-vector-index-{}.puffin",
+        tbl.metadata().location(),
+        uuid::Uuid::new_v4()
+    );
+    let file_io = tbl.file_io().clone();
+    crate::puffin::write_vector_index(
+        &file_io,
+        &puffin_path,
+        index,
+        covered_snapshot,
+        field_id,
+        column,
+        identity_col,
+    )
+    .await?;
+    Ok(puffin_path)
+}
+
+/// The build's completion lineage event: input = the CANONICAL loom dataset
+/// ref for the source table (`DatasetRef::from(table)` — the same node the
+/// landing/flush emitters use; iss-vector-build-lineage-ref, #295), output =
+/// the Puffin sidecar under the "loom-vector-index" namespace.
+#[must_use]
+pub fn build_lineage_event(
+    run_id: RunId,
+    table: &TableRef,
+    column: &str,
+    covered_snapshot: i64,
+    row_count: i64,
+    puffin_path: &str,
+) -> LineageEvent {
+    LineageEvent {
+        run_id,
+        event_type: EventType::Complete,
+        event_time: OffsetDateTime::now_utc(),
+        inputs: vec![DatasetRef::from(table)],
+        outputs: vec![DatasetRef {
+            namespace: "loom-vector-index".to_string(),
+            name: puffin_path.to_string(),
+        }],
+        payload: serde_json::json!({
+            "column": column,
+            "covered_snapshot": covered_snapshot,
+            "row_count": row_count,
+        }),
+    }
+}
+
+/// The mirror-row fields of a completed build: `VectorIndexRow` before the
+/// `table_id` is known — it is resolved INSIDE `bind_index_and_emit`'s
+/// transaction (moving it earlier would change failure semantics under a
+/// concurrent table drop/re-create).
+struct IndexBinding {
+    index_name: String,
+    column: String,
+    covered_snapshot: i64,
+    metric: String,
+    index_kind: String,
+    dim: i32,
+    row_count: i64,
+    puffin_path: String,
+}
+
+/// Job 10: ONE Postgres tx — resolve the live mirror table id, upsert the
+/// `vector_index` binding row, emit the lineage event, commit.
+async fn bind_index_and_emit(
+    pool: &PgPool,
+    table: &TableRef,
+    binding: IndexBinding,
+    lineage: &LineageEvent,
+) -> Result<()> {
+    use crate::iceberg_mirror::live_table_id;
+    use crate::lineage::pg_emit;
+
+    let mut tx = pool.begin().await.map_err(backend)?;
+    let conn: &mut PgConnection = &mut tx;
+
+    let table_id = live_table_id(conn, &table.schema, &table.name)
+        .await?
+        .ok_or_else(|| {
+            ControlPlaneError::NotFound(format!(
+                "no live mirror table for {}.{}",
+                table.schema, table.name
+            ))
+        })?;
+
+    insert_vector_index(
+        conn,
+        &VectorIndexRow {
+            table_id,
+            column: binding.column,
+            index_name: binding.index_name,
+            covered_snapshot: binding.covered_snapshot,
+            metric: binding.metric,
+            index_kind: binding.index_kind,
+            dim: binding.dim,
+            row_count: binding.row_count,
+            puffin_path: binding.puffin_path,
+        },
+    )
+    .await?;
+
+    pg_emit(conn, lineage).await?;
+    tx.commit().await.map_err(backend)
 }
 
 /// Build a flat vector index over all vectors live at the table's current
@@ -381,170 +609,68 @@ pub async fn build_vector_index(
     run_id: RunId,
 ) -> Result<BuiltIndex> {
     use crate::iceberg_catalog::IcebergCatalog;
-    use crate::iceberg_mirror::live_table_id;
-    use crate::lineage::pg_emit;
-    use crate::read_files_as_batches;
 
-    // 1. Snapshot S: the catalog snapshot we build as-of (MVCC anchor).
+    // 1-2. Snapshot anchor S + declaration + identity.
     let ice = IcebergCatalog::new(pool.clone());
-    let s: i64 = ice.current_snapshot(table).await?.id.0;
-    let at = SnapshotId(s);
+    let inputs = resolve_build_inputs(&ice, pool, table, index_name).await?;
+    let at = inputs.at;
+    let s: i64 = at.0;
 
-    // Resolve the named declaration (authoritative source of column/metric/spec).
-    let type_name = type_name_for(pool, table).await?;
-    let def = crate::ontology::vector_index_def_row(pool, &type_name, index_name)
-        .await?
-        .ok_or_else(|| {
-            ControlPlaneError::NotFound(format!(
-                "no vector index definition `{index_name}` on type `{type_name}`"
-            ))
-        })?;
-    let column: &str = &def.property;
-    let metric = def.metric;
-    let index_spec = def.spec;
-
-    // 2. Resolve identity column from the ontology.
-    let identity_col = identity_column_for(pool, table).await?;
-
-    // 3. Cold data: Parquet files live at S.
-    let files = ice.files_with_stats(table, at).await?;
-    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-    let (_, cold_batches) = read_files_as_batches(catalog, table, &paths).await?;
-
-    // 4. Hot data: live inline rows at S.
-    let hot_batch_opt = ice.inline_live_batch(table, at).await?;
-    let hot_batch: Option<RecordBatch> = hot_batch_opt.map(|(_, _, b)| b);
-
-    // 5. Extract (VectorKey, Vec<f32>) rows from all batches.
-    let mut all_rows: Vec<(VectorKey, Vec<f32>)> = Vec::new();
-    for batch in &cold_batches {
-        let rows = extract_rows(batch, column, &identity_col)?;
-        all_rows.extend(rows);
-    }
-    if let Some(ref batch) = hot_batch {
-        let rows = extract_rows(batch, column, &identity_col)?;
-        all_rows.extend(rows);
-    }
-
+    // 3-5. Cold Parquet + hot inline rows, extracted to (VectorKey, vector).
+    let all_rows = collect_vectors(
+        catalog,
+        &ice,
+        table,
+        at,
+        &inputs.column,
+        &inputs.identity_col,
+    )
+    .await?;
     let row_count = all_rows.len() as i64;
 
-    // 6. Infer dim from the first row (or from the schema).
-    let dim: u32 = if let Some((_, v)) = all_rows.first() {
-        v.len() as u32
-    } else {
-        // No rows: look up the declared dim from the column spec.
-        let schema = ice.schema(table, at).await?;
-        schema
-            .columns
-            .iter()
-            .find(|c| c.name == column)
-            .and_then(|c| {
-                // ty is e.g. "vector(4)"
-                c.ty.strip_prefix("vector(")
-                    .and_then(|s| s.strip_suffix(')'))
-                    .and_then(|s| s.parse::<u32>().ok())
-            })
-            .unwrap_or(0)
+    // 6. Infer dim from the first row; an empty table falls back to the
+    //    declared vector(N) (schema fetched only on this arm, as before).
+    let dim: u32 = match all_rows.first() {
+        Some((_, v)) => v.len() as u32,
+        None => declared_dim(&ice.schema(table, at).await?, &inputs.column),
     };
 
-    // 7. Build the chosen index (Flat exact, or IVF approximate). The `VectorIndex`
-    //    trait is `Send`, so the box may be held across `.await` points without
-    //    extracting fields early.
-    let index: Box<dyn control_plane_core::VectorIndex> = match index_spec {
-        IndexSpec::Flat => Box::new(FlatIndex::build(dim, metric, all_rows)?),
-        IndexSpec::IvfFlat { nlist } => {
-            Box::new(IvfFlatIndex::build(dim, metric, all_rows, nlist)?)
-        }
-        IndexSpec::Hnsw { m, ef_construction } => {
-            Box::new(HnswIndex::build(dim, metric, all_rows, m, ef_construction)?)
-        }
-    };
+    // 7. Build the chosen index via the core spec routing. The `VectorIndex`
+    //    trait is `Send`, so the box may be held across `.await` points.
+    let index: Box<dyn control_plane_core::VectorIndex> =
+        inputs.spec.build(dim, inputs.metric, all_rows)?;
     // dim may have been inferred as 0 for empty tables; prefer index's own dim.
     let dim = if index.dim() > 0 { index.dim() } else { dim };
 
-    // 8. Resolve the Iceberg field id for the vector column (informational).
-    let ident = TableIdent::from_strs([table.schema.as_str(), table.name.as_str()])
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-    let tbl = catalog
-        .load_table(&ident)
-        .await
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-    // Use the Schema::field_id_by_name accessor (available on the iceberg-rust
-    // pinned main commit). Falls back to 0 if the accessor returns None (e.g.
-    // if the Iceberg schema uses a different field name than expected — purely
-    // informational for Puffin footer decode in slice 1).
-    let field_id: i32 = tbl
-        .metadata()
-        .current_schema()
-        .field_id_by_name(column)
-        .unwrap_or(0);
-
-    // 9. Write the Puffin sidecar (object-store write BEFORE the Postgres tx).
-    //    `write_vector_index` is the single source of the 7-key property map.
-    let puffin_path = format!(
-        "{}/metadata/loom-vector-index-{}.puffin",
-        tbl.metadata().location(),
-        uuid::Uuid::new_v4()
-    );
-    let file_io = tbl.file_io().clone();
-    crate::puffin::write_vector_index(
-        &file_io,
-        &puffin_path,
+    // 8-9. Puffin sidecar (object-store write BEFORE the Postgres tx).
+    let puffin_path = write_sidecar(
+        catalog,
+        table,
         index.as_ref(),
         s,
-        field_id,
-        column,
-        &identity_col,
+        &inputs.column,
+        &inputs.identity_col,
     )
     .await?;
 
-    // 10. One Postgres tx: insert vector_index mirror row + lineage event.
-    let lineage = LineageEvent {
-        run_id,
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![DatasetRef::from(table)],
-        outputs: vec![DatasetRef {
-            namespace: "loom-vector-index".to_string(),
-            name: puffin_path.clone(),
-        }],
-        payload: serde_json::json!({
-            "column": column,
-            "covered_snapshot": s,
-            "row_count": row_count,
-        }),
-    };
-
-    let mut tx = pool.begin().await.map_err(backend)?;
-    let conn: &mut PgConnection = &mut tx;
-
-    let table_id = live_table_id(conn, &table.schema, &table.name)
-        .await?
-        .ok_or_else(|| {
-            ControlPlaneError::NotFound(format!(
-                "no live mirror table for {}.{}",
-                table.schema, table.name
-            ))
-        })?;
-
-    insert_vector_index(
-        conn,
-        &VectorIndexRow {
-            table_id,
-            column: column.to_string(),
+    // 10. One Postgres tx: binding row + lineage event.
+    let lineage = build_lineage_event(run_id, table, &inputs.column, s, row_count, &puffin_path);
+    bind_index_and_emit(
+        pool,
+        table,
+        IndexBinding {
             index_name: index_name.to_string(),
+            column: inputs.column.clone(),
             covered_snapshot: s,
-            metric: metric.as_str().to_string(),
+            metric: inputs.metric.as_str().to_string(),
             index_kind: index.index_kind().as_str().to_string(),
             dim: dim as i32,
             row_count,
             puffin_path: puffin_path.clone(),
         },
+        &lineage,
     )
     .await?;
-
-    pg_emit(conn, &lineage).await?;
-    tx.commit().await.map_err(backend)?;
 
     Ok(BuiltIndex {
         covered_snapshot: s,
