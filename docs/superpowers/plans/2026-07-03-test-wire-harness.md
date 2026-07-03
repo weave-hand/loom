@@ -1159,7 +1159,7 @@ scoped to the one helper that is byte-identical in every copy. The files'
 `columns()`/`ipc_body()` variants (id-only, id+name, reordered) STAY LOCAL —
 they encode per-test schemas.
 
-- [ ] **Step 1: Verify byte-identity, then swap.** For each file:
+- [x] **Step 1: Verify byte-identity, then swap.** For each file:
 
 ```bash
 grep -A13 "async fn make_catalog" src/control-plane/postgres/tests/iceberg_landing.rs
@@ -1172,10 +1172,10 @@ must match the `local_sql_catalog` body (modulo fn name and an optional
 (none is expected to — 20/20 postgres copies verified identical), leave that
 file alone and note it for the Task 9 close prose.
 
-- [ ] **Step 2: BUCK deps** — add `"//src/testing:seed",` to each target;
+- [x] **Step 2: BUCK deps** — add `"//src/testing:seed",` to each target;
   build is the unused-dep checklist.
 
-- [ ] **Step 3: Run the affected targets green** (list assembled from the
+- [x] **Step 3: Run the affected targets green** (list assembled from the
   BUCK `srcs` of the 13 files):
 
 ```bash
@@ -1187,7 +1187,7 @@ buck2 test //src/control-plane/postgres: -j 8 > /tmp/t5.log 2>&1; \
 fixture-slot guidance. In a cloud session scope to the 13 targets instead of
 the whole package if disk pressure appears.)
 
-- [ ] **Step 4: prek + commit**
+- [x] **Step 4: prek + commit**
 
 ```bash
 buck2 run //tools:prek -- run --all-files > /tmp/prek5.log 2>&1; grep -E "Failed" /tmp/prek5.log || echo CLEAN

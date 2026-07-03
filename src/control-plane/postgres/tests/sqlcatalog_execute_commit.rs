@@ -5,29 +5,9 @@
 //!
 //! `loom_fixture_test`, not an inline module — loom forbids inline `#[test]`.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use loom_test_seed::local_sql_catalog;
 
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
 
 /// Behavior lock: a statement that fails *at execution time* (duplicate primary key)
 /// surfaces as `Err`, and the auto-commit transaction rolls back so nothing extra
@@ -39,7 +19,7 @@ async fn statement_failure_rolls_back_and_errors() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
 
     catalog
@@ -88,7 +68,7 @@ async fn commit_failure_propagates_as_error() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
 
     catalog
         .execute(

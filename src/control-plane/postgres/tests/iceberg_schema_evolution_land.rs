@@ -1,7 +1,7 @@
 //! Additive happy-path (write side) + non-additive rejection, driven through the real
 //! landing entrypoint `land` (inline limit 0 forces real Parquet). Asserts mirror state,
 //! not reads (the read path is Task 6). Setup mirrors tests/iceberg_overwrite.rs.
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
@@ -12,11 +12,6 @@ use control_plane_core::{ColumnSpec, EventType, LineageEvent, RunId, SnapshotId,
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn col(name: &str, ty: &str, nullable: bool) -> ColumnSpec {
     ColumnSpec {
@@ -124,26 +119,12 @@ fn encode(schema: &Arc<Schema>, batch: &RecordBatch) -> Vec<u8> {
     buf
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn additive_land_evolves_mirror_and_bumps_schema_version() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "s".into(),
@@ -241,7 +222,7 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "s".into(),
@@ -351,7 +332,7 @@ async fn additive_land_rejected_while_live_inline_rows_exist() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().unwrap();
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "s".into(),

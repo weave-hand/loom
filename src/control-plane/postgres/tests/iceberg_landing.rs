@@ -2,7 +2,7 @@
 //! inline (mirror-only) write and a real Parquet write, both emitting lineage
 //! atomically and returning the loom mirror snapshot id.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
@@ -14,11 +14,6 @@ use control_plane_core::{
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 /// Build an Arrow IPC stream body of `rows` rows with a single `id: long` column.
 fn ipc_body(rows: i64) -> Vec<u8> {
@@ -103,20 +98,6 @@ fn reordered_columns() -> Vec<ColumnSpec> {
     ]
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// A small request (under the byte limit) inlines: mirror-only rows + lineage, no
 /// object-storage Parquet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -124,7 +105,7 @@ async fn small_request_inlines_and_emits_lineage() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
 
     let run = RunId(uuid::Uuid::new_v4());
@@ -169,7 +150,7 @@ async fn large_request_writes_parquet_and_emits_lineage() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
 
     let run = RunId(uuid::Uuid::new_v4());
@@ -214,7 +195,7 @@ async fn reordered_columns_inline_align_by_name() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
 
     let run = RunId(uuid::Uuid::new_v4());
@@ -247,7 +228,7 @@ async fn reordered_columns_parquet_align_by_name() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
 
     let run = RunId(uuid::Uuid::new_v4());

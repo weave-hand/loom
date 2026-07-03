@@ -3,7 +3,7 @@
 //! live set while prior files stay reachable by time travel (mirror end-cap at the
 //! new snapshot).
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
@@ -19,11 +19,6 @@ use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parq
 use control_plane_postgres::iceberg_mirror::{
     end_cap_live_data_files, ensure_table, next_snapshot,
 };
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn columns() -> Vec<ColumnSpec> {
     vec![ColumnSpec {
@@ -78,20 +73,6 @@ fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Append `a` (10 rows) at `s1`, overwrite with `b` (4 rows) at `s2`: at the current
 /// snapshot only `b` is live; the prior snapshot still time-travels to `a`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -99,7 +80,7 @@ async fn overwrite_expires_old_and_preserves_time_travel() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
 
@@ -157,7 +138,7 @@ async fn replaced_files_carry_per_column_stats() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
 
@@ -204,7 +185,7 @@ async fn truncate_overwrite_with_zero_files() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
 
@@ -250,7 +231,7 @@ async fn overwrite_emits_lineage() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
 
     let t = TableRef {
@@ -310,7 +291,7 @@ async fn overwrite_atomicity_leaves_prior_set_intact() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
 

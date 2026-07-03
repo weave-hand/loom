@@ -1,7 +1,7 @@
 //! IcebergTx::compact_files over the polymorphic ControlPlane seam: stage + commit
 //! expires a subset and adds coalesced files at one snapshot, time travel preserved.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
@@ -14,11 +14,6 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn columns() -> Vec<control_plane_core::ColumnSpec> {
     vec![control_plane_core::ColumnSpec {
@@ -59,26 +54,12 @@ fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn iceberg_tx_compact_files_swaps_subset() {
     let fx = PgFixture::shared();
     let (pgcp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice_cat = IcebergCatalog::new(pool.clone());
     let t = TableRef {

@@ -2,6 +2,7 @@
 //! Iceberg pointer, so the slice-1 IcebergCatalog read path round-trips it; and
 //! concurrent appends leave the mirror consistent (one snapshot row per commit,
 //! every snapshot carrying its files — no orphans from rolled-back CAS attempts).
+use loom_test_seed::local_sql_catalog;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -9,28 +10,11 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use control_plane_core::{Catalog, PageReq, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
+use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::iceberg_writer::append_batches;
-use iceberg::io::LocalFsStorageFactory;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
-use iceberg::{Catalog as _, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
+use iceberg::{Catalog as _, NamespaceIdent, TableCreation, TableIdent};
 use sqlx::PgPool;
-
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
 
 async fn create_t(catalog: &SqlCatalog, warehouse: &str) {
     let ns = NamespaceIdent::new("wh".to_string());
@@ -86,7 +70,7 @@ async fn append_round_trips_through_the_mirror() {
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let whs = wh.path().display().to_string();
-    let catalog = make_catalog(fx.pg_dsn(&db), &whs).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &whs).await;
     create_t(&catalog, &whs).await;
     let table = catalog
         .load_table(&TableIdent::new(
@@ -127,7 +111,7 @@ async fn drop_unappended_table_succeeds_without_orphan_snapshot() {
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let whs = wh.path().display().to_string();
-    let catalog = make_catalog(fx.pg_dsn(&db), &whs).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &whs).await;
     create_t(&catalog, &whs).await; // creates the table; never appended
 
     let ident = TableIdent::new(NamespaceIdent::new("wh".into()), "t".into());
@@ -158,7 +142,7 @@ async fn concurrent_appends_consistent(n: i64) {
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let whs = wh.path().display().to_string();
-    let setup = make_catalog(fx.pg_dsn(&db), &whs).await;
+    let setup = local_sql_catalog(fx.pg_dsn(&db), &whs).await;
     create_t(&setup, &whs).await;
     let cs = setup
         .load_table(&TableIdent::new(
@@ -177,7 +161,7 @@ async fn concurrent_appends_consistent(n: i64) {
         let whs = whs.clone();
         let cs = cs.clone();
         handles.push(tokio::spawn(async move {
-            let catalog = make_catalog(dsn, &whs).await;
+            let catalog = local_sql_catalog(dsn, &whs).await;
             let table = catalog
                 .load_table(&TableIdent::new(
                     NamespaceIdent::new("wh".into()),

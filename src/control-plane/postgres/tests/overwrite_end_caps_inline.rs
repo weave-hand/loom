@@ -5,7 +5,7 @@
 //! data. Time travel to the pre-overwrite snapshot must still return the original
 //! inline row.
 
-use std::collections::HashMap;
+use loom_test_seed::local_sql_catalog;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch};
@@ -15,11 +15,6 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline::inline_append;
 use control_plane_postgres::iceberg_landing::overwrite_parquet_snapshot;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 
 fn columns() -> Vec<ColumnSpec> {
     vec![ColumnSpec {
@@ -45,20 +40,6 @@ fn lineage() -> LineageEvent {
     }
 }
 
-async fn make_catalog(dsn: String, warehouse: &str) -> SqlCatalog {
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), dsn);
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{warehouse}"),
-    );
-    SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog")
-}
-
 /// Count inline rows live at a given snapshot for the given table id.
 async fn live_inline_count(pool: &sqlx::PgPool, tid: i64, at: SnapshotId) -> i64 {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
@@ -80,7 +61,7 @@ async fn overwrite_end_caps_stale_inline_row() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
-    let catalog = make_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     let ice = IcebergCatalog::new(pool.clone());
 
