@@ -187,7 +187,8 @@ including an empty-rows delete-to-truncate), emits one action-level
 `LineageEvent` whose `outputs` list every step's target, and commits once — so
 any step's failure rolls the whole action back with no partial object graph ever
 visible. Persisted in normalized per-step tables (`action_step` +
-step-ordinal-keyed `action_param`/`action_assignment`).
+step-ordinal-keyed `action_param`/`action_assignment`). How-to (defining +
+invoking, single- and multi-step): [`guides/actions.md`](../guides/actions.md).
 
 ## ACL
 
