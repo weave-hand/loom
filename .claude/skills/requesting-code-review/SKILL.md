@@ -39,6 +39,18 @@ Dispatch a `general-purpose` subagent, filling the template at [code-reviewer.md
 - `{BASE_SHA}` - Starting commit
 - `{HEAD_SHA}` - Ending commit
 
+## loom metric gate (this repo)
+
+For any review before a merge to main, the reviewer (or you, before
+dispatching) must also run the code-health census skills in diff mode over the
+branch — `loom-complexity diff` and `loom-duplication diff` (changed files
+only, print, no commit) — and treat as findings any NEW hotspot over the
+census thresholds (cc > 15, cognitive > 15, MI < 20, SLOC > 100) or NEW
+cross-file duplication pair ≥ 20 lines the branch introduces. Advisory, not
+auto-blocking: fix or explicitly justify each in the PR description. This is
+the same gate `loom-work-checkout` mandates for register-item final reviews;
+it applies to non-register branches too.
+
 **3. Act on feedback:**
 - Fix Critical issues immediately
 - Fix Important issues before proceeding

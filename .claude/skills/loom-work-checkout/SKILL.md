@@ -38,7 +38,17 @@ one step. The registers and grammar are defined in
       the subagents follow `superpowers:test-driven-development`.
    4. **Final review** — after all tasks, the whole-implementation review that
       `superpowers:subagent-driven-development` ends with (a final code-reviewer
-      subagent) before finishing.
+      subagent) before finishing. **The final review MUST include the metric
+      gate**: run `loom-complexity diff` and `loom-duplication diff` (both
+      skills take a `diff` argument — changed files only, print, no commit)
+      and report as findings any NEW hotspot over the census thresholds
+      (cc > 15, cognitive > 15, MI < 20, SLOC > 100) or any NEW cross-file
+      duplication pair ≥ 20 lines introduced by the branch. Findings are
+      advisory, not auto-blocking — some legitimate changes trip the detectors
+      (e.g. an intentionally-local test seed) — but each one must be either
+      fixed or explicitly justified in the PR description. When the item's
+      whole point is a metric improvement, quote the before/after numbers in
+      the register close prose.
 4. **Finish** — `superpowers:finishing-a-development-branch`: open a PR whose head
    branch is `work/<id>` (this is what binds the claim to the PR). In that PR,
    close the register item via `loom-docs-update` (`- [ ]`→`- [x]`, terminal
@@ -49,9 +59,18 @@ one step. The registers and grammar are defined in
 
 ## Notes
 
-- A claim with no PR older than the grace window (default 60 min,
+- A claim with no PR older than the grace window (default 240 min,
   `LOOM_CLAIM_GRACE_MIN`) is reapable — open the PR promptly, or re-run
-  `claim <id>` to refresh it.
+  `claim <id>` to refresh it. The default is sized to a full
+  plan → plan-review → implement → final-review arc; refresh the claim at the
+  start of each long phase anyway if the arc may exceed it.
+- **Lease-check before every push to `work/<id>`.** A reaped-and-reclaimed
+  branch means another session may hold it now: before pushing, run
+  `git ls-remote origin work/<id>` and verify the remote tip is an ancestor of
+  your local branch (i.e. your history contains it). If it is not — someone
+  else's commits are on the branch — STOP and surface the collision to the
+  user rather than force-pushing over live work. (This rule exists because two
+  sessions once built the same item after a stale reap; see PR #324.)
 - Cloud sessions can **acquire** claims (a `refs/heads/*` create, which the web
   git proxy allows) but cannot `release`/`claims --reap` (the proxy forbids ref
   deletion). That is fine: a cloud session only needs to claim; the branch is
