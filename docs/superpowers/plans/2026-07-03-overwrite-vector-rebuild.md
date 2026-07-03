@@ -27,7 +27,7 @@
 **Interfaces:**
 - Produces: `pub(crate) async fn rebuild_jobs_for(pool: &PgPool, table: &TableRef) -> Result<Vec<NewJob>>` in `vector_index.rs`.
 
-- [ ] **Step 1: Implement the helper** — move the construction verbatim:
+- [x] **Step 1: Implement the helper** — move the construction verbatim:
 
 ```rust
 /// One `build_vector_index` NewJob per vector index declared on the ontology
@@ -58,13 +58,13 @@ pub(crate) async fn rebuild_jobs_for(pool: &PgPool, table: &TableRef) -> Result<
 
 Add the needed imports to `vector_index.rs` (`BUILD_VECTOR_INDEX_JOB_KIND`, `BuildVectorIndexJob`, `NewJob` from `control_plane_core` — mirror `iceberg_flush.rs:7-8`). In `iceberg_flush.rs`, replace lines 120-137 (the construction ONLY — keep the whole "atomic + deduped" comment at 117-119, wording adjusted to point at the shared helper) with `let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;` and keep the comment about atomic+deduped enqueue; drop now-unused imports.
 
-- [ ] **Step 2: Prove behavior preserved**
+- [x] **Step 2: Prove behavior preserved**
 
 Run: `buck2 test //src/control-plane/postgres:flush-vector-rebuild --unstable-allow-all-tests-on-re > /tmp/o1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/o1.log`
 (Target name per BUCK — verify with `grep -n 'flush_vector_rebuild' src/control-plane/postgres/BUCK` and use the actual `name =`.)
 Expected: PASS, 0 failures.
 
-- [ ] **Step 3: prek + commit**
+- [x] **Step 3: prek + commit**
 
 ```bash
 buck2 run -v0 //tools:prek -- run --all-files > /tmp/p.log 2>&1; grep -c Failed /tmp/p.log  # 0
