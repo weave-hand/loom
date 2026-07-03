@@ -1294,6 +1294,22 @@ rust_test(
 )
 
 rust_test(
+    name = "multi-step-run",
+    crate = "multi_step_run",
+    srcs = ["tests/multi_step_run.rs"],
+    crate_root = "tests/multi_step_run.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:async-trait",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "mutate-conformance",
     crate = "mutate_conformance",
     srcs = ["tests/mutate_conformance.rs"],

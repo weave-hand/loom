@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use control_plane_core::{ActionDef, JsonRepr, ObjectType, ParamDef, json_repr_of};
+use control_plane_core::{ActionStep, JsonRepr, ObjectType, ParamDef, json_repr_of};
 use serde_json::Value;
 
 use crate::serving::SqlValue;
@@ -53,27 +53,24 @@ pub fn parse_params(
     Ok(out)
 }
 
-/// Resolve an action invocation body into ordered `(property, SqlValue)` write pairs, applying
-/// the action's param→property mapping (`binds`) and constant assignments. The body is keyed by
-/// PARAMETER name; the returned pairs are keyed by the PROPERTY each param binds (or a constant
-/// fills). Assumes the action already passed conformance (so constants coerce and no property is
-/// double-written). Constants reuse the same `parse_value` coercion — against the PROPERTY's
-/// logical type — that parameters take, so a constant is a first-class equal of a param.
+/// Resolve ONE action step's invocation body into ordered `(property, SqlValue)` write pairs,
+/// applying the step's param→property mapping (`binds`), its constant/expression assignments, and
+/// any cross-step `StepRef`s (read from `step_env`). The body is keyed by PARAMETER name; the
+/// returned pairs are keyed by the PROPERTY each param binds (or a constant/ref fills). Assumes
+/// the step already passed conformance (so constants coerce and no property is double-written).
+/// Constants reuse the same `parse_value` coercion — against the PROPERTY's logical type — that
+/// parameters take, so a constant is a first-class equal of a param.
+///
+/// A single-step action passes its sole step (`action.steps.first()`); a multi-step action calls
+/// this once per step in declared order, passing the step whose params/assignments to resolve and
+/// the growing `step_env` so a later step's `StepRef` sees earlier steps' resolved rows.
 pub fn resolve_action_row(
-    action: &ActionDef,
+    step: &ActionStep,
     target: &ObjectType,
     body: &serde_json::Map<String, Value>,
     now: time::PrimitiveDateTime,
     step_env: &StepEnv,
 ) -> Result<Vec<(String, SqlValue)>, ParamError> {
-    // Single-step semantics: read the sole step's params/assignments. A well-formed action
-    // always carries ≥1 step (construction-impossible empty), reported as a loud error rather
-    // than a panic. Task 5 iterates every step, populating `step_env` as it goes.
-    let step = action
-        .steps
-        .first()
-        .ok_or_else(|| ParamError::BadValue(action.name.0.clone(), "action has no steps".into()))?;
-
     // Param leg: reuse parse_params (rejects unknown keys, enforces required, coerces by
     // param.ty), then remap each pair from param name → bound property. parse_params preserves
     // step.parameters order, so zipping the param refs onto its output is exact.

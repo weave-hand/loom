@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::governed::Projection;
 use crate::handler::ObjectRows;
 use crate::params::ParamError;
-use crate::serving::{ActionEngine, ServingError, SqlValue};
+use crate::serving::{ActionEngine, ServingError, SqlValue, StepWrite, WriteMode};
 use crate::write_filter::{self, WriteVerdict};
 
 pub struct ActionDeps<'a> {
@@ -553,12 +553,23 @@ pub async fn run_action(
     //     after the Write gate (no definition-validity leak to unauthorized callers), before any write.
     check_conformance_steps(&action, &targets)?;
 
-    // 4. Dispatch on the mutation kind. The coarse Write gate + conformance above are shared;
-    //    the fine-grained write policy and the actual write differ per kind.
-    match step.kind {
-        ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await,
-        ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await,
-        ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await,
+    // 4. Dispatch on step count. A lone bind-less step is EXACTLY today's single-object path
+    //    (byte-compatible, inline tiering preserved) — run it unchanged on that step. Anything
+    //    else (≥2 steps, or a single bound step) is the multi-step orchestration: resolve +
+    //    govern EVERY step before one atomic `write_steps`. Never index `steps[0]`.
+    let single = (action.steps.len() == 1)
+        .then(|| action.steps.first())
+        .flatten()
+        .filter(|s| s.bind.is_none());
+    match single {
+        // The coarse Write gate + conformance above are shared; the fine-grained write policy
+        // and the actual write differ per kind.
+        Some(single_step) => match single_step.kind {
+            ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await,
+            ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await,
+            ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await,
+        },
+        None => run_multi_step(&action, &targets, body, subject, deps).await,
     }
 }
 
@@ -663,7 +674,7 @@ async fn run_insert(
     //    it across steps).
     let now = request_now();
     let step_env = crate::params::StepEnv::new();
-    let pairs = crate::params::resolve_action_row(action, target, body, now, &step_env)?;
+    let pairs = crate::params::resolve_action_row(step, target, body, now, &step_env)?;
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
     let values: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
 
@@ -777,6 +788,24 @@ fn ensure_cow_supported(target: &ObjectType) -> Result<(), ActionError> {
 /// single param is the resolved identity value. The read runs over the identity-aware
 /// merge view, so it returns the current merged version of exactly the targeted object.
 fn select_object_sql(target: &ObjectType, id_column: &str) -> String {
+    select_object_sql_where(target, Some(id_column))
+}
+
+/// The full-table read backing the multi-step Update/Delete copy-on-write overwrite:
+/// [`select_object_sql`] WITHOUT the identity `where` clause, so it returns EVERY live row of
+/// `target` (over the identity-aware merge view) in property order. The caller locates the
+/// targeted identity row, patches (Update) or drops (Delete) it, and writes the resulting row
+/// set back as an `Overwrite` — every OTHER row preserved verbatim.
+fn select_object_sql_all(target: &ObjectType) -> String {
+    select_object_sql_where(target, None)
+}
+
+/// Shared builder for the targeted ([`select_object_sql`]) and full-table
+/// ([`select_object_sql_all`]) reads: `SELECT <all props> FROM "schema"."table"` with an
+/// optional `WHERE "<id>" = ?` predicate (identifiers double-quoted, embedded quotes doubled;
+/// column order = property order). The `?` placeholder is substituted by the serving seam via
+/// `inline_params` — a `$1` would never be bound.
+fn select_object_sql_where(target: &ObjectType, id_column: Option<&str>) -> String {
     let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
     let cols = target
         .properties
@@ -784,11 +813,14 @@ fn select_object_sql(target: &ObjectType, id_column: &str) -> String {
         .map(|p| q(&p.name))
         .collect::<Vec<_>>()
         .join(", ");
+    let predicate = match id_column {
+        Some(id) => format!(" WHERE {} = ?", q(id)),
+        None => String::new(),
+    };
     format!(
-        "SELECT {cols} FROM {}.{} WHERE {} = ?",
+        "SELECT {cols} FROM {}.{}{predicate}",
         q(&target.table.schema),
         q(&target.table.name),
-        q(id_column),
     )
 }
 
@@ -950,7 +982,7 @@ async fn run_mutate(
     let now = request_now();
     // Single-step mutate: no prior-step bindings (Task 5 populates the env across steps).
     let step_env = crate::params::StepEnv::new();
-    let pairs = crate::params::resolve_action_row(action, target, body, now, &step_env)?;
+    let pairs = crate::params::resolve_action_row(step, target, body, now, &step_env)?;
     let id_value = pairs
         .iter()
         .find(|(c, _)| c == &idprop)
@@ -1133,4 +1165,337 @@ async fn run_mutate(
 
     // 7. Return the affected object + run id — unchanged shape.
     Ok((affected_object(target, columns, returned), run_id))
+}
+
+/// Project the shared invocation `body` down to a single step's declared parameters — each step
+/// sees ONLY its own param keys. The action-level unknown-key guard (in [`run_multi_step`]) has
+/// already rejected any key belonging to no step, so a per-step `parse_params` over this
+/// projection never trips on a sibling step's key. Absent keys (omitted optionals) are simply
+/// not carried — `parse_params` re-materializes them as `SqlValue::Null`, exactly as the
+/// single-step path does.
+fn project_body(
+    step: &ActionStep,
+    body: &serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    step.parameters
+        .iter()
+        .filter_map(|p| body.get(&p.name).map(|v| (p.name.clone(), v.clone())))
+        .collect()
+}
+
+/// Log a fine-grained Write denial server-side (caller-scoped reason; the predicate/policy/role
+/// stay here). Shared by the multi-step Insert gate and mirrors the single-step `run_insert` log.
+fn log_write_denied(action_name: &str, reason: &WriteDenialReason) {
+    match reason {
+        WriteDenialReason::Column(col) => {
+            tracing::info!(action = action_name, column = %col, "write denied: policy denies column");
+        }
+        WriteDenialReason::RowFilter => {
+            tracing::info!(
+                action = action_name,
+                "write denied: row fails write policy filter"
+            );
+        }
+    }
+}
+
+/// Multi-step orchestration: resolve + govern EVERY step (in declared order, threading the
+/// cross-step binding env) BEFORE a single atomic `write_steps`. A denial on ANY step — coarse
+/// Write gate, fine-grained ACL, or a constraint violation — returns before any write is issued,
+/// so the whole action is all-or-nothing (nothing is ever partially written). Steps sharing a
+/// target table coalesce into one multi-row `Append`; distinct targets stay distinct. One
+/// `RunId`; the lineage event's `outputs` list every step's target dataset. The returned
+/// `ObjectRows` is the FIRST step's affected object (the primary/root object the action minted) —
+/// the HTTP handler surfaces a single created object, and a richer multi-object response body is
+/// a follow-on.
+async fn run_multi_step(
+    action: &ActionDef,
+    targets: &[ObjectType],
+    body: &serde_json::Map<String, Value>,
+    subject: &SubjectId,
+    deps: &ActionDeps<'_>,
+) -> Result<(ObjectRows, RunId), ActionError> {
+    let action_name = action.name.0.as_str();
+    let now = request_now();
+    let run_id = RunId(Uuid::new_v4());
+
+    // Action-level unknown-key guard: the shared body is projected per step (each step sees only
+    // ITS param keys), so a per-step `parse_params` never rejects a sibling step's key. Enforce
+    // the "no unknown param" guarantee here instead, over the UNION of every step's params.
+    let known: std::collections::HashSet<&str> = action
+        .steps
+        .iter()
+        .flat_map(|s| s.parameters.iter().map(|p| p.name.as_str()))
+        .collect();
+    if let Some(k) = body.keys().find(|k| !known.contains(k.as_str())) {
+        return Err(ActionError::BadParams(ParamError::Unknown(k.clone())));
+    }
+
+    let mut step_env = crate::params::StepEnv::new();
+    let mut writes: Vec<StepWrite> = Vec::with_capacity(action.steps.len());
+    let mut first_affected: Option<ObjectRows> = None;
+
+    // Resolve + govern each step in declared order, building its staged write. NOTHING is written
+    // in this loop — `write_steps` runs once, after the whole action clears governance.
+    for (step, target) in action.steps.iter().zip(targets) {
+        // a. Coarse Write gate on THIS step's target (deny-by-default).
+        let policy_target = PolicyTarget::Type(step.target.clone());
+        if deps
+            .cp
+            .acl()
+            .check(subject, Action::Write, &policy_target)
+            .await?
+            == Decision::Deny
+        {
+            return Err(ActionError::Forbidden);
+        }
+
+        // b. Resolve the step's row (params → binds → assignments/exprs → StepRefs from the env),
+        //    projecting the shared body to this step's params.
+        let step_body = project_body(step, body);
+        let pairs = crate::params::resolve_action_row(step, target, &step_body, now, &step_env)?;
+
+        // c/d/e. Fine governance (identical to the single-object gates, per step) + build the
+        //        step's staged write. Any denial/violation returns here — before any write.
+        let write = govern_and_build_step(step, target, &pairs, subject, deps, action_name).await?;
+
+        // Response: keep the FIRST step's affected object (the primary/root object created).
+        if first_affected.is_none() {
+            let cols: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
+            let vals: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
+            first_affected = Some(affected_object(target, cols, vals));
+        }
+
+        // f. Expose this step's resolved row (INCLUDING its identity) under its `bind` name, so a
+        //    later step's `StepRef` resolves against it.
+        if let Some(b) = &step.bind {
+            let row: BTreeMap<String, SqlValue> =
+                pairs.iter().map(|(c, v)| (c.clone(), v.clone())).collect();
+            step_env.insert(b.clone(), row);
+        }
+
+        writes.push(write);
+    }
+
+    // Coalesce Append writes that share a target table into one multi-row write; distinct targets
+    // (and any Overwrite) stay distinct.
+    let writes = coalesce_appends(writes);
+
+    // ONE lineage event listing every step's target dataset (inputs stay [] for a from-params
+    // create). The caller owns the run_id; the engine commits every step + this event atomically.
+    let outputs: Vec<DatasetRef> = action
+        .steps
+        .iter()
+        .map(|s| DatasetRef::from(&s.target))
+        .collect();
+    let event = LineageEvent::completed_with_run(
+        run_id,
+        outputs,
+        serde_json::json!({ "action": action_name }),
+    );
+
+    deps.action_engine.write_steps(&writes, event).await?;
+
+    let rows =
+        first_affected.ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
+    Ok((rows, run_id))
+}
+
+/// Govern one step and build its staged [`StepWrite`], dispatching on the step's kind. Insert
+/// gates the row and stages an `Append`; Update/Delete read the table's full contents, gate the
+/// targeted row, and stage the full post-image as an `Overwrite`. Runs entirely before any write.
+async fn govern_and_build_step(
+    step: &ActionStep,
+    target: &ObjectType,
+    pairs: &[(String, SqlValue)],
+    subject: &SubjectId,
+    deps: &ActionDeps<'_>,
+    action_name: &str,
+) -> Result<StepWrite, ActionError> {
+    match step.kind {
+        ActionKind::Insert => {
+            govern_and_build_insert(target, pairs, subject, deps, action_name).await
+        }
+        ActionKind::Update => {
+            govern_and_build_mutate(target, pairs, subject, deps, action_name, true).await
+        }
+        ActionKind::Delete => {
+            govern_and_build_mutate(target, pairs, subject, deps, action_name, false).await
+        }
+    }
+}
+
+/// INSERT step: gate the SET (non-null) columns/values through the fine-grained Write policy,
+/// enforce per-value constraints, then stage the row (expanded to the target's full property
+/// set) as an `Append`. Mirrors `run_insert`'s governance exactly.
+async fn govern_and_build_insert(
+    target: &ObjectType,
+    pairs: &[(String, SqlValue)],
+    subject: &SubjectId,
+    deps: &ActionDeps<'_>,
+    action_name: &str,
+) -> Result<StepWrite, ActionError> {
+    let policy_target = PolicyTarget::Type(target.name.clone());
+    // Gate only the columns the caller actually SET (an omitted optional NULL is not "setting" it).
+    let (set_columns, set_values): (Vec<String>, Vec<SqlValue>) = pairs
+        .iter()
+        .filter(|(_, v)| !matches!(v, SqlValue::Null))
+        .cloned()
+        .unzip();
+    let write_policies = deps
+        .cp
+        .acl()
+        .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
+        .await?;
+    let verdict =
+        write_filter::check_write_policy(&write_policies.items, &set_columns, &set_values);
+    if let Some(reason) = WriteDenialReason::from_verdict(verdict) {
+        log_write_denied(action_name, &reason);
+        return Err(ActionError::WriteDenied(reason));
+    }
+    let cviol = value_constraint_violations(target, pairs)?;
+    if !cviol.is_empty() {
+        tracing::info!(
+            action = action_name,
+            count = cviol.len(),
+            "insert rejected: constraint violation"
+        );
+        return Err(ActionError::ConstraintViolation(cviol));
+    }
+    let (full_columns, full_values, full_logical) = expand_to_full_row(target, pairs);
+    Ok(StepWrite {
+        table: target.table.clone(),
+        columns: full_columns,
+        rows: vec![full_values],
+        logical_types: full_logical,
+        mode: WriteMode::Append,
+    })
+}
+
+/// UPDATE/DELETE step: read the table's FULL current contents (the unfiltered merge view),
+/// locate the targeted identity row, govern it via the three ordered mutate legs + per-value
+/// constraints, then stage the full post-image (targeted row PATCHed for Update / dropped for
+/// Delete; every OTHER row preserved verbatim) as an `Overwrite`. `ensure_cow_supported` still
+/// rejects vector-typed targets. This is the file-tier copy-on-write (O(table) per mutating
+/// step), distinct from the single-object inline-delta path.
+async fn govern_and_build_mutate(
+    target: &ObjectType,
+    pairs: &[(String, SqlValue)],
+    subject: &SubjectId,
+    deps: &ActionDeps<'_>,
+    action_name: &str,
+    is_update: bool,
+) -> Result<StepWrite, ActionError> {
+    ensure_cow_supported(target)?;
+    let policy_target = PolicyTarget::Type(target.name.clone());
+    let idprop = target.identity.clone().ok_or_else(|| {
+        ActionError::Misconfigured(format!("type `{}` has no declared identity", target.name.0))
+    })?;
+    let id_value = pairs
+        .iter()
+        .find(|(c, _)| c == &idprop)
+        .map(|(_, v)| v.clone())
+        .ok_or_else(|| {
+            ActionError::Misconfigured(format!("missing identity parameter `{idprop}`"))
+        })?;
+
+    let columns: Vec<String> = target.properties.iter().map(|p| p.name.clone()).collect();
+    let logical: Vec<String> = target.properties.iter().map(|p| p.ty.clone()).collect();
+    // The PATCH columns the caller actually SET (non-identity, non-null). DELETE sets nothing.
+    let set_pairs: Vec<(String, SqlValue)> = pairs
+        .iter()
+        .filter(|(c, v)| c != &idprop && !matches!(v, SqlValue::Null))
+        .cloned()
+        .collect();
+
+    let write_policies = deps
+        .cp
+        .acl()
+        .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
+        .await?;
+
+    // Full-table read of the current live contents (unfiltered merge view; no identity `where`).
+    let live = deps
+        .serving
+        .fetch_rows(&select_object_sql_all(target), &[])
+        .await?;
+    let id_idx = columns.iter().position(|c| c == &idprop).ok_or_else(|| {
+        ActionError::Misconfigured(format!("identity `{idprop}` is not a property"))
+    })?;
+    let (target_idx, existing) = locate_unique_row(&live.rows, id_idx, &id_value, &idprop)?;
+
+    // The resulting row: UPDATE = existing with the SET columns overwritten; DELETE keeps `None`.
+    let new_row: Option<Vec<SqlValue>> = is_update.then(|| {
+        let mut row = existing.clone();
+        for (col, val) in &set_pairs {
+            if let Some(ci) = columns.iter().position(|c| c == col)
+                && let Some(slot) = row.get_mut(ci)
+            {
+                *slot = val.clone();
+            }
+        }
+        row
+    });
+
+    // Governance + constraints on the freshly-read existing/new image (identical to single-object).
+    enforce_mutate_policy(
+        &write_policies.items,
+        &columns,
+        &existing,
+        &set_pairs,
+        new_row.as_deref(),
+        action_name,
+    )?;
+    let cviol = value_constraint_violations(target, &set_pairs)?;
+    if !cviol.is_empty() {
+        tracing::info!(
+            action = action_name,
+            count = cviol.len(),
+            "update rejected: constraint violation"
+        );
+        return Err(ActionError::ConstraintViolation(cviol));
+    }
+
+    // The full post-image: patch (UPDATE) or drop (DELETE) the targeted row, keep the rest verbatim.
+    let mut rows = live.rows;
+    match new_row {
+        Some(r) => {
+            if let Some(slot) = rows.get_mut(target_idx) {
+                *slot = r;
+            }
+        }
+        None => {
+            if target_idx < rows.len() {
+                rows.remove(target_idx);
+            }
+        }
+    }
+
+    Ok(StepWrite {
+        table: target.table.clone(),
+        columns,
+        rows,
+        logical_types: logical,
+        mode: WriteMode::Overwrite,
+    })
+}
+
+/// Coalesce staged writes that share a target table AND `Append` mode into one multi-row write
+/// (`build_object_batches` handles N rows engine-side). Distinct targets — and any `Overwrite` —
+/// stay distinct. Order-preserving: the first write to a table keeps its position; later same-table
+/// Appends fold their rows into it.
+fn coalesce_appends(writes: Vec<StepWrite>) -> Vec<StepWrite> {
+    let mut out: Vec<StepWrite> = Vec::with_capacity(writes.len());
+    for w in writes {
+        if w.mode == WriteMode::Append
+            && let Some(existing) = out
+                .iter_mut()
+                .find(|e| e.mode == WriteMode::Append && e.table == w.table)
+        {
+            existing.rows.extend(w.rows);
+            continue;
+        }
+        out.push(w);
+    }
+    out
 }

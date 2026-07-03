@@ -116,7 +116,7 @@ fn invalid_iso_date_is_an_error() {
 // --- resolve_action_row: param->property mapping + constant assignments (slice 1) ---
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, Assignment, ObjectType, PropertyDef, TableRef, TypeName,
+    ActionKind, ActionStep, Assignment, ObjectType, PropertyDef, TableRef, TypeName,
 };
 use query_api::params::{StepEnv, resolve_action_row};
 
@@ -152,14 +152,16 @@ fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
     }
 }
 
-fn insert(params: Vec<ParamDef>, assignments: Vec<Assignment>) -> ActionDef {
-    ActionDef::single_step(
-        ActionName("a".into()),
-        TypeName("Gadget".into()),
-        ActionKind::Insert,
-        params,
+// The single step under test. `resolve_action_row` now takes one `ActionStep` (the sole step of
+// a single-step action, or one step of a multi-step action); these tests exercise that step.
+fn insert(params: Vec<ParamDef>, assignments: Vec<Assignment>) -> ActionStep {
+    ActionStep {
+        target: TypeName("Gadget".into()),
+        kind: ActionKind::Insert,
+        parameters: params,
         assignments,
-    )
+        bind: None,
+    }
 }
 
 #[test]
