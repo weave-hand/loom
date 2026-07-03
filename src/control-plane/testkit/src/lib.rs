@@ -500,6 +500,19 @@ where
     );
 
     // Drop it.
+    // With BOTH tables live, list_tables pins the (schema, name) ordering on a
+    // genuinely multi-element list (the post-drop assert below sees only one).
+    let both = catalog
+        .list_tables(PageReq::unbounded())
+        .await
+        .expect("list_tables before drop")
+        .items;
+    assert_eq!(
+        both,
+        vec![t.clone(), other.clone()],
+        "both live tables listed, (schema, name)-ordered"
+    );
+
     let d = seeder.drop_table(&t).await;
     assert!(d > s1, "drop creates a later snapshot");
 

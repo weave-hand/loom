@@ -317,12 +317,21 @@ async fn wire_acl_is_read_only() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "read-only")]
-async fn wire_catalog_is_guarded() {
+async fn wire_catalog_delegates_direct() {
     let fx = PgFixture::shared();
     let (cp, db, warehouse) = seed(fx).await;
     let (sock, _guard) = spawn_engine(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
     let client = connect_gov_client(&sock).await;
     let wire = WireControlPlane::new(client, Arc::new(cp) as Arc<dyn ControlPlane>);
-    let _ = wire.catalog(); // must panic: query-api never reads catalog over this plane
+    // catalog() delegates to the direct plane (dataset metadata reads, like
+    // queue()/lineage()) — a usable handle, not a guard.
+    // This fixture defines ontology types but commits no mirror tables, so the
+    // page is empty — the point is that a real query ran (the old accessor
+    // panicked before it could).
+    let listed = wire
+        .catalog()
+        .list_tables(control_plane_core::PageReq::unbounded())
+        .await
+        .expect("list_tables over the delegated direct plane");
+    assert!(listed.next.is_none(), "single full page");
 }

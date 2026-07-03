@@ -4,7 +4,10 @@
 
 use std::str::FromStr;
 
-use control_plane_core::{Action, ActionKind, Cardinality, ControlPlaneError, Effect, EventType};
+use control_plane_core::{
+    Action, ActionKind, Cardinality, ControlPlaneError, Effect, EventType, PolicyTarget, TableRef,
+    TypeName,
+};
 
 #[test]
 fn cardinality_round_trips_and_fails_loud() {
@@ -60,4 +63,34 @@ fn action_and_effect_tokens() {
     assert_eq!(Action::Write.as_str(), "write");
     assert_eq!(Effect::Allow.as_str(), "allow");
     assert_eq!(Effect::Deny.as_str(), "deny");
+    // Round-trip + fail-loud, matching the other persisted-token decoders.
+    assert_eq!(Action::from_str("read").unwrap(), Action::Read);
+    assert_eq!(Action::from_str("write").unwrap(), Action::Write);
+    assert_eq!(Effect::from_str("allow").unwrap(), Effect::Allow);
+    assert_eq!(Effect::from_str("deny").unwrap(), Effect::Deny);
+    assert!(matches!(
+        Action::from_str("admin"),
+        Err(ControlPlaneError::Validation(_))
+    ));
+    assert!(matches!(
+        Effect::from_str("maybe"),
+        Err(ControlPlaneError::Validation(_))
+    ));
+}
+
+#[test]
+fn policy_target_key_parts_round_trip() {
+    let ty = PolicyTarget::Type(TypeName("Customer".into()));
+    let (k, a, b) = ty.key_parts();
+    assert_eq!(PolicyTarget::from_key_parts(k, &a, &b).unwrap(), ty);
+    let table = PolicyTarget::Table(TableRef {
+        schema: "sales".into(),
+        name: "orders".into(),
+    });
+    let (k, a, b) = table.key_parts();
+    assert_eq!(PolicyTarget::from_key_parts(k, &a, &b).unwrap(), table);
+    assert!(matches!(
+        PolicyTarget::from_key_parts("dataset", "x", ""),
+        Err(ControlPlaneError::Validation(_))
+    ));
 }

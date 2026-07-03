@@ -1,7 +1,8 @@
 //! A read-only governance `ControlPlane` for query-api: `acl()`/`ontology()` read
-//! over the engine wire; `queue()` and `lineage()` delegate to the direct Postgres
-//! plane (the GC enqueue and the governed lineage read endpoints); `catalog()`/
-//! `begin()` are guarded because query-api never uses them through this plane.
+//! over the engine wire; `queue()`, `lineage()`, and `catalog()` delegate to the
+//! direct Postgres plane (the GC enqueue, governed lineage reads, and dataset
+//! metadata reads); `begin()` stays guarded because query-api never opens a
+//! control-plane transaction through this plane.
 //! Write/define governance methods fail loudly — query-api authorizes reads here
 //! and sends pre-authorized writes via the engine's write RPCs; it never defines
 //! governance.

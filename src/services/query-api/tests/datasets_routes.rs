@@ -120,7 +120,9 @@ async fn dataset_detail_composes_snapshot_and_columns() {
     assert_eq!(json["table"]["name"], "events");
     assert_eq!(json["snapshot_id"], latest);
     assert!(
-        json["snapshot_time"].as_str().is_some_and(|t| !t.is_empty()),
+        json["snapshot_time"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()),
         "snapshot_time must be a non-empty RFC3339 string, got {json}"
     );
     assert_eq!(
