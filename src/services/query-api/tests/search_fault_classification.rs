@@ -137,9 +137,13 @@ async fn engine_hit_coercion_fault_is_internal_500_with_one_log() {
     // Its Display chains the wrap context and the underlying coercion detail (column).
     let shown = err.to_string();
     assert!(shown.contains("post-filter"), "context present: {shown}");
+    // `FilterError::Coerce` renders `"filter {column}: {detail}"`, so `"filter id"`
+    // uniquely proves the identity column was echoed — the wrap context ("...engine hit
+    // identity...") merely *contains* the substring "id", which a bare `contains("id")`
+    // would spuriously satisfy.
     assert!(
-        shown.contains("id"),
-        "coercion detail names the column: {shown}"
+        shown.contains("filter id"),
+        "coercion detail names the identity column: {shown}"
     );
 
     // Render + operator log: opaque 500 body, and exactly one ERROR event carrying the
@@ -174,8 +178,10 @@ async fn engine_hit_coercion_fault_is_internal_500_with_one_log() {
         logged.contains("post-filter"),
         "log carries the wrap context: {logged}"
     );
+    // `"filter id"` (from `FilterError::Coerce`'s Display) uniquely proves the column
+    // echo, unlike a bare `"id"` that the wrap context's "identity" would also satisfy.
     assert!(
-        logged.contains("id"),
-        "log carries the coercion detail (column): {logged}"
+        logged.contains("filter id"),
+        "log carries the coercion detail (identity column): {logged}"
     );
 }
