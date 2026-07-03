@@ -458,6 +458,18 @@ impl Ontology for PgControlPlane {
         })
     }
 
+    async fn list_actions(&self, _page: PageReq) -> Result<Page<ActionDef>> {
+        let names = sqlx::query_scalar!("select name from ontology.action order by name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?;
+        let mut out = Vec::with_capacity(names.len());
+        for n in names {
+            out.push(self.get_action(&ActionName(n)).await?);
+        }
+        Ok(Page::from_full(out))
+    }
+
     async fn define_vector_index(&self, def: VectorIndexDef) -> Result<()> {
         let prop_ty: Option<String> = sqlx::query_scalar!(
             "select ty from ontology.property where type_name = $1 and name = $2",

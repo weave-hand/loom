@@ -56,6 +56,9 @@ impl Ontology for MissingType {
     async fn get_action(&self, _name: &ActionName) -> control_plane_core::Result<ActionDef> {
         unreachable!("not exercised by resolve_governed")
     }
+    async fn list_actions(&self, _page: PageReq) -> control_plane_core::Result<Page<ActionDef>> {
+        unreachable!("not exercised by resolve_governed")
+    }
     async fn define_vector_index(&self, _def: VectorIndexDef) -> control_plane_core::Result<()> {
         unreachable!("not exercised by resolve_governed")
     }

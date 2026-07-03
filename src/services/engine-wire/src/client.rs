@@ -478,6 +478,14 @@ impl GrpcQueueClient {
     }
 
     gov_rpc! {
+        /// Governance: list all defined actions.
+        fn gov_list_actions(page: &PageReq) -> Page<ActionDef>;
+        rpc list_actions, out page_json, req pb::ListActionsRequest {
+            page_json: se(page)?,
+        }
+    }
+
+    gov_rpc! {
         /// Governance: fetch the definition of a named action.
         fn gov_get_action(name: &ActionName) -> ActionDef;
         rpc get_action, out action_def_json, req pb::GetActionRequest {

@@ -8,6 +8,17 @@ fn expected() -> BTreeSet<(String, String)> {
         ("post", "/datasets/{schema}/{table}"),
         ("post", "/models/{type}"),
         ("post", "/tables/{schema}/{table}/compact"),
+        // Runtime-mounted routes (serve.rs merges the auth and service-account
+        // routers — no admin router on ingest) — documented by the
+        // service_runtime OpenAPI fragments.
+        ("post", "/auth/login"),
+        ("post", "/auth/logout"),
+        ("post", "/auth/password"),
+        ("post", "/auth/service-accounts"),
+        ("get", "/auth/service-accounts"),
+        ("post", "/auth/service-accounts/{id}/tokens"),
+        ("get", "/auth/service-accounts/{id}/tokens"),
+        ("delete", "/auth/service-accounts/{id}/tokens/{token_id}"),
     ]
     .iter()
     .map(|(m, p)| ((*m).to_string(), (*p).to_string()))

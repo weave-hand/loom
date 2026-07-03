@@ -1,7 +1,7 @@
-//! query-api's static OpenAPI document. `build_openapi()` returns it as a value (the
-//! ontology hook: slice 2 will `.paths.extend(...)` ontology-derived operations into
-//! the same document). DTOs here are documentation shapes for the dynamic JSON the
-//! handlers actually emit (`render::objects_to_json` produces open object maps).
+//! query-api's static OpenAPI document. `build_openapi()` returns it as a value so the
+//! live document (`live_openapi`) can extend it with ontology-derived operations per
+//! request. DTOs here are documentation shapes for the dynamic JSON the handlers
+//! actually emit (`render::objects_to_json` produces open object maps).
 
 use utoipa::{OpenApi, ToSchema};
 
@@ -121,21 +121,28 @@ pub struct OntologyTypesResponse {
 pub struct ApiDoc;
 
 /// Build the static OpenAPI document. Returns a value (not a constant) so the live document
-/// (`live_openapi`) can merge ontology-derived operations through this same seam.
+/// (`live_openapi`) can merge ontology-derived operations through this same seam. The
+/// service's own paths are merged with the `service_runtime` fragments for the runtime
+/// routes this service mounts (`serve.rs`): auth, service-account, and admin.
 #[must_use]
 pub fn build_openapi() -> utoipa::openapi::OpenApi {
-    ApiDoc::openapi()
+    let mut doc = ApiDoc::openapi();
+    doc.merge(service_runtime::auth_openapi());
+    doc.merge(service_runtime::service_account_openapi());
+    doc.merge(service_runtime::admin_openapi());
+    doc
 }
 
-/// Bound on `list_types` page draining — a defensive cap so a misbehaving cursor can never
-/// spin forever. Adapters return one full page today; this tolerates future keyset paging.
+/// Bound on `list_types`/`list_actions` page draining — a defensive cap so a misbehaving
+/// cursor can never spin forever. Adapters return one full page today; this tolerates future
+/// keyset paging.
 const MAX_TYPE_PAGES: usize = 10_000;
 
 /// Build the OpenAPI document with per-request ontology-derived operations merged onto the
-/// static base. Reads the live ontology through `cp` (`list_types` + per-type `links`), runs
-/// the pure generator, and extends the base document's paths + component schemas. On a read
-/// error it logs and returns the static base unchanged — a docs endpoint must never fail the
-/// whole document because an ontology read hiccupped.
+/// static base. Reads the live ontology through `cp` (`list_types` + per-type `links` +
+/// `list_actions`), runs the pure generator, and extends the base document's paths +
+/// component schemas. On a read error it logs and degrades — a docs endpoint must never fail
+/// the whole document because an ontology read hiccupped.
 pub async fn live_openapi(
     cp: std::sync::Arc<dyn control_plane_core::ControlPlane + Send + Sync>,
 ) -> utoipa::openapi::OpenApi {
@@ -179,7 +186,34 @@ pub async fn live_openapi(
         }
     }
 
-    let (paths, schemas) = crate::openapi_gen::ontology_openapi(&types, &links);
+    // Drain every defined action (same bounded loop as types). Unlike a `list_types`
+    // failure, an action-read error degrades to an actionless document rather than the
+    // static base — the types/links already read are still worth serving.
+    let mut actions = Vec::new();
+    let mut after = None;
+    for _ in 0..MAX_TYPE_PAGES {
+        let page = match onto
+            .list_actions(PageReq {
+                after: after.clone(),
+                limit: None,
+            })
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "openapi: list_actions failed; serving without actions");
+                actions.clear();
+                break;
+            }
+        };
+        actions.extend(page.items);
+        match page.next {
+            Some(cursor) => after = Some(cursor),
+            None => break,
+        }
+    }
+
+    let (paths, schemas) = crate::openapi_gen::ontology_openapi(&types, &links, &actions);
     doc.paths.paths.extend(paths.paths);
     if let Some(components) = doc.components.as_mut() {
         components.schemas.extend(schemas);

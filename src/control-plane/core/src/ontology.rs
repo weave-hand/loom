@@ -776,6 +776,10 @@ pub trait Ontology {
     async fn define_action(&self, action: ActionDef) -> Result<()>;
     /// Fetch an action by name. `NotFound` if absent.
     async fn get_action(&self, name: &ActionName) -> Result<ActionDef>;
+    /// Page through every defined action, name-ordered. Adapters return the
+    /// full set in a single page (`next: None`); `page` is accepted for future
+    /// keyset paging, like [`Ontology::list_types`].
+    async fn list_actions(&self, page: PageReq) -> Result<Page<ActionDef>>;
     /// Declare (upsert) a named vector index, keyed by `(type, name)`. Replaces an
     /// existing index of the same key — matching `define_type`'s replace semantics.
     /// Validates that `def.property` exists on `def.type_name` and is a `vector(N)`

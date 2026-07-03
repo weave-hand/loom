@@ -127,6 +127,12 @@ impl Ontology for MemoryControlPlane {
             .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))
     }
 
+    async fn list_actions(&self, _page: PageReq) -> Result<Page<ActionDef>> {
+        let mut out: Vec<ActionDef> = self.ontology.lock().actions.values().cloned().collect();
+        out.sort_by(|a, b| a.name.0.cmp(&b.name.0));
+        Ok(Page::from_full(out))
+    }
+
     async fn define_vector_index(&self, def: VectorIndexDef) -> Result<()> {
         let mut ont = self.ontology.lock();
         let ty = ont

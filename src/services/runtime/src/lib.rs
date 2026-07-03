@@ -4,15 +4,16 @@
 
 mod auth;
 pub use auth::{
-    AuthState, Subject, login_lockout, login_routes, protect, require_auth, service_account_routes,
-    service_token_max_ttl, session_routes, session_ttl, status_for,
+    AuthState, Subject, auth_openapi, login_lockout, login_routes, protect, require_auth,
+    service_account_openapi, service_account_routes, service_token_max_ttl, session_routes,
+    session_ttl, status_for,
 };
 pub use control_plane_core::LockoutPolicy;
 
 pub mod create_admin;
 
 mod admin;
-pub use admin::{AdminState, admin_routes, require_admin};
+pub use admin::{AdminState, admin_openapi, admin_routes, require_admin};
 
 mod crypto;
 pub use crypto::{AuthError, generate_session_token, hash_password, token_sha256, verify_password};

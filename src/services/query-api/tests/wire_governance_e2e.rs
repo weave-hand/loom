@@ -218,6 +218,21 @@ async fn rpc_roundtrips_match_direct_reads() {
         "action must have parameters to exercise ParamDef serde"
     );
 
+    // list_actions parity — the seeded `createCustomer` round-trips with full fidelity.
+    let wire_actions = client
+        .gov_list_actions(&PageReq::unbounded())
+        .await
+        .expect("wire list_actions");
+    let listed = wire_actions
+        .items
+        .iter()
+        .find(|a| a.name.0 == "createCustomer")
+        .expect("createCustomer listed over the wire");
+    assert_eq!(
+        listed, &direct_action,
+        "list_actions parity (name + full step list)"
+    );
+
     // links_to parity — exercises the inbound-link RPC (inbound to `order` via orders FK).
     let order = TypeName("order".into());
     let direct_links_to = cp

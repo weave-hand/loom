@@ -74,8 +74,8 @@ pub async fn serve(
     ));
 
     // Dynamic OpenAPI: `/openapi.json` regenerates per request from the LIVE ontology, read
-    // through the direct Postgres control plane (`pg`) — the wire governance client does not
-    // implement `list_types`. `/docs` (Scalar) loads the live spec by URL.
+    // through the direct Postgres control plane rather than the engine-wire proxy — the
+    // docs endpoint needs no engine dependency. `/docs` (Scalar) loads the live spec by URL.
     let openapi_cp: Arc<dyn ControlPlane> = direct;
     let app = service_runtime::with_openapi_provider(app, move || {
         let cp = openapi_cp.clone();

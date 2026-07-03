@@ -251,6 +251,20 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "openapi-fragments",
+    crate = "openapi_fragments",
+    srcs = ["tests/openapi_fragments.rs"],
+    crate_root = "tests/openapi_fragments.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:utoipa",
+    ],
+)
+
 # bootstrap() end-to-end: migrate gate, Ready context, TTL fail-fast ordering.
 # Boots a hermetic Postgres via EmbeddedPg, so it must route local.
 loom_fixture_test(

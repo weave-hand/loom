@@ -116,13 +116,13 @@ pub fn protect(router: Router, auth: AuthState) -> Router {
 // Login / logout route handlers
 // ---------------------------------------------------------------------------
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct LoginReq {
     username: String,
     password: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 struct LoginResp {
     token: String,
 }
@@ -132,6 +132,15 @@ struct LoginResp {
 /// same generic 401 as a bad password (no enumeration); each failure is recorded
 /// and a success clears the counter. A uniform 401 on unknown user OR bad password
 /// OR locked (with a dummy hash to keep timing uniform).
+#[utoipa::path(
+    post, path = "/auth/login",
+    request_body = LoginReq,
+    responses(
+        (status = 200, description = "Session token, returned exactly once", body = LoginResp),
+        (status = 401, description = "Unknown user, bad password, or locked account (uniform)"),
+    ),
+    tag = "auth",
+)]
 async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq>) -> Response {
     let now = OffsetDateTime::now_utc();
     let cred = match st.auth.find_password_credential(&req.username).await {
@@ -186,6 +195,12 @@ async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq
 /// `POST /auth/logout` — authenticated. Revoke the presented session
 /// (idempotent). The `Subject` extractor enforces the caller is verified;
 /// the token to revoke is re-read from the `Authorization` header.
+#[utoipa::path(
+    post, path = "/auth/logout",
+    responses((status = 200, description = "Presented session revoked (idempotent)")),
+    security(("bearer_auth" = [])),
+    tag = "auth",
+)]
 async fn logout(
     _subject: Subject,
     State(st): State<AuthState>,
@@ -200,7 +215,7 @@ async fn logout(
     StatusCode::OK.into_response()
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct ChangePasswordReq {
     current: String,
     new: String,
@@ -210,6 +225,16 @@ struct ChangePasswordReq {
 /// rotate to the new one, and revoke the caller's OTHER sessions (the current
 /// session, identified by the presented bearer, is preserved). Wrong current → 403,
 /// nothing changed. Password strength policy is out of scope.
+#[utoipa::path(
+    post, path = "/auth/password",
+    request_body = ChangePasswordReq,
+    responses(
+        (status = 200, description = "Password rotated; the caller's other sessions revoked"),
+        (status = 403, description = "Current password is incorrect (nothing changed)"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "auth",
+)]
 async fn change_password(
     subject: Subject,
     State(st): State<AuthState>,
@@ -262,6 +287,22 @@ pub fn session_routes(auth: AuthState) -> Router {
     )
 }
 
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(login, logout, change_password),
+    components(schemas(LoginReq, LoginResp, ChangePasswordReq))
+)]
+struct AuthApiDoc;
+
+/// OpenAPI fragment for the `login_routes` + `session_routes` surface. Mergeable
+/// into a service's document via `utoipa::openapi::OpenApi::merge`; the bearer
+/// security scheme the ops reference is registered by the serve seam
+/// (`register_bearer_scheme`), not here.
+#[must_use]
+pub fn auth_openapi() -> utoipa::openapi::OpenApi {
+    <AuthApiDoc as utoipa::OpenApi>::openapi()
+}
+
 // ---------------------------------------------------------------------------
 // Service-account management (admin-gated)
 // ---------------------------------------------------------------------------
@@ -294,25 +335,25 @@ async fn ensure_admin(subject: &Subject, st: &ServiceAccountState) -> Result<(),
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct CreateAccountReq {
     name: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 struct AccountResp {
     subject_id: String,
     name: String,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct MintTokenReq {
     label: String,
     /// Requested lifetime in seconds. `expires_at = now + ttl`, capped at max_ttl.
     ttl_secs: u64,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 struct MintTokenResp {
     /// The plaintext token — returned exactly once, never persisted or re-derivable.
     token: String,
@@ -333,6 +374,16 @@ struct TokenMetaResp {
 }
 
 /// `POST /auth/service-accounts` — admin. Create a service account.
+#[utoipa::path(
+    post, path = "/auth/service-accounts",
+    request_body = CreateAccountReq,
+    responses(
+        (status = 200, description = "Service account created", body = AccountResp),
+        (status = 403, description = "Caller does not hold the reserved admin role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "service-accounts",
+)]
 async fn create_account(
     subject: Subject,
     State(st): State<ServiceAccountState>,
@@ -361,6 +412,15 @@ async fn create_account(
 }
 
 /// `GET /auth/service-accounts` — admin. List service accounts.
+#[utoipa::path(
+    get, path = "/auth/service-accounts",
+    responses(
+        (status = 200, description = "All service accounts, as `{\"accounts\": [...]}`"),
+        (status = 403, description = "Caller does not hold the reserved admin role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "service-accounts",
+)]
 async fn list_accounts(subject: Subject, State(st): State<ServiceAccountState>) -> Response {
     if let Err(r) = ensure_admin(&subject, &st).await {
         return r;
@@ -386,6 +446,18 @@ async fn list_accounts(subject: Subject, State(st): State<ServiceAccountState>) 
 }
 
 /// `POST /auth/service-accounts/{id}/tokens` — admin. Mint a token (plaintext once).
+#[utoipa::path(
+    post, path = "/auth/service-accounts/{id}/tokens",
+    params(("id" = String, Path, description = "Service-account subject id")),
+    request_body = MintTokenReq,
+    responses(
+        (status = 200, description = "Token minted; plaintext returned exactly once", body = MintTokenResp),
+        (status = 400, description = "ttl_secs is zero or exceeds the configured cap"),
+        (status = 403, description = "Caller does not hold the reserved admin role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "service-accounts",
+)]
 async fn mint_token(
     subject: Subject,
     State(st): State<ServiceAccountState>,
@@ -433,6 +505,16 @@ async fn mint_token(
 }
 
 /// `GET /auth/service-accounts/{id}/tokens` — admin. List a token's metadata.
+#[utoipa::path(
+    get, path = "/auth/service-accounts/{id}/tokens",
+    params(("id" = String, Path, description = "Service-account subject id")),
+    responses(
+        (status = 200, description = "Token metadata (never plaintext tokens), as `{\"tokens\": [...]}`"),
+        (status = 403, description = "Caller does not hold the reserved admin role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "service-accounts",
+)]
 async fn list_tokens(
     subject: Subject,
     State(st): State<ServiceAccountState>,
@@ -470,6 +552,20 @@ async fn list_tokens(
 
 /// `DELETE /auth/service-accounts/{id}/tokens/{token_id}` — admin. Revoke a token,
 /// addressed by its hex SHA-256 id (from the mint/list responses). Idempotent.
+#[utoipa::path(
+    delete, path = "/auth/service-accounts/{id}/tokens/{token_id}",
+    params(
+        ("id" = String, Path, description = "Service-account subject id"),
+        ("token_id" = String, Path, description = "Hex SHA-256 token id from the mint/list responses"),
+    ),
+    responses(
+        (status = 200, description = "Token revoked (idempotent)"),
+        (status = 400, description = "token_id is not a hex-encoded 32-byte SHA-256"),
+        (status = 403, description = "Caller does not hold the reserved admin role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "service-accounts",
+)]
 async fn revoke_token(
     subject: Subject,
     State(st): State<ServiceAccountState>,
@@ -524,6 +620,22 @@ pub fn service_account_routes(
             .with_state(mgmt),
         auth,
     )
+}
+
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(create_account, list_accounts, mint_token, list_tokens, revoke_token),
+    components(schemas(CreateAccountReq, AccountResp, MintTokenReq, MintTokenResp))
+)]
+struct ServiceAccountApiDoc;
+
+/// OpenAPI fragment for the `service_account_routes` surface. Mergeable into a
+/// service's document via `utoipa::openapi::OpenApi::merge`; the bearer security
+/// scheme the ops reference is registered by the serve seam
+/// (`register_bearer_scheme`), not here.
+#[must_use]
+pub fn service_account_openapi() -> utoipa::openapi::OpenApi {
+    <ServiceAccountApiDoc as utoipa::OpenApi>::openapi()
 }
 
 /// Fail-loud read of the service-token TTL cap from the env snapshot
