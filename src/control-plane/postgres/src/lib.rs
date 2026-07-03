@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Catalog, ControlPlane, ControlPlaneError, Lineage, Ontology, Queue, Result, Tx,
+    Acl, Auth, Catalog, ControlPlane, ControlPlaneError, Lineage, Ontology, Queue, Result, Tx,
 };
 use sqlx::PgPool;
 
@@ -107,10 +107,13 @@ impl ControlPlane for PgControlPlane {
     fn queue(&self) -> &(dyn Queue + Send + Sync) {
         self
     }
+    fn auth(&self) -> &(dyn Auth + Send + Sync) {
+        self
+    }
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
         // A plain Postgres transaction backing the transactional queue/lineage
-        // concerns (`enqueue`/`emit`). The table-write methods on this `Tx` error;
-        // Iceberg owns the table format.
+        // concerns (`enqueue`/`emit`). This `Tx` carries no table-format staging
+        // surface (`TableTx`); Iceberg owns the table format.
         let tx = self.pool.begin().await.map_err(backend)?;
         Ok(Box::new(PgTx { tx }))
     }

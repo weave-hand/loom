@@ -1,7 +1,7 @@
-//! An Iceberg-backed `ControlPlane`/`Tx`. It makes `ControlPlane::begin()` genuinely
-//! polymorphic: the same transform write code (`create_table → append_files |
-//! replace_files → emit → commit`) commits its already-written Parquet to Iceberg,
-//! selected at boot.
+//! An Iceberg-backed `TableControlPlane`/`TableTx`. Its `begin_table()` is the
+//! table-format staging seam: the same transform write code (`create_table →
+//! append_files | replace_files → emit → commit`) commits its already-written
+//! Parquet to Iceberg, selected at boot.
 //!
 //! Reads resolve through the mirror-backed [`IcebergCatalog`]; the other concerns
 //! (ontology/acl/lineage/queue) are backend-neutral and delegate to the inner
@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Catalog, ColumnSpec, ControlPlane, ControlPlaneError, DataFile, JobId, Lineage,
-    LineageEvent, NewJob, Ontology, Queue, Result, SnapshotId, TableRef, Tx,
+    Acl, Auth, Catalog, ColumnSpec, ControlPlane, ControlPlaneError, DataFile, JobId, Lineage,
+    LineageEvent, NewJob, Ontology, Queue, Result, SnapshotId, TableControlPlane, TableRef,
+    TableTx, Tx,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -69,7 +70,17 @@ impl ControlPlane for IcebergControlPlane {
     fn queue(&self) -> &(dyn Queue + Send + Sync) {
         self.pg.queue()
     }
+    fn auth(&self) -> &(dyn Auth + Send + Sync) {
+        self.pg.auth()
+    }
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
+        Ok(self.begin_table().await?)
+    }
+}
+
+#[async_trait]
+impl TableControlPlane for IcebergControlPlane {
+    async fn begin_table(&self) -> Result<Box<dyn TableTx + Send>> {
         let tx = self.pool.begin().await.map_err(backend)?;
         Ok(Box::new(IcebergTx {
             tx,
@@ -166,7 +177,10 @@ impl Tx for IcebergTx {
     async fn emit(&mut self, event: LineageEvent) -> Result<()> {
         pg_emit(&mut *self.tx, &event).await
     }
+}
 
+#[async_trait]
+impl TableTx for IcebergTx {
     async fn create_table(&mut self, table: &TableRef, columns: &[ColumnSpec]) -> Result<()> {
         self.staged_creates.push((table.clone(), columns.to_vec()));
         Ok(())

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DataFile, LineageEvent, PropertyDef, SnapshotId, TableRef,
+    ColumnSpec, DataFile, LineageEvent, PropertyDef, SnapshotId, TableControlPlane, TableRef,
 };
 use datafusion::execution::context::SessionContext;
 use datafusion_io::{
@@ -92,7 +92,7 @@ fn unknown_input(table: &TableRef, e: control_plane_core::ControlPlaneError) -> 
 /// output's relative paths are absolutized against, so the committed mirror paths match
 /// what the serving engine resolves (`{root_url}/{schema}/{table}/{rel}`).
 pub async fn run_transform(
-    cp: &dyn ControlPlane,
+    cp: &dyn TableControlPlane,
     store: Arc<dyn ObjectStore>,
     root_url: &str,
     write: &WriteConfig,
@@ -189,7 +189,7 @@ pub async fn run_transform(
         absolute_data_files(written, root_url, &req.output.schema, &req.output.name);
 
     // 6. One atomic Tx: create_table (idempotent) + append_files/replace_files + emit lineage.
-    let mut tx = cp.begin().await?;
+    let mut tx = cp.begin_table().await?;
     tx.create_table(req.output, &columns).await?;
     match req.output_mode {
         OutputMode::Append => tx.append_files(req.output, &data_files).await?,

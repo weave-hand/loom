@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    ColumnSpec, DataFile, JobId, LineageEvent, NewJob, Result, SnapshotId, TableRef, Tx,
+    ColumnSpec, DataFile, JobId, LineageEvent, NewJob, Result, SnapshotId, TableRef, TableTx, Tx,
 };
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -220,7 +220,10 @@ impl Tx for MemoryTx {
         self.staged_events.push(event);
         Ok(())
     }
+}
 
+#[async_trait]
+impl TableTx for MemoryTx {
     async fn create_table(&mut self, table: &TableRef, columns: &[ColumnSpec]) -> Result<()> {
         self.staged_tables.push((table.clone(), columns.to_vec()));
         Ok(())

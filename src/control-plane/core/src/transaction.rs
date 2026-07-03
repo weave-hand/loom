@@ -1,9 +1,12 @@
 //! The cross-concern transaction seam. `ControlPlane::begin` opens a unit of work;
 //! operations issued on the returned `Tx` commit together or roll back together.
+//! Planes that can also stage table-format writes implement `TableControlPlane`,
+//! whose `begin_table` returns the wider `TableTx` staging surface.
 
 use async_trait::async_trait;
 
 use crate::acl::Acl;
+use crate::auth::Auth;
 use crate::catalog::{Catalog, SnapshotId, TableRef};
 use crate::error::Result;
 use crate::lineage::{Lineage, LineageEvent};
@@ -23,16 +26,26 @@ pub trait ControlPlane: Send + Sync {
     fn lineage(&self) -> &(dyn Lineage + Send + Sync);
     /// The job queue.
     fn queue(&self) -> &(dyn Queue + Send + Sync);
+    /// The authentication surface (sessions, service tokens, credentials).
+    fn auth(&self) -> &(dyn Auth + Send + Sync);
 
     /// Open a unit of work. Issue operations on the returned `Tx`, then `commit`
     /// or `rollback`.
     async fn begin(&self) -> Result<Box<dyn Tx + Send>>;
 }
 
+/// A control plane whose units of work can also stage table-format writes.
+#[async_trait]
+pub trait TableControlPlane: ControlPlane {
+    /// Open a unit of work that can also stage table-format writes.
+    async fn begin_table(&self) -> Result<Box<dyn TableTx + Send>>;
+}
+
 #[async_trait]
 pub trait Tx: Send {
-    /// Commit the unit of work. Returns the new `SnapshotId` if a catalog op
-    /// (create_table/append_files) was staged, else `None`.
+    /// Commit the unit of work. Returns the new `SnapshotId` if the unit of work
+    /// staged table-format writes (see `TableTx`), else `None` — `Tx`-only planes
+    /// always return `None`.
     async fn commit(self: Box<Self>) -> Result<Option<SnapshotId>>;
     async fn rollback(self: Box<Self>) -> Result<()>;
     /// Enqueue a job within this unit of work: visible to workers only if the
@@ -43,6 +56,12 @@ pub trait Tx: Send {
     /// transaction commits. Makes "record lineage AND enqueue downstream work"
     /// atomic.
     async fn emit(&mut self, event: LineageEvent) -> Result<()>;
+}
+
+/// A unit of work that can additionally stage table-format writes, applied
+/// atomically at `commit` alongside the staged queue/lineage operations.
+#[async_trait]
+pub trait TableTx: Tx {
     /// Create a physical Iceberg table. Staged; applied at commit. Idempotent: a
     /// no-op if the table already exists live.
     async fn create_table(&mut self, table: &TableRef, columns: &[ColumnSpec]) -> Result<()>;

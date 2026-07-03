@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Catalog, ControlPlane, ControlPlaneError, EventType, FileRef, Lineage, LineageEvent,
-    Ontology, Page, PageReq, Queue, RunId, Snapshot, SnapshotId, TableRef, TableSchema, Tx,
+    Acl, Auth, Catalog, ControlPlane, ControlPlaneError, EventType, FileRef, Lineage, LineageEvent,
+    Ontology, Page, PageReq, Queue, RunId, Snapshot, SnapshotId, TableControlPlane, TableRef,
+    TableSchema, TableTx, Tx,
 };
 use datafusion_io::WriteConfig;
 use object_store::ObjectStore;
@@ -74,7 +75,17 @@ impl ControlPlane for StubCp {
     fn queue(&self) -> &(dyn Queue + Send + Sync) {
         unreachable!("queue not used by run_transform input resolution")
     }
+    fn auth(&self) -> &(dyn Auth + Send + Sync) {
+        unreachable!("auth not used by run_transform input resolution")
+    }
     async fn begin(&self) -> control_plane_core::Result<Box<dyn Tx + Send>> {
+        unreachable!("begin not reached — input resolution fails first")
+    }
+}
+
+#[async_trait]
+impl TableControlPlane for StubCp {
+    async fn begin_table(&self) -> control_plane_core::Result<Box<dyn TableTx + Send>> {
         unreachable!("begin not reached — input resolution fails first")
     }
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ControlPlane, DataFile, DatasetId, EventType, FileFormat, LineageEvent, RunId, TableRef,
+    DataFile, DatasetId, EventType, FileFormat, LineageEvent, RunId, TableControlPlane, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -108,7 +108,7 @@ async fn iceberg_tx_compact_files_swaps_subset() {
     }];
 
     let cp = IcebergControlPlane::new(pgcp, catalog);
-    let mut tx = cp.begin().await.expect("begin");
+    let mut tx = cp.begin_table().await.expect("begin");
     tx.compact_files(&t, &expire, &new).await.expect("stage");
     let snap = tx.commit().await.expect("commit").expect("snapshot");
 

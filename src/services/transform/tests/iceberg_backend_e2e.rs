@@ -11,7 +11,7 @@ use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, FileFormat, LineageEvent, PageReq,
-    RunId, SnapshotId, TableRef,
+    RunId, SnapshotId, TableControlPlane, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -125,7 +125,7 @@ async fn transform_writes_output_to_iceberg() {
             parquet_footer_size: Some(f.footer_size),
         })
         .collect();
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(&src, &id_cols()).await.unwrap();
     tx.append_files(&src, &src_files).await.unwrap();
     tx.commit().await.unwrap().expect("seed snapshot");
@@ -246,7 +246,7 @@ async fn transform_output_is_readable_through_serving_engine() {
             parquet_footer_size: Some(f.footer_size),
         })
         .collect();
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(&src, &id_cols()).await.unwrap();
     tx.append_files(&src, &src_files).await.unwrap();
     tx.commit().await.unwrap().expect("seed snapshot");

@@ -23,8 +23,8 @@ use std::sync::Arc;
 use arrow::array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::Schema;
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, FileFormat, LineageEvent, RunId,
-    TableRef,
+    ColumnSpec, DataFile, DatasetRef, EventType, FileFormat, LineageEvent, RunId,
+    TableControlPlane, TableRef,
 };
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_sql_catalog::{
@@ -126,7 +126,7 @@ pub async fn seed_table(
             parquet_footer_size: Some(f.footer_size),
         })
         .collect();
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(table, columns).await.unwrap();
     tx.append_files(table, &files).await.unwrap();
     tx.emit(lineage(table)).await.unwrap();
@@ -178,7 +178,7 @@ pub async fn seed_table_absolute(
             parquet_footer_size: Some(f.footer_size),
         })
         .collect();
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(table, columns).await.unwrap();
     tx.append_files(table, &files).await.unwrap();
     tx.emit(lineage(table)).await.unwrap();

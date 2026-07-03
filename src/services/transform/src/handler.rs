@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use control_plane_core::{
-    ControlPlane, DatasetRef, EventType, Job, JobFailure, LineageEvent, RetryPolicy, RunId,
+    DatasetRef, EventType, Job, JobFailure, LineageEvent, RetryPolicy, RunId, TableControlPlane,
     TableRef, TypeName,
 };
 use datafusion_io::WriteConfig;
@@ -43,7 +43,7 @@ struct TransformPayload {
 /// Run one transform job. Takes the deps + the job, returns the worker outcome.
 /// Used by the binary's handler closure and by tests.
 pub async fn transform_handler(
-    cp: &dyn ControlPlane,
+    cp: &dyn TableControlPlane,
     store: Arc<dyn ObjectStore>,
     root_url: &str,
     write: &WriteConfig,
@@ -116,7 +116,7 @@ struct TypedTransformPayload {
 /// Run one typed transform job. Inputs/output are ontology type names; the SQL
 /// references inputs by type name; the result must conform to the output type.
 pub async fn typed_transform_handler(
-    cp: &dyn ControlPlane,
+    cp: &dyn TableControlPlane,
     store: Arc<dyn ObjectStore>,
     root_url: &str,
     write: &WriteConfig,

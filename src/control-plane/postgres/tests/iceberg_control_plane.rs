@@ -6,7 +6,8 @@
 use loom_test_seed::local_sql_catalog;
 
 use control_plane_core::{
-    ColumnSpec, ColumnStat, ControlPlane, DataFile, FileFormat, PageReq, StatValue, TableRef,
+    ColumnSpec, ColumnStat, ControlPlane, DataFile, FileFormat, PageReq, StatValue,
+    TableControlPlane, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
@@ -62,7 +63,7 @@ async fn append_then_overwrite_preserves_time_travel() {
     let t = t();
 
     // append a.parquet (10 rows).
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(&t, &cols()).await.unwrap();
     tx.append_files(&t, &[data_file("a.parquet", 10)])
         .await
@@ -79,7 +80,7 @@ async fn append_then_overwrite_preserves_time_travel() {
     assert_eq!(f1.items[0].record_count, 10);
 
     // overwrite with b.parquet (4 rows).
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     tx.create_table(&t, &cols()).await.unwrap();
     tx.replace_files(&t, &[data_file("b.parquet", 4)])
         .await
@@ -113,7 +114,7 @@ async fn append_then_overwrite_preserves_time_travel() {
 async fn compact_files_stages_without_error() {
     let fx = PgFixture::shared();
     let (cp, _wh) = iceberg_cp(fx).await;
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     // Staging never fails — even with empty slices.
     tx.compact_files(&t(), &[], &[]).await.unwrap();
 }
@@ -127,7 +128,7 @@ async fn failed_commit_leaves_no_snapshot() {
     let (cp, _wh) = iceberg_cp(fx).await;
     let t = t();
 
-    let mut tx = cp.begin().await.unwrap();
+    let mut tx = cp.begin_table().await.unwrap();
     // Stage files WITHOUT create_table -> commit allocates a snapshot then errors on
     // the missing columns, and the held tx rolls back.
     tx.append_files(&t, &[data_file("a.parquet", 10)])

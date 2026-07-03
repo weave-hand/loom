@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use control_plane_core::{
-    ControlPlane, ControlPlaneError, DatasetRef, EventType, LineageEvent, RunId, SnapshotId,
+    ControlPlaneError, DatasetRef, EventType, LineageEvent, RunId, SnapshotId, TableControlPlane,
     TypeName,
 };
 use datafusion_io::WriteConfig;
@@ -30,7 +30,7 @@ pub enum TypedTransformError {
     reason = "typed transform requires all schema, store, and run context args"
 )]
 pub async fn run_typed_transform(
-    cp: &dyn ControlPlane,
+    cp: &dyn TableControlPlane,
     store: Arc<dyn ObjectStore>,
     root_url: &str,
     write: &WriteConfig,
