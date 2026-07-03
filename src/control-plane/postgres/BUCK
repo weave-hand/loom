@@ -268,7 +268,13 @@ loom_fixture_test(
     crate = "ontology",
     srcs = ["tests/ontology.rs"],
     crate_root = "tests/ontology.rs",
-    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
 )
 
 loom_fixture_test(
@@ -320,8 +326,11 @@ loom_fixture_test(
         ":postgres",
         "//src/control-plane/core:core",
         "//src/control-plane/testkit:testkit",
+        "//third-party:serde_json",
         "//third-party:sqlx",
+        "//third-party:time",
         "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 
@@ -568,6 +577,7 @@ loom_fixture_test(
     deps = [
         ":postgres",
         "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
         "//third-party:iceberg",
         "//third-party:tempfile",
         "//third-party:tokio",

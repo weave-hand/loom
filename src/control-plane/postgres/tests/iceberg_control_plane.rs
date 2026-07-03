@@ -161,3 +161,10 @@ async fn failed_commit_leaves_no_snapshot() {
         "a rolled-back commit leaves the table with no live snapshot"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_order_contract() {
+    let fx = PgFixture::shared();
+    let (cp, _wh) = iceberg_cp(fx).await;
+    control_plane_testkit::snapshot_write_order_contract(&cp).await;
+}

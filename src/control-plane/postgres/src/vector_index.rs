@@ -13,9 +13,7 @@ use iceberg::{Catalog as IceCatalog, TableIdent};
 use sqlx::{AssertSqlSafe, PgConnection, PgPool};
 use time::OffsetDateTime;
 
-fn backend<E: std::fmt::Display>(e: E) -> ControlPlaneError {
-    ControlPlaneError::Backend(e.to_string().into())
-}
+use crate::backend;
 
 /// A bound vector index: the metadata loom needs to find and decode the sidecar.
 #[derive(Clone, Debug)]
@@ -195,14 +193,8 @@ fn extract_rows(
     vector_col: &str,
     identity_col: &str,
 ) -> Result<Vec<(VectorKey, Vec<f32>)>> {
-    let vec_idx = batch
-        .schema()
-        .index_of(vector_col)
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-    let id_idx = batch
-        .schema()
-        .index_of(identity_col)
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+    let vec_idx = batch.schema().index_of(vector_col).map_err(backend)?;
+    let id_idx = batch.schema().index_of(identity_col).map_err(backend)?;
 
     let vec_col = batch.column(vec_idx);
     let id_col = batch.column(id_idx);
@@ -272,7 +264,9 @@ pub async fn inline_delta_batch(
     born_after: i64,
     at: i64,
 ) -> Result<Option<RecordBatch>> {
-    use crate::iceberg_inline::{column_array, inline_table_name};
+    use crate::iceberg_inline::{
+        column_array, inline_table_exists, inline_table_name, mvcc_live_pred, quote_ident,
+    };
     use crate::iceberg_mirror::live_table_id;
     use control_plane_core::resolve_logical;
 
@@ -282,14 +276,7 @@ pub async fn inline_delta_batch(
     };
 
     // Check the inline table exists.
-    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-        "select to_regclass('{}')::text",
-        inline_table_name(tid)
-    )))
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(backend)?;
-    if exists.is_none() {
+    if !inline_table_exists(&mut conn, tid).await? {
         return Ok(None);
     }
 
@@ -339,16 +326,16 @@ pub async fn inline_delta_batch(
         })?;
 
     // Runtime query: select only the identity + vector columns with the delta MVCC predicate.
-    let id_quoted = format!("\"{}\"", identity_col.replace('"', "\"\""));
-    let vec_quoted = format!("\"{}\"", vector_col.replace('"', "\"\""));
+    let id_quoted = quote_ident(&identity_col);
+    let vec_quoted = quote_ident(&vector_col);
     let rows = sqlx::query(AssertSqlSafe(format!(
         "select {id_quoted}, {vec_quoted} \
          from {} \
          where begin_snapshot > {born_after} \
-           and begin_snapshot <= {at} \
-           and (end_snapshot is null or end_snapshot > {at}) \
+           and {} \
          order by loom_row_id",
         inline_table_name(tid),
+        mvcc_live_pred(at),
     )))
     .fetch_all(&mut *conn)
     .await
@@ -369,8 +356,7 @@ pub async fn inline_delta_batch(
         Field::new(&identity_col, id_ty.arrow_data_type(), false),
         Field::new(&vector_col, vec_ty.arrow_data_type(), false),
     ]));
-    let batch = RecordBatch::try_new(out_schema, vec![id_array, vec_array])
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+    let batch = RecordBatch::try_new(out_schema, vec![id_array, vec_array]).map_err(backend)?;
     Ok(Some(batch))
 }
 
@@ -468,12 +454,9 @@ async fn write_sidecar(
     column: &str,
     identity_col: &str,
 ) -> Result<String> {
-    let ident = TableIdent::from_strs([table.schema.as_str(), table.name.as_str()])
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
-    let tbl = catalog
-        .load_table(&ident)
-        .await
-        .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+    let ident =
+        TableIdent::from_strs([table.schema.as_str(), table.name.as_str()]).map_err(backend)?;
+    let tbl = catalog.load_table(&ident).await.map_err(backend)?;
     // Use the Schema::field_id_by_name accessor (available on the iceberg-rust
     // pinned main commit). Falls back to 0 if the accessor returns None (e.g.
     // if the Iceberg schema uses a different field name than expected — purely

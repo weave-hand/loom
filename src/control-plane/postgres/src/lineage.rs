@@ -4,7 +4,7 @@ use control_plane_core::{
     decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,
 };
 
-use crate::{PgControlPlane, backend, event_type_from_str, event_type_to_str};
+use crate::{PgControlPlane, backend};
 
 pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
     ex: E,
@@ -26,7 +26,7 @@ pub(crate) async fn pg_emit<'e, E: sqlx::PgExecutor<'e>>(
              select 'output', ord, ns, nm \
              from unnest($7::text[], $8::text[]) with ordinality as t(ns, nm, ord)) d",
         event.run_id.0,
-        event_type_to_str(event.event_type),
+        event.event_type.as_str(),
         event.event_time,
         &event.payload,
         &event
@@ -66,7 +66,7 @@ impl Lineage for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn events_for(&self, run: &RunId, page: PageReq) -> Result<Page<LineageEvent>> {
         let after = page.after.as_ref().map(decode_event_cursor).transpose()?;
-        let fetch = page.limit.map_or(i64::MAX, |l| i64::from(l) + 1);
+        let fetch = page.fetch_limit_i64();
         let rows = sqlx::query!(
             "select event_id, event_type, event_time, payload from lineage.event \
              where run_id = $1 and ($2::bigint is null or event_id > $2) \
@@ -78,6 +78,39 @@ impl Lineage for PgControlPlane {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
+        let ids: Vec<i64> = rows.iter().map(|r| r.event_id).collect();
+        // ONE query hydrates every page event's datasets (was 2 queries per
+        // event). `order by event_id, ordinal` preserves each direction's
+        // ordinal order after the per-event split below.
+        let ds_rows = sqlx::query!(
+            "select event_id, direction, namespace, name from lineage.event_dataset \
+             where event_id = any($1) order by event_id, ordinal",
+            &ids,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let mut inputs: std::collections::HashMap<i64, Vec<DatasetRef>> =
+            std::collections::HashMap::new();
+        let mut outputs: std::collections::HashMap<i64, Vec<DatasetRef>> =
+            std::collections::HashMap::new();
+        for d in ds_rows {
+            // Unknown tokens are a loud error (a corrupt row), never silently
+            // dropped or misfiled — mirrors the core enum codecs.
+            let bucket = match d.direction.as_str() {
+                "input" => &mut inputs,
+                "output" => &mut outputs,
+                other => {
+                    return Err(control_plane_core::ControlPlaneError::Validation(format!(
+                        "unknown lineage direction '{other}'"
+                    )));
+                }
+            };
+            bucket.entry(d.event_id).or_default().push(DatasetRef {
+                namespace: d.namespace,
+                name: d.name,
+            });
+        }
         let mut keyed: Vec<(i64, LineageEvent)> = Vec::with_capacity(rows.len());
         for r in rows {
             let event_id = r.event_id;
@@ -85,10 +118,10 @@ impl Lineage for PgControlPlane {
                 event_id,
                 LineageEvent {
                     run_id: *run,
-                    event_type: event_type_from_str(&r.event_type),
+                    event_type: r.event_type.parse()?,
                     event_time: r.event_time,
-                    inputs: self.event_datasets(event_id, "input").await?,
-                    outputs: self.event_datasets(event_id, "output").await?,
+                    inputs: inputs.remove(&event_id).unwrap_or_default(),
+                    outputs: outputs.remove(&event_id).unwrap_or_default(),
                     payload: r.payload,
                 },
             ));
@@ -126,27 +159,6 @@ impl Lineage for PgControlPlane {
 }
 
 impl PgControlPlane {
-    /// The datasets of one event in one direction, ordered by ordinal.
-    #[tracing::instrument(skip(self), level = "debug")]
-    async fn event_datasets(&self, event_id: i64, direction: &str) -> Result<Vec<DatasetRef>> {
-        let rows = sqlx::query!(
-            "select namespace, name from lineage.event_dataset \
-             where event_id = $1 and direction = $2 order by ordinal",
-            event_id,
-            direction,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| DatasetRef {
-                namespace: r.namespace,
-                name: r.name,
-            })
-            .collect())
-    }
-
     /// Depth-bounded transitive closure over `lineage.event_dataset`. The seed sits
     /// on `from_dir`; neighbors are taken from `to_dir` of co-member events. A
     /// `WITH RECURSIVE` CTE (mirroring query-api's `/graph` reachability) bounded by
@@ -169,7 +181,7 @@ impl PgControlPlane {
             None => (None, None),
         };
         let max_depth = i32::try_from(depth).unwrap_or(i32::MAX);
-        let fetch = page.limit.map_or(i64::MAX, |l| i64::from(l) + 1);
+        let fetch = page.fetch_limit_i64();
         let rows = sqlx::query!(
             "with recursive closure(namespace, name, depth) as ( \
                  select $1::text, $2::text, 0 \

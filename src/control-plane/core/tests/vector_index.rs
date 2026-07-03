@@ -616,3 +616,30 @@ fn apply_query_knobs_is_noop_on_flat() {
     let after = idx.search(&query_vec(), 2);
     assert_eq!(before, after, "Flat ignores both knobs");
 }
+
+#[test]
+fn parse_and_dim_failures_are_validation() {
+    use control_plane_core::{ControlPlaneError, IndexKind, IndexSpec, Metric};
+    use std::str::FromStr;
+    // Parse failures: caller/wire/row-shaped tokens are Validation (honest
+    // classification; no plane maps the class to a status code today).
+    // Whitelisted change 2 of road-cp-adapter-hygiene.
+    assert!(matches!(
+        Metric::from_str("hamming"),
+        Err(ControlPlaneError::Validation(_))
+    ));
+    assert!(matches!(
+        IndexKind::from_str("nope"),
+        Err(ControlPlaneError::Validation(_))
+    ));
+    assert!(matches!(
+        IndexSpec::from_label(Some("nope"), None, None, None),
+        Err(ControlPlaneError::Validation(_))
+    ));
+    // Dim mismatch: caller-shaped data (a landed vector of the wrong length).
+    let rows = vec![(control_plane_core::VectorKey::Int(1), vec![1.0, 0.0, 0.0])];
+    assert!(matches!(
+        control_plane_core::FlatIndex::build(4, Metric::Cosine, rows),
+        Err(ControlPlaneError::Validation(_))
+    ));
+}

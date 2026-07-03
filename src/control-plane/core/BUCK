@@ -298,3 +298,23 @@ rust_test(
         "//third-party:serde_json",
     ],
 )
+
+rust_test(
+    name = "enum-wire-codecs",
+    crate = "enum_wire_codecs",
+    srcs = ["tests/enum_wire_codecs.rs"],
+    crate_root = "tests/enum_wire_codecs.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
+    name = "policy-write-checks",
+    crate = "policy_write_checks",
+    srcs = ["tests/policy_write_checks.rs"],
+    crate_root = "tests/policy_write_checks.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)

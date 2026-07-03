@@ -23,7 +23,7 @@ mod vector_index_job;
 
 pub use acl::{
     ADMIN_ROLE, Acl, Action, CompareOp, Decision, Effect, Policy, PolicyTarget, RoleId, RowFilter,
-    ScalarValue, SubjectId, validate_row_filter,
+    ScalarValue, SubjectId, check_grant_target, check_policy_write, validate_row_filter,
 };
 pub use auth::{
     Auth, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount, ServiceToken, UserSummary,

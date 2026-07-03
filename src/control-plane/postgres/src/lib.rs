@@ -12,8 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Catalog, ControlPlane, ControlPlaneError, Effect, EventType, Lineage,
-    Ontology, PolicyTarget, Queue, Result, Tx,
+    Acl, Catalog, ControlPlane, ControlPlaneError, Lineage, Ontology, Queue, Result, Tx,
 };
 use sqlx::PgPool;
 
@@ -87,10 +86,7 @@ pub fn embedded_migrator() -> sqlx::migrate::Migrator {
 /// Apply the embedded migrations (tracked in `_sqlx_migrations`; idempotent —
 /// re-runs as a no-op).
 pub async fn run_embedded_migrations(pool: &PgPool) -> Result<()> {
-    embedded_migrator()
-        .run(pool)
-        .await
-        .map_err(|e| ControlPlaneError::Backend(Box::new(e)))?;
+    embedded_migrator().run(pool).await.map_err(backend)?;
     Ok(())
 }
 
@@ -120,62 +116,11 @@ impl ControlPlane for PgControlPlane {
     }
 }
 
-fn backend(e: sqlx::Error) -> ControlPlaneError {
+/// Box a concrete error as `ControlPlaneError::Backend`, carrying the source.
+/// THE single boxing helper — call sites use `map_err(backend)` (or a
+/// domain-mapping helper like `auth::conflict_or_backend`); never flatten via
+/// `.to_string()`, which severs the source chain. `Backend` is
+/// `#[error(transparent)]`, so the Display text is the source's own.
+fn backend<E: std::error::Error + Send + Sync + 'static>(e: E) -> ControlPlaneError {
     ControlPlaneError::Backend(Box::new(e))
-}
-
-fn cardinality_to_str(c: Cardinality) -> &'static str {
-    match c {
-        Cardinality::One => "one",
-        Cardinality::Many => "many",
-    }
-}
-
-fn cardinality_from_str(s: &str) -> Cardinality {
-    match s {
-        "many" => Cardinality::Many,
-        _ => Cardinality::One,
-    }
-}
-
-fn event_type_to_str(t: EventType) -> &'static str {
-    match t {
-        EventType::Start => "start",
-        EventType::Running => "running",
-        EventType::Complete => "complete",
-        EventType::Abort => "abort",
-        EventType::Fail => "fail",
-    }
-}
-
-fn event_type_from_str(s: &str) -> EventType {
-    match s {
-        "running" => EventType::Running,
-        "complete" => EventType::Complete,
-        "abort" => EventType::Abort,
-        "fail" => EventType::Fail,
-        _ => EventType::Start,
-    }
-}
-
-fn action_to_str(a: Action) -> &'static str {
-    match a {
-        Action::Read => "read",
-        Action::Write => "write",
-    }
-}
-
-fn effect_to_str(effect: Effect) -> &'static str {
-    match effect {
-        Effect::Allow => "allow",
-        Effect::Deny => "deny",
-    }
-}
-
-/// `(kind, a, b)` column encoding of a target.
-fn target_cols(t: &PolicyTarget) -> (&'static str, String, String) {
-    match t {
-        PolicyTarget::Type(n) => ("type", n.0.clone(), String::new()),
-        PolicyTarget::Table(r) => ("table", r.schema.clone(), r.name.clone()),
-    }
 }

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{ControlPlaneError, Result};
 use crate::page::{Page, PageReq};
 use crate::{TableRef, TypeName};
 
@@ -36,12 +36,37 @@ pub enum Action {
     Write,
 }
 
+impl Action {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Action::Read => "read",
+            Action::Write => "write",
+        }
+    }
+}
+
 /// What a grant or policy is bound to. Matched exactly as stored — P4 never
 /// resolves a `Type` to its backing `Table`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PolicyTarget {
     Type(TypeName),
     Table(TableRef),
+}
+
+impl PolicyTarget {
+    /// The canonical `(kind, a, b)` encoding of a target — postgres persists
+    /// it as the `(target_kind, target_a, target_b)` columns, the memory
+    /// adapter as its grant/policy map key. `Type(n)` → `("type", n, "")`;
+    /// `Table(s.t)` → `("table", s, t)`.
+    #[must_use]
+    pub fn key_parts(&self) -> (&'static str, String, String) {
+        match self {
+            PolicyTarget::Type(n) => ("type", n.0.clone(), String::new()),
+            PolicyTarget::Table(r) => ("table", r.schema.clone(), r.name.clone()),
+        }
+    }
 }
 
 /// The outcome of an authorization check.
@@ -57,6 +82,17 @@ pub enum Decision {
 pub enum Effect {
     Allow,
     Deny,
+}
+
+impl Effect {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effect::Allow => "allow",
+            Effect::Deny => "deny",
+        }
+    }
 }
 
 /// A comparison operator in a [`RowFilter::Compare`] leaf.
@@ -190,6 +226,48 @@ pub fn validate_row_filter(
         }
         RowFilter::Not(x) => validate_row_filter(x, properties),
     }
+}
+
+/// Write-time existence check for `grant`: a `Type` target must reference an
+/// existing ontology type (`type_exists` is the adapter's lookup result);
+/// `Table` targets stay unvalidated (deferred) and ignore the flag.
+pub fn check_grant_target(target: &PolicyTarget, type_exists: bool) -> Result<()> {
+    if let PolicyTarget::Type(name) = target
+        && !type_exists
+    {
+        return Err(ControlPlaneError::Validation(format!(
+            "grant references unknown type `{}`",
+            name.0
+        )));
+    }
+    Ok(())
+}
+
+/// Write-time validation for `set_policy`. For a `Type` target, `type_props`
+/// is the type's property set when it exists (`None` = unknown type — always
+/// rejected, row_filter or not); a present row_filter validates against that
+/// set. For a `Table` target `type_props` is ignored and a present row_filter
+/// validates structurally only.
+pub fn check_policy_write(policy: &Policy, type_props: Option<&HashSet<String>>) -> Result<()> {
+    match &policy.target {
+        PolicyTarget::Type(name) => {
+            let Some(props) = type_props else {
+                return Err(ControlPlaneError::Validation(format!(
+                    "policy references unknown type {}",
+                    name.0
+                )));
+            };
+            if let Some(f) = &policy.row_filter {
+                validate_row_filter(f, Some(props)).map_err(ControlPlaneError::Validation)?;
+            }
+        }
+        PolicyTarget::Table(_) => {
+            if let Some(f) = &policy.row_filter {
+                validate_row_filter(f, None).map_err(ControlPlaneError::Validation)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]

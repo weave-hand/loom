@@ -96,6 +96,39 @@ pub enum EventType {
     Fail,
 }
 
+impl EventType {
+    /// The persisted wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EventType::Start => "start",
+            EventType::Running => "running",
+            EventType::Complete => "complete",
+            EventType::Abort => "abort",
+            EventType::Fail => "fail",
+        }
+    }
+}
+
+impl std::str::FromStr for EventType {
+    type Err = ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "start" => Ok(EventType::Start),
+            "running" => Ok(EventType::Running),
+            "complete" => Ok(EventType::Complete),
+            "abort" => Ok(EventType::Abort),
+            "fail" => Ok(EventType::Fail),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown event type '{other}'"
+            ))),
+        }
+    }
+}
+
 /// A lineage event: a typed envelope (the fields loom indexes/queries) plus the
 /// full OpenLineage event stored opaquely in `payload`.
 #[derive(Clone, Debug, PartialEq, Eq)]

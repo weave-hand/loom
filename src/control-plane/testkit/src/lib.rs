@@ -2763,6 +2763,44 @@ pub async fn lineage_pagination_contract<CP: Lineage>(cp: &CP) {
     assert!(ended_with_null, "final page signals no next");
 }
 
+/// Contract: `events_for` hydrates every event's inputs/outputs completely
+/// and in ordinal order, however the adapter batches the reads (pins the
+/// per-event-N+1 → `event_id = any($1)` collapse). `cp` must be freshly empty.
+pub async fn events_for_hydration_contract<CP: Lineage>(cp: &CP) {
+    let ds = |n: &str| DatasetRef {
+        namespace: "w".to_string(),
+        name: n.to_string(),
+    };
+    let run = RunId(uuid::Uuid::new_v4());
+    let ts = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    for i in 0..3 {
+        cp.emit(LineageEvent {
+            run_id: run,
+            event_type: EventType::Complete,
+            event_time: ts,
+            inputs: vec![ds(&format!("in{i}.a")), ds(&format!("in{i}.b"))],
+            outputs: vec![ds(&format!("out{i}.a")), ds(&format!("out{i}.b"))],
+            payload: serde_json::json!({ "i": i }),
+        })
+        .await
+        .unwrap();
+    }
+    let page = cp.events_for(&run, PageReq::unbounded()).await.unwrap();
+    assert_eq!(page.items.len(), 3, "all three events returned in order");
+    for (i, e) in page.items.iter().enumerate() {
+        assert_eq!(
+            e.inputs,
+            vec![ds(&format!("in{i}.a")), ds(&format!("in{i}.b"))],
+            "event {i}: inputs hydrated in ordinal order"
+        );
+        assert_eq!(
+            e.outputs,
+            vec![ds(&format!("out{i}.a")), ds(&format!("out{i}.b"))],
+            "event {i}: outputs hydrated in ordinal order"
+        );
+    }
+}
+
 /// Contract for `Tx` isolation: while a transaction is open and uncommitted, the
 /// autocommit read path observes none of its writes; on commit the whole unit
 /// (enqueue + emit) becomes visible; on rollback nothing ever does. Deterministic —
@@ -3247,6 +3285,76 @@ where
         "prior snapshot retains its file (time travel)"
     );
     assert_eq!(back.items[0].path, "a.parquet");
+}
+
+/// Contract: staged writes replay in STAGING ORDER within one `Tx`. A
+/// `replace_files` end-caps only what is live before it in the log, so a
+/// replace staged BEFORE an append leaves the append's files live — postgres
+/// `IcebergTx` semantics, which the memory fake must match. `cp` must be
+/// freshly empty.
+pub async fn snapshot_write_order_contract<C: control_plane_core::ControlPlane>(cp: &C) {
+    use control_plane_core::{ColumnSpec, DataFile, FileFormat, PageReq, TableRef};
+    let t = TableRef {
+        schema: "main".into(),
+        name: "write_order".into(),
+    };
+    let file = |path: &str, rows: i64| DataFile {
+        path: path.into(),
+        path_is_relative: true,
+        file_format: FileFormat::Parquet,
+        record_count: rows,
+        file_size_bytes: rows * 16,
+        column_stats: vec![],
+        parquet_footer_size: Some(10),
+    };
+    let cols = vec![ColumnSpec {
+        name: "id".into(),
+        ty: "long".into(),
+        nullable: false,
+    }];
+
+    // Seed: create + append f0.
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(&t, &cols).await.unwrap();
+    tx.append_files(&t, &[file("f0.parquet", 1)]).await.unwrap();
+    let s1 = tx.commit().await.unwrap().expect("seed snapshot");
+
+    // One tx: REPLACE with r.parquet, THEN APPEND a.parquet.
+    let mut tx = cp.begin().await.unwrap();
+    tx.create_table(&t, &cols).await.unwrap(); // idempotent; IcebergTx resolves columns in-tx
+    tx.replace_files(&t, &[file("r.parquet", 2)]).await.unwrap();
+    tx.append_files(&t, &[file("a.parquet", 3)]).await.unwrap();
+    let s2 = tx.commit().await.unwrap().expect("write snapshot");
+
+    let mut live: Vec<String> = cp
+        .catalog()
+        .files(&t, s2, PageReq::unbounded())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    live.sort();
+    assert_eq!(
+        live,
+        vec!["a.parquet".to_string(), "r.parquet".to_string()],
+        "replace-then-append: the append (staged AFTER the replace) stays live"
+    );
+
+    // f0 was live before the replace -> end-capped; time travel still sees it.
+    let back: Vec<String> = cp
+        .catalog()
+        .files(&t, s1, PageReq::unbounded())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(
+        back,
+        vec!["f0.parquet".to_string()],
+        "prior snapshot time-travels"
+    );
 }
 
 /// Contract for `Tx::compact_files` (selective compaction). Append three files, then

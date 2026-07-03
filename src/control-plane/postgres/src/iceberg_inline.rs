@@ -40,6 +40,33 @@ pub fn inline_table_name(table_id: i64) -> String {
     format!("iceberg_mirror.inline_{table_id}")
 }
 
+/// Quote `name` as a PG identifier: wrap in double quotes, escaping embedded
+/// quotes. THE identifier-splice guard for the runtime inline-table SQL in
+/// this module — quoting makes the spliced name inert, which is the safety
+/// argument every `AssertSqlSafe` here leans on.
+pub(crate) fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// The MVCC "live at snapshot `at`" predicate over an inline table's
+/// `begin_snapshot`/`end_snapshot` columns. `at` is a trusted i64 snapshot id
+/// (never caller text), so splicing it is safe.
+pub(crate) fn mvcc_live_pred(at: i64) -> String {
+    format!("begin_snapshot <= {at} and (end_snapshot is null or end_snapshot > {at})")
+}
+
+/// True if the physical `inline_<table_id>` relation exists (`to_regclass`
+/// returns NULL for a missing relation). The one inline-existence preamble —
+/// parameterized, so no splice at all.
+pub(crate) async fn inline_table_exists(conn: &mut PgConnection, table_id: i64) -> Result<bool> {
+    let exists: Option<String> = sqlx::query_scalar("select to_regclass($1)::text")
+        .bind(inline_table_name(table_id))
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+    Ok(exists.is_some())
+}
+
 /// End-cap EVERY live inline row of `table_id` at snapshot `at` (`end_snapshot = at`
 /// where `end_snapshot is null`). Used by the overwrite/replace commit so a replace
 /// supersedes the inline tier as well as the file tier. No-op if the inline table was
@@ -49,24 +76,19 @@ pub(crate) async fn end_cap_live_inline_rows(
     table_id: i64,
     at: control_plane_core::SnapshotId,
 ) -> control_plane_core::Result<()> {
-    let name = inline_table_name(table_id);
     // to_regclass returns NULL for a non-existent relation -> skip.
-    let exists: Option<String> = sqlx::query_scalar("select to_regclass($1)::text")
-        .bind(&name)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|e| control_plane_core::ControlPlaneError::Backend(Box::new(e)))?;
-    if exists.is_none() {
+    if !inline_table_exists(conn, table_id).await? {
         return Ok(());
     }
     let sql = format!(
-        "update {name} set end_snapshot = {} where end_snapshot is null",
+        "update {} set end_snapshot = {} where end_snapshot is null",
+        inline_table_name(table_id),
         at.0
     );
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .execute(&mut *conn)
         .await
-        .map_err(|e| control_plane_core::ControlPlaneError::Backend(Box::new(e)))?;
+        .map_err(backend)?;
     Ok(())
 }
 
@@ -111,22 +133,13 @@ pub async fn has_live_inline_rows(
     let Some(tid) = live_table_id(conn, &table.schema, &table.name).await? else {
         return Ok(false);
     };
-    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-        "select to_regclass('{}')::text",
-        inline_table_name(tid)
-    )))
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(backend)?;
-    if exists.is_none() {
+    if !inline_table_exists(conn, tid).await? {
         return Ok(false);
     }
     let any: bool = sqlx::query_scalar(AssertSqlSafe(format!(
-        "select exists(select 1 from {} \
-         where begin_snapshot <= {} and (end_snapshot is null or end_snapshot > {}))",
+        "select exists(select 1 from {} where {})",
         inline_table_name(tid),
-        at.0,
-        at.0,
+        mvcc_live_pred(at.0),
     )))
     .fetch_one(&mut *conn)
     .await
@@ -250,8 +263,7 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
             ControlPlaneError::Backend(format!("inline: no pg type for {:?}", c.ty).into())
         })?;
         // Column names come from the trusted schema; quote to preserve case.
-        write!(cols, ", \"{}\" {}", c.name.replace('"', "\"\""), pg)
-            .map_err(|e| ControlPlaneError::Backend(e.into()))?;
+        write!(cols, ", {} {}", quote_ident(&c.name), pg).map_err(backend)?;
     }
     Ok(format!(
         "create table if not exists {} (\
@@ -324,27 +336,28 @@ pub async fn inline_append(
         .await
         .map_err(backend)?;
 
-    // 3. Insert each row with the new begin_snapshot.
+    // 3. Insert each row with the new begin_snapshot. The statement text is
+    //    loop-invariant — only the binds change per row.
     let col_list = columns
         .iter()
-        .map(|c| format!("\"{}\"", c.name.replace('"', "\"\"")))
+        .map(|c| quote_ident(&c.name))
         .collect::<Vec<_>>()
         .join(", ");
+    let placeholders = (0..columns.len())
+        .map(|i| format!("${}", i + 2)) // $1 = begin_snapshot
+        .collect::<Vec<_>>()
+        .join(", ");
+    let insert_sql = format!(
+        "insert into {} (begin_snapshot, {col_list}) values ($1, {placeholders})",
+        inline_table_name(tid),
+    );
     for row in 0..batch.num_rows() {
-        let placeholders = (0..columns.len())
-            .map(|i| format!("${}", i + 2)) // $1 = begin_snapshot
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "insert into {} (begin_snapshot, {col_list}) values ($1, {placeholders})",
-            inline_table_name(tid),
-        );
         let cells = columns
             .iter()
             .enumerate()
             .map(|(c, spec)| cell_from_arrow(batch, c, row, &spec.ty))
             .collect::<Result<Vec<_>>>()?;
-        let mut q = sqlx::query(AssertSqlSafe(sql)).bind(at.0);
+        let mut q = sqlx::query(AssertSqlSafe(insert_sql.clone())).bind(at.0);
         for cell in &cells {
             q = bind_cell(q, cell);
         }
@@ -488,14 +501,7 @@ impl IcebergCatalog {
         let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
             return Ok(None);
         };
-        let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-            "select to_regclass('{}')::text",
-            inline_table_name(tid)
-        )))
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(backend)?;
-        if exists.is_none() {
+        if !inline_table_exists(&mut conn, tid).await? {
             return Ok(None);
         }
 
@@ -503,17 +509,14 @@ impl IcebergCatalog {
         let col_list = schema
             .columns
             .iter()
-            .map(|c| format!("\"{}\"", c.name.replace('"', "\"\"")))
+            .map(|c| quote_ident(&c.name))
             .collect::<Vec<_>>()
             .join(", ");
 
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "select loom_row_id, {col_list} from {} \
-             where begin_snapshot <= {} and (end_snapshot is null or end_snapshot > {}) \
-             order by loom_row_id",
+            "select loom_row_id, {col_list} from {} where {} order by loom_row_id",
             inline_table_name(tid),
-            at.0,
-            at.0,
+            mvcc_live_pred(at.0),
         )))
         .fetch_all(&mut *conn)
         .await
@@ -554,8 +557,7 @@ impl IcebergCatalog {
             arrays.push(column_array(&rows, i + 1, *ty)?);
         }
         let arrow_schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(arrow_schema, arrays)
-            .map_err(|e| ControlPlaneError::Backend(e.to_string().into()))?;
+        let batch = RecordBatch::try_new(arrow_schema, arrays).map_err(backend)?;
         Ok(Some((tid, row_ids, batch)))
     }
 }
