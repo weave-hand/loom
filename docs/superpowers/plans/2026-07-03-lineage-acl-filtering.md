@@ -917,7 +917,9 @@ Create `src/services/query-api/tests/lineage_acl_e2e.rs`:
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use control_plane_core::{ControlPlane, DatasetRef, EventType, LineageEvent, RunId};
+use control_plane_core::{
+    ControlPlane, DatasetRef, EventType, LineageEvent, ObjectType, RoleId, RunId,
+};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use e2e_support::{NoServing, get, grant_read, subject_with_role};
@@ -938,6 +940,32 @@ fn edge(inp: DatasetRef, out: DatasetRef) -> LineageEvent {
         inputs: vec![inp],
         outputs: vec![out],
         payload: serde_json::json!({}),
+    }
+}
+
+/// Define a minimal ontology type `name` so a `PolicyTarget::Type` grant on it
+/// validates — BOTH adapters reject a Type grant on an unknown type
+/// (`grant references unknown type`). Call **once** per type name (a second
+/// `define_type` of the same name errors). `define_type` is a pure ontology write
+/// (no physical table needed). Types that are only *denied* (never granted) need no
+/// definition — `Acl::check` returns `Deny` for an unknown type without erroring.
+async fn deftype(cp: &PgControlPlane, name: &str) {
+    cp.ontology()
+        .define_type(
+            ObjectType::build(name, ("lin", name))
+                .prop_req("id", "Long")
+                .identity("id")
+                .done(),
+        )
+        .await
+        .unwrap();
+}
+
+/// Define each granted type (deduped) then grant `role` `Read` on all of them.
+async fn grant_types(cp: &PgControlPlane, role: &RoleId, types: &[&str]) {
+    for t in types {
+        deftype(cp, t).await;
+        grant_read(cp, role, t).await;
     }
 }
 
@@ -980,9 +1008,7 @@ async fn cut_not_skip_denied_intermediate_hides_ancestor() {
     }
     // U reads A, X, S but NOT N.
     let (_u, role) = subject_with_role(&cp, "u").await;
-    for t in ["A", "X", "S"] {
-        grant_read(&cp, &role, t).await;
-    }
+    grant_types(&cp, &role, &["A", "X", "S"]).await;
     let (status, body) = get(
         cp.clone(),
         Arc::new(NoServing),
@@ -1001,7 +1027,11 @@ async fn flat_set_differs_between_admin_and_restricted() {
     for (i, o) in [("A", "N"), ("N", "X"), ("X", "S")] {
         cp.lineage().emit(edge(ty(i), ty(o))).await.unwrap();
     }
-    // admin reads everything.
+    // Define the shared type set ONCE (a second define_type of a name errors), then
+    // grant per subject. admin reads everything; restricted reads only X, S.
+    for t in ["A", "N", "X", "S"] {
+        deftype(&cp, t).await;
+    }
     let (_a, admin_role) = subject_with_role(&cp, "admin").await;
     for t in ["A", "N", "X", "S"] {
         grant_read(&cp, &admin_role, t).await;
@@ -1023,9 +1053,10 @@ async fn seed_gating_denied_seed_is_empty_like_unknown() {
     let fx = PgFixture::shared();
     let cp = fresh(fx).await;
     cp.lineage().emit(edge(ty("A"), ty("S"))).await.unwrap();
-    // U reads A but not the seed S.
+    // U reads A but not the seed S. (S and NOPE are never granted, so they need no
+    // define_type — the check returns Deny for both, giving identical empty pages.)
     let (_u, role) = subject_with_role(&cp, "u").await;
-    grant_read(&cp, &role, "A").await;
+    grant_types(&cp, &role, &["A"]).await;
     let (status, denied) =
         get(cp.clone(), Arc::new(NoServing), "/lineage/datasets/loom:type/S/upstream?depth=2", "u").await;
     assert_eq!(status, StatusCode::OK);
@@ -1048,10 +1079,14 @@ async fn pagination_pages_every_visible_ref_once() {
     for i in 0..3 {
         cp.lineage().emit(edge(ty(&format!("d{i}")), ty("Z"))).await.unwrap();
     }
+    // Grant Z + the 6 readable inputs; the 3 `d{i}` are left undefined+ungranted (denied).
     let (_u, role) = subject_with_role(&cp, "u").await;
+    deftype(&cp, "Z").await;
     grant_read(&cp, &role, "Z").await;
     for i in 0..6 {
-        grant_read(&cp, &role, &format!("r{i}")).await;
+        let r = format!("r{i}");
+        deftype(&cp, &r).await;
+        grant_read(&cp, &role, &r).await;
     }
     let mut seen: Vec<String> = Vec::new();
     let mut after: Option<String> = None;
@@ -1093,10 +1128,9 @@ async fn events_redaction_omits_denied_refs_keeps_envelope() {
         })
         .await
         .unwrap();
+    // Grant A + OUT; SECRET is left undefined+ungranted (denied → redacted).
     let (_u, role) = subject_with_role(&cp, "u").await;
-    for t in ["A", "OUT"] {
-        grant_read(&cp, &role, t).await;
-    }
+    grant_types(&cp, &role, &["A", "OUT"]).await;
     let uri = format!("/lineage/runs/{}/events", run.0);
     let (status, body) = get(cp.clone(), Arc::new(NoServing), &uri, "u").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -1114,8 +1148,9 @@ async fn external_source_is_default_allowed() {
     // s3 external source and a denied internal sibling both feed S.
     cp.lineage().emit(edge(ext("s3://raw", "landing.csv"), ty("S"))).await.unwrap();
     cp.lineage().emit(edge(ty("SECRET"), ty("S"))).await.unwrap();
+    // reads S, not SECRET (SECRET left undefined+ungranted → denied).
     let (_u, role) = subject_with_role(&cp, "u").await;
-    grant_read(&cp, &role, "S").await; // reads S, not SECRET
+    grant_types(&cp, &role, &["S"]).await;
     let (status, body) =
         get(cp.clone(), Arc::new(NoServing), "/lineage/datasets/loom:type/S/upstream?depth=2", "u").await;
     assert_eq!(status, StatusCode::OK, "{body}");
