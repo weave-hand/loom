@@ -23,17 +23,16 @@
 
 ## File Structure
 
-- `src/control-plane/postgres/src/iceberg_inline.rs` — add `loom_tombstone` to the inline DDL + an idempotent ensure-column ALTER; new `current_inline_version()` and `write_inline_delta()` (per-identity advisory-lock CAS delta write); flush-enqueue suppression.
-- `src/control-plane/postgres/migrations/0016_inline_shadow.sql` — new: `has_shadow` column on `iceberg_mirror.inline_trigger`.
-- `src/control-plane/postgres/src/iceberg_mirror.rs` — `set_has_shadow()` / `has_shadow()` accessors (compile-time `query!` on `inline_trigger`).
-- `src/control-plane/postgres/src/ontology.rs` (or a new small module) — `identity_for_table(pool, &TableRef) -> Option<String>` reverse lookup (compile-time `query!` on `ontology.object_type`).
+- `src/control-plane/postgres/src/iceberg_inline.rs` — add `loom_tombstone` to the inline DDL + an idempotent ensure-column ALTER; new `current_inline_version()` and `write_inline_delta()` (per-identity advisory-lock CAS delta write); `set_has_shadow()`/`has_shadow()` helpers (`AssertSqlSafe`); flush-enqueue suppression. **All new SQL is runtime `AssertSqlSafe`** (no `.sqlx` regen — see Global Constraints). The id value is carried **inside an Arrow `RecordBatch`** (not a `Cell`/`SqlValue`) so the postgres API stays `Cell`-private.
+- `src/control-plane/postgres/migrations/0027_shadow_flag.sql` — new **standalone table** `iceberg_mirror.shadow_flag(table_id)` (next free migration number; a new table touches no existing cached `query!`, so the committed `.sqlx` cache stays valid).
+- `src/control-plane/postgres/src/ontology.rs` — `identity_for_table(pool, &TableRef) -> Result<Option<String>>` reverse lookup (**runtime `AssertSqlSafe`**, `ontology.object_type` has `table_schema`/`table_name`/`identity`; add `use sqlx::AssertSqlSafe`).
 - `src/control-plane/postgres/src/iceberg_flush.rs` — early-return in `flush_locked` when `has_shadow`.
 - `src/services/engine-serving/src/serving.rs` — identity-aware merge-on-read in `build_serving_provider`; extend `build_inline_provider` to expose `begin_snapshot`+`loom_tombstone` for the merge.
-- `src/services/engine-serving/src/action_writer.rs` — `current_inline_version()` + `write_delta()` executor methods on `IcebergActionWriter`.
-- `src/services/engine-wire/proto/engine_control.proto` — 2 new RPCs + messages.
+- `src/services/engine-serving/src/action_writer.rs` — `current_inline_version()` + `write_delta()` executor methods on `IcebergActionWriter` (take `id_column: &str` + an Arrow `RecordBatch`; **no `SqlValue`/`Cell`** — those don't cross into the engine crates).
+- `src/services/engine-wire/proto/engine_control.proto` — 2 new RPCs + messages (the id rides in the Arrow IPC bytes, not a JSON field). **pb is build-time generated** — nothing to check in.
 - `src/services/engine-wire/src/client.rs` — 2 new `GrpcQueueClient` methods.
-- `src/services/engine/src/service.rs` — 2 new `EngineControlService` handlers.
-- `src/services/query-api/src/serving.rs` — `ActionEngine` trait: 2 new methods; `ServingError::Conflict` variant.
+- `src/services/engine/src/service.rs` — 2 new `EngineControlService` handlers (decode IPC → `RecordBatch`; no `SqlValue`).
+- `src/services/query-api/src/serving.rs` — `ActionEngine` trait: 2 new methods **with default impls** (10 impls exist; only `EngineActionClient` overrides them); `ServingError::Conflict` variant.
 - `src/services/query-api/src/engine_action_client.rs` — `EngineActionClient` impls of the 2 methods (map gRPC `Aborted` → `ServingError::Conflict`).
 - `src/services/query-api/src/action.rs` — `run_mutate` rewrite (O(change) + bounded retry); new `select_object_sql()`.
 - `src/services/query-api/tests/*.rs` + `src/services/query-api/BUCK` — new `loom_fixture_test` targets for the 7 spec cases + flush-suppression.
@@ -309,23 +308,45 @@ Concretely: extend the arrow schema handed to `PgTableProvider::new` with two ex
 
 - [ ] **Step 4: Implement the merge in `build_serving_provider`**
 
-At the top of `build_serving_provider`, resolve identity:
+At the top of `build_serving_provider`, resolve identity (`IcebergCatalog.pool` is a `pub` field — used cross-crate at `serving.rs:191`; no accessor needed):
 
 ```rust
-let identity = control_plane_postgres::ontology::identity_for_table(catalog.pool(), table)
+let identity = control_plane_postgres::ontology::identity_for_table(&catalog.pool, table)
     .await
     .map_err(to_serving)?;
 ```
 
-(If `IcebergCatalog` exposes the pool via a field not a method, use that; add a `pub fn pool(&self) -> &PgPool` accessor to `IcebergCatalog` if none exists — small, in `control-plane/postgres`.)
+Replace the `match (file_provider, inline_provider)` combine block (l.126-140). Decide by `identity` **and** which tiers are present:
+- **`identity.is_none()`** → keep the existing additive union / single-provider logic verbatim (identity-less types unchanged).
+- **`(Some(f), None)`** (identity but no live inline rows) → return the plain file provider `Arc::new(f)` unchanged. File rows are already identity-unique (a `>1` live PK row is a corrupt-invariant, `action.rs:629-634`), so no dedup is needed and the mirror schema is trivially preserved.
+- **`(None, Some(i))` / `(Some(f), Some(i))` with `identity = Some(id)`** → build the **identity-dedup merge** via the DataFrame API, embedding providers **by value** (like the current `read_table(...).union(...)` at l.128-136 — do NOT use `ctx.register_table`+`ctx.sql`, which needs the registrations to outlive the call and risks name collisions in the `register_iceberg_table` loop):
 
-Replace the `match (file_provider, inline_provider)` combine block (l.126-140):
-- **`identity.is_none()`** → keep the existing additive union / single-provider logic verbatim.
-- **`identity = Some(id)`** → register the file provider (with synthesized `_loom_prec=0`, `_loom_tomb=false`) and the merge-mode inline provider under temporary unique names in `ctx`, then run the merge SQL (the "definition of correctness" above) via `ctx.sql(&merge_sql).await` and return `.into_view()`. Build `<data_cols>` from `schema` (the mirror arrow schema), quoting identifiers. When only one tier exists, still apply the dedup+tombstone filter over that single tier (a lone tombstone must still hide its id; a lone inline set must still dedup versions).
+```rust
+use datafusion::prelude::*;
+use datafusion::logical_expr::{col, lit};
+// file tier: synthesize the precedence + tombstone columns
+let file_df = ctx.read_table(Arc::new(f))?
+    .with_column("_loom_prec", lit(0_i64))?
+    .with_column("_loom_tomb", lit(false))?;
+// inline tier already exposes _loom_prec (begin_snapshot) and _loom_tomb (loom_tombstone)
+// as its two trailing columns (Step 3). Align its column order to [<data_cols>, _loom_prec, _loom_tomb].
+let inline_df = ctx.read_table(Arc::new(i))?.select(aligned_inline_exprs)?;
+let unioned = file_df.union(inline_df)?;               // UNION ALL, schema = data + _loom_prec + _loom_tomb
+// row_number() over (partition by <id> order by _loom_prec desc)
+let ranked = unioned.window(vec![row_number_over(&id_col)])?;   // aliased "_loom_rn"
+let merged = ranked
+    .filter(col("_loom_rn").eq(lit(1_i64)))?
+    .filter(col("_loom_tomb").eq(lit(false)))?
+    // project + CAST back to EXACTLY the mirror arrow schema (data columns only, original types/nullability):
+    .select(project_to_mirror_schema(&schema))?;
+merged.into_view()
+```
 
-Verify the returned view's schema equals `schema` (data columns only) — the governed layer and callers depend on it (`serving.rs:120-125`). Adjust the final projection/casts if DataFusion widens types (e.g. cast `_loom_prec` literal to match).
-
-> Implementer note: express the merge as SQL over registered providers (mirrors the existing `ROW_NUMBER() OVER (PARTITION BY identity)` dedup in `query-api/src/sql.rs:662-688`). If you instead use the DataFrame builder (`with_column`/`window`/`distinct_on`), verify it compiles against DataFusion 54 and produces the identical result; the SQL form is the reference.
+Requirements the implementer MUST satisfy (verify against DataFusion 54; the SQL in "Merge semantics" above is the reference):
+- **Output schema == `schema`** (`arrow_schema_from_mirror`, `serving.rs:98-99`). The final `.select(...)` must project the data columns in mirror order and cast each to the mirror field's exact `DataType`/nullability — the governed layer and callers assert this (`serving.rs:120-125`). Add explicit `cast(col(name), ty)` where the window/union widened a type.
+- **Providers embedded by value** (`ctx.read_table(Arc::new(provider))`), not registered by name.
+- **`row_number_over`** builds `Expr::WindowFunction` for `row_number()` with `partition_by = [col(id)]`, `order_by = [col("_loom_prec").sort(false, false)]`, default frame, aliased `_loom_rn` (use `datafusion::functions_window::row_number` / the `ExprFunctionExt` `partition_by`/`order_by`/`alias` builders; confirm the exact 54 API and adjust). If `row_number` is awkward, `unioned.distinct_on(vec![col(id)], select_exprs, Some(sort_exprs))` is an acceptable equivalent (sort_exprs must lead with `col(id)` then `_loom_prec` desc) — whichever compiles and matches the reference semantics.
+- The `(None, Some(i))` case (inline-only) still runs the dedup+tombstone filter (a lone tombstone hides its id; sequential versions dedup to the max).
 
 - [ ] **Step 5: Run the test to verify it passes**
 
@@ -335,7 +356,7 @@ Expected: PASS (all three cases).
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/services/engine-serving/src/serving.rs src/services/engine-serving/tests/merge_on_read.rs src/services/engine-serving/BUCK src/control-plane/postgres/src/iceberg_catalog.rs
+git add src/services/engine-serving/src/serving.rs src/services/engine-serving/tests/merge_on_read.rs src/services/engine-serving/BUCK
 git commit -m "feat(cow): identity-aware merge-on-read in build_serving_provider"
 ```
 
@@ -344,21 +365,21 @@ git commit -m "feat(cow): identity-aware merge-on-read in build_serving_provider
 ## Task 4: `write_inline_delta` + `current_inline_version` (per-identity CAS)
 
 **Files:**
-- Create: `src/control-plane/postgres/migrations/0016_shadow_flag.sql` (the shadow marker table — defined here because `write_inline_delta` sets it; Task 5 only reads it)
+- Create: `src/control-plane/postgres/migrations/0027_shadow_flag.sql` (the shadow marker table — defined here because `write_inline_delta` sets it; Task 5 only reads it)
 - Modify: `src/control-plane/postgres/src/iceberg_inline.rs`
 - Test: `src/control-plane/postgres/tests/inline_delta_cas.rs` (new) + BUCK target
 - **No `.sqlx` regen** (standalone table + `AssertSqlSafe`).
 
 **Interfaces:**
-- Consumes: `ensure_inline_schema` (Task 1), `next_snapshot` (`iceberg_mirror.rs:46`), `bind_cell`/`Cell` (`iceberg_inline.rs:139-243`), `pg_emit`.
-- Produces:
-  - `pub async fn current_inline_version(pool: &PgPool, table: &TableRef, id_column: &str, id_value: &Cell) -> Result<i64>` — `coalesce(max(begin_snapshot),0)` over live inline rows for the id (0 if none / no inline table).
-  - `pub async fn write_inline_delta(pool: &PgPool, table: &TableRef, columns: &[ColumnSpec], id_column: &str, id_value: &Cell, tombstone: bool, batch: Option<&RecordBatch>, lineage: LineageEvent, expected_version: i64) -> Result<SnapshotId>` — one-tx delta write with per-identity advisory-lock CAS; `Err(ControlPlaneError::Conflict(_))` if a newer version for the id exists.
+- Consumes: `ensure_inline_schema` (Task 1), `next_snapshot` (`iceberg_mirror.rs:46`), `live_table_id(conn, &schema, &name)` (`iceberg_mirror.rs:177`), `bind_cell`/`cell_from_arrow`/`Cell` (`iceberg_inline.rs:139-243` — all `pub(crate)`, used **internally only**), `pg_emit`.
+- Produces (the id value is carried **inside an Arrow `RecordBatch`** so `Cell`/`SqlValue` never cross a crate boundary; `columns` describes the batch and lets the fn locate the id column by name):
+  - `pub async fn current_inline_version(pool: &PgPool, table: &TableRef, columns: &[ColumnSpec], id_column: &str, id_batch: &RecordBatch) -> Result<i64>` — `coalesce(max(begin_snapshot),0)` over live inline rows for the id (0 if no inline table / no live row). `id_batch` is a one-row batch containing the id column; `columns` describes it.
+  - `pub async fn write_inline_delta(pool: &PgPool, table: &TableRef, columns: &[ColumnSpec], id_column: &str, tombstone: bool, batch: &RecordBatch, lineage: LineageEvent, expected_version: i64) -> Result<SnapshotId>` — one-tx delta write with per-identity advisory-lock CAS; `Err(ControlPlaneError::Conflict(_))` if a newer version for the id exists. For a **version**, `batch` is the full one-row post-PATCH row and `columns` all data specs; for a **tombstone**, `batch` is a one-cell batch holding just the id and `columns = [id spec]` (the tombstone row carries the id + `loom_tombstone=true`, other data cols NULL).
   - `set_has_shadow(conn, tid) -> Result<()>`, `has_shadow(conn, tid) -> Result<bool>` (used by Task 5's flush guards).
 
 - [ ] **Step 0: Add the `shadow_flag` marker table + accessors**
 
-Create `src/control-plane/postgres/migrations/0016_shadow_flag.sql`:
+Create `src/control-plane/postgres/migrations/0027_shadow_flag.sql`:
 
 ```sql
 -- Slice-1 scalable COW: a table listed here has taken a mutation (carries inline
@@ -393,18 +414,24 @@ pub async fn has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool>
 - [ ] **Step 1: Write the failing test** (`tests/inline_delta_cas.rs`)
 
 ```rust
+// Helper (in-test): build a one-cell id batch and a full-row batch with arrow-array builders,
+// mirroring how existing inline tests build RecordBatches (grep tests/ for RecordBatch::try_new).
 #[tokio::test]
 async fn delta_write_and_cas_conflict() {
     // seed inline table via ensure_inline_schema + one append {id:1, qty:1} at v0.
-    // v0 = current_inline_version(pool, table, "id", &Cell::Int(1)).await.unwrap();
-    // write a VERSION {id:1, qty:9} with expected_version = v0 → Ok(v1), v1 > v0.
-    // write again with the STALE expected_version = v0 → Err(Conflict) (a newer version exists).
-    // write a delta for a DIFFERENT id=2 with its own expected_version → Ok (no conflict).
+    // let id1 = id_batch("id", 1i64);                 // one-cell RecordBatch
+    // let cols = vec![ColumnSpec{name:"id",..}, ColumnSpec{name:"qty",..}];
+    // let v0 = current_inline_version(&pool, &table, &[id_spec.clone()], "id", &id1).await.unwrap();
+    // let row9 = full_row_batch(&cols, 1i64, 9i64);   // {id:1, qty:9}
+    // write a VERSION: write_inline_delta(&pool,&table,&cols,"id",false,&row9,lin(),v0) → Ok(v1), v1>v0.
+    // write again with the STALE expected_version=v0 → Err(Conflict).
+    // write a delta for a DIFFERENT id=2 (its own id batch + expected_version) → Ok (no conflict).
 }
 #[tokio::test]
 async fn tombstone_delta_marks_deleted() {
-    // append {id:1}; write_inline_delta(tombstone=true, batch=None, expected_version=v0) → Ok.
-    // assert a live inline row for id=1 with loom_tombstone=true exists.
+    // append {id:1}; let id1 = id_batch("id", 1i64);
+    // write_inline_delta(&pool,&table,&[id_spec],"id", true, &id1, lin(), v0) → Ok.
+    // assert a live inline row for id=1 with loom_tombstone=true and the id column populated exists.
 }
 ```
 
@@ -419,28 +446,41 @@ Expected: FAIL — functions undefined.
 pub async fn current_inline_version(
     pool: &PgPool,
     table: &TableRef,
+    columns: &[ColumnSpec],
     id_column: &str,
-    id_value: &Cell,
+    id_batch: &RecordBatch,
 ) -> Result<i64> {
     let mut conn = pool.acquire().await.map_err(backend)?;
-    let Some(tid) = live_table_id(&mut conn, table).await? else { return Ok(0) };
+    // 3-arg live_table_id (as build_inline_provider uses at serving.rs:192).
+    let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else { return Ok(0) };
+    let id_cell = extract_id_cell(columns, id_column, id_batch)?;   // internal helper (below)
+    read_max_version(&mut *conn, tid, id_column, &id_cell).await
+}
+
+/// Extract the id column's cell (row 0) from a batch, typed by its ColumnSpec.
+fn extract_id_cell(columns: &[ColumnSpec], id_column: &str, batch: &RecordBatch) -> Result<Cell> {
+    let idx = columns.iter().position(|c| c.name == id_column)
+        .ok_or_else(|| ControlPlaneError::Backend(format!("id column {id_column} not in batch")))?;
+    cell_from_arrow(batch, idx, 0, &columns[idx].ty)   // existing helper, iceberg_inline.rs:155
+}
+
+/// coalesce(max(begin_snapshot),0) for the live rows of an id. Uses sqlx::query (bind_cell
+/// binds onto `Query`, not `QueryScalar`) then reads column 0 — avoids a scalar-binder variant.
+async fn read_max_version(conn: &mut sqlx::PgConnection, tid: i64, id_column: &str, id: &Cell) -> Result<i64> {
     // AssertSqlSafe: dynamic inline_<tid> name; id_column is a quoted mirror identifier.
     let sql = format!(
-        "select coalesce(max(begin_snapshot), 0) from {} where \"{}\" = $1 and end_snapshot is null",
-        inline_table_name(tid),
-        id_column.replace('"', "\"\""),
+        "select coalesce(max(begin_snapshot), 0) as v from {} where \"{}\" = $1 and end_snapshot is null",
+        inline_table_name(tid), id_column.replace('"', "\"\""),
     );
-    let q = bind_cell(sqlx::query_scalar(AssertSqlSafe(sql)), id_value);
-    let v: i64 = q.fetch_one(&mut *conn).await.map_err(backend)?;
+    let row = bind_cell(sqlx::query(AssertSqlSafe(sql)), id).fetch_one(conn).await.map_err(backend)?;
+    let v: i64 = row.try_get("v").map_err(backend)?;   // sqlx::Row::try_get
     Ok(v)
 }
 ```
 
-(Use the same `live_table_id` helper `build_inline_provider` uses to resolve `tid`; if the inline table does not exist yet, return 0. `bind_cell` currently binds onto `sqlx::query`; add/confirm a `query_scalar` binding variant or bind then `fetch_scalar` — mirror an existing scalar bind.)
-
 - [ ] **Step 4: Implement `write_inline_delta` (advisory-lock CAS)**
 
-Mirror `inline_append` (`iceberg_inline.rs:275-377`) — one `pool.begin()` tx:
+Mirror `inline_append` (`iceberg_inline.rs:275-377`) — one `pool.begin()` tx. The mutation targets an **existing** object, so `live_table_id` is `Some` and no column projection is needed; the `next_snapshot` call is load-bearing (it inserts the `iceberg_mirror.snapshot` row that makes the new version read-visible — `current_snapshot` = max live snapshot):
 
 ```rust
 pub async fn write_inline_delta(
@@ -448,31 +488,26 @@ pub async fn write_inline_delta(
     table: &TableRef,
     columns: &[ColumnSpec],
     id_column: &str,
-    id_value: &Cell,
     tombstone: bool,
-    batch: Option<&RecordBatch>,
+    batch: &RecordBatch,          // version: full row; tombstone: one-cell id batch
     lineage: LineageEvent,
     expected_version: i64,
 ) -> Result<SnapshotId> {
     let mut tx = pool.begin().await.map_err(backend)?;
-    let tid = /* ensure table_id: next_snapshot bookkeeping requires the mirror `table` row;
-                 mirror inline_append's ensure_table/project_columns preamble */;
-    ensure_inline_schema(&mut tx, tid, columns).await?;
+    let tid = live_table_id(&mut *tx, &table.schema, &table.name).await?
+        .ok_or_else(|| ControlPlaneError::Backend(format!("no mirror table for {}.{}", table.schema, table.name)))?;
+    ensure_inline_schema(&mut tx, tid, columns).await?;   // creates inline_<tid> if the object was file-only
+    let id_cell = extract_id_cell(columns, id_column, batch)?;
 
     // Per-identity serialization: advisory xact lock keyed by (tid, id hash).
     // Mirrors iceberg_flush.rs:43's pg_advisory_xact_lock(lock_key(...)).
     // AssertSqlSafe: static; sqlx regen unavailable in this env (initdb-as-root).
-    let key = advisory_key_for_id(tid, id_value);
+    let key = advisory_key_for_id(tid, &id_cell);
     sqlx::query(AssertSqlSafe("select pg_advisory_xact_lock($1)"))
         .bind(key).execute(&mut *tx).await.map_err(backend)?;
 
     // CAS: current live max version for id must still equal expected_version.
-    let cur_sql = format!(
-        "select coalesce(max(begin_snapshot),0) from {} where \"{}\" = $1 and end_snapshot is null",
-        inline_table_name(tid), id_column.replace('"', "\"\""),
-    );
-    let cur: i64 = bind_cell(sqlx::query_scalar(AssertSqlSafe(cur_sql)), id_value)
-        .fetch_one(&mut *tx).await.map_err(backend)?;
+    let cur = read_max_version(&mut *tx, tid, id_column, &id_cell).await?;
     if cur != expected_version {
         return Err(ControlPlaneError::Conflict(format!(
             "cow: identity version advanced {expected_version} -> {cur} (concurrent mutation)"
@@ -481,18 +516,21 @@ pub async fn write_inline_delta(
 
     let at = next_snapshot(&mut tx, None).await?;
 
-    // Insert one delta row.
+    // Insert one delta row. BOTH kinds carry the identity value so merge-on-read
+    // (PARTITION BY <id>) shadows/hides the file row for that id.
     if tombstone {
+        // tombstone row: begin_snapshot, loom_tombstone=true, "<id_col>"=id; other data cols NULL.
         let sql = format!(
-            "insert into {} (begin_snapshot, loom_tombstone) values ($1, true)",
-            inline_table_name(tid),
+            "insert into {} (begin_snapshot, loom_tombstone, \"{}\") values ($1, true, $2)",
+            inline_table_name(tid), id_column.replace('"', "\"\""),
         );
-        sqlx::query(AssertSqlSafe(sql)).bind(at.0).execute(&mut *tx).await.map_err(backend)?;
+        bind_cell(sqlx::query(AssertSqlSafe(sql)).bind(at.0), &id_cell)
+            .execute(&mut *tx).await.map_err(backend)?;
     } else {
-        let batch = batch.ok_or_else(|| ControlPlaneError::Backend("version delta requires a row".into()))?;
-        // mirror inline_append's INSERT (l.328-352): build col_list + placeholders,
-        // insert into inline_<tid> (begin_snapshot, loom_tombstone, <cols>) values ($1, false, …),
-        // binding at.0 then each cell_from_arrow(batch, c, 0, ty).
+        // version row: mirror inline_append's INSERT (l.328-352) but prefix loom_tombstone=false.
+        // build col_list from `columns`; insert into inline_<tid> (begin_snapshot, loom_tombstone, <cols>)
+        // values ($1, false, <$3..>); bind at.0 then each cell_from_arrow(batch, c, 0, &columns[c].ty).
+        // (the id column is one of <cols>, so the version row carries the id naturally.)
     }
 
     set_has_shadow(&mut tx, tid).await?;   // Step 0 helper
@@ -502,9 +540,9 @@ pub async fn write_inline_delta(
 }
 ```
 
-Add `fn advisory_key_for_id(tid: i64, id: &Cell) -> i64` — a deterministic hash of `(tid, id)` into an `i64` (mirror the deterministic hashing used by `commit_backoff` / `lock_key`; no `rand`). Reuse `next_snapshot`'s `&mut tx` overload (it accepts `&mut PgConnection`).
+Add `fn advisory_key_for_id(tid: i64, id: &Cell) -> i64` — a deterministic hash of `(tid, id)` into an `i64` (mirror the deterministic hashing used by `commit_backoff` / `lock_key`; no `rand`; hash the `tid` and the `Cell`'s scalar bytes). Note `next_snapshot`/`ensure_inline_schema`/`live_table_id`/`pg_emit` all accept a `&mut PgConnection` (pass `&mut tx` / `&mut *tx`).
 
-`ControlPlaneError::Conflict` already exists (`end_cap_files_by_path` raises it). Confirm the variant and constructor.
+`ControlPlaneError::Conflict(String)` already exists (`error.rs:19`, raised by `end_cap_files_by_path`, `iceberg_mirror.rs:257`).
 
 - [ ] **Step 5: Add BUCK target and run**
 
@@ -514,7 +552,7 @@ Expected: PASS — including `sqlx-cache-check` (proves the new migration/table 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/control-plane/postgres/migrations/0016_shadow_flag.sql src/control-plane/postgres/src/iceberg_inline.rs src/control-plane/postgres/tests/inline_delta_cas.rs src/control-plane/postgres/BUCK
+git add src/control-plane/postgres/migrations/0027_shadow_flag.sql src/control-plane/postgres/src/iceberg_inline.rs src/control-plane/postgres/tests/inline_delta_cas.rs src/control-plane/postgres/BUCK
 git commit -m "feat(cow): write_inline_delta + current_inline_version with per-identity CAS"
 ```
 
@@ -583,20 +621,21 @@ git commit -m "feat(cow): suppress flush for shadow-bearing tables"
 - Test: covered by the query-api e2e in Tasks 8-9 (wire has no standalone fixture). Add a compile-smoke by building the crates.
 
 **Interfaces:**
-- Produces (on `IcebergActionWriter`):
-  - `async fn current_inline_version(&self, table, id_column: &str, id_value: &SqlValue) -> Result<i64, EngineServingError>`
-  - `async fn write_delta(&self, table, id_column: &str, id_value: &SqlValue, tombstone: bool, ipc: &[u8], columns: &[ColumnSpec], event: LineageEvent, expected_version: i64) -> Result<SnapshotId, EngineServingError>` (maps `ControlPlaneError::Conflict` → `EngineServingError::Conflict`).
+- Produces (on `IcebergActionWriter`) — **no `SqlValue`/`Cell`** (not available in these crates); the id rides in Arrow IPC bytes, `columns` describes it:
+  - `async fn current_inline_version(&self, table: &TableRef, columns: &[ColumnSpec], id_column: &str, id_ipc: &[u8]) -> Result<i64, EngineServingError>`
+  - `async fn write_delta(&self, table: &TableRef, columns: &[ColumnSpec], id_column: &str, tombstone: bool, ipc: &[u8], event: LineageEvent, expected_version: i64) -> Result<SnapshotId, EngineServingError>` (maps `ControlPlaneError::Conflict` → `EngineServingError::Conflict`).
 
 - [ ] **Step 1: Extend the proto**
 
-Mirror `WriteObjectRequest`/`OverwriteTableRequest` (`engine_control.proto:66-82`):
+Mirror `WriteObjectRequest`/`OverwriteTableRequest` (`engine_control.proto:66-82`). **The id value rides in the Arrow IPC bytes** (with `columns_json` describing it) — no `SqlValue` JSON field, since `SqlValue` is a query-api type not nameable in `engine`/`engine-serving`:
 
 ```proto
 message CurrentInlineVersionRequest {
   string schema = 1;
   string name = 2;
   string id_column = 3;
-  string id_value_json = 4;   // SqlValue serialized
+  bytes  id_ipc = 4;          // one-row Arrow IPC holding just the id column
+  string columns_json = 5;    // Vec<ColumnSpec> describing id_ipc
 }
 message CurrentInlineVersionResponse { int64 version = 1; }
 
@@ -604,12 +643,11 @@ message WriteDeltaRequest {
   string schema = 1;
   string name = 2;
   string id_column = 3;
-  string id_value_json = 4;
-  bool   tombstone = 5;
-  bytes  ipc = 6;             // one-row Arrow IPC (empty when tombstone)
-  string columns_json = 7;    // Vec<ColumnSpec>
-  string lineage_json = 8;    // LineageWire
-  int64  expected_version = 9;
+  bool   tombstone = 4;
+  bytes  ipc = 5;             // version: full one-row batch; tombstone: one-cell id batch
+  string columns_json = 6;    // Vec<ColumnSpec> describing ipc
+  string lineage_json = 7;    // LineageWire
+  int64  expected_version = 8;
 }
 message WriteDeltaResponse { int64 snapshot_id = 1; }
 ```
@@ -626,23 +664,22 @@ Add to the `service EngineControl` block:
 - [ ] **Step 2: `IcebergActionWriter` methods** (`action_writer.rs`)
 
 ```rust
-pub async fn current_inline_version(&self, table: &TableRef, id_column: &str, id_value: &SqlValue)
+pub async fn current_inline_version(&self, table: &TableRef, columns: &[ColumnSpec], id_column: &str, id_ipc: &[u8])
     -> Result<i64, EngineServingError>
 {
-    let cell = cell_from_sqlvalue(id_value)?;  // SqlValue -> Cell (add small helper)
-    iceberg_inline::current_inline_version(&self.pool, table, id_column, &cell)
+    let batch = decode_ipc(id_ipc)?.into_iter().next()
+        .ok_or_else(|| EngineServingError::Engine("empty id batch".into()))?;
+    iceberg_inline::current_inline_version(&self.pool, table, columns, id_column, &batch)
         .await.map_err(|e| EngineServingError::Engine(e.to_string()))
 }
 
-pub async fn write_delta(&self, table: &TableRef, id_column: &str, id_value: &SqlValue,
-    tombstone: bool, ipc: &[u8], columns: &[ColumnSpec], event: LineageEvent, expected_version: i64)
+pub async fn write_delta(&self, table: &TableRef, columns: &[ColumnSpec], id_column: &str,
+    tombstone: bool, ipc: &[u8], event: LineageEvent, expected_version: i64)
     -> Result<SnapshotId, EngineServingError>
 {
-    let cell = cell_from_sqlvalue(id_value)?;
-    let batch = if tombstone { None } else { Some(decode_ipc(ipc)?.into_iter().next()
-        .ok_or_else(|| EngineServingError::Engine("empty version batch".into()))?) };
-    iceberg_inline::write_inline_delta(&self.pool, table, columns, id_column, &cell, tombstone,
-        batch.as_ref(), event, expected_version)
+    let batch = decode_ipc(ipc)?.into_iter().next()
+        .ok_or_else(|| EngineServingError::Engine("empty delta batch".into()))?;
+    iceberg_inline::write_inline_delta(&self.pool, table, columns, id_column, tombstone, &batch, event, expected_version)
         .await
         .map_err(|e| match e {
             ControlPlaneError::Conflict(m) => EngineServingError::Conflict(m),
@@ -651,11 +688,11 @@ pub async fn write_delta(&self, table: &TableRef, id_column: &str, id_value: &Sq
 }
 ```
 
-Add `EngineServingError::Conflict(String)` variant. Add `cell_from_sqlvalue` (match `SqlValue` variants → `Cell`; mirror the reverse `column_array`/`cell_from_arrow` typing).
+Add `EngineServingError::Conflict(String)` variant. No `SqlValue`/`Cell` handling — the id is a cell inside the decoded `RecordBatch`, extracted by the postgres layer (`extract_id_cell`, Task 4).
 
 - [ ] **Step 3: `EngineControlService` handlers** (`engine/src/service.rs`, mirror `write_object` l.234-258)
 
-Deserialize `id_value_json` → `SqlValue`, `columns_json` → `Vec<ColumnSpec>`, `lineage_json` → `LineageEvent`; call the writer; map `EngineServingError::Conflict` → `Status::aborted(msg)`, other → `Status::internal`. Return the snapshot id / version.
+Deserialize `columns_json` → `Vec<ColumnSpec>`, `lineage_json` → `LineageEvent`; pass the `id_ipc`/`ipc` bytes straight through to the writer (no decode here — the writer/postgres decodes); map `EngineServingError::Conflict` → `Status::aborted(msg)`, other → `Status::internal`. Return the snapshot id / version. **No `SqlValue` here.**
 
 - [ ] **Step 4: `GrpcQueueClient` methods** (`engine-wire/src/client.rs`, mirror `write_object` l.183-231)
 
@@ -684,26 +721,37 @@ git commit -m "feat(cow): EngineControl current_inline_version + write_delta RPC
 - Test: exercised by Tasks 8-9; build-smoke here.
 
 **Interfaces:**
-- Produces (on `ActionEngine`):
-  - `async fn current_inline_version(&self, table: &TableRef, id_column: &str, id_value: &SqlValue) -> Result<i64, ServingError>`
-  - `async fn write_delta(&self, table: &TableRef, id_column: &str, id_value: &SqlValue, tombstone: bool, columns: &[String], values: &[SqlValue], logical_types: &[String], event: LineageEvent, expected_version: i64) -> Result<SnapshotId, ServingError>` (builds the one-row IPC batch client-side for versions, like `write_object`; empty for tombstone).
+- Produces (on `ActionEngine`) — the query-api side keeps `SqlValue` (it lives here) and builds the Arrow IPC + `Vec<ColumnSpec>` client-side (like `write_object`/`build_object_batch`):
+  - `async fn current_inline_version(&self, table: &TableRef, id_column: &str, id_value: &SqlValue, id_logical: &str) -> Result<i64, ServingError>` — builds a one-cell id batch from `(id_value, id_logical)` and its `ColumnSpec`, sends `id_ipc`+`columns_json`.
+  - `async fn write_delta(&self, table: &TableRef, id_column: &str, tombstone: bool, columns: &[String], values: &[SqlValue], logical_types: &[String], event: LineageEvent, expected_version: i64) -> Result<SnapshotId, ServingError>` — version: build the full one-row batch (`build_object_batch`) + `columns_json`; tombstone: build a one-cell id batch (the id column only) + its `columns_json`.
   - `ServingError::Conflict(String)` variant.
 
-- [ ] **Step 1: Add trait methods + `ServingError::Conflict`** (`serving.rs:287-309`)
+- [ ] **Step 1: Add trait methods (WITH DEFAULT IMPLS) + `ServingError::Conflict`** (`serving.rs:287-309`)
 
-Add the two methods to the `ActionEngine` trait. Add `Conflict(String)` to `ServingError`.
+There are **10 `impl ActionEngine` blocks** (`EngineActionClient` + 9 test stubs). To avoid breaking the 9 unrelated test stubs (which never do COW mutations), give both new trait methods a **default impl** that errors:
+
+```rust
+async fn current_inline_version(&self, _table: &TableRef, _id_column: &str, _id_value: &SqlValue, _id_logical: &str)
+    -> Result<i64, ServingError> { Err(ServingError::Engine("current_inline_version unsupported".into())) }
+async fn write_delta(&self, _table: &TableRef, _id_column: &str, _tombstone: bool, _columns: &[String],
+    _values: &[SqlValue], _logical_types: &[String], _event: LineageEvent, _expected_version: i64)
+    -> Result<SnapshotId, ServingError> { Err(ServingError::Engine("write_delta unsupported".into())) }
+```
+
+Add `Conflict(String)` to `ServingError`. (`#[async_trait]` supports default methods.)
 
 - [ ] **Step 2: Implement on `EngineActionClient`** (`engine_action_client.rs:45-109`, mirror `write_object`/`overwrite_table`)
 
-`current_inline_version`: serialize `id_value` → JSON, call `GrpcQueueClient::current_inline_version`, return `version`.
-`write_delta`: for a version, build the one-row Arrow batch + IPC (reuse `build_object_batch` for a single row) and serialize `Vec<ColumnSpec>`; for a tombstone, empty ipc + columns still serialized (needed for `ensure_inline_schema`); serialize the `LineageEvent`; call `GrpcQueueClient::write_delta`. Map a `tonic::Code::Aborted` status → `ServingError::Conflict`.
+Override both defaults on `EngineActionClient` (the real wire client the COW e2e uses via `spawn_engine_writer`):
+- `current_inline_version`: build a one-cell id batch (arrow) from `(id_value, id_logical)`, IPC-encode → `id_ipc`; serialize the id's `ColumnSpec` → `columns_json`; call `GrpcQueueClient::current_inline_version`; return `version`.
+- `write_delta`: for a version, `build_object_batch(columns, values, logical_types)` → IPC + `columns_json`; for a tombstone, build a one-cell id batch (just the id column/value/logical, located by `id_column` in `columns`) + its `columns_json`; serialize `LineageEvent`; call `GrpcQueueClient::write_delta`. Map a `tonic::Code::Aborted` status → `ServingError::Conflict`.
 
-Add impls for the in-process test engine too (`InProcessServingEngine`/the test `ActionEngine` in `e2e_support.rs`) so e2e tests call the same seam without the wire — delegate directly to `IcebergActionWriter::current_inline_version`/`write_delta`. (Check `e2e_support.rs` for how the test `ActionEngine` is built; extend it.)
+The 9 test stubs inherit the erroring defaults (they never call these). No `e2e_support.rs` `ActionEngine` change is needed unless the COW e2e uses an in-process engine — it does not; `spawn_engine_writer` returns the real `EngineActionClient`.
 
 - [ ] **Step 3: Build query-api**
 
 Run: `buck2 build -M none //src/services/query-api/... > /tmp/b.log 2>&1; tail -5 /tmp/b.log`
-Expected: build succeeds (trait fully implemented by all impls).
+Expected: build succeeds (all 10 impls satisfied — 1 override + 9 defaults).
 
 - [ ] **Step 4: Commit**
 
@@ -762,13 +810,14 @@ Expected: FAIL — current `run_mutate` rewrites the whole table (data_file set 
 Add a targeted read helper next to `select_all_sql` (`action.rs:573-589`):
 
 ```rust
-/// Targeted single-object read: `SELECT "c1",… FROM "schema"."table" WHERE "id" = $1`.
+/// Targeted single-object read. Uses `?` (not `$1`): the serving seam substitutes `?`
+/// placeholders via `inline_params` (serving.rs:337) — a `$1` would never be bound.
 fn select_object_sql(target: &ObjectType, id_column: &str) -> String {
     let cols = target.properties.iter()
         .map(|p| format!("\"{}\"", p.name.replace('"', "\"\"")))
         .collect::<Vec<_>>().join(", ");
     format!(
-        "SELECT {cols} FROM \"{}\".\"{}\" WHERE \"{}\" = $1",
+        "SELECT {cols} FROM \"{}\".\"{}\" WHERE \"{}\" = ?",
         target.table.schema.replace('"', "\"\""),
         target.table.name.replace('"', "\"\""),
         id_column.replace('"', "\"\""),
@@ -776,36 +825,37 @@ fn select_object_sql(target: &ObjectType, id_column: &str) -> String {
 }
 ```
 
-Rewrite `run_mutate` (keep `ensure_cow_supported` + identity resolution + conformance verbatim). Replace the full-table read + `overwrite_table` (l.730-824) with a bounded retry loop:
+Rewrite `run_mutate` (keep `ensure_cow_supported` + identity resolution + conformance verbatim). Replace the full-table read + `overwrite_table` (l.730-824) with a bounded retry loop. `id_value: SqlValue` and its logical type `id_logical` come from the already-resolved identity param (l.711-721); `columns`/`new_row_values`/`logical` are built exactly as today (the resolved-row machinery), except `new_row` is derived from the *targeted* read's single row instead of a located full-table row:
 
 ```rust
 const COW_MAX_RETRIES: u32 = 5;
-let idprop = target.identity.clone().ok_or(ActionError::Misconfigured(/* … */))?;
-let id_idx = /* index of idprop in columns */;
+let idprop = target.identity.clone().ok_or_else(|| ActionError::Misconfigured("no identity".into()))?;
 let mut attempt = 0u32;
 loop {
     // 1. capture the per-identity version token BEFORE the row read (provably safe ordering).
     let v0 = deps.action_engine
-        .current_inline_version(&target.table, &idprop, &id_value)
+        .current_inline_version(&target.table, &idprop, &id_value, &id_logical)
         .await
         .map_err(ActionError::from)?;
 
-    // 2. targeted merged read of the current live object.
+    // 2. targeted merged read of the current live object (`?` placeholder bound to id_value).
     let live = deps.serving
         .fetch_rows(&select_object_sql(target, &idprop), &[id_value.clone()])
         .await
         .map_err(ActionError::from)?;
     let Some(existing) = live.rows.first() else { return Err(ActionError::NotFound); };
 
-    // 3. build set_pairs + new_row (UPDATE) / None (DELETE) — unchanged logic (l.743-760/795-809).
+    // 3. build set_pairs + new_row (UPDATE) / None (DELETE) — same PATCH logic as l.743-809,
+    //    over `existing` (the single targeted row).
     // 4. governance + constraints — enforce_mutate_policy(...) + constraint validation VERBATIM (l.764-793).
     // 5. commit ONE inline delta (version for UPDATE, tombstone for DELETE) with CAS on v0.
     let res = if is_update {
-        deps.action_engine.write_delta(&target.table, &idprop, &id_value, /*tombstone=*/false,
+        deps.action_engine.write_delta(&target.table, &idprop, /*tombstone=*/false,
             &columns, &new_row_values, &logical, event.clone(), v0).await
     } else {
-        deps.action_engine.write_delta(&target.table, &idprop, &id_value, /*tombstone=*/true,
-            &columns, &[], &logical, event.clone(), v0).await
+        // tombstone: send only the id column so the engine builds a one-cell id batch.
+        deps.action_engine.write_delta(&target.table, &idprop, /*tombstone=*/true,
+            &[idprop.clone()], &[id_value.clone()], &[id_logical.clone()], event.clone(), v0).await
     };
     match res {
         Ok(_) => break,
@@ -863,11 +913,14 @@ async fn time_travel_sees_pre_mutation_value() {
 async fn concurrent_updates_cas_no_lost_update() {
     // seed {id:1, name:"x", qty:1}. Two updates that PATCH DIFFERENT columns from the same base:
     //   A: updateWidget {id:1, name:"y"}   B: updateWidget {id:1, qty:9}
-    // Drive them so one hits the CAS conflict and retries (serialize deterministically:
-    //   run A to completion, then B — B's current_inline_version(before its read) is v0 from
-    //   before A, forcing the Conflict+retry path; OR use tokio::join! and assert final state).
-    // Final read → {name:"y", qty:9} (both applied, no lost update).
-    // A concurrent update to a DIFFERENT id never conflicts (write id=2 between → still Ok).
+    // Run them CONCURRENTLY with tokio::join! (both may capture the same v0 → the CAS forces
+    // one to Conflict+retry; a "run A then B" sequence would NOT exercise the retry path).
+    // Assert BOTH complete Ok and the final read is the convergent {name:"y", qty:9}
+    // (no lost update — the retrying writer re-reads the winner's row and re-applies its patch).
+    // Also: a concurrent update to a DIFFERENT id (id=2) never conflicts (runs Ok alongside).
+    // NOTE: the authoritative "one aborts with Conflict, retries on the fresh version" proof is the
+    // postgres-level delta_write_and_cas_conflict test (Task 4) with an explicit stale expected_version;
+    // this e2e asserts the observable end-to-end invariant (convergent, no lost update).
 }
 #[tokio::test]
 async fn governance_denies_and_never_leaks() {
@@ -957,4 +1010,4 @@ git push -u origin work/road-cow-inline-shadow
 
 **Placeholder scan:** SQL, proto, and `run_mutate` structure are concrete. Where the DataFusion 54 merge API and the exact `inline_trigger`/`object_type` column names are environment-verified, the plan gives the reference SQL + the exact file:line to confirm against — the implementer verifies, not invents. No "TODO/TBD/add error handling".
 
-**Type consistency:** `current_inline_version`/`write_inline_delta` (postgres) ↔ `IcebergActionWriter::current_inline_version`/`write_delta` (engine) ↔ `ActionEngine::current_inline_version`/`write_delta` (query-api) — names and the `expected_version: i64` / `tombstone: bool` / `Conflict` mapping thread consistently. `SqlValue`↔`Cell` bridged by `cell_from_sqlvalue`. `ServingError::Conflict` ↔ `EngineServingError::Conflict` ↔ `ControlPlaneError::Conflict` ↔ gRPC `Code::Aborted` mapping is consistent end-to-end.
+**Type consistency:** `current_inline_version`/`write_inline_delta` (postgres, take `&[ColumnSpec]`+`&RecordBatch`) ↔ `IcebergActionWriter::current_inline_version`/`write_delta` (engine, take IPC `&[u8]`+`&[ColumnSpec]`) ↔ `ActionEngine::current_inline_version`/`write_delta` (query-api, take `&SqlValue`/`&[SqlValue]` and build the IPC) — the id value crosses each boundary in the layer-appropriate form (`SqlValue` in query-api → Arrow IPC on the wire → `RecordBatch`→`Cell` in postgres), so **`Cell` and `SqlValue` never cross a crate boundary**. `expected_version: i64` / `tombstone: bool` thread identically. `ServingError::Conflict` ↔ `EngineServingError::Conflict` ↔ `ControlPlaneError::Conflict` ↔ gRPC `Code::Aborted` mapping is consistent end-to-end.
