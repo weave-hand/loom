@@ -143,6 +143,7 @@ async fn run_wire_vertical(backend: WireBackend) {
     let auth = AuthState {
         auth: backend.cp.clone(),
         session_ttl: std::time::Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     };
     let protected_query = protect(backend.query, auth);
 

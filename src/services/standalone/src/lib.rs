@@ -23,6 +23,7 @@ pub struct StandaloneAddrs {
 pub struct StandaloneTuning {
     pub session_ttl: std::time::Duration,
     pub max_ttl: std::time::Duration,
+    pub lockout: service_runtime::LockoutPolicy,
     pub engine: engine::EngineTuning,
 }
 
@@ -35,6 +36,7 @@ impl StandaloneTuning {
         Ok(StandaloneTuning {
             session_ttl: service_runtime::session_ttl(vars)?,
             max_ttl: service_runtime::service_token_max_ttl(vars)?,
+            lockout: service_runtime::login_lockout(vars)?,
             engine: engine::EngineTuning::from_map(vars)?,
         })
     }
@@ -79,6 +81,7 @@ async fn serve_composite(
     let auth = service_runtime::AuthState {
         auth: pg.clone(),
         session_ttl: tuning.session_ttl,
+        lockout: tuning.lockout,
     };
     let max_ttl = tuning.max_ttl;
 

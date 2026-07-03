@@ -36,6 +36,7 @@ fn app(cp: Arc<PgControlPlane>) -> axum::Router {
     let auth = AuthState {
         auth: cp as Arc<dyn Auth + Send + Sync>,
         session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     };
     admin_routes(admin, auth)
 }
@@ -53,6 +54,7 @@ fn full_app(
     let auth = AuthState {
         auth: cp.clone() as Arc<dyn Auth + Send + Sync>,
         session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     };
     let qapi = protect(
         router(AppState {

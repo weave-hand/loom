@@ -254,6 +254,7 @@ pub async fn get(
         AuthState {
             auth: cp.clone(),
             session_ttl: std::time::Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
         },
     );
     let res = app
@@ -325,6 +326,7 @@ pub async fn get_unauth(
         AuthState {
             auth: cp.clone(),
             session_ttl: std::time::Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
         },
     );
     let res = app
@@ -981,6 +983,7 @@ pub async fn post_search(
         AuthState {
             auth: cp.clone(),
             session_ttl: std::time::Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
         },
     );
     let res = app

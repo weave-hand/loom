@@ -192,6 +192,33 @@ async fn enable_user(State(st): State<AdminState>, Path(username): Path<String>)
 }
 
 #[derive(serde::Deserialize)]
+struct ResetPasswordReq {
+    new: String,
+}
+
+/// `POST /admin/users/:username/password` — admin. Set a new password for any user
+/// with NO current-verify (operator-driven recovery), and revoke ALL that user's
+/// sessions (force re-login). `NotFound` (404) if the username is unknown. The
+/// subject id equals the username, mirroring `create_user` on this surface.
+async fn reset_password(
+    State(st): State<AdminState>,
+    Path(username): Path<String>,
+    Json(req): Json<ResetPasswordReq>,
+) -> Response {
+    let Ok(new_phc) = hash_password(&req.new) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed").into_response();
+    };
+    let subject = SubjectId(username);
+    if let Err(e) = st.auth.update_password(&subject, &new_phc).await {
+        return status_for(&e).into_response();
+    }
+    if let Err(e) = st.auth.revoke_subject_sessions(&subject, None).await {
+        return status_for(&e).into_response();
+    }
+    StatusCode::OK.into_response()
+}
+
+#[derive(serde::Deserialize)]
 struct CreateRoleReq {
     role: String,
 }
@@ -315,6 +342,7 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         .route("/admin/users", post(create_user).get(list_users))
         .route("/admin/users/:username/disable", post(disable_user))
         .route("/admin/users/:username/enable", post(enable_user))
+        .route("/admin/users/:username/password", post(reset_password))
         .route("/admin/models", post(define_model))
         .route("/admin/roles", post(create_role).get(list_roles))
         .route("/admin/roles/:role/grants", post(grant))

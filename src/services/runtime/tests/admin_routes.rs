@@ -25,6 +25,7 @@ fn states(cp: Arc<MemoryControlPlane>) -> (AdminState, AuthState) {
         AuthState {
             auth: cp,
             session_ttl: Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
         },
     )
 }
@@ -247,4 +248,59 @@ async fn disable_unknown_user_is_404() {
     let token = seed_admin_session(&cp, ADMIN).await;
     let (status, _) = send(app(cp), post_json("/admin/users/ghost/disable", &token, "")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_reset_revokes_all_sessions_and_sets_new_password() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let admin_token = seed_admin_session(&cp, ADMIN).await;
+    // victim user with a live session
+    let victim_token = seed_session(&cp, "victim").await;
+
+    let (status, _) = send(
+        app(cp.clone()),
+        post_json(
+            "/admin/users/victim/password",
+            &admin_token,
+            r#"{"new":"reset-pw"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // all the victim's prior sessions are revoked
+    assert!(
+        cp.resolve_session(&token_sha256(&victim_token), time::OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // the new password verifies
+    let cred = cp.find_password_credential("victim").await.unwrap().unwrap();
+    assert!(service_runtime::verify_password("reset-pw", &cred.password_phc));
+}
+
+#[tokio::test]
+async fn admin_reset_unknown_user_is_404() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let admin_token = seed_admin_session(&cp, ADMIN).await;
+    let (status, _) = send(
+        app(cp),
+        post_json("/admin/users/ghost/password", &admin_token, r#"{"new":"x"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn non_admin_reset_is_403() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let alice = seed_session(&cp, "alice").await; // not admin
+    seed_session(&cp, "victim").await;
+    let (status, _) = send(
+        app(cp),
+        post_json("/admin/users/victim/password", &alice, r#"{"new":"x"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

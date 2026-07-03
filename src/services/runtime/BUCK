@@ -49,7 +49,10 @@ rust_test(
     srcs = ["tests/ttl.rs"],
     crate_root = "tests/ttl.rs",
     edition = "2024",
-    deps = [":runtime"],
+    deps = [
+        ":runtime",
+        "//third-party:time",
+    ],
 )
 
 rust_test(
@@ -156,6 +159,40 @@ rust_test(
         "//third-party:axum",
         "//third-party:http-body-util",
         "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "lockout",
+    crate = "lockout",
+    srcs = ["tests/lockout.rs"],
+    crate_root = "tests/lockout.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:axum",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "password-routes",
+    crate = "password_routes",
+    srcs = ["tests/password_routes.rs"],
+    crate_root = "tests/password_routes.rs",
+    edition = "2024",
+    deps = [
+        ":runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:axum",
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tower",

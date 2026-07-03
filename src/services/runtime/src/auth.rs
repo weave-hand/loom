@@ -16,8 +16,8 @@ use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use control_plane_core::{
-    ADMIN_ROLE, Auth, ControlPlane, ControlPlaneError, NewServiceAccount, PageReq, RoleId,
-    SubjectId,
+    ADMIN_ROLE, Auth, ControlPlane, ControlPlaneError, LockoutPolicy, NewServiceAccount, PageReq,
+    RoleId, SubjectId,
 };
 use time::OffsetDateTime;
 
@@ -33,6 +33,7 @@ pub struct Subject(pub SubjectId);
 pub struct AuthState {
     pub auth: Arc<dyn Auth + Send + Sync>,
     pub session_ttl: Duration,
+    pub lockout: LockoutPolicy,
 }
 
 /// Map a control-plane error to an HTTP status. Centralised so the reserved
@@ -126,40 +127,59 @@ struct LoginResp {
     token: String,
 }
 
-/// `POST /auth/login` — public. Verify the password, mint a session token,
-/// return it once. A uniform 401 on unknown user OR bad password (and a
-/// dummy hash on unknown user keeps login timing uniform).
+/// `POST /auth/login` — public. Verify the password, mint a session token, return
+/// it once. Enforces per-account lockout: a locked account is rejected with the
+/// same generic 401 as a bad password (no enumeration); each failure is recorded
+/// and a success clears the counter. A uniform 401 on unknown user OR bad password
+/// OR locked (with a dummy hash to keep timing uniform).
 async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq>) -> Response {
-    match st.auth.find_password_credential(&req.username).await {
-        Ok(Some(cred)) => {
-            if crate::verify_password(&req.password, &cred.password_phc) {
-                let token = crate::generate_session_token();
-                let hash = token_sha256(&token);
-                #[expect(
-                    clippy::expect_used,
-                    reason = "session_ttl comes from Duration::from_secs(u64) which always fits in time::Duration (<292 years)"
-                )]
-                let expires = OffsetDateTime::now_utc()
-                    + time::Duration::try_from(st.session_ttl)
-                        .expect("session_ttl fits in time::Duration");
-                match st
-                    .auth
-                    .create_session(&cred.subject_id, &hash, expires)
-                    .await
-                {
-                    Ok(()) => (StatusCode::OK, axum::Json(LoginResp { token })).into_response(),
-                    Err(e) => status_for(&e).into_response(),
-                }
-            } else {
-                unauthorized()
-            }
-        }
-        // Unknown user: burn comparable time with a dummy hash, then the same 401.
+    let now = OffsetDateTime::now_utc();
+    let cred = match st.auth.find_password_credential(&req.username).await {
+        Ok(Some(c)) => c,
+        // Unknown or disabled user: burn comparable time, then the same 401.
         Ok(None) => {
             drop(crate::hash_password(&req.password));
-            unauthorized()
+            return unauthorized();
         }
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => return status_for(&e).into_response(),
+    };
+
+    // Locked: reject with the same generic 401 (burn a dummy hash so a locked
+    // account is indistinguishable from a bad password by response and by timing).
+    if cred.locked_until.is_some_and(|lu| lu > now) {
+        drop(crate::hash_password(&req.password));
+        return unauthorized();
+    }
+
+    if crate::verify_password(&req.password, &cred.password_phc) {
+        if let Err(e) = st.auth.reset_failed_logins(&req.username).await {
+            return status_for(&e).into_response();
+        }
+        let token = crate::generate_session_token();
+        let hash = token_sha256(&token);
+        #[expect(
+            clippy::expect_used,
+            reason = "session_ttl comes from Duration::from_secs(u64) which always fits in time::Duration (<292 years)"
+        )]
+        let expires = now
+            + time::Duration::try_from(st.session_ttl).expect("session_ttl fits in time::Duration");
+        match st
+            .auth
+            .create_session(&cred.subject_id, &hash, expires)
+            .await
+        {
+            Ok(()) => (StatusCode::OK, axum::Json(LoginResp { token })).into_response(),
+            Err(e) => status_for(&e).into_response(),
+        }
+    } else {
+        if let Err(e) = st
+            .auth
+            .record_failed_login(&req.username, now, st.lockout)
+            .await
+        {
+            return status_for(&e).into_response();
+        }
+        unauthorized()
     }
 }
 
@@ -180,6 +200,49 @@ async fn logout(
     StatusCode::OK.into_response()
 }
 
+#[derive(serde::Deserialize)]
+struct ChangePasswordReq {
+    current: String,
+    new: String,
+}
+
+/// `POST /auth/password` — authenticated. Verify the caller's current password,
+/// rotate to the new one, and revoke the caller's OTHER sessions (the current
+/// session, identified by the presented bearer, is preserved). Wrong current → 403,
+/// nothing changed. Password strength policy is out of scope.
+async fn change_password(
+    subject: Subject,
+    State(st): State<AuthState>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<ChangePasswordReq>,
+) -> Response {
+    let phc = match st.auth.password_phc_for_subject(&subject.0).await {
+        Ok(Some(p)) => p,
+        // An authenticated subject with no credential should not happen; fail closed.
+        Ok(None) => return unauthorized(),
+        Err(e) => return status_for(&e).into_response(),
+    };
+    if !crate::verify_password(&req.current, &phc) {
+        return (StatusCode::FORBIDDEN, "current password is incorrect").into_response();
+    }
+    let Ok(new_phc) = crate::hash_password(&req.new) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed").into_response();
+    };
+    if let Err(e) = st.auth.update_password(&subject.0, &new_phc).await {
+        return status_for(&e).into_response();
+    }
+    // Keep the current session, revoke the rest.
+    let keep = bearer_token(&headers).map(|t| token_sha256(&t));
+    if let Err(e) = st
+        .auth
+        .revoke_subject_sessions(&subject.0, keep.as_ref())
+        .await
+    {
+        return status_for(&e).into_response();
+    }
+    StatusCode::OK.into_response()
+}
+
 /// Public auth routes (login). Mount un-gated.
 pub fn login_routes(auth: AuthState) -> Router {
     Router::new()
@@ -187,11 +250,13 @@ pub fn login_routes(auth: AuthState) -> Router {
         .with_state(auth)
 }
 
-/// Authenticated session routes (logout), behind the authn gate.
+/// Authenticated session routes (logout, self-service password change), behind the
+/// authn gate.
 pub fn session_routes(auth: AuthState) -> Router {
     protect(
         Router::new()
             .route("/auth/logout", axum::routing::post(logout))
+            .route("/auth/password", axum::routing::post(change_password))
             .with_state(auth.clone()),
         auth,
     )
@@ -484,4 +549,22 @@ pub fn session_ttl(vars: &HashMap<String, String>) -> Result<Duration, loom_conf
         "LOOM_SESSION_TTL_SECS",
         86_400_u64,
     )?))
+}
+
+/// Fail-loud read of the failed-login lockout policy from the env snapshot:
+/// `LOOM_LOGIN_LOCKOUT_THRESHOLD` (count, default 5), `LOOM_LOGIN_LOCKOUT_WINDOW`
+/// and `LOOM_LOGIN_LOCKOUT_DURATION` (seconds, default 900 = 15 min each). Same
+/// fallback semantics as [`session_ttl`] — a present-but-malformed value is a
+/// startup error naming the key, never a silent fallback.
+pub fn login_lockout(
+    vars: &HashMap<String, String>,
+) -> Result<LockoutPolicy, loom_config::ConfigError> {
+    let threshold = loom_config::parse_var(vars, "LOOM_LOGIN_LOCKOUT_THRESHOLD", 5_u32)?;
+    let window_secs = loom_config::parse_var(vars, "LOOM_LOGIN_LOCKOUT_WINDOW", 900_u64)?;
+    let duration_secs = loom_config::parse_var(vars, "LOOM_LOGIN_LOCKOUT_DURATION", 900_u64)?;
+    Ok(LockoutPolicy {
+        threshold,
+        window: time::Duration::seconds(i64::try_from(window_secs).unwrap_or(i64::MAX)),
+        lockout_duration: time::Duration::seconds(i64::try_from(duration_secs).unwrap_or(i64::MAX)),
+    })
 }

@@ -31,6 +31,7 @@ fn app(cp: Arc<PgControlPlane>, eng: Arc<dyn query_api::serving::ServingEngine>)
     let auth = AuthState {
         auth: cp.clone() as Arc<dyn Auth + Send + Sync>,
         session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
     };
     protect(
         query_api::http::router(query_api::http::AppState {
