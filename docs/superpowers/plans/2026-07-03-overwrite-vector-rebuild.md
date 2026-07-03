@@ -56,7 +56,7 @@ pub(crate) async fn rebuild_jobs_for(pool: &PgPool, table: &TableRef) -> Result<
 }
 ```
 
-Add the needed imports to `vector_index.rs` (`BUILD_VECTOR_INDEX_JOB_KIND`, `BuildVectorIndexJob`, `NewJob` from `control_plane_core` — mirror `iceberg_flush.rs:7-8`). In `iceberg_flush.rs`, replace lines 119-137 with `let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;` and keep the comment about atomic+deduped enqueue; drop now-unused imports.
+Add the needed imports to `vector_index.rs` (`BUILD_VECTOR_INDEX_JOB_KIND`, `BuildVectorIndexJob`, `NewJob` from `control_plane_core` — mirror `iceberg_flush.rs:7-8`). In `iceberg_flush.rs`, replace lines 120-137 (the construction ONLY — keep the whole "atomic + deduped" comment at 117-119, wording adjusted to point at the shared helper) with `let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;` and keep the comment about atomic+deduped enqueue; drop now-unused imports.
 
 - [ ] **Step 2: Prove behavior preserved**
 
@@ -84,15 +84,19 @@ git commit -m "refactor(vector-index): extract rebuild_jobs_for from the flush e
 - [ ] **Step 1: Write the failing test.** New file `tests/overwrite_vector_rebuild.rs`: copy `flush_vector_rebuild.rs`'s header docs pattern, its `setup` fixture (adapt: declare **two** indexes — call `define_vector_index` twice, e.g. `by_flat` + `by_flat2`, both `IndexKind::Flat`/`Metric::Cosine` over the same column — mirror how `setup(fx, true)` declares one), and its `job_count`/`job_count_by_state` helpers verbatim. First test:
 
 ```rust
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overwrite_enqueues_one_rebuild_per_declared_index() {
-    let fx = PgFixture::shared().await;
-    let (_cp, catalog, pool, table, _wh) = setup(&fx, true).await;
-    // Land initial rows so the table exists with live files.
-    land_vec4(&pool, &catalog, &table).await; // reuse setup's landing helper shape
+    let fx = PgFixture::shared(); // sync, returns &'static PgFixture
+    let (_cp, catalog, pool, table, _wh) = setup(fx, true).await;
+    // Seed rows exactly as flush_vector_rebuild.rs's tests do — copy its
+    // shortest green test's land(...) sequence verbatim (it inlines `land`
+    // with InlineLimits; do the same — loom_test_seed::land_vec4 has a
+    // different signature and is NOT what that file uses).
     assert_eq!(job_count(&pool, BUILD_VECTOR_INDEX_JOB_KIND).await, 0, "seed must not enqueue");
 
-    overwrite_parquet_snapshot(&pool, &catalog, &table, &vec4_columns(), vec4_batches(), Some(&test_lineage()))
+    let (_schema, batches) = vec4_batches(&[(1, [0.1, 0.2, 0.3, 0.4])]);
+    let ev = test_lineage(RunId("overwrite-1".into()), &table);
+    overwrite_parquet_snapshot(&pool, &catalog, &table, &vec4_columns(), batches, Some(&ev))
         .await
         .expect("overwrite");
 
@@ -109,7 +113,7 @@ async fn overwrite_enqueues_one_rebuild_per_declared_index() {
 }
 ```
 
-(Adapt helper names to what `flush_vector_rebuild.rs`'s setup actually exposes — the landing call there is `land(...)` with `InlineLimits`; reuse its exact seed sequence so rows are file-backed. The literal seed calls are in that file's tests — copy the shortest green one.) Wire the BUCK target (copy the `flush-vector-rebuild` stanza, rename target/crate/srcs/crate_root).
+(Verified signatures: `PgFixture::shared()` is sync; `vec4_batches(rows: &[(i64, [f32; 4])]) -> (SchemaRef, Vec<RecordBatch>)`; `test_lineage(run: RunId, table: &TableRef)`; setup declares the SECOND index by a second `define_vector_index` call — legal, PK is `(type_name, name)`, precedent `vector_index_multi.rs`. Note: flush's seed lands INLINE (`inline_byte_limit: usize::MAX`); that is fine — overwrite end-caps inline rows too — but if file-backed seeding is wanted use `cold_limits()` from loom_test_seed.) Wire the BUCK target (copy the `flush-vector-rebuild` stanza, rename target/crate/srcs/crate_root).
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -139,7 +143,7 @@ Expected: FAIL — `job_count_by_state == 0` today (empty job set).
     .await
 ```
 
-(`overwrite_truncate` gains the `jobs: &[NewJob]` param now but only *uses* it in Task 3 — pass it through and add the parameter in this task so the code compiles once; Task 3 adds the insert loop + its test.) Update `overwrite_parquet_snapshot`'s doc comment: overwrite commits now enqueue deduped index rebuilds like flush.
+(`overwrite_truncate` gains the param now but only *uses* it in Task 3 — name it `_jobs: &[NewJob]` in THIS task so clippy/prek stays clean (unused-variable would fail the hook), and rename to `jobs` when Task 3 adds the loop. Add `NewJob` to `iceberg_landing.rs`'s `control_plane_core` import list — it is not imported today.) Update `overwrite_parquet_snapshot`'s doc comment: overwrite commits now enqueue deduped index rebuilds like flush.
 
 - [ ] **Step 4: Run to verify pass** (same command). Expected: PASS.
 - [ ] **Step 5: prek + commit**
@@ -160,7 +164,7 @@ git commit -m "fix(vector-index): overwrite commits enqueue declared index rebui
 #[tokio::test]
 async fn truncate_overwrite_enqueues_rebuilds() {
     // same setup + seed as above, then a zero-row overwrite:
-    overwrite_parquet_snapshot(&pool, &catalog, &table, &vec4_columns(), vec![empty_vec4_batch()], Some(&test_lineage()))
+    overwrite_parquet_snapshot(&pool, &catalog, &table, &vec4_columns(), vec4_batches(&[]).1, Some(&ev)) // 0-row batch trips the truncate branch
         .await
         .expect("truncate");
     assert_eq!(job_count_by_state(&pool, BUILD_VECTOR_INDEX_JOB_KIND, "available").await, 2);
@@ -175,7 +179,7 @@ async fn pending_rebuild_dedupes_across_overwrites() {
 }
 ```
 
-(Fill the dedup test body from `flush_vector_rebuild.rs`'s existing dedup test — it has this exact three-phase shape for flush; mirror it with overwrite calls. `empty_vec4_batch()` = a `RecordBatch` with the vec4 schema and 0 rows — build it with `RecordBatch::new_empty(schema)` using the same schema `vec4_batches()` uses; if `loom_test_seed` already exports an empty-batch helper, use that instead.)
+(Assemble the dedup test from flush_vector_rebuild.rs's TWO existing tests: `two_flushes_with_pending_build_enqueue_one` (:254, phases 1-2) and `flush_while_build_running_enqueues_a_fresh_pending` (:317, the running-state UPDATE at :345) — mirror with overwrite calls. Empty batch = `vec4_batches(&[]).1`.)
 
 - [ ] **Step 2: Run to verify the truncate test fails** (dedup test red only on its third phase if Task 2 shipped). Expected: `truncate_overwrite_enqueues_rebuilds` FAILS with 0 jobs.
 - [ ] **Step 3: Implement** — in `overwrite_truncate` (signature from Task 2: `jobs: &[NewJob]`), after the lineage emit and before `tx.commit()`:
@@ -201,10 +205,10 @@ git commit -m "fix(vector-index): truncate overwrites enqueue deduped index rebu
 **Files:**
 - Modify: `src/services/engine-serving/tests/action_writer.rs` (+ its BUCK deps if the queue count needs sqlx — it already depends on `control-plane-postgres` fixture; check the stanza), `docs/ISSUES.md`, `docs/system-capabilities/vector-search.md`, `docs/system-capabilities/engine.md`
 
-- [ ] **Step 1: Seam test** — extend `action_writer.rs`: after its existing overwrite scenario, a new test (or extension) that declares one vector index on the seeded type before writing, drives `IcebergActionWriter::overwrite_table`, and asserts one `available` `build_vector_index` job (reuse a local `job_count` helper — copy the two-liner from `flush_vector_rebuild.rs:82-89`). Run: the engine-serving `action-writer` target with `--unstable-allow-all-tests-on-re`. Expected: PASS (wiring already proven at the postgres layer; this pins the seam).
-- [ ] **Step 2: Register close** per loom-docs-update: remove the `iss-overwrite-vector-index-staleness` entry from `docs/ISSUES.md`; `bash tools/docs.sh validate` OK. Sweep for dangling refs: `grep -rn 'iss-overwrite-vector-index-staleness' docs/ .claude/ src/` — rewrite the `[[...]]` link inside `docs/FUTURE.md`'s `fut-cow-arrow-native` entry (its "folds in [[iss-overwrite-vector-index-staleness]]" acceptance note) to state the rebuild-enqueue now exists (plain `` `#id` `` span + "fixed" phrasing), and delete the Known-gaps bullet in `docs/system-capabilities/vector-search.md` (line ~41, `#iss-overwrite-vector-index-staleness`).
+- [ ] **Step 1: Seam test** — extend `action_writer.rs`: the seeded `Widget` type (:91-119) has NO vector property, so first extend its `define_type` seed with an `embedding vector(4)` property (landing derives schema from the caller's `columns`, so existing tests are unaffected), then a new test that declares TWO vector indexes (matching the spec's criterion-1 shape), drives `IcebergActionWriter::overwrite_table`, and asserts two `available` `build_vector_index` jobs (copy the `job_count` helper from `flush_vector_rebuild.rs:83-89`; add `//third-party:sqlx` to the `action-writer` BUCK stanza — it lacks it). Run the engine-serving `action-writer` target with `--unstable-allow-all-tests-on-re`. Expected: PASS (wiring proven at the postgres layer; this pins the seam). NOTE for the PR body: the spec's criterion 1 wanted the red-first two-index case driven through this seam; the plan does red-first at the postgres layer and pins the seam green-first — equivalent coverage since `overwrite_table` is a 10-line pure delegation (action_writer.rs:76-100).
+- [ ] **Step 2: Register close** per loom-docs-update: remove the `iss-overwrite-vector-index-staleness` entry from `docs/ISSUES.md`; `bash tools/docs.sh validate` OK. Sweep for dangling refs: `grep -rn 'iss-overwrite-vector-index-staleness' docs/ .claude/ src/` — rewrite the `[[...]]` link inside `docs/FUTURE.md`'s `fut-cow-arrow-native` entry (its "folds in [[iss-overwrite-vector-index-staleness]]" acceptance note) to state the rebuild-enqueue now exists (plain `` `#id` `` span + "fixed" phrasing), delete the Known-gaps bullet in `docs/system-capabilities/vector-search.md` (line ~41), AND fix the prose at vector-search.md:37 ("…the governed UPDATE/DELETE replace path is a known gap (below)") which the grep sweep will NOT catch — rewrite it to state the replace path now enqueues rebuilds.
 - [ ] **Step 3: Capability docs** — vector-search.md "Rebuild/staleness" theme + engine.md's overwrite paragraph: one sentence each — overwrite/truncate commits now enqueue deduped `build_vector_index` rebuilds via the shared `rebuild_jobs_for` seam `(#PRNUM)`.
-- [ ] **Step 4: Sweep** — affected targets: `buck2 test //src/control-plane/postgres:flush-vector-rebuild //src/control-plane/postgres:overwrite-vector-rebuild //src/control-plane/postgres:iceberg-overwrite //src/control-plane/postgres:overwrite-end-caps-inline //src/services/engine-serving:action-writer --unstable-allow-all-tests-on-re > /tmp/o4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/o4.log` — expect PASS.
+- [ ] **Step 4: Sweep** — affected targets: `buck2 test //src/control-plane/postgres:flush-vector-rebuild //src/control-plane/postgres:overwrite-vector-rebuild //src/control-plane/postgres:iceberg-overwrite //src/control-plane/postgres:overwrite-end-caps-inline //src/services/engine-serving:action-writer --unstable-allow-all-tests-on-re > /tmp/o4.log 2>&1; grep -E "Tests finished|FAIL" /tmp/o4.log` — expect PASS. (Deliberate narrowing of the spec's "full //src/... green" — reviewer verified no other test declares a vector index or counts build_vector_index jobs; CI's btd-affected job covers the remainder. Say so in the PR body.)
 - [ ] **Step 5: prek + commit**
 
 ```bash
