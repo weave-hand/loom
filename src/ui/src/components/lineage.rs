@@ -18,18 +18,31 @@ pub struct LineageDagViewProps {
 
 // Fixed pixel layout so the absolutely-positioned node boxes and the SVG connector
 // endpoints share one coordinate system (the canvas scrolls horizontally if wide).
-const NODE_W: f64 = 150.0;
+const NODE_W: f64 = 140.0;
 const NODE_H: f64 = 34.0;
 const V_GAP: f64 = 18.0;
-const COL_STEP: f64 = 230.0;
+// Column pitch. Sized so a two-column DAG (current + one side) fits the ~378px-wide
+// drawer canvas without scrolling; a full three-column DAG scrolls horizontally.
+const COL_STEP: f64 = 176.0;
+// Interior breathing room so nodes (and the current node's glow) float inside the
+// dotted canvas rather than sitting flush against its border.
+const PAD: f64 = 14.0;
 
 #[styled_component(LineageDagView)]
 pub fn lineage_dag_view(props: &LineageDagViewProps) -> Html {
     let cls = css!(
         r#"
-        .scroll { overflow-x: auto; }
+        /* Only the horizontal axis ever scrolls (a wide three-column DAG); the
+           canvas is always sized to its content vertically, so pin overflow-y to
+           hidden — otherwise `overflow-x: auto` makes the browser compute
+           overflow-y to auto too and a 1px rounding tips in a spurious scrollbar. */
+        .scroll { overflow-x: auto; overflow-y: hidden; }
         .canvas {
             position: relative;
+            /* Auto inline margins centre the canvas when it is narrower than the
+               drawer, and collapse to 0 when it overflows (so it scrolls from the
+               left). */
+            margin: 0 auto;
             background: radial-gradient(#1b222b 1px, transparent 1px);
             background-size: 20px 20px;
             border: 1px solid var(--loom-border);
@@ -53,22 +66,41 @@ pub fn lineage_dag_view(props: &LineageDagViewProps) -> Html {
 
     let dag = &props.dag;
 
-    // Group node indices by column (0/1/2), preserving their emitted order.
+    // Group node indices by logical column (0 upstream / 1 current / 2 downstream),
+    // preserving their emitted order.
     let mut cols: [Vec<usize>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (i, n) in dag.nodes.iter().enumerate() {
         cols[n.column.min(2)].push(i);
     }
+
+    // Only non-empty columns consume a horizontal slot, so a dataset with no lineage
+    // (just the current node) renders one centred node instead of reserving two empty
+    // side columns and overflowing the drawer. Slots run left→right in column order,
+    // so producer→consumer edges still point rightward.
+    let mut slot_of = [0_usize; 3];
+    let mut n_slots = 0_usize;
+    for (c, idxs) in cols.iter().enumerate() {
+        if !idxs.is_empty() {
+            slot_of[c] = n_slots;
+            n_slots += 1;
+        }
+    }
+    let n_slots = n_slots.max(1);
+
     let max_count = cols.iter().map(Vec::len).max().unwrap_or(0);
     let row_h = NODE_H + V_GAP;
-    let canvas_h = (max_count as f64 * row_h - V_GAP).max(NODE_H);
-    let canvas_w = COL_STEP * 2.0 + NODE_W;
+    let content_h = (max_count as f64 * row_h - V_GAP).max(NODE_H);
+    let content_w = (n_slots as f64 - 1.0) * COL_STEP + NODE_W;
+    let canvas_w = content_w + 2.0 * PAD;
+    let canvas_h = content_h + 2.0 * PAD;
 
-    // Top-left position of every node id, each column vertically centred in the canvas.
+    // Top-left position of every node id, each column vertically centred within the
+    // content area, the whole thing inset by `PAD` from the canvas edges.
     let mut pos: HashMap<String, (f64, f64)> = HashMap::new();
     for (c, idxs) in cols.iter().enumerate() {
         let col_h = (idxs.len() as f64 * row_h - V_GAP).max(0.0);
-        let offset = (canvas_h - col_h) / 2.0;
-        let left = c as f64 * COL_STEP;
+        let offset = PAD + (content_h - col_h) / 2.0;
+        let left = PAD + slot_of[c] as f64 * COL_STEP;
         for (k, &i) in idxs.iter().enumerate() {
             pos.insert(dag.nodes[i].id.clone(), (left, offset + k as f64 * row_h));
         }
