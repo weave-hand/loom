@@ -25,5 +25,5 @@ only (resolved defects are recorded in git history, and the shipped behaviour in
 
 ## transform
 
-- [ ] **Lost terminal FinishRunFailed leaves a run stuck Running** `{#iss-transform-run-stuck-running area:transform status:open from:2026-07-04-transform-ergonomics-design pr:- spec:-}`
+- [ ] **Lost terminal FinishRunFailed leaves a run stuck Running** `{#iss-transform-run-stuck-running area:transform status:open from:2026-07-04-transform-ergonomics-design pr:#351 spec:-}`
   The worker's run-failure reporting is best-effort: if the job is abandoned (terminal) and the `FinishRunFailed` RPC itself fails, the run record permanently reads `Running` while execution has terminally ended (`report_run_failure`, `src/services/worker/src/transform.rs` — warn-logged, deliberately non-masking). Retryable failures self-heal on the retry's re-mark; only the terminal-moment RPC loss strands the record. Fix shape: a reconciliation sweep (runs `Running` with no live queue job → `Failed("reporting lost")`), or make abandon-side reporting synchronous-with-retry. Fold in the small worker cleanup flagged by the final review (dedup the 10-line `mark_run_running` block across the two handlers, drop `handle_typed_transform_inner`'s redundant `run_id` param, refresh `handle_typed_transform`'s doc comment).
