@@ -1,7 +1,8 @@
 //! Management admin routes against the in-memory fake: link + action
 //! define/delete (idempotent), role delete, grant list/revoke (reflecting
-//! grant→revoke), user↔role assign/list/unassign, plus the 404/400 edges and
-//! one non-admin 403 spot-check of the shared gate.
+//! grant→revoke), user↔role assign/list/unassign, transform define/get/
+//! list/delete + run-now/ad-hoc/history/get-by-id, plus the 404/400 edges and
+//! non-admin 403 spot-checks of the shared gate.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +10,9 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{ADMIN_ROLE, Acl, Auth, NewUser, ObjectType, Ontology, RoleId, SubjectId};
+use control_plane_core::{
+    ADMIN_ROLE, Acl, Auth, ControlPlane, NewUser, ObjectType, Ontology, RoleId, SubjectId,
+};
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use service_runtime::{AdminState, AuthState, admin_routes, hash_password, token_sha256};
@@ -489,4 +492,276 @@ async fn shape_invalid_define_bodies_are_400() {
         body.contains("invalid ActionDef"),
         "names the decode failure: {body}"
     );
+}
+
+const TRANSFORM_BODY: &str = r#"{
+    "name": "daily",
+    "body": {"kind": "physical",
+             "inputs": [{"schema": "main", "name": "src"}],
+             "output": {"schema": "main", "name": "dst"},
+             "sql": "select * from src"}
+}"#;
+
+#[tokio::test]
+async fn define_get_delete_transform() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, TRANSFORM_BODY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/transforms/daily", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["body"]["kind"], "physical");
+    // list
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/transforms", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["transforms"].as_array().unwrap().len(), 1);
+    // delete twice — idempotent
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("DELETE", "/admin/transforms/daily", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["deleted"], "daily");
+    let (status, _) = send(
+        app(cp.clone()),
+        req_empty("DELETE", "/admin/transforms/daily", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(app(cp), req_empty("GET", "/admin/transforms/daily", &token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn define_transform_rejects_bad_shapes() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    // not a TransformDef
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, r#"{"nope": 1}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // a valid cron schedule is now accepted
+    let scheduled = TRANSFORM_BODY.replace(
+        r#""name": "daily""#,
+        r#""name": "daily", "schedule": "* * * * *""#,
+    );
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, &scheduled),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // an invalid cron expression is still a 400
+    let bad_cron = TRANSFORM_BODY.replace(
+        r#""name": "daily""#,
+        r#""name": "daily", "schedule": "not a cron""#,
+    );
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, &bad_cron),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // typed body referencing unknown types (deliberately unseeded — the point is
+    // the 400, not the ontology lookup)
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/transforms",
+            &token,
+            r#"{
+        "name": "t", "body": {"kind": "typed", "inputs": ["Nope"], "output": "AlsoNope", "sql": "select 1"}
+    }"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn scheduled_transform_exposes_next_run_at() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    let scheduled = TRANSFORM_BODY.replace(
+        r#""name": "daily""#,
+        r#""name": "daily", "schedule": "0 3 * * *""#,
+    );
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, &scheduled),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/transforms/daily", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["schedule"], "0 3 * * *");
+    let nra = v["next_run_at"]
+        .as_str()
+        .expect("next_run_at present when scheduled");
+    assert!(nra.contains('T'), "RFC3339 timestamp: {nra}");
+    // Unscheduled defs omit the field entirely.
+    let (_, body) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, TRANSFORM_BODY),
+    )
+    .await;
+    let _ = body;
+    let (_, body) = send(app(cp), req_empty("GET", "/admin/transforms/daily", &token)).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        v.get("next_run_at").is_none(),
+        "field omitted when unscheduled"
+    );
+}
+
+#[tokio::test]
+async fn run_now_and_adhoc_submit_runs() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, TRANSFORM_BODY),
+    )
+    .await;
+
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("POST", "/admin/transforms/daily/run", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rid = v["run_id"].as_str().unwrap().to_string();
+
+    // run visible: by id, in the transform's history, newest first
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("GET", &format!("/admin/runs/{rid}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["state"], "queued");
+    assert_eq!(v["trigger"], "manual");
+    assert_eq!(v["transform"], "daily");
+    let (_, body) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/transforms/daily/runs", &token),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["runs"][0]["run_id"], rid.as_str());
+
+    // the queue job exists and carries the run id
+    let job = cp
+        .queue()
+        .dequeue(&["transform".to_string()], "t")
+        .await
+        .unwrap()
+        .expect("job");
+    assert_eq!(job.payload["run_id"], serde_json::json!(rid));
+
+    // ad-hoc: body only, no definition
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/transforms/run",
+            &token,
+            r#"
+        {"kind": "physical", "inputs": [{"schema": "main", "name": "a"}],
+         "output": {"schema": "main", "name": "b"}, "sql": "select 1"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let (_, body) = send(
+        app(cp.clone()),
+        req_empty(
+            "GET",
+            &format!("/admin/runs/{}", v["run_id"].as_str().unwrap()),
+            &token,
+        ),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["trigger"], "ad-hoc");
+    assert!(v["transform"].is_null());
+
+    // 404s + 400s
+    let (status, _) = send(
+        app(cp.clone()),
+        req_empty("POST", "/admin/transforms/nope/run", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/transforms/nope/runs", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/runs/not-a-uuid", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = send(
+        app(cp),
+        req_empty(
+            "GET",
+            &format!("/admin/runs/{}", uuid::Uuid::new_v4()),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn define_transform_rejects_reserved_name() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    let reserved = TRANSFORM_BODY.replace(r#""name": "daily""#, r#""name": "run""#);
+    let (status, _) = send(
+        app(cp),
+        req_json("POST", "/admin/transforms", &token, &reserved),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn non_admin_bearer_is_403_on_transforms_route() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let alice = seed_session(&cp, "alice").await; // not the admin
+    let (status, _) = send(app(cp), req_empty("GET", "/admin/transforms", &alice)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

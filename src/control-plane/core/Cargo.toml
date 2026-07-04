@@ -17,6 +17,8 @@ uuid = { version = "1", features = ["v4"] }
 time = "=0.3.47"
 serde_json = "1"
 regex = "1"
+croner = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Test-only (used under tests/), declared as a normal dep so reindeer emits the
 # //third-party:proptest target in non-vendored mode (same pattern as worker's tracing-test).
 proptest = "1"

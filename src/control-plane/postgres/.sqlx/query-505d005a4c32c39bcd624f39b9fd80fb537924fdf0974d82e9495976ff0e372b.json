@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from transforms.transform where name = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "505d005a4c32c39bcd624f39b9fd80fb537924fdf0974d82e9495976ff0e372b"
+}

@@ -389,6 +389,7 @@ impl GrpcQueueClient {
         write: &[control_plane_core::DataFile],
         lineage: &control_plane_core::LineageEvent,
         replace: bool,
+        run_id: Option<uuid::Uuid>,
     ) -> Result<Option<i64>> {
         let columns_json = serde_json::to_string(columns).map_err(be)?;
         let write_json = write
@@ -407,11 +408,44 @@ impl GrpcQueueClient {
                 write_json,
                 lineage_json,
                 replace,
+                run_id: run_id.map(|u| u.to_string()),
             })
             .await
             .map_err(be)?
             .into_inner();
         Ok(resp.snapshot_id)
+    }
+
+    /// Mark a transform run Running (dequeued by a worker).
+    pub async fn mark_run_running(&self, run_id: uuid::Uuid) -> Result<()> {
+        self.inner
+            .clone()
+            .mark_run_running(pb::MarkRunRunningRequest {
+                run_id: run_id.to_string(),
+            })
+            .await
+            .map_err(cp_status)?;
+        Ok(())
+    }
+
+    /// Report a run failure: `terminal` abandons (Failed); otherwise the run
+    /// goes back to Queued with the error retained.
+    pub async fn finish_run_failed(
+        &self,
+        run_id: uuid::Uuid,
+        error: &str,
+        terminal: bool,
+    ) -> Result<()> {
+        self.inner
+            .clone()
+            .finish_run_failed(pb::FinishRunFailedRequest {
+                run_id: run_id.to_string(),
+                error: error.to_string(),
+                terminal,
+            })
+            .await
+            .map_err(cp_status)?;
+        Ok(())
     }
 
     gov_rpc! {

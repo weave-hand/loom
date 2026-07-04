@@ -4,7 +4,8 @@ use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    ColumnSpec, DataFile, JobId, LineageEvent, NewJob, Result, SnapshotId, TableRef, TableTx, Tx,
+    ColumnSpec, ControlPlaneError, DataFile, JobId, LineageEvent, NewJob, Result, RunOutcome,
+    SnapshotId, TableRef, TableTx, Tx,
 };
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -12,6 +13,7 @@ use uuid::Uuid;
 use crate::Versioned;
 use crate::catalog::CatalogState;
 use crate::lineage::LineageState;
+use crate::transforms::TransformsState;
 use crate::{MemoryControlPlane, Row};
 
 /// One staged catalog file write, in STAGING ORDER. Mirrors the postgres
@@ -27,11 +29,13 @@ pub(crate) struct MemoryTx {
     pub(crate) notify: Arc<Notify>,
     pub(crate) lineage: Arc<Mutex<LineageState>>,
     pub(crate) catalog: Arc<Mutex<CatalogState>>,
+    pub(crate) transforms: Arc<Mutex<TransformsState>>,
     pub(crate) staged: Vec<(Uuid, NewJob)>,
     pub(crate) staged_events: Vec<LineageEvent>,
     pub(crate) staged_tables: Vec<(TableRef, Vec<ColumnSpec>)>,
     pub(crate) staged_writes: Vec<StagedWrite>,
     pub(crate) staged_compactions: Vec<(TableRef, Vec<String>, Vec<DataFile>)>,
+    pub(crate) staged_run_success: Option<Uuid>,
 }
 
 #[async_trait]
@@ -40,19 +44,47 @@ impl Tx for MemoryTx {
     async fn commit(self: Box<Self>) -> Result<Option<SnapshotId>> {
         use control_plane_core::{ColumnDef, FileRef};
 
+        // Validate-before-mutate, cheap and lock-free: a staged success mark with NO
+        // staged table-format write at all can never yield a snapshot, so reject it up
+        // front (mirrors the postgres `IcebergTx`'s early-return-branch check). This is
+        // the common misuse case; the residual case — writes staged but a `create_table`
+        // that turns out to be a no-op (table already live) — is caught structurally
+        // below and is accepted as programmer error (see the comment at the
+        // `last_snapshot` check).
+        if self.staged_run_success.is_some()
+            && self.staged_tables.is_empty()
+            && self.staged_writes.is_empty()
+            && self.staged_compactions.is_empty()
+        {
+            return Err(ControlPlaneError::Validation(
+                "mark_run_succeeded staged without a snapshot-producing write".into(),
+            ));
+        }
+
         let staged_any = !self.staged.is_empty();
         let mut last_snapshot: Option<i64> = None;
         {
-            // Hold ALL THREE locks across the whole apply so the commit is atomic
+            // Hold ALL FOUR locks across the whole apply so the commit is atomic
             // w.r.t. any single-lock reader (dequeue locks `rows`; events_for locks
             // `lineage`; the catalog reads lock `catalog`): no partial commit — across
-            // queue, lineage, AND catalog — is ever observable, faithfully modelling
-            // the postgres single-`sqlx::Transaction` guarantee. Lock order is
-            // rows->lineage->catalog; readers each take only ONE of these locks (no
-            // reader takes two), so holding all three here cannot deadlock.
+            // queue, lineage, catalog, AND transforms — is ever observable, faithfully
+            // modelling the postgres single-`sqlx::Transaction` guarantee. Lock order is
+            // rows->lineage->catalog->transforms (transforms LAST — Task 6's success
+            // mark; `submit_run` takes rows then transforms, agreeing with this
+            // ordering); readers each take only ONE of these locks (no reader takes
+            // two), so holding all four here cannot deadlock.
             let mut rows = self.rows.lock();
             let mut lin = self.lineage.lock();
             let mut cat = self.catalog.lock();
+            let mut transforms = self.transforms.lock();
+
+            // Verify a staged run success mark's run exists BEFORE any mutation below —
+            // an unknown run must abort the whole commit with nothing applied.
+            if let Some(rid) = self.staged_run_success
+                && !transforms.runs.contains_key(&rid)
+            {
+                return Err(ControlPlaneError::NotFound(format!("run {rid}")));
+            }
 
             // Validate every fallible precondition BEFORE mutating any state, so a
             // rejected op aborts the whole commit with nothing applied (the guards
@@ -195,6 +227,30 @@ impl Tx for MemoryTx {
                     });
                 }
             }
+
+            // Apply the staged run success mark LAST — it needs `last_snapshot`,
+            // which only the writes above allocate. The run's existence was already
+            // verified at the top of this block, before any mutation; a `None`
+            // `last_snapshot` here means writes were staged but every `create_table`
+            // turned out to be a no-op (table already live) — an accepted, rare
+            // programmer-error edge case (see the up-front check above). Unlike the
+            // up-front check, this abort happens after the queue/lineage/catalog
+            // sections above already applied (in-memory state has no transactional
+            // rollback the way the postgres `IcebergTx`'s held `sqlx::Transaction`
+            // does); the up-front check exists precisely to make this residual path
+            // unreachable in practice.
+            if let Some(rid) = self.staged_run_success {
+                let Some(s) = last_snapshot else {
+                    return Err(ControlPlaneError::Validation(
+                        "mark_run_succeeded staged without a snapshot-producing write".into(),
+                    ));
+                };
+                let run = transforms
+                    .runs
+                    .get_mut(&rid)
+                    .ok_or_else(|| ControlPlaneError::NotFound(format!("run {rid}")))?;
+                crate::transforms::apply_outcome(run, RunOutcome::Succeeded { snapshot_id: s });
+            }
         }
 
         if staged_any {
@@ -249,6 +305,16 @@ impl TableTx for MemoryTx {
     ) -> Result<()> {
         self.staged_compactions
             .push((table.clone(), expire.to_vec(), write.to_vec()));
+        Ok(())
+    }
+
+    async fn mark_run_succeeded(&mut self, run_id: Uuid) -> Result<()> {
+        if self.staged_run_success.is_some() {
+            return Err(ControlPlaneError::Validation(
+                "a run success mark is already staged on this transaction".into(),
+            ));
+        }
+        self.staged_run_success = Some(run_id);
         Ok(())
     }
 }

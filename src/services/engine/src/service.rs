@@ -33,6 +33,10 @@ fn parse_id(s: &str) -> std::result::Result<control_plane_core::JobId, Status> {
     })?))
 }
 
+fn parse_run_id(s: &str) -> std::result::Result<uuid::Uuid, Status> {
+    uuid::Uuid::parse_str(s).map_err(|e| Status::invalid_argument(format!("bad run_id: {e}")))
+}
+
 fn de_arg<T: serde::de::DeserializeOwned>(
     json: &str,
     what: &str,
@@ -290,10 +294,46 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             tx.append_files(&table, &write).await.map_err(status)?;
         }
         tx.emit(lineage).await.map_err(status)?;
+        if let Some(rid) = r.run_id.as_deref() {
+            let rid = parse_run_id(rid)?;
+            tx.mark_run_succeeded(rid).await.map_err(status)?;
+        }
         let snap = tx.commit().await.map_err(status)?;
         Ok(Response::new(pb::CommitTransformResponse {
             snapshot_id: snap.map(|s| s.0),
         }))
+    }
+
+    async fn mark_run_running(
+        &self,
+        req: Request<pb::MarkRunRunningRequest>,
+    ) -> std::result::Result<Response<pb::MarkRunRunningResponse>, Status> {
+        let rid = parse_run_id(&req.into_inner().run_id)?;
+        self.cp
+            .transforms()
+            .mark_run_running(rid)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::MarkRunRunningResponse {}))
+    }
+
+    async fn finish_run_failed(
+        &self,
+        req: Request<pb::FinishRunFailedRequest>,
+    ) -> std::result::Result<Response<pb::FinishRunFailedResponse>, Status> {
+        let r = req.into_inner();
+        let rid = parse_run_id(&r.run_id)?;
+        let outcome = if r.terminal {
+            control_plane_core::RunOutcome::Failed { error: r.error }
+        } else {
+            control_plane_core::RunOutcome::RetryQueued { error: r.error }
+        };
+        self.cp
+            .transforms()
+            .finish_run(rid, outcome)
+            .await
+            .map_err(status)?;
+        Ok(Response::new(pb::FinishRunFailedResponse {}))
     }
 
     async fn write_object(

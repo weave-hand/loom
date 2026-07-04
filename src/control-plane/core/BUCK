@@ -8,6 +8,8 @@ rust_library(
     deps = [
         "//third-party:arrow-schema",
         "//third-party:async-trait",
+        "//third-party:chrono",
+        "//third-party:croner",
         "//third-party:regex",
         "//third-party:serde",
         "//third-party:serde_json",
@@ -401,6 +403,21 @@ rust_test(
     edition = "2024",
     visibility = ["PUBLIC"],
     deps = [":core"],
+)
+
+rust_test(
+    name = "transforms",
+    crate = "transforms",
+    srcs = ["tests/transforms.rs"],
+    crate_root = "tests/transforms.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:uuid",
+    ],
 )
 
 rust_test(

@@ -177,7 +177,7 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 - [ ] **Wider DataFusion/DuckLake type coverage** `{#fut-datafusion-type-coverage area:transform status:deferred from:cross-cutting pr:- spec:-}`
   `datafusion-io` supports only a canonical scalar set; other Arrow types (timestamps, dates, decimals, unsigned/8/16-bit ints) error `InferError::Unsupported` and the job Abandons. Extend as pipelines need it.
 - [ ] **Scheduled maintenance jobs** `{#fut-scheduled-jobs area:transform status:deferred from:to-be-planned pr:- spec:-}`
-  Cron-like scheduling for **non-transform** job kinds (GC, compaction). Scheduled *transforms* are committed work — [[road-transform-schedules]] delivers the cron mechanism (croner parse, `next_run_at`, atomic due-claim loop) attached to `TransformDef`s; this item is the residual: a generic schedule surface for maintenance kinds, presumably reusing that mechanism.
+  Cron-like scheduling for **non-transform** job kinds (GC, compaction). Scheduled *transforms* landed (`#road-transform-schedules`, PR #367) — this item is the residual: a generic schedule surface for maintenance kinds (GC, compaction), presumably reusing the croner/`next_run_at`/atomic-claim mechanism.
 
 ## iceberg
 

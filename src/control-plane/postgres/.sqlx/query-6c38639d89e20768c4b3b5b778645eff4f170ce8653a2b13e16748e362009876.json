@@ -1,0 +1,136 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select run_id, transform, trigger, state, body, queued_at, started_at, finished_at, snapshot_id, error from transforms.run where ($1::text is null or transform = $1) order by queued_at desc, run_id desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "run_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "run_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "transform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "transform"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "trigger",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "trigger"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "body",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "queued_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "queued_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "finished_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "finished_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "snapshot_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "6c38639d89e20768c4b3b5b778645eff4f170ce8653a2b13e16748e362009876"
+}

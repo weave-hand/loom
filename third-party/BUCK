@@ -2952,6 +2952,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "chrono",
+    actual = ":chrono-0.4",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "chrono-0.4.45.crate",
     sha256 = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327",
@@ -3830,6 +3836,47 @@ buildscript_run(
         "std",
     ],
     version = "1.5.0",
+)
+
+alias(
+    name = "croner",
+    actual = ":croner-2",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "croner-2.2.0.crate",
+    sha256 = "c344b0690c1ad1c7176fe18eb173e0c927008fdaaa256e40dfd43ddd149c0843",
+    strip_prefix = "croner-2.2.0",
+    urls = ["https://static.crates.io/crates/croner/2.2.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "croner-2",
+    srcs = [":croner-2.2.0.crate"],
+    crate = "croner",
+    crate_root = "croner-2.2.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_BIN_NAME": "croner",
+        "CARGO_CRATE_NAME": "croner",
+        "CARGO_MANIFEST_DIR": "croner-2.2.0.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Fully-featured, lightweight, and efficient Rust library designed for parsing and evaluating cron patterns",
+        "CARGO_PKG_HOMEPAGE": "https://github.com/hexagon/croner-rust",
+        "CARGO_PKG_NAME": "croner",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/hexagon/croner-rust",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "2.2.0",
+        "CARGO_PKG_VERSION_MAJOR": "2",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [":chrono-0.4"],
 )
 
 http_archive(
@@ -13804,23 +13851,23 @@ cargo.rust_library(
 )
 
 http_archive(
-    name = "num-bigint-0.4.6.crate",
-    sha256 = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9",
-    strip_prefix = "num-bigint-0.4.6",
-    urls = ["https://static.crates.io/crates/num-bigint/0.4.6/download"],
+    name = "num-bigint-0.4.7.crate",
+    sha256 = "c863e9ab5e7bf9c99ba75e1050f1e4d624ae87ed3532d6238ffbdc7b585dbbe6",
+    strip_prefix = "num-bigint-0.4.7",
+    urls = ["https://static.crates.io/crates/num-bigint/0.4.7/download"],
     visibility = [],
 )
 
 cargo.rust_library(
     name = "num-bigint-0.4",
-    srcs = [":num-bigint-0.4.6.crate"],
+    srcs = [":num-bigint-0.4.7.crate"],
     crate = "num_bigint",
-    crate_root = "num-bigint-0.4.6.crate/src/lib.rs",
+    crate_root = "num-bigint-0.4.7.crate/src/lib.rs",
     edition = "2021",
     env = {
         "CARGO_BIN_NAME": "num_bigint",
         "CARGO_CRATE_NAME": "num_bigint",
-        "CARGO_MANIFEST_DIR": "num-bigint-0.4.6.crate",
+        "CARGO_MANIFEST_DIR": "num-bigint-0.4.7.crate",
         "CARGO_PKG_AUTHORS": "The Rust Project Developers",
         "CARGO_PKG_DESCRIPTION": "Big integer implementation for Rust",
         "CARGO_PKG_HOMEPAGE": "https://github.com/rust-num/num-bigint",
@@ -13828,10 +13875,10 @@ cargo.rust_library(
         "CARGO_PKG_README": "README.md",
         "CARGO_PKG_REPOSITORY": "https://github.com/rust-num/num-bigint",
         "CARGO_PKG_RUST_VERSION": "1.60",
-        "CARGO_PKG_VERSION": "0.4.6",
+        "CARGO_PKG_VERSION": "0.4.7",
         "CARGO_PKG_VERSION_MAJOR": "0",
         "CARGO_PKG_VERSION_MINOR": "4",
-        "CARGO_PKG_VERSION_PATCH": "6",
+        "CARGO_PKG_VERSION_PATCH": "7",
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [

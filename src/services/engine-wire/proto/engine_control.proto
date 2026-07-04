@@ -12,6 +12,8 @@ service EngineControl {
   rpc ListFiles    (ListFilesRequest)    returns (ListFilesResponse);
   rpc CompactTable (CompactTableRequest) returns (CompactTableResponse);
   rpc CommitTransform (CommitTransformRequest) returns (CommitTransformResponse);
+  rpc MarkRunRunning  (MarkRunRunningRequest)  returns (MarkRunRunningResponse);
+  rpc FinishRunFailed (FinishRunFailedRequest) returns (FinishRunFailedResponse);
   rpc BuildVectorIndex (BuildVectorIndexRequest) returns (BuildVectorIndexResponse);
   rpc WriteObject    (WriteObjectRequest)    returns (WriteObjectResponse);
   rpc WriteSteps     (WriteStepsRequest)     returns (WriteStepsResponse);
@@ -78,8 +80,18 @@ message CommitTransformRequest {
   repeated string write_json = 4; // one serde_json DataFile per written file
   string lineage_json = 5;        // serde_json LineageWire
   bool replace = 6;               // false = append_files; true = replace_files
+  optional string run_id = 7;     // transform run to mark Succeeded once staged, if any
 }
 message CommitTransformResponse { optional int64 snapshot_id = 1; }
+
+message MarkRunRunningRequest  { string run_id = 1; }
+message MarkRunRunningResponse {}
+message FinishRunFailedRequest {
+  string run_id = 1;
+  string error = 2;
+  bool terminal = 3;  // true => Failed; false => back to Queued (retry)
+}
+message FinishRunFailedResponse {}
 
 message BuildVectorIndexRequest  { string schema = 1; string name = 2; string index_name = 3; }
 message BuildVectorIndexResponse { int64 covered_snapshot = 1; string puffin_path = 2; int64 row_count = 3; }

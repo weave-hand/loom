@@ -24,10 +24,36 @@ tar_layer(
     path = "/usr/local/bin/query-api",
 )
 
+# The wasm UI bundle, pinned to the wasm target platform. A plain dep from this
+# (linux-configured) cell would re-configure //src/ui:bundle for linux and break
+# the yew cross-compile — `default_target_platform` does not survive being a
+# dependency, so the platform must be forced here.
+configured_alias(
+    name = "ui-bundle",
+    actual = "root//src/ui:bundle",
+    platform = "root//platforms:wasm",
+)
+
+# Stage the UI dist dir (index.html, config.js, app.js, app_bg.wasm) at the
+# path the chart points LOOM_UI_DIR at. `tar_layer` stages single executables,
+# so this stays a local genrule over the dist directory.
+genrule(
+    name = "ui_layer",
+    out = "layer.tar",
+    cmd = " && ".join([
+        "mkdir -p \"$TMP/root/usr/share/loom/ui\"",
+        "cp -r $(location :ui-bundle)/. \"$TMP/root/usr/share/loom/ui/\"",
+        "tar -C \"$TMP/root\" -cf $OUT .",
+    ]),
+)
+
 # Deployable image + `.info` (digest pin) + `.push` (crane push to ghcr).
 oci_image(
     name = "image",
     base = ":base",
-    layers = [":bin_layer"],
+    layers = [
+        ":bin_layer",
+        ":ui_layer",
+    ],
     repository = "ghcr.io/weave-hand/loom-query-api",
 )

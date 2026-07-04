@@ -310,6 +310,20 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "transforms",
+    crate = "transforms",
+    srcs = ["tests/transforms.rs"],
+    crate_root = "tests/transforms.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "existence-validation",
     crate = "existence_validation",
     srcs = ["tests/existence_validation.rs"],

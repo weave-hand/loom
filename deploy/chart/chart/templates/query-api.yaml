@@ -47,6 +47,12 @@ spec:
             # emptyDir volume.
             - name: LOOM_ENGINE_SOCKET
               value: {{ .Values.engine.socketPath | quote }}
+            {{- if .Values.ui.enabled }}
+            # Serve the image's wasm UI bundle as the SPA fallback (same origin
+            # as the API; real routes take precedence).
+            - name: LOOM_UI_DIR
+              value: {{ .Values.ui.dir | quote }}
+            {{- end }}
             {{- include "loom.dbEnv" . | nindent 12 }}
             {{- include "loom.migrateOnBootEnv" . | nindent 12 }}
           readinessProbe:
@@ -68,6 +74,13 @@ spec:
               mountPath: /tmp
             - name: engine-sock
               mountPath: {{ .Values.engine.socketDir | quote }}
+            {{- if and .Values.ui.enabled .Values.ui.apiBase }}
+            # Override the bundle's shipped config.js so the SPA prepends
+            # ui.apiBase to every API call (path-prefix / detached serving).
+            - name: ui-config
+              mountPath: {{ printf "%s/config.js" .Values.ui.dir | quote }}
+              subPath: config.js
+            {{- end }}
           {{- with .Values.queryApi.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -100,16 +113,12 @@ spec:
               value: {{ .Values.engine.socketPath | quote }}
             {{- include "loom.dbEnv" . | nindent 12 }}
             {{- include "loom.migrateOnBootEnv" . | nindent 12 }}
-          # Readiness gates the pod on the engine having bound the socket so
-          # query-api never connects before it exists.
-          readinessProbe:
-            exec:
-              command:
-                - test
-                - -S
-                - {{ .Values.engine.socketPath | quote }}
-            initialDelaySeconds: 3
-            periodSeconds: 5
+          # No readiness probe: the image is binary-only (no shell, no
+          # coreutils), so an exec probe has nothing to run (#356), and a
+          # container probe cannot order sibling startup anyway. query-api's
+          # own tcpSocket readiness transitively covers the engine: query-api
+          # exits fail-loud when the engine socket is absent and restarts
+          # until it is there, so the pod reads Ready only once both are up.
           volumeMounts:
             {{- if not .Values.objectStore.s3.enabled }}
             - name: data
@@ -134,6 +143,11 @@ spec:
         # Shared socket dir for the query-api ⇄ engine-sidecar Flight UDS.
         - name: engine-sock
           emptyDir: {}
+        {{- if and .Values.ui.enabled .Values.ui.apiBase }}
+        - name: ui-config
+          configMap:
+            name: {{ include "loom.fullname" . }}-ui-config
+        {{- end }}
       {{- with .Values.queryApi.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

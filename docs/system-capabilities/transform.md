@@ -13,7 +13,7 @@ shared payload/conformance types live in `control_plane_core`
 (`transform_job.rs`, `conform.rs`) and the read/write compute layer is
 `datafusion-io`.
 
-_As of d54063e6._
+_As of 666de0c3._
 
 ## Queue-driven SQL transforms
 
@@ -154,19 +154,115 @@ were executable by either binary during cutover. Transform inputs are
 collected in worker memory like compaction's (streaming input scans are a
 recorded follow-up under `#fut-transform-followups`).
 
+## Named definitions and first-class runs
+
+Transforms are a sixth control-plane concern (`Transforms`, `control_plane_core::transforms`):
+a `TransformDef` names a `TransformBody` — `Physical` (table inputs/output +
+SQL) or `Typed` (ontology-type inputs/output + SQL), each mirroring the
+matching queue job payload one-for-one, including `output_mode`. `define_transform`
+is an upsert (redefining an existing name replaces its body), backed by
+`list_transforms`/`get_transform`/`delete_transform` (delete is idempotent and
+history-preserving: runs keep their frozen body and transform name as plain
+text with no FK, so deleting a definition never orphans or rewrites past
+runs). Typed bodies are validated at define time — unknown input or output
+type names are a `Validation` rejection on both adapters, the same
+fail-at-define-not-at-read posture the rest of the ontology holds to.
+`TransformDef` also carries `schedule` and `on_input_commit` fields, one live
+and one still deferred: `schedule` (slice 2, see **Cron schedules** below) is
+validated and enforced today, while `on_input_commit == true` (slice 3, data
+triggers) remains a 400 at define — the shape is forward-compatible, only
+half the behavior is live.
+
+A `TransformRun` is the durable execution record: `run_id` **is** the lineage
+`run_id` (the same UUID names both), so a run's lineage events are queryable
+with no extra join, and `body` is frozen at submit time — redefining or
+deleting the `TransformDef` never rewrites a run's history. The state machine
+is `Queued → Running → Succeeded | Failed`, with `Running → Queued` on a
+retryable failure (retry-requeue): `submit_run` atomically records the
+`Queued` run and enqueues its job (the job — carrying `run_id` via the
+existing back-compatible `#[serde(default)] run_id` payload field — is visible
+to a worker iff the run row exists); the worker's job handlers call
+`mark_run_running` before doing any work (a failure to reach the engine here
+is itself retryable, leaving the run `Queued` for the retry to re-mark); on
+failure, `finish_run_failed` applies `RunOutcome::RetryQueued` (deterministic
+`Abandon` policy) or `RunOutcome::Failed` (terminal) depending on the job's
+retry classification. On success there is no separate "mark succeeded" RPC:
+`mark_run_succeeded` rides inside the same `EngineControl::CommitTransform`
+transaction that stages the output files and emits lineage — `create_table` +
+`append_files`/`replace_files` + `emit` + `mark_run_succeeded` + `commit`, so
+a run's record and the data it produced become visible atomically, exactly
+once, with `snapshot_id` populated from the committed snapshot. Lifecycle
+methods carry no state-transition guards by design: the queue is
+at-least-once, so a retried job that already committed may legitimately
+re-mark a terminal run, and the record follows execution rather than gating
+it. Runs are listed newest-first (`queued_at` desc, `run_id` desc tiebreak),
+optionally filtered to one transform's history.
+
+## Cron schedules
+
+`TransformDef.schedule` is live: a 5-field UTC cron expression (minute, hour,
+day-of-month, month, day-of-week), parsed and validated at define time by
+croner (`validate_transform_def` → `core::transforms::validate_cron`) — an
+invalid expression is a `Validation` 400 at `define_transform`, never
+discovered later at fire time. A scheduled def carries a derived
+`next_run_at`, computed from the definition (or redefinition) time as the
+first occurrence strictly after "now"; redefining a schedule resets the
+clock — `next_run_at` is recomputed from the redefinition time, not
+carried forward from the original cadence.
+
+The engine runs a scheduler loop (`src/services/engine/src/scheduler.rs`; see
+[engine.md](engine.md)) that ticks on `LOOM_SCHEDULER_TICK_SECS` (default 5s)
+and calls `Transforms::claim_due_schedules`, which the postgres adapter
+implements as one transaction: `SELECT ... FOR UPDATE SKIP LOCKED` over defs
+whose `next_run_at <= now`, advancing each claimed def's `next_run_at` to its
+next occurrence **in the same transaction** as the claim. That pairing is the
+whole correctness story — concurrent engines never claim the same due
+definition twice, and because the clock always advances before a run is
+submitted, a crash (or a `submit_run` failure) between claim and submit
+**skips** that occurrence rather than firing it twice on the next tick:
+at-most-once, not at-least-once. Each claimed def gets one fresh
+`TransformRun` (`trigger: RunTrigger::Schedule`) submitted through the
+ordinary `submit_run` path — downstream execution, retry-requeue, and
+lineage are indistinguishable from a manual or ad-hoc run except for the
+trigger tag. `GET /admin/transforms/{name}` exposes the derived
+`next_run_at` (RFC3339 UTC, omitted when the transform is unscheduled); the
+list route does not.
+
+## Admin HTTP surface
+
+Eight admin routes (`src/services/runtime/src/admin.rs`, `require_auth` then
+`require_admin`, OpenAPI-annotated) put the concern within reach without a
+direct control-plane handle: `POST /admin/transforms` (201, define/upsert;
+400 on a bad body or failed validation), `GET /admin/transforms` (200, all
+definitions), `GET /admin/transforms/{name}` (200, or 404 unknown), `DELETE
+/admin/transforms/{name}` (200, idempotent), `POST /admin/transforms/{name}/run`
+(202, runs the named definition's frozen body now with `RunTrigger::Manual`,
+returning the new `run_id`; 404 unknown), `POST /admin/transforms/run` (202,
+submits an ad-hoc `TransformBody` with no saved definition under
+`RunTrigger::AdHoc`; 400 on a bad body), `GET /admin/transforms/{name}/runs`
+(200, that transform's run history newest-first, or 404 for an unknown
+transform — distinguishing "no runs" from "no such transform"), and `GET
+/admin/runs/{run_id}` (200 the run, 400 non-UUID id, 404 unknown). Both
+run-submission routes share one `submit_new_run` helper: mint a fresh
+`run_id`, build the `Queued` `TransformRun`, and call `submit_run` with the
+body's `to_job(run_id)`.
+
 ## Known gaps
 
 - `#fut-programmatic-transforms` — SQL authoring only; no registered-plan
   (programmatic Rust) transforms or multi-output typed transforms yet.
 - `#fut-transform-authoring-auth` — transforms run as trusted pipeline code;
-  authoring/enqueue authorization is ungoverned.
+  authoring/enqueue authorization is ungoverned (the admin HTTP surface is
+  admin-gated, but that is coarse instance-admin, not a transform-authoring
+  capability of its own).
 - `#fut-transform-followups` — watermark/incremental output, DAG /
   transactional enqueue-downstream, optional Ballista escalation, streaming
   input scans for the wire path.
 - `#fut-datafusion-type-coverage` — only the canonical scalar set round-trips;
   timestamps, dates, decimals, and small/unsigned ints abandon the job.
-- `#fut-scheduled-jobs` — no cron-like scheduled transforms; jobs are
-  enqueue-driven only.
+- `#road-transform-data-triggers` — `TransformDef.on_input_commit` is carried
+  in the shape and rejected at define time; run-on-commit data triggers are
+  not live yet.
 - `#fut-worker-lazy-compact-ctx` — the zero-pool worker builds its compaction
   context eagerly, so even a flush-only worker requires warehouse config and a
   reachable Flight endpoint at startup.
