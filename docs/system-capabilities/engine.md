@@ -262,8 +262,9 @@ time-travellable vanishes (#266).
 
 The engine gains its first standing background task alongside the tonic
 server: `run::run` spawns `scheduler::scheduler_loop`
-(`src/services/engine/src/scheduler.rs`), cancelled through the same
-`CancellationToken` used for graceful shutdown. Every `LOOM_SCHEDULER_TICK_SECS`
+(`src/services/engine/src/scheduler.rs`), cancelled when the serve loop exits,
+via a dedicated token (a serve-loop error skips the cancel — the process is
+exiting either way). Every `LOOM_SCHEDULER_TICK_SECS`
 (`EngineTuning::scheduler_tick`, default 5s; `MissedTickBehavior::Delay` so a
 slow pass never bursts to catch up), one `tick` calls
 `Transforms::claim_due_schedules` against the engine's own `ControlPlane`

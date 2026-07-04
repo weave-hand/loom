@@ -166,9 +166,11 @@ impl Transforms for MemoryControlPlane {
         let mut claimed = Vec::with_capacity(due.len());
         // NOTE: a mid-loop `next_cron_occurrence` error here leaves earlier
         // advances in this batch applied (no rollback, unlike postgres's
-        // single-statement UPDATE ... RETURNING) — unreachable in practice
-        // since schedules are validated and their first occurrence computed
-        // at define time, so a stored schedule cannot fail to re-occur.
+        // claim, whose SELECT ... FOR UPDATE SKIP LOCKED + per-row UPDATE
+        // share one transaction and roll back together) — unreachable in
+        // practice since schedules are validated and their first occurrence
+        // computed at define time, so a stored schedule cannot fail to
+        // re-occur.
         for name in due {
             let Some(def) = st.defs.get(&name).cloned() else {
                 continue;
