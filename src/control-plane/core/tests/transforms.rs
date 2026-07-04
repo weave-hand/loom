@@ -72,25 +72,60 @@ fn to_job_maps_kind_and_threads_run_id() {
 }
 
 #[test]
-fn slice1_rejects_schedule_and_data_trigger() {
+fn rejects_data_trigger_until_slice_3() {
     let mut def = TransformDef {
         name: TransformName("t".into()),
         body: physical_body(),
-        schedule: Some("* * * * *".into()),
-        on_input_commit: false,
+        schedule: None,
+        on_input_commit: true,
     };
-    assert!(
-        validate_transform_def(&def).is_err(),
-        "schedule rejected until slice 2"
-    );
-    def.schedule = None;
-    def.on_input_commit = true;
     assert!(
         validate_transform_def(&def).is_err(),
         "data trigger rejected until slice 3"
     );
     def.on_input_commit = false;
     assert!(validate_transform_def(&def).is_ok());
+}
+
+#[test]
+fn cron_validation_accepts_5_field_and_rejects_garbage() {
+    use control_plane_core::validate_cron;
+    assert!(validate_cron("0 3 * * *").is_ok());
+    assert!(validate_cron("*/5 * * * *").is_ok());
+    assert!(validate_cron("not a cron").is_err());
+    assert!(validate_cron("99 99 99 99 99").is_err());
+    assert!(validate_cron("").is_err());
+}
+
+#[test]
+fn next_cron_occurrence_is_deterministic_utc() {
+    use control_plane_core::next_cron_occurrence;
+    use time::macros::datetime;
+    // Hourly at :00, from 00:30 UTC -> 01:00 UTC the same day.
+    let after = datetime!(2026-01-01 00:30 UTC);
+    let next = next_cron_occurrence("0 * * * *", after).unwrap();
+    assert_eq!(next, datetime!(2026-01-01 01:00 UTC));
+    // Strictly after: from exactly 01:00, the next hourly fire is 02:00.
+    let next2 = next_cron_occurrence("0 * * * *", next).unwrap();
+    assert_eq!(next2, datetime!(2026-01-01 02:00 UTC));
+    // A daily expression catches whole-hour timezone-offset bugs that an
+    // hourly one cannot (hourly at :00 is invariant under hour offsets).
+    let daily = next_cron_occurrence("0 3 * * *", after).unwrap();
+    assert_eq!(daily, datetime!(2026-01-01 03:00 UTC));
+}
+
+#[test]
+fn valid_schedule_now_passes_definition_validation() {
+    // slice 2: schedules are live — a valid cron is accepted, an invalid one rejected.
+    let mut def = TransformDef {
+        name: TransformName("t".into()),
+        body: physical_body(),
+        schedule: Some("0 3 * * *".into()),
+        on_input_commit: false,
+    };
+    assert!(validate_transform_def(&def).is_ok());
+    def.schedule = Some("not a cron".into());
+    assert!(validate_transform_def(&def).is_err());
 }
 
 #[test]
