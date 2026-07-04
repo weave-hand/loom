@@ -231,6 +231,10 @@ pub fn validate_transform_def(def: &TransformDef) -> Result<()> {
 }
 
 /// The transforms concern: named definitions and their runs.
+///
+/// Lifecycle methods deliberately carry no state-transition guards: the queue
+/// is at-least-once, so a retried job that already committed may legitimately
+/// re-mark a terminal run — the record follows execution, it does not gate it.
 #[async_trait]
 pub trait Transforms {
     /// Define or redefine (upsert) a transform. Typed bodies validate that

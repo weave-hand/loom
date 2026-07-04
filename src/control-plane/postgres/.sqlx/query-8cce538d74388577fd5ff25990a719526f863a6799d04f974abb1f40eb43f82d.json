@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, body, schedule, on_input_commit from transforms.transform order by name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "body",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "schedule",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "schedule"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "on_input_commit",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "on_input_commit"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "8cce538d74388577fd5ff25990a719526f863a6799d04f974abb1f40eb43f82d"
+}

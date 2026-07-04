@@ -41,6 +41,7 @@ mod lineage;
 pub mod ontology;
 mod queue;
 mod transaction;
+mod transforms;
 
 use iceberg_catalog::IcebergCatalog;
 use transaction::PgTx;
