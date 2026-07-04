@@ -187,6 +187,41 @@ pub async fn fetch_dataset_detail(
     Ok(parse_dataset_detail(&body))
 }
 
+/// GET /lineage/datasets/{namespace}/{name}/{dir} → the closure's (namespace,name)
+/// pairs. `dir` is "upstream" or "downstream". Decodes `{datasets:[{namespace,name}]}`
+/// defensively — a missing/absent `datasets` array yields an empty vec.
+pub async fn fetch_lineage(
+    base: &str,
+    token: &str,
+    namespace: &str,
+    name: &str,
+    dir: &str,
+) -> Result<Vec<(String, String)>, FetchError> {
+    let path = format!("/lineage/datasets/{namespace}/{name}/{dir}");
+    let resp = Request::get(&url(base, &path))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(body
+        .get("datasets")
+        .and_then(|d| d.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|d| {
+                    let ns = d.get("namespace")?.as_str()?.to_string();
+                    let nm = d.get("name")?.as_str()?.to_string();
+                    Some((ns, nm))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 /// GET /datasets/{schema}/{table}/preview?limit= with the bearer token.
 pub async fn fetch_preview(
     base: &str,

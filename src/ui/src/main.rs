@@ -79,6 +79,14 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let preview = use_state(|| Option::<PreviewData>::None);
     let preview_loading = use_state(|| false);
     let catalog_tab = use_state(|| AttrValue::from("schema"));
+    // Lazily-loaded lineage closures (upstream, downstream) for the selected dataset,
+    // plus whether the Lineage tab is showing the full-canvas stub.
+    #[allow(
+        clippy::type_complexity,
+        reason = "small local (up, down) closure pair"
+    )]
+    let lineage = use_state(|| Option::<(Vec<(String, String)>, Vec<(String, String)>)>::None);
+    let show_full_lineage = use_state(|| false);
 
     // On mount: load the dataset list. Catalog is the default surface, so a
     // mount-keyed effect loads it exactly once (mirrors the ontology type list).
@@ -110,6 +118,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let preview = preview.clone();
         let preview_loading = preview_loading.clone();
         let catalog_tab = catalog_tab.clone();
+        let lineage = lineage.clone();
+        let show_full_lineage = show_full_lineage.clone();
         let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
@@ -121,6 +131,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
             detail.set(None);
             preview.set(None);
             preview_loading.set(false);
+            lineage.set(None);
+            show_full_lineage.set(false);
             catalog_tab.set(AttrValue::from("schema"));
             wasm_bindgen_futures::spawn_local(async move {
                 match net::fetch_dataset_detail(&net::api_base(), &token, &ds.schema, &ds.name)
@@ -168,6 +180,42 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     }
                     Err(_) => preview_loading.set(false),
                 }
+            });
+        });
+    }
+
+    // Lazy lineage: only fetch the upstream + downstream closures when the Lineage
+    // tab is active for the selected dataset and nothing is loaded yet. Keyed on
+    // (selection, active tab); the row-select effect resets `lineage` to None, so
+    // switching datasets and re-opening Lineage refetches.
+    {
+        let lineage = lineage.clone();
+        let datasets = datasets.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let already_loaded = lineage.is_some();
+        let dep = (*selected_dataset, (*catalog_tab).clone());
+        use_effect_with(dep, move |(sel, tab)| {
+            if tab.as_str() != "lineage" || already_loaded {
+                return;
+            }
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            wasm_bindgen_futures::spawn_local(async move {
+                let base = net::api_base();
+                let up = net::fetch_lineage(&base, &token, &ds.schema, &ds.name, "upstream").await;
+                let down =
+                    net::fetch_lineage(&base, &token, &ds.schema, &ds.name, "downstream").await;
+                // A 401 on either leg fails closed to logout; any other error degrades
+                // to an empty closure so the mini-DAG still renders the current node.
+                if up.as_ref().err() == Some(&FetchError::Unauthorized)
+                    || down.as_ref().err() == Some(&FetchError::Unauthorized)
+                {
+                    on_logout.emit(());
+                    return;
+                }
+                lineage.set(Some((up.unwrap_or_default(), down.unwrap_or_default())));
             });
         });
     }
@@ -271,6 +319,10 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 let catalog_tab = catalog_tab.clone();
                 Callback::from(move |t: AttrValue| catalog_tab.set(t))
             };
+            let on_toggle_full = {
+                let show_full_lineage = show_full_lineage.clone();
+                Callback::from(move |()| show_full_lineage.set(!*show_full_lineage))
+            };
             let list = html! {
                 <CatalogList
                     datasets={(*datasets).clone()}
@@ -284,6 +336,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
             let drawer = (*selected_dataset)
                 .and_then(|i| datasets.get(i).cloned())
                 .map(|ds| {
+                    let lineage_view = (*lineage).as_ref().map(|(up, down)| {
+                        loom_ui_core::lineage_dag((&ds.schema, &ds.name), up, down)
+                    });
                     html! {
                         <CatalogDrawer
                             name={AttrValue::from(ds.name)}
@@ -292,6 +347,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
                             preview_loading={*preview_loading}
                             active_tab={(*catalog_tab).clone()}
                             on_tab={on_tab}
+                            lineage={lineage_view}
+                            show_full={*show_full_lineage}
+                            on_toggle_full={on_toggle_full}
                         />
                     }
                 })

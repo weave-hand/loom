@@ -6,8 +6,10 @@
 //! architecture the Ontology surface established.
 
 use super::ontology::LoadStatus;
-use loom_ui_components::{Column, DataTable, Panel, TabItem, TableRow, Tabs};
-use loom_ui_core::{Align, DatasetDetail, DatasetRow, PreviewData};
+use loom_ui_components::{
+    Button, Column, DataTable, LineageDagView, LineageFullStub, Panel, TabItem, TableRow, Tabs,
+};
+use loom_ui_core::{Align, ButtonVariant, DatasetDetail, DatasetRow, LineageDag, PreviewData};
 use stylist::yew::styled_component;
 use yew::prelude::*;
 
@@ -104,6 +106,13 @@ pub struct CatalogDrawerProps {
     pub preview_loading: bool,
     pub active_tab: AttrValue,
     pub on_tab: Callback<AttrValue>,
+    /// The assembled mini-DAG for the selected dataset. `None` while the lineage
+    /// closures are still loading (the tab shows "Loading…").
+    pub lineage: Option<LineageDag>,
+    /// When true the Lineage tab renders the full-canvas stub in place of the DAG.
+    pub show_full: bool,
+    /// Toggles `show_full` (the "Open full view ↗" / "← Back" button).
+    pub on_toggle_full: Callback<()>,
 }
 
 /// The detail drawer for the selected dataset: `Tabs` (Schema · Preview · Lineage ·
@@ -121,6 +130,9 @@ pub fn catalog_drawer(props: &CatalogDrawerProps) -> Html {
         .null { margin-left: auto; color: var(--loom-text-mut); font-size: 11px; }
         .updated { color: var(--loom-text-mut); font-size: 12px; margin: 8px 0 2px; }
         .empty { color: var(--loom-text-mut); font-size: 13px; padding: 8px 0; }
+        .lin-head { display: flex; align-items: center; justify-content: space-between;
+                    gap: 8px; margin: 4px 0 10px; }
+        .caption { color: var(--loom-text-mut); font-size: 12px; }
         .foot { color: var(--loom-text-mut); font-size: 12px; margin-top: 8px; }
         table.preview { width: 100%; border-collapse: collapse; font-size: 12px; }
         table.preview th, table.preview td {
@@ -151,7 +163,11 @@ pub fn catalog_drawer(props: &CatalogDrawerProps) -> Html {
 
     let body = match props.active_tab.as_str() {
         "preview" => preview_body(props.preview.as_ref(), props.preview_loading),
-        "lineage" => html! { <p class="empty">{ "Lineage — coming in the next step." }</p> },
+        "lineage" => lineage_body(
+            props.lineage.as_ref(),
+            props.show_full,
+            &props.on_toggle_full,
+        ),
         "history" => html! {
             <p class="empty">{ "Per-dataset run history isn't available on this instance yet." }</p>
         },
@@ -221,6 +237,45 @@ fn preview_body(preview: Option<&PreviewData>, loading: bool) -> Html {
                 </tbody>
             </table>
             <div class="foot">{ format!("Showing {} · sampled", p.rows.len()) }</div>
+        </>
+    }
+}
+
+/// The Lineage tab: the three-column mini-DAG plus an "Open full view ↗" button that
+/// swaps in the deferred full-canvas stub. The upstream/downstream counts (derived
+/// from the DAG's column-0 / column-2 nodes) ride above as a caption. While the
+/// closures are still loading, a "Loading…" line.
+fn lineage_body(dag: Option<&LineageDag>, show_full: bool, on_toggle: &Callback<()>) -> Html {
+    let Some(dag) = dag else {
+        return html! { <p class="empty">{ "Loading…" }</p> };
+    };
+    let toggle = {
+        let on_toggle = on_toggle.clone();
+        Callback::from(move |_: MouseEvent| on_toggle.emit(()))
+    };
+    if show_full {
+        return html! {
+            <>
+                <div class="lin-head">
+                    <Button variant={ButtonVariant::Ghost} onclick={toggle}>
+                        { "← Back to mini-DAG" }
+                    </Button>
+                </div>
+                <LineageFullStub />
+            </>
+        };
+    }
+    let up = dag.nodes.iter().filter(|n| n.column == 0).count();
+    let down = dag.nodes.iter().filter(|n| n.column == 2).count();
+    html! {
+        <>
+            <div class="lin-head">
+                <span class="caption">{ format!("{up} upstream · {down} downstream") }</span>
+                <Button variant={ButtonVariant::Secondary} onclick={toggle}>
+                    { "Open full view ↗" }
+                </Button>
+            </div>
+            <LineageDagView dag={dag.clone()} />
         </>
     }
 }
