@@ -13,7 +13,10 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{ADMIN_ROLE, Acl, Auth, ControlPlane, NewUser, RoleId, SubjectId};
+use control_plane_core::{
+    ADMIN_ROLE, Acl, Action, Auth, ControlPlane, Decision, NewUser, PolicyTarget, RoleId,
+    SubjectId, TableRef,
+};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -423,6 +426,209 @@ async fn governance_routes_end_to_end() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Fine-grained governance authored purely over HTTP: an admin sets a
+/// row-filter + column-mask policy via POST /admin/roles/{role}/policies and
+/// the governed read path enforces both. Also proves a table-target grant is
+/// grantable over HTTP (#361's documented workaround).
+#[tokio::test]
+async fn policy_authoring_end_to_end() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+
+    // land main.gizmo(id long, region string): (1,'emea'), (2,'emea'), (3,'apac')
+    let cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("region".to_string(), "string".to_string(), false),
+    ];
+    writer
+        .seed_arrays(
+            "main",
+            "gizmo",
+            &cols,
+            &[
+                SeedCol::Long(vec![1, 2, 3]),
+                SeedCol::Str(vec!["emea", "emea", "apac"]),
+            ],
+        )
+        .await;
+
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng: Arc<dyn query_api::serving::ServingEngine> =
+        Arc::new(InProcessServingEngine::new(catalog));
+
+    let cp = Arc::new(cp);
+    let admin_token = seed_admin_session(&cp, ADMIN).await;
+
+    // POST /admin/models — define Gizmo over the landed table.
+    let define_body = r#"{
+        "name": "Gizmo",
+        "table": {"schema": "main", "name": "gizmo"},
+        "identity": "id",
+        "properties": [
+            {"name": "id", "ty": "Long", "required": true},
+            {"name": "region", "ty": "String", "required": true}
+        ]
+    }"#;
+    let (status, _) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "POST",
+        "/admin/models",
+        &admin_token,
+        Some(define_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // POST /admin/roles — declare "reader".
+    let (status, _) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "POST",
+        "/admin/roles",
+        &admin_token,
+        Some(r#"{"role":"reader"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // POST /admin/users — provision a reader-role user.
+    let (status, _) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "POST",
+        "/admin/users",
+        &admin_token,
+        Some(r#"{"username":"reader1","password":"pw123","roles":["reader"]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Mint a session for the freshly-provisioned reader (subject id == username).
+    let reader_token = generate_session_token();
+    cp.create_session(
+        &SubjectId("reader1".into()),
+        &token_sha256(&reader_token),
+        time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+    )
+    .await
+    .unwrap();
+
+    // POST /admin/roles/reader/grants — coarse Read on Gizmo; the fine-grained
+    // policy below narrows it further.
+    let (status, _) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "POST",
+        "/admin/roles/reader/grants",
+        &admin_token,
+        Some(r#"{"action":"read","type":"Gizmo"}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // POST /admin/roles/reader/policies — row filter region == "emea", mask id.
+    let policy_body = r#"{
+        "action": "read",
+        "type": "Gizmo",
+        "row_filter": {"Compare": {"property": "region", "op": "Eq", "value": {"Text": "emea"}}},
+        "mask_columns": ["id"]
+    }"#;
+    let (status, _) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "POST",
+        "/admin/roles/reader/policies",
+        &admin_token,
+        Some(policy_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Reader reads Gizmo: only the two "emea" rows come back, and id is masked.
+    let (status, body) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "GET",
+        "/objects/Gizmo",
+        &reader_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reader read: {body:?}");
+    let objects = body["objects"].as_array().expect("objects array");
+    assert_eq!(objects.len(), 2, "expected 2 emea rows: {body:?}");
+    for obj in objects {
+        assert_eq!(obj["region"], serde_json::json!("emea"), "obj: {obj:?}");
+        assert_eq!(
+            obj["id"],
+            serde_json::json!("***"),
+            "id should be masked: {obj:?}"
+        );
+    }
+
+    // POST /admin/roles/reader/grants — a table-target grant is also grantable
+    // over HTTP (#361's documented workaround for pre-authorizing landing tables).
+    let (status, _) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "POST",
+        "/admin/roles/reader/grants",
+        &admin_token,
+        Some(r#"{"action":"read","table":{"schema":"main","name":"gizmo"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Confirm through the control plane directly: the table-target grant
+    // resolves to Allow for the reader subject.
+    let decision = cp
+        .acl()
+        .check(
+            &SubjectId("reader1".into()),
+            Action::Read,
+            &PolicyTarget::Table(TableRef {
+                schema: "main".to_string(),
+                name: "gizmo".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(decision, Decision::Allow);
+
+    // GET /admin/roles/reader/grants — lists the table-target grant.
+    let (status, body) = send_json(
+        full_app(cp.clone(), eng.clone()),
+        "GET",
+        "/admin/roles/reader/grants",
+        &admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let grants = body["grants"].as_array().expect("grants array");
+    assert!(
+        grants
+            .iter()
+            .any(|g| g["target"]
+                == serde_json::json!({"Table": {"schema": "main", "name": "gizmo"}})),
+        "expected table-target grant listed: {grants:?}"
+    );
+
+    // GET /admin/roles/reader/policies — read-your-writes: the policy from
+    // above is listed back over the real adapter.
+    let (status, body) = send_json(
+        full_app(cp, eng),
+        "GET",
+        "/admin/roles/reader/policies",
+        &admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let policies = body["policies"].as_array().expect("policies array");
+    assert_eq!(policies.len(), 1, "expected 1 policy: {policies:?}");
+    assert_eq!(policies[0]["action"], serde_json::json!("read"));
+    assert_eq!(policies[0]["target"], serde_json::json!({"Type": "Gizmo"}));
+    assert_eq!(policies[0]["mask_columns"], serde_json::json!(["id"]));
 }
 
 /// Admin password reset over real Postgres: the victim's sessions are all revoked

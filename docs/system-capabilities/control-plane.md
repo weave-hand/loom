@@ -293,6 +293,34 @@ unseal — and the resulting admin is a normal identity holding the reserved
 `Acl::has_role` fail-closed, and the admin reads data only via explicit
 self-grant.
 
+The admin-gated HTTP surface closed its remaining coarse-only gaps (issue
+#363, PR #NN). Fine-grained policy authoring — previously only reachable
+through `Acl::set_policy` directly — is now `POST|GET|DELETE
+/admin/roles/{role}/policies`: the request body carries a `RowFilter` in its
+domain serde shape (`{"Compare": {"property", "op", "value"}}`, `And`/`Or`/
+`Not`) plus `deny_columns`/`mask_columns`, and every write runs through the
+shared `check_policy_write` validator (unknown target type, unknown
+row-filter property, or a caller-predicate-only operator all reject as 400
+before the policy is persisted); the list route rides the new
+`Acl::list_policies` read-back (mirroring `list_grants`'s role-scoped,
+`(action, target)`-ordered page) so a policy is readable immediately after it
+is written. Coarse grants gained the same target flexibility the fine-grained
+side already had: `GrantReq` now accepts `type` **xor** `table`, so a role can
+be granted `Read`/`Write` directly on a physical `TableRef` — not just an
+ontology type — which unblocks pre-authorizing a landing table before its
+ontology binding exists (the workaround #361 needed). `POST /admin/models`
+also grew two authoring dimensions in the same request: aggregate-over-link
+**derived properties** (the `derived` array, matching `Ontology`'s existing
+`DerivedPropertyDef` bind validation) and per-property **`constraints`**
+(`range`/`length`/`pattern`/`one_of`, the same `PropertyConstraints` the
+typed-insert and land gates enforce) can now be declared over HTTP in one
+call, instead of requiring a follow-up direct-adapter call. Vector indexes
+join the declarative-authoring surface too: `POST|GET
+/admin/models/{type}/vector-indexes` declares and lists named
+`VectorIndexDef`s (kind/metric/params) the same way the direct `Ontology`
+trait always could — declaring still does not build the index (see
+`vector-search.md`).
+
 ## Transforms
 
 The transforms concern gives loom's existing queue-driven transform jobs a
@@ -433,7 +461,6 @@ lives entirely in the service layer.
 - `#fut-ontology-semantic-descriptions` — semantic description fields across the ontology
 - `#fut-breakglass-godmode` — break-glass / quorum god-mode
 - `#fut-engine-wire-role-rpcs` — `gov_has_role`/`gov_list_roles` engine-wire RPCs
-- `#fut-admin-governance-http-surface` — fuller governance authoring over HTTP
 - `#fut-auth-totp-mfa` — TOTP/OTP second factor
 - `#fut-auth-passkeys` — passkeys (WebAuthn)
 - `#fut-auth-saml` — SAML bridge
