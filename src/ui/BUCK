@@ -54,6 +54,15 @@ rust_test(
     deps = ["//third-party:serde_json", ":ui-core"],
 )
 
+rust_test(
+    name = "type-detail",
+    crate = "type_detail",
+    srcs = ["tests/type_detail.rs"],
+    crate_root = "tests/type_detail.rs",
+    edition = "2024",
+    deps = ["//third-party:serde_json", ":ui-core"],
+)
+
 rust_binary(
     name = "app",
     crate = "app",

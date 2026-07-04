@@ -266,3 +266,74 @@ impl Surface {
         matches!(self, Surface::Catalog | Surface::Ontology)
     }
 }
+
+/// A property row in the ontology drawer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropRow {
+    pub name: String,
+    pub ty: String,
+    pub required: bool,
+}
+
+/// A link row (either outbound `links` or inbound `links_to`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkRow {
+    pub name: String,
+    pub from: String,
+    pub to: String,
+    pub cardinality: String,
+}
+
+/// The ontology drawer's Properties + Links data, decoded from `GET /ontology/types/{name}`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TypeDetail {
+    pub properties: Vec<PropRow>,
+    pub links: Vec<LinkRow>,
+    pub links_to: Vec<LinkRow>,
+}
+
+fn str_field(v: &Value, k: &str) -> String {
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn parse_links(v: &Value, key: &str) -> Vec<LinkRow> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|l| LinkRow {
+                    name: str_field(l, "name"),
+                    from: str_field(l, "from"),
+                    to: str_field(l, "to"),
+                    cardinality: str_field(l, "cardinality"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Decode a type-detail body. Total: missing arrays → empty; missing scalars → default.
+#[must_use]
+pub fn parse_type_detail(body: &Value) -> TypeDetail {
+    let properties = body
+        .get("properties")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|p| PropRow {
+                    name: str_field(p, "name"),
+                    ty: str_field(p, "ty"),
+                    required: p.get("required").and_then(Value::as_bool).unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    TypeDetail {
+        properties,
+        links: parse_links(body, "links"),
+        links_to: parse_links(body, "links_to"),
+    }
+}

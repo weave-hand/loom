@@ -1,7 +1,9 @@
 //! Runtime API base resolution + the login/logout HTTP calls (gloo-net fetch).
 
 use gloo_net::http::Request;
-use loom_ui_core::{AuthError, ObjectsPage, parse_objects_page, status_to_error, url};
+use loom_ui_core::{
+    AuthError, ObjectsPage, TypeDetail, parse_objects_page, parse_type_detail, status_to_error, url,
+};
 use wasm_bindgen::JsValue;
 
 /// Read `window.LOOM_CONFIG.apiBase` (shipped default ""), so the same bundle is
@@ -150,4 +152,23 @@ pub async fn fetch_page(
     }
     let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
     Ok(parse_objects_page(&body))
+}
+
+/// GET /ontology/types/{name} with the bearer token.
+#[allow(dead_code, reason = "consumed by OntologyView in the next task")]
+pub async fn fetch_type_detail(
+    base: &str,
+    token: &str,
+    type_name: &str,
+) -> Result<TypeDetail, FetchError> {
+    let resp = Request::get(&url(base, &format!("/ontology/types/{type_name}")))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_type_detail(&body))
 }
