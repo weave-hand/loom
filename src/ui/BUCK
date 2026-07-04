@@ -75,7 +75,7 @@ rust_test(
 rust_binary(
     name = "app",
     crate = "app",
-    srcs = ["src/main.rs", "src/surfaces/mod.rs", "src/surfaces/ontology.rs", "src/net.rs", "src/session.rs"],
+    srcs = ["src/main.rs", "src/surfaces/mod.rs", "src/surfaces/catalog.rs", "src/surfaces/ontology.rs", "src/net.rs", "src/session.rs"],
     crate_root = "src/main.rs",
     edition = "2024",
     default_target_platform = "//platforms:wasm",

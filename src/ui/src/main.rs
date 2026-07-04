@@ -12,11 +12,14 @@ mod session;
 mod surfaces;
 
 use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
-use loom_ui_core::{AuthError, BadgeTone, ButtonVariant, Surface, TypeDetail};
+use loom_ui_core::{
+    AuthError, BadgeTone, ButtonVariant, DatasetDetail, DatasetRow, PreviewData, Surface,
+    TypeDetail,
+};
 use net::FetchError;
 use serde_json::{Map, Value};
 use stylist::yew::styled_component;
-use surfaces::{LoadStatus, OntologyDrawer, OntologyList};
+use surfaces::{CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList};
 use yew::prelude::*;
 
 #[function_component(App)]
@@ -66,6 +69,108 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let loading_more = use_state(|| false);
     let type_detail = use_state(|| Option::<TypeDetail>::None);
     let active_tab = use_state(|| AttrValue::from("properties"));
+
+    // Catalog surface state: the dataset list plus the selected dataset's detail,
+    // lazily-loaded preview, and active drawer tab.
+    let datasets = use_state(Vec::<DatasetRow>::new);
+    let catalog_status = use_state(|| LoadStatus::Idle);
+    let selected_dataset = use_state(|| Option::<usize>::None);
+    let detail = use_state(|| Option::<DatasetDetail>::None);
+    let preview = use_state(|| Option::<PreviewData>::None);
+    let preview_loading = use_state(|| false);
+    let catalog_tab = use_state(|| AttrValue::from("schema"));
+
+    // On mount: load the dataset list. Catalog is the default surface, so a
+    // mount-keyed effect loads it exactly once (mirrors the ontology type list).
+    {
+        let datasets = datasets.clone();
+        let catalog_status = catalog_status.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        use_effect_with((), move |()| {
+            catalog_status.set(LoadStatus::Loading);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_datasets(&net::api_base(), &token).await {
+                    Ok(d) => {
+                        datasets.set(d);
+                        catalog_status.set(LoadStatus::Idle);
+                    }
+                    Err(FetchError::Unauthorized) => on_logout.emit(()),
+                    Err(e) => catalog_status.set(LoadStatus::Error(e.to_string())),
+                }
+            });
+            || ()
+        });
+    }
+
+    // On dataset row-select: reset the drawer to the Schema tab, clear the previous
+    // detail/preview, and load the selected dataset's schema detail.
+    {
+        let detail = detail.clone();
+        let preview = preview.clone();
+        let preview_loading = preview_loading.clone();
+        let catalog_tab = catalog_tab.clone();
+        let datasets = datasets.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let selected_dep = *selected_dataset;
+        use_effect_with(selected_dep, move |sel| {
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            detail.set(None);
+            preview.set(None);
+            preview_loading.set(false);
+            catalog_tab.set(AttrValue::from("schema"));
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_dataset_detail(&net::api_base(), &token, &ds.schema, &ds.name)
+                    .await
+                {
+                    Ok(d) => detail.set(Some(d)),
+                    Err(FetchError::Unauthorized) => on_logout.emit(()),
+                    // Best-effort: a failure leaves the Schema tab on its "Loading…"
+                    // line rather than blocking the rest of the drawer.
+                    Err(_) => {}
+                }
+            });
+        });
+    }
+
+    // Lazy preview: only fetch when the Preview tab is active for the selected
+    // dataset and no preview is loaded yet. Keyed on (selection, active tab); the
+    // row-select effect above resets `preview` to None, so switching datasets and
+    // re-opening Preview refetches.
+    {
+        let preview = preview.clone();
+        let preview_loading = preview_loading.clone();
+        let datasets = datasets.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let already_loaded = preview.is_some();
+        let dep = (*selected_dataset, (*catalog_tab).clone());
+        use_effect_with(dep, move |(sel, tab)| {
+            if tab.as_str() != "preview" || already_loaded {
+                return;
+            }
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            preview_loading.set(true);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_preview(&net::api_base(), &token, &ds.schema, &ds.name, 50).await {
+                    Ok(p) => {
+                        preview.set(Some(p));
+                        preview_loading.set(false);
+                    }
+                    Err(FetchError::Unauthorized) => {
+                        preview_loading.set(false);
+                        on_logout.emit(());
+                    }
+                    Err(_) => preview_loading.set(false),
+                }
+            });
+        });
+    }
 
     // On mount: load the ontology's type list.
     {
@@ -157,6 +262,42 @@ fn workspace(props: &WorkspaceProps) -> Html {
     };
 
     let (list, drawer) = match *surface {
+        Surface::Catalog => {
+            let on_row = {
+                let selected_dataset = selected_dataset.clone();
+                Callback::from(move |i: usize| selected_dataset.set(Some(i)))
+            };
+            let on_tab = {
+                let catalog_tab = catalog_tab.clone();
+                Callback::from(move |t: AttrValue| catalog_tab.set(t))
+            };
+            let list = html! {
+                <CatalogList
+                    datasets={(*datasets).clone()}
+                    status={(*catalog_status).clone()}
+                    selected={*selected_dataset}
+                    on_row={on_row}
+                />
+            };
+            // Drawer contract: only a real drawer when a row is selected; otherwise
+            // Html::default() so the Shell hides the drawer region.
+            let drawer = (*selected_dataset)
+                .and_then(|i| datasets.get(i).cloned())
+                .map(|ds| {
+                    html! {
+                        <CatalogDrawer
+                            name={AttrValue::from(ds.name)}
+                            detail={(*detail).clone()}
+                            preview={(*preview).clone()}
+                            preview_loading={*preview_loading}
+                            active_tab={(*catalog_tab).clone()}
+                            on_tab={on_tab}
+                        />
+                    }
+                })
+                .unwrap_or_default();
+            (list, drawer)
+        }
         Surface::Ontology => {
             let on_select_type = {
                 let selected_type = selected_type.clone();

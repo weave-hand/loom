@@ -155,7 +155,6 @@ pub async fn fetch_type_detail(
 }
 
 /// GET /datasets with the bearer token.
-#[allow(dead_code, reason = "consumed by CatalogView in the next task")]
 pub async fn fetch_datasets(base: &str, token: &str) -> Result<Vec<DatasetRow>, FetchError> {
     let resp = Request::get(&url(base, "/datasets"))
         .header("Authorization", &format!("Bearer {token}"))
@@ -170,7 +169,6 @@ pub async fn fetch_datasets(base: &str, token: &str) -> Result<Vec<DatasetRow>, 
 }
 
 /// GET /datasets/{schema}/{table} with the bearer token.
-#[allow(dead_code, reason = "consumed by CatalogView in the next task")]
 pub async fn fetch_dataset_detail(
     base: &str,
     token: &str,
@@ -190,7 +188,6 @@ pub async fn fetch_dataset_detail(
 }
 
 /// GET /datasets/{schema}/{table}/preview?limit= with the bearer token.
-#[allow(dead_code, reason = "consumed by CatalogView in the next task")]
 pub async fn fetch_preview(
     base: &str,
     token: &str,
