@@ -4552,3 +4552,237 @@ where
     assert_eq!(r.state, RunState::Succeeded);
     assert_eq!(r.snapshot_id, Some(snap.0));
 }
+
+/// Commit one 1-row `DataFile` named `path` into `table` (creating it first
+/// if absent) — shared plumbing for each leg of
+/// [`transform_data_trigger_contract`].
+async fn commit_into<CP: TableControlPlane>(
+    cp: &CP,
+    table: &TableRef,
+    cols: &[control_plane_core::ColumnSpec],
+    path: &str,
+) {
+    let mut tx = cp.begin_table().await.unwrap();
+    tx.create_table(table, cols).await.unwrap();
+    tx.append_files(table, &[datafile(path, 1, 10)])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Data triggers (slice 3): a table-format commit into a def's input table
+/// enqueues a `DataTrigger` run in the same commit; debounce, self-skip via
+/// ontology rebinding, and compaction non-firing.
+pub async fn transform_data_trigger_contract<CP>(cp: &CP)
+where
+    CP: ControlPlane + TableControlPlane,
+{
+    // NOTE the bound: NO `+ Transforms`/`+ Ontology` — postgres's only
+    // `TableControlPlane` is `IcebergControlPlane`, which reaches those
+    // concerns through the `ControlPlane::transforms()`/`ontology()`
+    // accessors (Task 5), not a direct impl. All concern calls below
+    // therefore go through `t`/`cp.ontology()`.
+    use control_plane_core::{
+        ColumnSpec, OutputMode, RunState, RunTrigger, TransformBody, TransformDef, TransformName,
+        TransformRun,
+    };
+
+    let t = cp.transforms();
+    let src = tref("main", "dt_src");
+    let dst = tref("main", "dt_dst");
+    let cols = vec![ColumnSpec {
+        name: "id".into(),
+        ty: "long".into(),
+        nullable: true,
+    }];
+
+    // 1. Physical def fires: commit into src -> one Queued DataTrigger run,
+    //    frozen body.
+    let def = TransformDef {
+        name: TransformName("dt-def".into()),
+        body: TransformBody::Physical {
+            inputs: vec![src.clone()],
+            output: dst.clone(),
+            sql: "select * from dt_src".into(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: true,
+    };
+    t.define_transform(def.clone()).await.unwrap();
+    commit_into(cp, &src, &cols, "f1").await;
+    let runs = t
+        .list_runs(Some(&def.name), PageReq::default())
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].trigger, RunTrigger::DataTrigger);
+    assert_eq!(runs[0].state, RunState::Queued);
+    assert_eq!(runs[0].body, def.body);
+
+    // 2. Debounce: a second commit does not enqueue a second run.
+    commit_into(cp, &src, &cols, "f2").await;
+    assert_eq!(
+        t.list_runs(Some(&def.name), PageReq::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1,
+        "a queued run debounces a second commit"
+    );
+
+    // 3. Running does NOT suppress: mark it running, commit again -> 2 runs.
+    t.mark_run_running(runs[0].run_id).await.unwrap();
+    commit_into(cp, &src, &cols, "f3").await;
+    assert_eq!(
+        t.list_runs(Some(&def.name), PageReq::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        2,
+        "a running (not queued) run does not debounce"
+    );
+
+    // 4. Typed def resolves through the ontology at eval time.
+    cp.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Widget".into()),
+            table: tref("main", "dt_widgets"),
+            properties: vec![],
+            derived: vec![],
+            identity: None,
+        })
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Gadget".into()),
+            table: tref("main", "dt_gadgets"),
+            properties: vec![],
+            derived: vec![],
+            identity: None,
+        })
+        .await
+        .unwrap();
+    let typed = TransformDef {
+        name: TransformName("dt-typed".into()),
+        body: TransformBody::Typed {
+            inputs: vec!["Widget".into()],
+            output: "Gadget".into(),
+            sql: "select 1".into(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: true,
+    };
+    t.define_transform(typed.clone()).await.unwrap();
+    commit_into(cp, &tref("main", "dt_widgets"), &cols, "f4").await;
+    assert_eq!(
+        t.list_runs(Some(&typed.name), PageReq::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1,
+        "typed def fires via its ontology-resolved input table"
+    );
+
+    // 5. Self-skip (defense in depth): rebind Widget so `typed`'s input NOW
+    //    resolves to its own output table, then have a run of `typed` commit
+    //    into that table with mark_run_succeeded. Without suppression this
+    //    would re-trigger `typed`.
+    //    FIRST drain leg 4's Queued run (mark_run_running it) — otherwise the
+    //    debounce alone would suppress the enqueue and this leg would pass
+    //    even with self-skip deleted, testing nothing.
+    let leg4_run = t
+        .list_runs(Some(&typed.name), PageReq::default())
+        .await
+        .unwrap()
+        .items;
+    t.mark_run_running(leg4_run[0].run_id).await.unwrap();
+    // Rebind: redefine type Widget -> (main, dt_gadgets), so `typed`'s
+    // resolved input now coincides with its own resolved output table.
+    cp.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Widget".into()),
+            table: tref("main", "dt_gadgets"),
+            properties: vec![],
+            derived: vec![],
+            identity: None,
+        })
+        .await
+        .unwrap();
+    let rid = uuid::Uuid::new_v4();
+    let run = TransformRun {
+        run_id: rid,
+        transform: Some(typed.name.clone()),
+        trigger: RunTrigger::Manual,
+        state: RunState::Queued,
+        body: typed.body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    t.submit_run(run, typed.body.to_job(rid)).await.unwrap();
+    t.mark_run_running(rid).await.unwrap();
+    let before = t
+        .list_runs(Some(&typed.name), PageReq::default())
+        .await
+        .unwrap()
+        .items
+        .len();
+    {
+        let mut tx = cp.begin_table().await.unwrap();
+        tx.create_table(&tref("main", "dt_gadgets"), &cols)
+            .await
+            .unwrap();
+        tx.append_files(&tref("main", "dt_gadgets"), &[datafile("f5", 1, 10)])
+            .await
+            .unwrap();
+        tx.mark_run_succeeded(rid).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    let after = t
+        .list_runs(Some(&typed.name), PageReq::default())
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(
+        after.len(),
+        before,
+        "self-commit must not re-trigger the committing transform"
+    );
+    assert_eq!(t.get_run(rid).await.unwrap().state, RunState::Succeeded);
+
+    // 6. Compaction does not fire: compacting one of src's live files leaves
+    //    the run count for `def` unchanged (a compaction stages no
+    //    append/replace write, so it can never match a data trigger's
+    //    inputs).
+    let n = t
+        .list_runs(Some(&def.name), PageReq::default())
+        .await
+        .unwrap()
+        .items
+        .len();
+    {
+        let mut tx = cp.begin_table().await.unwrap();
+        tx.compact_files(&src, &["f1".to_string()], &[datafile("f6", 3, 30)])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert_eq!(
+        t.list_runs(Some(&def.name), PageReq::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        n,
+        "compaction does not fire data triggers"
+    );
+}

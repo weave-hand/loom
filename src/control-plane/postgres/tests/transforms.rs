@@ -23,3 +23,10 @@ async fn postgres_passes_transform_run_commit_success_contract() {
     let (cp, _wh) = iceberg_cp(fx).await;
     control_plane_testkit::transform_run_commit_success_contract(&cp).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_passes_transform_data_trigger_contract() {
+    let fx = PgFixture::shared();
+    let (cp, _wh) = iceberg_cp(fx).await;
+    control_plane_testkit::transform_data_trigger_contract(&cp).await;
+}

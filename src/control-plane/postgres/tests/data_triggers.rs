@@ -16,7 +16,9 @@ use control_plane_core::{
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_flush::flush_table;
-use control_plane_postgres::iceberg_landing::{InlineLimits, StepLand, land, overwrite_parquet_snapshot, write_steps};
+use control_plane_postgres::iceberg_landing::{
+    InlineLimits, StepLand, land, overwrite_parquet_snapshot, write_steps,
+};
 
 fn tref(schema: &str, name: &str) -> TableRef {
     TableRef {
@@ -253,9 +255,14 @@ async fn write_steps_fires_per_matched_def() {
             overwrite: false,
         },
     ];
-    write_steps(&pool, &catalog, steps, lineage(RunId(uuid::Uuid::new_v4()), &in1))
-        .await
-        .expect("write_steps");
+    write_steps(
+        &pool,
+        &catalog,
+        steps,
+        lineage(RunId(uuid::Uuid::new_v4()), &in1),
+    )
+    .await
+    .expect("write_steps");
 
     let runs_a = pg
         .list_runs(Some(&TransformName("depA".into())), PageReq::default())
@@ -408,18 +415,25 @@ async fn icebergtx_fires_downstream_and_marks_committing_run() {
         error: None,
     };
     let job = def_a.body.to_job(rid);
-    cp.transforms().submit_run(run, job).await.expect("submit R");
+    cp.transforms()
+        .submit_run(run, job)
+        .await
+        .expect("submit R");
     cp.transforms()
         .mark_run_running(rid)
         .await
         .expect("mark running");
 
     let mut tx = cp.begin_table().await.expect("begin_table");
-    tx.create_table(&dst, &columns()).await.expect("create_table");
+    tx.create_table(&dst, &columns())
+        .await
+        .expect("create_table");
     tx.append_files(&dst, &[data_file("a.parquet", 3)])
         .await
         .expect("append_files");
-    tx.mark_run_succeeded(rid).await.expect("mark_run_succeeded");
+    tx.mark_run_succeeded(rid)
+        .await
+        .expect("mark_run_succeeded");
     tx.commit().await.expect("commit").expect("snapshot");
 
     let runs_b = cp
