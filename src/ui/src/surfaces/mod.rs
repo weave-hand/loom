@@ -6,4 +6,4 @@ mod catalog;
 mod ontology;
 
 pub use catalog::{CatalogDrawer, CatalogList};
-pub use ontology::{LoadStatus, OntologyDrawer, OntologyList};
+pub use ontology::{LoadStatus, OntologyDrawer, OntologyList, OntologyTypeRow};

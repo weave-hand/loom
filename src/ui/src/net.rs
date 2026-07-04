@@ -2,9 +2,8 @@
 
 use gloo_net::http::Request;
 use loom_ui_core::{
-    AuthError, DatasetDetail, DatasetRow, ObjectsPage, PreviewData, TypeDetail,
-    parse_dataset_detail, parse_datasets, parse_objects_page, parse_preview, parse_type_detail,
-    status_to_error, url,
+    AuthError, DatasetDetail, DatasetRow, PreviewData, TypeDetail, parse_dataset_detail,
+    parse_datasets, parse_preview, parse_type_detail, status_to_error, url,
 };
 use wasm_bindgen::JsValue;
 
@@ -84,11 +83,6 @@ fn fetch_status_err(status: u16) -> FetchError {
     }
 }
 
-/// Percent-encode a cursor value for use in a query string.
-fn encode_cursor(c: &str) -> String {
-    js_sys::encode_uri_component(c).into()
-}
-
 /// GET /ontology/types with the bearer token. Decodes `{"types": [...]}`.
 pub async fn fetch_types(base: &str, token: &str) -> Result<Vec<String>, FetchError> {
     let resp = Request::get(&url(base, "/ontology/types"))
@@ -109,31 +103,6 @@ pub async fn fetch_types(base: &str, token: &str) -> Result<Vec<String>, FetchEr
                 .collect()
         })
         .unwrap_or_default())
-}
-
-/// GET /objects/{type_name}?limit=&cursor= with the bearer token. `cursor` is
-/// percent-encoded when present; `limit` is always sent.
-pub async fn fetch_page(
-    base: &str,
-    token: &str,
-    type_name: &str,
-    cursor: Option<&str>,
-    limit: u32,
-) -> Result<ObjectsPage, FetchError> {
-    let mut path = format!("/objects/{type_name}?limit={limit}");
-    if let Some(c) = cursor {
-        path.push_str(&format!("&cursor={}", encode_cursor(c)));
-    }
-    let resp = Request::get(&url(base, &path))
-        .header("Authorization", &format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|_| FetchError::Network)?;
-    if resp.status() != 200 {
-        return Err(fetch_status_err(resp.status()));
-    }
-    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
-    Ok(parse_objects_page(&body))
 }
 
 /// GET /ontology/types/{name} with the bearer token.

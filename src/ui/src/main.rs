@@ -17,9 +17,11 @@ use loom_ui_core::{
     TypeDetail,
 };
 use net::FetchError;
-use serde_json::{Map, Value};
+use std::collections::HashMap;
 use stylist::yew::styled_component;
-use surfaces::{CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList};
+use surfaces::{
+    CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList, OntologyTypeRow,
+};
 use yew::prelude::*;
 
 #[function_component(App)]
@@ -56,19 +58,13 @@ struct WorkspaceProps {
 fn workspace(props: &WorkspaceProps) -> Html {
     let surface = use_state(|| Surface::Catalog);
 
-    // Ontology surface state (lifted verbatim from the old explorer.rs), plus the
-    // drawer's type-detail + active-tab.
+    // Ontology surface state: the list of type names, each type's loaded `TypeDetail`
+    // (schema) keyed by name, the selected type index, and the drawer's active tab.
     let types = use_state(Vec::<String>::new);
-    let selected_type = use_state(|| Option::<String>::None);
-    let objs = use_state(Vec::<Map<String, Value>>::new);
-    let columns = use_state(Vec::<String>::new);
-    let next = use_state(|| Option::<String>::None);
-    let selected_row = use_state(|| Option::<usize>::None);
-    let status = use_state(|| LoadStatus::Idle);
-    let load_more_error = use_state(|| Option::<String>::None);
-    let loading_more = use_state(|| false);
-    let type_detail = use_state(|| Option::<TypeDetail>::None);
-    let active_tab = use_state(|| AttrValue::from("properties"));
+    let onto_status = use_state(|| LoadStatus::Idle);
+    let type_details = use_state(HashMap::<String, TypeDetail>::new);
+    let onto_selected = use_state(|| Option::<usize>::None);
+    let onto_tab = use_state(|| AttrValue::from("properties"));
 
     // Catalog surface state: the dataset list plus the selected dataset's detail,
     // lazily-loaded preview, and active drawer tab.
@@ -220,84 +216,44 @@ fn workspace(props: &WorkspaceProps) -> Html {
         });
     }
 
-    // On mount: load the ontology's type list.
+    // On mount: load the ontology's type list, then eagerly load every type's detail
+    // (schema) into one map. This is an N+1 over the type list (one /ontology/types +
+    // one /ontology/types/{name} per type) — fine for small ontologies; a lazier
+    // per-selection fetch is a future refinement. A 401 on any leg fails closed to
+    // logout, matching the rest of the app. The details map is set once (not
+    // per-insert) so concurrent renders never see a partially-built map.
     {
         let types = types.clone();
-        let status = status.clone();
+        let onto_status = onto_status.clone();
+        let type_details = type_details.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
         use_effect_with((), move |()| {
+            onto_status.set(LoadStatus::Loading);
             wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_types(&net::api_base(), &token).await {
-                    Ok(t) => types.set(t),
-                    Err(FetchError::Unauthorized) => on_logout.emit(()),
-                    Err(e) => status.set(LoadStatus::Error(e.to_string())),
+                let base = net::api_base();
+                let names = match net::fetch_types(&base, &token).await {
+                    Ok(t) => t,
+                    Err(FetchError::Unauthorized) => return on_logout.emit(()),
+                    Err(e) => return onto_status.set(LoadStatus::Error(e.to_string())),
+                };
+                types.set(names.clone());
+                onto_status.set(LoadStatus::Idle);
+                let mut map = HashMap::<String, TypeDetail>::new();
+                for name in names {
+                    match net::fetch_type_detail(&base, &token, &name).await {
+                        Ok(d) => {
+                            map.insert(name, d);
+                        }
+                        Err(FetchError::Unauthorized) => return on_logout.emit(()),
+                        // A per-type failure just leaves that type's drawer on its
+                        // "Loading…" line rather than blocking the whole list.
+                        Err(_) => {}
+                    }
                 }
+                type_details.set(map);
             });
             || ()
-        });
-    }
-
-    // On type selection: reset the table state and load page 1.
-    {
-        let objs = objs.clone();
-        let columns = columns.clone();
-        let next = next.clone();
-        let selected_row = selected_row.clone();
-        let status = status.clone();
-        let load_more_error = load_more_error.clone();
-        let loading_more = loading_more.clone();
-        let token = props.token.to_string();
-        let on_logout = props.on_logout.clone();
-        let selected_type_dep = (*selected_type).clone();
-        use_effect_with(selected_type_dep, move |ty| {
-            let Some(ty) = ty.clone() else {
-                return;
-            };
-            objs.set(Vec::new());
-            columns.set(Vec::new());
-            next.set(None);
-            selected_row.set(None);
-            status.set(LoadStatus::Loading);
-            load_more_error.set(None);
-            loading_more.set(false);
-            wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_page(&net::api_base(), &token, &ty, None, 50).await {
-                    Ok(page) => {
-                        columns.set(loom_ui_core::columns_from_objects(&page.rows));
-                        objs.set(page.rows);
-                        next.set(page.next);
-                        status.set(LoadStatus::Idle);
-                    }
-                    Err(FetchError::Unauthorized) => on_logout.emit(()),
-                    Err(e) => status.set(LoadStatus::Error(e.to_string())),
-                }
-            });
-        });
-    }
-
-    // On type selection: fetch the type detail that feeds the drawer's tabs.
-    {
-        let type_detail = type_detail.clone();
-        let active_tab = active_tab.clone();
-        let token = props.token.to_string();
-        let on_logout = props.on_logout.clone();
-        let selected_type_dep = (*selected_type).clone();
-        use_effect_with(selected_type_dep, move |ty| {
-            let Some(ty) = ty.clone() else {
-                return;
-            };
-            type_detail.set(None);
-            active_tab.set(AttrValue::from("properties"));
-            wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_type_detail(&net::api_base(), &token, &ty).await {
-                    Ok(d) => type_detail.set(Some(d)),
-                    Err(FetchError::Unauthorized) => on_logout.emit(()),
-                    // The detail is best-effort; a fetch failure leaves the tabs empty
-                    // rather than blocking the object table.
-                    Err(_) => {}
-                }
-            });
         });
     }
 
@@ -359,98 +315,56 @@ fn workspace(props: &WorkspaceProps) -> Html {
             (list, drawer)
         }
         Surface::Ontology => {
-            let on_select_type = {
-                let selected_type = selected_type.clone();
-                Callback::from(move |ty: String| selected_type.set(Some(ty)))
-            };
             let on_row = {
-                let selected_row = selected_row.clone();
-                Callback::from(move |i: usize| selected_row.set(Some(i)))
-            };
-            let on_tab = {
-                let active_tab = active_tab.clone();
-                Callback::from(move |t: AttrValue| active_tab.set(t))
-            };
-            let on_load_more = {
-                let objs = objs.clone();
-                let columns = columns.clone();
-                let next = next.clone();
-                let load_more_error = load_more_error.clone();
-                let loading_more = loading_more.clone();
-                let token = props.token.to_string();
-                let on_logout = props.on_logout.clone();
-                let selected_type = selected_type.clone();
-                Callback::from(move |_: MouseEvent| {
-                    if *loading_more {
-                        return;
-                    }
-                    let Some(ty) = (*selected_type).clone() else {
-                        return;
-                    };
-                    let cursor = (*next).clone();
-                    let (objs, columns, next, load_more_error, loading_more, on_logout) = (
-                        objs.clone(),
-                        columns.clone(),
-                        next.clone(),
-                        load_more_error.clone(),
-                        loading_more.clone(),
-                        on_logout.clone(),
-                    );
-                    let token = token.clone();
-                    loading_more.set(true);
-                    wasm_bindgen_futures::spawn_local(async move {
-                        match net::fetch_page(&net::api_base(), &token, &ty, cursor.as_deref(), 50)
-                            .await
-                        {
-                            Ok(page) => {
-                                let mut merged = (*objs).clone();
-                                merged.extend(page.rows);
-                                columns.set(loom_ui_core::columns_from_objects(&merged));
-                                objs.set(merged);
-                                next.set(page.next);
-                                load_more_error.set(None);
-                                loading_more.set(false);
-                            }
-                            Err(FetchError::Unauthorized) => {
-                                loading_more.set(false);
-                                on_logout.emit(());
-                            }
-                            Err(e) => {
-                                load_more_error.set(Some(e.to_string()));
-                                loading_more.set(false);
-                            }
-                        }
-                    });
+                let onto_selected = onto_selected.clone();
+                let onto_tab = onto_tab.clone();
+                Callback::from(move |i: usize| {
+                    onto_selected.set(Some(i));
+                    onto_tab.set(AttrValue::from("properties"));
                 })
             };
+            let on_tab = {
+                let onto_tab = onto_tab.clone();
+                Callback::from(move |t: AttrValue| onto_tab.set(t))
+            };
+
+            // Build one row per type by zipping the names with their loaded detail. A
+            // type whose detail hasn't arrived yet shows an empty backing and "…" props.
+            let rows: Vec<OntologyTypeRow> = types
+                .iter()
+                .map(|name| match type_details.get(name) {
+                    Some(d) => OntologyTypeRow {
+                        name: name.clone(),
+                        backing: format!("{}.{}", d.table_schema, d.table_name),
+                        props: d.properties.len().to_string(),
+                    },
+                    None => OntologyTypeRow {
+                        name: name.clone(),
+                        backing: String::new(),
+                        props: "…".to_string(),
+                    },
+                })
+                .collect();
 
             let list = html! {
                 <OntologyList
-                    types={(*types).clone()}
-                    selected_type={(*selected_type).clone()}
-                    objs={(*objs).clone()}
-                    columns={(*columns).clone()}
-                    status={(*status).clone()}
-                    has_next={next.is_some()}
-                    selected_row={*selected_row}
-                    loading_more={*loading_more}
-                    load_more_error={(*load_more_error).clone()}
-                    on_select_type={on_select_type}
+                    rows={rows}
+                    status={(*onto_status).clone()}
+                    selected={*onto_selected}
                     on_row={on_row}
-                    on_load_more={on_load_more}
                 />
             };
-            // Drawer contract: only pass a real drawer when a row is selected;
+            // Drawer contract: only pass a real drawer when a type is selected;
             // otherwise Html::default() so the Shell hides the drawer region.
-            let drawer = (*selected_row)
-                .and_then(|i| objs.get(i).cloned())
-                .map(|obj| {
+            let drawer = (*onto_selected)
+                .and_then(|i| types.get(i).cloned())
+                .map(|name| {
+                    let detail = type_details.get(&name).cloned();
                     html! {
                         <OntologyDrawer
-                            selected_type={(*selected_type).clone()}
-                            selected_obj={obj}
-                            detail={(*type_detail).clone()}
-                            active_tab={(*active_tab).clone()}
+                            name={AttrValue::from(name)}
+                            detail={detail}
+                            active_tab={(*onto_tab).clone()}
                             on_tab={on_tab}
                         />
                     }

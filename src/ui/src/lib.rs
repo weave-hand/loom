@@ -290,6 +290,12 @@ pub struct TypeDetail {
     pub properties: Vec<PropRow>,
     pub links: Vec<LinkRow>,
     pub links_to: Vec<LinkRow>,
+    /// The backing dataset's schema (`table.schema`), or `""` when absent.
+    pub table_schema: String,
+    /// The backing dataset's table name (`table.name`), or `""` when absent.
+    pub table_name: String,
+    /// The identity (primary-key) property name, or `None` when the type has none.
+    pub identity: Option<String>,
 }
 
 fn str_field(v: &Value, k: &str) -> String {
@@ -331,10 +337,20 @@ pub fn parse_type_detail(body: &Value) -> TypeDetail {
                 .collect()
         })
         .unwrap_or_default();
+    let table = body.get("table");
+    let table_schema = table.map(|t| str_field(t, "schema")).unwrap_or_default();
+    let table_name = table.map(|t| str_field(t, "name")).unwrap_or_default();
+    let identity = body
+        .get("identity")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     TypeDetail {
         properties,
         links: parse_links(body, "links"),
         links_to: parse_links(body, "links_to"),
+        table_schema,
+        table_name,
+        identity,
     }
 }
 
