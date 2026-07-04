@@ -442,3 +442,92 @@ pub fn parse_preview(body: &Value) -> PreviewData {
             .unwrap_or(false),
     }
 }
+
+/// Where a node sits relative to the current dataset in the mini-DAG.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    Upstream,
+    Current,
+    Downstream,
+}
+
+/// A node in the lineage mini-DAG. `column` is 0 (upstream) / 1 (current) / 2 (downstream).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagNode {
+    pub id: String,
+    pub label: String,
+    pub kind: NodeKind,
+    pub column: usize,
+}
+
+/// A directed edge (producer → consumer) between two node ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagEdge {
+    pub from: String,
+    pub to: String,
+}
+
+/// The assembled lineage mini-DAG.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LineageDag {
+    pub nodes: Vec<DagNode>,
+    pub edges: Vec<DagEdge>,
+}
+
+fn dataset_id(ns: &str, name: &str) -> String {
+    format!("{ns}.{name}")
+}
+
+/// Build the three-column mini-DAG for `current` from its upstream/downstream closures.
+/// Datasets equal to `current` are dropped from the closures (the current node is unique);
+/// edges run producer → current → consumer.
+#[must_use]
+pub fn lineage_dag(
+    current: (&str, &str),
+    upstream: &[(String, String)],
+    downstream: &[(String, String)],
+) -> LineageDag {
+    let (cur_ns, cur_name) = current;
+    let cur_id = dataset_id(cur_ns, cur_name);
+    let mut nodes = vec![DagNode {
+        id: cur_id.clone(),
+        label: cur_name.to_string(),
+        kind: NodeKind::Current,
+        column: 1,
+    }];
+    let mut edges = Vec::new();
+
+    for (ns, name) in upstream {
+        let id = dataset_id(ns, name);
+        if id == cur_id {
+            continue;
+        }
+        nodes.push(DagNode {
+            id: id.clone(),
+            label: name.clone(),
+            kind: NodeKind::Upstream,
+            column: 0,
+        });
+        edges.push(DagEdge {
+            from: id,
+            to: cur_id.clone(),
+        });
+    }
+    for (ns, name) in downstream {
+        let id = dataset_id(ns, name);
+        if id == cur_id {
+            continue;
+        }
+        nodes.push(DagNode {
+            id: id.clone(),
+            label: name.clone(),
+            kind: NodeKind::Downstream,
+            column: 2,
+        });
+        edges.push(DagEdge {
+            from: cur_id.clone(),
+            to: id,
+        });
+    }
+    LineageDag { nodes, edges }
+}

@@ -72,6 +72,15 @@ rust_test(
     deps = ["//third-party:serde_json", ":ui-core"],
 )
 
+rust_test(
+    name = "lineage-dag",
+    crate = "lineage_dag",
+    srcs = ["tests/lineage_dag.rs"],
+    crate_root = "tests/lineage_dag.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
 rust_binary(
     name = "app",
     crate = "app",
