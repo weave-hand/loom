@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, Effect, Grant, Page, PageReq, Policy, PolicyTarget,
-    Result, RoleId, SubjectId, check_grant_target, check_policy_write,
+    Result, RoleId, RolePolicy, SubjectId, check_grant_target, check_policy_write,
 };
 
 use crate::ontology::object_type_exists;
@@ -395,6 +395,42 @@ impl Acl for PgControlPlane {
         .await
         .map_err(backend)?;
         Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_policies(&self, role: &RoleId, _page: PageReq) -> Result<Page<RolePolicy>> {
+        if !role_exists(&self.pool, &role.0).await? {
+            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        let rows = sqlx::query!(
+            "select action, target_kind, target_a, target_b, row_filter, deny_columns, mask_columns \
+             from acl.policy where role_id = $1 \
+             order by action, target_kind, target_a, target_b",
+            &role.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let row_filter = match r.row_filter {
+                Some(v) => Some(
+                    serde_json::from_value(v)
+                        .map_err(|e| ControlPlaneError::Serialization(e.to_string()))?,
+                ),
+                None => None,
+            };
+            out.push(RolePolicy {
+                action: r.action.parse()?,
+                policy: Policy {
+                    target: PolicyTarget::from_key_parts(&r.target_kind, &r.target_a, &r.target_b)?,
+                    row_filter,
+                    deny_columns: r.deny_columns,
+                    mask_columns: r.mask_columns,
+                },
+            });
+        }
+        Ok(Page::from_full(out))
     }
 
     async fn check(

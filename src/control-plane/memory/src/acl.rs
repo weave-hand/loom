@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ControlPlaneError, Decision, Effect, Grant, Page, PageReq, Policy, PolicyTarget,
-    Result, RoleId, SubjectId, check_grant_target, check_policy_write,
+    Result, RoleId, RolePolicy, SubjectId, check_grant_target, check_policy_write,
 };
 
 use crate::MemoryControlPlane;
@@ -260,6 +260,30 @@ impl Acl for MemoryControlPlane {
         acl.policies.retain(|(r, _, _), _| r != &role.0);
         acl.inherits.retain(|(a, b)| a != &role.0 && b != &role.0);
         Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_policies(&self, role: &RoleId, _page: PageReq) -> Result<Page<RolePolicy>> {
+        let acl = self.acl.lock();
+        if !acl.roles.contains(&role.0) {
+            return Err(ControlPlaneError::NotFound(format!("role {}", role.0)));
+        }
+        let mut out = Vec::new();
+        for ((r, action, _), policy) in &acl.policies {
+            if r == &role.0 {
+                out.push(RolePolicy {
+                    action: *action,
+                    policy: policy.clone(),
+                });
+            }
+        }
+        // Action is NOT Ord — sort by the string forms (matches postgres's
+        // `order by action, target_kind, ...` on the text columns).
+        out.sort_by(|x, y| {
+            (x.action.as_str(), x.policy.target.key_parts())
+                .cmp(&(y.action.as_str(), y.policy.target.key_parts()))
+        });
+        Ok(Page::from_full(out))
     }
 
     #[tracing::instrument(skip(self, policy), level = "debug")]

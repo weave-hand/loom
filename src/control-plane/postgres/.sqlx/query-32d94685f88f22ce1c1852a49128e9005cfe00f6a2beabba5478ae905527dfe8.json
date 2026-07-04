@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select action, target_kind, target_a, target_b, row_filter, deny_columns, mask_columns from acl.policy where role_id = $1 order by action, target_kind, target_a, target_b",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "action"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "target_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "target_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "target_a",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "target_a"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "target_b",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "target_b"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "row_filter",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "row_filter"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "deny_columns",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "deny_columns"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "mask_columns",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "acl.policy",
+            "name": "mask_columns"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "32d94685f88f22ce1c1852a49128e9005cfe00f6a2beabba5478ae905527dfe8"
+}
