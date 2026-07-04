@@ -8,7 +8,7 @@ use iceberg::table::Table;
 use iceberg::{Catalog, Error, ErrorKind, MetadataLocation, Result, TableCommit, TableIdent};
 use sqlx::{Postgres, Transaction};
 
-use control_plane_core::{LineageEvent, SnapshotId};
+use control_plane_core::{LineageEvent, SnapshotId, TableRef};
 
 use crate::iceberg_mirror::{ProjectedColumn, ProjectedFile};
 use crate::lineage::pg_emit;
@@ -38,6 +38,11 @@ pub struct CommitExtras<'a> {
     /// inserted only if no `state='available'` job with the same `(kind, payload)`
     /// already exists). Empty slice (`&[]`, the `Default`) means no jobs.
     pub jobs: &'a [control_plane_core::NewJob],
+    /// Fire data-triggered transforms for these committed tables inside the
+    /// commit tx (slice 3). NEW-DATA commits only: data-preserving rewrites
+    /// (the inline flush) leave this empty so already-fired data cannot
+    /// re-fire on its own flush. Empty slice (the `Default`) fires nothing.
+    pub data_trigger_tables: &'a [TableRef],
 }
 
 /// Mark inline rows `loom_row_id = ANY(row_ids)` of `iceberg_mirror.inline_<table_id>`
@@ -76,6 +81,12 @@ pub(crate) async fn apply_commit_extras(
     for job in extras.jobs {
         crate::queue::pg_insert_if_absent(&mut *conn, job).await?;
     }
+    crate::transforms::pg_fire_data_triggers(
+        &mut *conn,
+        extras.data_trigger_tables,
+        extras.lineage.map(|ev| ev.run_id.0),
+    )
+    .await?;
     Ok(())
 }
 

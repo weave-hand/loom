@@ -70,6 +70,145 @@ async fn pg_type_tables<'e, E: sqlx::PgExecutor<'e>>(
         .collect())
 }
 
+/// Insert a run row on any executor — callable from inside a commit
+/// transaction (the data-trigger seam) as well as `submit_run`'s own tx.
+pub(crate) async fn pg_insert_run<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    run: &TransformRun,
+) -> Result<()> {
+    let body = ser(&run.body)?;
+    sqlx::query!(
+        "insert into transforms.run \
+             (run_id, transform, trigger, state, body, queued_at) \
+         values ($1, $2, $3, $4, $5, $6)",
+        run.run_id,
+        run.transform.as_ref().map(|t| t.0.clone()),
+        run.trigger.as_str(),
+        run.state.as_str(),
+        body,
+        run.queued_at,
+    )
+    .execute(ex)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Fire data-triggered transforms for `committed` tables, inside the
+/// caller's open commit transaction — the slice-3 seam. For each def with
+/// `on_input_commit` whose resolved inputs intersect `committed`:
+/// lock the def row (name order; serializes the debounce against concurrent
+/// commits without deadlock), skip if a `Queued` run already exists
+/// (at-most-one-pending; `Running` does not suppress), then insert a
+/// `DataTrigger` run and its queue job atomically with the commit.
+///
+/// `committing_run` is the run performing this commit (self-trigger
+/// suppression): its transform, if any, never re-fires from its own write.
+/// Undecodable def bodies are skipped with a warning — a poisoned admin
+/// artifact must not fail unrelated ingest commits. Typed names that no
+/// longer resolve contribute no match.
+pub(crate) async fn pg_fire_data_triggers(
+    conn: &mut sqlx::PgConnection,
+    committed: &[TableRef],
+    committing_run: Option<Uuid>,
+) -> Result<usize> {
+    if committed.is_empty() {
+        return Ok(0);
+    }
+    let rows = sqlx::query!(
+        "select name, body from transforms.transform where on_input_commit order by name",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let mut bodies: Vec<(TransformName, TransformBody)> = Vec::with_capacity(rows.len());
+    for r in rows {
+        match de_body(r.body) {
+            Ok(b) => bodies.push((TransformName(r.name), b)),
+            Err(e) => {
+                tracing::warn!(transform = %r.name, error = %e,
+                    "data trigger: undecodable body skipped");
+            }
+        }
+    }
+    let skip: Option<String> = match committing_run {
+        Some(rid) => sqlx::query_scalar!(
+            "select transform from transforms.run where run_id = $1",
+            rid,
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(backend)?
+        .flatten(),
+        None => None,
+    };
+    let types = pg_type_tables(&mut *conn, &bodies).await?;
+    let mut fired = 0usize;
+    for (name, candidate_body) in bodies {
+        if skip.as_deref() == Some(name.0.as_str()) {
+            continue;
+        }
+        let node = TriggerNode::resolve(&name, &candidate_body, &types);
+        if !node.inputs.iter().any(|t| committed.contains(t)) {
+            continue;
+        }
+        // Re-read the body under the row lock: a redefine committing between
+        // the candidate query and here must not enqueue a stale body ("the
+        // run freezes the def's body at enqueue" means the body live at the
+        // locked instant).
+        let live = sqlx::query!(
+            "select body from transforms.transform where name = $1 for update",
+            name.0,
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(backend)?;
+        let Some(row) = live else {
+            continue; // deleted since the candidate query
+        };
+        let body = match de_body(row.body) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(transform = %name.0, error = %e,
+                    "data trigger: undecodable body skipped");
+                continue;
+            }
+        };
+        let pending = sqlx::query_scalar!(
+            r#"select exists(
+                   select 1 from transforms.run where transform = $1 and state = 'queued'
+               ) as "pending!""#,
+            name.0,
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+        if pending {
+            continue;
+        }
+        let run_id = Uuid::new_v4();
+        let run = TransformRun {
+            run_id,
+            transform: Some(name),
+            trigger: RunTrigger::DataTrigger,
+            state: RunState::Queued,
+            body: body.clone(),
+            queued_at: OffsetDateTime::now_utc(),
+            started_at: None,
+            finished_at: None,
+            snapshot_id: None,
+            error: None,
+        };
+        pg_insert_run(&mut *conn, &run).await?;
+        crate::queue::pg_insert(&mut *conn, &body.to_job(run_id)).await?;
+        fired += 1;
+    }
+    Ok(fired)
+}
+
 /// Mark `run_id` succeeded at `snapshot_id` on any executor — callable from
 /// inside `IcebergTx::commit`'s held transaction (Task 6).
 pub(crate) async fn pg_mark_run_succeeded<'e, E: sqlx::PgExecutor<'e>>(
@@ -255,22 +394,8 @@ impl Transforms for PgControlPlane {
 
     #[tracing::instrument(skip(self, run, job), level = "debug")]
     async fn submit_run(&self, run: TransformRun, job: NewJob) -> Result<JobId> {
-        let body = ser(&run.body)?;
         let mut tx = self.pool().begin().await.map_err(backend)?;
-        sqlx::query!(
-            "insert into transforms.run \
-                 (run_id, transform, trigger, state, body, queued_at) \
-             values ($1, $2, $3, $4, $5, $6)",
-            run.run_id,
-            run.transform.as_ref().map(|t| t.0.clone()),
-            run.trigger.as_str(),
-            run.state.as_str(),
-            body,
-            run.queued_at,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
+        pg_insert_run(&mut *tx, &run).await?;
         let id = pg_insert(&mut *tx, &job).await?;
         tx.commit().await.map_err(backend)?;
         Ok(id)

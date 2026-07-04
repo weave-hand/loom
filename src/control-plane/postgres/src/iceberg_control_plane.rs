@@ -178,6 +178,14 @@ impl Tx for IcebergTx {
         if let Some(rid) = staged_run_success {
             crate::transforms::pg_mark_run_succeeded(&mut *tx, rid, at.0).await?;
         }
+        // Data triggers (slice 3): fire for the tables this commit wrote new
+        // data into. Compaction-only commits rewrite existing data and fire
+        // nothing. `staged_run_success` is the committing run — its own
+        // transform is suppressed inside the hook.
+        let mut written: Vec<TableRef> = staged_files.iter().map(|(t, _, _)| t.clone()).collect();
+        written.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
+        written.dedup();
+        crate::transforms::pg_fire_data_triggers(&mut tx, &written, staged_run_success).await?;
         tx.commit().await.map_err(backend)?;
         Ok(Some(at))
     }

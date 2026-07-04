@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(\n                   select 1 from transforms.run where transform = $1 and state = 'queued'\n               ) as \"pending!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pending!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7d7c57ea41f3719f8760bd4b6cacd4eabdb43140ac47fcc50244a83fa39db848"
+}

@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, body from transforms.transform where on_input_commit order by name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "body",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "body"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d93002fc9e86fb4867ab6b8b6b11ef5a219d4a309828191a0e22e2ce465ad854"
+}
