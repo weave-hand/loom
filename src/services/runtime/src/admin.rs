@@ -73,12 +73,10 @@ struct CreateUserResp {
     error: Option<String>,
 }
 
-/// `POST /admin/users` — create (or complete-grants for) a user with a starting
-/// password + roles. Sequenced autocommit: `create_user` → `define_subject` →
-/// `assign_role`*. A pre-existing username is not a hard conflict (retry-safe;
-/// note a retry does NOT reset the stored password — `create_user` is the only
-/// non-idempotent step and is skipped once the user exists); an unknown role is a
-/// 400 that reports what already completed.
+/// Create a user (or complete role grants for an existing one) with a starting password.
+///
+/// Retry-safe: a pre-existing username is not a conflict, and a retry does NOT reset the
+/// stored password. An unknown role is a 400 that reports what already completed.
 #[utoipa::path(
     post, path = "/admin/users",
     request_body = CreateUserReq,
@@ -175,8 +173,7 @@ fn to_view(u: UserSummary) -> UserView {
     }
 }
 
-/// `GET /admin/users` — list all users (identity + activation + created-at), never
-/// the verifier.
+/// List all users (identity, activation, created-at; never the password verifier).
 #[utoipa::path(
     get, path = "/admin/users",
     responses(
@@ -195,7 +192,7 @@ async fn list_users(State(st): State<AdminState>) -> Response {
     }
 }
 
-/// `POST /admin/users/:username/disable` — deactivate (revokes sessions).
+/// Deactivate a user and revoke their sessions.
 #[utoipa::path(
     post, path = "/admin/users/{username}/disable",
     params(("username" = String, Path, description = "Username to deactivate")),
@@ -210,7 +207,7 @@ async fn disable_user(State(st): State<AdminState>, Path(username): Path<String>
     }
 }
 
-/// `POST /admin/users/:username/enable` — reactivate (does not resurrect sessions).
+/// Reactivate a user (does not resurrect their revoked sessions).
 #[utoipa::path(
     post, path = "/admin/users/{username}/enable",
     params(("username" = String, Path, description = "Username to reactivate")),
@@ -230,10 +227,10 @@ struct ResetPasswordReq {
     new: String,
 }
 
-/// `POST /admin/users/:username/password` — admin. Set a new password for any user
-/// with NO current-verify (operator-driven recovery), and revoke ALL that user's
-/// sessions (force re-login). `NotFound` (404) if the username is unknown. The
-/// subject id equals the username, mirroring `create_user` on this surface.
+/// Set a new password for any user and revoke all their sessions.
+///
+/// Operator-driven recovery — no current-password check. Forces the user to re-log in;
+/// 404 if the username is unknown.
 #[utoipa::path(
     post, path = "/admin/users/{username}/password",
     params(("username" = String, Path, description = "Username whose password to reset")),
@@ -268,7 +265,7 @@ struct CreateRoleReq {
     role: String,
 }
 
-/// `POST /admin/roles` — declare a new role (governance target for grants).
+/// Declare a new role (a governance target for grants).
 #[utoipa::path(
     post, path = "/admin/roles",
     request_body = CreateRoleReq,
@@ -287,7 +284,7 @@ async fn create_role(State(st): State<AdminState>, Json(req): Json<CreateRoleReq
     }
 }
 
-/// `GET /admin/roles` — list all declared role ids.
+/// List all declared role ids.
 #[utoipa::path(
     get, path = "/admin/roles",
     responses((status = 200, description = "All declared role ids, as `{\"roles\": [...]}`")),
@@ -310,9 +307,9 @@ struct GrantReq {
     r#type: String,
 }
 
-/// `POST /admin/roles/:role/grants` — grant a role coarse `Read`/`Write` Allow
-/// on a type. An unknown grant-target type surfaces as 400 (the control plane
-/// returns `Validation`, mapped by `status_for`).
+/// Grant a role coarse Read/Write access on a type.
+///
+/// An unknown grant-target type is a 400.
 #[utoipa::path(
     post, path = "/admin/roles/{role}/grants",
     params(("role" = String, Path, description = "Role receiving the grant")),
@@ -374,7 +371,7 @@ struct DefineModelReq {
     properties: Vec<PropReq>,
 }
 
-/// `POST /admin/models` — define a model (ontology type) over an existing table.
+/// Define a model (ontology type) over an existing table.
 #[utoipa::path(
     post, path = "/admin/models",
     request_body = DefineModelReq,
@@ -412,9 +409,9 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
     }
 }
 
-/// `POST /admin/links` — define an ontology link between two existing types.
-/// `LinkDef` carries no `ToSchema`, so the body is documented as its serde shape
-/// and deserialized inside the handler (the `post_action` open-body pattern).
+/// Define an ontology link between two existing types.
+///
+/// The body is a `LinkDef` in its serde shape (documented on the request body below).
 #[utoipa::path(
     post, path = "/admin/links",
     request_body(
@@ -448,8 +445,7 @@ async fn define_link_route(
     }
 }
 
-/// `DELETE /admin/links/:from/:name` — remove a link definition (idempotent;
-/// the physical columns/join tables are untouched).
+/// Remove a link definition (idempotent; physical columns/join tables untouched).
 #[utoipa::path(
     delete, path = "/admin/links/{from}/{name}",
     params(
@@ -477,9 +473,9 @@ async fn delete_link_route(
     }
 }
 
-/// `POST /admin/actions` — define an ontology action. `ActionDef` carries no
-/// `ToSchema`, so the body is documented as its serde shape and deserialized
-/// inside the handler (the `post_action` open-body pattern).
+/// Define an ontology action.
+///
+/// The body is an `ActionDef` in its serde shape (documented on the request body below).
 #[utoipa::path(
     post, path = "/admin/actions",
     request_body(
@@ -513,7 +509,7 @@ async fn define_action_route(
     }
 }
 
-/// `DELETE /admin/actions/:name` — remove an action definition (idempotent).
+/// Remove an action definition (idempotent).
 #[utoipa::path(
     delete, path = "/admin/actions/{name}",
     params(("name" = String, Path, description = "Action name")),
@@ -533,8 +529,9 @@ async fn delete_action_route(State(st): State<AdminState>, Path(name): Path<Stri
     }
 }
 
-/// `DELETE /admin/roles/:role` — delete a role and everything hanging off it
-/// (memberships, grants, policies, inheritance edges). Idempotent.
+/// Delete a role and everything hanging off it (idempotent).
+///
+/// Removes the role's memberships, grants, policies, and inheritance edges.
 #[utoipa::path(
     delete, path = "/admin/roles/{role}",
     params(("role" = String, Path, description = "Role id to delete")),
@@ -564,7 +561,7 @@ struct RoleGrantsResp {
     grants: Vec<GrantView>,
 }
 
-/// `GET /admin/roles/:role/grants` — list a role's coarse grants.
+/// List a role's coarse grants.
 #[utoipa::path(
     get, path = "/admin/roles/{role}/grants",
     params(("role" = String, Path, description = "Role whose grants to list")),
@@ -598,8 +595,9 @@ async fn list_role_grants(State(st): State<AdminState>, Path(role): Path<String>
     }
 }
 
-/// `DELETE /admin/roles/:role/grants` — revoke a coarse grant. The body is the
-/// same `GrantReq` the POST takes; revoking an absent grant is idempotent.
+/// Revoke a coarse grant (idempotent).
+///
+/// The body is the same `GrantReq` the grant POST takes; revoking an absent grant is a no-op.
 #[utoipa::path(
     delete, path = "/admin/roles/{role}/grants",
     params(("role" = String, Path, description = "Role whose grant to revoke")),
@@ -634,8 +632,7 @@ async fn revoke_grant(
     }
 }
 
-/// `GET /admin/users/:username/roles` — the roles assigned to a user (the
-/// username IS the subject id on this surface, mirroring `create_user`).
+/// List the roles assigned to a user.
 #[utoipa::path(
     get, path = "/admin/users/{username}/roles",
     params(("username" = String, Path, description = "Username whose roles to list")),
@@ -661,7 +658,7 @@ async fn user_roles(State(st): State<AdminState>, Path(username): Path<String>) 
     }
 }
 
-/// `PUT /admin/users/:username/roles/:role` — assign a role to a user.
+/// Assign a role to a user (idempotent).
 #[utoipa::path(
     put, path = "/admin/users/{username}/roles/{role}",
     params(
@@ -690,9 +687,7 @@ async fn assign_user_role(
     }
 }
 
-/// `DELETE /admin/users/:username/roles/:role` — unassign a role from a user.
-/// The trait-level `unassign_role` is unconditionally idempotent (no 404), so
-/// the unknown-user 404 comes from a `roles_of` existence check here.
+/// Unassign a role from a user (idempotent; 404 only if the user is unknown).
 #[utoipa::path(
     delete, path = "/admin/users/{username}/roles/{role}",
     params(

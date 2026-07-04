@@ -325,6 +325,10 @@ async fn enqueue_gc(
     }
 }
 
+/// List a type's objects, with optional filters and keyset pagination.
+///
+/// Each property is an optional filter (`?prop=op:value`); `_ids`, `_or`, `limit`, and
+/// `cursor` are reserved. Governed per-type by ACL.
 #[utoipa::path(
     get, path = "/objects/{type_name}",
     params(
@@ -411,6 +415,10 @@ async fn get_object(
     }
 }
 
+/// Traverse a single link to its target objects (or association rows).
+///
+/// `_direction`, `_shape`, and `_ids` are reserved; other params filter the target.
+/// Governed by ACL.
 #[utoipa::path(
     get, path = "/objects/{from_type}/links/{link_name}",
     params(
@@ -465,6 +473,10 @@ async fn get_linked(
     respond_shaped(&st, query, reserved.last("_shape"), &subject).await
 }
 
+/// Traverse a `?path=` chain of links to the reached objects.
+///
+/// `?path=l1,l2` names the ordered link chain; `_shape` and `_ids` are reserved.
+/// Governed by ACL.
 #[utoipa::path(
     get, path = "/objects/{from_type}/links",
     params(("from_type" = String, Path, description = "Source object type")),
@@ -656,6 +668,10 @@ fn graph_knobs(
     Ok((ids, depth, tree))
 }
 
+/// Recurse a self-link from a seed type to all reachable objects.
+///
+/// `?depth` bounds the traversal (capped); `?tree=true` returns a shortest-path tree
+/// instead of the flat reachable set. Governed by ACL.
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph/{link_name}",
     params(
@@ -810,6 +826,10 @@ async fn graph_tree_respond(
     }
 }
 
+/// Invoke an ontology action by name (typed governed write).
+///
+/// The body is the action's parameter envelope. Insert/Update/Delete all respond 201
+/// with the affected object. Governed by ACL.
 #[utoipa::path(
     post, path = "/actions/{action_name}",
     params(("action_name" = String, Path, description = "Ontology action id")),
@@ -1024,6 +1044,9 @@ async fn lineage_closure(
     }
 }
 
+/// List a dataset's upstream lineage closure.
+///
+/// Walks producers to `?depth` (default 1, capped); paginated via `after`/`limit`.
 #[utoipa::path(
     get, path = "/lineage/datasets/{namespace}/{name}/upstream",
     params(
@@ -1058,6 +1081,9 @@ async fn get_lineage_upstream(
     .await
 }
 
+/// List a dataset's downstream lineage closure.
+///
+/// Walks consumers to `?depth` (default 1, capped); paginated via `after`/`limit`.
 #[utoipa::path(
     get, path = "/lineage/datasets/{namespace}/{name}/downstream",
     params(
@@ -1092,6 +1118,9 @@ async fn get_lineage_downstream(
     .await
 }
 
+/// List the lineage events emitted by a run.
+///
+/// Paginated via `after`/`limit`.
 #[utoipa::path(
     get, path = "/lineage/runs/{run_id}/events",
     params(
