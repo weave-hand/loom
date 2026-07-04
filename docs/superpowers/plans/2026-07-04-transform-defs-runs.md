@@ -30,6 +30,9 @@
 1. The spec's "`create_run` (Queued) + `queue().enqueue(...)` in one control-plane transaction" is delivered as a single concern method `submit_run(run, job)` — same atomicity guarantee, one seam, no `Tx`-trait growth. (Slice 3 adds its own commit-seam entry point.)
 2. `TransformRun` does not derive serde (it never crosses a serde boundary: postgres stores typed columns, HTTP responses map to explicit DTOs). `TransformDef`/`TransformBody` are serde as specced.
 3. The in-commit success mark is `TableTx::mark_run_succeeded(run_id)` (staged, applied at commit with the allocated snapshot) — the engine cannot know the snapshot id before `commit()` allocates it.
+4. Migration naming: the runs table is `transforms.run` (not the spec's `transform_run`), and `next_run_at` + the debounce/scheduler partial indexes are deferred to slices 2/3's own migrations — slice 1 stores nothing it doesn't read.
+5. `list_transforms`/`list_runs` return a single full page (`Page::from_full`, `PageReq` accepted-for-future) — the codebase-wide precedent for list reads; cursor pagination is not implemented anywhere yet.
+6. `GET /admin/runs/{run_id}` returns 400 for a malformed (non-uuid) id — not in the spec's status table, which only names the 404.
 
 ---
 
@@ -704,7 +707,20 @@ where
 }
 ```
 
-Where `seed_type`/`tref` — reuse the testkit's existing helpers if present (grep for `fn tref`/how `ontology_contract` seeds `ObjectType`); otherwise add small private helpers next to the contract mirroring `ontology_contract`'s seeding (an `ObjectType` with `name`, `table: TableRef`, `identity`, empty properties — copy the exact struct literal shape from the existing contract).
+`seed_type`/`tref` do NOT exist in testkit (verified — `ontology_contract` uses local closures; query-api's `e2e_support::tref` is not reachable from testkit): ADD them as small private helpers next to the contract, mirroring `ontology_contract`'s `ObjectType` seeding closures (an `ObjectType` with `name`, `table: TableRef`, `identity`, empty properties — copy the exact struct literal shape from `testkit/src/lib.rs:588-592`).
+
+Also add the frozen-body-after-redefine leg the spec's Testing section names — immediately after the `submit_run`/dequeue block above, redefine `daily` with a different body and assert the run is untouched:
+
+```rust
+    // Frozen body: redefinition never rewrites run history.
+    let mutated = TransformDef { body: phys.clone(), ..redefined.clone() };
+    cp.define_transform(mutated).await.unwrap();
+    assert_eq!(
+        cp.get_run(rid).await.unwrap().body,
+        redefined.body,
+        "run body frozen at submit, unaffected by redefine"
+    );
+```
 
 - [ ] **Step 2: Memory test file** — `src/control-plane/memory/tests/transforms.rs`:
 
@@ -812,11 +828,19 @@ impl Transforms for MemoryControlPlane {
 
     #[tracing::instrument(skip(self, run, job), level = "debug")]
     async fn submit_run(&self, run: TransformRun, job: NewJob) -> Result<JobId> {
-        // Insert the run and the job under the transforms lock so no reader
-        // observes the job without its run (mirrors the postgres transaction).
-        let mut st = self.transforms.lock();
-        let id = self.enqueue_locked(job);
-        st.runs.insert(run.run_id, run);
+        // GLOBAL LOCK ORDER: `rows` BEFORE `transforms` — Task 6's
+        // `MemoryTx::commit` extends the documented rows→lineage→catalog
+        // order with transforms LAST, and this method must agree or the two
+        // paths ABBA-deadlock. Holding both across the insert pair keeps the
+        // job invisible until its run exists (mirrors the postgres tx).
+        let id;
+        {
+            let mut rows = self.rows.lock();
+            let mut st = self.transforms.lock();
+            id = MemoryControlPlane::insert_locked(&mut rows, job);
+            st.runs.insert(run.run_id, run);
+        }
+        self.notify.notify_waiters();
         Ok(id)
     }
 
@@ -892,7 +916,7 @@ pub(crate) fn apply_outcome(run: &mut TransformRun, outcome: RunOutcome) {
 }
 ```
 
-`enqueue_locked(job) -> JobId`: the memory queue's insert seam. Look at `src/control-plane/memory/src/queue.rs` — `MemoryControlPlane` has `insert_with_id(&mut rows, id, job)` (used by `MemoryTx::commit`). Add a small `pub(crate) fn enqueue_locked(&self, job: NewJob) -> JobId` on `MemoryControlPlane` that locks `rows`, inserts with a fresh `Uuid::new_v4()`, calls `self.notify.notify_waiters()`, and returns the id — matching whatever the direct `Queue::enqueue` impl does (read it and reuse its body; if it is already a thin wrapper over such a helper, call that). NOTE the lock order comment in `transaction.rs` (`rows` before `lineage` before `catalog`): here we hold `transforms` then take `rows` — no existing reader takes `transforms` + another lock, so no deadlock; add a comment saying so.
+`insert_locked(&mut rows, job) -> JobId`: the memory queue's insert seam taking an already-held `rows` guard. Read `src/control-plane/memory/src/queue.rs` — the direct `Queue::enqueue` is `Self::insert(&mut self.rows.lock(), job)` + `notify_waiters`, and `insert_with_id(&mut rows, id, job)` exists for `MemoryTx::commit`. Reuse `Self::insert` if its signature already takes the guard (then `insert_locked` is just that); otherwise add the thin wrapper. **Lock-order rule (repeat of the code comment): `rows` is always taken BEFORE `transforms`; `transforms` is always the LAST lock in any multi-lock section.** Update the lock-order comment in `src/control-plane/memory/src/transaction.rs:50-52` to append `transforms` to the documented order when Task 6 touches it.
 
 - [ ] **Step 5: Run the contract**
 
@@ -1279,7 +1303,7 @@ impl Transforms for PgControlPlane {
     fn transforms(&self) -> &(dyn Transforms + Send + Sync);
 ```
 
-(plus `use crate::transforms::Transforms;` in that file's imports).
+(plus `use crate::transforms::Transforms;` in that file's imports; Task 6 will additionally need `use uuid::Uuid;` there — `transaction.rs` does not currently import it).
 
 - [ ] **Step 2: Implement in all four implementors:**
 
@@ -1338,8 +1362,12 @@ Run: `buck2 test //src/services/query-api:wire-governance-e2e --unstable-allow-a
 /// Succeeded with the very snapshot the commit allocates, atomically.
 pub async fn transform_run_commit_success_contract<CP>(cp: &CP)
 where
-    CP: ControlPlane + Transforms + TableControlPlane,
+    CP: ControlPlane + TableControlPlane,
 {
+    // NOTE the bound: NO `+ Transforms` — postgres's only `TableControlPlane`
+    // is `IcebergControlPlane`, which reaches the concern through the
+    // `ControlPlane::transforms()` accessor (Task 5), not a direct impl. All
+    // concern calls below therefore go `cp.transforms().…`.
     use control_plane_core::{
         ColumnSpec, DataFile, OutputMode, RunState, RunTrigger, TransformBody, TransformRun,
     };
@@ -1363,11 +1391,16 @@ where
         snapshot_id: None,
         error: None,
     };
-    cp.submit_run(run, body.to_job(rid)).await.unwrap();
+    cp.transforms().submit_run(run, body.to_job(rid)).await.unwrap();
 
     let out = tref("main", "run_dst");
     let cols = vec![ColumnSpec { name: "id".into(), ty: "long".into(), nullable: true }];
-    let files = vec![DataFile { path: "f1.parquet".into(), record_count: 1, file_size_bytes: 10 }];
+    // DataFile has SEVEN required fields (core/src/snapshot.rs:48 —
+    // path, path_is_relative, file_format, record_count, file_size_bytes,
+    // column_stats, parquet_footer_size). COPY the exact literal shape from
+    // testkit's existing snapshot/catalog contract construction rather than
+    // typing it fresh; the values below are representative only.
+    let files = vec![datafile("f1.parquet", 1, 10)]; // <- local helper copied from the existing contract's literal
 
     // Rollback leaves the run untouched.
     let mut tx = cp.begin_table().await.unwrap();
@@ -1375,7 +1408,7 @@ where
     tx.append_files(&out, &files).await.unwrap();
     tx.mark_run_succeeded(rid).await.unwrap();
     tx.rollback().await.unwrap();
-    assert_eq!(cp.get_run(rid).await.unwrap().state, RunState::Queued);
+    assert_eq!(cp.transforms().get_run(rid).await.unwrap().state, RunState::Queued);
 
     // Commit marks Succeeded at the allocated snapshot.
     let mut tx = cp.begin_table().await.unwrap();
@@ -1383,13 +1416,13 @@ where
     tx.append_files(&out, &files).await.unwrap();
     tx.mark_run_succeeded(rid).await.unwrap();
     let snap = tx.commit().await.unwrap().expect("a snapshot");
-    let r = cp.get_run(rid).await.unwrap();
+    let r = cp.transforms().get_run(rid).await.unwrap();
     assert_eq!(r.state, RunState::Succeeded);
     assert_eq!(r.snapshot_id, Some(snap.0));
 }
 ```
 
-(Match `ColumnSpec`/`DataFile` field names to their actual core definitions — check `src/control-plane/core/src/snapshot.rs`; the existing `queue_contract`/catalog contracts already construct them, copy that shape.)
+(`ColumnSpec { name, ty, nullable }` is correct as written; for `DataFile`, add a private `fn datafile(path: &str, records: i64, bytes: i64) -> DataFile` helper next to the contract whose body copies the full 7-field literal from the existing testkit contract that constructs one — grep `DataFile {` in `testkit/src/lib.rs`.)
 
 Invoke from `src/control-plane/memory/tests/transforms.rs` (add a second `#[tokio::test]` calling it with a fresh `MemoryControlPlane`). For postgres: find the existing fixture test that exercises `IcebergControlPlane`/`begin_table` (`grep -rln "begin_table\|IcebergControlPlane" src/control-plane/postgres/tests/`) and mirror its setup (it constructs `IcebergControlPlane::new(cp, catalog)` over the fixture's `SqlCatalog`); add a `#[tokio::test]` in `src/control-plane/postgres/tests/transforms.rs` invoking the contract with that plane, reusing the same setup helper.
 
@@ -1458,13 +1491,13 @@ CAREFUL: the validation-before-mutation discipline in `MemoryTx::commit` (see it
 - Modify: `src/services/engine-wire/proto/engine_control.proto`
 - Modify: `src/services/engine-wire/src/client.rs`
 - Modify: `src/services/engine/src/service.rs`
-- Modify: every `commit_transform(` caller (worker `src/services/worker/src/transform.rs` — signature gains an arg)
+- Modify: every `commit_transform(` caller — worker `src/services/worker/src/transform.rs` AND `src/services/engine/tests/transform_wire.rs` (client calls at lines ~143/~227/~241 gain a trailing `None`; the bare `pb::CommitTransformRequest { … }` literal at ~313 gains `run_id: None`)
 
 **Interfaces:**
 - Consumes: Task 5 (`cp.transforms()`), Task 6 (`TableTx::mark_run_succeeded`).
-- Produces (Task 8 calls these):
-  - `EngineControlClient::mark_run_running(&self, run_id: Uuid) -> Result<()>`
-  - `EngineControlClient::finish_run_failed(&self, run_id: Uuid, error: &str, terminal: bool) -> Result<()>`
+- Produces (Task 8 calls these; the wrapper being extended is `GrpcQueueClient` in `client.rs` — `EngineControlClient` is the generated tonic inner it wraps):
+  - `GrpcQueueClient::mark_run_running(&self, run_id: Uuid) -> Result<()>`
+  - `GrpcQueueClient::finish_run_failed(&self, run_id: Uuid, error: &str, terminal: bool) -> Result<()>` — both mapping errors via `cp_status` (preserves NotFound), not `be`.
   - `commit_transform(..., run_id: Option<Uuid>)` — new trailing parameter.
 
 - [ ] **Step 1: Proto** — in `engine_control.proto`, add to the service block:
@@ -1572,7 +1605,7 @@ In the existing `commit_transform` handler, after the tx is built and files stag
     }
 ```
 
-- [ ] **Step 4: Update `commit_transform` callers** — `grep -rn "commit_transform(" src/ --include=*.rs`; the worker's `run_wire_transform` call passes `None` for now (Task 8 threads the real id).
+- [ ] **Step 4: Update `commit_transform` callers** — `grep -rn "commit_transform(\|CommitTransformRequest {" src/ --include=*.rs`; the worker's `run_wire_transform` call passes `None` for now (Task 8 threads the real id), and the engine's `tests/transform_wire.rs` gets `None` on its three client calls plus `run_id: None` in its bare request literal.
 
 - [ ] **Step 5: Build the affected services**
 
@@ -1687,13 +1720,16 @@ async fn run_lifecycle_succeeds_with_commit_snapshot() {
     let ice = IcebergCatalog::new(pool.clone());
     let snap = ice.current_snapshot(&dst).await.expect("output snapshot");
     assert_eq!(r.snapshot_id, Some(snap.id));
-    // The lineage run_id IS the transform run_id.
+    // The lineage run_id IS the transform run_id. NOTE: event_dataset stores
+    // namespace and name as SEPARATE columns (migration 0004) — do not bind a
+    // dotted "main.dst".
     let lineage_run: uuid::Uuid = sqlx::query_scalar(
         "select e.run_id from lineage.event e \
-         join lineage.event_dataset d on d.event_id = e.event_id and d.direction = 'output' \
-         where d.name = $1",
+         join lineage.event_dataset d on d.event_id = e.event_id \
+         where d.direction = 'output' and d.namespace = $1 and d.name = $2",
     )
-    .bind("main.dst")
+    .bind("main")
+    .bind("dst")
     .fetch_one(&pool)
     .await
     .expect("lineage run id");
@@ -1722,7 +1758,7 @@ async fn run_lifecycle_fails_terminally_on_bad_sql() {
     assert!(matches!(err.policy, RetryPolicy::Abandon), "bad SQL is deterministic");
     let r = cp.transforms().get_run(rid).await.expect("run");
     assert_eq!(r.state, RunState::Failed);
-    assert!(r.error.as_deref().unwrap_or_default().contains("definitely_not_a_column") 
+    assert!(r.error.as_deref().unwrap_or_default().contains("definitely_not_a_column")
         || r.error.is_some(), "error text recorded");
 }
 ```
@@ -2077,13 +2113,13 @@ async fn run_now_and_adhoc_submit_runs() {
 }
 ```
 
-(Add a `req_empty_post` helper mirroring `req_empty` with method POST, or reuse `req_empty("POST", …)` if it already takes a method. Add `//third-party:uuid` to the test target deps. If `seed_types` seeds different type names than the typed-400 test assumes, keep the typed test's names unknown ones — the point is the 400. Also add one non-admin 403 spot-check: a plain-user token against `GET /admin/transforms` → 403, mirroring the existing pattern.)
+(No `req_empty_post` helper needed — `req_empty(method, uri, token)` already takes the method; write `req_empty("POST", "/admin/transforms/daily/run", &token)`. Add `//third-party:uuid` to the test target deps. If `seed_types` seeds different type names than the typed-400 test assumes, keep the typed test's names unknown ones — the point is the 400. Also add one non-admin 403 spot-check: a plain-user token against `GET /admin/transforms` → 403, mirroring the existing pattern.)
 
 - [ ] **Step 4: query-api drift** — add the same 8 `(method, path)` pairs to `expected()` in `src/services/query-api/tests/openapi.rs`.
 
 - [ ] **Step 5: Run**
 
-Run: `buck2 test //src/services/runtime:... > /tmp/t10.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t10.log` (the runtime test targets: fragments + admin-management + any others in its BUCK) → PASS.
+Run: `buck2 test //src/services/runtime: > /tmp/t10.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t10.log` (whole package — fragments + admin-management + the rest) → PASS.
 Run: `buck2 test //src/services/query-api:openapi --unstable-allow-all-tests-on-re > /tmp/t10b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t10b.log` (actual target name from BUCK) → PASS.
 
 - [ ] **Step 6: prek + commit** (`feat(api): transform management routes — define/run/history under /admin`)
