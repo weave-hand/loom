@@ -290,3 +290,20 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   The zero-pool worker (`#road-compaction-job`) builds its `CompactCtx` eagerly in `main` (parses `LOOM_WAREHOUSE_URI`, builds the write store, connects the Flight client), so a worker that only ever drains `flush_table` jobs now hard-requires warehouse config and a reachable Flight endpoint at startup. Acceptable today (no flush-only worker deployment exists yet, and the engine always serves Flight + `EngineControl` on one socket), but when the worker Helm manifest is authored either set `LOOM_WAREHOUSE_URI` there or make `CompactCtx` construction lazy/per-job so a flush-only worker need not require it.
 - [ ] **metrics crate / counters & histograms** `{#fut-metrics-crate area:cross-cutting status:deferred from:2026-06-07-tracing-instrumentation-design pr:- spec:-}`
   The tracing pass wired spans/events only; a `metrics` crate with counters/histograms is deferred to the binaries (libraries have no subscriber).
+
+## ui
+
+- [ ] **Dataset preview is coarse-auth (no per-dataset ACL)** `{#fut-ui-dataset-preview-acl area:ui status:deferred from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  `GET /datasets/{schema}/{table}/preview` runs `SELECT *` and returns raw cells to any authenticated subject, bypassing the row-filter/column-mask governance the `/objects` path enforces. Coarse auth is the spec's deliberate MVP choice (mirrors `list_datasets`); fine-grained per-dataset ACL on preview is deferred.
+- [ ] **Reconcile lineage namespace vs Iceberg schema for Catalog lineage** `{#fut-ui-lineage-namespace-reconcile area:ui status:deferred from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  `CatalogView`'s Lineage tab passes the dataset's Iceberg `schema` as the lineage `namespace` to `/lineage/datasets/{namespace}/{name}/{dir}`. If a deployment's lineage namespace differs from the schema, the closures return empty and the mini-DAG shows only the current node. Reconcile the two naming conventions (or resolve via the naming bridge).
+- [ ] **Full-canvas lineage view** `{#fut-ui-full-canvas-lineage area:ui status:deferred from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  The standalone full-canvas lineage view (handoff wireframe 2a) is stubbed as `LineageFullStub`, reached from the Catalog drawer's Lineage tab "Open full view" button. Build the real full-canvas graph.
+- [ ] **Per-dataset run history for the Catalog History tab** `{#fut-ui-dataset-runs-history area:ui status:deferred from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  The Catalog drawer's History tab is an honest stub — only per-run events exist (`/lineage/runs/{id}/events`), not a per-dataset runs list. Needs a route listing the lineage runs that touched a dataset, then a timeline render.
+- [ ] **Catalog routing / URL state** `{#fut-ui-catalog-routing area:ui status:deferred from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  Active surface and per-surface selected-row/active-tab are in-memory state; there is no router. Add real routes (`/catalog/{id}`, per-surface URL state) so views are linkable and survive reload.
+- [ ] **Catalog list row counts** `{#fut-ui-catalog-row-counts area:ui status:deferred from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  The Catalog list's Rows column always renders `—`; `GET /datasets` carries no cheap row count. Surface a count (exact or approximate) when one is available.
+- [ ] **Server-side Catalog sort/filter** `{#fut-ui-server-side-catalog-sort area:ui status:deferred from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  The Catalog list's filter chips and "Sort" control are presentational only in the MVP. Wire them to server-side sort/filter parameters.
