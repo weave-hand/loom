@@ -22,7 +22,8 @@ use control_plane_core::{
     Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef,
     LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq,
     ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
-    ScalarValue, SnapshotId, SubjectId, TableControlPlane, TableRef, TypeName, VectorIndexDef,
+    ScalarValue, SnapshotId, SubjectId, TableControlPlane, TableRef, Transforms, TypeName,
+    VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -4048,4 +4049,273 @@ pub async fn type_table_binding_contract<CP: Ontology + Lineage>(cp: &CP) {
         up_x_rebind.contains(&table_ref_v2),
         "rebind adds the new backing table as an upstream"
     );
+}
+
+fn tref(schema: &str, name: &str) -> TableRef {
+    TableRef {
+        schema: schema.to_string(),
+        name: name.to_string(),
+    }
+}
+
+/// Seed a bare `ObjectType` (no properties, no identity) purely so
+/// typed-transform validation has a known type name to reference. Mirrors
+/// `ontology_contract`'s `ObjectType` seeding shape.
+async fn seed_type<O: Ontology>(o: &O, name: &str, schema: &str, table: &str) {
+    o.define_type(ObjectType {
+        name: TypeName(name.to_string()),
+        table: tref(schema, table),
+        properties: vec![],
+        derived: vec![],
+        identity: None,
+    })
+    .await
+    .unwrap();
+}
+
+/// Contract for the transforms concern. Seeds two ontology types (`Widget`,
+/// `Gadget`) for typed-body validation; callers pass a fresh plane.
+pub async fn transforms_contract<CP>(cp: &CP)
+where
+    CP: ControlPlane + Transforms + Ontology,
+{
+    use control_plane_core::{
+        OutputMode, RunOutcome, RunState, RunTrigger, TransformBody, TransformDef, TransformName,
+        TransformRun,
+    };
+
+    // Seed types for typed-body validation (mirror the ObjectType seeding the
+    // ontology_contract uses — same table/property shapes).
+    seed_type(cp, "Widget", "main", "widget").await;
+    seed_type(cp, "Gadget", "main", "gadget").await;
+
+    let phys = TransformBody::Physical {
+        inputs: vec![tref("main", "src")],
+        output: tref("main", "dst"),
+        sql: "select * from src".into(),
+        output_mode: OutputMode::Append,
+    };
+    let def = TransformDef {
+        name: TransformName("daily".into()),
+        body: phys.clone(),
+        schedule: None,
+        on_input_commit: false,
+    };
+
+    // define + get + upsert redefine
+    cp.define_transform(def.clone()).await.unwrap();
+    assert_eq!(cp.get_transform(&def.name).await.unwrap(), def);
+    let redefined = TransformDef {
+        body: TransformBody::Physical {
+            inputs: vec![tref("main", "src2")],
+            output: tref("main", "dst"),
+            sql: "select * from src2".into(),
+            output_mode: OutputMode::Overwrite,
+        },
+        ..def.clone()
+    };
+    cp.define_transform(redefined.clone()).await.unwrap();
+    assert_eq!(
+        cp.get_transform(&def.name).await.unwrap(),
+        redefined,
+        "define is an upsert"
+    );
+
+    // slice-1 rejections + typed validation
+    let sched = TransformDef {
+        schedule: Some("* * * * *".into()),
+        ..def.clone()
+    };
+    assert!(
+        matches!(
+            cp.define_transform(sched).await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "schedule rejected until slice 2"
+    );
+    let trig = TransformDef {
+        on_input_commit: true,
+        ..def.clone()
+    };
+    assert!(matches!(
+        cp.define_transform(trig).await,
+        Err(ControlPlaneError::Validation(_))
+    ));
+    let bad_typed = TransformDef {
+        name: TransformName("typed".into()),
+        body: TransformBody::Typed {
+            inputs: vec!["Widget".into(), "Nope".into()],
+            output: "Gadget".into(),
+            sql: "select 1".into(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: false,
+    };
+    assert!(
+        matches!(
+            cp.define_transform(bad_typed.clone()).await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "unknown typed input rejected"
+    );
+    let good_typed = TransformDef {
+        body: TransformBody::Typed {
+            inputs: vec!["Widget".into()],
+            output: "Gadget".into(),
+            sql: "select 1".into(),
+            output_mode: OutputMode::Append,
+        },
+        ..bad_typed
+    };
+    cp.define_transform(good_typed.clone()).await.unwrap();
+
+    // list: name-ordered, full page
+    let page = cp.list_transforms(PageReq::default()).await.unwrap();
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|d| d.name.0.as_str())
+            .collect::<Vec<_>>(),
+        vec!["daily", "typed"]
+    );
+    assert!(page.next.is_none());
+
+    // submit_run: run recorded Queued + job dequeueable
+    let rid = uuid::Uuid::new_v4();
+    let run = TransformRun {
+        run_id: rid,
+        transform: Some(TransformName("daily".into())),
+        trigger: RunTrigger::Manual,
+        state: RunState::Queued,
+        body: redefined.body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    let job = redefined.body.to_job(rid);
+    let kinds = vec![job.kind.clone()];
+    cp.submit_run(run, job).await.unwrap();
+    let got = cp.get_run(rid).await.unwrap();
+    assert_eq!(got.state, RunState::Queued);
+    assert_eq!(got.transform, Some(TransformName("daily".into())));
+    assert_eq!(got.body, redefined.body, "body frozen at submit");
+    let j = cp
+        .queue()
+        .dequeue(&kinds, "w")
+        .await
+        .unwrap()
+        .expect("submitted job");
+    assert_eq!(j.payload["run_id"], serde_json::json!(rid.to_string()));
+
+    // Frozen body: redefinition never rewrites run history.
+    let mutated = TransformDef {
+        body: phys.clone(),
+        ..redefined.clone()
+    };
+    cp.define_transform(mutated).await.unwrap();
+    assert_eq!(
+        cp.get_run(rid).await.unwrap().body,
+        redefined.body,
+        "run body frozen at submit, unaffected by redefine"
+    );
+
+    // lifecycle: running -> retry-queued (error retained) -> running -> succeeded
+    cp.mark_run_running(rid).await.unwrap();
+    let r = cp.get_run(rid).await.unwrap();
+    assert_eq!(r.state, RunState::Running);
+    assert!(r.started_at.is_some());
+    cp.finish_run(
+        rid,
+        RunOutcome::RetryQueued {
+            error: "flaky".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let r = cp.get_run(rid).await.unwrap();
+    assert_eq!(r.state, RunState::Queued);
+    assert_eq!(r.error.as_deref(), Some("flaky"));
+    cp.mark_run_running(rid).await.unwrap();
+    cp.finish_run(rid, RunOutcome::Succeeded { snapshot_id: 41 })
+        .await
+        .unwrap();
+    let r = cp.get_run(rid).await.unwrap();
+    assert_eq!(r.state, RunState::Succeeded);
+    assert_eq!(r.snapshot_id, Some(41));
+    assert!(r.finished_at.is_some());
+
+    // a second, ad-hoc failed run; list newest-first + filter
+    let rid2 = uuid::Uuid::new_v4();
+    let run2 = TransformRun {
+        run_id: rid2,
+        transform: None,
+        trigger: RunTrigger::AdHoc,
+        state: RunState::Queued,
+        body: good_typed.body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    cp.submit_run(run2, good_typed.body.to_job(rid2))
+        .await
+        .unwrap();
+    cp.finish_run(
+        rid2,
+        RunOutcome::Failed {
+            error: "bad sql".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let all = cp.list_runs(None, PageReq::default()).await.unwrap();
+    assert_eq!(
+        all.items.first().map(|r| r.run_id),
+        Some(rid2),
+        "newest first"
+    );
+    assert_eq!(all.items.len(), 2);
+    let named = cp
+        .list_runs(Some(&TransformName("daily".into())), PageReq::default())
+        .await
+        .unwrap();
+    assert_eq!(named.items.len(), 1);
+    assert_eq!(named.items[0].run_id, rid);
+
+    // unknown-id errors
+    let nope = uuid::Uuid::new_v4();
+    assert!(matches!(
+        cp.get_run(nope).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(matches!(
+        cp.mark_run_running(nope).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(matches!(
+        cp.finish_run(nope, RunOutcome::Failed { error: "e".into() })
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // delete: idempotent; runs survive with the frozen name
+    cp.delete_transform(&TransformName("daily".into()))
+        .await
+        .unwrap();
+    cp.delete_transform(&TransformName("daily".into()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        cp.get_transform(&TransformName("daily".into())).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    let named = cp
+        .list_runs(Some(&TransformName("daily".into())), PageReq::default())
+        .await
+        .unwrap();
+    assert_eq!(named.items.len(), 1, "runs survive definition deletion");
 }

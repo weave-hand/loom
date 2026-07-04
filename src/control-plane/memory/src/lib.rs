@@ -9,6 +9,7 @@ mod lineage;
 mod ontology;
 mod queue;
 mod transaction;
+mod transforms;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +31,7 @@ use crate::catalog::CatalogState;
 use crate::lineage::LineageState;
 use crate::ontology::OntologyState;
 use crate::transaction::MemoryTx;
+use crate::transforms::TransformsState;
 
 #[derive(Clone)]
 pub(crate) struct Row {
@@ -67,6 +69,7 @@ pub struct MemoryControlPlane {
     acl: Arc<Mutex<AclState>>,
     auth: Arc<Mutex<AuthState>>,
     lineage: Arc<Mutex<LineageState>>,
+    transforms: Arc<Mutex<TransformsState>>,
     lock_timeout: Duration,
 }
 
@@ -80,6 +83,7 @@ impl MemoryControlPlane {
             acl: Arc::new(Mutex::new(AclState::default())),
             auth: Arc::new(Mutex::new(AuthState::default())),
             lineage: Arc::new(Mutex::new(LineageState::default())),
+            transforms: Arc::new(Mutex::new(TransformsState::default())),
             lock_timeout,
         }
     }
