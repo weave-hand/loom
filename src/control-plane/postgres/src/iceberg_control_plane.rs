@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Auth, Catalog, ColumnSpec, ControlPlane, ControlPlaneError, DataFile, JobId, Lineage,
     LineageEvent, NewJob, Ontology, Queue, Result, SnapshotId, TableControlPlane, TableRef,
-    TableTx, Tx,
+    TableTx, Transforms, Tx,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -70,6 +70,9 @@ impl ControlPlane for IcebergControlPlane {
     }
     fn queue(&self) -> &(dyn Queue + Send + Sync) {
         self.pg.queue()
+    }
+    fn transforms(&self) -> &(dyn Transforms + Send + Sync) {
+        self.pg.transforms()
     }
     fn auth(&self) -> &(dyn Auth + Send + Sync) {
         self.pg.auth()

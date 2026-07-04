@@ -335,3 +335,20 @@ async fn wire_catalog_delegates_direct() {
         .expect("list_tables over the delegated direct plane");
     assert!(listed.next.is_none(), "single full page");
 }
+
+#[tokio::test]
+async fn wire_transforms_delegates_direct() {
+    let fx = PgFixture::shared();
+    let (cp, db, warehouse) = seed(fx).await;
+    let (sock, _guard) = spawn_engine(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+    let client = connect_gov_client(&sock).await;
+    let wire = WireControlPlane::new(client, Arc::new(cp) as Arc<dyn ControlPlane>);
+    // transforms() delegates to the direct plane (admin transform def/run reads,
+    // like catalog()/queue()/lineage()) — a usable handle, not a guard.
+    let transforms = wire
+        .transforms()
+        .list_transforms(PageReq::default())
+        .await
+        .expect("wire transforms() delegates to the direct plane");
+    assert!(transforms.next.is_none());
+}
