@@ -23,12 +23,15 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 async-trait = "0.1"
 arrow-flight = { version = "58", features = ["flight-sql"] }
 prost = "0.14"
+tracing = "0.1"
+# Match control-plane-worker: CancellationToken needs no extra tokio-util feature.
+tokio-util = { version = "0.7", default-features = false }
+# Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
+# blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
+time = "=0.3.47"
 
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
 arrow-array = "58"
 arrow-schema = "58"
-# Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
-# blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
-time = "=0.3.47"
