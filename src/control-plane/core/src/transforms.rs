@@ -217,6 +217,16 @@ pub enum RunOutcome {
 /// Slice-1 definition validation, shared by both adapters: `schedule` and
 /// `on_input_commit` are carried in the shape but not yet live.
 pub fn validate_transform_def(def: &TransformDef) -> Result<()> {
+    if def.name.0.is_empty() {
+        return Err(ControlPlaneError::Validation(
+            "transform name must not be empty".into(),
+        ));
+    }
+    if def.name.0 == "run" {
+        return Err(ControlPlaneError::Validation(
+            "transform name 'run' is reserved (collides with the ad-hoc run route)".into(),
+        ));
+    }
     if def.schedule.is_some() {
         return Err(ControlPlaneError::Validation(
             "transform schedules are not supported yet (slice 2)".into(),

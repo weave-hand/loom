@@ -694,6 +694,19 @@ async fn run_now_and_adhoc_submit_runs() {
 }
 
 #[tokio::test]
+async fn define_transform_rejects_reserved_name() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    let reserved = TRANSFORM_BODY.replace(r#""name": "daily""#, r#""name": "run""#);
+    let (status, _) = send(
+        app(cp),
+        req_json("POST", "/admin/transforms", &token, &reserved),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn non_admin_bearer_is_403_on_transforms_route() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let alice = seed_session(&cp, "alice").await; // not the admin

@@ -94,6 +94,27 @@ fn slice1_rejects_schedule_and_data_trigger() {
 }
 
 #[test]
+fn rejects_empty_and_reserved_names() {
+    let mut def = TransformDef {
+        name: TransformName(String::new()),
+        body: physical_body(),
+        schedule: None,
+        on_input_commit: false,
+    };
+    assert!(validate_transform_def(&def).is_err(), "empty name rejected");
+    def.name = TransformName("run".into());
+    assert!(
+        validate_transform_def(&def).is_err(),
+        "reserved name 'run' rejected (collides with the ad-hoc run route)"
+    );
+    def.name = TransformName("daily".into());
+    assert!(
+        validate_transform_def(&def).is_ok(),
+        "normal name still passes"
+    );
+}
+
+#[test]
 fn run_enums_round_trip_strings() {
     for (t, s) in [
         (RunTrigger::Manual, "manual"),
