@@ -7,18 +7,16 @@
     reason = "yew html! macro expansion is not lint-clean under loom's strict gate"
 )]
 
-mod explorer;
 mod net;
 mod session;
+mod surfaces;
 
-#[allow(
-    unused_imports,
-    reason = "Explorer re-homed into OntologyView in a later task"
-)]
-use explorer::Explorer;
 use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
-use loom_ui_core::{AuthError, BadgeTone, ButtonVariant, Surface};
+use loom_ui_core::{AuthError, BadgeTone, ButtonVariant, Surface, TypeDetail};
+use net::FetchError;
+use serde_json::{Map, Value};
 use stylist::yew::styled_component;
+use surfaces::{LoadStatus, OntologyDrawer, OntologyList};
 use yew::prelude::*;
 
 #[function_component(App)]
@@ -54,6 +52,100 @@ struct WorkspaceProps {
 #[function_component(Workspace)]
 fn workspace(props: &WorkspaceProps) -> Html {
     let surface = use_state(|| Surface::Catalog);
+
+    // Ontology surface state (lifted verbatim from the old explorer.rs), plus the
+    // drawer's type-detail + active-tab.
+    let types = use_state(Vec::<String>::new);
+    let selected_type = use_state(|| Option::<String>::None);
+    let objs = use_state(Vec::<Map<String, Value>>::new);
+    let columns = use_state(Vec::<String>::new);
+    let next = use_state(|| Option::<String>::None);
+    let selected_row = use_state(|| Option::<usize>::None);
+    let status = use_state(|| LoadStatus::Idle);
+    let load_more_error = use_state(|| Option::<String>::None);
+    let loading_more = use_state(|| false);
+    let type_detail = use_state(|| Option::<TypeDetail>::None);
+    let active_tab = use_state(|| AttrValue::from("properties"));
+
+    // On mount: load the ontology's type list.
+    {
+        let types = types.clone();
+        let status = status.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        use_effect_with((), move |()| {
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_types(&net::api_base(), &token).await {
+                    Ok(t) => types.set(t),
+                    Err(FetchError::Unauthorized) => on_logout.emit(()),
+                    Err(e) => status.set(LoadStatus::Error(e.to_string())),
+                }
+            });
+            || ()
+        });
+    }
+
+    // On type selection: reset the table state and load page 1.
+    {
+        let objs = objs.clone();
+        let columns = columns.clone();
+        let next = next.clone();
+        let selected_row = selected_row.clone();
+        let status = status.clone();
+        let load_more_error = load_more_error.clone();
+        let loading_more = loading_more.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let selected_type_dep = (*selected_type).clone();
+        use_effect_with(selected_type_dep, move |ty| {
+            let Some(ty) = ty.clone() else {
+                return;
+            };
+            objs.set(Vec::new());
+            columns.set(Vec::new());
+            next.set(None);
+            selected_row.set(None);
+            status.set(LoadStatus::Loading);
+            load_more_error.set(None);
+            loading_more.set(false);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_page(&net::api_base(), &token, &ty, None, 50).await {
+                    Ok(page) => {
+                        columns.set(loom_ui_core::columns_from_objects(&page.rows));
+                        objs.set(page.rows);
+                        next.set(page.next);
+                        status.set(LoadStatus::Idle);
+                    }
+                    Err(FetchError::Unauthorized) => on_logout.emit(()),
+                    Err(e) => status.set(LoadStatus::Error(e.to_string())),
+                }
+            });
+        });
+    }
+
+    // On type selection: fetch the type detail that feeds the drawer's tabs.
+    {
+        let type_detail = type_detail.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let selected_type_dep = (*selected_type).clone();
+        use_effect_with(selected_type_dep, move |ty| {
+            let Some(ty) = ty.clone() else {
+                return;
+            };
+            type_detail.set(None);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_type_detail(&net::api_base(), &token, &ty).await {
+                    Ok(d) => type_detail.set(Some(d)),
+                    Err(FetchError::Unauthorized) => on_logout.emit(()),
+                    // The detail is best-effort; a fetch failure leaves the tabs empty
+                    // rather than blocking the object table.
+                    Err(_) => {}
+                }
+            });
+        });
+    }
+
     let on_switch = {
         let surface = surface.clone();
         Callback::from(move |s: Surface| surface.set(s))
@@ -63,12 +155,116 @@ fn workspace(props: &WorkspaceProps) -> Html {
         <Button variant={ButtonVariant::Ghost}
             onclick={Callback::from(move |_: MouseEvent| on_logout.emit(()))}>{ "Log out" }</Button>
     };
-    // Every surface is a stub until Tasks 6-7/8-9 replace Ontology and Catalog.
-    let list = html! { <StubView surface={*surface} /> };
+
+    let (list, drawer) = match *surface {
+        Surface::Ontology => {
+            let on_select_type = {
+                let selected_type = selected_type.clone();
+                Callback::from(move |ty: String| selected_type.set(Some(ty)))
+            };
+            let on_row = {
+                let selected_row = selected_row.clone();
+                Callback::from(move |i: usize| selected_row.set(Some(i)))
+            };
+            let on_tab = {
+                let active_tab = active_tab.clone();
+                Callback::from(move |t: AttrValue| active_tab.set(t))
+            };
+            let on_load_more = {
+                let objs = objs.clone();
+                let columns = columns.clone();
+                let next = next.clone();
+                let load_more_error = load_more_error.clone();
+                let loading_more = loading_more.clone();
+                let token = props.token.to_string();
+                let on_logout = props.on_logout.clone();
+                let selected_type = selected_type.clone();
+                Callback::from(move |_: MouseEvent| {
+                    if *loading_more {
+                        return;
+                    }
+                    let Some(ty) = (*selected_type).clone() else {
+                        return;
+                    };
+                    let cursor = (*next).clone();
+                    let (objs, columns, next, load_more_error, loading_more, on_logout) = (
+                        objs.clone(),
+                        columns.clone(),
+                        next.clone(),
+                        load_more_error.clone(),
+                        loading_more.clone(),
+                        on_logout.clone(),
+                    );
+                    let token = token.clone();
+                    loading_more.set(true);
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match net::fetch_page(&net::api_base(), &token, &ty, cursor.as_deref(), 50)
+                            .await
+                        {
+                            Ok(page) => {
+                                let mut merged = (*objs).clone();
+                                merged.extend(page.rows);
+                                columns.set(loom_ui_core::columns_from_objects(&merged));
+                                objs.set(merged);
+                                next.set(page.next);
+                                load_more_error.set(None);
+                                loading_more.set(false);
+                            }
+                            Err(FetchError::Unauthorized) => {
+                                loading_more.set(false);
+                                on_logout.emit(());
+                            }
+                            Err(e) => {
+                                load_more_error.set(Some(e.to_string()));
+                                loading_more.set(false);
+                            }
+                        }
+                    });
+                })
+            };
+
+            let list = html! {
+                <OntologyList
+                    types={(*types).clone()}
+                    selected_type={(*selected_type).clone()}
+                    objs={(*objs).clone()}
+                    columns={(*columns).clone()}
+                    status={(*status).clone()}
+                    has_next={next.is_some()}
+                    selected_row={*selected_row}
+                    loading_more={*loading_more}
+                    load_more_error={(*load_more_error).clone()}
+                    on_select_type={on_select_type}
+                    on_row={on_row}
+                    on_load_more={on_load_more}
+                />
+            };
+            // Drawer contract: only pass a real drawer when a row is selected;
+            // otherwise Html::default() so the Shell hides the drawer region.
+            let drawer = (*selected_row)
+                .and_then(|i| objs.get(i).cloned())
+                .map(|obj| {
+                    html! {
+                        <OntologyDrawer
+                            selected_type={(*selected_type).clone()}
+                            selected_obj={obj}
+                            detail={(*type_detail).clone()}
+                            active_tab={(*active_tab).clone()}
+                            on_tab={on_tab}
+                        />
+                    }
+                })
+                .unwrap_or_default();
+            (list, drawer)
+        }
+        other => (html! { <StubView surface={other} /> }, Html::default()),
+    };
+
     html! {
         <>
             <GlobalStyles />
-            <Shell active={*surface} on_switch={on_switch} search={logout_btn} avatar="DK" list={list} />
+            <Shell active={*surface} on_switch={on_switch} search={logout_btn} avatar="DK"
+                   list={list} drawer={drawer} />
         </>
     }
 }
