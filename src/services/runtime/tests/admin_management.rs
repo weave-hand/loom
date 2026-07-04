@@ -948,3 +948,145 @@ async fn non_admin_bearer_is_403_on_transforms_route() {
     let (status, _) = send(app(cp), req_empty("GET", "/admin/transforms", &alice)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn policy_set_list_clear_roundtrip() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_types(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    let body = r#"{
+        "action": "read",
+        "type": "Widget",
+        "row_filter": {"Compare": {"property": "id", "op": "Eq", "value": {"Int": 1}}},
+        "deny_columns": ["cost"],
+        "mask_columns": ["id"]
+    }"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/roles/admin/policies", &token, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, listed) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let pols = v["policies"].as_array().unwrap();
+    assert_eq!(pols.len(), 1, "{listed}");
+    assert_eq!(pols[0]["action"], "read");
+    assert_eq!(pols[0]["target"]["Type"], "Widget");
+    assert_eq!(pols[0]["row_filter"]["Compare"]["property"], "id");
+    assert_eq!(pols[0]["deny_columns"][0], "cost");
+    assert_eq!(pols[0]["mask_columns"][0], "id");
+    // clear (idempotent), listing empties
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "DELETE",
+            "/admin/roles/admin/policies",
+            &token,
+            r#"{"action":"read","type":"Widget"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, listed) = send(
+        app(cp),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert!(v["policies"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn policy_validation_errors_are_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_types(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    // row_filter that does not decode as a RowFilter
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/policies",
+            &token,
+            r#"{"action":"read","type":"Widget","row_filter":{"Bogus":1}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("invalid RowFilter"), "{body}");
+    // unknown type target -> adapter Validation -> 400
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/policies",
+            &token,
+            r#"{"action":"read","type":"NoSuchType"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // row_filter naming an unknown property -> adapter Validation -> 400
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/roles/admin/policies", &token,
+            r#"{"action":"read","type":"Widget","row_filter":{"Compare":{"property":"nope","op":"Eq","value":{"Int":1}}}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // exactly-one-of-target
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/policies",
+            &token,
+            r#"{"action":"read"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("exactly one of type or table"), "{body}");
+    // unknown role -> 404
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/roles/no-such-role/policies",
+            &token,
+            r#"{"action":"read","type":"Widget"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn policy_table_target_accepted() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    // Table targets skip type/property validation by design (deferred existence).
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/roles/admin/policies", &token,
+            r#"{"action":"read","table":{"schema":"main","name":"widget"},"mask_columns":["name"]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, listed) = send(
+        app(cp),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(
+        v["policies"][0]["target"]["Table"]["name"], "widget",
+        "{listed}"
+    );
+}

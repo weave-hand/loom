@@ -15,9 +15,9 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use control_plane_core::{
     ADMIN_ROLE, Action, ActionDef, ActionName, Auth, ControlPlane, ControlPlaneError, Effect,
-    LinkDef, NewUser, ObjectType, PageReq, PolicyTarget, PropertyDef, RoleId, RunState, RunTrigger,
-    SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun, TypeName,
-    UserSummary,
+    LinkDef, NewUser, ObjectType, PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter,
+    RunState, RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName,
+    TransformRun, TypeName, UserSummary,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -671,6 +671,171 @@ async fn revoke_grant(
     }
 }
 
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct PolicyReq {
+    action: String,
+    /// Exactly one of `type`/`table` must be set.
+    #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
+    table: Option<TableReq>,
+    /// A `RowFilter` in its serde shape, e.g.
+    /// `{"Compare":{"property":"region","op":"Eq","value":{"Text":"emea"}}}`,
+    /// `{"And":[...]}`, `{"Not":{...}}`. Absent/null means no row filter.
+    #[serde(default)]
+    row_filter: Option<serde_json::Value>,
+    #[serde(default)]
+    deny_columns: Vec<String>,
+    #[serde(default)]
+    mask_columns: Vec<String>,
+}
+
+/// Create or replace the fine-grained policy for `(role, action, target)`.
+#[utoipa::path(
+    post, path = "/admin/roles/{role}/policies",
+    params(("role" = String, Path, description = "Role the policy binds")),
+    request_body = PolicyReq,
+    responses(
+        (status = 201, description = "Policy set (upsert by role/action/target)"),
+        (status = 400, description = "action is not read|write, exactly-one-of-target violated, \
+            row_filter does not decode as a RowFilter, or validation failed (unknown type, \
+            unknown row-filter property, caller-predicate-only operator)"),
+        (status = 404, description = "Unknown role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn set_policy_route(
+    State(st): State<AdminState>,
+    Path(role): Path<String>,
+    Json(req): Json<PolicyReq>,
+) -> Response {
+    let action = match parse_action(&req.action) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    let target = match parse_target(req.r#type, req.table) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let row_filter: Option<RowFilter> = match req.row_filter {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("invalid RowFilter: {e}"))
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let policy = Policy {
+        target,
+        row_filter,
+        deny_columns: req.deny_columns,
+        mask_columns: req.mask_columns,
+    };
+    match st.cp.acl().set_policy(&RoleId(role), action, policy).await {
+        Ok(()) => (StatusCode::CREATED, "defined").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// One policy row as rendered on the admin read surface.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct PolicyView {
+    action: String,
+    /// The `PolicyTarget` serde shape, e.g. `{"Type": "Widget"}`.
+    target: serde_json::Value,
+    /// The stored `RowFilter` serde shape, or `null`.
+    row_filter: serde_json::Value,
+    deny_columns: Vec<String>,
+    mask_columns: Vec<String>,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct RolePoliciesResp {
+    policies: Vec<PolicyView>,
+}
+
+/// List a role's fine-grained policies.
+#[utoipa::path(
+    get, path = "/admin/roles/{role}/policies",
+    params(("role" = String, Path, description = "Role whose policies to list")),
+    responses(
+        (status = 200, description = "The role's policies", body = RolePoliciesResp),
+        (status = 404, description = "Unknown role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn list_role_policies(State(st): State<AdminState>, Path(role): Path<String>) -> Response {
+    match st
+        .cp
+        .acl()
+        .list_policies(&RoleId(role), PageReq::unbounded())
+        .await
+    {
+        Ok(page) => {
+            let policies = page
+                .items
+                .into_iter()
+                .map(|rp| PolicyView {
+                    action: rp.action.as_str().to_string(),
+                    target: serde_json::to_value(&rp.policy.target).unwrap_or_default(),
+                    row_filter: rp
+                        .policy
+                        .row_filter
+                        .as_ref()
+                        .map(|f| serde_json::to_value(f).unwrap_or_default())
+                        .unwrap_or(serde_json::Value::Null),
+                    deny_columns: rp.policy.deny_columns,
+                    mask_columns: rp.policy.mask_columns,
+                })
+                .collect();
+            Json(RolePoliciesResp { policies }).into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// Remove the policy for `(role, action, target)` (idempotent).
+///
+/// The body is a `PolicyReq`; only `action` and the target pair are read.
+#[utoipa::path(
+    delete, path = "/admin/roles/{role}/policies",
+    params(("role" = String, Path, description = "Role whose policy to clear")),
+    request_body = PolicyReq,
+    responses(
+        (status = 200, description = "Cleared (idempotent)"),
+        (status = 400, description = "action is not read|write, or exactly-one-of-target violated"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn clear_policy_route(
+    State(st): State<AdminState>,
+    Path(role): Path<String>,
+    Json(req): Json<PolicyReq>,
+) -> Response {
+    let action = match parse_action(&req.action) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    let target = match parse_target(req.r#type, req.table) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    match st
+        .cp
+        .acl()
+        .clear_policy(&RoleId(role), action, &target)
+        .await
+    {
+        Ok(()) => (StatusCode::OK, "cleared").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
 /// List the roles assigned to a user.
 #[utoipa::path(
     get, path = "/admin/users/{username}/roles",
@@ -1107,6 +1272,12 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
             "/admin/roles/:role/grants",
             post(grant).get(list_role_grants).delete(revoke_grant),
         )
+        .route(
+            "/admin/roles/:role/policies",
+            post(set_policy_route)
+                .get(list_role_policies)
+                .delete(clear_policy_route),
+        )
         .route("/admin/roles/:role", delete(delete_role_route))
         .route("/admin/links", post(define_link_route))
         .route("/admin/links/:from/:name", delete(delete_link_route))
@@ -1153,6 +1324,9 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         delete_role_route,
         list_role_grants,
         revoke_grant,
+        set_policy_route,
+        list_role_policies,
+        clear_policy_route,
         user_roles,
         assign_user_role,
         unassign_user_role,
@@ -1178,6 +1352,9 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         PropReq,
         GrantView,
         RoleGrantsResp,
+        PolicyReq,
+        PolicyView,
+        RolePoliciesResp,
         TransformDefView,
         ListTransformsResp,
         TransformRunView,
