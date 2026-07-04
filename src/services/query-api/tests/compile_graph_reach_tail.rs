@@ -393,7 +393,7 @@ fn tail_full_sql_including_cte_is_byte_exact() {
     .unwrap();
     assert_eq!(
         sql,
-        r#"WITH RECURSIVE reach(id, depth) AS (SELECT s."id" AS id, 0 AS depth FROM "main"."person" s WHERE (s."name" = ?) AND (s."active" = ?) UNION SELECT nxt."id" AS id, r.depth + 1 AS depth FROM reach r JOIN "main"."person" cur ON cur."id" = r.id JOIN "main"."person" nxt ON cur."knows_id" = nxt."id" WHERE r.depth < 2 AND (nxt."active" = ?)) SELECT DISTINCT t_1."id", '***' AS "cname" FROM "main"."company" t_1 JOIN "main"."person" t_0 ON t_0."worksat_id" = t_1."id" WHERE t_0."id" IN (SELECT id FROM reach WHERE depth >= 1) AND (t_1."public" = ?) LIMIT 50"#
+        r#"WITH RECURSIVE reach(id, depth) AS (SELECT s."id" AS id, 0 AS depth FROM "main"."person" s WHERE (s."name" = ?) AND (s."active" = ?) UNION SELECT nxt."id" AS id, r.depth + 1 AS depth FROM reach r JOIN "main"."person" cur ON cur."id" = r.id JOIN "main"."person" nxt ON cur."knows_id" = nxt."id" WHERE r.depth < 2 AND (nxt."active" = ?)) SELECT DISTINCT t_1."id", '***' AS "cname" FROM "main"."company" t_1 JOIN "main"."person" t_0 ON t_0."worksat_id" = t_1."id" WHERE t_0."id" IN (SELECT id FROM reach WHERE depth >= 1) AND (t_1."public" = ?) ORDER BY t_1."id" ASC LIMIT 50"#
     );
     assert_eq!(
         params,
