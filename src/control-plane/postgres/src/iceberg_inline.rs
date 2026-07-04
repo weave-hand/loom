@@ -485,6 +485,13 @@ pub async fn inline_append(
     // 4. Lineage, atomic with the rows.
     pg_emit(&mut *conn, &lineage).await?;
 
+    crate::transforms::pg_fire_data_triggers(
+        &mut *conn,
+        std::slice::from_ref(table),
+        Some(lineage.run_id.0),
+    )
+    .await?;
+
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }
@@ -830,6 +837,12 @@ pub async fn write_inline_delta(
 
     set_has_shadow(&mut tx, tid).await?;
     pg_emit(&mut *tx, &lineage).await?;
+    crate::transforms::pg_fire_data_triggers(
+        &mut tx,
+        std::slice::from_ref(table),
+        Some(lineage.run_id.0),
+    )
+    .await?;
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }

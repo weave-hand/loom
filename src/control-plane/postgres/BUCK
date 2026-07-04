@@ -324,6 +324,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "data-triggers",
+    crate = "data_triggers",
+    srcs = ["tests/data_triggers.rs"],
+    crate_root = "tests/data_triggers.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "existence-validation",
     crate = "existence_validation",
     srcs = ["tests/existence_validation.rs"],

@@ -226,6 +226,7 @@ impl TableControlPlane for MemoryControlPlane {
             lineage: self.lineage.clone(),
             catalog: self.catalog.clone(),
             transforms: self.transforms.clone(),
+            ontology: self.ontology.clone(),
             staged: Vec::new(),
             staged_events: Vec::new(),
             staged_tables: Vec::new(),

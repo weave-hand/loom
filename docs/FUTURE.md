@@ -1,6 +1,6 @@
 # Future work register
 
-_As of 4861433b._
+_As of 403f7a6a._
 
 Deliberately-deferred capabilities and tech debt — the "later, if a consumer
 needs it" pile, open deferrals only (promoted/dropped entries are recorded in
@@ -172,8 +172,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Transforms only run SQL today; a registered-plan authoring model (swapping the compute step) and multi-output typed transforms (atomic multi-table commit) are follow-ups.
 - [ ] **Transform-authoring authorization** `{#fut-transform-authoring-auth area:transform status:deferred from:2026-06-14-transform-workers-part1-design pr:#57 spec:-}`
   Transforms read raw tables as trusted pipeline code; governing who may author/run a transform is future work.
-- [ ] **Transform follow-ups (incremental, DAG, Ballista, wider types)** `{#fut-transform-followups area:transform status:deferred from:roadmap-step3 pr:- spec:-}`
-  Watermark/incremental output, DAG/transactional enqueue-downstream, optional Ballista escalation, a wider output type set (canonical scalars only today), and streaming (non-materializing) input scans / scan pushdown for the wire path — transform inputs are collected in worker memory over Flight (bytes hop engine -> worker -> object store), accepted for the migration slice. See [[fut-datafusion-type-coverage]].
+- [ ] **Transform follow-ups (incremental, Ballista, wider types, streaming scans)** `{#fut-transform-followups area:transform status:deferred from:roadmap-step3 pr:- spec:-}`
+  Watermark/incremental output, optional Ballista escalation, a wider output type set (canonical scalars only today), and streaming (non-materializing) input scans / scan pushdown for the wire path — transform inputs are collected in worker memory over Flight (bytes hop engine -> worker -> object store), accepted for the migration slice. Define-time DAG validation for data-triggered transforms landed (`#road-transform-data-triggers`, PR #373). See [[fut-datafusion-type-coverage]].
 - [ ] **Wider DataFusion/DuckLake type coverage** `{#fut-datafusion-type-coverage area:transform status:deferred from:cross-cutting pr:- spec:-}`
   `datafusion-io` supports only a canonical scalar set; other Arrow types (timestamps, dates, decimals, unsigned/8/16-bit ints) error `InferError::Unsupported` and the job Abandons. Extend as pipelines need it.
 - [ ] **Scheduled maintenance jobs** `{#fut-scheduled-jobs area:transform status:deferred from:to-be-planned pr:- spec:-}`

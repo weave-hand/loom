@@ -10,7 +10,7 @@ Postgres, so services program against `core` and tests get a faithful fake. This
 document describes what those concerns can do today, the guarantees they carry,
 and the design decisions behind them.
 
-_As of 666de0c3._
+_As of 403f7a6a._
 
 ## The concern library, transactions, and hardening
 
@@ -310,6 +310,46 @@ transaction) that keeps concurrent engines from double-claiming a due
 definition and skips, rather than double-fires, an occurrence whose claimed
 run fails to submit. Redefining a schedule resets the clock: `next_run_at` is
 recomputed from the redefinition time, not the original definition's cadence.
+
+Slice 3 (`road-transform-data-triggers`, PR #373) makes `TransformDef.on_input_commit`
+live: a def marked `on_input_commit` fires a fresh `TransformRun` whenever a
+commit writes new data to one of its resolved inputs, with no polling. The
+resolution and cycle-detection logic is backend-neutral core: `TriggerNode`
+resolves a def's body (physical tables directly, typed inputs/output via an
+ontology-name → `TableRef` map) to its physical io, and
+`validate_no_trigger_cycle` runs Kahn's algorithm over the edge set ("Y reads
+X's resolved output") so a firing cycle is named and rejected — both adapters
+call it inside `define_transform`, over the *complete* data-triggered set
+(existing defs plus the one being defined), turning a cycle into a `Validation`
+400 before the def is persisted. Postgres serializes concurrent defines under
+`pg_advisory_xact_lock` in the same transaction as the upsert, so two racing
+defines can never each see the other absent and jointly commit a cycle; the
+memory adapter gets the same atomicity from its existing transforms lock. The
+new `Transforms::data_triggered_defs` method returns every `on_input_commit`
+def, name-ordered — the commit-seam matcher's candidate set.
+
+The commit-seam hook itself — `pg_fire_data_triggers` on postgres, mirrored
+inside `MemoryTx::commit` on the fake — runs inside every commit transaction
+that writes genuinely new data: `IcebergTx::commit`, inline append, inline
+delta write, multi-step writes, and overwrite/truncate call it directly; the
+Parquet/additive landing paths reach it through a new `CommitExtras.data_trigger_tables`
+field (applied in `apply_commit_extras`, migration 0033 adds the
+`run_queued_by_transform` partial index its debounce probe uses). Compaction
+and the inline-flush end-cap leave that field empty (or skip the hook) —
+data-preserving rewrites carry no new rows and must never re-fire. For each
+candidate def whose resolved inputs intersect the committed tables, the hook
+locks the def row `FOR UPDATE` in name order (serializing the debounce
+check against a concurrent commit, deadlock-free), re-decodes the body under
+that lock (so the enqueued run freezes whatever body is live at the locked
+instant, not a stale read), and debounces: an existing `Queued` run of that
+def suppresses a new one (at-most-one-pending), while a `Running` run does
+not — a follow-up run may still queue. The committing run itself (if any) is
+excluded from firing even if data-triggered and reading its own output
+(self-trigger suppression, defense in depth against a post-define ontology
+rebind). An undecodable def body is skipped with a `tracing::warn!` rather
+than failing the commit — a poisoned admin artifact must not break unrelated
+ingest or transform commits.
+
 Full behavior, including the `Queued → Running → Succeeded | Failed` state
 machine and the eight-route admin HTTP surface, is documented in
 [transform.md](transform.md).

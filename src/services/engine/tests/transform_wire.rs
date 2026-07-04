@@ -9,8 +9,9 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, LineageEvent, PageReq,
-    RunId, SnapshotId, TableControlPlane, TableRef,
+    Catalog, ColumnSpec, ControlPlane, DataFile, DatasetRef, EventType, LineageEvent, OutputMode,
+    PageReq, RunId, RunState, RunTrigger, SnapshotId, TableControlPlane, TableRef, TransformBody,
+    TransformDef, TransformName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -194,6 +195,85 @@ async fn commit_transform_appends_and_emits_lineage() {
         serde_json::json!({ "sql": "SELECT id FROM src" }),
         "lineage payload round-trips byte-identically"
     );
+}
+
+/// Data-trigger e2e: a downstream physical def whose input is `t_out` is
+/// defined before the transform runs; `CommitTransform`'s commit seam (inside
+/// `IcebergTx::commit`) matches the committed output against the
+/// data-triggered set and queues a run for the downstream def.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commit_transform_fires_downstream_data_trigger() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let client = GrpcQueueClient::connect(&eng.sock).await.expect("connect");
+
+    let write = write_store(&wh_str);
+    let out = tref("main", "t_out");
+    let src = tref("main", "src");
+
+    // Downstream data-triggered def: fires when the transform commits t_out.
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName("downstream".into()),
+            body: TransformBody::Physical {
+                inputs: vec![out.clone()],
+                output: tref("main", "downstream_out"),
+                sql: "select 1".into(),
+                output_mode: OutputMode::Append,
+            },
+            schedule: None,
+            on_input_commit: true,
+        })
+        .await
+        .unwrap();
+
+    let files = write_files(&write, &out, &[1, 2, 3]).await;
+    let ev = event(std::slice::from_ref(&src), &out, "SELECT id FROM src");
+
+    let snap = client
+        .commit_transform(
+            "main".into(),
+            "t_out".into(),
+            &columns(),
+            &files,
+            &ev,
+            false,
+            None,
+        )
+        .await
+        .expect("commit_transform")
+        .expect("snapshot id");
+
+    let ice = IcebergCatalog::new(pool);
+    let cur = ice.current_snapshot(&out).await.expect("current snapshot");
+    assert_eq!(cur.id.0, snap, "current snapshot is the committed one");
+
+    let runs = cp
+        .transforms()
+        .list_runs(
+            Some(&TransformName("downstream".into())),
+            PageReq::default(),
+        )
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(runs.len(), 1, "downstream def has exactly one run");
+    assert_eq!(runs[0].trigger, RunTrigger::DataTrigger);
+    assert_eq!(runs[0].state, RunState::Queued);
 }
 
 /// Replace path: append once, then `replace=true` with a new file. The live set

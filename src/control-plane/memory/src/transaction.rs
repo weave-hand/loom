@@ -5,7 +5,8 @@ use parking_lot::Mutex;
 use async_trait::async_trait;
 use control_plane_core::{
     ColumnSpec, ControlPlaneError, DataFile, JobId, LineageEvent, NewJob, Result, RunOutcome,
-    SnapshotId, TableRef, TableTx, Tx,
+    RunState, RunTrigger, SnapshotId, TableRef, TableTx, TransformName, TransformRun, TriggerNode,
+    Tx,
 };
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -13,6 +14,7 @@ use uuid::Uuid;
 use crate::Versioned;
 use crate::catalog::CatalogState;
 use crate::lineage::LineageState;
+use crate::ontology::OntologyState;
 use crate::transforms::TransformsState;
 use crate::{MemoryControlPlane, Row};
 
@@ -30,6 +32,7 @@ pub(crate) struct MemoryTx {
     pub(crate) lineage: Arc<Mutex<LineageState>>,
     pub(crate) catalog: Arc<Mutex<CatalogState>>,
     pub(crate) transforms: Arc<Mutex<TransformsState>>,
+    pub(crate) ontology: Arc<Mutex<OntologyState>>,
     pub(crate) staged: Vec<(Uuid, NewJob)>,
     pub(crate) staged_events: Vec<LineageEvent>,
     pub(crate) staged_tables: Vec<(TableRef, Vec<ColumnSpec>)>,
@@ -61,6 +64,33 @@ impl Tx for MemoryTx {
             ));
         }
 
+        // Ontology snapshot for data-trigger resolution, taken and DROPPED
+        // before the commit locks. Invariant (deadlock-freedom): the
+        // ontology lock is never acquired while any of rows/lineage/catalog/
+        // transforms is held — `define_type` holds ontology THEN lineage,
+        // i.e. ontology is only ever taken FIRST; no path takes any of the
+        // four then ontology. This snapshot keeps it that way. Staleness
+        // across this instant is immaterial (postgres reads per-statement
+        // inside its tx).
+        let type_tables: std::collections::HashMap<String, TableRef> = self
+            .ontology
+            .lock()
+            .types
+            .iter()
+            .map(|(n, t)| (n.clone(), t.table.clone()))
+            .collect();
+        // The committed new-data table set (appends + replaces; compactions
+        // and bare creates fire nothing), captured before the apply loop
+        // consumes `staged_writes`.
+        let written: Vec<TableRef> = self
+            .staged_writes
+            .iter()
+            .map(|w| match w {
+                StagedWrite::Append(t, _) | StagedWrite::Replace(t, _) => t.clone(),
+            })
+            .collect();
+        let mut fired = false;
+
         let staged_any = !self.staged.is_empty();
         let mut last_snapshot: Option<i64> = None;
         {
@@ -70,9 +100,12 @@ impl Tx for MemoryTx {
             // queue, lineage, catalog, AND transforms — is ever observable, faithfully
             // modelling the postgres single-`sqlx::Transaction` guarantee. Lock order is
             // rows->lineage->catalog->transforms (transforms LAST — Task 6's success
-            // mark; `submit_run` takes rows then transforms, agreeing with this
-            // ordering); readers each take only ONE of these locks (no reader takes
-            // two), so holding all four here cannot deadlock.
+            // mark, and slice 3's data-trigger enqueue below, both need it last;
+            // `submit_run` takes rows then transforms, agreeing with this ordering);
+            // readers each take only ONE of these locks (no reader takes two), so
+            // holding all four here cannot deadlock. The ontology snapshot above is
+            // taken and dropped BEFORE this block, so ontology is never held
+            // alongside any of the four — see the invariant note there.
             let mut rows = self.rows.lock();
             let mut lin = self.lineage.lock();
             let mut cat = self.catalog.lock();
@@ -251,9 +284,72 @@ impl Tx for MemoryTx {
                     .ok_or_else(|| ControlPlaneError::NotFound(format!("run {rid}")))?;
                 crate::transforms::apply_outcome(run, RunOutcome::Succeeded { snapshot_id: s });
             }
+
+            // --- data triggers (slice 3): mirror pg_fire_data_triggers ---
+            // For each `on_input_commit` def (name-ordered, matching the
+            // postgres lock-order-by-name intent even though the memory
+            // adapter has no per-row lock to take) whose ontology-resolved
+            // inputs intersect `written`: skip the committing run's own
+            // transform (self-skip), skip if a `Queued` run of that def
+            // already exists (debounce; `Running` does not suppress), then
+            // enqueue a fresh `DataTrigger` run with the def's CURRENT body
+            // (re-read from `transforms.defs`, so a redefine racing this
+            // commit is reflected, mirroring postgres's `for update` re-read).
+            if !written.is_empty() {
+                let skip: Option<String> = self
+                    .staged_run_success
+                    .and_then(|rid| transforms.runs.get(&rid))
+                    .and_then(|r| r.transform.as_ref().map(|t| t.0.clone()));
+                let mut names: Vec<String> = transforms
+                    .defs
+                    .iter()
+                    .filter(|(_, d)| d.on_input_commit)
+                    .map(|(n, _)| n.clone())
+                    .collect();
+                names.sort_unstable();
+                for name in names {
+                    if skip.as_deref() == Some(name.as_str()) {
+                        continue;
+                    }
+                    let Some((body, inputs)) = transforms.defs.get(&name).map(|def| {
+                        let node = TriggerNode::resolve(&def.name, &def.body, &type_tables);
+                        (def.body.clone(), node.inputs)
+                    }) else {
+                        continue; // deleted since the candidate scan
+                    };
+                    if !inputs.iter().any(|t| written.contains(t)) {
+                        continue;
+                    }
+                    let pending = transforms.runs.values().any(|r| {
+                        r.state == RunState::Queued
+                            && r.transform.as_ref().is_some_and(|t| t.0 == name)
+                    });
+                    if pending {
+                        continue;
+                    }
+                    let run_id = Uuid::new_v4();
+                    MemoryControlPlane::insert(&mut rows, body.to_job(run_id));
+                    transforms.runs.insert(
+                        run_id,
+                        TransformRun {
+                            run_id,
+                            transform: Some(TransformName(name)),
+                            trigger: RunTrigger::DataTrigger,
+                            state: RunState::Queued,
+                            body,
+                            queued_at: time::OffsetDateTime::now_utc(),
+                            started_at: None,
+                            finished_at: None,
+                            snapshot_id: None,
+                            error: None,
+                        },
+                    );
+                    fired = true;
+                }
+            }
         }
 
-        if staged_any {
+        if staged_any || fired {
             self.notify.notify_waiters();
         }
         Ok(last_snapshot.map(SnapshotId))

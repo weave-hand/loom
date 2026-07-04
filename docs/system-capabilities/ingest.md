@@ -2,7 +2,7 @@
 
 The ingest service (`src/services/ingest/`) is loom's landing edge: it accepts Arrow data over plain HTTP, validates it against an optional or ontology-derived model, and persists it as an Iceberg snapshot with lineage committed atomically in one Postgres transaction. It covers three concerns — the raw dataset landing path (endpoint, IPC decode, materializer, DataFusion multi-file Parquet write), the transactional snapshot-commit + lineage primitive it rides on, and the typed path (dataset→model binding, model inference on ingest, and per-value constraints) that turns landed rows into governed, serveable objects.
 
-_As of 4861433b._
+_As of 403f7a6a._
 
 ## Landing path
 
@@ -10,7 +10,7 @@ Raw landing is `POST /datasets/{schema}/{table}` with an Arrow IPC stream body (
 
 Schema resolution follows the authoritative-schema rule: when a model is supplied the model's columns become the physical schema and inference is not consulted; without one, `datafusion_io::infer_columns` maps the Arrow schema to loom logical types. The inference map is deliberately small — `boolean`, `integer` (Int32), `long` (Int64), `double` (Float64), and `string` (Utf8/LargeUtf8) — and an unmapped Arrow type is a deterministic error, never a guess.
 
-The Iceberg landing entrypoint routes by in-memory batch size: small requests inline as mirror-only typed rows (at/above a live-inline-byte threshold the write also enqueues a `flush_table` job), while large requests write real Parquet. Both branches emit lineage atomically and return the loom mirror snapshot id.
+The Iceberg landing entrypoint routes by in-memory batch size: small requests inline as mirror-only typed rows (at/above a live-inline-byte threshold the write also enqueues a `flush_table` job), while large requests write real Parquet. Both branches emit lineage atomically and return the loom mirror snapshot id. Both also fire any data-triggered transforms (`TransformDef.on_input_commit`) reading the landed table, in the same commit transaction — see [control-plane.md](control-plane.md#transforms).
 
 The Parquet write itself is the DataFusion compute path, now hosted in the shared `datafusion-io` crate (`write_dataset`): batches register as an in-memory table in a per-call `SessionContext`, a pure size-estimate function derives the partition count (estimated in-memory bytes × a compression factor against a target file size, clamped to a max), and DataFusion repartitions and writes N Snappy Parquet files directly to object storage — no in-memory buffering, no assumed file names (the prefix is listed and sorted). Per-file `DataFile` stats are extracted from each footer with min/max merged across all row groups, preserving pruning on multi-row-group files, and all N files register in a single `append_files` call inside the atomic commit. Defaults target ~128 MiB files (max 64) and are tunable via `WriteConfig` / `LOOM_WRITE_*` environment overlays. The compute is identity today — the seam plus high-throughput partitioned writes are the deliverable; casts and projection live with the transform work.
 

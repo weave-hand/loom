@@ -453,6 +453,8 @@ pub async fn write_steps(
         register_files(&mut tx, &s.table, &s.columns, &s.files, mode, at).await?;
     }
     crate::lineage::pg_emit(&mut *tx, &lineage).await?;
+    let written: Vec<TableRef> = staged.iter().map(|s| s.table.clone()).collect();
+    crate::transforms::pg_fire_data_triggers(&mut tx, &written, Some(lineage.run_id.0)).await?;
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }
@@ -620,6 +622,7 @@ async fn land_parquet(
         batches,
         CommitExtras {
             lineage: Some(&lineage),
+            data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
         },
     )
@@ -668,6 +671,7 @@ pub async fn overwrite_parquet_snapshot(
             lineage,
             overwrite: true,
             jobs: &rebuild_jobs,
+            data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
         },
     )
@@ -702,6 +706,12 @@ async fn overwrite_truncate(
         // this tx commits, so a rolled-back truncate enqueues nothing.
         crate::queue::pg_insert_if_absent(&mut *conn, job).await?;
     }
+    crate::transforms::pg_fire_data_triggers(
+        conn,
+        std::slice::from_ref(table),
+        lineage.map(|ev| ev.run_id.0),
+    )
+    .await?;
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }

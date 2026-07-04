@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select transform from transforms.run where run_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "transform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "transform"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "9910281953469f34e29127b38c312feb314f02fea78360254b5c51cf6506b17c"
+}

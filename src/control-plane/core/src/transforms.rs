@@ -10,7 +10,11 @@
 //! Slice 1 delivered definitions + runs only, rejecting both `schedule` and
 //! `on_input_commit`. Slice 2 makes `schedule` live: [`validate_cron`] and
 //! [`next_cron_occurrence`] back real cron validation/scheduling in
-//! [`validate_transform_def`]. `on_input_commit` (slice 3) is still rejected.
+//! [`validate_transform_def`]. Slice 3 makes `on_input_commit` live:
+//! [`TriggerNode`] resolves a def's physical io and
+//! [`validate_no_trigger_cycle`] rejects a firing cycle among the
+//! data-triggered set; adapters run that check at define-time (with the
+//! existing def set + ontology), not this module.
 
 use std::str::FromStr;
 
@@ -101,7 +105,8 @@ impl TransformBody {
 
 /// A named transform definition. `schedule`, when set, is a cron expression
 /// validated by [`validate_transform_def`] (slice 2, live). `on_input_commit`
-/// (slice 3) is carried in the shape but still rejected.
+/// (slice 3, live) marks the def as firing on a commit to one of its inputs;
+/// adapter-side define-time validation rejects trigger cycles.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TransformDef {
     pub name: TransformName,
@@ -250,7 +255,9 @@ pub fn next_cron_occurrence(expr: &str, after: OffsetDateTime) -> Result<OffsetD
 
 /// Definition validation, shared by both adapters. `schedule` (slice 2) is
 /// live: a valid cron expression is accepted, an invalid one rejected.
-/// `on_input_commit` (slice 3) is still carried in the shape but rejected.
+/// `on_input_commit` (slice 3) is live too; cycle validation among the
+/// data-triggered set is adapter-side (it needs the existing def set and the
+/// ontology to resolve typed bodies), not here.
 pub fn validate_transform_def(def: &TransformDef) -> Result<()> {
     if def.name.0.is_empty() {
         return Err(ControlPlaneError::Validation(
@@ -265,12 +272,102 @@ pub fn validate_transform_def(def: &TransformDef) -> Result<()> {
     if let Some(expr) = &def.schedule {
         validate_cron(expr)?;
     }
-    if def.on_input_commit {
-        return Err(ControlPlaneError::Validation(
-            "data-triggered transforms are not supported yet (slice 3)".into(),
-        ));
-    }
     Ok(())
+}
+
+/// A data-triggered def's physical io, resolved for cycle validation and
+/// commit-seam matching.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TriggerNode {
+    pub name: String,
+    pub inputs: Vec<TableRef>,
+    /// `None` when the def's output does not resolve (e.g. a deleted
+    /// ontology type): an unresolvable output can never match a commit, so
+    /// it contributes no edge.
+    pub output: Option<TableRef>,
+}
+
+impl TriggerNode {
+    /// Resolve `body` to physical io given `types` (ontology type name →
+    /// backing table). Typed names absent from `types` contribute nothing:
+    /// a vanished binding cannot match a commit, so it forms no edge.
+    #[must_use]
+    pub fn resolve(
+        name: &TransformName,
+        body: &TransformBody,
+        types: &std::collections::HashMap<String, TableRef>,
+    ) -> Self {
+        let (inputs, output) = match body {
+            TransformBody::Physical { inputs, output, .. } => {
+                (inputs.clone(), Some(output.clone()))
+            }
+            TransformBody::Typed { inputs, output, .. } => (
+                inputs
+                    .iter()
+                    .filter_map(|t| types.get(t).cloned())
+                    .collect(),
+                types.get(output).cloned(),
+            ),
+        };
+        Self {
+            name: name.0.clone(),
+            inputs,
+            output,
+        }
+    }
+}
+
+/// Reject a firing cycle among data-triggered defs. Edge X → Y iff Y reads
+/// X's resolved output (a def reading its own output is a self-cycle).
+/// `nodes` is the complete data-triggered set INCLUDING the candidate being
+/// defined. Kahn's algorithm: repeatedly remove zero-in-degree nodes; any
+/// remainder is cyclic and is named in the error.
+pub fn validate_no_trigger_cycle(nodes: &[TriggerNode]) -> Result<()> {
+    use std::collections::HashMap;
+    let mut indegree: HashMap<&str, usize> = nodes.iter().map(|n| (n.name.as_str(), 0)).collect();
+    let mut succs: HashMap<&str, Vec<&str>> = HashMap::new();
+    for from in nodes {
+        let Some(out) = &from.output else { continue };
+        for to in nodes.iter().filter(|to| to.inputs.contains(out)) {
+            succs
+                .entry(from.name.as_str())
+                .or_default()
+                .push(to.name.as_str());
+            if let Some(d) = indegree.get_mut(to.name.as_str()) {
+                *d += 1;
+            }
+        }
+    }
+    let mut ready: Vec<&str> = indegree
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(n, _)| *n)
+        .collect();
+    let mut removed = 0usize;
+    while let Some(n) = ready.pop() {
+        removed += 1;
+        for s in succs.get(n).map(Vec::as_slice).unwrap_or_default() {
+            if let Some(d) = indegree.get_mut(s) {
+                *d -= 1;
+                if *d == 0 {
+                    ready.push(s);
+                }
+            }
+        }
+    }
+    if removed == nodes.len() {
+        return Ok(());
+    }
+    let mut cyclic: Vec<&str> = indegree
+        .iter()
+        .filter(|(_, d)| **d > 0)
+        .map(|(n, _)| *n)
+        .collect();
+    cyclic.sort_unstable();
+    Err(ControlPlaneError::Validation(format!(
+        "data-trigger cycle among transforms: {}",
+        cyclic.join(", ")
+    )))
 }
 
 /// The transforms concern: named definitions and their runs.
@@ -322,4 +419,8 @@ pub trait Transforms {
     /// Derived schedule state: when the def would next fire (`None` when
     /// unscheduled). `NotFound` for an unknown transform.
     async fn next_run_at(&self, name: &TransformName) -> Result<Option<OffsetDateTime>>;
+
+    /// Every definition with `on_input_commit` set, name-ordered — the
+    /// commit-seam matcher's candidate set.
+    async fn data_triggered_defs(&self) -> Result<Vec<TransformDef>>;
 }
