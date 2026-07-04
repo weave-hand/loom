@@ -47,6 +47,12 @@ spec:
             # emptyDir volume.
             - name: LOOM_ENGINE_SOCKET
               value: {{ .Values.engine.socketPath | quote }}
+            {{- if .Values.ui.enabled }}
+            # Serve the image's wasm UI bundle as the SPA fallback (same origin
+            # as the API; real routes take precedence).
+            - name: LOOM_UI_DIR
+              value: {{ .Values.ui.dir | quote }}
+            {{- end }}
             {{- include "loom.dbEnv" . | nindent 12 }}
             {{- include "loom.migrateOnBootEnv" . | nindent 12 }}
           readinessProbe:
@@ -68,6 +74,13 @@ spec:
               mountPath: /tmp
             - name: engine-sock
               mountPath: {{ .Values.engine.socketDir | quote }}
+            {{- if and .Values.ui.enabled .Values.ui.apiBase }}
+            # Override the bundle's shipped config.js so the SPA prepends
+            # ui.apiBase to every API call (path-prefix / detached serving).
+            - name: ui-config
+              mountPath: {{ printf "%s/config.js" .Values.ui.dir | quote }}
+              subPath: config.js
+            {{- end }}
           {{- with .Values.queryApi.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -130,6 +143,11 @@ spec:
         # Shared socket dir for the query-api ⇄ engine-sidecar Flight UDS.
         - name: engine-sock
           emptyDir: {}
+        {{- if and .Values.ui.enabled .Values.ui.apiBase }}
+        - name: ui-config
+          configMap:
+            name: {{ include "loom.fullname" . }}-ui-config
+        {{- end }}
       {{- with .Values.queryApi.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

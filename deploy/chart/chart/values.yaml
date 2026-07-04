@@ -63,6 +63,18 @@ engine:
 # Service lock-timeout (ms) -> LOOM_LOCK_TIMEOUT_MS.
 lockTimeoutMs: 5000
 
+# --- Web UI ---------------------------------------------------------------------
+# The query-api image ships the wasm UI bundle at `dir`; when enabled the
+# container serves it as the SPA fallback (LOOM_UI_DIR), same-origin with the
+# API. apiBase overrides the bundle's config.js (a ConfigMap mounted over it):
+# set it when the UI is served under a path prefix (e.g. "/app/loom" behind a
+# rewriting route) or from a detached API origin; the SPA prepends it to every
+# API call. Empty keeps the shipped same-origin default.
+ui:
+  enabled: true
+  dir: /usr/share/loom/ui
+  apiBase: ""
+
 # --- Schema migrations ---------------------------------------------------------
 # How loom's control-plane schema (src/control-plane/postgres/migrations) is
 # applied to the managed Postgres. A fresh install must migrate before the

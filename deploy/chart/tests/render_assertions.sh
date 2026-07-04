@@ -72,4 +72,20 @@ qapi_deploy "$OUT" | hasnt 'podAffinity'
 # egress NetworkPolicy to the S3 port
 allow_s3 "$OUT" | has 'port: 9000'
 
+echo "== ui default: LOOM_UI_DIR on query-api, no config.js override =="
+OUT="$(helm template loom "$CHART")"
+qapi_deploy "$OUT" | has 'LOOM_UI_DIR'
+echo "$OUT" | hasnt 'ui-config'
+
+echo "== ui.apiBase: ConfigMap config.js + subPath mount over the bundle =="
+OUT="$(helm template loom "$CHART" --set ui.apiBase=/app/loom)"
+echo "$OUT" | has 'window.LOOM_CONFIG = { apiBase: "/app/loom" };'
+qapi_deploy "$OUT" | has 'subPath: config.js'
+qapi_deploy "$OUT" | has 'mountPath: "/usr/share/loom/ui/config.js"'
+
+echo "== ui.enabled=false: no UI env, no override even with apiBase =="
+OUT="$(helm template loom "$CHART" --set ui.enabled=false --set ui.apiBase=/x)"
+echo "$OUT" | hasnt 'LOOM_UI_DIR'
+echo "$OUT" | hasnt 'ui-config'
+
 echo "ALL ASSERTIONS PASSED"

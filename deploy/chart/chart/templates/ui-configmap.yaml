@@ -1,0 +1,15 @@
+{{- if and .Values.ui.enabled .Values.ui.apiBase }}
+# Overrides the UI bundle's shipped config.js (same-origin default) so the SPA
+# prepends ui.apiBase to every API call. Mounted subPath over the file inside
+# LOOM_UI_DIR in the query-api container.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "loom.fullname" . }}-ui-config
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: query-api
+data:
+  config.js: |
+    window.LOOM_CONFIG = { apiBase: {{ .Values.ui.apiBase | quote }} };
+{{- end }}
