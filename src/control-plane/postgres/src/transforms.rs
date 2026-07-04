@@ -5,6 +5,7 @@ use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, RunTrigger,
     TransformBody, TransformDef, TransformName, TransformRun, Transforms, validate_transform_def,
 };
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::queue::pg_insert;
@@ -297,5 +298,24 @@ impl Transforms for PgControlPlane {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Page::from_full(items))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn claim_due_schedules(
+        &self,
+        _now: OffsetDateTime,
+        _limit: u32,
+    ) -> Result<Vec<TransformDef>> {
+        Err(ControlPlaneError::Backend(
+            "claim_due_schedules: postgres schedule storage lands in the next commit (migration 0032)".into(),
+        ))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn next_run_at(&self, _name: &TransformName) -> Result<Option<OffsetDateTime>> {
+        Err(ControlPlaneError::Backend(
+            "next_run_at: postgres schedule storage lands in the next commit (migration 0032)"
+                .into(),
+        ))
     }
 }

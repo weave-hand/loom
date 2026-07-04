@@ -308,4 +308,18 @@ pub trait Transforms {
         transform: Option<&TransformName>,
         page: PageReq,
     ) -> Result<Page<TransformRun>>;
+
+    /// Atomically claim schedule-due definitions: `schedule` set and
+    /// `next_run_at <= now`, at most `limit`, advancing each claimed def's
+    /// `next_run_at` to the next occurrence after `now`. Concurrent claimers
+    /// never both receive the same due def. A claimed occurrence that the
+    /// caller fails to submit is SKIPPED, not retried (at-most-once).
+    async fn claim_due_schedules(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> Result<Vec<TransformDef>>;
+    /// Derived schedule state: when the def would next fire (`None` when
+    /// unscheduled). `NotFound` for an unknown transform.
+    async fn next_run_at(&self, name: &TransformName) -> Result<Option<OffsetDateTime>>;
 }

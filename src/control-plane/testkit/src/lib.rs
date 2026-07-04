@@ -4122,17 +4122,85 @@ where
     );
 
     // slice-1 rejections + typed validation
-    let sched = TransformDef {
-        schedule: Some("* * * * *".into()),
+    // Schedules (slice 2): invalid cron rejected; valid cron accepted with
+    // derived next_run_at in the future; unscheduling clears it.
+    // NOTE: capture `before` BEFORE the define — next_cron_occurrence is
+    // strictly-after, so nra > define_now >= before can never flake.
+    let before = time::OffsetDateTime::now_utc();
+    let bad_cron = TransformDef {
+        schedule: Some("not a cron".into()),
         ..def.clone()
     };
     assert!(
         matches!(
-            cp.define_transform(sched).await,
+            cp.define_transform(bad_cron).await,
             Err(ControlPlaneError::Validation(_))
         ),
-        "schedule rejected until slice 2"
+        "invalid cron rejected"
     );
+    let scheduled = TransformDef {
+        name: TransformName("nightly".into()),
+        body: def.body.clone(),
+        schedule: Some("0 3 * * *".into()),
+        on_input_commit: false,
+    };
+    cp.define_transform(scheduled.clone()).await.unwrap();
+    let nra = cp
+        .next_run_at(&scheduled.name)
+        .await
+        .unwrap()
+        .expect("scheduled => Some");
+    assert!(nra > before, "next_run_at is in the future");
+    assert_eq!(
+        cp.next_run_at(&def.name).await.unwrap(),
+        None,
+        "unscheduled => None"
+    );
+    assert!(matches!(
+        cp.next_run_at(&TransformName("nope".into())).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // Claim: not due yet -> empty; due (probe far in the future) -> claimed
+    // exactly once with next_run_at advanced past the probe; immediate
+    // re-claim at the same probe -> empty (advance happened atomically).
+    let none_due = cp.claim_due_schedules(before, 32).await.unwrap();
+    assert!(none_due.is_empty(), "nothing due before next_run_at");
+    let probe = before + time::Duration::days(2);
+    let claimed = cp.claim_due_schedules(probe, 32).await.unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].name, scheduled.name);
+    let advanced = cp
+        .next_run_at(&scheduled.name)
+        .await
+        .unwrap()
+        .expect("still scheduled");
+    assert!(
+        advanced > probe,
+        "claim advanced next_run_at past the probe"
+    );
+    assert!(
+        cp.claim_due_schedules(probe, 32).await.unwrap().is_empty(),
+        "claim-once"
+    );
+
+    // Concurrent claimers: exactly one wins the single due def.
+    let probe2 = advanced + time::Duration::days(2);
+    let (a, b) = tokio::join!(
+        cp.claim_due_schedules(probe2, 32),
+        cp.claim_due_schedules(probe2, 32)
+    );
+    let total = a.unwrap().len() + b.unwrap().len();
+    assert_eq!(total, 1, "concurrent claims never double-fire");
+
+    // Unschedule clears the derived state.
+    let unscheduled = TransformDef {
+        schedule: None,
+        ..scheduled.clone()
+    };
+    cp.define_transform(unscheduled).await.unwrap();
+    assert_eq!(cp.next_run_at(&scheduled.name).await.unwrap(), None);
+
     let trig = TransformDef {
         on_input_commit: true,
         ..def.clone()
@@ -4177,7 +4245,7 @@ where
             .iter()
             .map(|d| d.name.0.as_str())
             .collect::<Vec<_>>(),
-        vec!["daily", "typed"]
+        vec!["daily", "nightly", "typed"]
     );
     assert!(page.next.is_none());
 
