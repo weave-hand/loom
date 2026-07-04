@@ -4184,14 +4184,17 @@ where
         "claim-once"
     );
 
-    // Concurrent claimers: exactly one wins the single due def.
+    // Two claim requests for the same due def: exactly one wins. (For the
+    // in-process memory adapter join! serializes — the leg's real
+    // concurrency value is against backends with genuine await points, like
+    // postgres's SKIP LOCKED transaction.)
     let probe2 = advanced + time::Duration::days(2);
     let (a, b) = tokio::join!(
         cp.claim_due_schedules(probe2, 32),
         cp.claim_due_schedules(probe2, 32)
     );
     let total = a.unwrap().len() + b.unwrap().len();
-    assert_eq!(total, 1, "concurrent claims never double-fire");
+    assert_eq!(total, 1, "claims for the same due def never both succeed");
 
     // Unschedule clears the derived state.
     let unscheduled = TransformDef {
