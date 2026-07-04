@@ -29,7 +29,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::builder::{Float32Builder, ListBuilder};
-use arrow_array::{BooleanArray, Float32Array, Float64Array, Int64Array, RecordBatch, StringArray};
+use arrow_array::{
+    BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use control_plane_core::{
@@ -145,11 +147,51 @@ pub fn employees_batch() -> RecordBatch {
 /// `tools/dev-up.sh` emitter writes these bytes to a file and `curl`s them
 /// into `POST /models/employees`.
 pub fn employees_ipc() -> Vec<u8> {
-    let batch = employees_batch();
+    batch_to_ipc(&employees_batch())
+}
+
+/// The demo `departments` object table: one row per department the
+/// [`employees_batch`] `department` column references (`Research`,
+/// `Engineering`, `Mathematics`, `Networking`), keyed by `name`. Columns
+/// (`name: string` identity, `building: string`, `floor: integer`) exercise the
+/// `integer` (Int32) logical type the employees table does not. Backs the
+/// `tools/dev-up.sh` link demo: an `employees.department -> departments`
+/// foreign-key link (`employees.department` = `departments.name`) so a freshly
+/// booted stack can show governed link traversal, not just a flat list.
+pub fn departments_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("name", DataType::Utf8, false),
+        Field::new("building", DataType::Utf8, false),
+        Field::new("floor", DataType::Int32, false),
+    ]));
+    let name = StringArray::from(vec!["Research", "Engineering", "Mathematics", "Networking"]);
+    let building = StringArray::from(vec![
+        "Babbage Hall",
+        "Hopper Building",
+        "Noether Wing",
+        "Perlman Annex",
+    ]);
+    let floor = Int32Array::from(vec![3, 1, 2, 4]);
+    RecordBatch::try_new(
+        schema,
+        vec![Arc::new(name), Arc::new(building), Arc::new(floor)],
+    )
+    .expect("departments batch")
+}
+
+/// [`departments_batch`] encoded as an Arrow IPC **stream** (the ingest wire
+/// form, like [`employees_ipc`]).
+pub fn departments_ipc() -> Vec<u8> {
+    batch_to_ipc(&departments_batch())
+}
+
+/// Encode one batch as an Arrow IPC **stream** (what `datafusion_io::decode_ipc`
+/// / `land_model` expect on the ingest wire). Shared by the demo `*_ipc` helpers.
+fn batch_to_ipc(batch: &RecordBatch) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut writer = StreamWriter::try_new(&mut buf, &batch.schema()).expect("ipc writer");
-        writer.write(&batch).expect("ipc write batch");
+        writer.write(batch).expect("ipc write batch");
         writer.finish().expect("ipc finish");
     }
     buf
