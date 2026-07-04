@@ -27,7 +27,9 @@
   Claude-Session: https://claude.ai/code/session_01KrF8cSY7q1odAy9AW6aAnd
   ```
 
-**Spec refinements to record in the PR body:** (1) skip-not-double-fire crash semantics above; (2) redefine resets the schedule clock; (3) `next_run_at` exposed via a separate trait read instead of widening `TransformDef`; (4) scheduler-loop e2e is the memory-adapter tick test the spec names — no additional fixture e2e of the timer plumbing (the loop body is `tick()`, which is fully tested; the timer is `tokio::time::interval`).
+**Spec refinements to record in the PR body:** (1) skip-not-double-fire crash semantics above; (2) redefine resets the schedule clock; (3) `next_run_at` exposed via a separate trait read instead of widening `TransformDef`; (4) scheduler-loop e2e is the memory-adapter tick test the spec names — no additional fixture e2e of the timer plumbing (the loop body is `tick()`, which is fully tested; the timer is `tokio::time::interval`); (5) postgres claim is `SELECT … FOR UPDATE SKIP LOCKED` + per-row `UPDATE` in one transaction rather than the spec's "`UPDATE … RETURNING`-style" — atomically equivalent (the next occurrence must be computed in Rust).
+
+**Push discipline:** do NOT `git push` between Tasks 1 and 6 — prek's `buck2-build`/`buck2-test` hooks are pre-push stage and run the full tree, which is deliberately red at test level during the inter-task window. Push only after Task 6's full gate (the controller pushes).
 
 ---
 
@@ -69,6 +71,10 @@ fn next_cron_occurrence_is_deterministic_utc() {
     // Strictly after: from exactly 01:00, the next hourly fire is 02:00.
     let next2 = next_cron_occurrence("0 * * * *", next).unwrap();
     assert_eq!(next2, datetime!(2026-01-01 02:00 UTC));
+    // A daily expression catches whole-hour timezone-offset bugs that an
+    // hourly one cannot (hourly at :00 is invariant under hour offsets).
+    let daily = next_cron_occurrence("0 3 * * *", after).unwrap();
+    assert_eq!(daily, datetime!(2026-01-01 03:00 UTC));
 }
 
 #[test]
@@ -86,7 +92,7 @@ fn valid_schedule_now_passes_definition_validation() {
 }
 ```
 
-Also UPDATE the existing `slice1_rejects_schedule_and_data_trigger` test: its schedule-rejection leg is now wrong — rename the fn to `rejects_data_trigger_until_slice_3` and keep only the `on_input_commit` leg (the schedule legs are covered by the new test above). Check whether `time` macros are already available to this test target (the `datetime!` macro needs the `time` crate's `macros` feature — check `third-party/BUCK`'s time target features; if `macros` is absent, construct via `OffsetDateTime::from_unix_timestamp(1767225000)`-style constants instead and assert unix timestamps).
+Also UPDATE the existing `slice1_rejects_schedule_and_data_trigger` test: its schedule-rejection leg is now wrong — rename the fn to `rejects_data_trigger_until_slice_3` and keep only the `on_input_commit` leg (the schedule legs are covered by the new test above). The `time` crate's `macros` feature IS vendored (verified), but the core `transforms` test target's BUCK deps lack `//third-party:time` — ADD it (deps become `[":core", "//third-party:serde_json", "//third-party:time", "//third-party:uuid"]`). `time` is exact-pinned `=0.3.47` tree-wide; no manifest change needed for a test-only BUCK dep.
 
 - [ ] **Step 3: Run to verify failure** — `buck2 test //src/control-plane/core:transforms > /tmp/s2t1.log 2>&1; grep -E "Tests finished|FAIL|error\[" /tmp/s2t1.log` → compile error (`validate_cron` not found).
 
@@ -132,7 +138,9 @@ In `validate_transform_def`, replace the schedule-rejection block with:
 
 Re-export the two helpers from `lib.rs` (extend the existing `pub use transforms::{...}` list).
 
-- [ ] **Step 5: Run** — `buck2 test //src/control-plane/core: > /tmp/s2t1b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/s2t1b.log` → all pass. NOTE: the testkit contract still asserts schedule-rejection — the memory/postgres contract targets will FAIL from here until Task 2 updates the contract. That cross-task red is expected; do NOT run those targets in this task.
+- [ ] **Step 5: Run** — `buck2 test //src/control-plane/core: > /tmp/s2t1b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/s2t1b.log` → all pass. NOTE: the testkit contract still asserts schedule-rejection — the memory/postgres contract targets will FAIL AT TEST TIME from here until Tasks 2/3 update them. That window is fine: everything still COMPILES (prek's clippy hook builds every target), and the pre-push test hooks don't run at commit time. Do not run those contract targets in this task.
+
+Also confirm the doc comment on `validate_cron` matches croner's OBSERVED parsing behavior (its default is 5-field with seconds opt-in via a builder — do not assert seconds-leniency unless you verified the vendored version actually accepts it), and that the vendored croner takes the timezone from the `DateTime` argument (UTC is pinned by passing `DateTime<Utc>`; any `Local`-based entry point is forbidden).
 
 - [ ] **Step 6: prek + commit** (`feat(control-plane): live cron validation — croner helpers in core`). The reindeer-check hook runs on Cargo.toml/lock changes; buckify output must be committed in the same commit.
 
@@ -143,6 +151,7 @@ Re-export the two helpers from `lib.rs` (extend the existing `pub use transforms
 **Files:**
 - Modify: `src/control-plane/core/src/transforms.rs` (trait: 2 new methods)
 - Modify: `src/control-plane/memory/src/transforms.rs`
+- Modify: `src/control-plane/postgres/src/transforms.rs` (**compiling stubs only** — see Step 3b; Task 3 replaces them)
 - Modify: `src/control-plane/testkit/src/lib.rs` (contract update + schedule legs)
 - Modify: `src/control-plane/memory/tests/transforms.rs` (nothing new expected — contract runs there)
 
@@ -167,6 +176,9 @@ Re-export the two helpers from `lib.rs` (extend the existing `pub use transforms
 ```rust
     // Schedules (slice 2): invalid cron rejected; valid cron accepted with
     // derived next_run_at in the future; unscheduling clears it.
+    // NOTE: capture `before` BEFORE the define — next_cron_occurrence is
+    // strictly-after, so nra > define_now >= before can never flake.
+    let before = time::OffsetDateTime::now_utc();
     let bad_cron = TransformDef { schedule: Some("not a cron".into()), ..def.clone() };
     assert!(matches!(
         cp.define_transform(bad_cron).await,
@@ -179,7 +191,6 @@ Re-export the two helpers from `lib.rs` (extend the existing `pub use transforms
         on_input_commit: false,
     };
     cp.define_transform(scheduled.clone()).await.unwrap();
-    let before = time::OffsetDateTime::now_utc();
     let nra = cp.next_run_at(&scheduled.name).await.unwrap().expect("scheduled => Some");
     assert!(nra > before, "next_run_at is in the future");
     assert_eq!(cp.next_run_at(&def.name).await.unwrap(), None, "unscheduled => None");
@@ -259,7 +270,29 @@ Place this where the old rejection block was; the later list-ordering assert exp
     }
 ```
 
-`define_transform` gains, inside its existing `transforms` lock section (after validation): compute `let next = def.schedule.as_deref().map(|e| next_cron_occurrence(e, time::OffsetDateTime::now_utc())).transpose()?;` BEFORE taking the lock (it's pure), then under the lock `match next { Some(n) => { st.next_run_at.insert(def.name.0.clone(), n); } None => { st.next_run_at.remove(&def.name.0); } }` alongside the def insert. `delete_transform` also removes the entry. Add the needed imports (`next_cron_occurrence`, `OffsetDateTime`).
+`define_transform` gains, inside its existing `transforms` lock section (after validation): compute `let next = def.schedule.as_deref().map(|e| next_cron_occurrence(e, time::OffsetDateTime::now_utc())).transpose()?;` BEFORE taking the lock (it's pure), then under the lock `match next { Some(n) => { st.next_run_at.insert(def.name.0.clone(), n); } None => { st.next_run_at.remove(&def.name.0); } }` alongside the def insert. `delete_transform` also removes the entry. Add the needed imports (`next_cron_occurrence`, `OffsetDateTime`). Doc-note on the memory claim: a mid-loop `next_cron_occurrence` error leaves earlier advances applied (no rollback, unlike postgres) — unreachable in practice since schedules are validated and their first occurrence computed at define time; add a one-line comment saying so.
+
+**Step 3b: postgres COMPILING STUBS** (the trait has no default bodies and postgres is a dep of engine/worker/runtime — without stubs the whole tree stops BUILDING and prek's clippy hook fails at commit time). In `src/control-plane/postgres/src/transforms.rs`, add both methods as stubs Task 3 will replace:
+
+```rust
+    async fn claim_due_schedules(
+        &self,
+        _now: OffsetDateTime,
+        _limit: u32,
+    ) -> Result<Vec<TransformDef>> {
+        Err(ControlPlaneError::Backend(
+            "claim_due_schedules: postgres schedule storage lands in the next commit (migration 0032)".into(),
+        ))
+    }
+
+    async fn next_run_at(&self, _name: &TransformName) -> Result<Option<OffsetDateTime>> {
+        Err(ControlPlaneError::Backend(
+            "next_run_at: postgres schedule storage lands in the next commit (migration 0032)".into(),
+        ))
+    }
+```
+
+(plus the `OffsetDateTime` import). The postgres contract target goes red at TEST time only — same class as the Task 1 window; do not run it in this task.
 
 - [ ] **Step 4: Run** — memory transforms target → PASS. NOTE: the postgres contract target is still red until Task 3 — expected, don't run it.
 
@@ -386,9 +419,10 @@ New trait methods:
 - Create: `src/services/engine/src/scheduler.rs`
 - Modify: `src/services/engine/src/lib.rs` (module + re-export as needed)
 - Modify: `src/services/engine/src/run.rs` (spawn + cancel around serve)
-- Modify: `src/services/engine/src/tuning.rs` or wherever `EngineTuning::from_map` lives (new knob — find it: `grep -rn "EngineTuning" src/services/engine/src/`)
+- Modify: `src/services/engine/src/run.rs` — `EngineTuning::from_map` lives HERE (line ~40; it holds `LOOM_INLINE_BYTE_LIMIT`/`LOOM_FLUSH_BYTE_THRESHOLD`): add `scheduler_tick: Duration` using the `Duration::from_secs(parse_var(vars, "LOOM_SCHEDULER_TICK_SECS", 5_u64)?)` pattern (same shape as runtime's `gc_retention` parse — but the field lives on `EngineTuning`, NOT runtime `Config`). `EngineTuning` is only constructed via `from_map` (verified: main.rs, standalone, engine_tuning test), so the new field breaks no literals; add a parse leg to `tests/engine_tuning.rs`.
+- Modify: `src/services/engine/Cargo.toml` + `src/services/engine/BUCK` — the engine lib currently depends on NEITHER `tracing` NOR `tokio-util`: add both (`tracing = "0.1"`, `tokio-util = "0.7"` to Cargo.toml; `//third-party:tracing`, `//third-party:tokio-util` to BUCK deps). Both crates are already vendored (worker/memory use them) — expect zero third-party/BUCK drift, but run the lockfile-churn guard + buckify if the lock changes.
 - Create: `src/services/engine/tests/scheduler.rs`
-- Modify: `src/services/engine/BUCK` (new plain `rust_test` + `//src/control-plane/memory:memory` test dep; `tokio-util` dep for the lib if not present)
+- Modify: `src/services/engine/BUCK` (new plain `rust_test` + `//src/control-plane/memory:memory` test dep)
 
 **Interfaces:**
 - Consumes: `claim_due_schedules`, `submit_run`, `TransformBody::to_job`, `RunTrigger::Schedule`.
@@ -476,9 +510,12 @@ BUCK target (plain `rust_test`, engine's unit-test style — mirror `engine_tuni
 use std::sync::Arc;
 use std::time::Duration;
 
-use control_plane_core::{ControlPlane, RunState, RunTrigger, TransformRun};
+use control_plane_core::{ControlPlane, RunState, RunTrigger, TransformRun, Transforms};
 use time::OffsetDateTime;
 use tokio_util::sync::CancellationToken;
+// (`Transforms` must be in scope for `cp.transforms().claim_due_schedules(...)`
+// method syntax; likewise the TEST file needs `Queue` in its use list for
+// `cp.queue().dequeue(...)` — testkit imports it for exactly this call.)
 
 /// One scheduler pass; returns how many runs were submitted.
 pub async fn tick(cp: &(dyn ControlPlane), now: OffsetDateTime, limit: u32) -> usize {
@@ -537,12 +574,18 @@ pub async fn scheduler_loop(
 }
 ```
 
-Wire the knob: wherever `EngineTuning::from_map` lives, add `scheduler_tick: Duration` parsed as `Duration::from_secs(parse_var(vars, "LOOM_SCHEDULER_TICK_SECS", 5_u64)?)` (mirror the `LOOM_GC_RETENTION_SECS` precedent exactly, including its test file if `engine_tuning.rs` tests knob parsing — add a leg there). In `run.rs`, before `Server::builder()`:
+Wire the knob per the Files note above (field on `EngineTuning`, default 5, `engine_tuning.rs` parse leg). In `run.rs`: **`cp` is MOVED into `EngineControlService { cp, ... }` (~line 87)** — take the scheduler's handle BEFORE that construction, right after `cp` is built (~line 66):
+
+```rust
+    let sched_cp: Arc<dyn ControlPlane> = Arc::new(cp.clone());
+```
+
+then before `Server::builder()`:
 
 ```rust
     let sched_cancel = CancellationToken::new();
     let sched = tokio::spawn(scheduler::scheduler_loop(
-        Arc::new(cp.clone()),
+        sched_cp,
         tuning.scheduler_tick,
         sched_cancel.clone(),
     ));
@@ -551,11 +594,14 @@ Wire the knob: wherever `EngineTuning::from_map` lives, add `scheduler_tick: Dur
 and after `.serve_with_incoming_shutdown(...).await?`:
 
 ```rust
+    // On a serve ERROR the `?` above skips this cancel and the scheduler task
+    // is reaped by process/runtime teardown instead — acceptable, we are
+    // exiting either way.
     sched_cancel.cancel();
     drop(sched.await);
 ```
 
-(`cp` is the `PgControlPlane` built at the top of `run` — it is `Clone`; `Arc<PgControlPlane>` coerces to `Arc<dyn ControlPlane>`. If `tuning` isn't in scope where needed, thread it. Add `tokio-util` to the engine lib's BUCK deps + Cargo.toml if absent — check; the worker already depends on it, so the crate is vendored.)
+(`PgControlPlane` is `Clone`; `Arc<PgControlPlane>` coerces to `Arc<dyn ControlPlane>`. If `tuning` isn't in scope where needed, thread it.)
 
 - [ ] **Step 4: Run** — scheduler test PASS; then existing engine tests (`buck2 test //src/services/engine: --unstable-allow-all-tests-on-re > /tmp/s2t4b.log 2>&1; grep -E "Tests finished|FAIL" /tmp/s2t4b.log`) → all pass (the loop spawn must not disturb the wire tests, which drive `engine::run` — they'll now spawn an idle scheduler too; if a wire test uses a `pause`d tokio clock or asserts exact task counts, adjust; none is expected to).
 
