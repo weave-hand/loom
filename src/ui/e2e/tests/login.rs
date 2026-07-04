@@ -2,8 +2,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr,
-    reason = "rust_test body; the skip branch prints a diagnostic to stderr"
+    reason = "rust_test body: assertions unwrap/expect and a failed browser start panics"
 )]
 //! Full-page login e2e: render, sad path, happy path — one backend + one browser
 //! (resource-light, per the shared-cluster/fresh-db model).
@@ -16,21 +15,13 @@ async fn login_flow() {
     let fx = control_plane_postgres::fixture::PgFixture::shared();
     let backend = start_backend(fx).await;
 
-    // Auto-skip gate: the vendored browser needs host libs, present only on the
-    // local executor (dev box / ubuntu-24.04 CI runner with the deb.deps), not the
-    // RE workers. If the browser can't start, skip (trivial pass) so the default
-    // sweep stays green — UNLESS LOOM_UI_E2E=1, which makes a start failure a hard
-    // error so the dedicated CI lane catches a genuinely broken browser.
-    let browser = match start_browser().await {
-        Ok(b) => b,
-        Err(e) => {
-            if std::env::var("LOOM_UI_E2E").is_ok() {
-                panic!("LOOM_UI_E2E=1 but browser failed to start: {e}");
-            }
-            eprintln!("skipping login_flow: browser unavailable ({e})");
-            return;
-        }
-    };
+    // The browser is guaranteed everywhere — the vendored Chromium's host libs
+    // come from the RE image (tools/ci/rbe-browser, pinned in platforms/defs.bzl)
+    // on the RE workers and from the host locally — so a start failure is a real
+    // defect, never a skip.
+    let browser = start_browser()
+        .await
+        .expect("vendored browser must start (RE image / dev-box host libs)");
     let c = &browser.client;
 
     // 1. Renders: the styled login mounts.
@@ -91,7 +82,7 @@ async fn login_flow() {
         .click()
         .await
         .unwrap();
-    // The Explorer renders a <nav>; the login page has none.
+    // The Shell renders a <nav>; the login page has none.
     c.wait().for_element(Locator::Css("nav")).await.unwrap();
     assert!(
         c.find(Locator::Css("#login-username")).await.is_err(),

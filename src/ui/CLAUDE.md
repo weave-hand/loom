@@ -67,13 +67,12 @@ clippy::restriction)]` because `html!`/`css!` expansion isn't lint-clean.
   hermetic; the **browser binary is vendored and its libs come from the executor
   image** — from the host locally, and from the custom RBE image
   (`tools/ci/rbe-browser/`, pinned in `platforms/defs.bzl`) on the RE workers — so it
-  runs for real on the RE-routed CI sweep and on a dev box with the libs, and
-  **auto-skips only where the browser can't start** (set `LOOM_UI_E2E=1` to turn a
-  browser-start failure into a hard error). Run it on a host with a browser:
-  `LOOM_UI_E2E=1 buck2 test //src/ui/e2e:login`. Stable DOM hooks it depends on:
-  `#login-username`, `#login-password`, `.signin`, `p.error`, and the Explorer's `<nav>`;
-  session token in sessionStorage key `loom_token`. Hermetic-RE image: `tools/ci/rbe-browser/`
-  (spec 2026-07-02-ui-e2e-hermetic-rbe-image).
+  **always runs, and hard-fails if the browser can't start** (the hermetic RE image
+  plus dev-box host libs guarantee a browser everywhere; there is no auto-skip and
+  no `LOOM_UI_E2E` variable). Run it: `buck2 test //src/ui/e2e:login`. Stable DOM
+  hooks it depends on: `#login-username`, `#login-password`, `.signin`, `p.error`,
+  and the Shell's `<nav>`; session token in sessionStorage key `loom_token`.
+  Hermetic-RE image: `tools/ci/rbe-browser/` (spec 2026-07-02-ui-e2e-hermetic-rbe-image).
 
 Spec/plan: `docs/superpowers/{specs,plans}/2026-07-01-ui-component-library*`.
 

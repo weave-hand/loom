@@ -137,9 +137,9 @@ impl Drop for DriverGuard {
 
 /// Spawn the vendored chromedriver on a free port, wait for it to listen, and
 /// connect fantoccini pointed at the vendored headless Chromium. Returns `Err`
-/// (not panic) when the browser can't start — the caller decides skip vs fail
-/// based on `LOOM_UI_E2E` (see the test's gate). A chrome that can't load its
-/// host libs manifests here as a failed WebDriver connect.
+/// (not panic) when the browser can't start — the caller treats a failure as a
+/// hard error (e.g. via `.expect(...)`). A chrome that can't load its host libs
+/// manifests here as a failed WebDriver connect.
 pub async fn start_browser() -> Result<Browser, String> {
     let driver_bin = std::env::var("CHROMEDRIVER_BIN").map_err(|_| "CHROMEDRIVER_BIN unset")?;
     let chrome_bin = std::env::var("CHROME_BIN").map_err(|_| "CHROME_BIN unset")?;
