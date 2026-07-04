@@ -47,7 +47,7 @@ pub fn shell(props: &ShellProps) -> Html {
     let accent_style = format!("--loom-accent: {}", props.active.accent());
     html! {
         <div class={cls} style={accent_style}>
-            <div class="bar">
+            <nav class="bar">
                 <span class="brand"><span class="logo"></span>{ "loom" }</span>
                 <div class="nav">
                     { for Surface::all().into_iter().map(|s| {
@@ -64,7 +64,7 @@ pub fn shell(props: &ShellProps) -> Html {
                 <div class="spacer" />
                 { props.search.clone() }
                 if !props.avatar.is_empty() { <span class="avatar">{ &props.avatar }</span> }
-            </div>
+            </nav>
             <div class="body">
                 <div class="list">{ props.list.clone() }</div>
                 if !is_empty(&props.drawer) {

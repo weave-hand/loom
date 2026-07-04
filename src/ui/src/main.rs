@@ -279,6 +279,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
     // On type selection: fetch the type detail that feeds the drawer's tabs.
     {
         let type_detail = type_detail.clone();
+        let active_tab = active_tab.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
         let selected_type_dep = (*selected_type).clone();
@@ -287,6 +288,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 return;
             };
             type_detail.set(None);
+            active_tab.set(AttrValue::from("properties"));
             wasm_bindgen_futures::spawn_local(async move {
                 match net::fetch_type_detail(&net::api_base(), &token, &ty).await {
                     Ok(d) => type_detail.set(Some(d)),

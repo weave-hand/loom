@@ -45,7 +45,7 @@ pub fn lineage_dag_view(props: &LineageDagViewProps) -> Html {
         }
         .node.current {
             border-color: var(--loom-accent);
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.16);
+            box-shadow: 0 0 0 4px color-mix(in srgb, var(--loom-accent) 16%, transparent);
         }
         .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     "#
