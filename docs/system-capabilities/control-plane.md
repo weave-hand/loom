@@ -294,7 +294,7 @@ unseal — and the resulting admin is a normal identity holding the reserved
 self-grant.
 
 The admin-gated HTTP surface closed its remaining coarse-only gaps (issue
-#363, PR #NN). Fine-grained policy authoring — previously only reachable
+#363, PR #374). Fine-grained policy authoring — previously only reachable
 through `Acl::set_policy` directly — is now `POST|GET|DELETE
 /admin/roles/{role}/policies`: the request body carries a `RowFilter` in its
 domain serde shape (`{"Compare": {"property", "op", "value"}}`, `And`/`Or`/
