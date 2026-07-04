@@ -65,7 +65,11 @@ impl RoutingTuning {
             "LOOM_FLUSH_BYTE_THRESHOLD",
             &mut self.flush_byte_threshold,
         )?;
-        overlay_opt(vars, "LOOM_HTTP_MAX_BODY_BYTES", &mut self.http_max_body_bytes)?;
+        overlay_opt(
+            vars,
+            "LOOM_HTTP_MAX_BODY_BYTES",
+            &mut self.http_max_body_bytes,
+        )?;
         Ok(())
     }
 
