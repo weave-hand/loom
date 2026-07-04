@@ -22,9 +22,12 @@ rust_library(
         "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:sqlx",
+        "//third-party:time",
         "//third-party:tokio",
         "//third-party:tokio-stream",
+        "//third-party:tokio-util",
         "//third-party:tonic",
+        "//third-party:tracing",
         "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
@@ -167,6 +170,21 @@ rust_test(
     deps = [
         ":engine",
         "//src/services/runtime:runtime",
+    ],
+)
+
+rust_test(
+    name = "scheduler",
+    crate = "scheduler",
+    srcs = ["tests/scheduler.rs"],
+    crate_root = "tests/scheduler.rs",
+    deps = [
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
     ],
 )
 

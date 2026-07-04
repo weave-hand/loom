@@ -727,6 +727,9 @@ struct TransformDefView {
     body: serde_json::Value,
     schedule: Option<String>,
     on_input_commit: bool,
+    /// Next scheduled fire (RFC3339, UTC) — present only when scheduled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_run_at: Option<String>,
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -772,6 +775,7 @@ fn def_view(d: &TransformDef) -> TransformDefView {
         body: serde_json::to_value(&d.body).unwrap_or(serde_json::Value::Null),
         schedule: d.schedule.clone(),
         on_input_commit: d.on_input_commit,
+        next_run_at: None,
     }
 }
 
@@ -838,13 +842,14 @@ async fn submit_new_run(
         content = serde_json::Value,
         description = "A `TransformDef` in its serde shape: `{\"name\", \"body\": \
             {\"kind\": \"physical\"|\"typed\", \"inputs\", \"output\", \"sql\", \"output_mode\"?}, \
-            \"schedule\"?, \"on_input_commit\"?}`",
+            \"schedule\"?, \"on_input_commit\"?}`. `schedule`, if present, is a live 5-field \
+            UTC cron expression (e.g. `\"0 3 * * *\"`) validated at define time.",
     ),
     responses(
         (status = 201, description = "Transform defined"),
         (status = 400, description = "Body does not decode as a TransformDef, or validation \
-            failed (e.g. a schedule/on_input_commit not yet supported, or a typed body \
-            referencing unknown ontology types)"),
+            failed (e.g. an invalid cron `schedule` expression, on_input_commit not yet \
+            supported, or a typed body referencing unknown ontology types)"),
     ),
     security(("bearer_auth" = [])),
     tag = "admin",
@@ -891,17 +896,26 @@ async fn list_transforms_route(State(st): State<AdminState>) -> Response {
     get, path = "/admin/transforms/{name}",
     params(("name" = String, Path, description = "Transform name")),
     responses(
-        (status = 200, description = "The transform definition", body = TransformDefView),
+        (status = 200, description = "The transform definition (with `next_run_at` when \
+            scheduled)", body = TransformDefView),
         (status = 404, description = "Unknown transform"),
     ),
     security(("bearer_auth" = [])),
     tag = "admin",
 )]
 async fn get_transform_route(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
-    match st.cp.transforms().get_transform(&TransformName(name)).await {
-        Ok(def) => (StatusCode::OK, Json(def_view(&def))).into_response(),
-        Err(e) => status_for(&e).into_response(),
-    }
+    let name = TransformName(name);
+    let def = match st.cp.transforms().get_transform(&name).await {
+        Ok(d) => d,
+        Err(e) => return status_for(&e).into_response(),
+    };
+    let nra = match st.cp.transforms().next_run_at(&name).await {
+        Ok(n) => n,
+        Err(e) => return status_for(&e).into_response(),
+    };
+    let mut view = def_view(&def);
+    view.next_run_at = nra.map(rfc3339);
+    (StatusCode::OK, Json(view)).into_response()
 }
 
 /// `DELETE /admin/transforms/:name` — remove a transform definition

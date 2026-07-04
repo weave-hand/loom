@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update transforms.transform set next_run_at = $2 where name = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a4b0c77ef84e02955dcc7a475f83230f9fc292260d27949758c054a8b905d9b"
+}

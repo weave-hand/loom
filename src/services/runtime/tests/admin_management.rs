@@ -559,7 +559,7 @@ async fn define_transform_rejects_bad_shapes() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    // schedule not yet supported (slice 2)
+    // a valid cron schedule is now accepted
     let scheduled = TRANSFORM_BODY.replace(
         r#""name": "daily""#,
         r#""name": "daily", "schedule": "* * * * *""#,
@@ -567,6 +567,17 @@ async fn define_transform_rejects_bad_shapes() {
     let (status, _) = send(
         app(cp.clone()),
         req_json("POST", "/admin/transforms", &token, &scheduled),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // an invalid cron expression is still a 400
+    let bad_cron = TRANSFORM_BODY.replace(
+        r#""name": "daily""#,
+        r#""name": "daily", "schedule": "not a cron""#,
+    );
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, &bad_cron),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -585,6 +596,47 @@ async fn define_transform_rejects_bad_shapes() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn scheduled_transform_exposes_next_run_at() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    let scheduled = TRANSFORM_BODY.replace(
+        r#""name": "daily""#,
+        r#""name": "daily", "schedule": "0 3 * * *""#,
+    );
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, &scheduled),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/transforms/daily", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["schedule"], "0 3 * * *");
+    let nra = v["next_run_at"]
+        .as_str()
+        .expect("next_run_at present when scheduled");
+    assert!(nra.contains('T'), "RFC3339 timestamp: {nra}");
+    // Unscheduled defs omit the field entirely.
+    let (_, body) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, TRANSFORM_BODY),
+    )
+    .await;
+    let _ = body;
+    let (_, body) = send(app(cp), req_empty("GET", "/admin/transforms/daily", &token)).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        v.get("next_run_at").is_none(),
+        "field omitted when unscheduled"
+    );
 }
 
 #[tokio::test]

@@ -10,7 +10,7 @@ Postgres, so services program against `core` and tests get a faithful fake. This
 document describes what those concerns can do today, the guarantees they carry,
 and the design decisions behind them.
 
-_As of 4861433b._
+_As of 666de0c3._
 
 ## The concern library, transactions, and hardening
 
@@ -300,9 +300,19 @@ named, durable identity: a `TransformDef` (upsert define/list/get/idempotent
 delete) names a reusable `Physical`- or `Typed`-bodied transform, and every
 execution — defined or ad-hoc — becomes a `TransformRun` whose `run_id`
 doubles as the lineage `run_id` and whose `body` is frozen at submit time, so
-redefinition or deletion never rewrites a run's history. Full behavior,
-including the `Queued → Running → Succeeded | Failed` state machine and the
-eight-route admin HTTP surface, is documented in [transform.md](transform.md).
+redefinition or deletion never rewrites a run's history. `TransformDef.schedule`
+is live too: a 5-field UTC cron expression, validated at define time (croner)
+so an invalid expression is rejected as `Validation` rather than discovered at
+fire time, carrying a derived `next_run_at` that the engine's scheduler loop
+advances by calling `claim_due_schedules` — an atomic claim-and-advance
+(`SELECT ... FOR UPDATE SKIP LOCKED` plus the next-occurrence update, one
+transaction) that keeps concurrent engines from double-claiming a due
+definition and skips, rather than double-fires, an occurrence whose claimed
+run fails to submit. Redefining a schedule resets the clock: `next_run_at` is
+recomputed from the redefinition time, not the original definition's cadence.
+Full behavior, including the `Queued → Running → Succeeded | Failed` state
+machine and the eight-route admin HTTP surface, is documented in
+[transform.md](transform.md).
 
 ## Lineage
 

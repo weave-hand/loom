@@ -5,8 +5,10 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, TransformBody,
-    TransformDef, TransformName, TransformRun, Transforms, validate_transform_def,
+    TransformDef, TransformName, TransformRun, Transforms, next_cron_occurrence,
+    validate_transform_def,
 };
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::MemoryControlPlane;
@@ -15,6 +17,7 @@ use crate::MemoryControlPlane;
 pub(crate) struct TransformsState {
     pub(crate) defs: HashMap<String, TransformDef>,
     pub(crate) runs: HashMap<Uuid, TransformRun>,
+    pub(crate) next_run_at: HashMap<String, OffsetDateTime>,
 }
 
 #[async_trait]
@@ -32,7 +35,22 @@ impl Transforms for MemoryControlPlane {
                 }
             }
         }
-        self.transforms.lock().defs.insert(def.name.0.clone(), def);
+        // Pure (no lock held) — computed before taking `transforms` below.
+        let next = def
+            .schedule
+            .as_deref()
+            .map(|e| next_cron_occurrence(e, OffsetDateTime::now_utc()))
+            .transpose()?;
+        let mut st = self.transforms.lock();
+        match next {
+            Some(n) => {
+                st.next_run_at.insert(def.name.0.clone(), n);
+            }
+            None => {
+                st.next_run_at.remove(&def.name.0);
+            }
+        }
+        st.defs.insert(def.name.0.clone(), def);
         Ok(())
     }
 
@@ -55,7 +73,9 @@ impl Transforms for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_transform(&self, name: &TransformName) -> Result<()> {
-        self.transforms.lock().defs.remove(&name.0);
+        let mut st = self.transforms.lock();
+        st.defs.remove(&name.0);
+        st.next_run_at.remove(&name.0);
         Ok(())
     }
 
@@ -126,6 +146,52 @@ impl Transforms for MemoryControlPlane {
             .collect();
         items.sort_by(|a, b| b.queued_at.cmp(&a.queued_at).then(b.run_id.cmp(&a.run_id)));
         Ok(Page::from_full(items))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn claim_due_schedules(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> Result<Vec<TransformDef>> {
+        let mut st = self.transforms.lock();
+        let mut due: Vec<String> = st
+            .next_run_at
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(name, _)| name.clone())
+            .collect();
+        due.sort(); // deterministic order
+        due.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        let mut claimed = Vec::with_capacity(due.len());
+        // NOTE: a mid-loop `next_cron_occurrence` error here leaves earlier
+        // advances in this batch applied (no rollback, unlike postgres's
+        // claim, whose SELECT ... FOR UPDATE SKIP LOCKED + per-row UPDATE
+        // share one transaction and roll back together) — unreachable in
+        // practice since schedules are validated and their first occurrence
+        // computed at define time, so a stored schedule cannot fail to
+        // re-occur.
+        for name in due {
+            let Some(def) = st.defs.get(&name).cloned() else {
+                continue;
+            };
+            let Some(expr) = def.schedule.as_deref() else {
+                continue;
+            };
+            let next = next_cron_occurrence(expr, now)?;
+            st.next_run_at.insert(name, next);
+            claimed.push(def);
+        }
+        Ok(claimed)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn next_run_at(&self, name: &TransformName) -> Result<Option<OffsetDateTime>> {
+        let st = self.transforms.lock();
+        if !st.defs.contains_key(&name.0) {
+            return Err(ControlPlaneError::NotFound(format!("transform {}", name.0)));
+        }
+        Ok(st.next_run_at.get(&name.0).copied())
     }
 }
 

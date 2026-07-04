@@ -8,6 +8,8 @@ rust_library(
     deps = [
         "//third-party:arrow-schema",
         "//third-party:async-trait",
+        "//third-party:chrono",
+        "//third-party:croner",
         "//third-party:regex",
         "//third-party:serde",
         "//third-party:serde_json",
@@ -413,6 +415,7 @@ rust_test(
     deps = [
         ":core",
         "//third-party:serde_json",
+        "//third-party:time",
         "//third-party:uuid",
     ],
 )

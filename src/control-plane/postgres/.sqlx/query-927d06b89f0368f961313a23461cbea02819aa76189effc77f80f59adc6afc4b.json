@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, body, schedule, on_input_commit from transforms.transform where schedule is not null and next_run_at is not null and next_run_at <= $1 order by next_run_at, name limit $2 for update skip locked",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "body",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "schedule",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "schedule"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "on_input_commit",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "on_input_commit"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "927d06b89f0368f961313a23461cbea02819aa76189effc77f80f59adc6afc4b"
+}

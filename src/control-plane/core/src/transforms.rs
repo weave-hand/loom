@@ -7,8 +7,10 @@
 //! queryable with no extra linkage. Runs freeze the body they executed:
 //! redefinition never rewrites history.
 //!
-//! Slice 1 delivers definitions + runs only: [`validate_transform_def`]
-//! rejects `schedule`/`on_input_commit` until slices 2/3 make them live.
+//! Slice 1 delivered definitions + runs only, rejecting both `schedule` and
+//! `on_input_commit`. Slice 2 makes `schedule` live: [`validate_cron`] and
+//! [`next_cron_occurrence`] back real cron validation/scheduling in
+//! [`validate_transform_def`]. `on_input_commit` (slice 3) is still rejected.
 
 use std::str::FromStr;
 
@@ -97,9 +99,9 @@ impl TransformBody {
     }
 }
 
-/// A named transform definition. `schedule` (slice 2) and `on_input_commit`
-/// (slice 3) are carried in the shape but rejected by
-/// [`validate_transform_def`] until their slices land.
+/// A named transform definition. `schedule`, when set, is a cron expression
+/// validated by [`validate_transform_def`] (slice 2, live). `on_input_commit`
+/// (slice 3) is carried in the shape but still rejected.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TransformDef {
     pub name: TransformName,
@@ -214,8 +216,41 @@ pub enum RunOutcome {
     Failed { error: String },
 }
 
-/// Slice-1 definition validation, shared by both adapters: `schedule` and
-/// `on_input_commit` are carried in the shape but not yet live.
+/// Validate a cron expression. Standard 5-field (minute hour day-of-month
+/// month day-of-week), evaluated in UTC. Croner's default configuration
+/// (used here) does NOT tolerate an optional seconds field — a 6-field
+/// expression is rejected unless the caller opts in via croner's
+/// `with_seconds_optional`/`with_seconds_required` builders, which this
+/// helper does not use. Observed against the vendored croner 2.2.0 source.
+pub fn validate_cron(expr: &str) -> Result<()> {
+    croner::Cron::new(expr)
+        .parse()
+        .map(|_| ())
+        .map_err(|e| ControlPlaneError::Validation(format!("invalid cron expression: {e}")))
+}
+
+/// The next UTC occurrence of `expr` strictly after `after`. Evaluation is
+/// pinned to UTC by constructing a `chrono::DateTime<Utc>` from `after` and
+/// passing it to croner's generic `find_next_occurrence` — croner takes the
+/// timezone from the `DateTime` argument, so there is no `Local`-based entry
+/// point in this path.
+pub fn next_cron_occurrence(expr: &str, after: OffsetDateTime) -> Result<OffsetDateTime> {
+    let cron = croner::Cron::new(expr)
+        .parse()
+        .map_err(|e| ControlPlaneError::Validation(format!("invalid cron expression: {e}")))?;
+    let after_c =
+        chrono::DateTime::<chrono::Utc>::from_timestamp(after.unix_timestamp(), after.nanosecond())
+            .ok_or_else(|| ControlPlaneError::Validation("timestamp out of range".into()))?;
+    let next = cron
+        .find_next_occurrence(&after_c, false)
+        .map_err(|e| ControlPlaneError::Validation(format!("no next cron occurrence: {e}")))?;
+    OffsetDateTime::from_unix_timestamp(next.timestamp())
+        .map_err(|e| ControlPlaneError::Validation(format!("cron occurrence out of range: {e}")))
+}
+
+/// Definition validation, shared by both adapters. `schedule` (slice 2) is
+/// live: a valid cron expression is accepted, an invalid one rejected.
+/// `on_input_commit` (slice 3) is still carried in the shape but rejected.
 pub fn validate_transform_def(def: &TransformDef) -> Result<()> {
     if def.name.0.is_empty() {
         return Err(ControlPlaneError::Validation(
@@ -227,10 +262,8 @@ pub fn validate_transform_def(def: &TransformDef) -> Result<()> {
             "transform name 'run' is reserved (collides with the ad-hoc run route)".into(),
         ));
     }
-    if def.schedule.is_some() {
-        return Err(ControlPlaneError::Validation(
-            "transform schedules are not supported yet (slice 2)".into(),
-        ));
+    if let Some(expr) = &def.schedule {
+        validate_cron(expr)?;
     }
     if def.on_input_commit {
         return Err(ControlPlaneError::Validation(
@@ -275,4 +308,18 @@ pub trait Transforms {
         transform: Option<&TransformName>,
         page: PageReq,
     ) -> Result<Page<TransformRun>>;
+
+    /// Atomically claim schedule-due definitions: `schedule` set and
+    /// `next_run_at <= now`, at most `limit`, advancing each claimed def's
+    /// `next_run_at` to the next occurrence after `now`. Concurrent claimers
+    /// never both receive the same due def. A claimed occurrence that the
+    /// caller fails to submit is SKIPPED, not retried (at-most-once).
+    async fn claim_due_schedules(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> Result<Vec<TransformDef>>;
+    /// Derived schedule state: when the def would next fire (`None` when
+    /// unscheduled). `NotFound` for an unknown transform.
+    async fn next_run_at(&self, name: &TransformName) -> Result<Option<OffsetDateTime>>;
 }

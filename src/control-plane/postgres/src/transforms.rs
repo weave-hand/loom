@@ -3,8 +3,10 @@
 use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, RunTrigger,
-    TransformBody, TransformDef, TransformName, TransformRun, Transforms, validate_transform_def,
+    TransformBody, TransformDef, TransformName, TransformRun, Transforms, next_cron_occurrence,
+    validate_transform_def,
 };
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::queue::pg_insert;
@@ -99,16 +101,23 @@ impl Transforms for PgControlPlane {
             }
         }
         let body = ser(&def.body)?;
+        let next_run_at = def
+            .schedule
+            .as_deref()
+            .map(|e| next_cron_occurrence(e, OffsetDateTime::now_utc()))
+            .transpose()?;
         sqlx::query!(
-            "insert into transforms.transform (name, body, schedule, on_input_commit) \
-             values ($1, $2, $3, $4) \
+            "insert into transforms.transform (name, body, schedule, on_input_commit, next_run_at) \
+             values ($1, $2, $3, $4, $5) \
              on conflict (name) do update set \
                  body = excluded.body, schedule = excluded.schedule, \
-                 on_input_commit = excluded.on_input_commit",
+                 on_input_commit = excluded.on_input_commit, \
+                 next_run_at = excluded.next_run_at",
             def.name.0,
             body,
             def.schedule,
             def.on_input_commit,
+            next_run_at,
         )
         .execute(self.pool())
         .await
@@ -297,5 +306,63 @@ impl Transforms for PgControlPlane {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Page::from_full(items))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn claim_due_schedules(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> Result<Vec<TransformDef>> {
+        let mut tx = self.pool().begin().await.map_err(backend)?;
+        let rows = sqlx::query!(
+            "select name, body, schedule, on_input_commit from transforms.transform \
+             where schedule is not null and next_run_at is not null and next_run_at <= $1 \
+             order by next_run_at, name \
+             limit $2 \
+             for update skip locked",
+            now,
+            i64::from(limit),
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let mut claimed = Vec::with_capacity(rows.len());
+        for r in rows {
+            let def = TransformDef {
+                name: TransformName(r.name),
+                body: de_body(r.body)?,
+                schedule: r.schedule,
+                on_input_commit: r.on_input_commit,
+            };
+            let Some(expr) = def.schedule.as_deref() else {
+                continue;
+            };
+            let next = next_cron_occurrence(expr, now)?;
+            sqlx::query!(
+                "update transforms.transform set next_run_at = $2 where name = $1",
+                def.name.0,
+                next,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+            claimed.push(def);
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(claimed)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn next_run_at(&self, name: &TransformName) -> Result<Option<OffsetDateTime>> {
+        let row = sqlx::query!(
+            "select next_run_at from transforms.transform where name = $1",
+            name.0,
+        )
+        .fetch_optional(self.pool())
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| ControlPlaneError::NotFound(format!("transform {}", name.0)))?;
+        Ok(row.next_run_at)
     }
 }

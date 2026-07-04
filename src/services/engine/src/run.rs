@@ -2,8 +2,11 @@
 //! pool and serve them on a pre-bound Unix socket until `shutdown` resolves.
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use control_plane_core::ControlPlane;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
@@ -12,11 +15,13 @@ use iceberg::CatalogBuilder;
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnixListenerStream;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 
 use engine_wire::pb::engine_control_server::EngineControlServer;
 
 use crate::flight::FlightDataService;
+use crate::scheduler;
 use crate::service::EngineControlService;
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
@@ -32,6 +37,9 @@ pub struct EngineTuning {
     /// Inline-row bytes above which a flush-to-Parquet job is enqueued
     /// (`LOOM_FLUSH_BYTE_THRESHOLD`, default 64 MiB).
     pub flush_byte_threshold: i64,
+    /// How often the scheduler loop claims due transform schedules
+    /// (`LOOM_SCHEDULER_TICK_SECS`, default 5).
+    pub scheduler_tick: Duration,
 }
 
 impl EngineTuning {
@@ -49,6 +57,11 @@ impl EngineTuning {
                 "LOOM_FLUSH_BYTE_THRESHOLD",
                 64 * 1024 * 1024,
             )?,
+            scheduler_tick: Duration::from_secs(service_runtime::parse_var(
+                vars,
+                "LOOM_SCHEDULER_TICK_SECS",
+                5_u64,
+            )?),
         })
     }
 }
@@ -64,6 +77,7 @@ pub async fn run(
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<(), BoxErr> {
     let cp = service_runtime::control_plane(pool.clone(), cfg.lock_timeout);
+    let sched_cp: Arc<dyn ControlPlane> = Arc::new(cp.clone());
 
     let mut props = HashMap::new();
     props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
@@ -103,10 +117,23 @@ pub async fn run(
     // The send fails only if the receiver dropped (e.g. throwaway in main.rs), which is fine.
     let _sent = ready.send(());
 
+    let sched_cancel = CancellationToken::new();
+    let sched = tokio::spawn(scheduler::scheduler_loop(
+        sched_cp,
+        tuning.scheduler_tick,
+        sched_cancel.clone(),
+    ));
+
     Server::builder()
         .add_service(EngineControlServer::new(control))
         .add_service(FlightServiceServer::new(flight))
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
         .await?;
+
+    // On a serve ERROR the `?` above skips this cancel and the scheduler task
+    // is reaped by process/runtime teardown instead — acceptable, we are
+    // exiting either way.
+    sched_cancel.cancel();
+    drop(sched.await);
     Ok(())
 }

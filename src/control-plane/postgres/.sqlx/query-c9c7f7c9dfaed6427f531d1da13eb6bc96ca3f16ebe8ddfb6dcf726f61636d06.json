@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select next_run_at from transforms.transform where name = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "next_run_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "next_run_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "c9c7f7c9dfaed6427f531d1da13eb6bc96ca3f16ebe8ddfb6dcf726f61636d06"
+}
