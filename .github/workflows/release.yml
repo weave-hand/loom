@@ -6,8 +6,8 @@ name: release
 #
 # Three independent flows by event:
 #
-# - push to main      -> `edge`: push immutable `sha-<short>` images for both
-#                        services, then publish the Helm chart as the moving
+# - push to main      -> `edge`: push immutable `sha-<short>` images for all
+#                        three services, then publish the Helm chart as the moving
 #                        `bleeding-edge` channel (digest-pinned to those images).
 #                        Also publishes a versioned chart when the committed
 #                        Chart.yaml `version` is new (bump it to cut one).
@@ -39,6 +39,7 @@ env:
   REGISTRY: ghcr.io
   INGEST_IMAGE: ghcr.io/weave-hand/loom-ingest
   QUERY_API_IMAGE: ghcr.io/weave-hand/loom-query-api
+  ENGINE_IMAGE: ghcr.io/weave-hand/loom-engine
   CHART_REPO: oci://ghcr.io/weave-hand/charts
   CHART_OCI: ghcr.io/weave-hand/charts/loom
 
@@ -84,6 +85,7 @@ jobs:
           # (bleeding-edge), which digest-pins these exact images.
           buck2 run deploy//images/ingest:image.push    -- "sha-$short"
           buck2 run deploy//images/query-api:image.push -- "sha-$short"
+          buck2 run deploy//images/engine:image.push    -- "sha-$short"
 
       - name: Publish charts (bleeding-edge always; released version when bumped)
         env:
@@ -158,6 +160,7 @@ jobs:
           set -euo pipefail
           buck2 run deploy//images/ingest:image.push    -- "$V" latest
           buck2 run deploy//images/query-api:image.push -- "$V" latest
+          buck2 run deploy//images/engine:image.push    -- "$V" latest
 
       - name: Tag & GitHub Release
         uses: softprops/action-gh-release@v2
@@ -209,6 +212,7 @@ jobs:
 
           buck2 run deploy//images/ingest:image.push    -- "$dev" "$moving"
           buck2 run deploy//images/query-api:image.push -- "$dev" "$moving"
+          buck2 run deploy//images/engine:image.push    -- "$dev" "$moving"
 
           # Chart stamped to the dev version, digest-pinned to the dev images.
           sed -i -E "s/^version:.*/version: $dev/; s/^appVersion:.*/appVersion: \"$dev\"/" \
@@ -220,5 +224,6 @@ jobs:
             echo ""
             echo "- \`${INGEST_IMAGE}:${dev}\` (also \`:${moving}\`)"
             echo "- \`${QUERY_API_IMAGE}:${dev}\` (also \`:${moving}\`)"
+            echo "- \`${ENGINE_IMAGE}:${dev}\` (also \`:${moving}\`)"
             echo "- chart \`${CHART_REPO}/loom:${dev}\`"
           } >> "$GITHUB_STEP_SUMMARY"
