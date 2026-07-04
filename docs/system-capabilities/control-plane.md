@@ -304,7 +304,10 @@ row-filter property, or a caller-predicate-only operator all reject as 400
 before the policy is persisted); the list route rides the new
 `Acl::list_policies` read-back (mirroring `list_grants`'s role-scoped,
 `(action, target)`-ordered page) so a policy is readable immediately after it
-is written. Coarse grants gained the same target flexibility the fine-grained
+is written. One honesty note: **Table-target policies are stored for the
+deferred external SQL wire but enforced by nothing yet** — today's governed
+reads load policies by `Type` target only, so only Type-target policies
+affect what a reader sees. Coarse grants gained the same target flexibility the fine-grained
 side already had: `GrantReq` now accepts `type` **xor** `table`, so a role can
 be granted `Read`/`Write` directly on a physical `TableRef` — not just an
 ontology type — which unblocks pre-authorizing a landing table before its
