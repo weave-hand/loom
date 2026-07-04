@@ -5,10 +5,10 @@
 )]
 
 use loom_ui_components::{
-    Badge, Button, Column, DataTable, GlobalStyles, Input, InputKind, NavItem, Panel, StatusDot,
-    TabItem, TableRow, Tabs, TopNav,
+    Badge, Button, Column, DataTable, GlobalStyles, Input, InputKind, NavItem, Panel, Shell,
+    StatusDot, StubView, TabItem, TableRow, Tabs, TopNav,
 };
-use loom_ui_core::{Align, BadgeTone, ButtonVariant, Status, format_count};
+use loom_ui_core::{Align, BadgeTone, ButtonVariant, Status, Surface, format_count};
 use yew::prelude::*;
 
 #[derive(Clone, PartialEq)]
@@ -170,6 +170,17 @@ fn gallery() -> Html {
                     <h2>{ "DataTable" }</h2>
                     <Panel title="Finance / Transactions">
                         <DataTable<DatasetRow> columns={columns} rows={rows} selected={Some(0)} />
+                    </Panel>
+                </section>
+                <section>
+                    <h2>{ "Shell" }</h2>
+                    <Panel title="Shell">
+                        <Shell
+                            active={Surface::Catalog}
+                            on_switch={Callback::noop()}
+                            avatar="DK"
+                            list={html!{ <StubView surface={Surface::Pipelines} /> }}
+                        />
                     </Panel>
                 </section>
             </main>
