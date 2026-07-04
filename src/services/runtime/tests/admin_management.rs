@@ -1131,6 +1131,134 @@ async fn define_model_with_derived_and_constraints_roundtrips() {
     assert_eq!(status_p.constraints.length.as_ref().unwrap().max, Some(16));
 }
 
+async fn seed_vector_type(cp: &MemoryControlPlane) {
+    cp.define_type(
+        ObjectType::build("Doc", ("main", "doc"))
+            .prop("id", "Int")
+            .prop("embedding", "vector(3)")
+            .done(),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn vector_index_define_and_list_roundtrip() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_vector_type(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    // defaults: flat + cosine
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"embed_idx","property":"embedding"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // explicit hnsw + l2
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"embed_hnsw","property":"embedding","metric":"l2",
+                "spec":{"kind":"hnsw","m":16,"ef_construction":200}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = send(
+        app(cp),
+        req_empty("GET", "/admin/models/Doc/vector-indexes", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let idx = v["indexes"].as_array().unwrap();
+    assert_eq!(idx.len(), 2, "{body}");
+    let flat = idx.iter().find(|i| i["name"] == "embed_idx").unwrap();
+    assert_eq!(flat["metric"], "cosine");
+    assert_eq!(flat["spec"]["kind"], "flat");
+    let hnsw = idx.iter().find(|i| i["name"] == "embed_hnsw").unwrap();
+    assert_eq!(hnsw["metric"], "l2");
+    assert_eq!(hnsw["spec"]["kind"], "hnsw");
+    assert_eq!(hnsw["spec"]["m"], 16);
+    assert_eq!(hnsw["spec"]["ef_construction"], 200);
+}
+
+#[tokio::test]
+async fn vector_index_errors() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_vector_type(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    // unknown metric
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"embedding","metric":"dotproduct"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("metric"), "{body}");
+    // unknown kind
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"embedding","spec":{"kind":"annoy"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // tuning field on the wrong kind
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"embedding","spec":{"kind":"hnsw","nlist":10}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // non-vector property -> adapter Validation -> 400
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"id"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // unknown type -> adapter NotFound -> 404
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/models/Nope/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"embedding"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn define_model_agg_and_constraint_errors_are_400() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));

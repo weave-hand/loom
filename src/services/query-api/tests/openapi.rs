@@ -40,6 +40,8 @@ fn expected() -> BTreeSet<(String, String)> {
         ("post", "/admin/users/{username}/enable"),
         ("post", "/admin/users/{username}/password"),
         ("post", "/admin/models"),
+        ("post", "/admin/models/{type}/vector-indexes"),
+        ("get", "/admin/models/{type}/vector-indexes"),
         ("post", "/admin/roles"),
         ("get", "/admin/roles"),
         ("post", "/admin/roles/{role}/grants"),

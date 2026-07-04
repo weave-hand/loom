@@ -69,6 +69,8 @@ async fn admin_fragment_documents_exactly_the_admin_routes() {
         ("post", "/admin/users/{username}/enable"),
         ("post", "/admin/users/{username}/password"),
         ("post", "/admin/models"),
+        ("post", "/admin/models/{type}/vector-indexes"),
+        ("get", "/admin/models/{type}/vector-indexes"),
         ("post", "/admin/roles"),
         ("get", "/admin/roles"),
         ("post", "/admin/roles/{role}/grants"),

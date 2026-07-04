@@ -15,10 +15,10 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use control_plane_core::{
     ADMIN_ROLE, Action, ActionDef, ActionName, Aggregation, Auth, ControlPlane, ControlPlaneError,
-    DerivedPropertyDef, Effect, LengthConstraint, LinkDef, NewUser, ObjectType, PageReq, Policy,
-    PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId, RowFilter, RunState,
-    RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun,
-    TypeName, UserSummary,
+    DerivedPropertyDef, Effect, IndexSpec, LengthConstraint, LinkDef, Metric, NewUser, ObjectType,
+    PageReq, Policy, PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId,
+    RowFilter, RunState, RunTrigger, SubjectId, TableRef, TransformBody, TransformDef,
+    TransformName, TransformRun, TypeName, UserSummary, VectorIndexDef,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -572,6 +572,186 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
             Json(serde_json::json!({ "name": req.name })),
         )
             .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct VectorIndexSpecReq {
+    /// "flat" | "ivf_flat" | "hnsw".
+    kind: String,
+    /// ivf_flat only.
+    #[serde(default)]
+    nlist: Option<u32>,
+    /// hnsw only.
+    #[serde(default)]
+    m: Option<u32>,
+    /// hnsw only.
+    #[serde(default)]
+    ef_construction: Option<u32>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct VectorIndexReq {
+    name: String,
+    /// The vector-typed property the index covers.
+    property: String,
+    /// "cosine" (default) | "l2".
+    #[serde(default)]
+    metric: Option<String>,
+    /// Defaults to `{"kind": "flat"}`.
+    #[serde(default)]
+    spec: Option<VectorIndexSpecReq>,
+}
+
+/// Admin-wire spec parsing. Deliberately NOT `IndexSpec::from_label` — that
+/// helper silently drops tuning fields that don't belong to the kind; the
+/// admin surface rejects them so an operator's typo cannot vanish.
+fn parse_index_spec(spec: Option<VectorIndexSpecReq>) -> std::result::Result<IndexSpec, String> {
+    let Some(s) = spec else {
+        return Ok(IndexSpec::Flat);
+    };
+    match s.kind.as_str() {
+        "flat" => {
+            if s.nlist.is_some() || s.m.is_some() || s.ef_construction.is_some() {
+                return Err("flat takes no tuning fields".to_string());
+            }
+            Ok(IndexSpec::Flat)
+        }
+        "ivf_flat" => {
+            if s.m.is_some() || s.ef_construction.is_some() {
+                return Err("ivf_flat takes only nlist".to_string());
+            }
+            Ok(IndexSpec::IvfFlat { nlist: s.nlist })
+        }
+        "hnsw" => {
+            if s.nlist.is_some() {
+                return Err("hnsw takes only m and ef_construction".to_string());
+            }
+            Ok(IndexSpec::Hnsw {
+                m: s.m,
+                ef_construction: s.ef_construction,
+            })
+        }
+        other => Err(format!(
+            "unknown index kind `{other}` (want flat|ivf_flat|hnsw)"
+        )),
+    }
+}
+
+/// Declare (or replace, by `(type, name)`) a vector index over a vector-typed property.
+#[utoipa::path(
+    post, path = "/admin/models/{type}/vector-indexes",
+    params(("type" = String, Path, description = "Ontology type the index belongs to")),
+    request_body = VectorIndexReq,
+    responses(
+        (status = 201, description = "Vector index declared (upsert by type/name)"),
+        (status = 400, description = "Unknown metric or index kind, tuning field on the \
+            wrong kind, or the property is not vector-typed"),
+        (status = 404, description = "Unknown type"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn define_vector_index_route(
+    State(st): State<AdminState>,
+    Path(ty): Path<String>,
+    Json(req): Json<VectorIndexReq>,
+) -> Response {
+    let metric = match req.metric.as_deref() {
+        None => Metric::default(),
+        Some(s) => match s.parse::<Metric>() {
+            Ok(m) => m,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "metric must be cosine|l2" })),
+                )
+                    .into_response();
+            }
+        },
+    };
+    let spec = match parse_index_spec(req.spec) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e })),
+            )
+                .into_response();
+        }
+    };
+    let def = VectorIndexDef {
+        name: req.name.clone(),
+        type_name: TypeName(ty),
+        property: req.property,
+        metric,
+        spec,
+    };
+    match st.cp.ontology().define_vector_index(def).await {
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "name": req.name })),
+        )
+            .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// One vector index as rendered on the admin read surface (request vocabulary).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct VectorIndexView {
+    name: String,
+    property: String,
+    metric: String,
+    /// `{"kind": ...}` plus the kind's tuning fields when set.
+    spec: serde_json::Value,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct VectorIndexesResp {
+    indexes: Vec<VectorIndexView>,
+}
+
+/// List a type's declared vector indexes.
+#[utoipa::path(
+    get, path = "/admin/models/{type}/vector-indexes",
+    params(("type" = String, Path, description = "Ontology type whose indexes to list")),
+    responses((status = 200, description = "The type's vector indexes", body = VectorIndexesResp)),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn list_vector_indexes_route(
+    State(st): State<AdminState>,
+    Path(ty): Path<String>,
+) -> Response {
+    match st.cp.ontology().vector_indexes_for(&TypeName(ty)).await {
+        Ok(defs) => {
+            let indexes = defs
+                .into_iter()
+                .map(|d| {
+                    let (kind, nlist, m, ef) = d.spec.as_cols();
+                    let mut spec = serde_json::Map::new();
+                    spec.insert("kind".into(), kind.into());
+                    if let Some(v) = nlist {
+                        spec.insert("nlist".into(), v.into());
+                    }
+                    if let Some(v) = m {
+                        spec.insert("m".into(), v.into());
+                    }
+                    if let Some(v) = ef {
+                        spec.insert("ef_construction".into(), v.into());
+                    }
+                    VectorIndexView {
+                        name: d.name,
+                        property: d.property,
+                        metric: d.metric.as_str().to_string(),
+                        spec: serde_json::Value::Object(spec),
+                    }
+                })
+                .collect();
+            Json(VectorIndexesResp { indexes }).into_response()
+        }
         Err(e) => status_for(&e).into_response(),
     }
 }
@@ -1391,6 +1571,10 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         .route("/admin/users/:username/enable", post(enable_user))
         .route("/admin/users/:username/password", post(reset_password))
         .route("/admin/models", post(define_model))
+        .route(
+            "/admin/models/:type/vector-indexes",
+            post(define_vector_index_route).get(list_vector_indexes_route),
+        )
         .route("/admin/roles", post(create_role).get(list_roles))
         .route(
             "/admin/roles/:role/grants",
@@ -1441,6 +1625,8 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         list_roles,
         grant,
         define_model,
+        define_vector_index_route,
+        list_vector_indexes_route,
         define_link_route,
         delete_link_route,
         define_action_route,
@@ -1479,6 +1665,10 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         LengthReq,
         AggReq,
         DerivedReq,
+        VectorIndexReq,
+        VectorIndexSpecReq,
+        VectorIndexView,
+        VectorIndexesResp,
         GrantView,
         RoleGrantsResp,
         PolicyReq,
