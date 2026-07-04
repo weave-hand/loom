@@ -222,7 +222,18 @@ Re-export `RolePolicy` from `src/control-plane/core/src/lib.rs` in the same `pub
 
 Then refresh the compile-time cache: `bash tools/sqlx-prepare.sh` (commit the `.sqlx/` diff with this task).
 
-**Other `Acl` implementors:** grep `impl Acl for` across `src/` — besides the two adapters there is query-api's `WireAcl` (`src/services/query-api/src/wire_control_plane.rs`), which implements read-side methods and errors on unsupported ones. Add `list_policies` there returning the same "unsupported over the wire" error its `list_grants`/other admin reads use (copy the adjacent method's idiom exactly). If any other implementor turns up (testkit fakes), mirror the memory impl.
+**Other `Acl` implementors — BOTH must be updated in THIS task** (the trait has no default bodies, and prek's clippy hook builds every target at every commit, so a missed impl breaks the tree):
+
+1. `src/services/query-api/src/wire_control_plane.rs:36` — `WireAcl`. Add `list_policies` returning the same "unsupported over the wire" error its `list_grants`/other admin-read methods use (copy the adjacent method's idiom exactly). Add `RolePolicy` to its `control_plane_core` import block (~lines 14-18).
+2. `src/services/query-api/tests/read_page_single_resolve.rs:27` — `CountingAcl<'_>`, a delegating wrapper over `MemoryControlPlane` (rust_test target `//src/services/query-api:read-page-single-resolve`). Add the delegating method (and `RolePolicy` to its imports):
+
+```rust
+    async fn list_policies(&self, role: &RoleId, page: PageReq) -> Result<Page<RolePolicy>> {
+        self.inner.list_policies(role, page).await
+    }
+```
+
+(Verify the wrapper's inner field name by reading the adjacent delegating methods; mirror them exactly.)
 
 - [ ] **Step 5: Run the contract on both adapters**
 
@@ -253,7 +264,7 @@ git add -A && git commit --no-verify -m "feat(acl): role-scoped policy listing �
 ```rust
 #[tokio::test]
 async fn grant_table_target_roundtrips() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let token = seed_admin_session(&cp, "root").await;
     let (status, _) = send(
         app(cp.clone()),
@@ -265,7 +276,7 @@ async fn grant_table_target_roundtrips() {
     // listed with the PolicyTarget serde shape
     let (status, body) = send(
         app(cp.clone()),
-        req_json("GET", "/admin/roles/admin/grants", &token, ""),
+        req_empty("GET", "/admin/roles/admin/grants", &token),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -286,7 +297,7 @@ async fn grant_table_target_roundtrips() {
     assert_eq!(status, StatusCode::OK);
     let (_, body) = send(
         app(cp),
-        req_json("GET", "/admin/roles/admin/grants", &token, ""),
+        req_empty("GET", "/admin/roles/admin/grants", &token),
     )
     .await;
     assert!(!body.contains("\"Table\""), "revoked table grant gone: {body}");
@@ -294,7 +305,7 @@ async fn grant_table_target_roundtrips() {
 
 #[tokio::test]
 async fn grant_requires_exactly_one_target() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     seed_types(&cp).await;
     let token = seed_admin_session(&cp, "root").await;
     // neither
@@ -317,7 +328,7 @@ async fn grant_requires_exactly_one_target() {
 
 #[tokio::test]
 async fn grant_type_target_still_works_and_unknown_type_still_400() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     seed_types(&cp).await;
     let token = seed_admin_session(&cp, "root").await;
     let (status, _) = send(
@@ -437,7 +448,7 @@ Expected: PASS.
 ```rust
 #[tokio::test]
 async fn policy_set_list_clear_roundtrip() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     seed_types(&cp).await;
     let token = seed_admin_session(&cp, "root").await;
     let body = r#"{
@@ -455,7 +466,7 @@ async fn policy_set_list_clear_roundtrip() {
     assert_eq!(status, StatusCode::CREATED);
     let (status, listed) = send(
         app(cp.clone()),
-        req_json("GET", "/admin/roles/admin/policies", &token, ""),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -477,7 +488,7 @@ async fn policy_set_list_clear_roundtrip() {
     assert_eq!(status, StatusCode::OK);
     let (_, listed) = send(
         app(cp),
-        req_json("GET", "/admin/roles/admin/policies", &token, ""),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
     )
     .await;
     let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
@@ -486,7 +497,7 @@ async fn policy_set_list_clear_roundtrip() {
 
 #[tokio::test]
 async fn policy_validation_errors_are_400() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     seed_types(&cp).await;
     let token = seed_admin_session(&cp, "root").await;
     // row_filter that does not decode as a RowFilter
@@ -534,7 +545,7 @@ async fn policy_validation_errors_are_400() {
 
 #[tokio::test]
 async fn policy_table_target_accepted() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let token = seed_admin_session(&cp, "root").await;
     // Table targets skip type/property validation by design (deferred existence).
     let (status, _) = send(
@@ -546,7 +557,7 @@ async fn policy_table_target_accepted() {
     assert_eq!(status, StatusCode::CREATED);
     let (_, listed) = send(
         app(cp),
-        req_json("GET", "/admin/roles/admin/policies", &token, ""),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
     )
     .await;
     let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
@@ -556,7 +567,7 @@ async fn policy_table_target_accepted() {
 
 - [ ] **Step 2: Run to verify failure** (same command as Task 2 Step 2; expect 404-not-405 style failures since the route doesn't exist).
 
-- [ ] **Step 3: Implement.** In `admin.rs` (add `Policy`, `RowFilter`, `RolePolicy` to the `control_plane_core` import):
+- [ ] **Step 3: Implement.** In `admin.rs` (add `Policy` and `RowFilter` to the `control_plane_core` import — `RolePolicy` is not named in any handler, so do NOT import it here):
 
 ```rust
 #[derive(serde::Deserialize, utoipa::ToSchema)]
@@ -765,7 +776,7 @@ Expected: PASS.
 ```rust
 #[tokio::test]
 async fn define_model_with_derived_and_constraints_roundtrips() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let token = seed_admin_session(&cp, "root").await;
     let body = r#"{
         "name": "Order",
@@ -773,8 +784,8 @@ async fn define_model_with_derived_and_constraints_roundtrips() {
         "identity": "id",
         "properties": [
             {"name": "id", "ty": "Int", "required": true},
-            {"name": "qty", "ty": "Int", "constraints": {"range": {"min": 1, "max": 100}}},
-            {"name": "status", "ty": "Text",
+            {"name": "qty", "ty": "Integer", "constraints": {"range": {"min": 1, "max": 100}}},
+            {"name": "status", "ty": "String",
              "constraints": {"length": {"min": 2, "max": 16}, "one_of": ["open", "closed"]}}
         ],
         "derived": [
@@ -804,7 +815,7 @@ async fn define_model_with_derived_and_constraints_roundtrips() {
 
 #[tokio::test]
 async fn define_model_agg_and_constraint_errors_are_400() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let token = seed_admin_session(&cp, "root").await;
     // unknown agg kind
     let (status, body) = send(
@@ -837,12 +848,12 @@ async fn define_model_agg_and_constraint_errors_are_400() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    // range constraint on a Text property -> define-gate Validation -> 400
+    // range constraint on a String property -> define-gate Validation -> 400
     let (status, _) = send(
         app(cp),
         req_json("POST", "/admin/models", &token,
             r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
-                "properties":[{"name":"s","ty":"Text","constraints":{"range":{"min":1}}}]}"#),
+                "properties":[{"name":"s","ty":"String","constraints":{"range":{"min":1}}}]}"#),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -993,7 +1004,7 @@ In `define_model`, before building `otype`:
     }
 ```
 
-and in the `ObjectType` literal: `constraints: to_constraints(p.constraints)` replaces the `default()`, and `derived` replaces `vec![]`. Update the `define_model` `#[utoipa::path]` responses with a 400 line ("invalid agg kind/column pairing, or constraint invalid for the property type"). Add `ConstraintsReq`, `RangeReq`, `LengthReq`, `AggReq`, `DerivedReq` to `AdminApiDoc` schemas. Add `Aggregation`, `DerivedPropertyDef`, `RangeConstraint`, `LengthConstraint` imports (and switch the existing `control_plane_core::PropertyConstraints::default()` usage to the imported name if that reads cleaner — keep it consistent).
+and in the `ObjectType` literal: `constraints: to_constraints(p.constraints)` replaces the `default()`, and `derived` replaces `vec![]`. Update the `define_model` `#[utoipa::path]` responses with a 400 line ("invalid agg kind/column pairing, or constraint invalid for the property type"). Add `ConstraintsReq`, `RangeReq`, `LengthReq`, `AggReq`, `DerivedReq` to `AdminApiDoc` schemas. Add `Aggregation`, `DerivedPropertyDef`, `PropertyConstraints`, `RangeConstraint`, `LengthConstraint` imports (and switch the existing `control_plane_core::PropertyConstraints::default()` usage to the imported name if that reads cleaner — keep it consistent).
 
 - [ ] **Step 4: Run to verify pass** (same targets as Task 2). Expected: PASS.
 - [ ] **Step 5: prek + commit.** Message: `feat(admin): derived properties + per-value constraints in POST /admin/models`.
@@ -1027,7 +1038,7 @@ async fn seed_vector_type(cp: &MemoryControlPlane) {
 
 #[tokio::test]
 async fn vector_index_define_and_list_roundtrip() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     seed_vector_type(&cp).await;
     let token = seed_admin_session(&cp, "root").await;
     // defaults: flat + cosine
@@ -1049,7 +1060,7 @@ async fn vector_index_define_and_list_roundtrip() {
     assert_eq!(status, StatusCode::CREATED);
     let (status, body) = send(
         app(cp),
-        req_json("GET", "/admin/models/Doc/vector-indexes", &token, ""),
+        req_empty("GET", "/admin/models/Doc/vector-indexes", &token),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1068,7 +1079,7 @@ async fn vector_index_define_and_list_roundtrip() {
 
 #[tokio::test]
 async fn vector_index_errors() {
-    let cp = Arc::new(MemoryControlPlane::default());
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     seed_vector_type(&cp).await;
     let token = seed_admin_session(&cp, "root").await;
     // unknown metric
@@ -1148,6 +1159,9 @@ struct VectorIndexReq {
     spec: Option<VectorIndexSpecReq>,
 }
 
+/// Admin-wire spec parsing. Deliberately NOT `IndexSpec::from_label` — that
+/// helper silently drops tuning fields that don't belong to the kind; the
+/// admin surface rejects them so an operator's typo cannot vanish.
 fn parse_index_spec(spec: Option<VectorIndexSpecReq>) -> std::result::Result<IndexSpec, String> {
     let Some(s) = spec else {
         return Ok(IndexSpec::Flat);
@@ -1344,13 +1358,13 @@ Expected: PASS.
 async fn policy_authoring_end_to_end() { ... }
 ```
 
-Test body outline (concrete assertions; adapt the seed values to the columns `governance_routes_end_to_end` seeds — if it seeds only an `id` column, extend the seeded table with a text column, mirroring its `SeedCol` usage):
+Test body outline (concrete assertions). `governance_routes_end_to_end` seeds `main.widget(id: long, name: string)` (`admin_e2e.rs:257-269`) and defines properties `id: Long`, `name: String`. For a row filter you need a filterable text column: seed a **fresh** table (e.g. `main.gizmo`) with `SeedCol`s `id: long` + `region: string`, three rows (two `"emea"`, one `"apac"`), mirroring the existing seeding block:
 
 1. Boot `PgFixture` + Iceberg catalog + `InProcessServingEngine` exactly as `governance_routes_end_to_end` does; `full_app(...)`.
-2. Admin over HTTP: define the `Widget` model (`POST /admin/models`, properties `id: Int`, `region: Text` — matching the seeded columns), create role `reader` + user, grant `read` on type `Widget`.
-3. Admin over HTTP: `POST /admin/roles/reader/policies` with body `{"action":"read","type":"Widget","row_filter":{"Compare":{"property":"region","op":"Eq","value":{"Text":"emea"}}},"mask_columns":["id"]}` → assert 201.
-4. Reader `GET /objects/Widget`: assert only the `region == "emea"` rows come back and the `id` column value is the mask sentinel (grep the query-api masking code/tests for the exact sentinel — the issue report saw `***`; assert whatever the existing mask tests assert).
-5. Admin over HTTP: `POST /admin/roles/reader/grants` `{"action":"read","table":{"schema":"main","name":"widget"}}` → 201; then assert through the control plane that `cp.acl().check(&reader_subject, Action::Read, &PolicyTarget::Table(...))` is `Decision::Allow`, and `GET /admin/roles/reader/grants` lists the `{"Table":...}` target.
+2. Admin over HTTP: define the `Gizmo` model (`POST /admin/models`, properties `id: Long`, `region: String` — the logical-type tokens `resolve_logical` accepts), create role `reader` + user, grant `read` on type `Gizmo`.
+3. Admin over HTTP: `POST /admin/roles/reader/policies` with body `{"action":"read","type":"Gizmo","row_filter":{"Compare":{"property":"region","op":"Eq","value":{"Text":"emea"}}},"mask_columns":["id"]}` → assert 201.
+4. Reader `GET /objects/Gizmo`: assert only the two `region == "emea"` rows come back and the `id` column value is the mask sentinel — the literal `"***"` (`MASK_MARKER`, `src/services/query-api/src/sql.rs:51`).
+5. Admin over HTTP: `POST /admin/roles/reader/grants` `{"action":"read","table":{"schema":"main","name":"gizmo"}}` → 201; then assert through the control plane that `cp.acl().check(&reader_subject, Action::Read, &PolicyTarget::Table(...))` is `Decision::Allow`, and `GET /admin/roles/reader/grants` lists the `{"Table":...}` target.
 6. Admin over HTTP: `GET /admin/roles/reader/policies` → the policy from step 3 is listed (read-your-writes over the real adapter).
 
 - [ ] **Step 2: Run to verify red→green.** The test is new, so write it, then:
@@ -1358,7 +1372,7 @@ Test body outline (concrete assertions; adapt the seed values to the columns `go
 Run: `buck2 test //src/services/query-api:admin-e2e --unstable-allow-all-tests-on-re > /tmp/t6.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t6.log`
 Expected: PASS (Tasks 1–5 are in). If it fails, the failure is in the new surface — fix before proceeding.
 
-- [ ] **Step 3: Capability docs.** In `docs/system-capabilities/control-plane.md`'s administration section, extend the prose to record: fine-grained policy authoring (`POST|GET|DELETE /admin/roles/{role}/policies`, row filters in the domain serde shape, validated by `check_policy_write`), table-target grants (`GrantReq` `type` XOR `table`; unblocks pre-authorizing landing tables — the #361 workaround), derived properties + per-value constraints in `POST /admin/models`, vector index declare/list (`/admin/models/{type}/vector-indexes`), and the new `Acl::list_policies` read-back. Name PR `#NN` (placeholder — the controller patches the real number before merge). Keep it to one tight paragraph-per-surface in the file's existing voice.
+- [ ] **Step 3: Capability docs.** In `docs/system-capabilities/control-plane.md`'s administration section, extend the prose to record: fine-grained policy authoring (`POST|GET|DELETE /admin/roles/{role}/policies`, row filters in the domain serde shape, validated by `check_policy_write`), table-target grants (`GrantReq` `type` XOR `table`; unblocks pre-authorizing landing tables — the #361 workaround), derived properties + per-value constraints in `POST /admin/models`, vector index declare/list (`/admin/models/{type}/vector-indexes`), and the new `Acl::list_policies` read-back. Name PR `#NN` (placeholder — the controller patches the real number before merge). Keep it to one tight paragraph-per-surface in the file's existing voice. Put the vector-index route note in `docs/system-capabilities/vector-search.md` (the index-definition section) rather than control-plane.md.
 
 - [ ] **Step 4: Register close.** In `docs/FUTURE.md`, delete the `fut-admin-governance-http-surface` entry (its `- [ ]` title line and the prose line under it). Run `bash tools/docs.sh validate` — must pass. (The links/actions halves of that entry landed earlier via `#road-api-management-crud`; this branch lands the policy half and the rest of issue #363's surface.)
 
