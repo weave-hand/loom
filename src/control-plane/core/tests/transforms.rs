@@ -1,10 +1,18 @@
 //! Serde shapes and helpers of the transforms concern types.
 
 use control_plane_core::{
-    OutputMode, RunState, RunTrigger, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND, TableRef,
-    TransformBody, TransformDef, TransformName, validate_transform_def,
+    ControlPlaneError, OutputMode, RunState, RunTrigger, TRANSFORM_JOB_KIND,
+    TYPED_TRANSFORM_JOB_KIND, TableRef, TransformBody, TransformDef, TransformName, TriggerNode,
+    validate_no_trigger_cycle, validate_transform_def,
 };
 use uuid::Uuid;
+
+fn tref(schema: &str, name: &str) -> TableRef {
+    TableRef {
+        schema: schema.to_string(),
+        name: name.to_string(),
+    }
+}
 
 fn physical_body() -> TransformBody {
     TransformBody::Physical {
@@ -69,22 +77,6 @@ fn to_job_maps_kind_and_threads_run_id() {
         output_mode: OutputMode::Overwrite,
     };
     assert_eq!(typed.to_job(rid).kind, TYPED_TRANSFORM_JOB_KIND);
-}
-
-#[test]
-fn rejects_data_trigger_until_slice_3() {
-    let mut def = TransformDef {
-        name: TransformName("t".into()),
-        body: physical_body(),
-        schedule: None,
-        on_input_commit: true,
-    };
-    assert!(
-        validate_transform_def(&def).is_err(),
-        "data trigger rejected until slice 3"
-    );
-    def.on_input_commit = false;
-    assert!(validate_transform_def(&def).is_ok());
 }
 
 #[test]
@@ -185,4 +177,99 @@ fn legacy_payload_without_run_id_still_deserializes() {
     let typed = serde_json::json!({ "inputs": ["A"], "output": "B", "sql": "select 1" });
     let job: control_plane_core::TypedTransformJob = serde_json::from_value(typed).unwrap();
     assert_eq!(job.run_id, None);
+}
+
+// -- slice 3: trigger-cycle validation --
+
+fn node(name: &str, inputs: &[(&str, &str)], output: Option<(&str, &str)>) -> TriggerNode {
+    TriggerNode {
+        name: name.to_string(),
+        inputs: inputs.iter().map(|(s, t)| tref(s, t)).collect(),
+        output: output.map(|(s, t)| tref(s, t)),
+    }
+}
+
+#[test]
+fn trigger_cycle_accepts_a_dag() {
+    // a -> b -> c is acyclic; unrelated d has no edges.
+    let nodes = vec![
+        node("a", &[("main", "t0")], Some(("main", "t1"))),
+        node("b", &[("main", "t1")], Some(("main", "t2"))),
+        node("c", &[("main", "t2")], Some(("main", "t3"))),
+        node("d", &[("main", "x")], Some(("main", "y"))),
+    ];
+    validate_no_trigger_cycle(&nodes).unwrap();
+}
+
+#[test]
+fn trigger_cycle_rejects_a_two_cycle() {
+    let nodes = vec![
+        node("a", &[("main", "t1")], Some(("main", "t2"))),
+        node("b", &[("main", "t2")], Some(("main", "t1"))),
+    ];
+    let err = validate_no_trigger_cycle(&nodes).unwrap_err();
+    assert!(matches!(err, ControlPlaneError::Validation(_)));
+    let msg = err.to_string();
+    assert!(
+        msg.contains('a') && msg.contains('b'),
+        "cycle members named: {msg}"
+    );
+}
+
+#[test]
+fn trigger_cycle_rejects_a_self_loop() {
+    let nodes = vec![node("a", &[("main", "t1")], Some(("main", "t1")))];
+    assert!(validate_no_trigger_cycle(&nodes).is_err());
+}
+
+#[test]
+fn trigger_cycle_unresolvable_output_forms_no_edge() {
+    // "a" would close the loop but its output no longer resolves.
+    let nodes = vec![
+        node("a", &[("main", "t2")], None),
+        node("b", &[("main", "t1")], Some(("main", "t2"))),
+    ];
+    validate_no_trigger_cycle(&nodes).unwrap();
+}
+
+#[test]
+fn trigger_node_resolves_typed_and_physical_bodies() {
+    let mut types = std::collections::HashMap::new();
+    types.insert("Widget".to_string(), tref("main", "widgets"));
+    // Typed: known input resolves, unknown input drops, unknown output -> None.
+    let typed = TransformBody::Typed {
+        inputs: vec!["Widget".into(), "Ghost".into()],
+        output: "Phantom".into(),
+        sql: "select 1".into(),
+        output_mode: OutputMode::Append,
+    };
+    let n = TriggerNode::resolve(&TransformName("t".into()), &typed, &types);
+    assert_eq!(n.inputs, vec![tref("main", "widgets")]);
+    assert_eq!(n.output, None);
+    // Physical passes through untouched.
+    let phys = TransformBody::Physical {
+        inputs: vec![tref("main", "src")],
+        output: tref("main", "dst"),
+        sql: "select 1".into(),
+        output_mode: OutputMode::Append,
+    };
+    let n = TriggerNode::resolve(&TransformName("p".into()), &phys, &types);
+    assert_eq!(n.inputs, vec![tref("main", "src")]);
+    assert_eq!(n.output, Some(tref("main", "dst")));
+}
+
+#[test]
+fn validate_accepts_a_data_triggered_def() {
+    let def = TransformDef {
+        name: TransformName("dt".into()),
+        body: TransformBody::Physical {
+            inputs: vec![tref("main", "src")],
+            output: tref("main", "dst"),
+            sql: "select 1".into(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: true,
+    };
+    validate_transform_def(&def).unwrap();
 }

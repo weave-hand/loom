@@ -365,4 +365,25 @@ impl Transforms for PgControlPlane {
         .ok_or_else(|| ControlPlaneError::NotFound(format!("transform {}", name.0)))?;
         Ok(row.next_run_at)
     }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn data_triggered_defs(&self) -> Result<Vec<TransformDef>> {
+        let rows = sqlx::query!(
+            "select name, body, schedule, on_input_commit from transforms.transform \
+             where on_input_commit order by name",
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(backend)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(TransformDef {
+                    name: TransformName(r.name),
+                    body: de_body(r.body)?,
+                    schedule: r.schedule,
+                    on_input_commit: r.on_input_commit,
+                })
+            })
+            .collect()
+    }
 }

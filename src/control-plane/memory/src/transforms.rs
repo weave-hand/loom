@@ -193,6 +193,20 @@ impl Transforms for MemoryControlPlane {
         }
         Ok(st.next_run_at.get(&name.0).copied())
     }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn data_triggered_defs(&self) -> Result<Vec<TransformDef>> {
+        let mut defs: Vec<TransformDef> = self
+            .transforms
+            .lock()
+            .defs
+            .values()
+            .filter(|d| d.on_input_commit)
+            .cloned()
+            .collect();
+        defs.sort_by(|a, b| a.name.0.cmp(&b.name.0));
+        Ok(defs)
+    }
 }
 
 /// Shared state transition for [`RunOutcome`] — also used by the memory

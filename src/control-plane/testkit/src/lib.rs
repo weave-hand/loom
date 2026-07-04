@@ -4204,14 +4204,6 @@ where
     cp.define_transform(unscheduled).await.unwrap();
     assert_eq!(cp.next_run_at(&scheduled.name).await.unwrap(), None);
 
-    let trig = TransformDef {
-        on_input_commit: true,
-        ..def.clone()
-    };
-    assert!(matches!(
-        cp.define_transform(trig).await,
-        Err(ControlPlaneError::Validation(_))
-    ));
     let bad_typed = TransformDef {
         name: TransformName("typed".into()),
         body: TransformBody::Typed {
