@@ -311,7 +311,7 @@ definition and skips, rather than double-fires, an occurrence whose claimed
 run fails to submit. Redefining a schedule resets the clock: `next_run_at` is
 recomputed from the redefinition time, not the original definition's cadence.
 
-Slice 3 (`road-transform-data-triggers`, PR #NN) makes `TransformDef.on_input_commit`
+Slice 3 (`road-transform-data-triggers`, PR #373) makes `TransformDef.on_input_commit`
 live: a def marked `on_input_commit` fires a fresh `TransformRun` whenever a
 commit writes new data to one of its resolved inputs, with no polling. The
 resolution and cycle-detection logic is backend-neutral core: `TriggerNode`

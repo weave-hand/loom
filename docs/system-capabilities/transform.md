@@ -230,7 +230,7 @@ list route does not.
 
 ## Data triggers
 
-`TransformDef.on_input_commit` (slice 3, `road-transform-data-triggers`, PR #NN)
+`TransformDef.on_input_commit` (slice 3, `road-transform-data-triggers`, PR #373)
 is live: a data-triggered def fires a fresh run whenever a commit writes new
 data to one of its resolved inputs, with no polling loop. Resolution and
 cycle-checking are shared, backend-neutral logic in `core::transforms`:
