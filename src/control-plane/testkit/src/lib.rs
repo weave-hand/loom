@@ -21,8 +21,8 @@ use control_plane_core::{
     Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef,
     Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef,
     LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq,
-    ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RowFilter, RunId,
-    ScalarValue, SnapshotId, SubjectId, TableControlPlane, TableRef, Transforms, TypeName,
+    ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RolePolicy, RowFilter,
+    RunId, ScalarValue, SnapshotId, SubjectId, TableControlPlane, TableRef, Transforms, TypeName,
     VectorIndexDef,
 };
 use time::OffsetDateTime;
@@ -1931,6 +1931,100 @@ pub async fn acl_contract<A: Acl + Ontology>(a: &A) {
         .items,
         vec![ticket_write],
         "Write policy survives clearing the Read policy"
+    );
+
+    // --- list_policies: role-scoped read-back, ordered by (action, target-key) ---
+    a.define_role(&rid("auditor")).await.unwrap();
+    let p_widget_write = Policy {
+        target: ttype("Widget"),
+        row_filter: None,
+        deny_columns: vec!["cost".into()],
+        mask_columns: vec![],
+    };
+    let p_gadget_read = Policy {
+        target: ttype("Gadget"),
+        row_filter: None,
+        deny_columns: vec![],
+        mask_columns: vec!["name".into()],
+    };
+    let p_table_read = Policy {
+        target: ttable("main", "widget"),
+        row_filter: None,
+        deny_columns: vec![],
+        mask_columns: vec![],
+    };
+    // Insert out of order to prove the listing sorts.
+    a.set_policy(&rid("auditor"), Action::Write, p_widget_write.clone())
+        .await
+        .unwrap();
+    a.set_policy(&rid("auditor"), Action::Read, p_gadget_read.clone())
+        .await
+        .unwrap();
+    a.set_policy(&rid("auditor"), Action::Read, p_table_read.clone())
+        .await
+        .unwrap();
+    let listed = a
+        .list_policies(&rid("auditor"), PageReq::unbounded())
+        .await
+        .unwrap();
+    // Order: action ("read" < "write"), then target kind ("table" < "type"), then a, b.
+    assert_eq!(
+        listed.items,
+        vec![
+            RolePolicy {
+                action: Action::Read,
+                policy: p_table_read
+            },
+            RolePolicy {
+                action: Action::Read,
+                policy: p_gadget_read
+            },
+            RolePolicy {
+                action: Action::Write,
+                policy: p_widget_write.clone()
+            },
+        ],
+        "list_policies returns the role's policies ordered by (action, target-key)"
+    );
+    // clear shrinks the listing; other rows untouched
+    a.clear_policy(&rid("auditor"), Action::Read, &ttype("Gadget"))
+        .await
+        .unwrap();
+    let listed = a
+        .list_policies(&rid("auditor"), PageReq::unbounded())
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 2, "cleared policy no longer listed");
+    // unknown role -> NotFound (mirrors list_grants)
+    assert!(matches!(
+        a.list_policies(&rid("no-such-role"), PageReq::unbounded())
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    // a policy with a row_filter round-trips through the listing intact
+    let p_filtered = Policy {
+        target: ttype("Customer"),
+        row_filter: Some(RowFilter::Compare {
+            property: "region".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Text("emea".into()),
+        }),
+        deny_columns: vec![],
+        mask_columns: vec![],
+    };
+    a.set_policy(&rid("auditor"), Action::Read, p_filtered.clone())
+        .await
+        .unwrap();
+    let listed = a
+        .list_policies(&rid("auditor"), PageReq::unbounded())
+        .await
+        .unwrap();
+    assert!(
+        listed.items.contains(&RolePolicy {
+            action: Action::Read,
+            policy: p_filtered
+        }),
+        "row_filter survives the role-scoped listing"
     );
 
     // --- grant / set_policy on a missing role -> NotFound ---

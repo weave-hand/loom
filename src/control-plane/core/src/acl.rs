@@ -221,6 +221,15 @@ pub struct Grant {
     pub effect: Effect,
 }
 
+/// One row of a role's policy listing: the action the policy binds plus the
+/// policy itself. The role-scoped dual of [`Grant`], returned by
+/// [`Acl::list_policies`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RolePolicy {
+    pub action: Action,
+    pub policy: Policy,
+}
+
 /// Validate a [`RowFilter`]'s well-formedness. Structural rules are always enforced;
 /// when `properties` is `Some`, every `Compare` leaf's `property` must be a member.
 /// Returns a human-readable reason on the first failure.
@@ -384,6 +393,11 @@ pub trait Acl {
         action: Action,
         target: &PolicyTarget,
     ) -> Result<()>;
+
+    /// All policies of `role`, ordered by `(action, target-key)`. Role must
+    /// exist, else `NotFound`. The `page` request is accepted but not yet
+    /// enforced; results are a single full page. (Mirrors `list_grants`.)
+    async fn list_policies(&self, role: &RoleId, page: PageReq) -> Result<Page<RolePolicy>>;
 
     /// `Allow` iff any role assigned to `subject` has a grant matching
     /// `(action, target)`. Unknown subject → `Deny` (not an error).

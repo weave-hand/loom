@@ -9,7 +9,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, Decision, Effect, Grant, ObjectType, Ontology, Page, PageReq, Policy,
-    PolicyTarget, PropertyDef, Result as CpResult, RoleId, SubjectId, TableRef, TypeName,
+    PolicyTarget, PropertyDef, Result as CpResult, RoleId, RolePolicy, SubjectId, TableRef,
+    TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object_page};
@@ -80,6 +81,9 @@ impl Acl for CountingAcl<'_> {
         target: &PolicyTarget,
     ) -> CpResult<()> {
         self.inner.clear_policy(role, action, target).await
+    }
+    async fn list_policies(&self, role: &RoleId, page: PageReq) -> CpResult<Page<RolePolicy>> {
+        self.inner.list_policies(role, page).await
     }
     async fn check(
         &self,

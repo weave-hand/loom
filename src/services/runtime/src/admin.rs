@@ -14,10 +14,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use control_plane_core::{
-    ADMIN_ROLE, Action, ActionDef, ActionName, Auth, ControlPlane, ControlPlaneError, Effect,
-    LinkDef, NewUser, ObjectType, PageReq, PolicyTarget, PropertyDef, RoleId, RunState, RunTrigger,
-    SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun, TypeName,
-    UserSummary,
+    ADMIN_ROLE, Action, ActionDef, ActionName, Aggregation, Auth, ControlPlane, ControlPlaneError,
+    DerivedPropertyDef, Effect, IndexSpec, LengthConstraint, LinkDef, Metric, NewUser, ObjectType,
+    PageReq, Policy, PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId,
+    RowFilter, RunState, RunTrigger, SubjectId, TableRef, TransformBody, TransformDef,
+    TransformName, TransformRun, TypeName, UserSummary, VectorIndexDef,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -306,19 +307,64 @@ async fn list_roles(State(st): State<AdminState>) -> Response {
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 struct GrantReq {
     action: String,
-    r#type: String,
+    /// Exactly one of `type`/`table` must be set.
+    #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
+    table: Option<TableReq>,
 }
 
-/// Grant a role coarse Read/Write access on a type.
+/// Parse the wire action token shared by grant/policy bodies.
+#[expect(
+    clippy::result_large_err,
+    reason = "the Err path returns straight through to the handler as the HTTP response body"
+)]
+fn parse_action(s: &str) -> std::result::Result<Action, Response> {
+    match s {
+        "read" => Ok(Action::Read),
+        "write" => Ok(Action::Write),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "action must be read|write" })),
+        )
+            .into_response()),
+    }
+}
+
+/// Resolve the exclusive `type`/`table` target pair shared by grant/policy
+/// bodies. Exactly one must be set.
+#[expect(
+    clippy::result_large_err,
+    reason = "the Err path returns straight through to the handler as the HTTP response body"
+)]
+fn parse_target(
+    ty: Option<String>,
+    table: Option<TableReq>,
+) -> std::result::Result<PolicyTarget, Response> {
+    match (ty, table) {
+        (Some(t), None) => Ok(PolicyTarget::Type(TypeName(t))),
+        (None, Some(t)) => Ok(PolicyTarget::Table(TableRef {
+            schema: t.schema,
+            name: t.name,
+        })),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "exactly one of type or table" })),
+        )
+            .into_response()),
+    }
+}
+
+/// Grant a role coarse Read/Write access on a type or table.
 ///
 /// An unknown grant-target type is a 400.
 #[utoipa::path(
     post, path = "/admin/roles/{role}/grants",
     params(("role" = String, Path, description = "Role receiving the grant")),
-    request_body = GrantReq,
+    request_body(content = GrantReq, description = "Exactly one of `type`/`table` must be set"),
     responses(
         (status = 201, description = "Granted"),
-        (status = 400, description = "action is not read|write, or unknown grant-target type"),
+        (status = 400, description = "action is not read|write, exactly-one-of-target violated, or unknown grant-target type"),
     ),
     security(("bearer_auth" = [])),
     tag = "admin",
@@ -328,18 +374,14 @@ async fn grant(
     Path(role): Path<String>,
     Json(req): Json<GrantReq>,
 ) -> Response {
-    let action = match req.action.as_str() {
-        "read" => Action::Read,
-        "write" => Action::Write,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "action must be read|write" })),
-            )
-                .into_response();
-        }
+    let action = match parse_action(&req.action) {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
-    let target = PolicyTarget::Type(TypeName(req.r#type.clone()));
+    let target = match parse_target(req.r#type, req.table) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
     match st
         .cp
         .acl()
@@ -352,11 +394,108 @@ async fn grant(
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
+struct RangeReq {
+    #[serde(default)]
+    min: Option<f64>,
+    #[serde(default)]
+    max: Option<f64>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct LengthReq {
+    #[serde(default)]
+    min: Option<u32>,
+    #[serde(default)]
+    max: Option<u32>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct ConstraintsReq {
+    /// Numeric bound; valid only on numeric property types.
+    #[serde(default)]
+    range: Option<RangeReq>,
+    /// String length bound; valid only on string property types.
+    #[serde(default)]
+    length: Option<LengthReq>,
+    /// Regex the value must match; valid only on string property types.
+    #[serde(default)]
+    pattern: Option<String>,
+    /// Closed value vocabulary; valid only on string property types.
+    #[serde(default)]
+    one_of: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct AggReq {
+    /// "count" | "sum" | "avg" | "min" | "max".
+    kind: String,
+    /// Target-type column to aggregate; required for every kind except "count".
+    #[serde(default)]
+    column: Option<String>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct DerivedReq {
+    name: String,
+    /// Result type, e.g. "Int".
+    ty: String,
+    /// The link the aggregation traverses.
+    link: String,
+    agg: AggReq,
+}
+
+fn to_constraints(c: Option<ConstraintsReq>) -> PropertyConstraints {
+    let Some(c) = c else {
+        return PropertyConstraints::default();
+    };
+    PropertyConstraints {
+        range: c.range.map(|r| RangeConstraint {
+            min: r.min,
+            max: r.max,
+        }),
+        length: c.length.map(|l| LengthConstraint {
+            min: l.min,
+            max: l.max,
+        }),
+        pattern: c.pattern,
+        one_of: c.one_of,
+    }
+}
+
+fn parse_agg(agg: AggReq) -> std::result::Result<Aggregation, String> {
+    fn need(
+        column: Option<String>,
+        kind: &str,
+        f: fn(String) -> Aggregation,
+    ) -> std::result::Result<Aggregation, String> {
+        column
+            .map(f)
+            .ok_or_else(|| format!("agg kind {kind} requires a column"))
+    }
+    match agg.kind.as_str() {
+        "count" => match agg.column {
+            None => Ok(Aggregation::Count),
+            Some(_) => Err("agg kind count takes no column".to_string()),
+        },
+        "sum" => need(agg.column, "sum", Aggregation::Sum),
+        "avg" => need(agg.column, "avg", Aggregation::Avg),
+        "min" => need(agg.column, "min", Aggregation::Min),
+        "max" => need(agg.column, "max", Aggregation::Max),
+        other => Err(format!(
+            "unknown agg kind `{other}` (want count|sum|avg|min|max)"
+        )),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct PropReq {
     name: String,
     ty: String,
     #[serde(default)]
     required: bool,
+    /// Per-value constraints enforced by the land and action gates (422 on violation).
+    #[serde(default)]
+    constraints: Option<ConstraintsReq>,
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
@@ -371,17 +510,43 @@ struct DefineModelReq {
     table: TableReq,
     identity: Option<String>,
     properties: Vec<PropReq>,
+    /// Aggregate-over-link derived properties. Link existence is not validated
+    /// here (matches `define_type`; see iss-delete-link-derived-dangle).
+    #[serde(default)]
+    derived: Vec<DerivedReq>,
 }
 
 /// Define a model (ontology type) over an existing table.
 #[utoipa::path(
     post, path = "/admin/models",
     request_body = DefineModelReq,
-    responses((status = 201, description = "Model (ontology type) defined")),
+    responses(
+        (status = 201, description = "Model (ontology type) defined"),
+        (status = 400, description = "invalid agg kind/column pairing, or constraint invalid \
+            for the property type"),
+    ),
     security(("bearer_auth" = [])),
     tag = "admin",
 )]
 async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelReq>) -> Response {
+    let mut derived = Vec::with_capacity(req.derived.len());
+    for d in req.derived {
+        match parse_agg(d.agg) {
+            Ok(agg) => derived.push(DerivedPropertyDef {
+                name: d.name,
+                ty: d.ty,
+                link: d.link,
+                agg,
+            }),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": e })),
+                )
+                    .into_response();
+            }
+        }
+    }
     let otype = ObjectType {
         name: TypeName(req.name.clone()),
         table: TableRef {
@@ -395,10 +560,10 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
                 name: p.name,
                 ty: p.ty,
                 required: p.required,
-                constraints: control_plane_core::PropertyConstraints::default(),
+                constraints: to_constraints(p.constraints),
             })
             .collect(),
-        derived: vec![],
+        derived,
         identity: req.identity,
     };
     match st.cp.ontology().define_type(otype).await {
@@ -407,6 +572,186 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
             Json(serde_json::json!({ "name": req.name })),
         )
             .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct VectorIndexSpecReq {
+    /// "flat" | "ivf_flat" | "hnsw".
+    kind: String,
+    /// ivf_flat only.
+    #[serde(default)]
+    nlist: Option<u32>,
+    /// hnsw only.
+    #[serde(default)]
+    m: Option<u32>,
+    /// hnsw only.
+    #[serde(default)]
+    ef_construction: Option<u32>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct VectorIndexReq {
+    name: String,
+    /// The vector-typed property the index covers.
+    property: String,
+    /// "cosine" (default) | "l2".
+    #[serde(default)]
+    metric: Option<String>,
+    /// Defaults to `{"kind": "flat"}`.
+    #[serde(default)]
+    spec: Option<VectorIndexSpecReq>,
+}
+
+/// Admin-wire spec parsing. Deliberately NOT `IndexSpec::from_label` — that
+/// helper silently drops tuning fields that don't belong to the kind; the
+/// admin surface rejects them so an operator's typo cannot vanish.
+fn parse_index_spec(spec: Option<VectorIndexSpecReq>) -> std::result::Result<IndexSpec, String> {
+    let Some(s) = spec else {
+        return Ok(IndexSpec::Flat);
+    };
+    match s.kind.as_str() {
+        "flat" => {
+            if s.nlist.is_some() || s.m.is_some() || s.ef_construction.is_some() {
+                return Err("flat takes no tuning fields".to_string());
+            }
+            Ok(IndexSpec::Flat)
+        }
+        "ivf_flat" => {
+            if s.m.is_some() || s.ef_construction.is_some() {
+                return Err("ivf_flat takes only nlist".to_string());
+            }
+            Ok(IndexSpec::IvfFlat { nlist: s.nlist })
+        }
+        "hnsw" => {
+            if s.nlist.is_some() {
+                return Err("hnsw takes only m and ef_construction".to_string());
+            }
+            Ok(IndexSpec::Hnsw {
+                m: s.m,
+                ef_construction: s.ef_construction,
+            })
+        }
+        other => Err(format!(
+            "unknown index kind `{other}` (want flat|ivf_flat|hnsw)"
+        )),
+    }
+}
+
+/// Declare (or replace, by `(type, name)`) a vector index over a vector-typed property.
+#[utoipa::path(
+    post, path = "/admin/models/{type}/vector-indexes",
+    params(("type" = String, Path, description = "Ontology type the index belongs to")),
+    request_body = VectorIndexReq,
+    responses(
+        (status = 201, description = "Vector index declared (upsert by type/name)"),
+        (status = 400, description = "Unknown metric or index kind, tuning field on the \
+            wrong kind, or the property is not vector-typed"),
+        (status = 404, description = "Unknown type"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn define_vector_index_route(
+    State(st): State<AdminState>,
+    Path(ty): Path<String>,
+    Json(req): Json<VectorIndexReq>,
+) -> Response {
+    let metric = match req.metric.as_deref() {
+        None => Metric::default(),
+        Some(s) => match s.parse::<Metric>() {
+            Ok(m) => m,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "metric must be cosine|l2" })),
+                )
+                    .into_response();
+            }
+        },
+    };
+    let spec = match parse_index_spec(req.spec) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e })),
+            )
+                .into_response();
+        }
+    };
+    let def = VectorIndexDef {
+        name: req.name.clone(),
+        type_name: TypeName(ty),
+        property: req.property,
+        metric,
+        spec,
+    };
+    match st.cp.ontology().define_vector_index(def).await {
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "name": req.name })),
+        )
+            .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// One vector index as rendered on the admin read surface (request vocabulary).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct VectorIndexView {
+    name: String,
+    property: String,
+    metric: String,
+    /// `{"kind": ...}` plus the kind's tuning fields when set.
+    spec: serde_json::Value,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct VectorIndexesResp {
+    indexes: Vec<VectorIndexView>,
+}
+
+/// List a type's declared vector indexes.
+#[utoipa::path(
+    get, path = "/admin/models/{type}/vector-indexes",
+    params(("type" = String, Path, description = "Ontology type whose indexes to list")),
+    responses((status = 200, description = "The type's vector indexes", body = VectorIndexesResp)),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn list_vector_indexes_route(
+    State(st): State<AdminState>,
+    Path(ty): Path<String>,
+) -> Response {
+    match st.cp.ontology().vector_indexes_for(&TypeName(ty)).await {
+        Ok(defs) => {
+            let indexes = defs
+                .into_iter()
+                .map(|d| {
+                    let (kind, nlist, m, ef) = d.spec.as_cols();
+                    let mut spec = serde_json::Map::new();
+                    spec.insert("kind".into(), kind.into());
+                    if let Some(v) = nlist {
+                        spec.insert("nlist".into(), v.into());
+                    }
+                    if let Some(v) = m {
+                        spec.insert("m".into(), v.into());
+                    }
+                    if let Some(v) = ef {
+                        spec.insert("ef_construction".into(), v.into());
+                    }
+                    VectorIndexView {
+                        name: d.name,
+                        property: d.property,
+                        metric: d.metric.as_str().to_string(),
+                        spec: serde_json::Value::Object(spec),
+                    }
+                })
+                .collect();
+            Json(VectorIndexesResp { indexes }).into_response()
+        }
         Err(e) => status_for(&e).into_response(),
     }
 }
@@ -603,10 +948,10 @@ async fn list_role_grants(State(st): State<AdminState>, Path(role): Path<String>
 #[utoipa::path(
     delete, path = "/admin/roles/{role}/grants",
     params(("role" = String, Path, description = "Role whose grant to revoke")),
-    request_body = GrantReq,
+    request_body(content = GrantReq, description = "Exactly one of `type`/`table` must be set"),
     responses(
         (status = 200, description = "Revoked (idempotent)"),
-        (status = 400, description = "action is not read|write"),
+        (status = 400, description = "action is not read|write, or exactly-one-of-target violated"),
     ),
     security(("bearer_auth" = [])),
     tag = "admin",
@@ -616,20 +961,181 @@ async fn revoke_grant(
     Path(role): Path<String>,
     Json(req): Json<GrantReq>,
 ) -> Response {
-    let action = match req.action.as_str() {
-        "read" => Action::Read,
-        "write" => Action::Write,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "action must be read|write" })),
-            )
-                .into_response();
-        }
+    let action = match parse_action(&req.action) {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
-    let target = PolicyTarget::Type(TypeName(req.r#type.clone()));
+    let target = match parse_target(req.r#type, req.table) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
     match st.cp.acl().revoke(&RoleId(role), action, &target).await {
         Ok(()) => (StatusCode::OK, "revoked").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct PolicyReq {
+    action: String,
+    /// Exactly one of `type`/`table` must be set.
+    #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
+    table: Option<TableReq>,
+    /// A `RowFilter` in its serde shape, e.g.
+    /// `{"Compare":{"property":"region","op":"Eq","value":{"Text":"emea"}}}`,
+    /// `{"And":[...]}`, `{"Not":{...}}`. Absent/null means no row filter.
+    #[serde(default)]
+    row_filter: Option<serde_json::Value>,
+    #[serde(default)]
+    deny_columns: Vec<String>,
+    #[serde(default)]
+    mask_columns: Vec<String>,
+}
+
+/// Create or replace the fine-grained policy for `(role, action, target)`.
+#[utoipa::path(
+    post, path = "/admin/roles/{role}/policies",
+    params(("role" = String, Path, description = "Role the policy binds")),
+    request_body = PolicyReq,
+    responses(
+        (status = 201, description = "Policy set (upsert by role/action/target)"),
+        (status = 400, description = "action is not read|write, exactly-one-of-target violated, \
+            row_filter does not decode as a RowFilter, or validation failed (unknown type, \
+            unknown row-filter property, caller-predicate-only operator)"),
+        (status = 404, description = "Unknown role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn set_policy_route(
+    State(st): State<AdminState>,
+    Path(role): Path<String>,
+    Json(req): Json<PolicyReq>,
+) -> Response {
+    let action = match parse_action(&req.action) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    let target = match parse_target(req.r#type, req.table) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let row_filter: Option<RowFilter> = match req.row_filter {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("invalid RowFilter: {e}"))
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let policy = Policy {
+        target,
+        row_filter,
+        deny_columns: req.deny_columns,
+        mask_columns: req.mask_columns,
+    };
+    match st.cp.acl().set_policy(&RoleId(role), action, policy).await {
+        Ok(()) => (StatusCode::CREATED, "defined").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// One policy row as rendered on the admin read surface.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct PolicyView {
+    action: String,
+    /// The `PolicyTarget` serde shape, e.g. `{"Type": "Widget"}`.
+    target: serde_json::Value,
+    /// The stored `RowFilter` serde shape, or `null`.
+    row_filter: serde_json::Value,
+    deny_columns: Vec<String>,
+    mask_columns: Vec<String>,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct RolePoliciesResp {
+    policies: Vec<PolicyView>,
+}
+
+/// List a role's fine-grained policies.
+#[utoipa::path(
+    get, path = "/admin/roles/{role}/policies",
+    params(("role" = String, Path, description = "Role whose policies to list")),
+    responses(
+        (status = 200, description = "The role's policies", body = RolePoliciesResp),
+        (status = 404, description = "Unknown role"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn list_role_policies(State(st): State<AdminState>, Path(role): Path<String>) -> Response {
+    match st
+        .cp
+        .acl()
+        .list_policies(&RoleId(role), PageReq::unbounded())
+        .await
+    {
+        Ok(page) => {
+            let policies = page
+                .items
+                .into_iter()
+                .map(|rp| PolicyView {
+                    action: rp.action.as_str().to_string(),
+                    target: serde_json::to_value(&rp.policy.target).unwrap_or_default(),
+                    row_filter: rp
+                        .policy
+                        .row_filter
+                        .as_ref()
+                        .map(|f| serde_json::to_value(f).unwrap_or_default())
+                        .unwrap_or(serde_json::Value::Null),
+                    deny_columns: rp.policy.deny_columns,
+                    mask_columns: rp.policy.mask_columns,
+                })
+                .collect();
+            Json(RolePoliciesResp { policies }).into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// Remove the policy for `(role, action, target)` (idempotent).
+///
+/// The body is a `PolicyReq`; only `action` and the target pair are read.
+#[utoipa::path(
+    delete, path = "/admin/roles/{role}/policies",
+    params(("role" = String, Path, description = "Role whose policy to clear")),
+    request_body = PolicyReq,
+    responses(
+        (status = 200, description = "Cleared (idempotent)"),
+        (status = 400, description = "action is not read|write, or exactly-one-of-target violated"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn clear_policy_route(
+    State(st): State<AdminState>,
+    Path(role): Path<String>,
+    Json(req): Json<PolicyReq>,
+) -> Response {
+    let action = match parse_action(&req.action) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    let target = match parse_target(req.r#type, req.table) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    match st
+        .cp
+        .acl()
+        .clear_policy(&RoleId(role), action, &target)
+        .await
+    {
+        Ok(()) => (StatusCode::OK, "cleared").into_response(),
         Err(e) => status_for(&e).into_response(),
     }
 }
@@ -1065,10 +1571,20 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         .route("/admin/users/:username/enable", post(enable_user))
         .route("/admin/users/:username/password", post(reset_password))
         .route("/admin/models", post(define_model))
+        .route(
+            "/admin/models/:type/vector-indexes",
+            post(define_vector_index_route).get(list_vector_indexes_route),
+        )
         .route("/admin/roles", post(create_role).get(list_roles))
         .route(
             "/admin/roles/:role/grants",
             post(grant).get(list_role_grants).delete(revoke_grant),
+        )
+        .route(
+            "/admin/roles/:role/policies",
+            post(set_policy_route)
+                .get(list_role_policies)
+                .delete(clear_policy_route),
         )
         .route("/admin/roles/:role", delete(delete_role_route))
         .route("/admin/links", post(define_link_route))
@@ -1109,6 +1625,8 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         list_roles,
         grant,
         define_model,
+        define_vector_index_route,
+        list_vector_indexes_route,
         define_link_route,
         delete_link_route,
         define_action_route,
@@ -1116,6 +1634,9 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         delete_role_route,
         list_role_grants,
         revoke_grant,
+        set_policy_route,
+        list_role_policies,
+        clear_policy_route,
         user_roles,
         assign_user_role,
         unassign_user_role,
@@ -1139,8 +1660,20 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         DefineModelReq,
         TableReq,
         PropReq,
+        ConstraintsReq,
+        RangeReq,
+        LengthReq,
+        AggReq,
+        DerivedReq,
+        VectorIndexReq,
+        VectorIndexSpecReq,
+        VectorIndexView,
+        VectorIndexesResp,
         GrantView,
         RoleGrantsResp,
+        PolicyReq,
+        PolicyView,
+        RolePoliciesResp,
         TransformDefView,
         ListTransformsResp,
         TransformRunView,

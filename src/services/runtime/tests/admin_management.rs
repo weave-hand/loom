@@ -11,7 +11,8 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use control_plane_core::{
-    ADMIN_ROLE, Acl, Auth, ControlPlane, NewUser, ObjectType, Ontology, RoleId, SubjectId,
+    ADMIN_ROLE, Acl, Aggregation, Auth, ControlPlane, NewUser, ObjectType, Ontology, RoleId,
+    SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -330,6 +331,121 @@ async fn grants_list_reflects_grant_then_revoke() {
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(v["grants"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn grant_table_target_roundtrips() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","table":{"schema":"main","name":"widget"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // listed with the PolicyTarget serde shape
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/roles/admin/grants", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let grants = v["grants"].as_array().unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g["target"]["Table"]["schema"] == "main"
+                && g["target"]["Table"]["name"] == "widget"),
+        "table grant listed: {body}"
+    );
+    // revoke with the same body shape (idempotent)
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "DELETE",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","table":{"schema":"main","name":"widget"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(
+        app(cp),
+        req_empty("GET", "/admin/roles/admin/grants", &token),
+    )
+    .await;
+    assert!(
+        !body.contains("\"Table\""),
+        "revoked table grant gone: {body}"
+    );
+}
+
+#[tokio::test]
+async fn grant_requires_exactly_one_target() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_types(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    // neither
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("exactly one of type or table"), "{body}");
+    // both
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","type":"Widget","table":{"schema":"main","name":"widget"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn grant_type_target_still_works_and_unknown_type_still_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_types(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","type":"Widget"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","type":"NoSuchType"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -832,4 +948,371 @@ async fn non_admin_bearer_is_403_on_transforms_route() {
     let alice = seed_session(&cp, "alice").await; // not the admin
     let (status, _) = send(app(cp), req_empty("GET", "/admin/transforms", &alice)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn policy_set_list_clear_roundtrip() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_types(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    let body = r#"{
+        "action": "read",
+        "type": "Widget",
+        "row_filter": {"Compare": {"property": "id", "op": "Eq", "value": {"Int": 1}}},
+        "deny_columns": ["cost"],
+        "mask_columns": ["id"]
+    }"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/roles/admin/policies", &token, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, listed) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let pols = v["policies"].as_array().unwrap();
+    assert_eq!(pols.len(), 1, "{listed}");
+    assert_eq!(pols[0]["action"], "read");
+    assert_eq!(pols[0]["target"]["Type"], "Widget");
+    assert_eq!(pols[0]["row_filter"]["Compare"]["property"], "id");
+    assert_eq!(pols[0]["deny_columns"][0], "cost");
+    assert_eq!(pols[0]["mask_columns"][0], "id");
+    // clear (idempotent), listing empties
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "DELETE",
+            "/admin/roles/admin/policies",
+            &token,
+            r#"{"action":"read","type":"Widget"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, listed) = send(
+        app(cp),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert!(v["policies"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn policy_validation_errors_are_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_types(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    // row_filter that does not decode as a RowFilter
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/policies",
+            &token,
+            r#"{"action":"read","type":"Widget","row_filter":{"Bogus":1}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("invalid RowFilter"), "{body}");
+    // unknown type target -> adapter Validation -> 400
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/policies",
+            &token,
+            r#"{"action":"read","type":"NoSuchType"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // row_filter naming an unknown property -> adapter Validation -> 400
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/roles/admin/policies", &token,
+            r#"{"action":"read","type":"Widget","row_filter":{"Compare":{"property":"nope","op":"Eq","value":{"Int":1}}}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // exactly-one-of-target
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/policies",
+            &token,
+            r#"{"action":"read"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("exactly one of type or table"), "{body}");
+    // unknown role -> 404
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/roles/no-such-role/policies",
+            &token,
+            r#"{"action":"read","type":"Widget"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn policy_table_target_accepted() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    // Table targets skip type/property validation by design (deferred existence).
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/roles/admin/policies", &token,
+            r#"{"action":"read","table":{"schema":"main","name":"widget"},"mask_columns":["name"]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, listed) = send(
+        app(cp),
+        req_empty("GET", "/admin/roles/admin/policies", &token),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(
+        v["policies"][0]["target"]["Table"]["name"], "widget",
+        "{listed}"
+    );
+}
+
+#[tokio::test]
+async fn define_model_with_derived_and_constraints_roundtrips() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    let body = r#"{
+        "name": "Order",
+        "table": {"schema": "main", "name": "orders"},
+        "identity": "id",
+        "properties": [
+            {"name": "id", "ty": "Int", "required": true},
+            {"name": "qty", "ty": "Integer", "constraints": {"range": {"min": 1, "max": 100}}},
+            {"name": "status", "ty": "String",
+             "constraints": {"length": {"min": 2, "max": 16}, "one_of": ["open", "closed"]}}
+        ],
+        "derived": [
+            {"name": "line_count", "ty": "Int", "link": "lines", "agg": {"kind": "count"}},
+            {"name": "total", "ty": "Int", "link": "lines", "agg": {"kind": "sum", "column": "amount"}}
+        ]
+    }"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/models", &token, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // stored intact on the ontology (assert through the control plane)
+    let t = cp.get_type(&TypeName("Order".into())).await.unwrap();
+    assert_eq!(t.derived.len(), 2);
+    assert_eq!(t.derived[0].name, "line_count");
+    assert!(matches!(t.derived[0].agg, Aggregation::Count));
+    assert!(matches!(t.derived[1].agg, Aggregation::Sum(ref c) if c == "amount"));
+    let qty = t.properties.iter().find(|p| p.name == "qty").unwrap();
+    assert_eq!(qty.constraints.range.as_ref().unwrap().min, Some(1.0));
+    assert_eq!(qty.constraints.range.as_ref().unwrap().max, Some(100.0));
+    let status_p = t.properties.iter().find(|p| p.name == "status").unwrap();
+    assert_eq!(status_p.constraints.one_of.as_ref().unwrap().len(), 2);
+    assert_eq!(status_p.constraints.length.as_ref().unwrap().max, Some(16));
+}
+
+async fn seed_vector_type(cp: &MemoryControlPlane) {
+    cp.define_type(
+        ObjectType::build("Doc", ("main", "doc"))
+            .prop("id", "Int")
+            .prop("embedding", "vector(3)")
+            .done(),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn vector_index_define_and_list_roundtrip() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_vector_type(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    // defaults: flat + cosine
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"embed_idx","property":"embedding"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // explicit hnsw + l2
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"embed_hnsw","property":"embedding","metric":"l2",
+                "spec":{"kind":"hnsw","m":16,"ef_construction":200}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = send(
+        app(cp),
+        req_empty("GET", "/admin/models/Doc/vector-indexes", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let idx = v["indexes"].as_array().unwrap();
+    assert_eq!(idx.len(), 2, "{body}");
+    let flat = idx.iter().find(|i| i["name"] == "embed_idx").unwrap();
+    assert_eq!(flat["metric"], "cosine");
+    assert_eq!(flat["spec"]["kind"], "flat");
+    let hnsw = idx.iter().find(|i| i["name"] == "embed_hnsw").unwrap();
+    assert_eq!(hnsw["metric"], "l2");
+    assert_eq!(hnsw["spec"]["kind"], "hnsw");
+    assert_eq!(hnsw["spec"]["m"], 16);
+    assert_eq!(hnsw["spec"]["ef_construction"], 200);
+}
+
+#[tokio::test]
+async fn vector_index_errors() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_vector_type(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    // unknown metric
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"embedding","metric":"dotproduct"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("metric"), "{body}");
+    // unknown kind
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"embedding","spec":{"kind":"annoy"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // tuning field on the wrong kind
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"embedding","spec":{"kind":"hnsw","nlist":10}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // non-vector property -> adapter Validation -> 400
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models/Doc/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"id"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // unknown type -> adapter NotFound -> 404
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/models/Nope/vector-indexes",
+            &token,
+            r#"{"name":"i","property":"embedding"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn define_model_agg_and_constraint_errors_are_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    // unknown agg kind
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models",
+            &token,
+            r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
+                "properties":[{"name":"id","ty":"Int"}],
+                "derived":[{"name":"d","ty":"Int","link":"l","agg":{"kind":"median"}}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("unknown agg kind"), "{body}");
+    // count with a column
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/models", &token,
+            r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
+                "properties":[{"name":"id","ty":"Int"}],
+                "derived":[{"name":"d","ty":"Int","link":"l","agg":{"kind":"count","column":"x"}}]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // sum without a column
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models",
+            &token,
+            r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
+                "properties":[{"name":"id","ty":"Int"}],
+                "derived":[{"name":"d","ty":"Int","link":"l","agg":{"kind":"sum"}}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // range constraint on a String property -> define-gate Validation -> 400
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/models",
+            &token,
+            r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
+                "properties":[{"name":"s","ty":"String","constraints":{"range":{"min":1}}}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
