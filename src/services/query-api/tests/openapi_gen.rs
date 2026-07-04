@@ -447,6 +447,40 @@ fn generated_ops_are_tagged_by_type() {
     );
 }
 
+#[test]
+fn get_op_documents_filter_and_pagination_params() {
+    let (paths, _schemas) = ontology_openapi(&[customer()], &[], &[]);
+    let get = op_json(&paths, "/objects/Customer", "get");
+    let params = get["parameters"].as_array().expect("parameters array");
+    let names: std::collections::BTreeSet<&str> =
+        params.iter().filter_map(|p| p["name"].as_str()).collect();
+    // One filter param per property...
+    assert!(names.contains("id"), "filter param per property: {names:?}");
+    assert!(names.contains("email"));
+    assert!(names.contains("score"));
+    // ...plus the reserved object-set and pagination knobs.
+    for reserved in ["_ids", "_or", "limit", "cursor"] {
+        assert!(
+            names.contains(reserved),
+            "missing reserved param {reserved}: {names:?}"
+        );
+    }
+    // Every documented param is a query param; the grammar is described.
+    let email = params
+        .iter()
+        .find(|p| p["name"] == "email")
+        .expect("email param");
+    assert_eq!(email["in"], "query");
+    assert!(
+        email["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("startswith"),
+        "filter grammar documented: {}",
+        email["description"]
+    );
+}
+
 // ---- liveness (memory-backed) --------------------------------------------------------
 
 // MemoryControlPlane::new takes a lock_timeout Duration (see memory/src/lib.rs).

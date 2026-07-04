@@ -28,14 +28,14 @@ rust_library(
     ],
 )
 
-# Dev-only emitter: writes the `employees` demo fixture (loom_test_seed::
-# employees_ipc) to a file as an Arrow IPC stream, for `tools/dev-up.sh` to
-# `curl` into ingest's `POST /models/employees`. Not a shipped service.
+# Dev-only emitter: writes a demo fixture (loom_test_seed::{employees,
+# departments}_ipc) to a file as an Arrow IPC stream, for `tools/dev-up.sh` to
+# `curl` into ingest's `POST /models/{dataset}`. Not a shipped service.
 rust_binary(
-    name = "emit-employees",
-    crate = "emit_employees",
-    srcs = ["emit_employees.rs"],
-    crate_root = "emit_employees.rs",
+    name = "emit-seed",
+    crate = "emit_seed",
+    srcs = ["emit_seed.rs"],
+    crate_root = "emit_seed.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
     deps = [":seed"],

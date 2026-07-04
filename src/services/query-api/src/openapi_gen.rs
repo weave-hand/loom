@@ -10,14 +10,15 @@ use control_plane_core::{
 };
 use service_runtime::BEARER_SCHEME_NAME;
 use utoipa::openapi::path::{
-    HttpMethod, Operation, OperationBuilder, PathItem, Paths, PathsBuilder,
+    HttpMethod, Operation, OperationBuilder, Parameter, ParameterBuilder, ParameterIn, PathItem,
+    Paths, PathsBuilder,
 };
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::{
     ArrayBuilder, KnownFormat, ObjectBuilder, SchemaFormat, SchemaType, Type,
 };
 use utoipa::openapi::security::SecurityRequirement;
-use utoipa::openapi::{Content, Ref, RefOr, ResponseBuilder, Schema};
+use utoipa::openapi::{Content, Ref, RefOr, Required, ResponseBuilder, Schema};
 
 /// A non-nullable single `Type`, or (when `nullable`) the OpenAPI 3.1 type array
 /// `[ty, "null"]`.
@@ -133,16 +134,90 @@ fn type_component_schema(ty: &ObjectType) -> RefOr<Schema> {
     RefOr::T(Schema::Object(b.build()))
 }
 
-fn get_objects_op(type_name: &str) -> Operation {
-    OperationBuilder::new()
-        .summary(Some(format!("List {type_name} objects")))
-        .tag(type_name)
-        .security(bearer())
-        .response(
-            "200",
-            json_response(objects_response_schema(type_name), "Matching objects"),
-        )
+/// The shared filter-predicate grammar, documented once on every per-property filter
+/// parameter. Mirrors `crate::filter::coerce_predicate`: split at the first `:` into
+/// `op:value`; a bare value is `eq`. Kept in sync with the operator token list there.
+const FILTER_GRAMMAR: &str = "Filter predicate `op:value` — op ∈ eq, ne, lt, le, gt, ge, in, \
+     nin, between, contains, startswith, endswith, isnull, isnotnull; a bare value (no `op:`) \
+     means eq. Set ops (in/nin/between) take comma-separated operands (escape a literal comma \
+     as `\\,`). Repeat the key to apply several predicates to one column.";
+
+/// A bare string schema, the wire type of every filter/`_ids`/`_or`/`cursor` value.
+fn string_schema() -> RefOr<Schema> {
+    RefOr::T(Schema::Object(
+        ObjectBuilder::new()
+            .schema_type(SchemaType::Type(Type::String))
+            .build(),
+    ))
+}
+
+/// An optional query-string `Parameter` with the given schema and description.
+fn query_param(name: &str, schema: RefOr<Schema>, description: &str) -> Parameter {
+    ParameterBuilder::new()
+        .name(name)
+        .parameter_in(ParameterIn::Query)
+        .required(Required::False)
+        .description(Some(description))
+        .schema(Some(schema))
         .build()
+}
+
+/// `GET /objects/{Type}`: the governed typed read. Documents one filter parameter per
+/// property (the `op:value` grammar) plus the reserved knobs `_ids` (object-set scoping),
+/// `_or` (cross-column OR-groups), and `limit`/`cursor` (keyset pagination) — the same set
+/// `get_object` splits out in `http.rs`.
+fn get_objects_op(ty: &ObjectType) -> Operation {
+    let name = &ty.name.0;
+    let mut op = OperationBuilder::new()
+        .summary(Some(format!("List {name} objects")))
+        .tag(name.clone())
+        .security(bearer());
+    for p in &ty.properties {
+        op = op.parameter(query_param(
+            &p.name,
+            string_schema(),
+            &format!(
+                "Filter on `{}` (declared type `{}`). {FILTER_GRAMMAR}",
+                p.name, p.ty
+            ),
+        ));
+    }
+    let int_schema = RefOr::T(Schema::Object(
+        ObjectBuilder::new()
+            .schema_type(SchemaType::Type(Type::Integer))
+            .build(),
+    ));
+    op.parameter(query_param(
+        "_ids",
+        string_schema(),
+        "Restrict the read to this comma-separated identity set (object-set scoping). \
+         Mutually exclusive with `limit`/`cursor` pagination.",
+    ))
+    .parameter(query_param(
+        "_or",
+        string_schema(),
+        "OR-group of cross-column predicates: `col:pred,col:pred` (>=2 members). Repeatable; \
+         each member uses the same predicate grammar as a plain filter.",
+    ))
+    .parameter(query_param(
+        "limit",
+        int_schema,
+        "Page size, clamped to [1,200]. Presence (with `cursor`) selects cursor pagination; \
+         incompatible with `_ids`.",
+    ))
+    .parameter(query_param(
+        "cursor",
+        string_schema(),
+        "Opaque keyset cursor from a previous page's `next`. Presence selects cursor pagination.",
+    ))
+    .response(
+        "200",
+        json_response(objects_response_schema(name), "Matching objects"),
+    )
+    .response("400", plain_response("Bad filter, _ids, or pagination"))
+    .response("403", plain_response("Forbidden by ACL policy"))
+    .response("404", plain_response("Unknown type"))
+    .build()
 }
 
 fn link_op(from: &str, link_name: &str, to: &str) -> Operation {
@@ -271,7 +346,7 @@ pub fn ontology_openapi(
         schemas.insert(name.clone(), type_component_schema(ty));
         pb = pb.path(
             format!("/objects/{name}"),
-            PathItem::new(HttpMethod::Get, get_objects_op(name)),
+            PathItem::new(HttpMethod::Get, get_objects_op(ty)),
         );
     }
     for l in links {
