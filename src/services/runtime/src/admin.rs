@@ -306,19 +306,64 @@ async fn list_roles(State(st): State<AdminState>) -> Response {
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 struct GrantReq {
     action: String,
-    r#type: String,
+    /// Exactly one of `type`/`table` must be set.
+    #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
+    table: Option<TableReq>,
 }
 
-/// Grant a role coarse Read/Write access on a type.
+/// Parse the wire action token shared by grant/policy bodies.
+#[expect(
+    clippy::result_large_err,
+    reason = "the Err path returns straight through to the handler as the HTTP response body"
+)]
+fn parse_action(s: &str) -> std::result::Result<Action, Response> {
+    match s {
+        "read" => Ok(Action::Read),
+        "write" => Ok(Action::Write),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "action must be read|write" })),
+        )
+            .into_response()),
+    }
+}
+
+/// Resolve the exclusive `type`/`table` target pair shared by grant/policy
+/// bodies. Exactly one must be set.
+#[expect(
+    clippy::result_large_err,
+    reason = "the Err path returns straight through to the handler as the HTTP response body"
+)]
+fn parse_target(
+    ty: Option<String>,
+    table: Option<TableReq>,
+) -> std::result::Result<PolicyTarget, Response> {
+    match (ty, table) {
+        (Some(t), None) => Ok(PolicyTarget::Type(TypeName(t))),
+        (None, Some(t)) => Ok(PolicyTarget::Table(TableRef {
+            schema: t.schema,
+            name: t.name,
+        })),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "exactly one of type or table" })),
+        )
+            .into_response()),
+    }
+}
+
+/// Grant a role coarse Read/Write access on a type or table.
 ///
 /// An unknown grant-target type is a 400.
 #[utoipa::path(
     post, path = "/admin/roles/{role}/grants",
     params(("role" = String, Path, description = "Role receiving the grant")),
-    request_body = GrantReq,
+    request_body(content = GrantReq, description = "Exactly one of `type`/`table` must be set"),
     responses(
         (status = 201, description = "Granted"),
-        (status = 400, description = "action is not read|write, or unknown grant-target type"),
+        (status = 400, description = "action is not read|write, exactly-one-of-target violated, or unknown grant-target type"),
     ),
     security(("bearer_auth" = [])),
     tag = "admin",
@@ -328,18 +373,14 @@ async fn grant(
     Path(role): Path<String>,
     Json(req): Json<GrantReq>,
 ) -> Response {
-    let action = match req.action.as_str() {
-        "read" => Action::Read,
-        "write" => Action::Write,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "action must be read|write" })),
-            )
-                .into_response();
-        }
+    let action = match parse_action(&req.action) {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
-    let target = PolicyTarget::Type(TypeName(req.r#type.clone()));
+    let target = match parse_target(req.r#type, req.table) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
     match st
         .cp
         .acl()
@@ -603,10 +644,10 @@ async fn list_role_grants(State(st): State<AdminState>, Path(role): Path<String>
 #[utoipa::path(
     delete, path = "/admin/roles/{role}/grants",
     params(("role" = String, Path, description = "Role whose grant to revoke")),
-    request_body = GrantReq,
+    request_body(content = GrantReq, description = "Exactly one of `type`/`table` must be set"),
     responses(
         (status = 200, description = "Revoked (idempotent)"),
-        (status = 400, description = "action is not read|write"),
+        (status = 400, description = "action is not read|write, or exactly-one-of-target violated"),
     ),
     security(("bearer_auth" = [])),
     tag = "admin",
@@ -616,18 +657,14 @@ async fn revoke_grant(
     Path(role): Path<String>,
     Json(req): Json<GrantReq>,
 ) -> Response {
-    let action = match req.action.as_str() {
-        "read" => Action::Read,
-        "write" => Action::Write,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "action must be read|write" })),
-            )
-                .into_response();
-        }
+    let action = match parse_action(&req.action) {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
-    let target = PolicyTarget::Type(TypeName(req.r#type.clone()));
+    let target = match parse_target(req.r#type, req.table) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
     match st.cp.acl().revoke(&RoleId(role), action, &target).await {
         Ok(()) => (StatusCode::OK, "revoked").into_response(),
         Err(e) => status_for(&e).into_response(),

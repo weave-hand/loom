@@ -333,6 +333,121 @@ async fn grants_list_reflects_grant_then_revoke() {
 }
 
 #[tokio::test]
+async fn grant_table_target_roundtrips() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","table":{"schema":"main","name":"widget"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // listed with the PolicyTarget serde shape
+    let (status, body) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/roles/admin/grants", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let grants = v["grants"].as_array().unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g["target"]["Table"]["schema"] == "main"
+                && g["target"]["Table"]["name"] == "widget"),
+        "table grant listed: {body}"
+    );
+    // revoke with the same body shape (idempotent)
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "DELETE",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","table":{"schema":"main","name":"widget"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(
+        app(cp),
+        req_empty("GET", "/admin/roles/admin/grants", &token),
+    )
+    .await;
+    assert!(
+        !body.contains("\"Table\""),
+        "revoked table grant gone: {body}"
+    );
+}
+
+#[tokio::test]
+async fn grant_requires_exactly_one_target() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_types(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    // neither
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("exactly one of type or table"), "{body}");
+    // both
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","type":"Widget","table":{"schema":"main","name":"widget"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn grant_type_target_still_works_and_unknown_type_still_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_types(&cp).await;
+    let token = seed_admin_session(&cp, "root").await;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","type":"Widget"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/roles/admin/grants",
+            &token,
+            r#"{"action":"read","type":"NoSuchType"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn grants_list_unknown_role_is_404() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let token = seed_admin_session(&cp, ADMIN).await;
