@@ -115,10 +115,10 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Ontology metadata: the defined object-type names, for the object-explorer UI's type
-/// sidebar. Auth-required (via `Subject`) but deliberately NOT per-type ACL-gated —
-/// this is ontology metadata (like `/openapi.json`), not object data; ACL governs the
-/// latter via `/objects/{type}`.
+/// List the defined object-type names.
+///
+/// Ontology metadata for the type sidebar (like `/openapi.json`) — auth-required but
+/// not per-type ACL-gated; object data itself is governed via `/objects/{type}`.
 #[utoipa::path(
     get, path = "/ontology/types",
     responses((status = 200, description = "Object-type names", body = OntologyTypesResponse)),
@@ -157,10 +157,11 @@ fn link_view_json(l: &LinkDef) -> serde_json::Value {
     })
 }
 
-/// Per-type ontology detail: the declared properties (with required flags), identity,
-/// backing table, and the type's outbound (`links`) + inbound (`links_to`) link
-/// adjacency. Like `/ontology/types`, auth-required but NOT per-type ACL-gated —
-/// ontology metadata, not object data.
+/// Per-type ontology detail: properties, identity, backing table, and link adjacency.
+///
+/// Reports the declared properties (with required flags), identity, backing table, and
+/// the type's outbound and inbound links. Like `/ontology/types`, auth-required but not
+/// per-type ACL-gated (ontology metadata, not object data).
 #[utoipa::path(
     get, path = "/ontology/types/{name}",
     params(("name" = String, Path, description = "Ontology object type")),
@@ -207,9 +208,10 @@ async fn get_ontology_type(
     .into_response()
 }
 
-/// Dataset catalog: every table currently live in the Iceberg mirror, `(schema, name)`-
-/// ordered. Auth-required but not ACL-gated — catalog metadata (like `/ontology/types`);
-/// ACL governs the data reads.
+/// List every table live in the Iceberg mirror, `(schema, name)`-ordered.
+///
+/// Catalog metadata (like `/ontology/types`) — auth-required but not ACL-gated; ACL
+/// governs the data reads themselves.
 #[utoipa::path(
     get, path = "/datasets",
     responses(
@@ -233,8 +235,9 @@ async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::r
     }
 }
 
-/// Dataset detail: the table's current snapshot (id + RFC3339 time) composed with its
-/// column schema at that snapshot.
+/// Dataset detail: the table's current snapshot and column schema.
+///
+/// Composes the current snapshot (id + RFC3339 time) with the column schema at that snapshot.
 #[utoipa::path(
     get, path = "/datasets/{schema}/{table}",
     params(
@@ -285,9 +288,10 @@ async fn get_dataset(
     .into_response()
 }
 
-/// Operator-triggered physical GC: enqueue a `gc_table` job for `(schema, table)`.
-/// A zero-pool worker drains it via the engine's `GcTable` RPC. Returns 202 with
-/// the job id; the actual reclamation runs asynchronously.
+/// Enqueue physical GC for a table; returns 202 with the job id.
+///
+/// Operator-triggered. A worker drains the `gc_table` job asynchronously via the
+/// engine's `GcTable` RPC — reclamation is not synchronous with this call.
 #[utoipa::path(
     post, path = "/maintenance/gc/{schema}/{table}",
     params(
@@ -321,6 +325,10 @@ async fn enqueue_gc(
     }
 }
 
+/// List a type's objects, with optional filters and keyset pagination.
+///
+/// Each property is an optional filter (`?prop=op:value`); `_ids`, `_or`, `limit`, and
+/// `cursor` are reserved. Governed per-type by ACL.
 #[utoipa::path(
     get, path = "/objects/{type_name}",
     params(
@@ -407,11 +415,18 @@ async fn get_object(
     }
 }
 
+/// Traverse a single link to its target objects (or association rows).
+///
+/// `_direction`, `_shape`, and `_ids` are reserved; other params filter the target.
+/// Governed by ACL.
 #[utoipa::path(
     get, path = "/objects/{from_type}/links/{link_name}",
     params(
         ("from_type" = String, Path, description = "Source object type"),
         ("link_name" = String, Path, description = "Link to traverse"),
+        ("_direction" = Option<String>, Query, description = "Hop direction: `forward` (default) or `inverse`"),
+        ("_shape" = Option<String>, Query, description = "Response shape: `objects` (default) or `association` (id pairs)"),
+        ("_ids" = Option<String>, Query, description = "Comma-separated source identity set to restrict the traversal"),
     ),
     responses(
         (status = 200, description = "Linked objects or associations", body = ObjectsResponse),
@@ -461,9 +476,18 @@ async fn get_linked(
     respond_shaped(&st, query, reserved.last("_shape"), &subject).await
 }
 
+/// Traverse a `?path=` chain of links to the reached objects.
+///
+/// `?path=l1,l2` names the ordered link chain; `_shape` and `_ids` are reserved.
+/// Governed by ACL.
 #[utoipa::path(
     get, path = "/objects/{from_type}/links",
-    params(("from_type" = String, Path, description = "Source object type")),
+    params(
+        ("from_type" = String, Path, description = "Source object type"),
+        ("_path" = String, Query, description = "Comma-separated ordered link chain, e.g. `l1,l2`; a `~`-prefixed hop is inverse"),
+        ("_shape" = Option<String>, Query, description = "Response shape: `objects` (default) or `association` (id pairs)"),
+        ("_ids" = Option<String>, Query, description = "Comma-separated source identity set to restrict the traversal"),
+    ),
     responses(
         (status = 200, description = "Chain-traversed objects or associations", body = ObjectsResponse),
         (status = 400, description = "Bad path/shape/filter"),
@@ -652,6 +676,10 @@ fn graph_knobs(
     Ok((ids, depth, tree))
 }
 
+/// Recurse a self-link from a seed type to all reachable objects.
+///
+/// `?depth` bounds the traversal (capped); `?tree=true` returns a shortest-path tree
+/// instead of the flat reachable set. Governed by ACL.
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph/{link_name}",
     params(
@@ -695,11 +723,11 @@ async fn get_graph(
     }
 }
 
-/// Multi-link `?path=l1,l2` path-cycle route. Parses `?path=` via `parse_path_hops`
-/// (comma-split; empty/absent -> 400), where a `~`-prefixed element is followed backward
-/// (an inverse hop, same grammar as the `/links` chain), plus the same `depth`/`_ids`/filter
-/// handling as `get_graph`, then shares the `read_graph_reach` call + error mapping via
-/// `graph_respond`.
+/// Traverse a multi-link `?path=l1,l2` chain and return the reached objects.
+///
+/// `?path=` is a comma-separated hop chain (empty or absent is a 400); a `~`-prefixed
+/// hop is followed backward (an inverse hop). Supports the same `depth`, `_ids`, and
+/// filter parameters as the single-link graph route.
 #[utoipa::path(
     get, path = "/objects/{type_name}/graph",
     params(
@@ -806,6 +834,10 @@ async fn graph_tree_respond(
     }
 }
 
+/// Invoke an ontology action by name (typed governed write).
+///
+/// The body is the action's parameter envelope. Insert/Update/Delete all respond 201
+/// with the affected object. Governed by ACL.
 #[utoipa::path(
     post, path = "/actions/{action_name}",
     params(("action_name" = String, Path, description = "Ontology action id")),
@@ -907,9 +939,9 @@ fn id_json(v: &crate::serving::SqlValue) -> serde_json::Value {
     }
 }
 
-/// Governed kNN search: `POST /search/:type/:index_name`. Parses + validates the body
-/// (manual deserialize -> 400 on any problem, BEFORE any engine call), then runs the
-/// governed `vector_search` flow and maps its errors to status codes.
+/// Governed k-nearest-neighbour vector search over a type's named index.
+///
+/// The request body is validated before any engine call — a malformed body is a 400.
 #[utoipa::path(
     post, path = "/search/{type_name}/{index_name}",
     params(
@@ -1020,6 +1052,9 @@ async fn lineage_closure(
     }
 }
 
+/// List a dataset's upstream lineage closure.
+///
+/// Walks producers to `?depth` (default 1, capped); paginated via `after`/`limit`.
 #[utoipa::path(
     get, path = "/lineage/datasets/{namespace}/{name}/upstream",
     params(
@@ -1054,6 +1089,9 @@ async fn get_lineage_upstream(
     .await
 }
 
+/// List a dataset's downstream lineage closure.
+///
+/// Walks consumers to `?depth` (default 1, capped); paginated via `after`/`limit`.
 #[utoipa::path(
     get, path = "/lineage/datasets/{namespace}/{name}/downstream",
     params(
@@ -1088,6 +1126,9 @@ async fn get_lineage_downstream(
     .await
 }
 
+/// List the lineage events emitted by a run.
+///
+/// Paginated via `after`/`limit`.
 #[utoipa::path(
     get, path = "/lineage/runs/{run_id}/events",
     params(

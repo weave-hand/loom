@@ -127,11 +127,11 @@ struct LoginResp {
     token: String,
 }
 
-/// `POST /auth/login` — public. Verify the password, mint a session token, return
-/// it once. Enforces per-account lockout: a locked account is rejected with the
-/// same generic 401 as a bad password (no enumeration); each failure is recorded
-/// and a success clears the counter. A uniform 401 on unknown user OR bad password
-/// OR locked (with a dummy hash to keep timing uniform).
+/// Log in with a username and password; returns a session token once.
+///
+/// Public. A locked account, unknown user, and wrong password all return the same
+/// generic 401 with uniform timing (no enumeration); each failure is recorded and a
+/// success clears the counter.
 #[utoipa::path(
     post, path = "/auth/login",
     request_body = LoginReq,
@@ -192,9 +192,7 @@ async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq
     }
 }
 
-/// `POST /auth/logout` — authenticated. Revoke the presented session
-/// (idempotent). The `Subject` extractor enforces the caller is verified;
-/// the token to revoke is re-read from the `Authorization` header.
+/// Revoke the presented session token (idempotent).
 #[utoipa::path(
     post, path = "/auth/logout",
     responses((status = 200, description = "Presented session revoked (idempotent)")),
@@ -221,10 +219,10 @@ struct ChangePasswordReq {
     new: String,
 }
 
-/// `POST /auth/password` — authenticated. Verify the caller's current password,
-/// rotate to the new one, and revoke the caller's OTHER sessions (the current
-/// session, identified by the presented bearer, is preserved). Wrong current → 403,
-/// nothing changed. Password strength policy is out of scope.
+/// Rotate the caller's password and revoke their other sessions.
+///
+/// Verifies the current password (wrong → 403, nothing changed); the presented session
+/// is preserved. Password-strength policy is out of scope.
 #[utoipa::path(
     post, path = "/auth/password",
     request_body = ChangePasswordReq,
@@ -373,7 +371,7 @@ struct TokenMetaResp {
     revoked_at: Option<i64>,
 }
 
-/// `POST /auth/service-accounts` — admin. Create a service account.
+/// Create a service account. Admin only.
 #[utoipa::path(
     post, path = "/auth/service-accounts",
     request_body = CreateAccountReq,
@@ -411,7 +409,7 @@ async fn create_account(
     }
 }
 
-/// `GET /auth/service-accounts` — admin. List service accounts.
+/// List all service accounts. Admin only.
 #[utoipa::path(
     get, path = "/auth/service-accounts",
     responses(
@@ -445,7 +443,7 @@ async fn list_accounts(subject: Subject, State(st): State<ServiceAccountState>) 
     }
 }
 
-/// `POST /auth/service-accounts/{id}/tokens` — admin. Mint a token (plaintext once).
+/// Mint a bearer token for a service account (plaintext returned once). Admin only.
 #[utoipa::path(
     post, path = "/auth/service-accounts/{id}/tokens",
     params(("id" = String, Path, description = "Service-account subject id")),
@@ -504,7 +502,7 @@ async fn mint_token(
     }
 }
 
-/// `GET /auth/service-accounts/{id}/tokens` — admin. List a token's metadata.
+/// List a service account's token metadata (never plaintext). Admin only.
 #[utoipa::path(
     get, path = "/auth/service-accounts/{id}/tokens",
     params(("id" = String, Path, description = "Service-account subject id")),
@@ -550,8 +548,7 @@ async fn list_tokens(
     }
 }
 
-/// `DELETE /auth/service-accounts/{id}/tokens/{token_id}` — admin. Revoke a token,
-/// addressed by its hex SHA-256 id (from the mint/list responses). Idempotent.
+/// Revoke a service-account token by its hex SHA-256 id (idempotent). Admin only.
 #[utoipa::path(
     delete, path = "/auth/service-accounts/{id}/tokens/{token_id}",
     params(

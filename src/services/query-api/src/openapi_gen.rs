@@ -162,6 +162,17 @@ fn query_param(name: &str, schema: RefOr<Schema>, description: &str) -> Paramete
         .build()
 }
 
+/// One filter query parameter (`?<key>=op:value`) documenting the shared predicate grammar.
+/// `key` is the wire key — a bare property name on a type read, or `<link>.<prop>` for a
+/// link's target column; `label` names the column the filter applies to in the description.
+fn filter_param(key: &str, label: &str, ty: &str) -> Parameter {
+    query_param(
+        key,
+        string_schema(),
+        &format!("Filter on `{label}` (declared type `{ty}`). {FILTER_GRAMMAR}"),
+    )
+}
+
 /// `GET /objects/{Type}`: the governed typed read. Documents one filter parameter per
 /// property (the `op:value` grammar) plus the reserved knobs `_ids` (object-set scoping),
 /// `_or` (cross-column OR-groups), and `limit`/`cursor` (keyset pagination) — the same set
@@ -173,14 +184,7 @@ fn get_objects_op(ty: &ObjectType) -> Operation {
         .tag(name.clone())
         .security(bearer());
     for p in &ty.properties {
-        op = op.parameter(query_param(
-            &p.name,
-            string_schema(),
-            &format!(
-                "Filter on `{}` (declared type `{}`). {FILTER_GRAMMAR}",
-                p.name, p.ty
-            ),
-        ));
+        op = op.parameter(filter_param(&p.name, &p.name, &p.ty));
     }
     let int_schema = RefOr::T(Schema::Object(
         ObjectBuilder::new()
@@ -220,16 +224,55 @@ fn get_objects_op(ty: &ObjectType) -> Operation {
     .build()
 }
 
-fn link_op(from: &str, link_name: &str, to: &str) -> Operation {
-    OperationBuilder::new()
+/// `GET /objects/{from}/links/{link}`: traverse a single link. Documents the reserved
+/// knobs `_direction` (forward|inverse), `_shape` (objects|association), and `_ids`
+/// (source object-set), plus a filter parameter per source property (bare key) and per
+/// target property (`<link>.<prop>` key) — the keys `resolve_chain_filters` resolves.
+fn link_op(from_ty: &ObjectType, link_name: &str, to_ty: &ObjectType) -> Operation {
+    let from = &from_ty.name.0;
+    let to = &to_ty.name.0;
+    let mut op = OperationBuilder::new()
         .summary(Some(format!("Traverse {from}.{link_name} -> {to}")))
-        .tag(from)
+        .tag(from.clone())
         .security(bearer())
-        .response(
-            "200",
-            json_response(objects_response_schema(to), "Linked objects"),
-        )
-        .build()
+        .parameter(query_param(
+            "_direction",
+            string_schema(),
+            "Hop direction: `forward` (default) follows the link; `inverse` follows it backward.",
+        ))
+        .parameter(query_param(
+            "_shape",
+            string_schema(),
+            "Response shape: `objects` (default) returns the linked objects; `association` \
+             returns the source/target identity pairs.",
+        ))
+        .parameter(query_param(
+            "_ids",
+            string_schema(),
+            "Restrict the source objects to this comma-separated identity set.",
+        ));
+    // A bare key filters the source object; a `<link>.<prop>` key filters the linked target.
+    for p in &from_ty.properties {
+        op = op.parameter(filter_param(&p.name, &format!("{from}.{}", p.name), &p.ty));
+    }
+    for p in &to_ty.properties {
+        op = op.parameter(filter_param(
+            &format!("{link_name}.{}", p.name),
+            &format!("{to}.{}", p.name),
+            &p.ty,
+        ));
+    }
+    op.response(
+        "200",
+        json_response(objects_response_schema(to), "Linked objects"),
+    )
+    .response(
+        "400",
+        plain_response("Bad direction, shape, filter, or _ids"),
+    )
+    .response("403", plain_response("Forbidden by ACL policy"))
+    .response("404", plain_response("Unknown type or link"))
+    .build()
 }
 
 /// Request schema for an action: one property per parameter across every step,
@@ -340,6 +383,8 @@ pub fn ontology_openapi(
     actions: &[ActionDef],
 ) -> (Paths, BTreeMap<String, RefOr<Schema>>) {
     let mut schemas: BTreeMap<String, RefOr<Schema>> = BTreeMap::new();
+    let by_name: BTreeMap<&str, &ObjectType> =
+        types.iter().map(|t| (t.name.0.as_str(), t)).collect();
     let mut pb = PathsBuilder::new();
     for ty in types {
         let name = &ty.name.0;
@@ -353,12 +398,15 @@ pub fn ontology_openapi(
         // Only emit a link whose endpoint types are both in the snapshot, so the generated
         // response `$ref #/components/schemas/{to}` always resolves — a snapshot skew (a
         // `links` read succeeding while a type read failed) must not yield an invalid document.
-        if !schemas.contains_key(&l.from.0) || !schemas.contains_key(&l.to.0) {
+        // The type lookups double as that guard (a missing endpoint type skips the link).
+        let (Some(from_ty), Some(to_ty)) =
+            (by_name.get(l.from.0.as_str()), by_name.get(l.to.0.as_str()))
+        else {
             continue;
-        }
+        };
         pb = pb.path(
             format!("/objects/{}/links/{}", l.from.0, l.name),
-            PathItem::new(HttpMethod::Get, link_op(&l.from.0, &l.name, &l.to.0)),
+            PathItem::new(HttpMethod::Get, link_op(from_ty, &l.name, to_ty)),
         );
     }
     for a in actions {
