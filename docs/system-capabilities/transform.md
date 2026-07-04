@@ -329,9 +329,9 @@ body's `to_job(run_id)`.
   authoring/enqueue authorization is ungoverned (the admin HTTP surface is
   admin-gated, but that is coarse instance-admin, not a transform-authoring
   capability of its own).
-- `#fut-transform-followups` — watermark/incremental output, DAG /
-  transactional enqueue-downstream, optional Ballista escalation, streaming
-  input scans for the wire path.
+- `#fut-transform-followups` — watermark/incremental output, optional
+  Ballista escalation, streaming input scans for the wire path (define-time
+  DAG validation landed with data triggers).
 - `#fut-datafusion-type-coverage` — only the canonical scalar set round-trips;
   timestamps, dates, decimals, and small/unsigned ints abandon the job.
 - `#fut-worker-lazy-compact-ctx` — the zero-pool worker builds its compaction
