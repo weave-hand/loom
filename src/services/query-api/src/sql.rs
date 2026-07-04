@@ -683,10 +683,36 @@ pub fn compile_chain_with(
         // No declared identity: back-compatible DISTINCT over the visible projection.
         None => {
             let cols = col_exprs.join(", ");
-            format!("SELECT DISTINCT {cols} FROM {from}{where_sql} {limit_clause}")
+            // Order by the unmasked visible columns (table-qualified, so unambiguous; masked
+            // columns are constants and don't affect ordering) to satisfy DataFusion's
+            // DISTINCT+LIMIT rule and make the truncated set deterministic.
+            let order_cols: Vec<String> = allowed_cols
+                .iter()
+                .filter(|c| !mask_cols.contains(c))
+                .map(|c| format!("{final_alias}.{}", dialect.quote_ident(c)))
+                .collect();
+            let order = order_by_asc(&order_cols);
+            format!("SELECT DISTINCT {cols} FROM {from}{where_sql}{order} {limit_clause}")
         }
     };
     Ok((sql, params))
+}
+
+/// An `ORDER BY c ASC, …` clause (with a leading space) over already-qualified column
+/// references. DataFusion rejects a `DISTINCT … LIMIT` plan without an explicit ordering
+/// ("Ordering direction required for DISTINCT with limit"), and a stable order also makes
+/// the truncated result deterministic. Empty input yields `""` (the degenerate all-columns-
+/// masked read, already meaningless, keeps its prior shape).
+fn order_by_asc(cols: &[String]) -> String {
+    if cols.is_empty() {
+        return String::new();
+    }
+    let terms = cols
+        .iter()
+        .map(|c| format!("{c} ASC"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(" ORDER BY {terms}")
 }
 
 /// Compile a governed chain that projects exactly the source (`t_0`) and final-target
@@ -713,7 +739,13 @@ pub fn compile_chain_pairs(
         sql.push_str(" WHERE ");
         sql.push_str(&conjuncts.join(" AND "));
     }
-    let _write = write!(sql, " {}", dialect.limit_clause(limit));
+    // Order the DISTINCT pair by both id columns (never masked — a masked identity is
+    // Forbidden before compile), satisfying DataFusion's DISTINCT+LIMIT rule.
+    let order = order_by_asc(&[
+        format!("t_0.{}", dialect.quote_ident(source_id)),
+        format!("t_{k}.{}", dialect.quote_ident(target_id)),
+    ]);
+    let _write = write!(sql, "{order} {}", dialect.limit_clause(limit));
     Ok((sql, params))
 }
 
@@ -1268,7 +1300,17 @@ pub fn compile_graph_reach_tail(
         // No declared final identity: back-compatible DISTINCT over the visible projection.
         None => {
             let cols = col_exprs.join(", ");
-            format!("{cte} SELECT DISTINCT {cols} FROM {from} WHERE {where_sql} {limit_clause}")
+            // Order by the unmasked visible columns (see `compile_chain_with`) to satisfy
+            // DataFusion's DISTINCT+LIMIT rule and make the truncated set deterministic.
+            let order_cols: Vec<String> = allowed_cols
+                .iter()
+                .filter(|c| !mask_cols.contains(c))
+                .map(|c| format!("{final_alias}.{}", q(c)))
+                .collect();
+            let order = order_by_asc(&order_cols);
+            format!(
+                "{cte} SELECT DISTINCT {cols} FROM {from} WHERE {where_sql}{order} {limit_clause}"
+            )
         }
     };
     Ok((sql, params))

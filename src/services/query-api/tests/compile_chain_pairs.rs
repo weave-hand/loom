@@ -33,6 +33,12 @@ fn pairs_project_source_and_target_identity() {
     assert!(params.is_empty());
     // DISTINCT pair of source (t_0) and final-target (t_1) identity columns.
     assert!(sql.contains("SELECT DISTINCT"), "got: {sql}");
+    // DataFusion rejects DISTINCT + LIMIT without an ORDER BY, so the pair query must
+    // carry an explicit ordering on both id columns (regression guard for the 500 fix).
+    assert!(
+        sql.contains(r#"ORDER BY t_0."id" ASC, t_1."order_id" ASC"#),
+        "DISTINCT+LIMIT needs ORDER BY: {sql}"
+    );
     assert!(
         sql.contains(r#"t_0."id""#),
         "source identity projected: {sql}"
