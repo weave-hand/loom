@@ -13,7 +13,7 @@ shared payload/conformance types live in `control_plane_core`
 (`transform_job.rs`, `conform.rs`) and the read/write compute layer is
 `datafusion-io`.
 
-_As of 666de0c3._
+_As of 403f7a6a._
 
 ## Queue-driven SQL transforms
 
@@ -167,11 +167,11 @@ text with no FK, so deleting a definition never orphans or rewrites past
 runs). Typed bodies are validated at define time — unknown input or output
 type names are a `Validation` rejection on both adapters, the same
 fail-at-define-not-at-read posture the rest of the ontology holds to.
-`TransformDef` also carries `schedule` and `on_input_commit` fields, one live
-and one still deferred: `schedule` (slice 2, see **Cron schedules** below) is
-validated and enforced today, while `on_input_commit == true` (slice 3, data
-triggers) remains a 400 at define — the shape is forward-compatible, only
-half the behavior is live.
+`TransformDef` also carries `schedule` and `on_input_commit` fields, both live:
+`schedule` (slice 2, see **Cron schedules** below) is a cron expression
+validated and enforced at fire time, while `on_input_commit` (slice 3, see
+**Data triggers** below) marks the def as firing whenever a commit writes new
+data to one of its resolved inputs.
 
 A `TransformRun` is the durable execution record: `run_id` **is** the lineage
 `run_id` (the same UUID names both), so a run's lineage events are queryable
@@ -228,6 +228,80 @@ trigger tag. `GET /admin/transforms/{name}` exposes the derived
 `next_run_at` (RFC3339 UTC, omitted when the transform is unscheduled); the
 list route does not.
 
+## Data triggers
+
+`TransformDef.on_input_commit` (slice 3, `road-transform-data-triggers`, PR #NN)
+is live: a data-triggered def fires a fresh run whenever a commit writes new
+data to one of its resolved inputs, with no polling loop. Resolution and
+cycle-checking are shared, backend-neutral logic in `core::transforms`:
+`TriggerNode::resolve` maps a def's body to its physical input/output tables
+(a typed body resolves input/output type names via the ontology snapshot at
+hand — an unresolvable name, e.g. a deleted binding, contributes no edge), and
+`validate_no_trigger_cycle` runs Kahn's algorithm over the edge set X → Y
+("Y reads X's resolved output") and names every def caught in a cycle.
+
+**Define-time rejection.** Both adapters build the edge set over the *complete*
+data-triggered set — the def being (re)defined plus every other
+`on_input_commit` def — and reject a cycle as a `Validation` error (HTTP 400 at
+`POST /admin/transforms`) before the def is persisted. On postgres, the whole
+check runs inside the same transaction as the upsert, under
+`pg_advisory_xact_lock(TRANSFORM_DEFINE_LOCK)`: two racing defines cannot each
+see the other absent and jointly commit a cycle, since the lock serializes
+them. The memory adapter gets the same atomicity from its existing transforms
+lock (the ontology snapshot used for type resolution is cloned and dropped
+*before* that lock is taken, preserving the fake's established
+lock-acquisition order).
+
+**Same-tx firing.** The commit-seam hook — `pg_fire_data_triggers` on postgres,
+mirrored inside `MemoryTx::commit` on the fake — runs inside every commit
+transaction that writes genuinely new data: `IcebergTx::commit` (the primitive
+behind engine `CommitTransform` and the snapshot-commit path), inline append,
+inline delta write, multi-step writes, and overwrite/truncate call it directly;
+`land_parquet` and `overwrite_parquet_snapshot` (dataset landing) reach it via
+the new `CommitExtras.data_trigger_tables` field, applied in
+`apply_commit_extras` alongside lineage emit and job enqueue. Compaction and the
+inline-flush end-cap deliberately leave that field empty (or skip the hook
+entirely) — data-preserving rewrites carry no new rows, so re-firing on a flush
+or compaction would be a spurious duplicate run. See
+[control-plane.md](control-plane.md) for the hook's exact seam list.
+
+For each candidate def whose resolved inputs intersect the committed tables:
+the def row is locked `FOR UPDATE` in name order (a fixed lock order across all
+matched defs in one commit, deadlock-free, and the same serialization point
+that makes the debounce race-free against a concurrent commit), the body is
+re-decoded under that lock (so a redefine racing the commit is reflected — the
+enqueued run freezes whatever body is live at the locked instant, not a stale
+snapshot read earlier in the transaction), and a **debounce** check looks for
+an existing `Queued` run of that def: if one exists, the commit skips it
+(at-most-one-pending); a `Running` run does **not** suppress, so a run already
+executing does not block a follow-up run from queuing once its input changes
+again. Absent debounce, the hook inserts a new `TransformRun`
+(`trigger: RunTrigger::DataTrigger`) and its queue job atomically with the
+triggering commit — visible to a worker iff the commit lands.
+
+**Self-trigger suppression.** The run performing the commit (if any) is looked
+up by its `run_id` and excluded from firing even if its own transform is
+data-triggered and reads its own output — defense in depth against a
+self-referential loop that could otherwise arise from a post-define ontology
+rebind (the def's typed input/output re-resolving to overlap after the cycle
+check ran).
+
+**Poison-body skip-and-warn.** A def body that fails to deserialize (a stale
+shape from before a breaking change, or manual corruption) is skipped with a
+`tracing::warn!` rather than failing the transaction — a single broken admin
+artifact must never fail unrelated ingest or transform commits.
+
+Tested by the cross-adapter `transform_data_trigger_contract` (testkit,
+covering both memory and postgres) plus cycle-rejection legs in
+`transforms_contract`; the postgres fixture suite adds eight dedicated legs in
+`tests/data_triggers.rs` (inline land, parquet land + debounce, multi-step
+write, unmatched table is a no-op, overwrite/truncate, `IcebergTx` firing +
+self-skip, flush does not re-fire, and a poisoned body is skipped); and an
+engine-wire e2e (`commit_transform_fires_downstream_data_trigger`) proves a
+`CommitTransform` RPC fires a downstream data-triggered def. The admin surface
+gets a 201/400 pair (`define_data_triggered_transform_is_accepted`,
+`define_trigger_cycle_is_rejected_400`).
+
 ## Admin HTTP surface
 
 Eight admin routes (`src/services/runtime/src/admin.rs`, `require_auth` then
@@ -260,9 +334,6 @@ body's `to_job(run_id)`.
   input scans for the wire path.
 - `#fut-datafusion-type-coverage` — only the canonical scalar set round-trips;
   timestamps, dates, decimals, and small/unsigned ints abandon the job.
-- `#road-transform-data-triggers` — `TransformDef.on_input_commit` is carried
-  in the shape and rejected at define time; run-on-commit data triggers are
-  not live yet.
 - `#fut-worker-lazy-compact-ctx` — the zero-pool worker builds its compaction
   context eagerly, so even a flush-only worker requires warehouse config and a
   reachable Flight endpoint at startup.

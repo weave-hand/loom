@@ -1,6 +1,6 @@
 # Roadmap register
 
-_As of 4861433b._
+_As of 403f7a6a._
 
 Committed and sequenced work — open (`planned`) items only. Shipped work is
 documented per subsystem in [`system-capabilities/`](system-capabilities/README.md)
@@ -12,11 +12,6 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 - [ ] **Custom-logic actions slice 4 — enqueue-downstream (write-then-derive)** `{#road-action-enqueue-downstream area:ontology status:planned from:2026-07-01-action-enqueue-downstream-design pr:- spec:2026-07-01-action-enqueue-downstream-design}`
   Slice 4: on commit, a governed action **atomically enqueues a downstream job** in the **same** unit of work (write-then-derive). The atomic-enqueue point already exists — `append_parquet_snapshot` (`iceberg_landing.rs:149`) already takes `jobs: &[NewJob]` and enqueues them in the write's `pool.begin()` tx, and `Tx::enqueue` (`transaction.rs:41`) is its seam. The gap is action-level: `ActionDef` gains optional `downstream: Vec<JobTemplate{kind, payload}>` where `kind` is validated at define time against a job-kind allowlist and `payload` leaves may reference params + the **written identity** (`@self.id`, reusing `#road-action-computed-assignments`'s resolver). The write path resolves the templates to `NewJob`s and threads `&[NewJob]` through `write_object`/`overwrite_table` → `land` → the existing enqueue — so the job is visible to a worker **iff** the write commits (rollback ⇒ no job). Insert+Update+Delete. Promotes `#fut-action-enqueue-downstream`. Smallest of the three (plumbing largely landed); pairs with [[fut-scheduled-jobs]]. Out: conditional enqueue, general hook bus, new job kinds/handlers.
-
-## transform
-
-- [ ] **Transform ergonomics slice 3 — data triggers (run on input commit)** `{#road-transform-data-triggers area:transform status:planned from:2026-07-04-transform-ergonomics-design pr:- spec:2026-07-04-transform-ergonomics-design}`
-  `TransformDef.on_input_commit` goes live: the snapshot-commit seam in the postgres adapter (shared by ingest commits and engine `CommitTransform`) matches committed tables against data-triggered defs (typed inputs resolved via ontology at eval time) and creates+enqueues `trigger: DataTrigger` runs **in the same commit transaction** — no polling. Queued-run debounce (at-most-one-pending), define-time DAG validation (cycle → 400), runtime self-trigger suppression; memory fake mirrors the hook. Trims `#fut-transform-followups`' DAG bullet on landing; composes with [[road-action-enqueue-downstream]]. `#road-transform-defs-runs` landed (PR #351) — unblocked.
 
 ## acl
 
