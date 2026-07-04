@@ -4233,6 +4233,94 @@ where
     };
     cp.define_transform(good_typed.clone()).await.unwrap();
 
+    // -- data triggers: define-time cycle validation (slice 3) --
+    // NOTE: named `dt_phys`/`dt_typed` (not `phys`/`typed`) to avoid
+    // shadowing the outer `phys: TransformBody` local, which is still read
+    // further below (the "frozen body" leg's `mutated` def).
+
+    let dt_phys = |name: &str, input: (&str, &str), output: (&str, &str)| TransformDef {
+        name: TransformName(name.to_string()),
+        body: TransformBody::Physical {
+            inputs: vec![tref(input.0, input.1)],
+            output: tref(output.0, output.1),
+            sql: "select 1".to_string(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: true,
+    };
+
+    // A data-triggered def is accepted and round-trips its flag.
+    cp.define_transform(dt_phys("dt-a", ("main", "t1"), ("main", "t2")))
+        .await
+        .unwrap();
+    assert!(
+        cp.get_transform(&TransformName("dt-a".into()))
+            .await
+            .unwrap()
+            .on_input_commit
+    );
+
+    // A self-loop (reads its own output) is rejected.
+    let err = cp
+        .define_transform(dt_phys("dt-self", ("main", "s1"), ("main", "s1")))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ControlPlaneError::Validation(_)), "{err}");
+
+    // Closing a two-cycle against dt-a is rejected...
+    let err = cp
+        .define_transform(dt_phys("dt-b", ("main", "t2"), ("main", "t1")))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("cycle"), "{err}");
+    // ...and the rejected def was not stored.
+    assert!(matches!(
+        cp.get_transform(&TransformName("dt-b".into())).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+
+    // Redefining dt-a does not collide with its own previous edges.
+    cp.define_transform(dt_phys("dt-a", ("main", "t1"), ("main", "t2")))
+        .await
+        .unwrap();
+
+    // A typed cycle resolves through the ontology: Widget->(main,widget),
+    // Gadget->(main,gadget). dt-t1 reads Widget writes Gadget; dt-t2
+    // (reads Gadget writes Widget) closes the loop -> rejected.
+    let dt_typed = |name: &str, input: &str, output: &str| TransformDef {
+        name: TransformName(name.to_string()),
+        body: TransformBody::Typed {
+            inputs: vec![input.to_string()],
+            output: output.to_string(),
+            sql: "select 1".to_string(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: true,
+    };
+    cp.define_transform(dt_typed("dt-t1", "Widget", "Gadget"))
+        .await
+        .unwrap();
+    let err = cp
+        .define_transform(dt_typed("dt-t2", "Gadget", "Widget"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("cycle"), "{err}");
+
+    // data_triggered_defs returns exactly the flagged defs, name-ordered.
+    let dt = cp.data_triggered_defs().await.unwrap();
+    let names: Vec<&str> = dt.iter().map(|d| d.name.0.as_str()).collect();
+    assert_eq!(names, vec!["dt-a", "dt-t1"]);
+
+    // Cleanup so later legs' def counts are unaffected.
+    cp.delete_transform(&TransformName("dt-a".into()))
+        .await
+        .unwrap();
+    cp.delete_transform(&TransformName("dt-t1".into()))
+        .await
+        .unwrap();
+
     // list: name-ordered, full page
     let page = cp.list_transforms(PageReq::default()).await.unwrap();
     assert_eq!(

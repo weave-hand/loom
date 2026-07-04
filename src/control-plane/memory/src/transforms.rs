@@ -4,9 +4,9 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, TransformBody,
-    TransformDef, TransformName, TransformRun, Transforms, next_cron_occurrence,
-    validate_transform_def,
+    ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, TableRef,
+    TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode,
+    next_cron_occurrence, validate_no_trigger_cycle, validate_transform_def,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -35,6 +35,20 @@ impl Transforms for MemoryControlPlane {
                 }
             }
         }
+        // Ontology snapshot for trigger-cycle resolution, cloned and dropped
+        // OUTSIDE the transforms lock. Invariant (deadlock-freedom): the
+        // ontology lock is never ACQUIRED while any of rows/lineage/catalog/
+        // transforms is held (define_type holds ontology THEN takes lineage —
+        // ontology is only ever first). Taking it here in its own scope,
+        // before `transforms`, preserves that.
+        let type_tables: HashMap<String, TableRef> = {
+            self.ontology
+                .lock()
+                .types
+                .iter()
+                .map(|(n, t)| (n.clone(), t.table.clone()))
+                .collect()
+        };
         // Pure (no lock held) — computed before taking `transforms` below.
         let next = def
             .schedule
@@ -42,6 +56,18 @@ impl Transforms for MemoryControlPlane {
             .map(|e| next_cron_occurrence(e, OffsetDateTime::now_utc()))
             .transpose()?;
         let mut st = self.transforms.lock();
+        if def.on_input_commit {
+            // Edge set over data-triggered defs (the candidate replaces any
+            // same-name predecessor), validated atomically with the insert.
+            let mut nodes: Vec<TriggerNode> = st
+                .defs
+                .values()
+                .filter(|d| d.on_input_commit && d.name.0 != def.name.0)
+                .map(|d| TriggerNode::resolve(&d.name, &d.body, &type_tables))
+                .collect();
+            nodes.push(TriggerNode::resolve(&def.name, &def.body, &type_tables));
+            validate_no_trigger_cycle(&nodes)?;
+        }
         match next {
             Some(n) => {
                 st.next_run_at.insert(def.name.0.clone(), n);

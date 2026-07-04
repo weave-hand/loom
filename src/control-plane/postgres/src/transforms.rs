@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, RunTrigger,
-    TransformBody, TransformDef, TransformName, TransformRun, Transforms, next_cron_occurrence,
-    validate_transform_def,
+    TableRef, TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode,
+    next_cron_occurrence, validate_no_trigger_cycle, validate_transform_def,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -12,12 +12,62 @@ use uuid::Uuid;
 use crate::queue::pg_insert;
 use crate::{PgControlPlane, backend};
 
+/// Serializes trigger-DAG validation against concurrent defines: two racing
+/// `define_transform`s could each see the other absent and jointly commit a
+/// cycle. Arbitrary constant, unique within loom's advisory-lock usage.
+const TRANSFORM_DEFINE_LOCK: i64 = 0x6c6f_6f6d_7472; // "loomtr"
+
 fn ser(v: &impl serde::Serialize) -> Result<serde_json::Value> {
     serde_json::to_value(v).map_err(|e| ControlPlaneError::Serialization(e.to_string()))
 }
 
 fn de_body(v: serde_json::Value) -> Result<TransformBody> {
     serde_json::from_value(v).map_err(|e| ControlPlaneError::Serialization(e.to_string()))
+}
+
+/// Resolve every typed name appearing in `bodies` to its backing table, in
+/// one query. Missing names are simply absent from the map (an unresolvable
+/// type cannot match a commit and forms no edge).
+async fn pg_type_tables<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    bodies: &[(TransformName, TransformBody)],
+) -> Result<std::collections::HashMap<String, TableRef>> {
+    let mut names: Vec<String> = bodies
+        .iter()
+        .flat_map(|(_, b)| match b {
+            TransformBody::Typed { inputs, output, .. } => inputs
+                .iter()
+                .chain(std::iter::once(output))
+                .cloned()
+                .collect::<Vec<_>>(),
+            TransformBody::Physical { .. } => Vec::new(),
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    if names.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let rows = sqlx::query!(
+        "select name, table_schema, table_name from ontology.object_type \
+         where name = any($1)",
+        &names,
+    )
+    .fetch_all(ex)
+    .await
+    .map_err(backend)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.name,
+                TableRef {
+                    schema: r.table_schema,
+                    name: r.table_name,
+                },
+            )
+        })
+        .collect())
 }
 
 /// Mark `run_id` succeeded at `snapshot_id` on any executor — callable from
@@ -81,6 +131,17 @@ impl Transforms for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_transform(&self, def: TransformDef) -> Result<()> {
         validate_transform_def(&def)?;
+        let body = ser(&def.body)?;
+        let next_run_at = def
+            .schedule
+            .as_deref()
+            .map(|e| next_cron_occurrence(e, OffsetDateTime::now_utc()))
+            .transpose()?;
+        let mut tx = self.pool().begin().await.map_err(backend)?;
+        sqlx::query!("select pg_advisory_xact_lock($1)", TRANSFORM_DEFINE_LOCK)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
         if let TransformBody::Typed { inputs, output, .. } = &def.body {
             let mut names: Vec<String> = inputs.clone();
             names.push(output.clone());
@@ -90,7 +151,7 @@ impl Transforms for PgControlPlane {
                 "select count(*) from ontology.object_type where name = any($1)",
                 &names,
             )
-            .fetch_one(self.pool())
+            .fetch_one(&mut *tx)
             .await
             .map_err(backend)?
             .unwrap_or(0);
@@ -100,12 +161,27 @@ impl Transforms for PgControlPlane {
                 ));
             }
         }
-        let body = ser(&def.body)?;
-        let next_run_at = def
-            .schedule
-            .as_deref()
-            .map(|e| next_cron_occurrence(e, OffsetDateTime::now_utc()))
-            .transpose()?;
+        if def.on_input_commit {
+            let existing = sqlx::query!(
+                "select name, body from transforms.transform \
+                 where on_input_commit and name <> $1",
+                def.name.0,
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(backend)?;
+            let mut bodies: Vec<(TransformName, TransformBody)> = existing
+                .into_iter()
+                .map(|r| Ok((TransformName(r.name), de_body(r.body)?)))
+                .collect::<Result<_>>()?;
+            bodies.push((def.name.clone(), def.body.clone()));
+            let types = pg_type_tables(&mut *tx, &bodies).await?;
+            let nodes: Vec<TriggerNode> = bodies
+                .iter()
+                .map(|(n, b)| TriggerNode::resolve(n, b, &types))
+                .collect();
+            validate_no_trigger_cycle(&nodes)?;
+        }
         sqlx::query!(
             "insert into transforms.transform (name, body, schedule, on_input_commit, next_run_at) \
              values ($1, $2, $3, $4, $5) \
@@ -119,9 +195,10 @@ impl Transforms for PgControlPlane {
             def.on_input_commit,
             next_run_at,
         )
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
         Ok(())
     }
 
