@@ -279,6 +279,7 @@ async fn run_wire_transform(
             &files,
             &req.lineage,
             matches!(req.output_mode, OutputMode::Overwrite),
+            None,
         )
         .await
         .map_err(|e| {

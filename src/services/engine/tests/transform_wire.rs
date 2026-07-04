@@ -147,6 +147,7 @@ async fn commit_transform_appends_and_emits_lineage() {
             &files,
             &ev,
             false,
+            None,
         )
         .await
         .expect("commit_transform")
@@ -231,6 +232,7 @@ async fn commit_transform_replace_expires_prior_live_set() {
             &first,
             &event(std::slice::from_ref(&src), &out, "q1"),
             false,
+            None,
         )
         .await
         .expect("append commit")
@@ -245,6 +247,7 @@ async fn commit_transform_replace_expires_prior_live_set() {
             &second,
             &event(std::slice::from_ref(&src), &out, "q2"),
             true,
+            None,
         )
         .await
         .expect("replace commit")
@@ -317,6 +320,7 @@ async fn commit_transform_bad_lineage_json_is_invalid_argument() {
             write_json: vec![],
             lineage_json: "not lineage".into(),
             replace: false,
+            run_id: None,
         })
         .await
     {
