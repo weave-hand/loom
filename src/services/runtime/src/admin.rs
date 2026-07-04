@@ -15,9 +15,11 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use control_plane_core::{
     ADMIN_ROLE, Action, ActionDef, ActionName, Auth, ControlPlane, ControlPlaneError, Effect,
-    LinkDef, NewUser, ObjectType, PageReq, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef,
-    TypeName, UserSummary,
+    LinkDef, NewUser, ObjectType, PageReq, PolicyTarget, PropertyDef, RoleId, RunState, RunTrigger,
+    SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun, TypeName,
+    UserSummary,
 };
+use time::format_description::well_known::Rfc3339;
 
 use crate::auth::{AuthState, Subject, protect, status_for, unauthorized};
 use crate::hash_password;
@@ -721,6 +723,330 @@ async fn unassign_user_role(
     }
 }
 
+/// A transform definition, echoed in its serde shape.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct TransformDefView {
+    name: String,
+    /// The `TransformBody` serde shape (`{"kind": "physical"|"typed", ...}`).
+    #[schema(value_type = Object)]
+    body: serde_json::Value,
+    schedule: Option<String>,
+    on_input_commit: bool,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct ListTransformsResp {
+    transforms: Vec<TransformDefView>,
+}
+
+/// One transform run.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct TransformRunView {
+    run_id: String,
+    /// Absent for ad-hoc runs.
+    transform: Option<String>,
+    trigger: String,
+    state: String,
+    #[schema(value_type = Object)]
+    body: serde_json::Value,
+    queued_at: String,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    snapshot_id: Option<i64>,
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct ListRunsResp {
+    runs: Vec<TransformRunView>,
+}
+
+/// Acknowledgement of an accepted (asynchronous) run submission.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct RunSubmittedResp {
+    run_id: String,
+}
+
+fn rfc3339(t: time::OffsetDateTime) -> String {
+    t.format(&Rfc3339).unwrap_or_default()
+}
+
+fn def_view(d: &TransformDef) -> TransformDefView {
+    TransformDefView {
+        name: d.name.0.clone(),
+        body: serde_json::to_value(&d.body).unwrap_or(serde_json::Value::Null),
+        schedule: d.schedule.clone(),
+        on_input_commit: d.on_input_commit,
+    }
+}
+
+fn run_view(r: &TransformRun) -> TransformRunView {
+    TransformRunView {
+        run_id: r.run_id.to_string(),
+        transform: r.transform.as_ref().map(|t| t.0.clone()),
+        trigger: r.trigger.as_str().to_string(),
+        state: r.state.as_str().to_string(),
+        body: serde_json::to_value(&r.body).unwrap_or(serde_json::Value::Null),
+        queued_at: rfc3339(r.queued_at),
+        started_at: r.started_at.map(rfc3339),
+        finished_at: r.finished_at.map(rfc3339),
+        snapshot_id: r.snapshot_id,
+        error: r.error.clone(),
+    }
+}
+
+/// Shared submit path for run-now and ad-hoc runs: builds a fresh `Queued`
+/// [`TransformRun`] + its queue job and submits them atomically.
+async fn submit_new_run(
+    st: &AdminState,
+    transform: Option<TransformName>,
+    trigger: RunTrigger,
+    body: TransformBody,
+) -> Response {
+    let run_id = uuid::Uuid::new_v4();
+    let run = TransformRun {
+        run_id,
+        transform,
+        trigger,
+        state: RunState::Queued,
+        body: body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    match st
+        .cp
+        .transforms()
+        .submit_run(run, body.to_job(run_id))
+        .await
+    {
+        Ok(_) => (
+            StatusCode::ACCEPTED,
+            Json(RunSubmittedResp {
+                run_id: run_id.to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `POST /admin/transforms` — define (or redefine) a named transform.
+/// `TransformDef` carries no `ToSchema`, so the body is documented as its
+/// serde shape and deserialized inside the handler (the `post_action`
+/// open-body pattern).
+#[utoipa::path(
+    post, path = "/admin/transforms",
+    request_body(
+        content = serde_json::Value,
+        description = "A `TransformDef` in its serde shape: `{\"name\", \"body\": \
+            {\"kind\": \"physical\"|\"typed\", \"inputs\", \"output\", \"sql\", \"output_mode\"?}, \
+            \"schedule\"?, \"on_input_commit\"?}`",
+    ),
+    responses(
+        (status = 201, description = "Transform defined"),
+        (status = 400, description = "Body does not decode as a TransformDef, or validation \
+            failed (e.g. a schedule/on_input_commit not yet supported, or a typed body \
+            referencing unknown ontology types)"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn define_transform_route(
+    State(st): State<AdminState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let def: TransformDef = match serde_json::from_value(body) {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid TransformDef: {e}"),
+            )
+                .into_response();
+        }
+    };
+    match st.cp.transforms().define_transform(def).await {
+        Ok(()) => (StatusCode::CREATED, "defined").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `GET /admin/transforms` — list all transform definitions.
+#[utoipa::path(
+    get, path = "/admin/transforms",
+    responses((status = 200, description = "All transform definitions", body = ListTransformsResp)),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn list_transforms_route(State(st): State<AdminState>) -> Response {
+    match st.cp.transforms().list_transforms(PageReq::default()).await {
+        Ok(page) => {
+            let transforms = page.items.iter().map(def_view).collect();
+            (StatusCode::OK, Json(ListTransformsResp { transforms })).into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `GET /admin/transforms/:name` — fetch one transform definition.
+#[utoipa::path(
+    get, path = "/admin/transforms/{name}",
+    params(("name" = String, Path, description = "Transform name")),
+    responses(
+        (status = 200, description = "The transform definition", body = TransformDefView),
+        (status = 404, description = "Unknown transform"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn get_transform_route(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
+    match st.cp.transforms().get_transform(&TransformName(name)).await {
+        Ok(def) => (StatusCode::OK, Json(def_view(&def))).into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `DELETE /admin/transforms/:name` — remove a transform definition
+/// (idempotent). Runs keep their frozen body and name; history survives
+/// deletion.
+#[utoipa::path(
+    delete, path = "/admin/transforms/{name}",
+    params(("name" = String, Path, description = "Transform name")),
+    responses((status = 200, description = "Transform definition removed (idempotent)")),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn delete_transform_route(
+    State(st): State<AdminState>,
+    Path(name): Path<String>,
+) -> Response {
+    match st
+        .cp
+        .transforms()
+        .delete_transform(&TransformName(name.clone()))
+        .await
+    {
+        Ok(()) => Json(serde_json::json!({ "deleted": name })).into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `POST /admin/transforms/:name/run` — run a defined transform now
+/// (`RunTrigger::Manual`), submitting its frozen body as a fresh run.
+#[utoipa::path(
+    post, path = "/admin/transforms/{name}/run",
+    params(("name" = String, Path, description = "Transform name")),
+    responses(
+        (status = 202, description = "Run accepted and queued", body = RunSubmittedResp),
+        (status = 404, description = "Unknown transform"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn run_transform_route(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
+    let name = TransformName(name);
+    let def = match st.cp.transforms().get_transform(&name).await {
+        Ok(d) => d,
+        Err(e) => return status_for(&e).into_response(),
+    };
+    submit_new_run(&st, Some(name), RunTrigger::Manual, def.body).await
+}
+
+/// `POST /admin/transforms/run` — run an ad-hoc `TransformBody` (no saved
+/// definition), submitted with `RunTrigger::AdHoc`. `TransformBody` carries
+/// no `ToSchema`, so the body is documented as its serde shape and
+/// deserialized inside the handler.
+#[utoipa::path(
+    post, path = "/admin/transforms/run",
+    request_body(
+        content = serde_json::Value,
+        description = "A `TransformBody` in its serde shape: `{\"kind\": \"physical\"|\"typed\", \
+            \"inputs\", \"output\", \"sql\", \"output_mode\"?}`",
+    ),
+    responses(
+        (status = 202, description = "Run accepted and queued", body = RunSubmittedResp),
+        (status = 400, description = "Body does not decode as a TransformBody"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn run_adhoc_route(
+    State(st): State<AdminState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let body: TransformBody = match serde_json::from_value(body) {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid TransformBody: {e}"),
+            )
+                .into_response();
+        }
+    };
+    submit_new_run(&st, None, RunTrigger::AdHoc, body).await
+}
+
+/// `GET /admin/transforms/:name/runs` — a transform's run history, newest
+/// first. 404 for an unknown transform name (distinguishes "no runs" from
+/// "no such transform").
+#[utoipa::path(
+    get, path = "/admin/transforms/{name}/runs",
+    params(("name" = String, Path, description = "Transform name")),
+    responses(
+        (status = 200, description = "The transform's runs, newest first", body = ListRunsResp),
+        (status = 404, description = "Unknown transform"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn list_transform_runs(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
+    let name = TransformName(name);
+    if let Err(e) = st.cp.transforms().get_transform(&name).await {
+        return status_for(&e).into_response();
+    }
+    match st
+        .cp
+        .transforms()
+        .list_runs(Some(&name), PageReq::default())
+        .await
+    {
+        Ok(page) => {
+            let runs = page.items.iter().map(run_view).collect();
+            (StatusCode::OK, Json(ListRunsResp { runs })).into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `GET /admin/runs/:run_id` — fetch one run by id.
+#[utoipa::path(
+    get, path = "/admin/runs/{run_id}",
+    params(("run_id" = String, Path, description = "Run id (UUID)")),
+    responses(
+        (status = 200, description = "The run", body = TransformRunView),
+        (status = 400, description = "run_id is not a valid UUID"),
+        (status = 404, description = "Unknown run"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn get_run_route(State(st): State<AdminState>, Path(run_id): Path<String>) -> Response {
+    let rid = match uuid::Uuid::parse_str(&run_id) {
+        Ok(u) => u,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("invalid run id: {e}")).into_response();
+        }
+    };
+    match st.cp.transforms().get_run(rid).await {
+        Ok(run) => (StatusCode::OK, Json(run_view(&run))).into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
 /// Admin routes, behind `require_auth` (401) then [`require_admin`] (403).
 pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
     let inner = Router::new()
@@ -744,6 +1070,18 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
             "/admin/users/:username/roles/:role",
             put(assign_user_role).delete(unassign_user_role),
         )
+        .route(
+            "/admin/transforms",
+            post(define_transform_route).get(list_transforms_route),
+        )
+        .route("/admin/transforms/run", post(run_adhoc_route))
+        .route(
+            "/admin/transforms/:name",
+            get(get_transform_route).delete(delete_transform_route),
+        )
+        .route("/admin/transforms/:name/run", post(run_transform_route))
+        .route("/admin/transforms/:name/runs", get(list_transform_runs))
+        .route("/admin/runs/:run_id", get(get_run_route))
         .with_state(admin.clone())
         .route_layer(axum::middleware::from_fn_with_state(admin, require_admin));
     protect(inner, auth)
@@ -770,7 +1108,15 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         revoke_grant,
         user_roles,
         assign_user_role,
-        unassign_user_role
+        unassign_user_role,
+        define_transform_route,
+        list_transforms_route,
+        get_transform_route,
+        delete_transform_route,
+        run_transform_route,
+        run_adhoc_route,
+        list_transform_runs,
+        get_run_route
     ),
     components(schemas(
         CreateUserReq,
@@ -784,7 +1130,12 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         TableReq,
         PropReq,
         GrantView,
-        RoleGrantsResp
+        RoleGrantsResp,
+        TransformDefView,
+        ListTransformsResp,
+        TransformRunView,
+        ListRunsResp,
+        RunSubmittedResp
     ))
 )]
 struct AdminApiDoc;
