@@ -29,6 +29,11 @@ pub struct TransformJob {
     pub sql: String,
     #[serde(default)]
     pub output_mode: OutputMode,
+    /// When present, the id of the `TransformRun` this job executes (and the
+    /// lineage `run_id` the worker will emit). Absent on legacy/direct
+    /// enqueues, which run without a run record.
+    #[serde(default)]
+    pub run_id: Option<uuid::Uuid>,
 }
 
 /// Payload of a `"typed-transform"` job: SQL over ontology-type-named inputs.
@@ -39,4 +44,9 @@ pub struct TypedTransformJob {
     pub sql: String,
     #[serde(default)]
     pub output_mode: OutputMode,
+    /// When present, the id of the `TransformRun` this job executes (and the
+    /// lineage `run_id` the worker will emit). Absent on legacy/direct
+    /// enqueues, which run without a run record.
+    #[serde(default)]
+    pub run_id: Option<uuid::Uuid>,
 }

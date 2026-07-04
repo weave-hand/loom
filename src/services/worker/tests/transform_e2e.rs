@@ -78,6 +78,7 @@ fn make_transform_job(
             output: output.clone(),
             sql: sql.to_string(),
             output_mode,
+            run_id: None,
         })
         .unwrap(),
         attempts: 0,
@@ -208,6 +209,7 @@ async fn transform_runs_over_the_wire() {
                 output: dst.clone(),
                 sql: sql.to_string(),
                 output_mode: OutputMode::Append,
+                run_id: None,
             })
             .expect("payload"),
             run_at: None,
