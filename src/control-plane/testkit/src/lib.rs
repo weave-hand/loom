@@ -4319,3 +4319,85 @@ where
         .unwrap();
     assert_eq!(named.items.len(), 1, "runs survive definition deletion");
 }
+
+/// A `DataFile` with representative stats, copying the full 7-field literal
+/// shape used elsewhere in this file (e.g. `snapshot_replace_contract`).
+fn datafile(path: &str, records: i64, bytes: i64) -> control_plane_core::DataFile {
+    control_plane_core::DataFile {
+        path: path.into(),
+        path_is_relative: true,
+        file_format: control_plane_core::FileFormat::Parquet,
+        record_count: records,
+        file_size_bytes: bytes,
+        column_stats: vec![],
+        parquet_footer_size: Some(10),
+    }
+}
+
+/// The success mark rides the table-commit transaction: the run flips to
+/// Succeeded with the very snapshot the commit allocates, atomically.
+pub async fn transform_run_commit_success_contract<CP>(cp: &CP)
+where
+    CP: ControlPlane + TableControlPlane,
+{
+    // NOTE the bound: NO `+ Transforms` — postgres's only `TableControlPlane`
+    // is `IcebergControlPlane`, which reaches the concern through the
+    // `ControlPlane::transforms()` accessor (Task 5), not a direct impl. All
+    // concern calls below therefore go `cp.transforms().…`.
+    use control_plane_core::{
+        ColumnSpec, OutputMode, RunState, RunTrigger, TransformBody, TransformRun,
+    };
+
+    let rid = uuid::Uuid::new_v4();
+    let body = TransformBody::Physical {
+        inputs: vec![tref("main", "src")],
+        output: tref("main", "run_dst"),
+        sql: "select 1".into(),
+        output_mode: OutputMode::Append,
+    };
+    let run = TransformRun {
+        run_id: rid,
+        transform: None,
+        trigger: RunTrigger::AdHoc,
+        state: RunState::Queued,
+        body: body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    cp.transforms()
+        .submit_run(run, body.to_job(rid))
+        .await
+        .unwrap();
+
+    let out = tref("main", "run_dst");
+    let cols = vec![ColumnSpec {
+        name: "id".into(),
+        ty: "long".into(),
+        nullable: true,
+    }];
+    let files = vec![datafile("f1.parquet", 1, 10)];
+
+    // Rollback leaves the run untouched.
+    let mut tx = cp.begin_table().await.unwrap();
+    tx.create_table(&out, &cols).await.unwrap();
+    tx.append_files(&out, &files).await.unwrap();
+    tx.mark_run_succeeded(rid).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        cp.transforms().get_run(rid).await.unwrap().state,
+        RunState::Queued
+    );
+
+    // Commit marks Succeeded at the allocated snapshot.
+    let mut tx = cp.begin_table().await.unwrap();
+    tx.create_table(&out, &cols).await.unwrap();
+    tx.append_files(&out, &files).await.unwrap();
+    tx.mark_run_succeeded(rid).await.unwrap();
+    let snap = tx.commit().await.unwrap().expect("a snapshot");
+    let r = cp.transforms().get_run(rid).await.unwrap();
+    assert_eq!(r.state, RunState::Succeeded);
+    assert_eq!(r.snapshot_id, Some(snap.0));
+}

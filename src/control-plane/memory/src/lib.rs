@@ -225,11 +225,13 @@ impl TableControlPlane for MemoryControlPlane {
             notify: self.notify.clone(),
             lineage: self.lineage.clone(),
             catalog: self.catalog.clone(),
+            transforms: self.transforms.clone(),
             staged: Vec::new(),
             staged_events: Vec::new(),
             staged_tables: Vec::new(),
             staged_writes: Vec::new(),
             staged_compactions: Vec::new(),
+            staged_run_success: None,
         }))
     }
 }

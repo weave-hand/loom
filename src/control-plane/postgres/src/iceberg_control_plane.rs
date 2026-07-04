@@ -19,6 +19,7 @@ use control_plane_core::{
     TableTx, Transforms, Tx,
 };
 use sqlx::{PgPool, Postgres, Transaction};
+use uuid::Uuid;
 
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_landing::{WriteMode, ensure_iceberg_table, register_files};
@@ -92,6 +93,7 @@ impl TableControlPlane for IcebergControlPlane {
             staged_creates: Vec::new(),
             staged_files: Vec::new(),
             staged_compacts: Vec::new(),
+            staged_run_success: None,
         }))
     }
 }
@@ -105,6 +107,7 @@ pub struct IcebergTx {
     staged_creates: Vec<(TableRef, Vec<ColumnSpec>)>,
     staged_files: Vec<(TableRef, Vec<DataFile>, WriteMode)>,
     staged_compacts: Vec<(TableRef, Vec<String>, Vec<DataFile>)>,
+    staged_run_success: Option<Uuid>,
 }
 
 #[async_trait]
@@ -119,9 +122,15 @@ impl Tx for IcebergTx {
             staged_creates,
             staged_files,
             staged_compacts,
+            staged_run_success,
         } = *self;
 
         if staged_creates.is_empty() && staged_files.is_empty() && staged_compacts.is_empty() {
+            if staged_run_success.is_some() {
+                return Err(ControlPlaneError::Validation(
+                    "mark_run_succeeded staged without a snapshot-producing write".into(),
+                ));
+            }
             // Only lineage/enqueue (already applied on the held tx) — commit them.
             tx.commit().await.map_err(backend)?;
             return Ok(None);
@@ -165,6 +174,9 @@ impl Tx for IcebergTx {
                 at,
             )
             .await?;
+        }
+        if let Some(rid) = staged_run_success {
+            crate::transforms::pg_mark_run_succeeded(&mut *tx, rid, at.0).await?;
         }
         tx.commit().await.map_err(backend)?;
         Ok(Some(at))
@@ -210,6 +222,16 @@ impl TableTx for IcebergTx {
     ) -> Result<()> {
         self.staged_compacts
             .push((table.clone(), expire.to_vec(), write.to_vec()));
+        Ok(())
+    }
+
+    async fn mark_run_succeeded(&mut self, run_id: Uuid) -> Result<()> {
+        if self.staged_run_success.is_some() {
+            return Err(ControlPlaneError::Validation(
+                "a run success mark is already staged on this transaction".into(),
+            ));
+        }
+        self.staged_run_success = Some(run_id);
         Ok(())
     }
 }

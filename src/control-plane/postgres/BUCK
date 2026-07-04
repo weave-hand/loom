@@ -314,7 +314,13 @@ loom_fixture_test(
     crate = "transforms",
     srcs = ["tests/transforms.rs"],
     crate_root = "tests/transforms.rs",
-    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
 )
 
 loom_fixture_test(

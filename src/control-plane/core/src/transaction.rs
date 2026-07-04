@@ -4,6 +4,7 @@
 //! whose `begin_table` returns the wider `TableTx` staging surface.
 
 use async_trait::async_trait;
+use uuid::Uuid;
 
 use crate::acl::Acl;
 use crate::auth::Auth;
@@ -88,4 +89,10 @@ pub trait TableTx: Tx {
         expire: &[String],
         write: &[DataFile],
     ) -> Result<()>;
+    /// Stage a transform-run success mark: at `commit()`, the run flips to
+    /// `Succeeded` carrying the snapshot that commit allocates — in the same
+    /// unit of work as the data. Staging twice is an error; committing with a
+    /// staged mark but no snapshot-producing write is an error (a success
+    /// mark without a snapshot is meaningless — see `RunOutcome::Succeeded`).
+    async fn mark_run_succeeded(&mut self, run_id: Uuid) -> Result<()>;
 }
