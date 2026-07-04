@@ -14,10 +14,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use control_plane_core::{
-    ADMIN_ROLE, Action, ActionDef, ActionName, Auth, ControlPlane, ControlPlaneError, Effect,
-    LinkDef, NewUser, ObjectType, PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter,
-    RunState, RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName,
-    TransformRun, TypeName, UserSummary,
+    ADMIN_ROLE, Action, ActionDef, ActionName, Aggregation, Auth, ControlPlane, ControlPlaneError,
+    DerivedPropertyDef, Effect, LengthConstraint, LinkDef, NewUser, ObjectType, PageReq, Policy,
+    PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId, RowFilter, RunState,
+    RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun,
+    TypeName, UserSummary,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -393,11 +394,108 @@ async fn grant(
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
+struct RangeReq {
+    #[serde(default)]
+    min: Option<f64>,
+    #[serde(default)]
+    max: Option<f64>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct LengthReq {
+    #[serde(default)]
+    min: Option<u32>,
+    #[serde(default)]
+    max: Option<u32>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct ConstraintsReq {
+    /// Numeric bound; valid only on numeric property types.
+    #[serde(default)]
+    range: Option<RangeReq>,
+    /// String length bound; valid only on string property types.
+    #[serde(default)]
+    length: Option<LengthReq>,
+    /// Regex the value must match; valid only on string property types.
+    #[serde(default)]
+    pattern: Option<String>,
+    /// Closed value vocabulary; valid only on string property types.
+    #[serde(default)]
+    one_of: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct AggReq {
+    /// "count" | "sum" | "avg" | "min" | "max".
+    kind: String,
+    /// Target-type column to aggregate; required for every kind except "count".
+    #[serde(default)]
+    column: Option<String>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct DerivedReq {
+    name: String,
+    /// Result type, e.g. "Int".
+    ty: String,
+    /// The link the aggregation traverses.
+    link: String,
+    agg: AggReq,
+}
+
+fn to_constraints(c: Option<ConstraintsReq>) -> PropertyConstraints {
+    let Some(c) = c else {
+        return PropertyConstraints::default();
+    };
+    PropertyConstraints {
+        range: c.range.map(|r| RangeConstraint {
+            min: r.min,
+            max: r.max,
+        }),
+        length: c.length.map(|l| LengthConstraint {
+            min: l.min,
+            max: l.max,
+        }),
+        pattern: c.pattern,
+        one_of: c.one_of,
+    }
+}
+
+fn parse_agg(agg: AggReq) -> std::result::Result<Aggregation, String> {
+    fn need(
+        column: Option<String>,
+        kind: &str,
+        f: fn(String) -> Aggregation,
+    ) -> std::result::Result<Aggregation, String> {
+        column
+            .map(f)
+            .ok_or_else(|| format!("agg kind {kind} requires a column"))
+    }
+    match agg.kind.as_str() {
+        "count" => match agg.column {
+            None => Ok(Aggregation::Count),
+            Some(_) => Err("agg kind count takes no column".to_string()),
+        },
+        "sum" => need(agg.column, "sum", Aggregation::Sum),
+        "avg" => need(agg.column, "avg", Aggregation::Avg),
+        "min" => need(agg.column, "min", Aggregation::Min),
+        "max" => need(agg.column, "max", Aggregation::Max),
+        other => Err(format!(
+            "unknown agg kind `{other}` (want count|sum|avg|min|max)"
+        )),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct PropReq {
     name: String,
     ty: String,
     #[serde(default)]
     required: bool,
+    /// Per-value constraints enforced by the land and action gates (422 on violation).
+    #[serde(default)]
+    constraints: Option<ConstraintsReq>,
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
@@ -412,17 +510,43 @@ struct DefineModelReq {
     table: TableReq,
     identity: Option<String>,
     properties: Vec<PropReq>,
+    /// Aggregate-over-link derived properties. Link existence is not validated
+    /// here (matches `define_type`; see iss-delete-link-derived-dangle).
+    #[serde(default)]
+    derived: Vec<DerivedReq>,
 }
 
 /// Define a model (ontology type) over an existing table.
 #[utoipa::path(
     post, path = "/admin/models",
     request_body = DefineModelReq,
-    responses((status = 201, description = "Model (ontology type) defined")),
+    responses(
+        (status = 201, description = "Model (ontology type) defined"),
+        (status = 400, description = "invalid agg kind/column pairing, or constraint invalid \
+            for the property type"),
+    ),
     security(("bearer_auth" = [])),
     tag = "admin",
 )]
 async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelReq>) -> Response {
+    let mut derived = Vec::with_capacity(req.derived.len());
+    for d in req.derived {
+        match parse_agg(d.agg) {
+            Ok(agg) => derived.push(DerivedPropertyDef {
+                name: d.name,
+                ty: d.ty,
+                link: d.link,
+                agg,
+            }),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": e })),
+                )
+                    .into_response();
+            }
+        }
+    }
     let otype = ObjectType {
         name: TypeName(req.name.clone()),
         table: TableRef {
@@ -436,10 +560,10 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
                 name: p.name,
                 ty: p.ty,
                 required: p.required,
-                constraints: control_plane_core::PropertyConstraints::default(),
+                constraints: to_constraints(p.constraints),
             })
             .collect(),
-        derived: vec![],
+        derived,
         identity: req.identity,
     };
     match st.cp.ontology().define_type(otype).await {
@@ -1350,6 +1474,11 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         DefineModelReq,
         TableReq,
         PropReq,
+        ConstraintsReq,
+        RangeReq,
+        LengthReq,
+        AggReq,
+        DerivedReq,
         GrantView,
         RoleGrantsResp,
         PolicyReq,

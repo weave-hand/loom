@@ -11,7 +11,8 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use control_plane_core::{
-    ADMIN_ROLE, Acl, Auth, ControlPlane, NewUser, ObjectType, Ontology, RoleId, SubjectId,
+    ADMIN_ROLE, Acl, Aggregation, Auth, ControlPlane, NewUser, ObjectType, Ontology, RoleId,
+    SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -1089,4 +1090,101 @@ async fn policy_table_target_accepted() {
         v["policies"][0]["target"]["Table"]["name"], "widget",
         "{listed}"
     );
+}
+
+#[tokio::test]
+async fn define_model_with_derived_and_constraints_roundtrips() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    let body = r#"{
+        "name": "Order",
+        "table": {"schema": "main", "name": "orders"},
+        "identity": "id",
+        "properties": [
+            {"name": "id", "ty": "Int", "required": true},
+            {"name": "qty", "ty": "Integer", "constraints": {"range": {"min": 1, "max": 100}}},
+            {"name": "status", "ty": "String",
+             "constraints": {"length": {"min": 2, "max": 16}, "one_of": ["open", "closed"]}}
+        ],
+        "derived": [
+            {"name": "line_count", "ty": "Int", "link": "lines", "agg": {"kind": "count"}},
+            {"name": "total", "ty": "Int", "link": "lines", "agg": {"kind": "sum", "column": "amount"}}
+        ]
+    }"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/models", &token, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // stored intact on the ontology (assert through the control plane)
+    let t = cp.get_type(&TypeName("Order".into())).await.unwrap();
+    assert_eq!(t.derived.len(), 2);
+    assert_eq!(t.derived[0].name, "line_count");
+    assert!(matches!(t.derived[0].agg, Aggregation::Count));
+    assert!(matches!(t.derived[1].agg, Aggregation::Sum(ref c) if c == "amount"));
+    let qty = t.properties.iter().find(|p| p.name == "qty").unwrap();
+    assert_eq!(qty.constraints.range.as_ref().unwrap().min, Some(1.0));
+    assert_eq!(qty.constraints.range.as_ref().unwrap().max, Some(100.0));
+    let status_p = t.properties.iter().find(|p| p.name == "status").unwrap();
+    assert_eq!(status_p.constraints.one_of.as_ref().unwrap().len(), 2);
+    assert_eq!(status_p.constraints.length.as_ref().unwrap().max, Some(16));
+}
+
+#[tokio::test]
+async fn define_model_agg_and_constraint_errors_are_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    // unknown agg kind
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models",
+            &token,
+            r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
+                "properties":[{"name":"id","ty":"Int"}],
+                "derived":[{"name":"d","ty":"Int","link":"l","agg":{"kind":"median"}}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("unknown agg kind"), "{body}");
+    // count with a column
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/models", &token,
+            r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
+                "properties":[{"name":"id","ty":"Int"}],
+                "derived":[{"name":"d","ty":"Int","link":"l","agg":{"kind":"count","column":"x"}}]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // sum without a column
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/models",
+            &token,
+            r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
+                "properties":[{"name":"id","ty":"Int"}],
+                "derived":[{"name":"d","ty":"Int","link":"l","agg":{"kind":"sum"}}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // range constraint on a String property -> define-gate Validation -> 400
+    let (status, _) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/models",
+            &token,
+            r#"{"name":"T","table":{"schema":"main","name":"t"},"identity":null,
+                "properties":[{"name":"s","ty":"String","constraints":{"range":{"min":1}}}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
