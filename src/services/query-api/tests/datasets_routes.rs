@@ -104,10 +104,15 @@ async fn datasets_lists_the_seeded_table() {
     let app = app(cp);
     let (status, json) = get(&app, "/datasets").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        json,
-        serde_json::json!({ "datasets": [ { "schema": "main", "name": "events" } ] })
+    let ds = &json["datasets"][0];
+    assert_eq!(ds["schema"], "main");
+    assert_eq!(ds["name"], "events");
+    assert_eq!(ds["project"], "main");
+    assert!(
+        ds["updated"].as_str().is_some_and(|t| !t.is_empty()),
+        "updated must be a non-empty RFC3339 string, got {json}"
     );
+    assert_eq!(json["datasets"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

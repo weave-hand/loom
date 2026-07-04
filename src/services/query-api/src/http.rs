@@ -222,17 +222,29 @@ async fn get_ontology_type(
     tag = "datasets",
 )]
 async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::response::Response {
-    match st.cp.catalog().list_tables(PageReq::unbounded()).await {
-        Ok(page) => {
-            let datasets: Vec<serde_json::Value> = page
-                .items
-                .iter()
-                .map(|t| serde_json::json!({ "schema": t.schema, "name": t.name }))
-                .collect();
-            Json(serde_json::json!({ "datasets": datasets })).into_response()
-        }
-        Err(e) => internal_error("catalog list_tables fault", e),
+    let catalog = st.cp.catalog();
+    let page = match catalog.list_tables(PageReq::unbounded()).await {
+        Ok(p) => p,
+        Err(e) => return internal_error("catalog list_tables fault", e),
+    };
+    let mut datasets: Vec<serde_json::Value> = Vec::with_capacity(page.items.len());
+    for t in &page.items {
+        // Best-effort updated-time: a table with no readable snapshot renders "".
+        let updated = match catalog.current_snapshot(t).await {
+            Ok(s) => s
+                .time
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        datasets.push(serde_json::json!({
+            "schema": t.schema,
+            "name": t.name,
+            "project": t.schema,
+            "updated": updated,
+        }));
     }
+    Json(serde_json::json!({ "datasets": datasets })).into_response()
 }
 
 /// Dataset detail: the table's current snapshot and column schema.
