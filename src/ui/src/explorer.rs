@@ -1,6 +1,12 @@
 //! The object-explorer view: a type sidebar, a paginated object table, and a
 //! detail drawer for the selected row. Rendered as the authenticated view once
 //! `main.rs` has a session token.
+#![allow(
+    dead_code,
+    reason = "Explorer is temporarily unwired from main.rs's authenticated \
+              render (replaced by the Workspace shell); re-homed into \
+              OntologyView in a later task, not deleted here"
+)]
 
 use crate::net::{self, FetchError};
 use loom_ui_components::{

@@ -11,9 +11,13 @@ mod explorer;
 mod net;
 mod session;
 
+#[allow(
+    unused_imports,
+    reason = "Explorer re-homed into OntologyView in a later task"
+)]
 use explorer::Explorer;
-use loom_ui_components::{Badge, GlobalStyles};
-use loom_ui_core::{AuthError, BadgeTone};
+use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
+use loom_ui_core::{AuthError, BadgeTone, ButtonVariant, Surface};
 use stylist::yew::styled_component;
 use yew::prelude::*;
 
@@ -35,10 +39,38 @@ fn app() -> Html {
             })
         };
         return html! {
-            <Explorer token={(*token).clone().unwrap_or_default()} on_logout={on_logout.clone()} />
+            <Workspace token={(*token).clone().unwrap_or_default()} on_logout={on_logout.clone()} />
         };
     }
     html! { <Login on_login={Callback::from({ let token = token.clone(); move |t: String| { session::store(&t); token.set(Some(t)); } })} /> }
+}
+
+#[derive(Properties, PartialEq)]
+struct WorkspaceProps {
+    token: AttrValue,
+    on_logout: Callback<()>,
+}
+
+#[function_component(Workspace)]
+fn workspace(props: &WorkspaceProps) -> Html {
+    let surface = use_state(|| Surface::Catalog);
+    let on_switch = {
+        let surface = surface.clone();
+        Callback::from(move |s: Surface| surface.set(s))
+    };
+    let on_logout = props.on_logout.clone();
+    let logout_btn = html! {
+        <Button variant={ButtonVariant::Ghost}
+            onclick={Callback::from(move |_: MouseEvent| on_logout.emit(()))}>{ "Log out" }</Button>
+    };
+    // Every surface is a stub until Tasks 6-7/8-9 replace Ontology and Catalog.
+    let list = html! { <StubView surface={*surface} /> };
+    html! {
+        <>
+            <GlobalStyles />
+            <Shell active={*surface} on_switch={on_switch} search={logout_btn} avatar="DK" list={list} />
+        </>
+    }
 }
 
 #[derive(Properties, PartialEq)]

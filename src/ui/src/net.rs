@@ -52,6 +52,10 @@ pub async fn logout(base: &str, token: &str) {
 }
 
 /// Why a governed `GET` failed.
+#[allow(
+    dead_code,
+    reason = "consumed only by Explorer, temporarily unwired pending a later task"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchError {
     /// The bearer token is missing/expired (HTTP 401) — the caller should log out.
@@ -72,6 +76,10 @@ impl std::fmt::Display for FetchError {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "consumed only by Explorer, temporarily unwired pending a later task"
+)]
 fn fetch_status_err(status: u16) -> FetchError {
     if status == 401 {
         FetchError::Unauthorized
@@ -81,11 +89,19 @@ fn fetch_status_err(status: u16) -> FetchError {
 }
 
 /// Percent-encode a cursor value for use in a query string.
+#[allow(
+    dead_code,
+    reason = "consumed only by Explorer, temporarily unwired pending a later task"
+)]
 fn encode_cursor(c: &str) -> String {
     js_sys::encode_uri_component(c).into()
 }
 
 /// GET /ontology/types with the bearer token. Decodes `{"types": [...]}`.
+#[allow(
+    dead_code,
+    reason = "consumed only by Explorer, temporarily unwired pending a later task"
+)]
 pub async fn fetch_types(base: &str, token: &str) -> Result<Vec<String>, FetchError> {
     let resp = Request::get(&url(base, "/ontology/types"))
         .header("Authorization", &format!("Bearer {token}"))
@@ -109,6 +125,10 @@ pub async fn fetch_types(base: &str, token: &str) -> Result<Vec<String>, FetchEr
 
 /// GET /objects/{type_name}?limit=&cursor= with the bearer token. `cursor` is
 /// percent-encoded when present; `limit` is always sent.
+#[allow(
+    dead_code,
+    reason = "consumed only by Explorer, temporarily unwired pending a later task"
+)]
 pub async fn fetch_page(
     base: &str,
     token: &str,
