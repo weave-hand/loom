@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into transforms.transform (name, body, schedule, on_input_commit) values ($1, $2, $3, $4) on conflict (name) do update set body = excluded.body, schedule = excluded.schedule, on_input_commit = excluded.on_input_commit",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "09b45a63bc961222d5e621661d724c08f3800e852902a5eb838a03feed3b3d8d"
+}

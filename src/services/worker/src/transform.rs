@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use control_plane_core::{
     ControlPlaneError, DatasetRef, EventType, Job, JobFailure, LineageEvent, OutputMode,
-    PropertyDef, RunId, TableRef, TransformJob, TypeName, TypedTransformJob, check_conformance,
+    PropertyDef, RetryPolicy, RunId, TableRef, TransformJob, TypeName, TypedTransformJob,
+    check_conformance,
 };
 use datafusion::execution::context::SessionContext;
 use datafusion_io::{
@@ -30,25 +31,38 @@ pub struct TransformCtx {
 }
 
 /// Run one physical `"transform"` job: SQL over table-named inputs, each registered
-/// under its own table name.
+/// under its own table name. Thin lifecycle wrapper: parse → (if `run_id` present)
+/// mark the run Running → run the shared wire-transform funnel → on failure,
+/// best-effort report it against the run.
 pub async fn handle_transform(ctx: &TransformCtx, job: Job) -> std::result::Result<(), JobFailure> {
     let attempts = job.attempts;
     let parsed: TransformJob = serde_json::from_value(job.payload)
         .map_err(|e| JobFailure::abandon(format!("bad transform payload: {e}")))?;
+    let run_id = parsed.run_id;
+    if let Some(rid) = run_id {
+        // Failure to reach the engine is retryable — the run record stays
+        // Queued and the retry re-marks it.
+        ctx.control.mark_run_running(rid).await.map_err(|e| {
+            JobFailure::retry(
+                ctx.worker_tuning.backoff(attempts),
+                format!("mark_run_running: {e}"),
+            )
+        })?;
+    }
     let inputs: Vec<(String, TableRef)> = parsed
         .inputs
         .iter()
         .map(|t| (t.name.clone(), t.clone()))
         .collect();
     let lineage = LineageEvent {
-        run_id: RunId(uuid::Uuid::new_v4()),
+        run_id: RunId(run_id.unwrap_or_else(uuid::Uuid::new_v4)),
         event_type: EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
         inputs: parsed.inputs.iter().map(DatasetRef::from).collect(),
         outputs: vec![DatasetRef::from(&parsed.output)],
         payload: serde_json::json!({ "sql": parsed.sql }),
     };
-    run_wire_transform(
+    let result = run_wire_transform(
         ctx,
         attempts,
         WireTransform {
@@ -58,9 +72,12 @@ pub async fn handle_transform(ctx: &TransformCtx, job: Job) -> std::result::Resu
             conform: None,
             output_mode: parsed.output_mode,
             lineage,
+            run_id,
         },
     )
-    .await
+    .await;
+    report_run_failure(ctx, run_id, &result).await;
+    result
 }
 
 /// Run one `"typed-transform"` job: SQL over ontology-type-named inputs. Each input
@@ -75,6 +92,28 @@ pub async fn handle_typed_transform(
     let attempts = job.attempts;
     let parsed: TypedTransformJob = serde_json::from_value(job.payload)
         .map_err(|e| JobFailure::abandon(format!("bad typed-transform payload: {e}")))?;
+    let run_id = parsed.run_id;
+    if let Some(rid) = run_id {
+        // Failure to reach the engine is retryable — the run record stays
+        // Queued and the retry re-marks it.
+        ctx.control.mark_run_running(rid).await.map_err(|e| {
+            JobFailure::retry(
+                ctx.worker_tuning.backoff(attempts),
+                format!("mark_run_running: {e}"),
+            )
+        })?;
+    }
+    let result = handle_typed_transform_inner(ctx, attempts, &parsed, run_id).await;
+    report_run_failure(ctx, run_id, &result).await;
+    result
+}
+
+async fn handle_typed_transform_inner(
+    ctx: &TransformCtx,
+    attempts: i32,
+    parsed: &TypedTransformJob,
+    run_id: Option<uuid::Uuid>,
+) -> std::result::Result<(), JobFailure> {
     // Resolve inputs: NotFound is deterministic (Abandon), other errors transient (Retry).
     let mut inputs = Vec::new();
     let mut input_types = Vec::new();
@@ -109,7 +148,7 @@ pub async fn handle_typed_transform(
             ),
         })?;
     let lineage = LineageEvent {
-        run_id: RunId(uuid::Uuid::new_v4()),
+        run_id: RunId(run_id.unwrap_or_else(uuid::Uuid::new_v4)),
         event_type: EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
         inputs: input_types.iter().map(DatasetRef::from).collect(),
@@ -133,6 +172,7 @@ pub async fn handle_typed_transform(
             conform: Some(&out_type.properties),
             output_mode: parsed.output_mode,
             lineage,
+            run_id,
         },
     )
     .await
@@ -148,6 +188,24 @@ struct WireTransform<'a> {
     conform: Option<&'a [PropertyDef]>,
     output_mode: OutputMode,
     lineage: LineageEvent,
+    run_id: Option<uuid::Uuid>,
+}
+
+/// Best-effort failure reporting: the run record must reflect the failure, but
+/// a reporting error must not mask the original failure (the queue's
+/// retry/abandon decision stands either way).
+async fn report_run_failure(
+    ctx: &TransformCtx,
+    run_id: Option<uuid::Uuid>,
+    result: &std::result::Result<(), JobFailure>,
+) {
+    let (Some(rid), Err(f)) = (run_id, result) else {
+        return;
+    };
+    let terminal = matches!(f.policy, RetryPolicy::Abandon);
+    if let Err(e) = ctx.control.finish_run_failed(rid, &f.error, terminal).await {
+        tracing::warn!(run_id = %rid, error = %e, "failed to report run failure");
+    }
 }
 
 async fn run_wire_transform(
@@ -279,6 +337,7 @@ async fn run_wire_transform(
             &files,
             &req.lineage,
             matches!(req.output_mode, OutputMode::Overwrite),
+            req.run_id,
         )
         .await
         .map_err(|e| {

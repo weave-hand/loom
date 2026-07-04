@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update transforms.run set state = 'queued', error = $2 where run_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "93fbb396e5cee6ee9f3dbd4c1aa3328caff8a84573c3eefc999ee7a8671d9d8c"
+}

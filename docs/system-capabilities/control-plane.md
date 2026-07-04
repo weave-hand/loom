@@ -16,8 +16,15 @@ _As of 4861433b._
 
 The library ships the five original concerns — queue, catalog, ontology, ACL,
 lineage — as ports and adapters, each with a contract test run against the memory
-fake and a hermetic Postgres fixture, plus a sixth `auth` concern added later
-(see **Auth**). The cross-concern transaction seam is the headline property:
+fake and a hermetic Postgres fixture, plus `auth` and, most recently,
+`transforms` (see **Transforms**) added later. Transforms layers named
+`TransformDef`s and durable `TransformRun` records over the existing
+queue-driven job payloads, memory + postgres + testkit like every other
+concern; a run's success is folded into the existing commit story rather than
+reported separately — `TableTx::mark_run_succeeded` rides inside the same
+transaction that stages a transform's output files and emits its lineage
+event, so the run record and the data it produced become visible atomically.
+The cross-concern transaction seam is the headline property:
 `ControlPlane::begin` opens a `Tx` on which operations commit together or roll
 back together, so a snapshot commit and the downstream job it enqueues (or the
 lineage event it emits) are atomic — no lost work, no orphan jobs. A decision
@@ -285,6 +292,17 @@ unseal — and the resulting admin is a normal identity holding the reserved
 `admin` role, not a standing ACL-bypass superuser: the `/admin/*` gate checks
 `Acl::has_role` fail-closed, and the admin reads data only via explicit
 self-grant.
+
+## Transforms
+
+The transforms concern gives loom's existing queue-driven transform jobs a
+named, durable identity: a `TransformDef` (upsert define/list/get/idempotent
+delete) names a reusable `Physical`- or `Typed`-bodied transform, and every
+execution — defined or ad-hoc — becomes a `TransformRun` whose `run_id`
+doubles as the lineage `run_id` and whose `body` is frozen at submit time, so
+redefinition or deletion never rewrites a run's history. Full behavior,
+including the `Queued → Running → Succeeded | Failed` state machine and the
+eight-route admin HTTP surface, is documented in [transform.md](transform.md).
 
 ## Lineage
 

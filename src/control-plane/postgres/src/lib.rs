@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Auth, Catalog, ControlPlane, ControlPlaneError, Lineage, Ontology, Queue, Result, Tx,
+    Acl, Auth, Catalog, ControlPlane, ControlPlaneError, Lineage, Ontology, Queue, Result,
+    Transforms, Tx,
 };
 use sqlx::PgPool;
 
@@ -41,6 +42,7 @@ mod lineage;
 pub mod ontology;
 mod queue;
 mod transaction;
+mod transforms;
 
 use iceberg_catalog::IcebergCatalog;
 use transaction::PgTx;
@@ -105,6 +107,9 @@ impl ControlPlane for PgControlPlane {
         self
     }
     fn queue(&self) -> &(dyn Queue + Send + Sync) {
+        self
+    }
+    fn transforms(&self) -> &(dyn Transforms + Send + Sync) {
         self
     }
     fn auth(&self) -> &(dyn Auth + Send + Sync) {

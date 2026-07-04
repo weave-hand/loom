@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update transforms.run set state = 'failed', error = $2, finished_at = now() where run_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "055da7d29d2093e572b7c8c82c3cbcec558d9a31a222e6d7285260ffeeb19bd9"
+}

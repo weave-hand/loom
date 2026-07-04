@@ -96,6 +96,7 @@ fn make_typed_job(inputs: &[&str], output: &str, sql: &str, output_mode: OutputM
             output: output.to_string(),
             sql: sql.to_string(),
             output_mode,
+            run_id: None,
         })
         .unwrap(),
         attempts: 0,
@@ -239,6 +240,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
                 output: "CustomerSlim".to_string(),
                 sql: sql.to_string(),
                 output_mode: OutputMode::Append,
+                run_id: None,
             })
             .expect("payload"),
             run_at: None,

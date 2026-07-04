@@ -9,6 +9,7 @@ mod lineage;
 mod ontology;
 mod queue;
 mod transaction;
+mod transforms;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +19,7 @@ use parking_lot::Mutex;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Auth, Catalog, ColumnDef, ControlPlane, FileRef, Lineage, NewJob, Ontology, Queue, Result,
-    SnapshotId, TableControlPlane, TableRef, TableTx, Tx,
+    SnapshotId, TableControlPlane, TableRef, TableTx, Transforms, Tx,
 };
 use time::OffsetDateTime;
 use tokio::sync::Notify;
@@ -30,6 +31,7 @@ use crate::catalog::CatalogState;
 use crate::lineage::LineageState;
 use crate::ontology::OntologyState;
 use crate::transaction::MemoryTx;
+use crate::transforms::TransformsState;
 
 #[derive(Clone)]
 pub(crate) struct Row {
@@ -67,6 +69,7 @@ pub struct MemoryControlPlane {
     acl: Arc<Mutex<AclState>>,
     auth: Arc<Mutex<AuthState>>,
     lineage: Arc<Mutex<LineageState>>,
+    transforms: Arc<Mutex<TransformsState>>,
     lock_timeout: Duration,
 }
 
@@ -80,6 +83,7 @@ impl MemoryControlPlane {
             acl: Arc::new(Mutex::new(AclState::default())),
             auth: Arc::new(Mutex::new(AuthState::default())),
             lineage: Arc::new(Mutex::new(LineageState::default())),
+            transforms: Arc::new(Mutex::new(TransformsState::default())),
             lock_timeout,
         }
     }
@@ -202,6 +206,9 @@ impl ControlPlane for MemoryControlPlane {
     fn queue(&self) -> &(dyn Queue + Send + Sync) {
         self
     }
+    fn transforms(&self) -> &(dyn Transforms + Send + Sync) {
+        self
+    }
     fn auth(&self) -> &(dyn Auth + Send + Sync) {
         self
     }
@@ -218,11 +225,13 @@ impl TableControlPlane for MemoryControlPlane {
             notify: self.notify.clone(),
             lineage: self.lineage.clone(),
             catalog: self.catalog.clone(),
+            transforms: self.transforms.clone(),
             staged: Vec::new(),
             staged_events: Vec::new(),
             staged_tables: Vec::new(),
             staged_writes: Vec::new(),
             staged_compactions: Vec::new(),
+            staged_run_success: None,
         }))
     }
 }

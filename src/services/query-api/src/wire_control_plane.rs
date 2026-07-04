@@ -1,8 +1,9 @@
 //! A read-only governance `ControlPlane` for query-api: `acl()`/`ontology()` read
-//! over the engine wire; `queue()`, `lineage()`, and `catalog()` delegate to the
-//! direct Postgres plane (the GC enqueue, governed lineage reads, and dataset
-//! metadata reads); `begin()` stays guarded because query-api never opens a
-//! control-plane transaction through this plane.
+//! over the engine wire; `queue()`, `lineage()`, `catalog()`, and `transforms()`
+//! delegate to the direct Postgres plane (the GC enqueue, governed lineage reads,
+//! dataset metadata reads, and transform def/run reads for the admin routes);
+//! `begin()` stays guarded because query-api never opens a control-plane
+//! transaction through this plane.
 //! Write/define governance methods fail loudly — query-api authorizes reads here
 //! and sends pre-authorized writes via the engine's write RPCs; it never defines
 //! governance.
@@ -13,7 +14,7 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionName, Auth, Catalog, ControlPlane, ControlPlaneError, Decision,
     Effect, Grant, Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, Policy, PolicyTarget,
-    Queue, RoleId, SubjectId, TableRef, Tx, TypeName, VectorIndexDef,
+    Queue, RoleId, SubjectId, TableRef, Transforms, Tx, TypeName, VectorIndexDef,
 };
 use engine_wire::client::GrpcQueueClient;
 
@@ -247,6 +248,13 @@ impl ControlPlane for WireControlPlane {
         // Postgres plane, exactly as `queue()` does. query-api's governed lineage
         // read endpoints resolve provenance here.
         self.direct.lineage()
+    }
+
+    fn transforms(&self) -> &(dyn Transforms + Send + Sync) {
+        // Transform defs/runs are not carried over the engine wire; read them from
+        // the direct Postgres plane, exactly as `queue()` and `lineage()` do. The
+        // admin transform routes resolve def/run metadata here.
+        self.direct.transforms()
     }
 
     async fn begin(&self) -> Result<Box<dyn Tx + Send>> {
