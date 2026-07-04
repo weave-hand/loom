@@ -719,6 +719,24 @@ impl ActionDefBuilder {
         self
     }
 
+    /// Append a cross-step reference assignment on the current step: `property` is set to the
+    /// value of an **earlier** step's `prop`, read from the step named `bind` (`@bind.prop`,
+    /// e.g. a child row's `orderId` = the parent step's minted `id`). The reference is validated
+    /// at define time (the bind must name a strictly-earlier step and `prop` a real property of
+    /// that step's target).
+    pub fn assign_step_ref(
+        mut self,
+        property: impl Into<String>,
+        bind: impl Into<String>,
+        prop: impl Into<String>,
+    ) -> Self {
+        if let Some(s) = self.steps.last_mut() {
+            s.assignments
+                .push(Assignment::step_ref(property, bind, prop));
+        }
+        self
+    }
+
     /// Open a new step targeting `target` of mutation kind `kind`; subsequent
     /// `param`/`assign` calls append to it.
     #[must_use]
