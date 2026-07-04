@@ -10,11 +10,12 @@ use crate::handler::{
     read_linked_chain, read_object, read_object_page,
 };
 use crate::openapi::{
-    DatasetDetailResponse, DatasetsResponse, JobAck, ObjectsResponse, OntologyTypesResponse,
-    TypeDetailResponse, VectorSearchResponse, WriteDeniedBody,
+    DatasetDetailResponse, DatasetPreviewResponse, DatasetsResponse, JobAck, ObjectsResponse,
+    OntologyTypesResponse, TypeDetailResponse, VectorSearchResponse, WriteDeniedBody,
 };
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
+use crate::sql::SqlDialect;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -112,6 +113,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ontology/types/:name", get(get_ontology_type))
         .route("/datasets", get(list_datasets))
         .route("/datasets/:schema/:table", get(get_dataset))
+        .route("/datasets/:schema/:table/preview", get(dataset_preview))
         .with_state(state)
 }
 
@@ -222,17 +224,29 @@ async fn get_ontology_type(
     tag = "datasets",
 )]
 async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::response::Response {
-    match st.cp.catalog().list_tables(PageReq::unbounded()).await {
-        Ok(page) => {
-            let datasets: Vec<serde_json::Value> = page
-                .items
-                .iter()
-                .map(|t| serde_json::json!({ "schema": t.schema, "name": t.name }))
-                .collect();
-            Json(serde_json::json!({ "datasets": datasets })).into_response()
-        }
-        Err(e) => internal_error("catalog list_tables fault", e),
+    let catalog = st.cp.catalog();
+    let page = match catalog.list_tables(PageReq::unbounded()).await {
+        Ok(p) => p,
+        Err(e) => return internal_error("catalog list_tables fault", e),
+    };
+    let mut datasets: Vec<serde_json::Value> = Vec::with_capacity(page.items.len());
+    for t in &page.items {
+        // Best-effort updated-time: a table with no readable snapshot renders "".
+        let updated = match catalog.current_snapshot(t).await {
+            Ok(s) => s
+                .time
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        datasets.push(serde_json::json!({
+            "schema": t.schema,
+            "name": t.name,
+            "project": t.schema,
+            "updated": updated,
+        }));
     }
+    Json(serde_json::json!({ "datasets": datasets })).into_response()
 }
 
 /// Dataset detail: the table's current snapshot and column schema.
@@ -286,6 +300,59 @@ async fn get_dataset(
         "columns": columns,
     }))
     .into_response()
+}
+
+/// Sample rows from a dataset: `SELECT * FROM "schema"."table" LIMIT n` over the engine.
+///
+/// Coarse-auth (authenticated), mirroring `list_datasets`. `limit` defaults to 20 and is
+/// capped at 200; a malformed `limit` is a 400.
+#[utoipa::path(
+    get, path = "/datasets/{schema}/{table}/preview",
+    params(
+        ("schema" = String, Path, description = "Iceberg schema"),
+        ("table" = String, Path, description = "Table name"),
+        ("limit" = Option<u32>, Query, description = "Max sample rows (default 20, cap 200)"),
+    ),
+    responses(
+        (status = 200, description = "Sampled rows", body = DatasetPreviewResponse),
+        (status = 400, description = "Bad limit"),
+        (status = 500, description = "Serving error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "datasets",
+)]
+async fn dataset_preview(
+    State(st): State<AppState>,
+    Path((schema, table)): Path<(String, String)>,
+    Query(params): Query<Vec<(String, String)>>,
+    _subject: Subject,
+) -> axum::response::Response {
+    const DEFAULT_LIMIT: u32 = 20;
+    const MAX_LIMIT: u32 = 200;
+    let limit = match params
+        .iter()
+        .find(|(k, _)| k == "limit")
+        .map(|(_, v)| v.as_str())
+    {
+        None => DEFAULT_LIMIT,
+        Some(raw) => match raw.parse::<u32>() {
+            Ok(n) => n.clamp(1, MAX_LIMIT),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "limit must be a positive integer")
+                    .into_response();
+            }
+        },
+    };
+    let dialect = crate::sql::DataFusionDialect;
+    let sql = format!(
+        "SELECT * FROM {}.{} LIMIT {limit}",
+        dialect.quote_ident(&schema),
+        dialect.quote_ident(&table),
+    );
+    match st.serving.fetch_rows(&sql, &[]).await {
+        Ok(rows) => Json(crate::dataset_preview::preview_body(&rows)).into_response(),
+        Err(e) => internal_error("dataset preview serving fault", e),
+    }
 }
 
 /// Enqueue physical GC for a table; returns 202 with the job id.

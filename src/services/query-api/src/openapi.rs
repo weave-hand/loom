@@ -158,6 +158,16 @@ pub struct DatasetDetailResponse {
     pub columns: Vec<DatasetColumnView>,
 }
 
+/// Documentation shape for the `GET /datasets/{schema}/{table}/preview` response.
+#[derive(ToSchema)]
+pub struct DatasetPreviewResponse {
+    pub columns: Vec<String>,
+    /// Every sampled cell rendered to a display string (`""` for `NULL`).
+    pub rows: Vec<Vec<String>>,
+    /// Always `true` — a marker that this is a LIMIT-bounded sample, not a full read.
+    pub sampled: bool,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -180,6 +190,7 @@ pub struct DatasetDetailResponse {
         crate::http::get_ontology_type,
         crate::http::list_datasets,
         crate::http::get_dataset,
+        crate::http::dataset_preview,
     ),
     components(schemas(
         ObjectsResponse,
@@ -198,6 +209,7 @@ pub struct DatasetDetailResponse {
         DatasetsResponse,
         DatasetColumnView,
         DatasetDetailResponse,
+        DatasetPreviewResponse,
         crate::http::VectorSearchRequest,
         crate::lineage_read::DatasetNode,
         crate::lineage_read::DatasetClosureResponse,

@@ -7,14 +7,21 @@
     reason = "yew html! macro expansion is not lint-clean under loom's strict gate"
 )]
 
-mod explorer;
 mod net;
 mod session;
+mod surfaces;
 
-use explorer::Explorer;
-use loom_ui_components::{Badge, GlobalStyles};
-use loom_ui_core::{AuthError, BadgeTone};
+use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
+use loom_ui_core::{
+    AuthError, BadgeTone, ButtonVariant, DatasetDetail, DatasetRow, PreviewData, Surface,
+    TypeDetail,
+};
+use net::FetchError;
+use std::collections::HashMap;
 use stylist::yew::styled_component;
+use surfaces::{
+    CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList, OntologyTypeRow,
+};
 use yew::prelude::*;
 
 #[function_component(App)]
@@ -35,10 +42,346 @@ fn app() -> Html {
             })
         };
         return html! {
-            <Explorer token={(*token).clone().unwrap_or_default()} on_logout={on_logout.clone()} />
+            <Workspace token={(*token).clone().unwrap_or_default()} on_logout={on_logout.clone()} />
         };
     }
     html! { <Login on_login={Callback::from({ let token = token.clone(); move |t: String| { session::store(&t); token.set(Some(t)); } })} /> }
+}
+
+#[derive(Properties, PartialEq)]
+struct WorkspaceProps {
+    token: AttrValue,
+    on_logout: Callback<()>,
+}
+
+#[function_component(Workspace)]
+fn workspace(props: &WorkspaceProps) -> Html {
+    let surface = use_state(|| Surface::Catalog);
+
+    // Ontology surface state: the list of type names, each type's loaded `TypeDetail`
+    // (schema) keyed by name, the selected type index, and the drawer's active tab.
+    let types = use_state(Vec::<String>::new);
+    let onto_status = use_state(|| LoadStatus::Idle);
+    let type_details = use_state(HashMap::<String, TypeDetail>::new);
+    let onto_selected = use_state(|| Option::<usize>::None);
+    let onto_tab = use_state(|| AttrValue::from("properties"));
+
+    // Catalog surface state: the dataset list plus the selected dataset's detail,
+    // lazily-loaded preview, and active drawer tab.
+    let datasets = use_state(Vec::<DatasetRow>::new);
+    let catalog_status = use_state(|| LoadStatus::Idle);
+    let selected_dataset = use_state(|| Option::<usize>::None);
+    let detail = use_state(|| Option::<DatasetDetail>::None);
+    let preview = use_state(|| Option::<PreviewData>::None);
+    let preview_loading = use_state(|| false);
+    let catalog_tab = use_state(|| AttrValue::from("schema"));
+    // Lazily-loaded lineage closures (upstream, downstream) for the selected dataset,
+    // plus whether the Lineage tab is showing the full-canvas stub.
+    #[allow(
+        clippy::type_complexity,
+        reason = "small local (up, down) closure pair"
+    )]
+    let lineage = use_state(|| Option::<(Vec<(String, String)>, Vec<(String, String)>)>::None);
+    let show_full_lineage = use_state(|| false);
+
+    // On mount: load the dataset list. Catalog is the default surface, so a
+    // mount-keyed effect loads it exactly once (mirrors the ontology type list).
+    {
+        let datasets = datasets.clone();
+        let catalog_status = catalog_status.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        use_effect_with((), move |()| {
+            catalog_status.set(LoadStatus::Loading);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_datasets(&net::api_base(), &token).await {
+                    Ok(d) => {
+                        datasets.set(d);
+                        catalog_status.set(LoadStatus::Idle);
+                    }
+                    Err(FetchError::Unauthorized) => on_logout.emit(()),
+                    Err(e) => catalog_status.set(LoadStatus::Error(e.to_string())),
+                }
+            });
+            || ()
+        });
+    }
+
+    // On dataset row-select: reset the drawer to the Schema tab, clear the previous
+    // detail/preview, and load the selected dataset's schema detail.
+    {
+        let detail = detail.clone();
+        let preview = preview.clone();
+        let preview_loading = preview_loading.clone();
+        let catalog_tab = catalog_tab.clone();
+        let lineage = lineage.clone();
+        let show_full_lineage = show_full_lineage.clone();
+        let datasets = datasets.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let selected_dep = *selected_dataset;
+        use_effect_with(selected_dep, move |sel| {
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            detail.set(None);
+            preview.set(None);
+            preview_loading.set(false);
+            lineage.set(None);
+            show_full_lineage.set(false);
+            catalog_tab.set(AttrValue::from("schema"));
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_dataset_detail(&net::api_base(), &token, &ds.schema, &ds.name)
+                    .await
+                {
+                    Ok(d) => detail.set(Some(d)),
+                    Err(FetchError::Unauthorized) => on_logout.emit(()),
+                    // Best-effort: a failure leaves the Schema tab on its "Loading…"
+                    // line rather than blocking the rest of the drawer.
+                    Err(_) => {}
+                }
+            });
+        });
+    }
+
+    // Lazy preview: only fetch when the Preview tab is active for the selected
+    // dataset and no preview is loaded yet. Keyed on (selection, active tab); the
+    // row-select effect above resets `preview` to None, so switching datasets and
+    // re-opening Preview refetches.
+    {
+        let preview = preview.clone();
+        let preview_loading = preview_loading.clone();
+        let datasets = datasets.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let already_loaded = preview.is_some();
+        let dep = (*selected_dataset, (*catalog_tab).clone());
+        use_effect_with(dep, move |(sel, tab)| {
+            if tab.as_str() != "preview" || already_loaded {
+                return;
+            }
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            preview_loading.set(true);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_preview(&net::api_base(), &token, &ds.schema, &ds.name, 50).await {
+                    Ok(p) => {
+                        preview.set(Some(p));
+                        preview_loading.set(false);
+                    }
+                    Err(FetchError::Unauthorized) => {
+                        preview_loading.set(false);
+                        on_logout.emit(());
+                    }
+                    Err(_) => preview_loading.set(false),
+                }
+            });
+        });
+    }
+
+    // Lazy lineage: only fetch the upstream + downstream closures when the Lineage
+    // tab is active for the selected dataset and nothing is loaded yet. Keyed on
+    // (selection, active tab); the row-select effect resets `lineage` to None, so
+    // switching datasets and re-opening Lineage refetches.
+    {
+        let lineage = lineage.clone();
+        let datasets = datasets.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let already_loaded = lineage.is_some();
+        let dep = (*selected_dataset, (*catalog_tab).clone());
+        use_effect_with(dep, move |(sel, tab)| {
+            if tab.as_str() != "lineage" || already_loaded {
+                return;
+            }
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            wasm_bindgen_futures::spawn_local(async move {
+                let base = net::api_base();
+                let up = net::fetch_lineage(&base, &token, &ds.schema, &ds.name, "upstream").await;
+                let down =
+                    net::fetch_lineage(&base, &token, &ds.schema, &ds.name, "downstream").await;
+                // A 401 on either leg fails closed to logout; any other error degrades
+                // to an empty closure so the mini-DAG still renders the current node.
+                if up.as_ref().err() == Some(&FetchError::Unauthorized)
+                    || down.as_ref().err() == Some(&FetchError::Unauthorized)
+                {
+                    on_logout.emit(());
+                    return;
+                }
+                lineage.set(Some((up.unwrap_or_default(), down.unwrap_or_default())));
+            });
+        });
+    }
+
+    // On mount: load the ontology's type list, then eagerly load every type's detail
+    // (schema) into one map. This is an N+1 over the type list (one /ontology/types +
+    // one /ontology/types/{name} per type) — fine for small ontologies; a lazier
+    // per-selection fetch is a future refinement. A 401 on any leg fails closed to
+    // logout, matching the rest of the app. The details map is set once (not
+    // per-insert) so concurrent renders never see a partially-built map.
+    {
+        let types = types.clone();
+        let onto_status = onto_status.clone();
+        let type_details = type_details.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        use_effect_with((), move |()| {
+            onto_status.set(LoadStatus::Loading);
+            wasm_bindgen_futures::spawn_local(async move {
+                let base = net::api_base();
+                let names = match net::fetch_types(&base, &token).await {
+                    Ok(t) => t,
+                    Err(FetchError::Unauthorized) => return on_logout.emit(()),
+                    Err(e) => return onto_status.set(LoadStatus::Error(e.to_string())),
+                };
+                types.set(names.clone());
+                onto_status.set(LoadStatus::Idle);
+                let mut map = HashMap::<String, TypeDetail>::new();
+                for name in names {
+                    match net::fetch_type_detail(&base, &token, &name).await {
+                        Ok(d) => {
+                            map.insert(name, d);
+                        }
+                        Err(FetchError::Unauthorized) => return on_logout.emit(()),
+                        // A per-type failure just leaves that type's drawer on its
+                        // "Loading…" line rather than blocking the whole list.
+                        Err(_) => {}
+                    }
+                }
+                type_details.set(map);
+            });
+            || ()
+        });
+    }
+
+    let on_switch = {
+        let surface = surface.clone();
+        Callback::from(move |s: Surface| surface.set(s))
+    };
+    let on_logout = props.on_logout.clone();
+    let logout_btn = html! {
+        <Button variant={ButtonVariant::Ghost}
+            onclick={Callback::from(move |_: MouseEvent| on_logout.emit(()))}>{ "Log out" }</Button>
+    };
+
+    let (list, drawer) = match *surface {
+        Surface::Catalog => {
+            let on_row = {
+                let selected_dataset = selected_dataset.clone();
+                Callback::from(move |i: usize| selected_dataset.set(Some(i)))
+            };
+            let on_tab = {
+                let catalog_tab = catalog_tab.clone();
+                Callback::from(move |t: AttrValue| catalog_tab.set(t))
+            };
+            let on_toggle_full = {
+                let show_full_lineage = show_full_lineage.clone();
+                Callback::from(move |()| show_full_lineage.set(!*show_full_lineage))
+            };
+            let list = html! {
+                <CatalogList
+                    datasets={(*datasets).clone()}
+                    status={(*catalog_status).clone()}
+                    selected={*selected_dataset}
+                    on_row={on_row}
+                />
+            };
+            // Drawer contract: only a real drawer when a row is selected; otherwise
+            // Html::default() so the Shell hides the drawer region.
+            let drawer = (*selected_dataset)
+                .and_then(|i| datasets.get(i).cloned())
+                .map(|ds| {
+                    let lineage_view = (*lineage).as_ref().map(|(up, down)| {
+                        loom_ui_core::lineage_dag((&ds.schema, &ds.name), up, down)
+                    });
+                    html! {
+                        <CatalogDrawer
+                            name={AttrValue::from(ds.name)}
+                            detail={(*detail).clone()}
+                            preview={(*preview).clone()}
+                            preview_loading={*preview_loading}
+                            active_tab={(*catalog_tab).clone()}
+                            on_tab={on_tab}
+                            lineage={lineage_view}
+                            show_full={*show_full_lineage}
+                            on_toggle_full={on_toggle_full}
+                        />
+                    }
+                })
+                .unwrap_or_default();
+            (list, drawer)
+        }
+        Surface::Ontology => {
+            let on_row = {
+                let onto_selected = onto_selected.clone();
+                let onto_tab = onto_tab.clone();
+                Callback::from(move |i: usize| {
+                    onto_selected.set(Some(i));
+                    onto_tab.set(AttrValue::from("properties"));
+                })
+            };
+            let on_tab = {
+                let onto_tab = onto_tab.clone();
+                Callback::from(move |t: AttrValue| onto_tab.set(t))
+            };
+
+            // Build one row per type by zipping the names with their loaded detail. A
+            // type whose detail hasn't arrived yet shows an empty backing and "…" props.
+            let rows: Vec<OntologyTypeRow> = types
+                .iter()
+                .map(|name| match type_details.get(name) {
+                    Some(d) => OntologyTypeRow {
+                        name: name.clone(),
+                        backing: format!("{}.{}", d.table_schema, d.table_name),
+                        props: d.properties.len().to_string(),
+                    },
+                    None => OntologyTypeRow {
+                        name: name.clone(),
+                        backing: String::new(),
+                        props: "…".to_string(),
+                    },
+                })
+                .collect();
+
+            let list = html! {
+                <OntologyList
+                    rows={rows}
+                    status={(*onto_status).clone()}
+                    selected={*onto_selected}
+                    on_row={on_row}
+                />
+            };
+            // Drawer contract: only pass a real drawer when a type is selected;
+            // otherwise Html::default() so the Shell hides the drawer region.
+            let drawer = (*onto_selected)
+                .and_then(|i| types.get(i).cloned())
+                .map(|name| {
+                    let detail = type_details.get(&name).cloned();
+                    html! {
+                        <OntologyDrawer
+                            name={AttrValue::from(name)}
+                            detail={detail}
+                            active_tab={(*onto_tab).clone()}
+                            on_tab={on_tab}
+                        />
+                    }
+                })
+                .unwrap_or_default();
+            (list, drawer)
+        }
+        other => (html! { <StubView surface={other} /> }, Html::default()),
+    };
+
+    html! {
+        <>
+            <GlobalStyles />
+            <Shell active={*surface} on_switch={on_switch} search={logout_btn} avatar="DK"
+                   list={list} drawer={drawer} />
+        </>
+    }
 }
 
 #[derive(Properties, PartialEq)]

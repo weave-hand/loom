@@ -211,3 +211,339 @@ pub fn cell_to_string(v: &Value) -> String {
         Value::Array(_) | Value::Object(_) => serde_json::to_string(v).unwrap_or_default(),
     }
 }
+
+/// One of the app's five top-level surfaces (nav order). Backend-live surfaces are
+/// Catalog and Ontology; the others render an honest "not available" stub.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Surface {
+    Catalog,
+    Pipelines,
+    Ontology,
+    Workbooks,
+    Dashboards,
+}
+
+impl Surface {
+    /// Nav order, left to right.
+    #[must_use]
+    pub fn all() -> [Surface; 5] {
+        [
+            Surface::Catalog,
+            Surface::Pipelines,
+            Surface::Ontology,
+            Surface::Workbooks,
+            Surface::Dashboards,
+        ]
+    }
+
+    /// The nav label / list title for this surface.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Surface::Catalog => "Catalog",
+            Surface::Pipelines => "Pipelines",
+            Surface::Ontology => "Ontology",
+            Surface::Workbooks => "Workbooks",
+            Surface::Dashboards => "Dashboards",
+        }
+    }
+
+    /// The per-surface accent hex (design tokens).
+    #[must_use]
+    pub fn accent(self) -> &'static str {
+        match self {
+            Surface::Catalog => "#3b82f6",
+            Surface::Pipelines => "#2bb0a0",
+            Surface::Ontology => "#8b5cf6",
+            Surface::Workbooks => "#2da44e",
+            Surface::Dashboards => "#d29922",
+        }
+    }
+
+    /// Whether the backend can serve this surface (else the shell shows a stub).
+    #[must_use]
+    pub fn is_live(self) -> bool {
+        matches!(self, Surface::Catalog | Surface::Ontology)
+    }
+}
+
+/// A property row in the ontology drawer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropRow {
+    pub name: String,
+    pub ty: String,
+    pub required: bool,
+}
+
+/// A link row (either outbound `links` or inbound `links_to`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkRow {
+    pub name: String,
+    pub from: String,
+    pub to: String,
+    pub cardinality: String,
+}
+
+/// The ontology drawer's Properties + Links data, decoded from `GET /ontology/types/{name}`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TypeDetail {
+    pub properties: Vec<PropRow>,
+    pub links: Vec<LinkRow>,
+    pub links_to: Vec<LinkRow>,
+    /// The backing dataset's schema (`table.schema`), or `""` when absent.
+    pub table_schema: String,
+    /// The backing dataset's table name (`table.name`), or `""` when absent.
+    pub table_name: String,
+    /// The identity (primary-key) property name, or `None` when the type has none.
+    pub identity: Option<String>,
+}
+
+fn str_field(v: &Value, k: &str) -> String {
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn parse_links(v: &Value, key: &str) -> Vec<LinkRow> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|l| LinkRow {
+                    name: str_field(l, "name"),
+                    from: str_field(l, "from"),
+                    to: str_field(l, "to"),
+                    cardinality: str_field(l, "cardinality"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Decode a type-detail body. Total: missing arrays → empty; missing scalars → default.
+#[must_use]
+pub fn parse_type_detail(body: &Value) -> TypeDetail {
+    let properties = body
+        .get("properties")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|p| PropRow {
+                    name: str_field(p, "name"),
+                    ty: str_field(p, "ty"),
+                    required: p.get("required").and_then(Value::as_bool).unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let table = body.get("table");
+    let table_schema = table.map(|t| str_field(t, "schema")).unwrap_or_default();
+    let table_name = table.map(|t| str_field(t, "name")).unwrap_or_default();
+    let identity = body
+        .get("identity")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    TypeDetail {
+        properties,
+        links: parse_links(body, "links"),
+        links_to: parse_links(body, "links_to"),
+        table_schema,
+        table_name,
+        identity,
+    }
+}
+
+/// A row in the Catalog list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetRow {
+    pub schema: String,
+    pub name: String,
+    pub project: String,
+    pub updated: String,
+}
+
+/// Decode `GET /datasets`. Missing array → empty; missing scalars → "".
+#[must_use]
+pub fn parse_datasets(body: &Value) -> Vec<DatasetRow> {
+    body.get("datasets")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|d| DatasetRow {
+                    schema: str_field(d, "schema"),
+                    name: str_field(d, "name"),
+                    project: str_field(d, "project"),
+                    updated: str_field(d, "updated"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A schema column in the Catalog › Schema tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaCol {
+    pub name: String,
+    pub ty: String,
+    pub nullable: bool,
+}
+
+/// Decode `GET /datasets/{schema}/{table}`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DatasetDetail {
+    pub snapshot_time: String,
+    pub columns: Vec<SchemaCol>,
+}
+
+#[must_use]
+pub fn parse_dataset_detail(body: &Value) -> DatasetDetail {
+    let columns = body
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|c| SchemaCol {
+                    name: str_field(c, "name"),
+                    ty: str_field(c, "ty"),
+                    nullable: c.get("nullable").and_then(Value::as_bool).unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    DatasetDetail {
+        snapshot_time: str_field(body, "snapshot_time"),
+        columns,
+    }
+}
+
+/// Decode `GET /datasets/{schema}/{table}/preview`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PreviewData {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub sampled: bool,
+}
+
+#[must_use]
+pub fn parse_preview(body: &Value) -> PreviewData {
+    let columns = body
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let rows = body
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|r| {
+                    r.as_array()
+                        .map(|cells| cells.iter().map(cell_to_string).collect())
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    PreviewData {
+        columns,
+        rows,
+        sampled: body
+            .get("sampled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+/// Where a node sits relative to the current dataset in the mini-DAG.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    Upstream,
+    Current,
+    Downstream,
+}
+
+/// A node in the lineage mini-DAG. `column` is 0 (upstream) / 1 (current) / 2 (downstream).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagNode {
+    pub id: String,
+    pub label: String,
+    pub kind: NodeKind,
+    pub column: usize,
+}
+
+/// A directed edge (producer → consumer) between two node ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagEdge {
+    pub from: String,
+    pub to: String,
+}
+
+/// The assembled lineage mini-DAG.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LineageDag {
+    pub nodes: Vec<DagNode>,
+    pub edges: Vec<DagEdge>,
+}
+
+fn dataset_id(ns: &str, name: &str) -> String {
+    format!("{ns}.{name}")
+}
+
+/// Build the three-column mini-DAG for `current` from its upstream/downstream closures.
+/// Datasets equal to `current` are dropped from the closures (the current node is unique);
+/// edges run producer → current → consumer.
+#[must_use]
+pub fn lineage_dag(
+    current: (&str, &str),
+    upstream: &[(String, String)],
+    downstream: &[(String, String)],
+) -> LineageDag {
+    let (cur_ns, cur_name) = current;
+    let cur_id = dataset_id(cur_ns, cur_name);
+    let mut nodes = vec![DagNode {
+        id: cur_id.clone(),
+        label: cur_name.to_string(),
+        kind: NodeKind::Current,
+        column: 1,
+    }];
+    let mut edges = Vec::new();
+
+    for (ns, name) in upstream {
+        let id = dataset_id(ns, name);
+        if id == cur_id {
+            continue;
+        }
+        nodes.push(DagNode {
+            id: id.clone(),
+            label: name.clone(),
+            kind: NodeKind::Upstream,
+            column: 0,
+        });
+        edges.push(DagEdge {
+            from: id,
+            to: cur_id.clone(),
+        });
+    }
+    for (ns, name) in downstream {
+        let id = dataset_id(ns, name);
+        if id == cur_id {
+            continue;
+        }
+        nodes.push(DagNode {
+            id: id.clone(),
+            label: name.clone(),
+            kind: NodeKind::Downstream,
+            column: 2,
+        });
+        edges.push(DagEdge {
+            from: cur_id.clone(),
+            to: id,
+        });
+    }
+    LineageDag { nodes, edges }
+}

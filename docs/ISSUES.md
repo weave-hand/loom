@@ -23,6 +23,13 @@ only (resolved defects are recorded in git history, and the shipped behaviour in
 - [ ] **/search can serve superseded or tombstoned cold hits after an inline-shadow mutation** `{#iss-search-cold-superseded-hits area:query status:open from:2026-07-03-overwrite-vector-rebuild-design pr:- spec:-}`
   After a COW slice-1 inline-shadow UPDATE/DELETE (`#road-cow-inline-shadow`, #331), the cold Puffin index still holds the pre-mutation vector (a stale duplicate hit) or a tombstoned identity; the hot/cold merge adds the new row version but does not *suppress* the superseded cold entry, and the query-api row-filter post-filter drops it only when row filters happen to exist (`handler.rs:607`). Cold-suppression belongs to slice 2's compaction consolidation (`fut-cow-inline-shadow`), whose fold-into-new-base commit is a replace-shaped snapshot routing through the shared `rebuild_jobs_for` seam. Surfaced by the `2026-07-03-overwrite-vector-rebuild-design` investigation.
 
+## ui
+
+- [ ] **Async in-flight fetch race can stale a Catalog/Ontology drawer tab body** `{#iss-ui-async-fetch-race area:ui status:open from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  `Workspace`'s lazy detail/preview/lineage fetches reset state synchronously on selection change but `spawn_local` a new fetch with no generation/epoch guard, so an in-flight fetch from the previous selection can resolve later and `set` stale content under the new selection's drawer body (whichever fetch resolves last wins). Only the tab body can go stale — the drawer label is derived synchronously from the current selection — and the forced tab-reset-to-schema on select largely masks it; the durable-wrong case is genuine out-of-order network arrival. Fix: a single shared epoch-guard helper (a generation counter captured into each spawn, compared before `set`), applied once across the detail/preview/lineage effects rather than per-effect.
+- [ ] **Non-401 fetch errors leave Catalog Schema/Preview tabs stuck on "Loading…"** `{#iss-ui-swallowed-fetch-errors area:ui status:open from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
+  The Catalog detail and preview effects swallow non-401 errors (`Err(_) => {}` / just clear the loading flag) with no error surfaced, so a 500 renders an indefinite "Loading…" (Schema) or a silent empty (Preview). The Lineage tab degrades gracefully (falls back to the current-node-only DAG); detail/preview do not. Surface a small error line consistent with the rest of the UI.
+
 ## transform
 
 - [ ] **Lost terminal FinishRunFailed leaves a run stuck Running** `{#iss-transform-run-stuck-running area:transform status:open from:2026-07-04-transform-ergonomics-design pr:#351 spec:-}`

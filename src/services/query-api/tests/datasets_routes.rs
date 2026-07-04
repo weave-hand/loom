@@ -70,6 +70,35 @@ fn app(cp: MemoryControlPlane) -> axum::Router {
     })
 }
 
+struct CannedServing;
+
+#[async_trait]
+impl ServingEngine for CannedServing {
+    async fn fetch_rows(
+        &self,
+        _sql: &str,
+        _params: &[SqlValue],
+    ) -> std::result::Result<Rows, ServingError> {
+        Ok(Rows {
+            columns: vec!["id".into(), "note".into()],
+            rows: vec![
+                vec![SqlValue::Int(1), SqlValue::Text("a".into())],
+                vec![SqlValue::Int(2), SqlValue::Null],
+            ],
+        })
+    }
+}
+
+fn app_canned(cp: MemoryControlPlane) -> axum::Router {
+    router(AppState {
+        cp: Arc::new(cp),
+        serving: Arc::new(CannedServing),
+        action_engine: Arc::new(StubAction),
+        default_limit: 1000,
+        naming: query_api::lineage_filter::local_naming(),
+    })
+}
+
 async fn get(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
     let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
     req.extensions_mut()
@@ -104,10 +133,15 @@ async fn datasets_lists_the_seeded_table() {
     let app = app(cp);
     let (status, json) = get(&app, "/datasets").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        json,
-        serde_json::json!({ "datasets": [ { "schema": "main", "name": "events" } ] })
+    let ds = &json["datasets"][0];
+    assert_eq!(ds["schema"], "main");
+    assert_eq!(ds["name"], "events");
+    assert_eq!(ds["project"], "main");
+    assert!(
+        ds["updated"].as_str().is_some_and(|t| !t.is_empty()),
+        "updated must be a non-empty RFC3339 string, got {json}"
     );
+    assert_eq!(json["datasets"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -140,4 +174,23 @@ async fn unknown_dataset_is_404() {
     let app = app(cp);
     let (status, _) = get(&app, "/datasets/main/no-such-table").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dataset_preview_returns_sampled_rows() {
+    let (cp, _) = seeded();
+    let app = app_canned(cp);
+    let (status, json) = get(&app, "/datasets/main/events/preview?limit=5").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["columns"], serde_json::json!(["id", "note"]));
+    assert_eq!(json["sampled"], serde_json::json!(true));
+    assert_eq!(json["rows"], serde_json::json!([["1", "a"], ["2", ""]]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dataset_preview_rejects_bad_limit() {
+    let (cp, _) = seeded();
+    let app = app_canned(cp);
+    let (status, _) = get(&app, "/datasets/main/events/preview?limit=nope").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

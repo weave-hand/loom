@@ -116,6 +116,18 @@ rust_test(
 )
 
 rust_test(
+    name = "dataset-preview",
+    crate = "dataset_preview",
+    srcs = ["tests/dataset_preview.rs"],
+    crate_root = "tests/dataset_preview.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "web-static",
     crate = "web_static",
     srcs = ["tests/web_static.rs"],
