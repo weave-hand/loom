@@ -37,6 +37,15 @@ rust_test(
 )
 
 rust_test(
+    name = "surface",
+    crate = "surface",
+    srcs = ["tests/surface.rs"],
+    crate_root = "tests/surface.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
+rust_test(
     name = "objects",
     crate = "objects",
     srcs = ["tests/objects.rs"],

@@ -211,3 +211,58 @@ pub fn cell_to_string(v: &Value) -> String {
         Value::Array(_) | Value::Object(_) => serde_json::to_string(v).unwrap_or_default(),
     }
 }
+
+/// One of the app's five top-level surfaces (nav order). Backend-live surfaces are
+/// Catalog and Ontology; the others render an honest "not available" stub.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Surface {
+    Catalog,
+    Pipelines,
+    Ontology,
+    Workbooks,
+    Dashboards,
+}
+
+impl Surface {
+    /// Nav order, left to right.
+    #[must_use]
+    pub fn all() -> [Surface; 5] {
+        [
+            Surface::Catalog,
+            Surface::Pipelines,
+            Surface::Ontology,
+            Surface::Workbooks,
+            Surface::Dashboards,
+        ]
+    }
+
+    /// The nav label / list title for this surface.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Surface::Catalog => "Catalog",
+            Surface::Pipelines => "Pipelines",
+            Surface::Ontology => "Ontology",
+            Surface::Workbooks => "Workbooks",
+            Surface::Dashboards => "Dashboards",
+        }
+    }
+
+    /// The per-surface accent hex (design tokens).
+    #[must_use]
+    pub fn accent(self) -> &'static str {
+        match self {
+            Surface::Catalog => "#3b82f6",
+            Surface::Pipelines => "#2bb0a0",
+            Surface::Ontology => "#8b5cf6",
+            Surface::Workbooks => "#2da44e",
+            Surface::Dashboards => "#d29922",
+        }
+    }
+
+    /// Whether the backend can serve this surface (else the shell shows a stub).
+    #[must_use]
+    pub fn is_live(self) -> bool {
+        matches!(self, Surface::Catalog | Surface::Ontology)
+    }
+}
