@@ -13,8 +13,9 @@ use arrow_array::{Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, Job, JobId, LineageEvent, NewJob,
-    OutputMode, Queue, RetryPolicy, RunId, SnapshotId, TRANSFORM_JOB_KIND, TableControlPlane,
-    TableRef, TransformJob,
+    OutputMode, Queue, RetryPolicy, RunId, RunState, RunTrigger, SnapshotId, TRANSFORM_JOB_KIND,
+    TableControlPlane, TableRef, TransformBody, TransformDef, TransformJob, TransformName,
+    TransformRun,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -787,5 +788,219 @@ async fn overwrite_replaces_live_set_and_time_travels() {
     assert_eq!(
         files_then, files1,
         "the prior snapshot still time-travels to the original files"
+    );
+}
+
+/// The full run-lifecycle proof: a `TransformDef` is defined, a run is submitted
+/// (record + queued job atomically), the worker dequeues and executes it over the
+/// wire, and the run ends `Succeeded` carrying the committed snapshot id — with the
+/// lineage event's `run_id` equal to the transform run's id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_lifecycle_succeeds_with_commit_snapshot() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    // Seed main.src with ids [1,2,3] as one real Parquet file.
+    let src = tref("main", "src");
+    let (schema, batches) = ipc_body(&[1, 2, 3]);
+    land(
+        &pool,
+        &catalog,
+        &src,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&src),
+    )
+    .await
+    .expect("land");
+
+    let dst = tref("main", "dst");
+    let def = TransformDef {
+        name: TransformName("daily".into()),
+        body: TransformBody::Physical {
+            inputs: vec![src.clone()],
+            output: dst.clone(),
+            sql: "select * from src where id > 1".into(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: false,
+    };
+    cp.transforms()
+        .define_transform(def.clone())
+        .await
+        .expect("define");
+
+    let rid = uuid::Uuid::new_v4();
+    let run = TransformRun {
+        run_id: rid,
+        transform: Some(def.name.clone()),
+        trigger: RunTrigger::Manual,
+        state: RunState::Queued,
+        body: def.body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    cp.transforms()
+        .submit_run(run, def.body.to_job(rid))
+        .await
+        .expect("submit");
+
+    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let job = ctx
+        .control
+        .dequeue(&[TRANSFORM_JOB_KIND.to_string()], "e2e-worker")
+        .await
+        .expect("dequeue")
+        .expect("a queued transform job");
+    handle_transform(&ctx, job).await.expect("transform");
+
+    let r = cp.transforms().get_run(rid).await.expect("run");
+    assert_eq!(r.state, RunState::Succeeded);
+    assert!(
+        r.started_at.is_some() && r.finished_at.is_some(),
+        "the run's timestamps are stamped through the lifecycle"
+    );
+
+    // The run's recorded snapshot is the table's committed snapshot.
+    let ice = IcebergCatalog::new(pool.clone());
+    let snap = ice.current_snapshot(&dst).await.expect("output snapshot");
+    assert_eq!(r.snapshot_id, Some(snap.id.0));
+
+    // The lineage event's run_id IS the transform run_id. `event_dataset`'s
+    // `name` column holds the dot-qualified `schema.name` (loom's dataset
+    // identity, see `DatasetId::dataset_ref` in identity.rs) under the `loom`
+    // namespace — not separate schema/name columns.
+    let lineage_run: uuid::Uuid = sqlx::query_scalar(
+        "select e.run_id from lineage.event e \
+         join lineage.event_dataset d on d.event_id = e.event_id \
+         where d.direction = 'output' and d.namespace = $1 and d.name = $2",
+    )
+    .bind("loom")
+    .bind("main.dst")
+    .fetch_one(&pool)
+    .await
+    .expect("lineage run id");
+    assert_eq!(
+        lineage_run, rid,
+        "the lineage event's run_id equals the transform run_id"
+    );
+}
+
+/// A deterministically bad transform (SQL referencing an unknown column) ends the
+/// run `Failed` with the error text recorded, rather than leaving it stuck.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_lifecycle_fails_terminally_on_bad_sql() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    // Seed main.src as a known, live input so the failure comes from the SQL
+    // itself (a bad column), not from an "unknown input table" Abandon.
+    let src = tref("main", "src");
+    let (schema, batches) = ipc_body(&[1, 2, 3]);
+    land(
+        &pool,
+        &catalog,
+        &src,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&src),
+    )
+    .await
+    .expect("land");
+
+    let rid = uuid::Uuid::new_v4();
+    let body = TransformBody::Physical {
+        inputs: vec![src.clone()],
+        output: tref("main", "dst"),
+        sql: "select definitely_not_a_column from src".into(),
+        output_mode: OutputMode::Append,
+    };
+    let run = TransformRun {
+        run_id: rid,
+        transform: None,
+        trigger: RunTrigger::AdHoc,
+        state: RunState::Queued,
+        body: body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    cp.transforms()
+        .submit_run(run, body.to_job(rid))
+        .await
+        .expect("submit");
+
+    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let job = ctx
+        .control
+        .dequeue(&[TRANSFORM_JOB_KIND.to_string()], "e2e-worker")
+        .await
+        .expect("dequeue")
+        .expect("a queued transform job");
+    let err = handle_transform(&ctx, job)
+        .await
+        .expect_err("bad sql must fail");
+    assert!(
+        matches!(err.policy, RetryPolicy::Abandon),
+        "bad SQL is a deterministic failure (Abandon), got {:?}",
+        err.policy
+    );
+
+    let r = cp.transforms().get_run(rid).await.expect("run");
+    assert_eq!(r.state, RunState::Failed);
+    assert!(
+        r.error.as_deref().unwrap_or_default().contains("sql:"),
+        "error text recorded on the run, got: {:?}",
+        r.error
     );
 }
