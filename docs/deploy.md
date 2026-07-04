@@ -25,7 +25,11 @@ _Capabilities as of 4861433b._
 Each image is the buck2-built Rust binary (`x86_64-unknown-linux-gnu`, glibc)
 layered onto a minimal apko/Wolfi base carrying just `glibc` + `libgcc` +
 CA certs. query-api is a pure wire client over the engine's Arrow Flight
-service, so it bundles no analytics engine and needs no extra runtime libs;
+service, so it bundles no analytics engine and needs no extra runtime libs.
+Its image also carries the wasm UI bundle at `/usr/share/loom/ui`; the chart
+serves it from the query-api container by default (`ui.enabled`, `LOOM_UI_DIR`
+SPA fallback), and `ui.apiBase` mounts a config.js override for path-prefix or
+detached serving;
 the **engine** ships as its own image and runs as a **sidecar container in the
 query-api pod**, sharing a Unix socket (`engine.socketPath` on an emptyDir,
 wired via `LOOM_ENGINE_SOCKET`). All containers run as
@@ -134,6 +138,8 @@ the full set; the notable knobs:
 | `networkPolicy.enabled` | `true` | Default-deny on/off. |
 | `gateway.enabled` | `false` | Attach an HTTPRoute to a parent Gateway. |
 | `gateway.parentRef.name` | `""` | Existing Gateway to route through. |
+| `ui.enabled` | `true` | Serve the bundled web UI from query-api (`LOOM_UI_DIR`). |
+| `ui.apiBase` | `""` | config.js override: API prefix when served behind a rewriting route. |
 
 ## Configuration model
 
