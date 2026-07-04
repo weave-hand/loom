@@ -13,7 +13,7 @@ shared payload/conformance types live in `control_plane_core`
 (`transform_job.rs`, `conform.rs`) and the read/write compute layer is
 `datafusion-io`.
 
-_As of d54063e6._
+_As of 666de0c3._
 
 ## Queue-driven SQL transforms
 
@@ -167,10 +167,11 @@ text with no FK, so deleting a definition never orphans or rewrites past
 runs). Typed bodies are validated at define time — unknown input or output
 type names are a `Validation` rejection on both adapters, the same
 fail-at-define-not-at-read posture the rest of the ontology holds to.
-`TransformDef` already carries `schedule` and `on_input_commit` fields for
-slices 2/3, but the shared `validate_transform_def` rejects either being set
-today (`schedule.is_some()` or `on_input_commit == true` both 400 at define) —
-the shape is forward-compatible, the behavior is not yet live.
+`TransformDef` also carries `schedule` and `on_input_commit` fields, one live
+and one still deferred: `schedule` (slice 2, see **Cron schedules** below) is
+validated and enforced today, while `on_input_commit == true` (slice 3, data
+triggers) remains a 400 at define — the shape is forward-compatible, only
+half the behavior is live.
 
 A `TransformRun` is the durable execution record: `run_id` **is** the lineage
 `run_id` (the same UUID names both), so a run's lineage events are queryable
@@ -196,6 +197,36 @@ at-least-once, so a retried job that already committed may legitimately
 re-mark a terminal run, and the record follows execution rather than gating
 it. Runs are listed newest-first (`queued_at` desc, `run_id` desc tiebreak),
 optionally filtered to one transform's history.
+
+## Cron schedules
+
+`TransformDef.schedule` is live: a 5-field UTC cron expression (minute, hour,
+day-of-month, month, day-of-week), parsed and validated at define time by
+croner (`validate_transform_def` → `core::transforms::validate_cron`) — an
+invalid expression is a `Validation` 400 at `define_transform`, never
+discovered later at fire time. A scheduled def carries a derived
+`next_run_at`, computed from the definition (or redefinition) time as the
+first occurrence strictly after "now"; redefining a schedule resets the
+clock — `next_run_at` is recomputed from the redefinition time, not
+carried forward from the original cadence.
+
+The engine runs a scheduler loop (`src/services/engine/src/scheduler.rs`; see
+[engine.md](engine.md)) that ticks on `LOOM_SCHEDULER_TICK_SECS` (default 5s)
+and calls `Transforms::claim_due_schedules`, which the postgres adapter
+implements as one transaction: `SELECT ... FOR UPDATE SKIP LOCKED` over defs
+whose `next_run_at <= now`, advancing each claimed def's `next_run_at` to its
+next occurrence **in the same transaction** as the claim. That pairing is the
+whole correctness story — concurrent engines never claim the same due
+definition twice, and because the clock always advances before a run is
+submitted, a crash (or a `submit_run` failure) between claim and submit
+**skips** that occurrence rather than firing it twice on the next tick:
+at-most-once, not at-least-once. Each claimed def gets one fresh
+`TransformRun` (`trigger: RunTrigger::Schedule`) submitted through the
+ordinary `submit_run` path — downstream execution, retry-requeue, and
+lineage are indistinguishable from a manual or ad-hoc run except for the
+trigger tag. `GET /admin/transforms/{name}` exposes the derived
+`next_run_at` (RFC3339 UTC, omitted when the transform is unscheduled); the
+list route does not.
 
 ## Admin HTTP surface
 
@@ -229,8 +260,6 @@ body's `to_job(run_id)`.
   input scans for the wire path.
 - `#fut-datafusion-type-coverage` — only the canonical scalar set round-trips;
   timestamps, dates, decimals, and small/unsigned ints abandon the job.
-- `#road-transform-schedules` — `TransformDef.schedule` is carried in the
-  shape and rejected at define time; cron-driven runs are not live yet.
 - `#road-transform-data-triggers` — `TransformDef.on_input_commit` is carried
   in the shape and rejected at define time; run-on-commit data triggers are
   not live yet.

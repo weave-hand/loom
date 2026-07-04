@@ -11,7 +11,7 @@ zero-pool workers and query-api drive over a Unix-domain socket. It is
 distilled from the closed register items assigned to the subsystem and their
 design specs; open work is listed at the end.
 
-_As of 4861433b._
+_As of 666de0c3._
 
 ## Serving path and the internal Flight SQL wire
 
@@ -257,6 +257,27 @@ drop/recreate history) have their data files reclaimed under the same
 horizon, and once fully reclaimed the physical `inline_<tid>` table and the
 `table`/`column` mirror rows are removed — gated on full reclaim so nothing
 time-travellable vanishes (#266).
+
+## Scheduler loop: the engine's first background task
+
+The engine gains its first standing background task alongside the tonic
+server: `run::run` spawns `scheduler::scheduler_loop`
+(`src/services/engine/src/scheduler.rs`), cancelled through the same
+`CancellationToken` used for graceful shutdown. Every `LOOM_SCHEDULER_TICK_SECS`
+(`EngineTuning::scheduler_tick`, default 5s; `MissedTickBehavior::Delay` so a
+slow pass never bursts to catch up), one `tick` calls
+`Transforms::claim_due_schedules` against the engine's own `ControlPlane`
+handle and submits one `TransformRun` (`trigger: RunTrigger::Schedule`) per
+claimed definition through the ordinary `submit_run` path — the loop is a
+thin caller over control-plane primitives, with no scheduling logic of its
+own. The claim is the concurrency boundary, not the loop: `claim_due_schedules`
+runs `SELECT ... FOR UPDATE SKIP LOCKED` and advances each claimed def's
+`next_run_at` in the same transaction, so multiple engines ticking against
+the same Postgres never double-claim a due definition — the design is
+concurrent-engine safe by construction, with no leader election needed. A
+claim that fails to make it into a submitted run (a `submit_run` error) is
+logged and the occurrence is skipped, not retried, since the clock has
+already advanced.
 
 ## Known gaps
 
