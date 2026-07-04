@@ -100,16 +100,12 @@ spec:
               value: {{ .Values.engine.socketPath | quote }}
             {{- include "loom.dbEnv" . | nindent 12 }}
             {{- include "loom.migrateOnBootEnv" . | nindent 12 }}
-          # Readiness gates the pod on the engine having bound the socket so
-          # query-api never connects before it exists.
-          readinessProbe:
-            exec:
-              command:
-                - test
-                - -S
-                - {{ .Values.engine.socketPath | quote }}
-            initialDelaySeconds: 3
-            periodSeconds: 5
+          # No readiness probe: the image is binary-only (no shell, no
+          # coreutils), so an exec probe has nothing to run (#356), and a
+          # container probe cannot order sibling startup anyway. query-api's
+          # own tcpSocket readiness transitively covers the engine: query-api
+          # exits fail-loud when the engine socket is absent and restarts
+          # until it is there, so the pod reads Ready only once both are up.
           volumeMounts:
             {{- if not .Values.objectStore.s3.enabled }}
             - name: data
