@@ -37,6 +37,7 @@
 **Files:**
 - Modify: `src/control-plane/core/src/transforms.rs`
 - Modify: `src/control-plane/core/tests/transforms.rs` (existing `rust_test` target)
+- Modify: `src/control-plane/testkit/src/lib.rs` (DELETE the old-rejection contract leg — see Step 1)
 - Modify: `src/control-plane/memory/src/transforms.rs`
 - Modify: `src/control-plane/postgres/src/transforms.rs`
 
@@ -159,7 +160,16 @@ fn validate_accepts_a_data_triggered_def() {
 }
 ```
 
-Reuse the file's existing `tref` helper and imports (extend the `use` list with `TriggerNode`, `validate_no_trigger_cycle` as needed). If the existing file asserts the old rejection (a test that `on_input_commit: true` fails validation), DELETE that assertion — its behavior is the thing this slice changes.
+The core test file has NO `tref` helper (it builds `TableRef` literals inline in `physical_body()`) — add a 3-line local `fn tref(schema: &str, name: &str) -> TableRef` and extend the `use` list with `TriggerNode`, `validate_no_trigger_cycle` as needed. DELETE the existing test that asserts `on_input_commit: true` fails validation (`rejects_data_trigger_until_slice_3`, ~line 75) — its behavior is the thing this slice changes.
+
+**Also in this task (BLOCKER if skipped):** `src/control-plane/testkit/src/lib.rs:4207–4214` — the `transforms_contract` has a leg asserting the OLD rejection:
+
+```rust
+let trig = TransformDef { on_input_commit: true, ..def.clone() };
+assert!(matches!(cp.define_transform(trig).await, Err(ControlPlaneError::Validation(_))));
+```
+
+DELETE this leg entirely (do not invert it — an accepted "daily" data-triggered def would pollute Task 2's `data_triggered_defs` count assertion). Without this deletion, `//src/control-plane/memory:transforms` and `//src/control-plane/postgres:transforms` go red at this task's commit.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -170,7 +180,7 @@ Expected: compile FAIL (`TriggerNode` not found). (If the core transforms test t
 
 - [ ] **Step 3: Implement in `src/control-plane/core/src/transforms.rs`**
 
-Remove the `on_input_commit` rejection block from `validate_transform_def` (lines 268–272) and update its doc comment plus the module doc (lines 10–13) — `on_input_commit` is live; adapter-side define-time validation rejects trigger cycles. Then add:
+Remove the `on_input_commit` rejection block from `validate_transform_def` (lines 268–272) and update its doc comment, the module doc (lines 10–13), AND the `TransformDef` doc comment (~line 104, "carried in the shape but still rejected") — `on_input_commit` is live; adapter-side define-time validation rejects trigger cycles. Then add:
 
 ```rust
 /// A data-triggered def's physical io, resolved for cycle validation and
@@ -326,10 +336,10 @@ Re-export `TriggerNode` / `validate_no_trigger_cycle` from the crate root the sa
 
 ```bash
 bash tools/sqlx-prepare.sh
-buck2 test //src/control-plane/core:transforms > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log
+buck2 test //src/control-plane/core:transforms //src/control-plane/memory:transforms //src/control-plane/postgres:transforms --unstable-allow-all-tests-on-re > /tmp/t1.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t1.log
 buck2 build -M none //src/... > /tmp/b1.log 2>&1; tail -3 /tmp/b1.log
 ```
-Expected: core tests PASS; build green.
+Expected: core + both adapters' transforms tests PASS (proves the deleted testkit leg left the contract green); build green.
 
 - [ ] **Step 6: prek + commit**
 
@@ -356,7 +366,7 @@ git commit --no-verify -m "feat(transform): trigger-cycle validation helper + da
 
 **Steps:**
 
-- [ ] **Step 1: Write failing contract legs** in `transforms_contract` (`src/control-plane/testkit/src/lib.rs`, after the existing typed-validation leg). The contract already binds `CP: ControlPlane + Transforms + Ontology` and has `tref` + `seed_type` helpers, and has seeded types `Widget`→(main, widgets) and `Gadget`→(main, gadgets):
+- [ ] **Step 1: Write failing contract legs** in `transforms_contract` (`src/control-plane/testkit/src/lib.rs`, after the existing typed-validation leg). The contract already binds `CP: ControlPlane + Transforms + Ontology` and has `tref` + `seed_type` helpers, and has seeded types `Widget`→(main, widget) and `Gadget`→(main, gadget) — note SINGULAR table names:
 
 ```rust
     // -- data triggers: define-time cycle validation (slice 3) --
@@ -403,8 +413,8 @@ git commit --no-verify -m "feat(transform): trigger-cycle validation helper + da
         .await
         .unwrap();
 
-    // A typed cycle resolves through the ontology: Widget->(main,widgets),
-    // Gadget->(main,gadgets). dt-t1 reads Widget writes Gadget; dt-t2
+    // A typed cycle resolves through the ontology: Widget->(main,widget),
+    // Gadget->(main,gadget). dt-t1 reads Widget writes Gadget; dt-t2
     // (reads Gadget writes Widget) closes the loop -> rejected.
     let typed = |name: &str, input: &str, output: &str| TransformDef {
         name: TransformName(name.to_string()),
@@ -456,9 +466,12 @@ Expected: FAIL — self-loop/two-cycle defines are accepted (no validation yet).
                 }
             }
         }
-        // Ontology snapshot for trigger-cycle resolution, cloned OUTSIDE the
-        // transforms lock: the ontology mutex is never held together with
-        // rows/lineage/catalog/transforms anywhere — keep it that way.
+        // Ontology snapshot for trigger-cycle resolution, cloned and dropped
+        // OUTSIDE the transforms lock. Invariant (deadlock-freedom): the
+        // ontology lock is never ACQUIRED while any of rows/lineage/catalog/
+        // transforms is held (define_type holds ontology THEN takes lineage —
+        // ontology is only ever first). Taking it here in its own scope,
+        // before `transforms`, preserves that.
         let type_tables: std::collections::HashMap<String, control_plane_core::TableRef> = {
             self.ontology
                 .lock()
@@ -811,24 +824,36 @@ pub(crate) async fn pg_fire_data_triggers(
     };
     let types = pg_type_tables(&mut *conn, &bodies).await?;
     let mut fired = 0usize;
-    for (name, body) in bodies {
+    for (name, candidate_body) in bodies {
         if skip.as_deref() == Some(name.0.as_str()) {
             continue;
         }
-        let node = TriggerNode::resolve(&name, &body, &types);
+        let node = TriggerNode::resolve(&name, &candidate_body, &types);
         if !node.inputs.iter().any(|t| committed.contains(t)) {
             continue;
         }
-        let live = sqlx::query_scalar!(
-            "select name from transforms.transform where name = $1 for update",
+        // Re-read the body under the row lock: a redefine committing between
+        // the candidate query and here must not enqueue a stale body ("the
+        // run freezes the def's body at enqueue" means the body live at the
+        // locked instant).
+        let live = sqlx::query!(
+            "select body from transforms.transform where name = $1 for update",
             name.0,
         )
         .fetch_optional(&mut *conn)
         .await
         .map_err(backend)?;
-        if live.is_none() {
+        let Some(row) = live else {
             continue; // deleted since the candidate query
-        }
+        };
+        let body = match de_body(row.body) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(transform = %name.0, error = %e,
+                    "data trigger: undecodable body skipped");
+                continue;
+            }
+        };
         let pending = sqlx::query_scalar!(
             r#"select exists(
                    select 1 from transforms.run where transform = $1 and state = 'queued'
@@ -905,12 +930,13 @@ pub(crate) async fn pg_fire_data_triggers(
   (the `pg_emit(&mut *tx, &lineage)` above already borrows `lineage` — order the fire call after it and only pass the copied `run_id`.)
 
 `iceberg_inline.rs`:
-- `inline_append`: capture `let committing = lineage.run_id.0;` near the top (before `lineage` is consumed), and before `tx.commit()`:
+- `inline_append`: before `tx.commit()`:
   ```rust
-  crate::transforms::pg_fire_data_triggers(&mut tx, std::slice::from_ref(table), Some(committing)).await?;
+  crate::transforms::pg_fire_data_triggers(&mut tx, std::slice::from_ref(table), Some(lineage.run_id.0)).await?;
   ```
+  (`pg_emit` only borrows `lineage`, so reading `lineage.run_id.0` here is fine; if control flow makes that awkward, capture the uuid up top — it's `Copy`.)
 - `write_inline_delta`: identical pattern.
-- The flush function (the other tx in this file, ~lines 745+ if it is NOT `write_inline_delta` — the implementer confirms which functions own transactions here) gets NO call: flush is a data-preserving rewrite.
+- These are the ONLY two tx-owning functions in this file. The inline flush lives in `iceberg_flush.rs` and commits through `do_update_table`, where the new `CommitExtras` field defaults to empty — flush non-firing is guaranteed by construction; add no call there.
 
 `iceberg_control_plane.rs` — `IcebergTx::commit`, after the `pg_mark_run_succeeded` block, before `tx.commit()`:
 
@@ -929,9 +955,9 @@ pub(crate) async fn pg_fire_data_triggers(
 
 ```bash
 bash tools/sqlx-prepare.sh
-buck2 test //src/control-plane/postgres:data-triggers //src/control-plane/postgres:transforms //src/control-plane/postgres:sqlx-cache-check //src/control-plane/postgres:iceberg_landing //src/control-plane/postgres:iceberg_inline //src/control-plane/postgres:iceberg_flush --unstable-allow-all-tests-on-re > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log
+buck2 test //src/control-plane/postgres:data-triggers //src/control-plane/postgres:transforms //src/control-plane/postgres:sqlx-cache-check //src/control-plane/postgres:iceberg-landing //src/control-plane/postgres:iceberg-inline //src/control-plane/postgres:iceberg-flush --unstable-allow-all-tests-on-re > /tmp/t3.log 2>&1; grep -E "Tests finished|FAIL" /tmp/t3.log
 ```
-(Adjust target names to what `src/control-plane/postgres/BUCK` actually calls the landing/inline/flush tests.) Expected: all PASS.
+(Target names in `src/control-plane/postgres/BUCK` are mostly dashed — `iceberg-landing`, `iceberg-inline` — but not uniformly; verify each against the BUCK file.) Expected: all PASS.
 
 - [ ] **Step 7: Whole-tree build, prek, commit**
 
@@ -1011,10 +1037,15 @@ where
     commit_into(tref("main", "dt_widgets"), "f4").await;
     assert_eq!(t.list_runs(Some(&typed.name), PageReq::default()).await.unwrap().items.len(), 1);
 
-    // 5. Self-skip (defense in depth): rebind Gadget so `typed`'s input NOW
+    // 5. Self-skip (defense in depth): rebind Widget so `typed`'s input NOW
     //    resolves to its own output table, then have a run of `typed` commit
     //    into that table with mark_run_succeeded. Without suppression this
     //    would re-trigger `typed`.
+    //    FIRST drain leg 4's Queued run (mark_run_running it) — otherwise the
+    //    debounce alone would suppress the enqueue and this leg would pass
+    //    even with self-skip deleted, testing nothing.
+    let leg4_run = t.list_runs(Some(&typed.name), PageReq::default()).await.unwrap().items;
+    t.mark_run_running(leg4_run[0].run_id).await.unwrap();
     //    Rebind: redefine type Widget -> (main, dt_gadgets).
     cp.ontology().define_type(/* Widget -> (main, dt_gadgets) */).await.unwrap();
     let rid = uuid::Uuid::new_v4();
@@ -1052,11 +1083,11 @@ Wire it up:
   ```rust
   #[tokio::test]
   async fn memory_passes_transform_data_trigger_contract() {
-      let cp = control_plane_memory::MemoryControlPlane::new();
+      let cp = MemoryControlPlane::new(Duration::from_millis(300));
       control_plane_testkit::transform_data_trigger_contract(&cp).await;
   }
   ```
-  (mirror how the file constructs `cp` for the other contracts)
+  (`new` takes the poll interval — mirror the file's existing construction exactly)
 - `src/control-plane/postgres/tests/transforms.rs`:
   ```rust
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1081,13 +1112,14 @@ Expected: postgres PASSES already (Task 3's hook); memory FAILS (no hook yet). I
 2. In `commit`, BEFORE the four-lock block:
 
 ```rust
-        // Ontology snapshot for data-trigger resolution, cloned BEFORE the
-        // commit locks: the ontology mutex is never held together with
-        // rows/lineage/catalog/transforms anywhere (verified: every
-        // `ontology.lock()` site is single-lock or drops before taking
-        // another) — keeping it out of the held set preserves that
-        // deadlock-freedom by construction. Staleness across this instant
-        // is immaterial (postgres reads per-statement inside its tx).
+        // Ontology snapshot for data-trigger resolution, taken and DROPPED
+        // before the commit locks. Invariant (deadlock-freedom): the
+        // ontology lock is never acquired while any of rows/lineage/catalog/
+        // transforms is held — `define_type` holds ontology THEN lineage,
+        // i.e. ontology is only ever taken FIRST; no path takes any of the
+        // four then ontology. This snapshot keeps it that way. Staleness
+        // across this instant is immaterial (postgres reads per-statement
+        // inside its tx).
         let type_tables: std::collections::HashMap<String, TableRef> = self
             .ontology
             .lock()
@@ -1108,7 +1140,7 @@ Expected: postgres PASSES already (Task 3's hook); memory FAILS (no hook yet). I
         let mut fired = false;
 ```
 
-(the implementer must verify the "never held together" claim: `grep -rn "ontology.lock()" src/control-plane/memory/src/` and check each site's guard scope; record the finding in the comment if it differs.)
+(Verified during plan review: `define_type` in `memory/src/ontology.rs:29–39` holds the ontology guard while taking `lineage` — ontology-then-lineage, ontology always FIRST; no path acquires ontology while holding any of the four commit locks. The comment above states the real invariant — keep it accurate if the code you find differs.)
 
 3. Inside the lock block, AFTER the staged-run-success section (transforms lock already held):
 
