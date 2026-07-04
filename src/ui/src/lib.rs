@@ -337,3 +337,108 @@ pub fn parse_type_detail(body: &Value) -> TypeDetail {
         links_to: parse_links(body, "links_to"),
     }
 }
+
+/// A row in the Catalog list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetRow {
+    pub schema: String,
+    pub name: String,
+    pub project: String,
+    pub updated: String,
+}
+
+/// Decode `GET /datasets`. Missing array → empty; missing scalars → "".
+#[must_use]
+pub fn parse_datasets(body: &Value) -> Vec<DatasetRow> {
+    body.get("datasets")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|d| DatasetRow {
+                    schema: str_field(d, "schema"),
+                    name: str_field(d, "name"),
+                    project: str_field(d, "project"),
+                    updated: str_field(d, "updated"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A schema column in the Catalog › Schema tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaCol {
+    pub name: String,
+    pub ty: String,
+    pub nullable: bool,
+}
+
+/// Decode `GET /datasets/{schema}/{table}`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DatasetDetail {
+    pub snapshot_time: String,
+    pub columns: Vec<SchemaCol>,
+}
+
+#[must_use]
+pub fn parse_dataset_detail(body: &Value) -> DatasetDetail {
+    let columns = body
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|c| SchemaCol {
+                    name: str_field(c, "name"),
+                    ty: str_field(c, "ty"),
+                    nullable: c.get("nullable").and_then(Value::as_bool).unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    DatasetDetail {
+        snapshot_time: str_field(body, "snapshot_time"),
+        columns,
+    }
+}
+
+/// Decode `GET /datasets/{schema}/{table}/preview`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PreviewData {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub sampled: bool,
+}
+
+#[must_use]
+pub fn parse_preview(body: &Value) -> PreviewData {
+    let columns = body
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let rows = body
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|r| {
+                    r.as_array()
+                        .map(|cells| cells.iter().map(cell_to_string).collect())
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    PreviewData {
+        columns,
+        rows,
+        sampled: body
+            .get("sampled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}

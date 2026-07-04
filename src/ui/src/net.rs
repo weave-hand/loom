@@ -2,7 +2,9 @@
 
 use gloo_net::http::Request;
 use loom_ui_core::{
-    AuthError, ObjectsPage, TypeDetail, parse_objects_page, parse_type_detail, status_to_error, url,
+    AuthError, DatasetDetail, DatasetRow, ObjectsPage, PreviewData, TypeDetail,
+    parse_dataset_detail, parse_datasets, parse_objects_page, parse_preview, parse_type_detail,
+    status_to_error, url,
 };
 use wasm_bindgen::JsValue;
 
@@ -150,4 +152,63 @@ pub async fn fetch_type_detail(
     }
     let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
     Ok(parse_type_detail(&body))
+}
+
+/// GET /datasets with the bearer token.
+#[allow(dead_code, reason = "consumed by CatalogView in the next task")]
+pub async fn fetch_datasets(base: &str, token: &str) -> Result<Vec<DatasetRow>, FetchError> {
+    let resp = Request::get(&url(base, "/datasets"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_datasets(&body))
+}
+
+/// GET /datasets/{schema}/{table} with the bearer token.
+#[allow(dead_code, reason = "consumed by CatalogView in the next task")]
+pub async fn fetch_dataset_detail(
+    base: &str,
+    token: &str,
+    schema: &str,
+    table: &str,
+) -> Result<DatasetDetail, FetchError> {
+    let resp = Request::get(&url(base, &format!("/datasets/{schema}/{table}")))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_dataset_detail(&body))
+}
+
+/// GET /datasets/{schema}/{table}/preview?limit= with the bearer token.
+#[allow(dead_code, reason = "consumed by CatalogView in the next task")]
+pub async fn fetch_preview(
+    base: &str,
+    token: &str,
+    schema: &str,
+    table: &str,
+    limit: u32,
+) -> Result<PreviewData, FetchError> {
+    let resp = Request::get(&url(
+        base,
+        &format!("/datasets/{schema}/{table}/preview?limit={limit}"),
+    ))
+    .header("Authorization", &format!("Bearer {token}"))
+    .send()
+    .await
+    .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_preview(&body))
 }
