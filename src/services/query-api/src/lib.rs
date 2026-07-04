@@ -7,6 +7,7 @@
 pub mod action;
 pub mod chain_filter;
 pub mod config;
+pub mod dataset_preview;
 pub mod engine_action_client;
 pub mod engine_client;
 pub mod expr;
