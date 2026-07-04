@@ -15,6 +15,7 @@ fn defaults_match_constants() {
     let r = RoutingTuning::default();
     assert_eq!(r.inline_byte_limit, 16 * 1024 * 1024);
     assert_eq!(r.flush_byte_threshold, 64 * 1024 * 1024);
+    assert_eq!(r.http_max_body_bytes, 64 * 1024 * 1024);
 }
 
 #[test]
@@ -59,4 +60,21 @@ fn validate_rejects_nonpositive_flush_threshold() {
     let r: RoutingTuning = serde_json::from_str(r#"{"flush_byte_threshold": 0}"#).unwrap();
     let err = r.validate().unwrap_err();
     assert!(format!("{err}").contains("LOOM_FLUSH_BYTE_THRESHOLD"));
+}
+
+#[test]
+fn http_body_cap_env_overlay() {
+    let mut r = RoutingTuning::default();
+    r.overlay_env(&map(&[("LOOM_HTTP_MAX_BODY_BYTES", "134217728")]))
+        .unwrap();
+    assert_eq!(r.http_max_body_bytes, 128 * 1024 * 1024);
+}
+
+#[test]
+fn validate_rejects_body_cap_at_or_below_inline_limit() {
+    let r: RoutingTuning =
+        serde_json::from_str(r#"{"inline_byte_limit": 1024, "http_max_body_bytes": 1024}"#)
+            .unwrap();
+    let err = r.validate().unwrap_err();
+    assert!(format!("{err}").contains("LOOM_HTTP_MAX_BODY_BYTES"));
 }

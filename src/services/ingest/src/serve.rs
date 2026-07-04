@@ -45,6 +45,11 @@ pub async fn serve(
         .merge(service_runtime::service_account_routes(
             auth, sa_cp, max_ttl,
         ));
+    // Raise axum's stock 2 MB body cap: Arrow IPC bodies must be able to
+    // exceed inline_byte_limit or the Parquet branch is unreachable (#370).
+    let app = app.layer(axum::extract::DefaultBodyLimit::max(
+        app_cfg.routing.http_max_body_bytes,
+    ));
     let app = service_runtime::with_openapi(app, crate::build_openapi());
     service_runtime::serve_with_shutdown(listener, app, shutdown).await?;
     Ok(())
