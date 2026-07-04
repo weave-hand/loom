@@ -759,6 +759,74 @@ async fn define_transform_rejects_reserved_name() {
 }
 
 #[tokio::test]
+async fn define_data_triggered_transform_is_accepted() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    let body = serde_json::json!({
+        "name": "dt",
+        "body": {"kind": "physical",
+                 "inputs": [{"schema": "main", "name": "src"}],
+                 "output": {"schema": "main", "name": "dst"},
+                 "sql": "select 1"},
+        "on_input_commit": true
+    });
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, &body.to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(app(cp), req_empty("GET", "/admin/transforms/dt", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["on_input_commit"], serde_json::json!(true));
+}
+
+#[tokio::test]
+async fn define_trigger_cycle_is_rejected_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    let dt_a = serde_json::json!({
+        "name": "dt-a",
+        "body": {"kind": "physical",
+                 "inputs": [{"schema": "main", "name": "src"}],
+                 "output": {"schema": "main", "name": "dst"},
+                 "sql": "select 1"},
+        "on_input_commit": true
+    });
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, &dt_a.to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let dt_b = serde_json::json!({
+        "name": "dt-b",
+        "body": {"kind": "physical",
+                 "inputs": [{"schema": "main", "name": "dst"}],
+                 "output": {"schema": "main", "name": "src"},
+                 "sql": "select 1"},
+        "on_input_commit": true
+    });
+    // NOTE: `define_transform_route`'s error arm is a bare
+    // `status_for(&e).into_response()` — service_runtime admin routes don't
+    // yet surface `ControlPlaneError`'s Display text in the body (tracked as
+    // the deliberately-deferred `fut-service-runtime-error-idiom`, unrelated
+    // to this slice). So only the status is asserted here; the underlying
+    // `ControlPlaneError::Validation` message itself does say "data-trigger
+    // cycle among transforms: ..." (see `validate_no_trigger_cycle`), just
+    // not wired through to this HTTP response yet.
+    let (status, _body) = send(
+        app(cp),
+        req_json("POST", "/admin/transforms", &token, &dt_b.to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn non_admin_bearer_is_403_on_transforms_route() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let alice = seed_session(&cp, "alice").await; // not the admin

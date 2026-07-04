@@ -848,8 +848,9 @@ async fn submit_new_run(
     responses(
         (status = 201, description = "Transform defined"),
         (status = 400, description = "Body does not decode as a TransformDef, or validation \
-            failed (e.g. an invalid cron `schedule` expression, on_input_commit not yet \
-            supported, or a typed body referencing unknown ontology types)"),
+            failed (e.g. an invalid cron `schedule` expression, an `on_input_commit` def that \
+            would close a data-trigger cycle, or a typed body referencing unknown ontology \
+            types)"),
     ),
     security(("bearer_auth" = [])),
     tag = "admin",
