@@ -424,6 +424,9 @@ async fn get_object(
     params(
         ("from_type" = String, Path, description = "Source object type"),
         ("link_name" = String, Path, description = "Link to traverse"),
+        ("_direction" = Option<String>, Query, description = "Hop direction: `forward` (default) or `inverse`"),
+        ("_shape" = Option<String>, Query, description = "Response shape: `objects` (default) or `association` (id pairs)"),
+        ("_ids" = Option<String>, Query, description = "Comma-separated source identity set to restrict the traversal"),
     ),
     responses(
         (status = 200, description = "Linked objects or associations", body = ObjectsResponse),
@@ -479,7 +482,12 @@ async fn get_linked(
 /// Governed by ACL.
 #[utoipa::path(
     get, path = "/objects/{from_type}/links",
-    params(("from_type" = String, Path, description = "Source object type")),
+    params(
+        ("from_type" = String, Path, description = "Source object type"),
+        ("_path" = String, Query, description = "Comma-separated ordered link chain, e.g. `l1,l2`; a `~`-prefixed hop is inverse"),
+        ("_shape" = Option<String>, Query, description = "Response shape: `objects` (default) or `association` (id pairs)"),
+        ("_ids" = Option<String>, Query, description = "Comma-separated source identity set to restrict the traversal"),
+    ),
     responses(
         (status = 200, description = "Chain-traversed objects or associations", body = ObjectsResponse),
         (status = 400, description = "Bad path/shape/filter"),

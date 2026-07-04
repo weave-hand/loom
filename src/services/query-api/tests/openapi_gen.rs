@@ -279,6 +279,27 @@ fn generates_per_type_operations() {
 }
 
 #[test]
+fn link_op_documents_direction_shape_ids_and_filters() {
+    let (paths, _schemas) = ontology_openapi(&[customer(), order()], &[orders_link()], &[]);
+    let op = op_json(&paths, "/objects/Customer/links/orders", "get");
+    let params = op["parameters"].as_array().expect("parameters array");
+    let names: std::collections::BTreeSet<&str> =
+        params.iter().filter_map(|p| p["name"].as_str()).collect();
+    // Reserved traversal knobs.
+    for reserved in ["_direction", "_shape", "_ids"] {
+        assert!(names.contains(reserved), "missing {reserved}: {names:?}");
+    }
+    // Source filters use the bare property name; target filters use `<link>.<prop>`.
+    assert!(names.contains("email"), "source filter (bare): {names:?}");
+    assert!(
+        names.contains("orders.id"),
+        "target filter (prefixed): {names:?}"
+    );
+    // Every documented param is a query param.
+    assert!(params.iter().all(|p| p["in"] == "query"));
+}
+
+#[test]
 fn link_response_targets_the_to_type() {
     let (paths, _schemas) = ontology_openapi(&[customer(), order()], &[orders_link()], &[]);
     let json = serde_json::to_value(&paths).unwrap();
