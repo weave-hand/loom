@@ -20,6 +20,7 @@ mod queue;
 pub mod snapshot;
 mod transaction;
 mod transform_job;
+mod transforms;
 mod vector_index;
 mod vector_index_job;
 
@@ -68,6 +69,10 @@ pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use transaction::{ControlPlane, TableControlPlane, TableTx, Tx};
 pub use transform_job::{
     OutputMode, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND, TransformJob, TypedTransformJob,
+};
+pub use transforms::{
+    RunOutcome, RunState, RunTrigger, TransformBody, TransformDef, TransformName, TransformRun,
+    Transforms, validate_transform_def,
 };
 pub use vector_index::{
     FlatIndex, HnswIndex, IndexKind, IndexSpec, IvfFlatIndex, Metric, VectorIndex, VectorKey,
