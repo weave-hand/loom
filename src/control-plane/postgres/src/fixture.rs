@@ -939,21 +939,46 @@ impl MinioFixture {
             self.access_key()
         );
 
-        let resp = reqwest::Client::new()
-            .put(format!("{}/{bucket}", self.endpoint))
-            .header("Host", &host)
-            .header("x-amz-content-sha256", &payload_hash)
-            .header("x-amz-date", &amz_date)
-            .header("Authorization", authorization)
-            .send()
-            .await
-            .expect("PUT bucket");
-        // 200 = created; MinIO returns 409 BucketAlreadyOwnedByYou on re-create.
-        assert!(
-            resp.status().is_success() || resp.status().as_u16() == 409,
-            "create_bucket failed: {}",
-            resp.status()
-        );
+        // MinIO opens its listening socket before its object-storage backend is
+        // ready to serve, and answers requests during that window with 503 Service
+        // Unavailable. Under CI load that window outlasts the fixture's coarse TCP
+        // readiness gate (`wait_ready`), which is what made this the flaky path:
+        // the first PUT raced the backend and 503'd. So poll the *real* operation —
+        // retry the PUT through any 503/transient error until the backend is up
+        // (~15s budget), failing only on a genuine error status. SigV4 is signed
+        // once above; its 15-min validity window comfortably covers the retries.
+        let client = reqwest::Client::new();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let resp = client
+                .put(format!("{}/{bucket}", self.endpoint))
+                .header("Host", &host)
+                .header("x-amz-content-sha256", &payload_hash)
+                .header("x-amz-date", &amz_date)
+                .header("Authorization", &authorization)
+                .send()
+                .await;
+            match resp {
+                // 200 = created; MinIO returns 409 BucketAlreadyOwnedByYou on re-create.
+                Ok(r) if r.status().is_success() || r.status().as_u16() == 409 => return,
+                // Still initializing (5xx, typically 503) — retry until the deadline.
+                Ok(r) if r.status().is_server_error() => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "create_bucket failed: {} (minio not ready after ~15s)",
+                        r.status()
+                    );
+                }
+                // A non-5xx, non-2xx/409 status is a genuine error — fail fast.
+                Ok(r) => panic!("create_bucket failed: {}", r.status()),
+                // Transient connection error during startup — retry until the deadline.
+                Err(e) => assert!(
+                    Instant::now() < deadline,
+                    "create_bucket request error after ~15s: {e}"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }
 
