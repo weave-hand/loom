@@ -63,6 +63,15 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   `#road-action-multi-object` (#343) executes an action's `steps` as a **linear, single-pass** sequence resolved in declared order. The out-of-scope richer shapes remain deferred: **DAG** step dependencies (a step consuming two prior binds), **conditional** steps (execute-if-predicate), **fan-out** (one step producing N rows that each seed N child sub-steps — beyond the current same-table row coalescing), per-step **loops**, and **cross-action composition** (one action invoking another) / **distributed / cross-database** transactions. All keep the "declarative, no arbitrary code" north star. Deferred until a concrete workflow needs more than a linear script; the current `StepRef` binding environment + one-`IcebergTx` commit are the substrate a DAG scheduler would build on.
 - [ ] **Cross-step references inside expressions (`@bind.prop` in arithmetic)** `{#fut-action-cross-step-expr-refs area:ontology status:deferred from:2026-07-01-action-multi-object-design pr:- spec:-}`
   `#road-action-multi-object` (#343) lands cross-step references as a first-class `AssignmentSource::StepRef { bind, prop }` — a *whole-value* reference to an earlier step's resolved property (`orderId = @order.id`), which satisfies the slice's tests and the spec's sanctioned "prior-step identity/property values only" fallback. Referencing a prior step's value **inside** a slice-2 computed expression (e.g. `total = @order.subtotal * 1.1`) is deferred: it needs the `query-api/src/expr/` lexer+parser+typecheck+eval to grow a qualified `@bind.prop` reference form and read it from the step-binding environment, rather than the standalone `StepRef` source. Deferred as it never arose in the slice's use cases; the step-binding env already threaded through invocation is the hook.
+- [ ] **Stream engine — merge engines** `{#fut-stream-merge-engines area:ontology status:deferred from:2026-07-06-stream-engine-design pr:- spec:-}`
+  FirstRow / Versioned / Aggregation merge engines + partial-update, beyond slice-2's LastRow default.
+
+## ingest
+
+- [ ] **Stream engine — Arrow log on object storage** `{#fut-stream-arrow-log area:ingest status:deferred from:2026-07-06-stream-engine-design pr:- spec:-}`
+  Re-back the offset-ordered live tier with sealed Arrow segments on object storage (design Approach B) if Postgres becomes the hot-log throughput bottleneck; the `BucketOffsets`/changelog logical model is unchanged.
+- [ ] **Stream engine — partitioning above buckets** `{#fut-stream-partitioning area:ingest status:deferred from:2026-07-06-stream-engine-design pr:- spec:-}`
+  Fluss-style two-level partition → bucket sharding above the single-level bucketing the slices ship.
 
 ## query
 
@@ -138,6 +147,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Time-travel reads (`?as_of`/`?as_of_snapshot` on `GET /objects/{type}` and `GET /datasets/{schema}/{table}`) resolve to a concrete snapshot id with no check against the GC retention horizon. A selector resolving to a snapshot whose data files have already been reclaimed by GC (aged past the horizon `H`) currently under-reads — a partial or empty result — rather than erroring. Add a horizon check so such a selector returns a clear 410/404 instead. Relates to [[fut-iceberg-time-travel-schema]].
 - [ ] **Validate `?as_of_snapshot` against snapshot history on the object-read path** `{#fut-timetravel-snapshot-id-validation area:query status:deferred from:2026-07-06-timetravel-reads-design pr:- spec:2026-07-06-timetravel-reads-design}`
   `GET /objects/{type}` gates `as_of_snapshot` via the mirror's liveness predicate (`begin <= id AND (end IS NULL OR end > id)`), which is open-ended upward — an id **above** the table's current snapshot reads live data instead of 404ing. This is inconsistent with `GET /datasets/{schema}/{table}`, which validates via exact `snapshots().find(id)` history lookup and 404s any non-existent id. Unify by validating the object-read selector against actual snapshot history.
+- [ ] **Stream engine — primary-key index** `{#fut-stream-pk-index area:query status:deferred from:2026-07-06-stream-engine-design pr:- spec:-}`
+  A primary-key index spanning the inline + Iceberg tiers for high-QPS point lookups (backs the slice-5 lookup-join).
 
 ## acl
 
@@ -178,6 +189,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Watermark/incremental output, optional Ballista escalation, a wider output type set (canonical scalars only today), and streaming (non-materializing) input scans / scan pushdown for the wire path — transform inputs are collected in worker memory over Flight (bytes hop engine -> worker -> object store), accepted for the migration slice. Define-time DAG validation for data-triggered transforms landed (`#road-transform-data-triggers`, PR #373). See [[fut-datafusion-type-coverage]].
 - [ ] **Wider DataFusion/DuckLake type coverage** `{#fut-datafusion-type-coverage area:transform status:deferred from:cross-cutting pr:- spec:-}`
   `datafusion-io` supports only a canonical scalar set; other Arrow types (timestamps, dates, decimals, unsigned/8/16-bit ints) error `InferError::Unsupported` and the job Abandons. Extend as pipelines need it.
+- [ ] **Stream engine — incremental stream-stream join** `{#fut-stream-incremental-join area:transform status:deferred from:2026-07-06-stream-engine-design pr:- spec:-}`
+  True stateful incremental stream-stream joins, beyond slice-5's micro-batch approximation.
 - [ ] **Scheduled maintenance jobs** `{#fut-scheduled-jobs area:transform status:deferred from:to-be-planned pr:- spec:-}`
   Cron-like scheduling for **non-transform** job kinds (GC, compaction). Scheduled *transforms* landed (`#road-transform-schedules`, PR #367) — this item is the residual: a generic schedule surface for maintenance kinds (GC, compaction), presumably reusing the croner/`next_run_at`/atomic-claim mechanism.
 
