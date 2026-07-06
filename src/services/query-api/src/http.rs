@@ -423,8 +423,10 @@ async fn get_object(
     // knobs out of the params; the rest are filters. Repeated filter keys are preserved (a
     // column may carry several predicates, e.g. a range); the handler parses each value's
     // operator and coerces it. Presence of `limit` OR `cursor` selects the paginated read path.
-    let (reserved, filters) =
-        crate::query_params::split_reserved(params, &["_ids", "_or", "limit", "cursor"]);
+    let (reserved, filters) = crate::query_params::split_reserved(
+        params,
+        &["_ids", "_or", "limit", "cursor", "as_of", "as_of_snapshot"],
+    );
     let ids = match crate::query_params::parse_ids(reserved.last("_ids")) {
         Ok(ids) => ids,
         Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
@@ -432,6 +434,10 @@ async fn get_object(
     let or_raw: Vec<String> = reserved.all("_or").to_vec();
     let raw_limit = reserved.last("limit").map(String::from);
     let raw_cursor = reserved.last("cursor").map(String::from);
+    let as_of = match parse_as_of(reserved.last("as_of"), reserved.last("as_of_snapshot")) {
+        Ok(sel) => sel,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
     let deps = st.deps();
     let paginated = raw_limit.is_some() || raw_cursor.is_some();
     if paginated {
@@ -452,6 +458,7 @@ async fn get_object(
                 filters,
                 ids,
                 or_raw,
+                as_of,
             },
             &subject,
             &deps,
@@ -472,6 +479,7 @@ async fn get_object(
             filters,
             ids,
             or_raw,
+            as_of,
         },
         &subject,
         &deps,
@@ -480,6 +488,27 @@ async fn get_object(
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => query_error_response(e, "object read serving fault"),
+    }
+}
+
+/// Parse the mutually-exclusive `?as_of=` (RFC3339) / `?as_of_snapshot=` (i64) selectors.
+/// Both present, a non-integer id, or an unparseable timestamp -> `Err(message)` (400).
+fn parse_as_of(
+    as_of: Option<&str>,
+    as_of_snapshot: Option<&str>,
+) -> Result<Option<crate::handler::AsOfSelector>, String> {
+    match (as_of, as_of_snapshot) {
+        (Some(_), Some(_)) => Err("as_of and as_of_snapshot are mutually exclusive".into()),
+        (None, None) => Ok(None),
+        (None, Some(id)) => id
+            .parse::<i64>()
+            .map(|n| Some(crate::handler::AsOfSelector::Snapshot(n)))
+            .map_err(|e| format!("as_of_snapshot must be an integer snapshot id: {e}")),
+        (Some(ts), None) => {
+            time::OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339)
+                .map(|t| Some(crate::handler::AsOfSelector::Time(t)))
+                .map_err(|e| format!("as_of must be an RFC3339 timestamp: {e}"))
+        }
     }
 }
 
@@ -682,6 +711,7 @@ pub fn query_error_response(e: QueryError, context: &'static str) -> axum::respo
         QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
         QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::BadPagination(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::AsOfNotFound(m) => (StatusCode::NOT_FOUND, m).into_response(),
         QueryError::Serving(crate::serving::ServingError::NoIndex(m)) => {
             (StatusCode::NOT_FOUND, m).into_response()
         }

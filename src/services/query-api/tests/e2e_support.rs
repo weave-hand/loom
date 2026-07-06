@@ -39,7 +39,6 @@ use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::vector_index::build_vector_index;
-use engine_serving::execute_query;
 use http_body_util::BodyExt;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::http::{AppState, router};
@@ -140,20 +139,26 @@ impl query_api::serving::ServingEngine for InProcessServingEngine {
         &self,
         sql: &str,
         params: &[SqlValue],
-        _at: Option<control_plane_core::SnapshotId>,
+        at: Option<control_plane_core::SnapshotId>,
     ) -> Result<query_api::serving::Rows, ServingError> {
         let inlined = inline_params(sql, params);
-        let batches = execute_query(&self.catalog, &inlined, None)
+        // Honor `at`: use the streaming entry point directly (it threads `at` through to
+        // `register_iceberg_table`) and collect, rather than the unary `execute_query`
+        // helper (which hardcodes `at: None`) — this in-process double must serve the
+        // same as-of semantics as the real engine wire client (`EngineServingClient`).
+        let map_err = |e| match e {
+            // Full Display, not the inner DataFusionError: the wire path's message
+            // is the engine's `query planning failed: {df}` (serving_status uses
+            // e.to_string()), and the in-process twin must match it byte-for-byte.
+            e @ engine_serving::EngineServingError::Plan(_) => ServingError::Plan(e.to_string()),
+            other => ServingError::Engine(other.to_string()),
+        };
+        let stream = engine_serving::execute_query_stream(&self.catalog, &inlined, None, at)
             .await
-            .map_err(|e| match e {
-                // Full Display, not the inner DataFusionError: the wire path's message
-                // is the engine's `query planning failed: {df}` (serving_status uses
-                // e.to_string()), and the in-process twin must match it byte-for-byte.
-                e @ engine_serving::EngineServingError::Plan(_) => {
-                    ServingError::Plan(e.to_string())
-                }
-                other => ServingError::Engine(other.to_string()),
-            })?;
+            .map_err(map_err)?;
+        let batches = datafusion::physical_plan::common::collect(stream)
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))?;
         Ok(batches_to_rows(batches))
     }
 
@@ -904,6 +909,7 @@ pub async fn read_widget(
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &qdeps,

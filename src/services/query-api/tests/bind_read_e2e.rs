@@ -114,6 +114,7 @@ async fn landed_then_bound_dataset_is_queryable() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj),
         &deps,

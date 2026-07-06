@@ -72,6 +72,7 @@ async fn read_labels(
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj),
         &qdeps,

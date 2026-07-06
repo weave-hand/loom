@@ -93,6 +93,18 @@ pub struct ObjectQuery {
     /// `column:value` member predicates). Each entry becomes one parenthesized disjunction
     /// ANDed into the WHERE. Empty = no OR-groups. Parsed in `compile_object_read`.
     pub or_raw: Vec<String>,
+    /// Optional time-travel selector; `None` = read the live snapshot.
+    pub as_of: Option<AsOfSelector>,
+}
+
+/// A parsed-but-unresolved time-travel selector from `?as_of_snapshot=` / `?as_of=`.
+/// Resolved to a concrete `SnapshotId` (against the target table) inside the read path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AsOfSelector {
+    /// An exact mirror snapshot id (`?as_of_snapshot=`).
+    Snapshot(i64),
+    /// A wall-clock instant (`?as_of=`, RFC3339) -> the latest snapshot at/before it.
+    Time(time::OffsetDateTime),
 }
 
 /// Borrowed dependencies for one read.
@@ -163,6 +175,12 @@ pub enum QueryError {
     Serving(#[from] crate::serving::ServingError),
     #[error(transparent)]
     Malformed(#[from] crate::sql::CompileError),
+    /// A time-travel selector (`?as_of`/`?as_of_snapshot`) resolved to no live snapshot:
+    /// an id the table is not (or not yet) live at, or a timestamp before the table's
+    /// first snapshot. Distinct from `ControlPlane(NotFound)` (which renders 500) so this
+    /// caller-forgeable case renders 404.
+    #[error("no snapshot at or before the requested point: {0}")]
+    AsOfNotFound(String),
 }
 
 impl QueryError {
@@ -378,12 +396,64 @@ pub async fn compile_object_read_with(
     })
 }
 
+/// Resolve a time-travel selector to a concrete snapshot id for `table`, or `None`
+/// when no selector was given (live read). A selector that resolves to no live
+/// snapshot — an as-of snapshot id the table is not live at, or a timestamp before
+/// the table's first snapshot — is `AsOfNotFound` (renders 404); a genuine backend
+/// fault from the catalog stays `ControlPlane` (renders 500).
+async fn resolve_read_snapshot(
+    deps: &QueryDeps<'_>,
+    table: &control_plane_core::TableRef,
+    sel: Option<&AsOfSelector>,
+) -> Result<Option<control_plane_core::SnapshotId>, QueryError> {
+    use control_plane_core::ControlPlaneError;
+    let Some(sel) = sel else { return Ok(None) };
+    let id = match sel {
+        AsOfSelector::Snapshot(id) => {
+            let sid = control_plane_core::SnapshotId(*id);
+            // Liveness gate: `schema` NotFounds if the table is not live at `sid`.
+            match deps.catalog.schema(table, sid).await {
+                Ok(_) => sid,
+                Err(ControlPlaneError::NotFound(_)) => {
+                    return Err(QueryError::AsOfNotFound(format!(
+                        "{}.{} not live at snapshot {}",
+                        table.schema, table.name, id
+                    )));
+                }
+                Err(e) => return Err(QueryError::ControlPlane(e)), // real backend fault -> 500
+            }
+        }
+        AsOfSelector::Time(ts) => match deps.catalog.snapshot_as_of(table, *ts).await {
+            Ok(Some(s)) => s.id,
+            Ok(None) => {
+                return Err(QueryError::AsOfNotFound(format!(
+                    "{}.{} has no snapshot at or before {ts}",
+                    table.schema, table.name
+                )));
+            }
+            Err(e) => return Err(QueryError::ControlPlane(e)), // real backend fault -> 500
+        },
+    };
+    Ok(Some(id))
+}
+
 pub async fn read_object(
     q: &ObjectQuery,
     subject: &Subject,
     deps: &QueryDeps<'_>,
 ) -> Result<ObjectRows, QueryError> {
-    let g = compile_object_read(
+    let type_name = TypeName(q.type_name.clone());
+    let g = resolve_governed(
+        deps.ontology,
+        deps.acl,
+        &subject.0,
+        &type_name,
+        OnMissing::NotFound,
+    )
+    .await?;
+    let at = resolve_read_snapshot(deps, &g.otype.table, q.as_of.as_ref()).await?;
+    let gr = compile_object_read_with(
+        &g,
         q,
         subject,
         deps.ontology,
@@ -394,8 +464,8 @@ pub async fn read_object(
         None,
     )
     .await?;
-    let served = deps.serving.fetch_rows(&g.sql, &g.params, None).await?;
-    Ok(g.into_object_rows(served))
+    let served = deps.serving.fetch_rows(&gr.sql, &gr.params, at).await?;
+    Ok(gr.into_object_rows(served))
 }
 
 /// Cap on the caller-requested page size (`?limit=`), independent of `deps.default_limit`
@@ -440,6 +510,7 @@ pub async fn read_object_page(
         OnMissing::NotFound,
     )
     .await?;
+    let at = resolve_read_snapshot(deps, &g.otype.table, q.as_of.as_ref()).await?;
 
     let identity =
         g.otype.identity.clone().ok_or_else(|| {
@@ -508,7 +579,7 @@ pub async fn read_object_page(
         extra_predicate,
     )
     .await?;
-    let served = deps.serving.fetch_rows(&gr.sql, &gr.params, None).await?;
+    let served = deps.serving.fetch_rows(&gr.sql, &gr.params, at).await?;
     debug_assert_eq!(
         served.columns, gr.columns,
         "serving engine returned columns out of the projected order"

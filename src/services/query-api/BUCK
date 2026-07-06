@@ -262,6 +262,7 @@ rust_library(
         "//third-party:arrow-schema",
         "//third-party:async-trait",
         "//third-party:axum",
+        "//third-party:datafusion",
         "//third-party:http-body-util",
         "//third-party:iceberg",
         "//third-party:serde_json",
@@ -1852,6 +1853,24 @@ loom_fixture_test(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "as_of_objects_e2e",
+    crate = "as_of_objects_e2e",
+    srcs = ["tests/as_of_objects_e2e.rs"],
+    crate_root = "tests/as_of_objects_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
     ],
 )
 

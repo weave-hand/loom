@@ -191,6 +191,7 @@ async fn paginated_read_resolves_governance_exactly_once() {
         filters: vec![],
         ids: vec![],
         or_raw: vec![],
+        as_of: None,
     };
     let (rows, next) = read_object_page(&q, &Subject(analyst), &deps, 2, None)
         .await
