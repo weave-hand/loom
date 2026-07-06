@@ -8,7 +8,10 @@ use loom_ui_components::{
     Badge, Button, Column, DataTable, GlobalStyles, Input, InputKind, LineageDagView, NavItem,
     Panel, Shell, SqlEditor, StatusDot, StubView, TabItem, TableRow, Tabs, TopNav,
 };
-use loom_ui_core::{Align, BadgeTone, ButtonVariant, Status, Surface, format_count, lineage_dag};
+use loom_ui_core::{
+    Align, BadgeTone, ButtonVariant, CompletionColumn, CompletionSchema, CompletionTable, Status,
+    Surface, format_count, lineage_dag,
+};
 use yew::prelude::*;
 
 #[derive(Clone, PartialEq)]
@@ -59,6 +62,39 @@ fn gallery() -> Html {
     let on_sql = {
         let sql = sql.clone();
         Callback::from(move |v: String| sql.set(AttrValue::from(v)))
+    };
+    // Sample schema feeding the SqlEditor's completion provider.
+    let sample_schema = CompletionSchema {
+        tables: vec![
+            CompletionTable {
+                schema: None,
+                name: "customers".into(),
+                columns: vec![
+                    CompletionColumn {
+                        name: "id".into(),
+                        ty: "int64".into(),
+                    },
+                    CompletionColumn {
+                        name: "name".into(),
+                        ty: "utf8".into(),
+                    },
+                ],
+            },
+            CompletionTable {
+                schema: None,
+                name: "orders".into(),
+                columns: vec![
+                    CompletionColumn {
+                        name: "id".into(),
+                        ty: "int64".into(),
+                    },
+                    CompletionColumn {
+                        name: "total".into(),
+                        ty: "float64".into(),
+                    },
+                ],
+            },
+        ],
     };
     let nav = vec![
         NavItem {
@@ -174,7 +210,7 @@ fn gallery() -> Html {
                 <section>
                     <h2>{ "SQL editor" }</h2>
                     <Panel title="SqlEditor">
-                        <SqlEditor value={(*sql).clone()} on_change={on_sql} />
+                        <SqlEditor value={(*sql).clone()} on_change={on_sql} schema={sample_schema} />
                         <p>{ format!("buffer: {}", *sql) }</p>
                     </Panel>
                 </section>

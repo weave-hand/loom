@@ -28,11 +28,14 @@
 //     snippets — wasm-bindgen `--target web --out-dir $OUT` emits `$OUT/snippets/`,
 //     which the genrule's `out=dist` already captures. No CDN, no extra copy.
 
-use loom_ui_core::CompletionSchema;
+use loom_ui_core::{CompletionSchema, SuggestionKind, cursor_context, sql_completions};
 use monaco::api::{CodeEditor, CodeEditorOptions, DisposableClosure, TextModel};
-use monaco::sys::editor::{BuiltinTheme, IEditorOptions, IModelContentChangedEvent};
+use monaco::sys::editor::{BuiltinTheme, IEditorOptions, IModelContentChangedEvent, ITextModel};
+use monaco::sys::languages::CompletionItemProvider;
+use monaco::sys::{IDisposable, Position};
 use stylist::yew::styled_component;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::HtmlElement;
 use yew::prelude::*;
 
@@ -68,6 +71,15 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
     // explicitly on unmount — `CodeEditor::Drop` only disposes the editor widget,
     // not a model supplied this way, and `TextModel` itself has no `Drop`.
     let model_ref = use_mut_ref(|| None::<TextModel>);
+    // Hold the completion provider's closure AND its registration for the
+    // editor's life: dropping the `Closure` invalidates the JS callback, and
+    // dropping/disposing the `IDisposable` unregisters the provider.
+    let completion = use_mut_ref(|| {
+        None::<(
+            Closure<dyn FnMut(ITextModel, Position) -> JsValue>,
+            IDisposable,
+        )>
+    });
 
     // Mount: create the editor, seed the model from the initial `value`, and
     // subscribe to content changes. Schema/read_only are captured by value so
@@ -78,9 +90,11 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
         let editor = editor.clone();
         let subscription = subscription.clone();
         let model_ref = model_ref.clone();
+        let completion = completion.clone();
         let on_change = props.on_change.clone();
         let initial = props.value.to_string();
         let read_only = props.read_only;
+        let schema = props.schema.clone();
         use_effect_with(node.clone(), move |node| {
             let el: HtmlElement = node.cast().expect("sql-editor node is an HtmlElement");
             let model =
@@ -107,11 +121,100 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
             *editor.borrow_mut() = Some(ed);
             *model_ref.borrow_mut() = Some(model);
 
+            // Schema-fed completion: register one `sql` CompletionItemProvider,
+            // driven by the pure engine over this editor's captured `schema`.
+            // KNOWN LIMITATION (v1): the provider is registered per mounted
+            // editor capturing that editor's schema, so two concurrently-mounted
+            // `SqlEditor`s would register two 'sql' providers. Acceptable — the
+            // isolation scope has exactly one editor; multi-editor de-duplication
+            // is a follow-up.
+            let provider: CompletionItemProvider = js_sys::Object::new().unchecked_into();
+            let cb = Closure::wrap(Box::new(
+                move |model: ITextModel, position: Position| -> JsValue {
+                    let text = model.get_value(None, None);
+                    let offset = model.get_offset_at(position.unchecked_ref()) as usize;
+                    let (prefix, qualifier) = cursor_context(&text, offset);
+                    let items = sql_completions(&schema, &prefix, qualifier.as_deref());
+
+                    // Every suggestion MUST carry an IRange (modern Monaco drops
+                    // range-less items). Build it once from the word under the
+                    // cursor; all items on this line share the same replace range.
+                    let word = model.get_word_until_position(position.unchecked_ref());
+                    let line = position.line_number();
+                    let start_column = word.start_column();
+                    let end_column = word.end_column();
+
+                    let suggestions = js_sys::Array::new();
+                    for s in items {
+                        let kind = match s.kind {
+                            SuggestionKind::Keyword => 17.0, // CompletionItemKind.Keyword
+                            SuggestionKind::Table => 5.0,    // CompletionItemKind.Class
+                            SuggestionKind::Column => 3.0,   // CompletionItemKind.Field
+                        };
+
+                        let range = js_sys::Object::new();
+                        js_sys::Reflect::set(
+                            &range,
+                            &"startLineNumber".into(),
+                            &JsValue::from_f64(line),
+                        )
+                        .unwrap();
+                        js_sys::Reflect::set(
+                            &range,
+                            &"endLineNumber".into(),
+                            &JsValue::from_f64(line),
+                        )
+                        .unwrap();
+                        js_sys::Reflect::set(
+                            &range,
+                            &"startColumn".into(),
+                            &JsValue::from_f64(start_column),
+                        )
+                        .unwrap();
+                        js_sys::Reflect::set(
+                            &range,
+                            &"endColumn".into(),
+                            &JsValue::from_f64(end_column),
+                        )
+                        .unwrap();
+
+                        let item = js_sys::Object::new();
+                        js_sys::Reflect::set(&item, &"label".into(), &s.label.into()).unwrap();
+                        js_sys::Reflect::set(&item, &"kind".into(), &JsValue::from_f64(kind))
+                            .unwrap();
+                        js_sys::Reflect::set(&item, &"insertText".into(), &s.insert_text.into())
+                            .unwrap();
+                        if let Some(detail) = s.detail {
+                            js_sys::Reflect::set(&item, &"detail".into(), &detail.into()).unwrap();
+                        }
+                        js_sys::Reflect::set(&item, &"range".into(), &range).unwrap();
+                        suggestions.push(&item);
+                    }
+
+                    let list = js_sys::Object::new();
+                    js_sys::Reflect::set(&list, &"suggestions".into(), &suggestions).unwrap();
+                    list.into()
+                },
+            )
+                as Box<dyn FnMut(ITextModel, Position) -> JsValue>);
+            js_sys::Reflect::set(
+                &provider,
+                &"provideCompletionItems".into(),
+                cb.as_ref().unchecked_ref(),
+            )
+            .unwrap();
+            let reg = monaco::sys::languages::register_completion_item_provider("sql", &provider);
+            *completion.borrow_mut() = Some((cb, reg));
+
             move || {
                 subscription.borrow_mut().take(); // unsubscribe
                 editor.borrow_mut().take(); // dispose editor widget
                 if let Some(model) = model_ref.borrow_mut().take() {
                     model.as_ref().dispose(); // dispose the model (editor.dispose() does not)
+                }
+                if let Some((_cb, reg)) = completion.borrow_mut().take() {
+                    reg.dispose(); // unregister the completion provider
+                    // `_cb` (the Closure) drops here, invalidating the JS callback.
                 }
             }
         });
