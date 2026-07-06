@@ -211,7 +211,6 @@ fn gallery() -> Html {
                     <h2>{ "SQL editor" }</h2>
                     <Panel title="SqlEditor">
                         <SqlEditor value={(*sql).clone()} on_change={on_sql} schema={sample_schema} />
-                        <p>{ format!("buffer: {}", *sql) }</p>
                     </Panel>
                 </section>
                 <section>

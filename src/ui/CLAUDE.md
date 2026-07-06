@@ -50,6 +50,28 @@ clippy::restriction)]` because `html!`/`css!` expansion isn't lint-clean.
 - **Primitives:** `Button`, `Badge`, `StatusDot`, `Input` (Text/Password/Search),
   `Tabs`, `Panel`, generic `DataTable<R>` (callers `impl TableRow` for their row type),
   `TopNav`. Components are controlled/stateless; interactive state lives in the caller.
+- **`SqlEditor`** (`src/components/sql_editor.rs`) — a reusable Monaco-backed SQL
+  editor, built on the `monaco` crate (features `api`+`workers`, deliberately **not**
+  `yew-components`, which pins yew 0.23 against this app's yew 0.21). It's
+  controlled-with-guard (`value`/`on_change`, only force-writes the model when the
+  incoming prop actually differs from the live buffer) and takes a `schema` prop
+  (`CompletionSchema`) that feeds a registered Monaco `CompletionItemProvider` for
+  keyword/table/column completion. The pure completion engine (`sql_completions`,
+  `cursor_context`) lives in `loom_ui_core`, lint-clean and `rust_test`'d via
+  `//src/ui:sql-completions` and `//src/ui:cursor-context` — the DOM-free logic is
+  fully covered even though the Monaco-hosting component itself isn't. Editor chrome
+  uses a defined `loom-dark` Monaco theme (`monaco::sys::editor::define_theme`, an
+  `IStandaloneThemeData` inheriting `vs-dark` with `editor.background`/`editor.foreground`
+  overridden to the `--loom-bg`/`--loom-text` values) rather than the builtin `vs-dark`.
+  Monaco's JS ships **vendored inside the crate** via wasm-bindgen module snippets — the
+  `--target web` build emits `snippets/` into `dist/`, already captured by the `:bundle`/
+  `:gallery-bundle` genrules' `out=dist`; no CDN, no separate copy step. **Known
+  limitations:** props (`on_change`/`read_only`/`schema`) are captured at mount time by
+  the mount effect, so a caller changing them post-mount won't see it take effect; and the
+  completion provider is registered once per mounted editor instance, so two
+  concurrently-mounted `SqlEditor`s would double-register Monaco's `sql` provider (fine
+  for the current single-editor gallery/product surfaces; multi-editor de-duplication is
+  a follow-up).
 - **Gallery:** `buck2 build //src/ui:gallery-bundle` then `buck2 run //src/ui:gallery-serve`
   serves a dev-only "kitchen sink" (`:gallery` binary, `src/gallery.rs` + `gallery.html`)
   rendering every primitive with its variants. It has **no backend/config.js** and never

@@ -30,7 +30,9 @@
 
 use loom_ui_core::{CompletionSchema, SuggestionKind, cursor_context, sql_completions};
 use monaco::api::{CodeEditor, CodeEditorOptions, DisposableClosure, TextModel};
-use monaco::sys::editor::{BuiltinTheme, IEditorOptions, IModelContentChangedEvent, ITextModel};
+use monaco::sys::editor::{
+    BuiltinTheme, IEditorOptions, IModelContentChangedEvent, IStandaloneThemeData, ITextModel,
+};
 use monaco::sys::languages::CompletionItemProvider;
 use monaco::sys::{IDisposable, Position};
 use stylist::yew::styled_component;
@@ -97,11 +99,28 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
         let schema = props.schema.clone();
         use_effect_with(node.clone(), move |node| {
             let el: HtmlElement = node.cast().expect("sql-editor node is an HtmlElement");
+
+            // Define the `loom-dark` theme (mirrors the --loom-* palette tokens from
+            // global.rs). Monaco tolerates redefinition, so it's safe to call this on
+            // every mount rather than gate it behind a "define once" flag.
+            let theme_data: IStandaloneThemeData = js_sys::Object::new().unchecked_into();
+            theme_data.set_base(BuiltinTheme::VsDark);
+            theme_data.set_inherit(true);
+            theme_data.set_rules(&js_sys::Array::new());
+            let colors = js_sys::Object::new();
+            js_sys::Reflect::set(&colors, &"editor.background".into(), &"#0b0e14".into())
+                .expect("set editor.background");
+            js_sys::Reflect::set(&colors, &"editor.foreground".into(), &"#e6edf3".into())
+                .expect("set editor.foreground");
+            theme_data.set_colors(&colors);
+            monaco::sys::editor::define_theme("loom-dark", &theme_data)
+                .expect("define loom-dark theme");
+
             let model =
                 TextModel::create(&initial, Some("sql"), None).expect("create SQL text model");
             let opts = CodeEditorOptions::default()
                 .with_language("sql".to_owned())
-                .with_builtin_theme(BuiltinTheme::VsDark)
+                .with_theme("loom-dark".to_owned())
                 .with_automatic_layout(true)
                 .with_model(model.clone());
             let ed = CodeEditor::create(&el, Some(opts));
