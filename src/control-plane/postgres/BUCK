@@ -264,6 +264,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream",
+    crate = "stream",
+    srcs = ["tests/stream.rs"],
+    crate_root = "tests/stream.rs",
+    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "ontology",
     crate = "ontology",
     srcs = ["tests/ontology.rs"],
