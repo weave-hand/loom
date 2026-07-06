@@ -55,6 +55,11 @@ fn gallery() -> Html {
         let active_tab = active_tab.clone();
         Callback::from(move |id: AttrValue| active_tab.set(id))
     };
+    let sql = use_state(|| AttrValue::from("SELECT id, name\nFROM customers\nWHERE "));
+    let on_sql = {
+        let sql = sql.clone();
+        Callback::from(move |v: String| sql.set(AttrValue::from(v)))
+    };
     let nav = vec![
         NavItem {
             label: "Catalog".into(),
@@ -169,7 +174,8 @@ fn gallery() -> Html {
                 <section>
                     <h2>{ "SQL editor" }</h2>
                     <Panel title="SqlEditor">
-                        <SqlEditor />
+                        <SqlEditor value={(*sql).clone()} on_change={on_sql} />
+                        <p>{ format!("buffer: {}", *sql) }</p>
                     </Panel>
                 </section>
                 <section>
