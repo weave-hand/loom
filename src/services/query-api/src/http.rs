@@ -250,18 +250,22 @@ async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::r
     Json(serde_json::json!({ "datasets": datasets })).into_response()
 }
 
-/// Dataset detail: the table's current snapshot and column schema.
+/// Dataset detail: the table's snapshot (current, or the `?as_of`/`?as_of_snapshot`
+/// selected one) and its column schema.
 ///
-/// Composes the current snapshot (id + RFC3339 time) with the column schema at that snapshot.
+/// Composes the target snapshot (id + RFC3339 time) with the column schema at that snapshot.
 #[utoipa::path(
     get, path = "/datasets/{schema}/{table}",
     params(
         ("schema" = String, Path, description = "Iceberg schema"),
         ("table" = String, Path, description = "Table name"),
+        ("as_of" = Option<String>, Query, description = "Time-travel selector: RFC3339 timestamp -> the latest snapshot at/before it. Mutually exclusive with `as_of_snapshot`."),
+        ("as_of_snapshot" = Option<i64>, Query, description = "Time-travel selector: an exact mirror snapshot id. Mutually exclusive with `as_of`."),
     ),
     responses(
-        (status = 200, description = "Current snapshot + column schema", body = DatasetDetailResponse),
-        (status = 404, description = "Unknown table"),
+        (status = 200, description = "Target snapshot + column schema", body = DatasetDetailResponse),
+        (status = 400, description = "Malformed as_of/as_of_snapshot selector"),
+        (status = 404, description = "Unknown table, or selector resolves to no live/prior snapshot"),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = [])),
@@ -270,6 +274,7 @@ async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::r
 async fn get_dataset(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
+    Query(params): Query<Vec<(String, String)>>,
     _subject: Subject,
 ) -> axum::response::Response {
     let catalog = st.cp.catalog();
@@ -277,9 +282,14 @@ async fn get_dataset(
         schema,
         name: table,
     };
-    let snapshot = match catalog.current_snapshot(&table_ref).await {
+    let reserved = crate::query_params::split_reserved(params, &["as_of", "as_of_snapshot"]).0;
+    let sel = match parse_as_of(reserved.last("as_of"), reserved.last("as_of_snapshot")) {
         Ok(s) => s,
-        Err(e) => return cp_read_error("catalog current_snapshot fault", e),
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let snapshot = match resolve_dataset_snapshot(catalog, &table_ref, sel.as_ref()).await {
+        Ok(s) => s,
+        Err(e) => return cp_read_error("catalog snapshot resolution fault", e),
     };
     let table_schema = match catalog.schema(&table_ref, snapshot.id).await {
         Ok(s) => s,
@@ -301,6 +311,44 @@ async fn get_dataset(
         "columns": columns,
     }))
     .into_response()
+}
+
+/// Resolve dataset-detail's target snapshot: the selector's snapshot when given,
+/// else the current one. `NotFound` (bad id / pre-history timestamp / unknown table)
+/// propagates to the 404 mapping.
+async fn resolve_dataset_snapshot(
+    catalog: &(dyn control_plane_core::Catalog + Send + Sync),
+    table: &TableRef,
+    sel: Option<&crate::handler::AsOfSelector>,
+) -> Result<control_plane_core::Snapshot, ControlPlaneError> {
+    use crate::handler::AsOfSelector;
+    match sel {
+        None => catalog.current_snapshot(table).await,
+        Some(AsOfSelector::Snapshot(id)) => {
+            let sid = control_plane_core::SnapshotId(*id);
+            // Liveness + fetch: `snapshots` lists the table's live snapshots; pick `sid`.
+            catalog
+                .snapshots(table, PageReq::unbounded())
+                .await?
+                .items
+                .into_iter()
+                .find(|s| s.id == sid)
+                .ok_or_else(|| {
+                    ControlPlaneError::NotFound(format!(
+                        "{}.{} not live at snapshot {}",
+                        table.schema, table.name, id
+                    ))
+                })
+        }
+        Some(AsOfSelector::Time(ts)) => {
+            catalog.snapshot_as_of(table, *ts).await?.ok_or_else(|| {
+                ControlPlaneError::NotFound(format!(
+                    "{}.{} has no snapshot at or before {ts}",
+                    table.schema, table.name
+                ))
+            })
+        }
+    }
 }
 
 /// Sample rows from a dataset: `SELECT * FROM "schema"."table" LIMIT n` over the engine.
