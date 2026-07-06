@@ -136,3 +136,50 @@ pub fn sql_completions(
     }
     out
 }
+
+fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Extract `(prefix, qualifier)` at a byte `offset` into `text`.
+/// `prefix` is the identifier ending at the cursor; `qualifier` is the
+/// identifier immediately before a `.` that precedes the prefix, if present.
+/// ASCII-identifier oriented (SQL identifiers); `offset` is clamped to `text`.
+#[must_use]
+pub fn cursor_context(text: &str, offset: usize) -> (String, Option<String>) {
+    let offset = offset.min(text.len());
+    let bytes = text.as_bytes();
+
+    // Walk left over identifier chars to find the prefix start.
+    let mut start = offset;
+    while start > 0
+        && bytes
+            .get(start - 1)
+            .is_some_and(|&b| is_ident_char(b as char))
+    {
+        start -= 1;
+    }
+    let prefix = text.get(start..offset).unwrap_or_default().to_owned();
+
+    // If a '.' immediately precedes the prefix, read the qualifier before it.
+    let qualifier = if start > 0 && bytes.get(start - 1) == Some(&b'.') {
+        let mut qstart = start - 1;
+        while qstart > 0
+            && bytes
+                .get(qstart - 1)
+                .is_some_and(|&b| is_ident_char(b as char))
+        {
+            qstart -= 1;
+        }
+        let q = text.get(qstart..start - 1).unwrap_or_default();
+        if q.is_empty() {
+            None
+        } else {
+            Some(q.to_owned())
+        }
+    } else {
+        None
+    };
+
+    (prefix, qualifier)
+}

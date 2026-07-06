@@ -6,7 +6,7 @@ use std::fmt;
 mod completion;
 pub use completion::{
     CompletionColumn, CompletionSchema, CompletionTable, SQL_KEYWORDS, Suggestion, SuggestionKind,
-    sql_completions,
+    cursor_context, sql_completions,
 };
 
 /// Join a runtime API base with a request path. An empty base yields a relative

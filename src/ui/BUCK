@@ -90,6 +90,15 @@ rust_test(
     deps = [":ui-core"],
 )
 
+rust_test(
+    name = "cursor-context",
+    crate = "cursor_context",
+    srcs = ["tests/cursor_context.rs"],
+    crate_root = "tests/cursor_context.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
 rust_binary(
     name = "app",
     crate = "app",
