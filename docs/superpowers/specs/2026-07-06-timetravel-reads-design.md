@@ -86,40 +86,79 @@ async fn snapshot_as_of(&self, table: &TableRef, ts: OffsetDateTime)
 `Snapshot` already carries `id` and `time` (the mirror's `snapshot_time`
 column); no new type.
 
-### Wire
+### Wire — a dedicated as-of read plane
 
-Add one optional field to `GovernedStatementQuery`
-(`engine-wire/src/flight.rs`):
+The object read runs on the **plain** Flight SQL plane
+(`EngineServingClient::fetch_rows` → `FlightSqlClient::execute` → standard
+`CommandStatementQuery`/`TicketStatementQuery` → engine `do_get_sql` →
+`execute_query_stream`). That standard command struct is loom's future *external*
+SQL interop surface and carries only a query string — it must not be polluted
+with a loom-specific field. `GovernedStatementQuery` is a *different* plane, used
+only by `flight_export.rs`, not by the object read.
+
+So as-of rides a **new loom-native JSON ticket**, parallel to the existing
+`VectorSearchTicket`/`FlightTicket` (which bypass `CommandStatementQuery` and go
+single-hop straight to `do_get`):
 
 ```rust
-#[serde(default)]
-pub as_of_snapshot: Option<i64>,
+// engine-wire/src/flight.rs
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AsOfStatementQuery {
+    pub sql: String,
+    pub as_of_snapshot: i64,
+}
+// + a new EngineTicket::AsOfSql(AsOfStatementQuery) variant, decoded after the
+//   protobuf ticket and disjoint from the other JSON shapes by deny_unknown_fields.
 ```
 
-`#[serde(default)]` keeps it backward-compatible under the struct's existing
-`deny_unknown_fields`. `None` ⇒ live read (today's path, byte-identical). A
-single query-level selector is applied to the (single) table the object/dataset
-read registers — matching the read shape; multi-table selection is out of scope.
+The no-as-of hot path is **byte-identical** to today — the new ticket is used
+only when a selector is present.
 
 ### Engine
 
-`execute_governed_sql_stream(…, at: Option<SnapshotId>)`
-(`engine-serving/src/serving.rs`) threads `at` to `build_serving_provider`.
-When `Some`, it replaces `catalog.current_snapshot(table)` with `at` and feeds
-it to the existing `files_with_stats(table, at)` — the mirror provider already
-takes an arbitrary `SnapshotId`. When `None`, the current-snapshot branch is
-untouched. Schema is derived from the current schema (per scope). The Flight
-`do_get` governed-SQL handler (`engine/src/flight.rs`) decodes the new field and
-passes it through.
+- `build_serving_provider`, `register_iceberg_table`, and `execute_query_stream`
+  (`engine-serving/src/serving.rs`) each gain `at: Option<SnapshotId>`.
+  `execute_query_stream`'s existing caller (`do_get_sql`) passes `None`
+  (unchanged). In `build_serving_provider`, `None` ⇒ `current_snapshot(table).id`
+  (today's path); `Some(id)` ⇒ use `id` directly and thread it into the existing
+  `catalog.schema(table, id)` / `files_with_stats(table, id)` /
+  `build_inline_provider(…, id, …)`. Because `execute_query_stream` registers
+  **every** live table, a table not live at `at` (created after the requested
+  snapshot) must be **skipped** (`catalog.schema` returns `NotFound` ⇒ return
+  `Ok(None)` when `at.is_some()`), never error — a query referencing it then
+  surfaces as a plan-time unknown table (`400`).
+- `engine/src/flight.rs`: a new `do_get` dispatch arm for `EngineTicket::AsOfSql`
+  → `do_get_as_of_sql(q)` → `execute_query_stream(catalog, &q.sql,
+  Some(SnapshotId(q.as_of_snapshot)), store)`. `do_get_sql` is unchanged.
+- Schema is the mirror schema *at the resolved snapshot* (which today equals the
+  current schema — no schema evolution yet), consistent for files + inline.
 
-### query-api HTTP + client
+### query-api serving seam + client
 
-- `query_params.rs` / `params.rs`: parse `as_of` / `as_of_snapshot`, enforce
-  mutual exclusion, map parse/validation failures to `400`.
-- Object-read handler: resolve → set `as_of_snapshot` on the
-  `GovernedStatementQuery` the engine client sends.
-- Dataset-detail handler (`http.rs`): when a selector is present, resolve it and
-  report that snapshot (id + time) and its schema instead of `current_snapshot`.
+- `ServingEngine::fetch_rows(&self, sql, params, at: Option<SnapshotId>)`
+  (`serving.rs`): add the `at` param. Every existing call site passes `None`
+  except the object read. `EngineServingClient::fetch_rows` sends the new
+  `AsOfStatementQuery` ticket (single-hop `do_get`) when `at.is_some()`, else the
+  unchanged `FlightSqlClient::execute`.
+- `QueryDeps` (`handler.rs`) gains `catalog: &dyn Catalog` (from `st.cp.catalog()`
+  in `st.deps()`), so the read path can resolve/validate the selector once the
+  type's backing table is known.
+
+### query-api HTTP + resolution
+
+- `AsOfSelector` enum (`{ Snapshot(i64), Time(OffsetDateTime) }`): a *parsed but
+  unresolved* selector. `ObjectQuery` gains `as_of: Option<AsOfSelector>`.
+- `get_object` (`http.rs`): `as_of` / `as_of_snapshot` become reserved query
+  keys; parse to `AsOfSelector`; both-present ⇒ `400`; non-integer id or
+  unparseable RFC3339 ⇒ `400`.
+- Resolution (in the read path, where `g.otype.table` and `deps.catalog` are
+  available): `Time(ts)` → `catalog.snapshot_as_of(table, ts)` (`None` ⇒ `404`);
+  `Snapshot(id)` → validate liveness via `catalog.schema(table, id)` (`NotFound`
+  ⇒ `404`). The resolved `SnapshotId` flows into `fetch_rows(…, Some(id))`.
+- Dataset-detail (`get_dataset`, catalog-only — no engine): parse the same
+  selector, resolve it (same rules), and report that snapshot's id/time + its
+  schema instead of `current_snapshot`.
 - OpenAPI (`openapi.rs`): document both params on the two operations.
 
 ### Retention caveat
