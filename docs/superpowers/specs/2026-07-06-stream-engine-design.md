@@ -72,17 +72,20 @@ inline-rows-in-Postgres → **flush** → Iceberg-Parquet pipeline is *structura
 the same shape* as Fluss's live-log → tiered-lakehouse, and the flush point is
 loom's equivalent of the per-bucket switchover offset.
 
-The already-planned `road-cow-inline-shadow` (inline shadow table +
-`loom_tombstone` delete marker + identity-aware merge-on-read) is ~70% of a
-PK/CDC table: a materialized-current-state over a changelog with delete markers.
+The **shipped** `road-cow-inline-shadow` slice 1 (PR #331) — inline shadow rows
+in `iceberg_inline.rs`, a `loom_tombstone` delete marker, a per-identity
+compare-and-swap guard, and identity-aware merge-on-read — is already ~70% of a
+PK/CDC table: a materialized current-state over a delta log with delete markers.
 It simply does not yet expose an *offset-ordered change stream* or the full
-+I/−U/+U/−D event kinds.
++I/−U/+U/−D event kinds, and its **compaction-consolidation** step (folding the
+deltas into a fresh base) is still deferred (`fut-cow-inline-shadow` slice 2).
 
 Two consequences shape every choice below:
 
 1. **Most of the "port" is generalizing loom primitives, not building a Fluss
-   clone.** The inline tier, flush, merge-on-read, compaction, and the union read
-   already exist.
+   clone.** The inline tier, flush, merge-on-read, the per-identity CAS guard,
+   and the union read already exist; compaction-consolidation of the deltas is
+   the one still-deferred piece (`fut-cow-inline-shadow` slice 2).
 2. **loom collapses Fluss's two tiers.** loom's historical tier is already
    Iceberg-native, so there is no separate Paimon and no separate lakehouse
    tiering job — **flush *is* the tiering**, and loom's control plane already
@@ -95,7 +98,7 @@ Two consequences shape every choice below:
 | --- | --- | --- |
 | Columnar Arrow log | Offset-ordered inline rows in Postgres → flush to Iceberg | inline tier + flush **exist** |
 | Log Table (append) | Append-only dataset, sub-second via inline tier | ingest landing path **exists**, needs offsets |
-| PK Table + RocksDB state | Identity type + inline shadow + merge-on-read | `road-cow-inline-shadow` **planned** |
+| PK Table + RocksDB state | Identity type + inline shadow + merge-on-read + CAS | `road-cow-inline-shadow` **shipped (#331)** |
 | CDC changelog (+I/−U/+U/−D) | `change_kind` column on the changelog | **new** (generalize `loom_tombstone`) |
 | RowMerger / merge engines | Merge-on-read + write-path merge policy | **new** (LastRow implicit today) |
 | Remote-log + lakehouse tiering | Flush inline → Iceberg snapshot | **exists** (one tiering, not two) |
@@ -160,11 +163,13 @@ Three approaches were weighed:
   - a **current-state base** — the compacted merge-on-read materialization (folds
     −U/+U/−D to the latest row per key).
   - **Log Tables** have only the changelog table (the events *are* the data).
-- **Flush** appends inline events → the changelog Iceberg table.
-  **Compaction** folds the changelog → the current-state base. Both reuse loom's
-  existing flush + `road-cow-inline-shadow` compaction machinery. The durability
-  invariant: an event is durable once flushed to the changelog Iceberg table; the
-  inline tier may be trimmed behind the flush watermark.
+- **Flush** appends inline events → the changelog Iceberg table — loom's existing
+  inline→Parquet `flush_table`. **Compaction** folds the changelog → the
+  current-state base; this is the still-deferred `fut-cow-inline-shadow` slice-2
+  compaction-consolidation, which this design brings into scope for PK stream
+  tables (it does *not* exist yet). The durability invariant: an event is durable
+  once flushed to the changelog Iceberg table; the inline tier may be trimmed
+  behind the flush watermark.
 
 ### The two union reads (both are loom's existing shape)
 
@@ -228,18 +233,28 @@ its own schema (working name `stream`).
 Dependency spine: **0 → {1, 2} → 3 → 4 → 5.** Each slice is independently
 shippable and mostly *extends* existing machinery.
 
-- **Slice 0 — Changelog substrate (`road-stream-substrate`, first to build).**
-  The `stream` schema: bucket-assignment map, per-bucket monotonic offset
-  (assigned at commit under the bucket advisory lock), and a `change_kind`
-  (+I/−U/+U/−D) column on the inline tier. Generalizes `loom_tombstone` into the
-  full change-event vocabulary. Guarantees per-bucket offset-ordering. The spine
-  every other slice reads and writes.
+- **Slice 0 — Offset substrate (`road-stream-substrate`, first to build).** A new
+  `stream` control-plane schema and a `BucketOffsets` concern built as the full
+  five-layer control-plane stack (core trait, memory fake, postgres adapter,
+  testkit contract), exposing a **gapless, per-`(table, bucket)` monotonic offset
+  allocator** — `allocate_offset(table_id, bucket, count) -> first_offset`,
+  transaction-scoped so an offset is assigned iff the enclosing write commits, and
+  serialized per bucket by the counter row's lock. Offsets are what make the inline
+  tier a *log*; this is the spine every later slice reads and writes. Proven by a
+  concurrency contract test (N concurrent single-row allocations on one bucket
+  yield a gapless `0..N` with no dups; buckets and tables are independent). No
+  change to existing write paths yet — the allocator's first consumer is Slice 1.
+  The `change_kind` (+I/−U/+U/−D) column on the inline tier is deliberately *not*
+  here: it has no reader until events are emitted, so it lands in Slices 1–2 where
+  it earns its place.
 
 - **Slice 1 — Log Tables (`road-stream-log-tables`).** An append-only stream
-  dataset flavor: writes land in the inline tier as +I with an assigned per-bucket
-  offset, are sub-second-visible via the current-state union read, and flush to
-  the changelog Iceberg table on cadence. Reuses `iceberg_landing::land` + flush
-  almost wholesale; adds bucket assignment (sticky/round-robin/hash).
+  dataset flavor: appends land in the inline tier stamped with `(bucket, offset)`
+  from Slice 0's allocator and a `change_kind = +I` column (added to the inline
+  DDL beside `loom_tombstone`, existing rows backfilled — appends `+I`, tombstones
+  `−D`), are sub-second-visible via the current-state union read, and flush to the
+  changelog Iceberg table on cadence. Reuses `iceberg_landing::land` +
+  `flush_table` almost wholesale; adds bucket assignment (sticky/round-robin/hash).
 
 - **Slice 2 — PK / CDC tables (`road-stream-pk-tables`).** Builds on
   `road-cow-inline-shadow`. The write path emits change events
