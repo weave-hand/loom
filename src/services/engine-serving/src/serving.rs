@@ -10,7 +10,7 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use control_plane_core::snapshot::StatValue;
-use control_plane_core::{TableRef, resolve_logical};
+use control_plane_core::{SnapshotId, TableRef, resolve_logical};
 use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
@@ -76,6 +76,7 @@ pub async fn build_serving_provider(
     catalog: &IcebergCatalog,
     table: &TableRef,
     serving_store: Option<&ServingStore>,
+    at: Option<SnapshotId>,
 ) -> Result<Option<Arc<dyn TableProvider>>, EngineServingError> {
     use control_plane_core::Catalog;
 
@@ -91,17 +92,36 @@ pub async fn build_serving_provider(
         ctx.register_object_store(url.as_ref(), store.clone());
     }
 
-    let snap = catalog.current_snapshot(table).await.map_err(to_serving)?;
+    let snap_id = match at {
+        None => {
+            catalog
+                .current_snapshot(table)
+                .await
+                .map_err(to_serving)?
+                .id
+        }
+        Some(id) => id,
+    };
+    // The MIRROR is authoritative for the served schema at `snap_id`. For an
+    // as-of read (`at = Some`), a table not live at `snap_id` (created later) is
+    // simply skipped: `schema` NotFound -> Ok(None). For the current path (`at =
+    // None`), `snap_id` came from `current_snapshot`, so this never NotFounds.
+    let table_schema = match catalog.schema(table, snap_id).await {
+        Ok(s) => s,
+        Err(control_plane_core::ControlPlaneError::NotFound(_)) if at.is_some() => {
+            return Ok(None);
+        }
+        Err(e) => return Err(to_serving(e)),
+    };
     // The MIRROR is authoritative for the served schema (not per-file Parquet
     // footers): an additively-evolved table presents its superset, and files written
     // before a newer column existed are null-filled by DataFusion's default schema
     // adapter (the column is nullable). File-backed data uses the pruning-aware
     // provider over the mirror's per-column stats; its `scan` skips files a query's
     // predicates provably cannot match.
-    let table_schema = catalog.schema(table, snap.id).await.map_err(to_serving)?;
     let schema = arrow_schema_from_mirror(&table_schema.columns)?;
     let files_with_stats = catalog
-        .files_with_stats(table, snap.id)
+        .files_with_stats(table, snap_id)
         .await
         .map_err(to_serving)?;
     let file_provider = if files_with_stats.is_empty() {
@@ -129,7 +149,7 @@ pub async fn build_serving_provider(
         table,
         &schema,
         &table_schema.columns,
-        snap.id,
+        snap_id,
         identity.as_deref(),
     )
     .await?;
@@ -275,8 +295,10 @@ pub async fn register_iceberg_table(
     catalog: &IcebergCatalog,
     table: &TableRef,
     serving_store: Option<&ServingStore>,
+    at: Option<SnapshotId>,
 ) -> Result<(), EngineServingError> {
-    let Some(provider) = build_serving_provider(ctx, catalog, table, serving_store).await? else {
+    let Some(provider) = build_serving_provider(ctx, catalog, table, serving_store, at).await?
+    else {
         return Ok(());
     };
     register_qualified(ctx, &table.schema, &table.name, provider)
@@ -601,7 +623,7 @@ pub async fn execute_query(
     sql: &str,
     serving_store: Option<&ServingStore>,
 ) -> Result<Vec<RecordBatch>, EngineServingError> {
-    let stream = execute_query_stream(catalog, sql, serving_store).await?;
+    let stream = execute_query_stream(catalog, sql, serving_store, None).await?;
     datafusion::physical_plan::common::collect(stream)
         .await
         .map_err(to_serving)
@@ -618,10 +640,11 @@ pub async fn execute_query_stream(
     catalog: &IcebergCatalog,
     sql: &str,
     serving_store: Option<&ServingStore>,
+    at: Option<SnapshotId>,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
     let ctx = SessionContext::new();
     for table in catalog.live_tables().await.map_err(to_serving)? {
-        register_iceberg_table(&ctx, catalog, &table, serving_store).await?;
+        register_iceberg_table(&ctx, catalog, &table, serving_store, at).await?;
     }
     let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
     df.execute_stream().await.map_err(to_serving)

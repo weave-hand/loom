@@ -82,6 +82,7 @@ impl FlightDataService {
             &self.serving_catalog,
             &sql,
             self.serving_store.as_ref(),
+            None,
         )
         .await
         .map_err(serving_status)?;
