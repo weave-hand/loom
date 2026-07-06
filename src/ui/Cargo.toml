@@ -19,9 +19,13 @@ yew = { version = "0.21", features = ["csr"] }
 wasm-bindgen = "=0.2.126"
 gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Storage", "HtmlInputElement", "InputEvent", "SubmitEvent", "EventTarget"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "HtmlInputElement", "InputEvent", "SubmitEvent", "EventTarget", "HtmlElement", "Element"] }
 js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # CSS-in-Rust for the component library. 0.13 is the yew-0.21-compatible line.
 stylist = { version = "0.13", features = ["yew", "parser"] }
+# rust-monaco: Rust/WASM bindings to the Monaco editor. `api` = ergonomic editor
+# API, `workers` = language web workers (perf). NOT `yew-components` (pins yew
+# 0.23; loom is on 0.21 — we wrap the raw api in our own yew-0.21 component).
+monaco = { version = "0.7", features = ["api", "workers"], default-features = false }

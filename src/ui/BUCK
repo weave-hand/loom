@@ -175,7 +175,11 @@ rust_library(
     edition = "2024",
     default_target_platform = "//platforms:wasm",
     deps = [
+        "//third-party:js-sys",
+        "//third-party:monaco",
         "//third-party:stylist",
+        "//third-party:wasm-bindgen",
+        "//third-party:web-sys",
         "//third-party:yew",
         ":ui-core",
     ],

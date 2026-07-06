@@ -6,7 +6,7 @@
 
 use loom_ui_components::{
     Badge, Button, Column, DataTable, GlobalStyles, Input, InputKind, LineageDagView, NavItem,
-    Panel, Shell, StatusDot, StubView, TabItem, TableRow, Tabs, TopNav,
+    Panel, Shell, SqlEditor, StatusDot, StubView, TabItem, TableRow, Tabs, TopNav,
 };
 use loom_ui_core::{Align, BadgeTone, ButtonVariant, Status, Surface, format_count, lineage_dag};
 use yew::prelude::*;
@@ -164,6 +164,12 @@ fn gallery() -> Html {
                     <Panel title="Tabs">
                         <Tabs tabs={tabs} active={(*active_tab).clone()} onselect={onselect} />
                         <p>{ format!("active: {}", *active_tab) }</p>
+                    </Panel>
+                </section>
+                <section>
+                    <h2>{ "SQL editor" }</h2>
+                    <Panel title="SqlEditor">
+                        <SqlEditor />
                     </Panel>
                 </section>
                 <section>
