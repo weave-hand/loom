@@ -64,13 +64,20 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
     // unsubscribe) for as long as the editor lives.
     let subscription =
         use_mut_ref(|| None::<DisposableClosure<dyn FnMut(IModelContentChangedEvent)>>);
+    // Hold the Monaco text model created via `with_model` so it can be disposed
+    // explicitly on unmount — `CodeEditor::Drop` only disposes the editor widget,
+    // not a model supplied this way, and `TextModel` itself has no `Drop`.
+    let model_ref = use_mut_ref(|| None::<TextModel>);
 
     // Mount: create the editor, seed the model from the initial `value`, and
     // subscribe to content changes. Schema/read_only are captured by value so
-    // this effect only reruns when `node` changes (i.e. once, on mount).
+    // this effect only reruns when `node` changes (i.e. once, on mount). Because
+    // of this, a caller that swaps `on_change` or flips `read_only` after mount
+    // won't see the change take effect — a known limitation for later tasks/callers.
     {
         let editor = editor.clone();
         let subscription = subscription.clone();
+        let model_ref = model_ref.clone();
         let on_change = props.on_change.clone();
         let initial = props.value.to_string();
         let read_only = props.read_only;
@@ -98,10 +105,14 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
             });
             *subscription.borrow_mut() = Some(disposable);
             *editor.borrow_mut() = Some(ed);
+            *model_ref.borrow_mut() = Some(model);
 
             move || {
                 subscription.borrow_mut().take(); // unsubscribe
-                editor.borrow_mut().take(); // dispose editor
+                editor.borrow_mut().take(); // dispose editor widget
+                if let Some(model) = model_ref.borrow_mut().take() {
+                    model.as_ref().dispose(); // dispose the model (editor.dispose() does not)
+                }
             }
         });
     }
