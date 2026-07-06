@@ -2,7 +2,7 @@
 
 The query-api service (`src/services/query-api/`) is loom's governed HTTP surface for reading and mutating typed objects: it resolves the ontology, compiles ACL policy into the SQL it generates (every caller value a bound parameter, never interpolated), and executes on the engine service — the sole serving path, running DataFusion against the Iceberg mirror — as a zero-DataFusion wire client over internal Flight SQL (`CommandStatementQuery`). It covers governed object reads with typed JSON rendering, relational link/multi-hop traversal, recursive `/graph` queries, a typed filter language, object sets and cursor pagination, governed write-back actions (insert/update/delete), and vector kNN search — all behind one deny-by-default governance spine.
 
-_As of 4861433b._
+_As of 5c5f3092._
 
 ## Governed object reads and typed JSON
 
@@ -100,3 +100,5 @@ The status mapping is uniform across reads: 403 `Forbidden` for any Read/Write d
 - `#fut-set-depth-annotation` — the flat reachable-set response carries no per-node depth (the tree does).
 - `#fut-governed-scan-pushdown` — the governed table provider pushes no client projection/filter/limit into the inner scan yet.
 - `#fut-query-multitype-joins` — no multi-type queries/joins, schema sidecar, or timezone-aware timestamps.
+- `#fut-timetravel-snapshot-id-validation` — `/objects` gates `as_of_snapshot` via the mirror's open-ended-upward liveness range, so an id above the current snapshot reads live instead of 404ing, unlike `/datasets`' exact snapshot-history lookup.
+- `#fut-timetravel-retention-guard` — an as-of selector resolving to a GC'd (aged-past-horizon) snapshot under-reads rather than erroring; add a retention-window check.

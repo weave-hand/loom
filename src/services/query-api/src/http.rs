@@ -458,7 +458,7 @@ async fn enqueue_gc(
         (status = 200, description = "Matching objects", body = ObjectsResponse),
         (status = 400, description = "Bad filter, _ids, or pagination (no declared identity, denied/masked identity, _ids + pagination together, a malformed cursor, or a malformed/mutually-exclusive as_of selector)"),
         (status = 403, description = "Forbidden by ACL policy"),
-        (status = 404, description = "Unknown type, or no snapshot at/before the requested point"),
+        (status = 404, description = "Unknown type, or the requested as-of snapshot/timestamp resolves to no live snapshot"),
     ),
     security(("bearer_auth" = [])),
     tag = "objects",
