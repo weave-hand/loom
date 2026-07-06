@@ -8,6 +8,7 @@ mod catalog;
 mod lineage;
 mod ontology;
 mod queue;
+mod stream;
 mod transaction;
 mod transforms;
 
@@ -70,6 +71,7 @@ pub struct MemoryControlPlane {
     auth: Arc<Mutex<AuthState>>,
     lineage: Arc<Mutex<LineageState>>,
     transforms: Arc<Mutex<TransformsState>>,
+    offsets: Arc<Mutex<std::collections::HashMap<(i64, i32), i64>>>,
     lock_timeout: Duration,
 }
 
@@ -84,6 +86,7 @@ impl MemoryControlPlane {
             auth: Arc::new(Mutex::new(AuthState::default())),
             lineage: Arc::new(Mutex::new(LineageState::default())),
             transforms: Arc::new(Mutex::new(TransformsState::default())),
+            offsets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             lock_timeout,
         }
     }
