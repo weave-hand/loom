@@ -141,6 +141,7 @@ impl FlightExportService {
                 filters: cmd.filters,
                 ids: cmd.ids,
                 or_raw: Vec::new(),
+                as_of: None,
             },
             &Subject(subject),
             self.cp.ontology(),

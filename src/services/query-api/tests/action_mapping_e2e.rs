@@ -140,6 +140,7 @@ async fn read_gadgets(
     let deps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -149,6 +150,7 @@ async fn read_gadgets(
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &deps,

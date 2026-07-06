@@ -15,7 +15,7 @@ use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
-use control_plane_core::{Catalog, TableRef};
+use control_plane_core::{Catalog, SnapshotId, TableRef};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
@@ -82,6 +82,27 @@ impl FlightDataService {
             &self.serving_catalog,
             &sql,
             self.serving_store.as_ref(),
+            None,
+        )
+        .await
+        .map_err(serving_status)?;
+        Ok(Self::encode_response(stream.map_err(|e| {
+            FlightError::from_external_error(Box::new(e))
+        })))
+    }
+
+    /// Run a loom-native as-of SQL statement (client SQL read at a resolved snapshot)
+    /// through the plain serving path pinned to that snapshot. Mirrors `do_get_sql`'s
+    /// error mapping (planning -> `invalid_argument`, execution -> `internal`).
+    async fn do_get_as_of_sql(
+        &self,
+        q: engine_wire::flight::AsOfStatementQuery,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let stream = engine_serving::execute_query_stream(
+            &self.serving_catalog,
+            &q.sql,
+            self.serving_store.as_ref(),
+            Some(SnapshotId(q.as_of_snapshot)),
         )
         .await
         .map_err(serving_status)?;
@@ -226,6 +247,7 @@ impl FlightService for FlightDataService {
         match EngineTicket::decode(&ticket.ticket)? {
             EngineTicket::Sql(sql) => self.do_get_sql(sql).await,
             EngineTicket::GovernedSql(q) => self.do_get_governed_sql(q).await,
+            EngineTicket::AsOfSql(q) => self.do_get_as_of_sql(q).await,
             EngineTicket::VectorSearch(vs) => self.do_get_vector_search(vs).await,
             EngineTicket::Files(ft) => self.do_get_files(ft).await,
         }

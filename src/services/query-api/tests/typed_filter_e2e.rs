@@ -7,8 +7,8 @@
 //! first exercise of the rendered `ILIKE ... ESCAPE '\'` SQL against DataFusion.
 
 use control_plane_core::{
-    Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ControlPlane, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -115,6 +115,7 @@ async fn typed_filters_match_and_reject() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -137,6 +138,7 @@ async fn typed_filters_match_and_reject() {
             filters: vec![("amount".into(), "10.5".into())],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,
@@ -152,6 +154,7 @@ async fn typed_filters_match_and_reject() {
             filters: vec![("active".into(), "true".into())],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,
@@ -165,6 +168,7 @@ async fn typed_filters_match_and_reject() {
             filters: vec![("active".into(), "false".into())],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,
@@ -180,6 +184,7 @@ async fn typed_filters_match_and_reject() {
             filters: vec![("amount".into(), "abc".into())],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,
@@ -199,6 +204,7 @@ async fn comparison_set_and_null_operators() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -223,6 +229,7 @@ async fn comparison_set_and_null_operators() {
                     filters,
                     ids: vec![],
                     or_raw: Vec::new(),
+                    as_of: None,
                 },
                 &Subject(a),
                 deps,
@@ -373,6 +380,7 @@ async fn between_matches_ge_and_le() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -397,6 +405,7 @@ async fn between_matches_ge_and_le() {
                     filters,
                     ids: vec![],
                     or_raw: Vec::new(),
+                    as_of: None,
                 },
                 &Subject(a),
                 deps,
@@ -430,6 +439,7 @@ async fn contains_is_case_insensitive_and_anchors() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -454,6 +464,7 @@ async fn contains_is_case_insensitive_and_anchors() {
                     filters,
                     ids: vec![],
                     or_raw: Vec::new(),
+                    as_of: None,
                 },
                 &Subject(a),
                 deps,
@@ -492,6 +503,7 @@ async fn contains_literal_percent_matches_the_character() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -516,6 +528,7 @@ async fn contains_literal_percent_matches_the_character() {
                     filters,
                     ids: vec![],
                     or_raw: Vec::new(),
+                    as_of: None,
                 },
                 &Subject(a),
                 deps,
@@ -540,6 +553,7 @@ async fn or_groups_union_and_governance() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -562,6 +576,7 @@ async fn or_groups_union_and_governance() {
             filters: vec![],
             ids: vec![],
             or_raw: vec!["amount:gt:25,active:eq:false".into()],
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,
@@ -578,6 +593,7 @@ async fn or_groups_union_and_governance() {
             filters: vec![("amount".into(), "10.5".into())],
             ids: vec![],
             or_raw: vec!["active:eq:true,amount:gt:100".into()],
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,
@@ -603,6 +619,7 @@ async fn or_groups_union_and_governance() {
                 "amount:ge:20,active:eq:false".into(),
                 "amount:le:20,active:eq:true".into(),
             ],
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,
@@ -618,6 +635,7 @@ async fn or_groups_union_and_governance() {
             filters: vec![],
             ids: vec![],
             or_raw: vec!["amount:gt:25".into()],
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,
@@ -637,6 +655,7 @@ async fn or_group_never_weakens_governance() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -649,6 +668,7 @@ async fn or_group_never_weakens_governance() {
             filters: vec![],
             ids: vec![],
             or_raw: vec!["nonexistent:eq:x,amount:gt:1".into()],
+            as_of: None,
         },
         &Subject(a.clone()),
         &deps,

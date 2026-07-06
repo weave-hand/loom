@@ -143,6 +143,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
     };
@@ -152,6 +153,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &qdeps,
@@ -198,6 +200,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
     let qdeps2 = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving2,
         default_limit: 1000,
     };
@@ -207,6 +210,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &qdeps2,

@@ -84,7 +84,7 @@ async fn tree_sql_executes_on_datafusion() {
     let catalog = IcebergCatalog::new(pool.clone());
     let eng = InProcessServingEngine::new(catalog);
     // The point of the test: this must not error on the DataFusion planner.
-    let served = eng.fetch_rows(&sql, &params).await.unwrap();
+    let served = eng.fetch_rows(&sql, &params, None).await.unwrap();
 
     assert_eq!(
         served.columns,

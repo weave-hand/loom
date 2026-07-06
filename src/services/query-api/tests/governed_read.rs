@@ -5,8 +5,8 @@
 //! over an `IcebergCatalog`).
 
 use control_plane_core::{
-    Acl, Action, CompareOp, Effect, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef,
-    RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
+    Acl, Action, CompareOp, ControlPlane, Effect, ObjectType, Ontology, Policy, PolicyTarget,
+    PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -115,6 +115,7 @@ async fn governed_object_read() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -124,6 +125,7 @@ async fn governed_object_read() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &deps,
@@ -150,6 +152,7 @@ async fn governed_object_read() {
             filters: vec![("id".into(), "1".into())],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &deps,
@@ -167,6 +170,7 @@ async fn governed_object_read() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(stranger),
         &deps,
@@ -197,6 +201,7 @@ async fn governed_object_read() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &deps,
@@ -241,6 +246,7 @@ async fn governed_object_read() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(masker.clone()),
         &deps,
@@ -272,6 +278,7 @@ async fn governed_object_read() {
             filters: vec![("secret".into(), "s1".into())],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(masker),
         &deps,

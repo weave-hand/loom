@@ -136,6 +136,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
     };
@@ -145,6 +146,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &qdeps,

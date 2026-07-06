@@ -85,6 +85,7 @@ impl AppState {
             ontology: self.cp.ontology(),
             acl: self.cp.acl(),
             serving: self.serving.as_ref(),
+            catalog: self.cp.catalog(),
             default_limit: self.default_limit,
         }
     }
@@ -249,18 +250,22 @@ async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::r
     Json(serde_json::json!({ "datasets": datasets })).into_response()
 }
 
-/// Dataset detail: the table's current snapshot and column schema.
+/// Dataset detail: the table's snapshot (current, or the `?as_of`/`?as_of_snapshot`
+/// selected one) and its column schema.
 ///
-/// Composes the current snapshot (id + RFC3339 time) with the column schema at that snapshot.
+/// Composes the target snapshot (id + RFC3339 time) with the column schema at that snapshot.
 #[utoipa::path(
     get, path = "/datasets/{schema}/{table}",
     params(
         ("schema" = String, Path, description = "Iceberg schema"),
         ("table" = String, Path, description = "Table name"),
+        ("as_of" = Option<String>, Query, description = "Time-travel selector: RFC3339 timestamp -> the latest snapshot at/before it. Mutually exclusive with `as_of_snapshot`."),
+        ("as_of_snapshot" = Option<i64>, Query, description = "Time-travel selector: an exact mirror snapshot id. Mutually exclusive with `as_of`."),
     ),
     responses(
-        (status = 200, description = "Current snapshot + column schema", body = DatasetDetailResponse),
-        (status = 404, description = "Unknown table"),
+        (status = 200, description = "Target snapshot + column schema", body = DatasetDetailResponse),
+        (status = 400, description = "Malformed as_of/as_of_snapshot selector"),
+        (status = 404, description = "Unknown table, or selector resolves to no live/prior snapshot"),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = [])),
@@ -269,6 +274,7 @@ async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::r
 async fn get_dataset(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
+    Query(params): Query<Vec<(String, String)>>,
     _subject: Subject,
 ) -> axum::response::Response {
     let catalog = st.cp.catalog();
@@ -276,9 +282,14 @@ async fn get_dataset(
         schema,
         name: table,
     };
-    let snapshot = match catalog.current_snapshot(&table_ref).await {
+    let reserved = crate::query_params::split_reserved(params, &["as_of", "as_of_snapshot"]).0;
+    let sel = match parse_as_of(reserved.last("as_of"), reserved.last("as_of_snapshot")) {
         Ok(s) => s,
-        Err(e) => return cp_read_error("catalog current_snapshot fault", e),
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    let snapshot = match resolve_dataset_snapshot(catalog, &table_ref, sel.as_ref()).await {
+        Ok(s) => s,
+        Err(e) => return cp_read_error("catalog snapshot resolution fault", e),
     };
     let table_schema = match catalog.schema(&table_ref, snapshot.id).await {
         Ok(s) => s,
@@ -300,6 +311,44 @@ async fn get_dataset(
         "columns": columns,
     }))
     .into_response()
+}
+
+/// Resolve dataset-detail's target snapshot: the selector's snapshot when given,
+/// else the current one. `NotFound` (bad id / pre-history timestamp / unknown table)
+/// propagates to the 404 mapping.
+async fn resolve_dataset_snapshot(
+    catalog: &(dyn control_plane_core::Catalog + Send + Sync),
+    table: &TableRef,
+    sel: Option<&crate::handler::AsOfSelector>,
+) -> Result<control_plane_core::Snapshot, ControlPlaneError> {
+    use crate::handler::AsOfSelector;
+    match sel {
+        None => catalog.current_snapshot(table).await,
+        Some(AsOfSelector::Snapshot(id)) => {
+            let sid = control_plane_core::SnapshotId(*id);
+            // Liveness + fetch: `snapshots` lists the table's live snapshots; pick `sid`.
+            catalog
+                .snapshots(table, PageReq::unbounded())
+                .await?
+                .items
+                .into_iter()
+                .find(|s| s.id == sid)
+                .ok_or_else(|| {
+                    ControlPlaneError::NotFound(format!(
+                        "{}.{} not live at snapshot {}",
+                        table.schema, table.name, id
+                    ))
+                })
+        }
+        Some(AsOfSelector::Time(ts)) => {
+            catalog.snapshot_as_of(table, *ts).await?.ok_or_else(|| {
+                ControlPlaneError::NotFound(format!(
+                    "{}.{} has no snapshot at or before {ts}",
+                    table.schema, table.name
+                ))
+            })
+        }
+    }
 }
 
 /// Sample rows from a dataset: `SELECT * FROM "schema"."table" LIMIT n` over the engine.
@@ -349,7 +398,7 @@ async fn dataset_preview(
         dialect.quote_ident(&schema),
         dialect.quote_ident(&table),
     );
-    match st.serving.fetch_rows(&sql, &[]).await {
+    match st.serving.fetch_rows(&sql, &[], None).await {
         Ok(rows) => Json(crate::dataset_preview::preview_body(&rows)).into_response(),
         Err(e) => internal_error("dataset preview serving fault", e),
     }
@@ -402,12 +451,14 @@ async fn enqueue_gc(
         ("type_name" = String, Path, description = "Ontology object type"),
         ("limit" = Option<u32>, Query, description = "Page size, clamped to [1,200]; presence (with `cursor`) selects cursor pagination"),
         ("cursor" = Option<String>, Query, description = "Opaque keyset cursor from a previous page's `next`; presence (with `limit`) selects cursor pagination"),
+        ("as_of" = Option<String>, Query, description = "Time-travel selector: RFC3339 timestamp -> the latest snapshot at/before it, for that type's backing table. Mutually exclusive with `as_of_snapshot`."),
+        ("as_of_snapshot" = Option<i64>, Query, description = "Time-travel selector: an exact mirror snapshot id. Mutually exclusive with `as_of`."),
     ),
     responses(
         (status = 200, description = "Matching objects", body = ObjectsResponse),
-        (status = 400, description = "Bad filter, _ids, or pagination (no declared identity, denied/masked identity, _ids + pagination together, or a malformed cursor)"),
+        (status = 400, description = "Bad filter, _ids, or pagination (no declared identity, denied/masked identity, _ids + pagination together, a malformed cursor, or a malformed/mutually-exclusive as_of selector)"),
         (status = 403, description = "Forbidden by ACL policy"),
-        (status = 404, description = "Unknown type"),
+        (status = 404, description = "Unknown type, or the requested as-of snapshot/timestamp resolves to no live snapshot"),
     ),
     security(("bearer_auth" = [])),
     tag = "objects",
@@ -422,8 +473,10 @@ async fn get_object(
     // knobs out of the params; the rest are filters. Repeated filter keys are preserved (a
     // column may carry several predicates, e.g. a range); the handler parses each value's
     // operator and coerces it. Presence of `limit` OR `cursor` selects the paginated read path.
-    let (reserved, filters) =
-        crate::query_params::split_reserved(params, &["_ids", "_or", "limit", "cursor"]);
+    let (reserved, filters) = crate::query_params::split_reserved(
+        params,
+        &["_ids", "_or", "limit", "cursor", "as_of", "as_of_snapshot"],
+    );
     let ids = match crate::query_params::parse_ids(reserved.last("_ids")) {
         Ok(ids) => ids,
         Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
@@ -431,6 +484,10 @@ async fn get_object(
     let or_raw: Vec<String> = reserved.all("_or").to_vec();
     let raw_limit = reserved.last("limit").map(String::from);
     let raw_cursor = reserved.last("cursor").map(String::from);
+    let as_of = match parse_as_of(reserved.last("as_of"), reserved.last("as_of_snapshot")) {
+        Ok(sel) => sel,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
     let deps = st.deps();
     let paginated = raw_limit.is_some() || raw_cursor.is_some();
     if paginated {
@@ -451,6 +508,7 @@ async fn get_object(
                 filters,
                 ids,
                 or_raw,
+                as_of,
             },
             &subject,
             &deps,
@@ -471,6 +529,7 @@ async fn get_object(
             filters,
             ids,
             or_raw,
+            as_of,
         },
         &subject,
         &deps,
@@ -479,6 +538,27 @@ async fn get_object(
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => query_error_response(e, "object read serving fault"),
+    }
+}
+
+/// Parse the mutually-exclusive `?as_of=` (RFC3339) / `?as_of_snapshot=` (i64) selectors.
+/// Both present, a non-integer id, or an unparseable timestamp -> `Err(message)` (400).
+fn parse_as_of(
+    as_of: Option<&str>,
+    as_of_snapshot: Option<&str>,
+) -> Result<Option<crate::handler::AsOfSelector>, String> {
+    match (as_of, as_of_snapshot) {
+        (Some(_), Some(_)) => Err("as_of and as_of_snapshot are mutually exclusive".into()),
+        (None, None) => Ok(None),
+        (None, Some(id)) => id
+            .parse::<i64>()
+            .map(|n| Some(crate::handler::AsOfSelector::Snapshot(n)))
+            .map_err(|e| format!("as_of_snapshot must be an integer snapshot id: {e}")),
+        (Some(ts), None) => {
+            time::OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339)
+                .map(|t| Some(crate::handler::AsOfSelector::Time(t)))
+                .map_err(|e| format!("as_of must be an RFC3339 timestamp: {e}"))
+        }
     }
 }
 
@@ -681,6 +761,7 @@ pub fn query_error_response(e: QueryError, context: &'static str) -> axum::respo
         QueryError::NotCyclicPath(p) => (StatusCode::BAD_REQUEST, p).into_response(),
         QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::BadPagination(m) => (StatusCode::BAD_REQUEST, m).into_response(),
+        QueryError::AsOfNotFound(m) => (StatusCode::NOT_FOUND, m).into_response(),
         QueryError::Serving(crate::serving::ServingError::NoIndex(m)) => {
             (StatusCode::NOT_FOUND, m).into_response()
         }

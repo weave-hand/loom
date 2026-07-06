@@ -127,6 +127,7 @@ async fn governed_read_parity_over_wire() {
         filters: vec![],
         ids: vec![],
         or_raw: Vec::new(),
+        as_of: None,
     };
     let s = Subject(subj.clone());
     let direct = read_object(
@@ -135,6 +136,7 @@ async fn governed_read_parity_over_wire() {
         &QueryDeps {
             ontology: cp.ontology(),
             acl: cp.acl(),
+            catalog: cp.catalog(),
             serving: &eng,
             default_limit: 1000,
         },
@@ -147,6 +149,7 @@ async fn governed_read_parity_over_wire() {
         &QueryDeps {
             ontology: wire.ontology(),
             acl: wire.acl(),
+            catalog: wire.catalog(),
             serving: &eng,
             default_limit: 1000,
         },
@@ -201,6 +204,7 @@ async fn governed_read_parity_over_wire() {
         filters: vec![],
         ids: vec![],
         or_raw: Vec::new(),
+        as_of: None,
     };
     let ms = Subject(masker.clone());
     let direct_masked = read_object(
@@ -209,6 +213,7 @@ async fn governed_read_parity_over_wire() {
         &QueryDeps {
             ontology: cp.ontology(),
             acl: cp.acl(),
+            catalog: cp.catalog(),
             serving: &eng,
             default_limit: 1000,
         },
@@ -221,6 +226,7 @@ async fn governed_read_parity_over_wire() {
         &QueryDeps {
             ontology: wire.ontology(),
             acl: wire.acl(),
+            catalog: wire.catalog(),
             serving: &eng,
             default_limit: 1000,
         },

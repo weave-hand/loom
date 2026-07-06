@@ -94,6 +94,7 @@ async fn read_objects(
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
     };
@@ -103,6 +104,7 @@ async fn read_objects(
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &qdeps,
@@ -719,6 +721,7 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving2,
         default_limit: 1000,
     };
@@ -728,6 +731,7 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj.clone()),
         &qdeps,

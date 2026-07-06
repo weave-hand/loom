@@ -24,7 +24,12 @@ struct BadHitServing;
 
 #[async_trait]
 impl ServingEngine for BadHitServing {
-    async fn fetch_rows(&self, _sql: &str, _params: &[SqlValue]) -> Result<Rows, ServingError> {
+    async fn fetch_rows(
+        &self,
+        _sql: &str,
+        _params: &[SqlValue],
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Err(ServingError::Engine("unused".into()))
     }
     async fn vector_search(
@@ -115,6 +120,7 @@ async fn engine_hit_coercion_fault_is_internal_500_with_one_log() {
     let deps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
     };

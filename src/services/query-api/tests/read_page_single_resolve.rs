@@ -112,7 +112,12 @@ struct PageServing;
 
 #[async_trait]
 impl ServingEngine for PageServing {
-    async fn fetch_rows(&self, _sql: &str, _params: &[SqlValue]) -> Result<Rows, ServingError> {
+    async fn fetch_rows(
+        &self,
+        _sql: &str,
+        _params: &[SqlValue],
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Ok(Rows {
             columns: vec!["id".into(), "name".into()],
             rows: vec![
@@ -177,6 +182,7 @@ async fn paginated_read_resolves_governance_exactly_once() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &acl,
+        catalog: &cp,
         serving: &serving,
         default_limit: 100,
     };
@@ -185,6 +191,7 @@ async fn paginated_read_resolves_governance_exactly_once() {
         filters: vec![],
         ids: vec![],
         or_raw: vec![],
+        as_of: None,
     };
     let (rows, next) = read_object_page(&q, &Subject(analyst), &deps, 2, None)
         .await

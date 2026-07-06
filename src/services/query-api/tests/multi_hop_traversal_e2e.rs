@@ -3,8 +3,8 @@
 //! denying Read on the intermediate Order type forbids the whole traversal.
 
 use control_plane_core::{
-    Acl, Action, CompareOp, Effect, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue,
-    SubjectId, TypeName,
+    Acl, Action, CompareOp, ControlPlane, Effect, Policy, PolicyTarget, RoleId, RowFilter,
+    ScalarValue, SubjectId, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -56,6 +56,7 @@ async fn multi_hop_served_and_governed() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -148,6 +149,7 @@ async fn target_filter_narrows_final_set() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -183,6 +185,7 @@ async fn intermediate_typed_filter_coerces_and_narrows() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -218,6 +221,7 @@ async fn source_and_intermediate_filters_combine() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -249,6 +253,7 @@ async fn bad_positioned_filters_are_rejected() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -332,6 +337,7 @@ async fn intermediate_comparison_operator_narrows() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };

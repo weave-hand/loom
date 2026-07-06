@@ -4,6 +4,7 @@ use control_plane_core::{
     SnapshotId, TableRef, TableSchema,
 };
 use sqlx::PgPool;
+use time::OffsetDateTime;
 
 use control_plane_core::snapshot::ColumnStat;
 
@@ -178,6 +179,34 @@ impl Catalog for IcebergCatalog {
             time: row.snapshot_time,
             schema_version: row.schema_version,
         })
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn snapshot_as_of(
+        &self,
+        table: &TableRef,
+        ts: OffsetDateTime,
+    ) -> Result<Option<Snapshot>> {
+        let row = sqlx::query!(
+            "select sn.snapshot_id as \"snapshot_id!\", sn.snapshot_time as \"snapshot_time!\", sn.schema_version as \"schema_version!\" \
+             from iceberg_mirror.snapshot sn \
+             where sn.snapshot_time <= $3 and exists ( \
+                 select 1 from iceberg_mirror.table t \
+                 where t.table_namespace = $1 and t.table_name = $2 \
+                   and t.begin_snapshot <= sn.snapshot_id and (t.end_snapshot is null or t.end_snapshot > sn.snapshot_id)) \
+             order by sn.snapshot_id desc limit 1",
+            table.schema,
+            table.name,
+            ts,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(row.map(|r| Snapshot {
+            id: SnapshotId(r.snapshot_id),
+            time: r.snapshot_time,
+            schema_version: r.schema_version,
+        }))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]

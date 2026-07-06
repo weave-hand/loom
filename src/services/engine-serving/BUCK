@@ -223,6 +223,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "serving_as_of",
+    crate = "serving_as_of",
+    srcs = ["tests/serving_as_of.rs"],
+    crate_root = "tests/serving_as_of.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/testing:seed",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:datafusion",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "governed-sql",
     crate = "governed_sql",
     srcs = ["tests/governed_sql.rs"],

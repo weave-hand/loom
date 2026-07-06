@@ -37,7 +37,7 @@ async fn stream_matches_collected() {
         .expect("execute_query");
     let collected_ids = ids(&collected);
 
-    let stream = engine_serving::execute_query_stream(&catalog, sql, None)
+    let stream = engine_serving::execute_query_stream(&catalog, sql, None, None)
         .await
         .expect("execute_query_stream");
     let streamed: Vec<RecordBatch> = stream.try_collect().await.expect("collect stream");

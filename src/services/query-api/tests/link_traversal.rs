@@ -2,9 +2,9 @@
 //! many-to-many link, and exercise the both-ends governance matrix.
 
 use control_plane_core::{
-    Acl, Action, Cardinality, CompareOp, Effect, LinkBacking, LinkDef, ObjectType, Ontology,
-    Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef,
-    TypeName,
+    Acl, Action, Cardinality, CompareOp, ControlPlane, Effect, LinkBacking, LinkDef, ObjectType,
+    Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -194,6 +194,7 @@ async fn fk_traversal_returns_linked_targets() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -222,6 +223,7 @@ async fn missing_read_on_source_is_forbidden() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -249,6 +251,7 @@ async fn missing_read_on_target_is_forbidden() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -293,6 +296,7 @@ async fn source_row_filter_closes_the_leak() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -341,6 +345,7 @@ async fn target_row_filter_and_projection_apply() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -385,6 +390,7 @@ async fn source_filter_on_denied_column_is_bad_filter() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -443,6 +449,7 @@ async fn many_to_many_dedups_shared_targets() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -471,6 +478,7 @@ async fn unknown_link_is_reported() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };

@@ -60,6 +60,7 @@ async fn read_labels(
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
     };
@@ -71,6 +72,7 @@ async fn read_labels(
             filters: vec![],
             ids: vec![],
             or_raw: Vec::new(),
+            as_of: None,
         },
         &Subject(subj),
         &qdeps,

@@ -112,11 +112,38 @@ impl GovernedStatementQuery {
     }
 }
 
+/// A loom-native as-of read ticket: run `sql` with every referenced table read at
+/// snapshot `as_of_snapshot` instead of its current snapshot. Bypasses the standard
+/// `CommandStatementQuery` (loom's external Flight SQL interop surface) so that
+/// surface stays a bare query string. `deny_unknown_fields` keeps it disjoint from
+/// the other JSON ticket shapes for the `EngineTicket` decode.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AsOfStatementQuery {
+    pub sql: String,
+    pub as_of_snapshot: i64,
+}
+
+impl AsOfStatementQuery {
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "serde_json of an owned serializable type is infallible; matches GovernedStatementQuery::encode"
+    )]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("AsOfStatementQuery is always serializable")
+    }
+
+    pub fn decode(bytes: &[u8]) -> std::result::Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
 /// A decoded engine `do_get` ticket — one variant per serving plane. The decode
 /// ORDER is load-bearing and lives here, next to the ticket types whose
 /// `deny_unknown_fields` disjointness it depends on: the protobuf Flight SQL
 /// ticket is tried first (a legacy JSON ticket always starts with `{`, an invalid
-/// protobuf `Any`, so the file path is never misrouted), then the three JSON
+/// protobuf `Any`, so the file path is never misrouted), then the four JSON
 /// shapes fall through in order, the file ticket terminal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineTicket {
@@ -124,6 +151,8 @@ pub enum EngineTicket {
     Sql(String),
     /// Governed-SQL plane: arbitrary client SQL + a caller-resolved governed catalog.
     GovernedSql(GovernedStatementQuery),
+    /// Loom-native as-of SQL plane: client SQL + a resolved snapshot id.
+    AsOfSql(AsOfStatementQuery),
     /// k-NN vector-search plane.
     VectorSearch(VectorSearchTicket),
     /// File-ticket data plane: an explicit live-file set to stream.
@@ -172,7 +201,7 @@ impl EngineTicket {
     /// the SQL. Try the protobuf decode first; a legacy JSON ticket always starts
     /// with `{` (an invalid protobuf `Any`), so this never misroutes the file path.
     /// (The decode-then-`is::<>()` ordering is load-bearing.) The JSON planes then
-    /// fall through in order — `deny_unknown_fields` on all three JSON shapes makes
+    /// fall through in order — `deny_unknown_fields` on all four JSON shapes makes
     /// each stage unambiguous — with the file ticket terminal.
     pub fn decode(bytes: &[u8]) -> std::result::Result<Self, TicketError> {
         if let Ok(any) = Any::decode(bytes)
@@ -190,6 +219,13 @@ impl EngineTicket {
         // (deny_unknown_fields) from the other JSON tickets.
         if let Ok(gq) = GovernedStatementQuery::decode(bytes) {
             return Ok(Self::GovernedSql(gq));
+        }
+        // loom-native as-of SQL ticket (JSON): disjoint fields
+        // (deny_unknown_fields) from the other JSON tickets — requires
+        // `as_of_snapshot`, which `GovernedStatementQuery` (requires `catalog`)
+        // and the others do not carry.
+        if let Ok(q) = AsOfStatementQuery::decode(bytes) {
+            return Ok(EngineTicket::AsOfSql(q));
         }
         // loom-native k-NN ticket (JSON). Disjoint fields from FlightTicket
         // (deny_unknown_fields on both) make this unambiguous.
@@ -347,5 +383,31 @@ impl FlightSqlClient {
         // stream's FlightError items to control-plane errors (same `be` mapping the
         // buffered path uses). The stream owns the (cloned) response, so it is 'static.
         Ok(Box::pin(decode_batches(resp).map_err(crate::client::be)))
+    }
+
+    /// Execute `sql` with every referenced table read at `as_of_snapshot`, buffering
+    /// the streamed result. Single-hop `do_get` of an `AsOfStatementQuery` ticket
+    /// (the standard `CommandStatementQuery` cannot carry the snapshot id).
+    pub async fn execute_as_of(
+        &self,
+        sql: String,
+        as_of_snapshot: i64,
+    ) -> Result<Vec<RecordBatch>> {
+        let ticket = AsOfStatementQuery {
+            sql,
+            as_of_snapshot,
+        };
+        let resp = self
+            .inner
+            .clone()
+            .do_get(Ticket {
+                ticket: ticket.encode().into(),
+            })
+            .await
+            .map_err(crate::client::sql_status)?;
+        decode_batches(resp)
+            .map_err(crate::client::be)
+            .try_collect()
+            .await
     }
 }

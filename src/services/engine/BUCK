@@ -235,6 +235,29 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "as-of-wire",
+    crate = "as_of_wire",
+    srcs = ["tests/as_of_wire.rs"],
+    crate_root = "tests/as_of_wire.rs",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:iceberg",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "governed-flight",
     crate = "governed_flight",
     srcs = ["tests/governed_flight.rs"],

@@ -294,7 +294,8 @@ pub async fn execute_governed_sql_stream(
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
     let ctx = SessionContext::new();
     for table in catalog.live_tables().await.map_err(to_serving)? {
-        let Some(inner) = build_serving_provider(&ctx, catalog, &table, serving_store).await?
+        let Some(inner) =
+            build_serving_provider(&ctx, catalog, &table, serving_store, None).await?
         else {
             continue;
         };

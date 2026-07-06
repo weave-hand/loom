@@ -32,7 +32,7 @@ async fn registers_and_selects_back() {
     };
 
     let ctx = SessionContext::new();
-    register_iceberg_table(&ctx, &catalog, &table, None)
+    register_iceberg_table(&ctx, &catalog, &table, None, None)
         .await
         .expect("register");
 

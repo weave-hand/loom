@@ -26,7 +26,12 @@ struct StubServing;
 
 #[async_trait]
 impl ServingEngine for StubServing {
-    async fn fetch_rows(&self, _sql: &str, _params: &[SqlValue]) -> Result<Rows, ServingError> {
+    async fn fetch_rows(
+        &self,
+        _sql: &str,
+        _params: &[SqlValue],
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Ok(Rows {
             columns: vec![],
             rows: vec![],

@@ -29,7 +29,8 @@ impl ServingEngine for GraphServing {
         &self,
         _sql: &str,
         _params: &[SqlValue],
-    ) -> std::result::Result<Rows, ServingError> {
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Ok(Rows {
             columns: vec!["id".into(), "name".into()],
             rows: self.rows.clone(),
@@ -164,6 +165,7 @@ async fn rejects_a_non_self_core_link() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -184,6 +186,7 @@ async fn rejects_an_unknown_core_link() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -203,6 +206,7 @@ async fn rejects_an_unknown_tail_link() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -222,6 +226,7 @@ async fn rejects_an_empty_tail() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -241,6 +246,7 @@ async fn rejects_a_type_without_identity() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -261,6 +267,7 @@ async fn forbids_when_tail_type_not_granted() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -285,6 +292,7 @@ async fn returns_projected_tail_objects() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };

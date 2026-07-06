@@ -284,7 +284,14 @@ fn one_cell(base: BaseType, v: &SqlValue, col: &str) -> Result<(DataType, ArrayR
 #[async_trait]
 pub trait ServingEngine: Send + Sync {
     /// Execute read-only `sql`, binding `params` positionally (`?` placeholders).
-    async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError>;
+    /// `at`, when set, resolves the read against that snapshot instead of the
+    /// table's current one (time-travel read).
+    async fn fetch_rows(
+        &self,
+        sql: &str,
+        params: &[SqlValue],
+        at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError>;
 
     /// Typed kNN search over a named vector index. Returns a 2-column `Rows`
     /// (`id`, `_distance`) in ascending-distance order, ≤ `k` rows. The default

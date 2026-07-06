@@ -116,7 +116,7 @@ async fn read_after_additive_land_returns_superset_with_nulls() {
     // Read at the current snapshot through the serving path.
     let cat = IcebergCatalog::new(pool.clone());
     let ctx = SessionContext::new();
-    register_iceberg_table(&ctx, &cat, &t, None)
+    register_iceberg_table(&ctx, &cat, &t, None, None)
         .await
         .expect("register");
     let df = ctx

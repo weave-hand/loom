@@ -5,8 +5,8 @@
 //! deterministic error and an unknown inbound link is UnknownLink.
 
 use control_plane_core::{
-    Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, Ontology, PolicyTarget, RoleId,
-    SubjectId, TypeName,
+    Acl, Action, Cardinality, ControlPlane, Effect, LinkBacking, LinkDef, Ontology, PolicyTarget,
+    RoleId, SubjectId, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -49,6 +49,7 @@ async fn inverse_single_hop_reaches_origin_customer() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -80,6 +81,7 @@ async fn inverse_two_hop_chain_reaches_origin_customer() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -113,6 +115,7 @@ async fn inverse_hop_is_governed_on_the_reached_type() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -144,6 +147,7 @@ async fn unknown_inbound_link_is_unknown_link() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };
@@ -177,6 +181,7 @@ async fn ambiguous_inbound_link_is_rejected() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };

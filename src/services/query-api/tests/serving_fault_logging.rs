@@ -25,7 +25,12 @@ struct FaultEngine;
 
 #[async_trait]
 impl ServingEngine for FaultEngine {
-    async fn fetch_rows(&self, _sql: &str, _params: &[SqlValue]) -> Result<Rows, ServingError> {
+    async fn fetch_rows(
+        &self,
+        _sql: &str,
+        _params: &[SqlValue],
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Err(ServingError::Engine("fault-detail-boom".into()))
     }
 }
