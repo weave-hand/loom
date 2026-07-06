@@ -135,6 +135,7 @@ async fn governed_read_parity_over_wire() {
         &QueryDeps {
             ontology: cp.ontology(),
             acl: cp.acl(),
+            catalog: cp.catalog(),
             serving: &eng,
             default_limit: 1000,
         },
@@ -147,6 +148,7 @@ async fn governed_read_parity_over_wire() {
         &QueryDeps {
             ontology: wire.ontology(),
             acl: wire.acl(),
+            catalog: wire.catalog(),
             serving: &eng,
             default_limit: 1000,
         },
@@ -209,6 +211,7 @@ async fn governed_read_parity_over_wire() {
         &QueryDeps {
             ontology: cp.ontology(),
             acl: cp.acl(),
+            catalog: cp.catalog(),
             serving: &eng,
             default_limit: 1000,
         },
@@ -221,6 +224,7 @@ async fn governed_read_parity_over_wire() {
         &QueryDeps {
             ontology: wire.ontology(),
             acl: wire.acl(),
+            catalog: wire.catalog(),
             serving: &eng,
             default_limit: 1000,
         },

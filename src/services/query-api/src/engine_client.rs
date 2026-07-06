@@ -31,16 +31,29 @@ impl EngineServingClient {
 
 #[async_trait]
 impl crate::serving::ServingEngine for EngineServingClient {
-    async fn fetch_rows(&self, sql: &str, params: &[SqlValue]) -> Result<Rows, ServingError> {
+    async fn fetch_rows(
+        &self,
+        sql: &str,
+        params: &[SqlValue],
+        at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         // Same param inlining the unary path used; the engine has no positional bind slot.
         let inlined = inline_params(sql, params);
-        let batches = self.sql.execute(inlined).await.map_err(|e| match e {
+        let map_err = |e| match e {
             control_plane_core::ControlPlaneError::Validation(m) => ServingError::Plan(m),
             other => ServingError::Engine(other.to_string()),
-        })?;
+        };
         // Empty result → empty Rows (no column names) — behaviour-preserving for the
         // Iceberg backend, matching the previous unary/DataFusion path. `batches_to_rows`
         // already returns `Rows::default()` for an empty batch list.
+        let batches = match at {
+            None => self.sql.execute(inlined).await.map_err(map_err)?,
+            Some(id) => self
+                .sql
+                .execute_as_of(inlined, id.0)
+                .await
+                .map_err(map_err)?,
+        };
         Ok(batches_to_rows(batches))
     }
 

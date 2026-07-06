@@ -1118,6 +1118,7 @@ async fn run_mutate(
             .fetch_rows(
                 &select_object_sql(target, &idprop),
                 std::slice::from_ref(&id_value),
+                None,
             )
             .await?;
         // 0 live rows ⇒ the object does not exist (the caller's 404). >1 is a corrupt-PK
@@ -1488,7 +1489,7 @@ async fn govern_and_build_mutate(
     // Full-table read of the current live contents (unfiltered merge view; no identity `where`).
     let live = deps
         .serving
-        .fetch_rows(&select_object_sql_all(target), &[])
+        .fetch_rows(&select_object_sql_all(target), &[], None)
         .await?;
     let id_idx = columns.iter().position(|c| c == &idprop).ok_or_else(|| {
         ActionError::Misconfigured(format!("identity `{idprop}` is not a property"))

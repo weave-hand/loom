@@ -136,6 +136,7 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
     };

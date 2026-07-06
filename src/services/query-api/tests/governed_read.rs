@@ -5,8 +5,8 @@
 //! over an `IcebergCatalog`).
 
 use control_plane_core::{
-    Acl, Action, CompareOp, Effect, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef,
-    RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
+    Acl, Action, CompareOp, ControlPlane, Effect, ObjectType, Ontology, Policy, PolicyTarget,
+    PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -115,6 +115,7 @@ async fn governed_object_read() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };

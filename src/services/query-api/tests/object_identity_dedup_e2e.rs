@@ -11,8 +11,8 @@
 //!   - the double-pathed person collapses to a single row in every case (no over-splitting).
 
 use control_plane_core::{
-    Cardinality, LinkBacking, LinkDef, ObjectType, Ontology, PropertyConstraints, PropertyDef,
-    TypeName,
+    Cardinality, ControlPlane, LinkBacking, LinkDef, ObjectType, Ontology, PropertyConstraints,
+    PropertyDef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -193,6 +193,7 @@ async fn masked_or_denied_identity_preserves_object_cardinality() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
     };

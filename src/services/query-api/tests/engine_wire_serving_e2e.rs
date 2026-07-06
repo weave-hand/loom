@@ -41,7 +41,11 @@ async fn engine_wire_unions_file_and_inline() {
         .expect("connect");
 
     let rows = client
-        .fetch_rows(r#"SELECT "id" FROM "sales"."orders" ORDER BY "id""#, &[])
+        .fetch_rows(
+            r#"SELECT "id" FROM "sales"."orders" ORDER BY "id""#,
+            &[],
+            None,
+        )
         .await
         .expect("fetch_rows over flight-sql");
     let ids: Vec<i64> = rows
@@ -56,7 +60,10 @@ async fn engine_wire_unions_file_and_inline() {
 
     // Malformed SQL → ServingError (engine maps it to internal; client surfaces Err).
     assert!(
-        client.fetch_rows("SELECT FROM nope", &[]).await.is_err(),
+        client
+            .fetch_rows("SELECT FROM nope", &[], None)
+            .await
+            .is_err(),
         "malformed SQL must error"
     );
 }
@@ -83,7 +90,7 @@ async fn large_result_streams_past_unary_cap() {
         .expect("connect");
 
     let rows = client
-        .fetch_rows(r#"SELECT "id" FROM "big"."rows""#, &[])
+        .fetch_rows(r#"SELECT "id" FROM "big"."rows""#, &[], None)
         .await
         .expect("large result must stream back, not hit the 4 MB cap");
     assert_eq!(
@@ -110,7 +117,7 @@ async fn malformed_sql_is_plan_class() {
         .expect("connect");
 
     let err = client
-        .fetch_rows("SELECT FROM nope", &[])
+        .fetch_rows("SELECT FROM nope", &[], None)
         .await
         .expect_err("malformed SQL must error");
     assert!(

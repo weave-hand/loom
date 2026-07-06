@@ -70,6 +70,7 @@ async fn write_object_through_wire_client() {
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };

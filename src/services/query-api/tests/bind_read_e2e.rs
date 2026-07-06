@@ -3,8 +3,8 @@
 //! loom's two layers (landing + model) meet.
 
 use control_plane_core::{
-    Acl, Action, Effect, ObjectType, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef,
-    TypeName,
+    Acl, Action, ControlPlane, Effect, ObjectType, PolicyTarget, PropertyDef, RoleId, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -104,6 +104,7 @@ async fn landed_then_bound_dataset_is_queryable() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };

@@ -28,7 +28,8 @@ impl ServingEngine for PairServing {
         &self,
         _sql: &str,
         _params: &[SqlValue],
-    ) -> std::result::Result<Rows, ServingError> {
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Ok(Rows {
             columns: vec!["id".into(), "order_id".into()],
             rows: self.rows.clone(),
@@ -150,6 +151,7 @@ async fn read_associations_returns_id_pairs() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -179,6 +181,7 @@ async fn read_associations_rejects_source_without_identity() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -198,6 +201,7 @@ async fn read_associations_rejects_target_without_identity() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -238,6 +242,7 @@ async fn read_associations_forbids_a_denied_source_identity() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -274,6 +279,7 @@ async fn read_associations_forbids_a_masked_target_identity() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };

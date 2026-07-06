@@ -26,7 +26,8 @@ impl ServingEngine for GraphServing {
         &self,
         _sql: &str,
         _params: &[SqlValue],
-    ) -> std::result::Result<Rows, ServingError> {
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Ok(Rows {
             columns: vec!["id".into(), "name".into()],
             rows: self.rows.clone(),
@@ -169,6 +170,7 @@ async fn rejects_a_non_self_link() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -189,6 +191,7 @@ async fn rejects_an_unknown_link() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -208,6 +211,7 @@ async fn rejects_an_empty_link_set() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -227,6 +231,7 @@ async fn rejects_a_type_without_identity() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -251,6 +256,7 @@ async fn returns_reachable_objects_for_a_self_link_union() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -285,6 +291,7 @@ async fn duplicate_link_names_collapse() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };

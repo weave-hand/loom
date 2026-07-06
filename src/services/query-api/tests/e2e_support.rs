@@ -140,6 +140,7 @@ impl query_api::serving::ServingEngine for InProcessServingEngine {
         &self,
         sql: &str,
         params: &[SqlValue],
+        _at: Option<control_plane_core::SnapshotId>,
     ) -> Result<query_api::serving::Rows, ServingError> {
         let inlined = inline_params(sql, params);
         let batches = execute_query(&self.catalog, &inlined, None)
@@ -291,6 +292,7 @@ impl query_api::serving::ServingEngine for NoServing {
         &self,
         _sql: &str,
         _params: &[SqlValue],
+        _at: Option<control_plane_core::SnapshotId>,
     ) -> Result<query_api::serving::Rows, ServingError> {
         Err(ServingError::Engine("no serving engine configured".into()))
     }
@@ -892,6 +894,7 @@ pub async fn read_widget(
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
     };

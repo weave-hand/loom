@@ -26,7 +26,8 @@ impl ServingEngine for TreeServing {
         &self,
         _sql: &str,
         _params: &[SqlValue],
-    ) -> std::result::Result<Rows, ServingError> {
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Ok(Rows {
             columns: vec![
                 "id".into(),
@@ -116,6 +117,7 @@ async fn rejects_a_type_without_identity() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -148,6 +150,7 @@ async fn masked_identity_is_forbidden() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -181,6 +184,7 @@ async fn denied_identity_is_forbidden() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };
@@ -225,6 +229,7 @@ async fn builds_tree_with_root_and_parent_pointers() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: &cp,
         serving: &serving,
         default_limit: 1000,
     };

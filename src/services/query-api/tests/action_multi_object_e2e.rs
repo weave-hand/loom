@@ -94,6 +94,7 @@ async fn read_objects(
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
     };
@@ -719,6 +720,7 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &serving2,
         default_limit: 1000,
     };

@@ -146,6 +146,7 @@ async fn widget_count(cp: &PgControlPlane, pool: &sqlx::PgPool, subj: &SubjectId
     let deps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -201,6 +202,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
     let qdeps = QueryDeps {
         ontology: cp.ontology(),
         acl: cp.acl(),
+        catalog: cp.catalog(),
         serving: &reader,
         default_limit: 1000,
     };

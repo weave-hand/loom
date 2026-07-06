@@ -85,6 +85,7 @@ impl AppState {
             ontology: self.cp.ontology(),
             acl: self.cp.acl(),
             serving: self.serving.as_ref(),
+            catalog: self.cp.catalog(),
             default_limit: self.default_limit,
         }
     }
@@ -349,7 +350,7 @@ async fn dataset_preview(
         dialect.quote_ident(&schema),
         dialect.quote_ident(&table),
     );
-    match st.serving.fetch_rows(&sql, &[]).await {
+    match st.serving.fetch_rows(&sql, &[], None).await {
         Ok(rows) => Json(crate::dataset_preview::preview_body(&rows)).into_response(),
         Err(e) => internal_error("dataset preview serving fault", e),
     }

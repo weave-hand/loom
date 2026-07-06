@@ -100,6 +100,7 @@ pub struct QueryDeps<'a> {
     pub ontology: &'a (dyn Ontology + Send + Sync),
     pub acl: &'a (dyn Acl + Send + Sync),
     pub serving: &'a dyn ServingEngine,
+    pub catalog: &'a (dyn control_plane_core::Catalog + Send + Sync),
     pub default_limit: u32,
 }
 
@@ -393,7 +394,7 @@ pub async fn read_object(
         None,
     )
     .await?;
-    let served = deps.serving.fetch_rows(&g.sql, &g.params).await?;
+    let served = deps.serving.fetch_rows(&g.sql, &g.params, None).await?;
     Ok(g.into_object_rows(served))
 }
 
@@ -507,7 +508,7 @@ pub async fn read_object_page(
         extra_predicate,
     )
     .await?;
-    let served = deps.serving.fetch_rows(&gr.sql, &gr.params).await?;
+    let served = deps.serving.fetch_rows(&gr.sql, &gr.params, None).await?;
     debug_assert_eq!(
         served.columns, gr.columns,
         "serving engine returned columns out of the projected order"
@@ -662,7 +663,7 @@ pub async fn vector_search(
         None,
         limit,
     )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let served = deps.serving.fetch_rows(&sql, &params, None).await?;
     let surviving: std::collections::HashSet<String> = served
         .rows
         .iter()
@@ -909,7 +910,7 @@ pub async fn read_linked_chain(
         target.otype.identity.as_deref(),
         deps.default_limit,
     )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let served = deps.serving.fetch_rows(&sql, &params, None).await?;
     Ok(proj.into_object_rows(served))
 }
 
@@ -977,7 +978,7 @@ pub async fn read_associations(
         &target_id,
         deps.default_limit,
     )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let served = deps.serving.fetch_rows(&sql, &params, None).await?;
     let pairs: Vec<(SqlValue, SqlValue)> = served
         .rows
         .into_iter()
@@ -1057,7 +1058,7 @@ pub async fn read_graph_reach_spec(
         GraphReadSpec::UnionSelfLinks(q) => compile_reach_union(q, subject, deps).await?,
         GraphReadSpec::CoreTail(q) => compile_reach_tail(q, subject, deps).await?,
     };
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let served = deps.serving.fetch_rows(&sql, &params, None).await?;
     Ok(proj.into_object_rows(served))
 }
 
@@ -1097,7 +1098,7 @@ pub async fn read_graph_tree(
         },
         &r.steps,
     )?;
-    let served = deps.serving.fetch_rows(&sql, &params).await?;
+    let served = deps.serving.fetch_rows(&sql, &params, None).await?;
     // Contract guard (mirrors the sibling reads): the tree projects the visible columns then
     // the three trailing tree columns, in this exact order — the positional split below relies
     // on it. A compiler/engine column-order regression trips this in tests rather than silently

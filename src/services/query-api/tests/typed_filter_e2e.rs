@@ -7,8 +7,8 @@
 //! first exercise of the rendered `ILIKE ... ESCAPE '\'` SQL against DataFusion.
 
 use control_plane_core::{
-    Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ControlPlane, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -115,6 +115,7 @@ async fn typed_filters_match_and_reject() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -199,6 +200,7 @@ async fn comparison_set_and_null_operators() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -373,6 +375,7 @@ async fn between_matches_ge_and_le() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -430,6 +433,7 @@ async fn contains_is_case_insensitive_and_anchors() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -492,6 +496,7 @@ async fn contains_literal_percent_matches_the_character() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -540,6 +545,7 @@ async fn or_groups_union_and_governance() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };
@@ -637,6 +643,7 @@ async fn or_group_never_weakens_governance() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };

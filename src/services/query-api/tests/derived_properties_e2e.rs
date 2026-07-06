@@ -3,9 +3,9 @@
 //! Read on Order the derived props are omitted; an Order row-filter narrows the aggregate.
 
 use control_plane_core::{
-    Acl, Action, Aggregation, Cardinality, CompareOp, DerivedPropertyDef, Effect, LinkBacking,
-    LinkDef, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter,
-    ScalarValue, SubjectId, TableRef, TypeName,
+    Acl, Action, Aggregation, Cardinality, CompareOp, ControlPlane, DerivedPropertyDef, Effect,
+    LinkBacking, LinkDef, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId,
+    RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -177,6 +177,7 @@ async fn derived_aggregates_are_served_and_governed() {
     let deps = QueryDeps {
         ontology: &cp,
         acl: &cp,
+        catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
     };

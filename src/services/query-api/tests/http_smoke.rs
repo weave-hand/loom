@@ -26,7 +26,8 @@ impl ServingEngine for StubServing {
         &self,
         _sql: &str,
         _params: &[SqlValue],
-    ) -> std::result::Result<Rows, ServingError> {
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
         Ok(Rows {
             columns: vec!["id".into()],
             rows: vec![vec![SqlValue::Int(1)]],
