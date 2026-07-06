@@ -203,6 +203,7 @@ rust_binary(
     edition = "2024",
     default_target_platform = "//platforms:wasm",
     deps = [
+        "//third-party:monaco",
         "//third-party:wasm-bindgen",
         "//third-party:web-sys",
         "//third-party:yew",
