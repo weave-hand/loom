@@ -47,14 +47,22 @@ fn batch(ids: &[i64]) -> (SchemaRef, Vec<RecordBatch>) {
     let names: Vec<String> = ids.iter().map(|i| format!("row{i}")).collect();
     let id_array = Int64Array::from(ids.to_vec());
     let name_array = StringArray::from(names);
-    let rb = RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array), Arc::new(name_array)])
-        .expect("batch");
+    let rb = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(id_array), Arc::new(name_array)],
+    )
+    .expect("batch");
     (schema, vec![rb])
 }
 
 /// Land `ids` as a new Parquet-backed snapshot over `table`, returning the
 /// new snapshot id.
-async fn land_rows(pool: &PgPool, catalog: &SqlCatalog, table: &TableRef, ids: &[i64]) -> SnapshotId {
+async fn land_rows(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    ids: &[i64],
+) -> SnapshotId {
     let (schema, batches) = batch(ids);
     land(
         pool,
