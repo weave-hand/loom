@@ -4972,6 +4972,20 @@ pub async fn bucket_offsets_contract<CP: BucketOffsets>(cp: &CP) {
         0,
         "table 2 has its own sequence"
     );
+    // a non-positive count is rejected and does not advance the high-water
+    assert!(
+        cp.allocate_offset(9, 0, 0).await.is_err(),
+        "count = 0 is rejected"
+    );
+    assert!(
+        cp.allocate_offset(9, 0, -1).await.is_err(),
+        "negative count is rejected"
+    );
+    assert_eq!(
+        cp.peek_offset(9, 0).await.expect("peek"),
+        0,
+        "rejected allocations do not advance the high-water"
+    );
 }
 
 /// Concurrency contract (run against a real database): N concurrent single-row

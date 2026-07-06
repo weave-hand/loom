@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use control_plane_core::{BucketOffsets, Result};
+use control_plane_core::{BucketOffsets, ControlPlaneError, Result};
 
 use crate::MemoryControlPlane;
 
@@ -7,6 +7,11 @@ use crate::MemoryControlPlane;
 impl BucketOffsets for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn allocate_offset(&self, table_id: i64, bucket: i32, count: i64) -> Result<i64> {
+        if count <= 0 {
+            return Err(ControlPlaneError::Validation(format!(
+                "allocate_offset requires count > 0, got {count}"
+            )));
+        }
         let mut map = self.offsets.lock();
         let next = map.entry((table_id, bucket)).or_insert(0);
         let first = *next;

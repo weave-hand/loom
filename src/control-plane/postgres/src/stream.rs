@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use control_plane_core::{BucketOffsets, Result};
+use control_plane_core::{BucketOffsets, ControlPlaneError, Result};
 
 use crate::{PgControlPlane, backend};
 
@@ -12,6 +12,11 @@ pub(crate) async fn pg_allocate_offset<'e, E: sqlx::PgExecutor<'e>>(
     bucket: i32,
     count: i64,
 ) -> Result<i64> {
+    if count <= 0 {
+        return Err(ControlPlaneError::Validation(format!(
+            "allocate_offset requires count > 0, got {count}"
+        )));
+    }
     let first = sqlx::query_scalar!(
         "insert into stream.bucket_offset (table_id, bucket, next) values ($1, $2, $3) \
          on conflict (table_id, bucket) do update set next = stream.bucket_offset.next + $3 \
