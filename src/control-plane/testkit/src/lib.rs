@@ -358,6 +358,42 @@ where
         "history ends at the current snapshot"
     );
 
+    // snapshot_as_of: exact latest time -> latest; a time strictly between the two
+    // seeded snapshots -> the earlier; strictly before the first -> None.
+    let s0 = hist.iter().find(|s| s.id == seeded[0].snapshot).unwrap();
+    let s1 = hist.iter().find(|s| s.id == seeded[1].snapshot).unwrap();
+    assert_eq!(
+        catalog
+            .snapshot_as_of(&t, s1.time)
+            .await
+            .unwrap()
+            .map(|s| s.id),
+        Some(s1.id),
+        "as_of at the latest snapshot's time resolves to it"
+    );
+    // Guard the midpoint assertion: only meaningful when the two snapshots have
+    // distinct times (a very fast backend may stamp both within clock resolution).
+    if s0.time < s1.time {
+        let between = s0.time + (s1.time - s0.time) / 2;
+        assert_eq!(
+            catalog
+                .snapshot_as_of(&t, between)
+                .await
+                .unwrap()
+                .map(|s| s.id),
+            Some(s0.id),
+            "as_of between the two resolves to the earlier"
+        );
+    }
+    assert_eq!(
+        catalog
+            .snapshot_as_of(&t, s0.time - time::Duration::seconds(1))
+            .await
+            .unwrap(),
+        None,
+        "as_of before the first snapshot resolves to None"
+    );
+
     // schema at current: the two columns, in order, with loom logical types and
     // correct nullability. The contract seeds loom LOGICAL types (`long`/`string`);
     // `Catalog::schema()` returns logical types for every backend (the pg adapter

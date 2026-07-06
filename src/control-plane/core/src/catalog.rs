@@ -69,6 +69,14 @@ pub trait Catalog {
     /// The latest snapshot at which `table` is live. `NotFound` if the table does
     /// not exist at the catalog's current snapshot.
     async fn current_snapshot(&self, table: &TableRef) -> Result<Snapshot>;
+    /// The latest snapshot at or before `ts` at which `table` is live, or `None`
+    /// if the table has no live snapshot at/before that instant (created later, or
+    /// never existed). Time-travel resolution for a wall-clock `as_of` read.
+    async fn snapshot_as_of(
+        &self,
+        table: &TableRef,
+        ts: OffsetDateTime,
+    ) -> Result<Option<Snapshot>>;
     /// All snapshots at which `table` is live, oldest first. `NotFound` if the
     /// table never existed. The `page` request is accepted but not yet enforced;
     /// results are a single full page.
