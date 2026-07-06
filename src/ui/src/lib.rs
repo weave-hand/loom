@@ -3,6 +3,12 @@
 
 use std::fmt;
 
+mod completion;
+pub use completion::{
+    CompletionColumn, CompletionSchema, CompletionTable, SQL_KEYWORDS, Suggestion, SuggestionKind,
+    sql_completions,
+};
+
 /// Join a runtime API base with a request path. An empty base yields a relative
 /// (same-origin) URL; a non-empty base is used as a prefix with at most one `/`.
 #[must_use]
