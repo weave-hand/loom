@@ -125,6 +125,16 @@ horizon, and once a drop snapshot ages past the horizon physically drops the
 `inline_<tid>` table and deletes the mirror rows, gated on full reclaim so
 nothing time-travellable vanishes.
 
+Concurrent first-writes to a brand-new table are race-safe: `ensure_table` —
+the SELECT-live-then-INSERT that materializes the `iceberg_mirror.table` row for
+a `(namespace, name)` — wraps its INSERT in a SAVEPOINT, so when two writers
+race the `iceberg_table_one_live_idx` partial unique index the loser rolls back
+and re-SELECTs the winner's now-committed row, returning the same `table_id`
+instead of surfacing a raw `23505` (#388). Under READ COMMITTED the losing
+INSERT blocks until the winner commits, so exactly one live row is guaranteed to
+be found. `ensure_table` must run inside the caller's transaction; every
+production write path already does.
+
 ## Ontology and typed writes (actions)
 
 The ontology concern is loom's user-facing typed model: object types with a

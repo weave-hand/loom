@@ -10,7 +10,9 @@ use iceberg::table::Table;
 use sqlx::PgConnection;
 
 use crate::backend;
+use crate::iceberg_inline::is_duplicate_object_race;
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
+use sqlx::AssertSqlSafe;
 
 /// A neutral view of one committed Iceberg data file the projection writes.
 pub struct ProjectedFile {
@@ -82,6 +84,10 @@ pub async fn set_iceberg_snapshot_id(
 
 /// Ensure a live `iceberg_mirror.table` row exists for `(ns, name)`, returning its `table_id`.
 /// Inserts a new row beginning at `at` if none is currently live.
+///
+/// Must run inside an explicit transaction: the insert path opens a SAVEPOINT to
+/// absorb a concurrent first-write race (the loser resolves to the winner's
+/// `table_id`), and `SAVEPOINT` on a bare autocommit connection raises `25P01`.
 pub async fn ensure_table(
     conn: &mut PgConnection,
     ns: &str,
@@ -100,7 +106,16 @@ pub async fn ensure_table(
     {
         return Ok(tid);
     }
-    let tid = sqlx::query_scalar!(
+    // No live row yet: insert one, guarded by a savepoint so a lost first-write
+    // race (a concurrent writer inserted the live row for (ns, name) between our
+    // SELECT and INSERT) resolves to the winner's table_id instead of surfacing a
+    // raw 23505 that would poison the caller's outer transaction. Mirrors
+    // `run_idempotent_ddl`'s savepoint shape, but re-SELECTs the winner's id.
+    sqlx::query(AssertSqlSafe("savepoint loom_ensure_table"))
+        .execute(&mut *conn)
+        .await
+        .map_err(backend)?;
+    match sqlx::query_scalar!(
         "insert into iceberg_mirror.table (table_namespace, table_name, begin_snapshot) \
          values ($1, $2, $3) returning table_id as \"id!\"",
         ns,
@@ -109,8 +124,48 @@ pub async fn ensure_table(
     )
     .fetch_one(&mut *conn)
     .await
-    .map_err(backend)?;
-    Ok(tid)
+    {
+        Ok(tid) => {
+            sqlx::query(AssertSqlSafe("release savepoint loom_ensure_table"))
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            Ok(tid)
+        }
+        // A concurrent first-writer won the unique-index race. Undo our aborted
+        // INSERT, then re-SELECT the now-committed live row: under READ COMMITTED
+        // our INSERT blocked until the winner committed, and the partial unique
+        // index permits exactly one live (ns, name), so precisely one row is found.
+        Err(e) if is_duplicate_object_race(&e) => {
+            sqlx::query(AssertSqlSafe("rollback to savepoint loom_ensure_table"))
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            sqlx::query(AssertSqlSafe("release savepoint loom_ensure_table"))
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            let tid = sqlx::query_scalar!(
+                "select table_id as \"id!\" from iceberg_mirror.table \
+                 where table_namespace = $1 and table_name = $2 and end_snapshot is null",
+                ns,
+                name,
+            )
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(backend)?;
+            Ok(tid)
+        }
+        // A genuinely different failure: restore the pre-INSERT state so the outer
+        // transaction is usable, then surface it.
+        Err(e) => {
+            sqlx::query(AssertSqlSafe("rollback to savepoint loom_ensure_table"))
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            Err(backend(e))
+        }
+    }
 }
 
 /// Write the column rows for loom snapshot `at`.
