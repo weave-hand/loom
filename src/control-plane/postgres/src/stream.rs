@@ -270,7 +270,8 @@ pub(crate) async fn pg_stream_meta<'e, E: sqlx::PgExecutor<'e>>(
     table_id: i64,
 ) -> Result<Option<StreamMeta>> {
     let row = sqlx::query!(
-        "select bucket_count, kind, bucket_key from stream.stream_table where table_id = $1",
+        "select bucket_count, kind, bucket_key, changelog_table_id from stream.stream_table \
+         where table_id = $1",
         table_id,
     )
     .fetch_optional(ex)
@@ -286,8 +287,27 @@ pub(crate) async fn pg_stream_meta<'e, E: sqlx::PgExecutor<'e>>(
             bucket_count: r.bucket_count,
             kind,
             bucket_key: r.bucket_key,
+            changelog_table_id: r.changelog_table_id,
         }
     }))
+}
+
+/// Point a CDC table's registry row at its durable changelog table's mirror
+/// `table_id`. Idempotent overwrite; only meaningful for a `kind='cdc'` row.
+pub(crate) async fn pg_set_changelog_table_id<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table_id: i64,
+    changelog_table_id: i64,
+) -> Result<()> {
+    sqlx::query!(
+        "update stream.stream_table set changelog_table_id = $2 where table_id = $1",
+        table_id,
+        changelog_table_id,
+    )
+    .execute(ex)
+    .await
+    .map_err(backend)?;
+    Ok(())
 }
 
 #[async_trait]
@@ -310,5 +330,10 @@ impl StreamTables for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>> {
         pg_stream_meta(self.pool(), table_id).await
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn set_changelog_table_id(&self, table_id: i64, changelog_table_id: i64) -> Result<()> {
+        pg_set_changelog_table_id(self.pool(), table_id, changelog_table_id).await
     }
 }

@@ -652,6 +652,19 @@ pub(crate) fn augment_with_framing(
     }
 }
 
+/// The durable changelog table's `TableRef` for a CDC base table: same schema,
+/// name suffixed `__changelog` (slice 2b, spec §4).
+#[expect(
+    dead_code,
+    reason = "consumed by a later slice 2b task that creates the changelog table"
+)]
+pub(crate) fn changelog_table_ref(base: &TableRef) -> TableRef {
+    TableRef {
+        schema: base.schema.clone(),
+        name: format!("{}__changelog", base.name),
+    }
+}
+
 /// How [`register_files`] folds new files into the table's live set.
 #[derive(Clone)]
 pub enum WriteMode {

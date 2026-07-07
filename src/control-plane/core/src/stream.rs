@@ -24,6 +24,10 @@ pub struct StreamMeta {
     pub bucket_count: i32,
     pub kind: StreamKind,
     pub bucket_key: Option<String>,
+    /// The durable changelog table's `iceberg_mirror` `table_id` for a CDC table
+    /// (slice 2b); `None` for a log table or a CDC table not yet given its
+    /// changelog pointer. Soft pointer — no FK.
+    pub changelog_table_id: Option<i64>,
 }
 
 #[async_trait]
@@ -50,4 +54,7 @@ pub trait StreamTables {
     async fn declare_cdc(&self, table_id: i64, bucket_count: i32, bucket_key: &str) -> Result<()>;
     /// Full stream metadata for table_id if it is a declared stream table, else None.
     async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>>;
+    /// Point a CDC table's registry row at its durable changelog table's mirror
+    /// `table_id`. Idempotent overwrite; only meaningful for a `kind='cdc'` row.
+    async fn set_changelog_table_id(&self, table_id: i64, changelog_table_id: i64) -> Result<()>;
 }
