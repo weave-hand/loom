@@ -149,7 +149,11 @@ definitions are also deletable (`delete_link` by the `(name, from)` key,
 `delete_action` with steps/params/assignments cascading) — idempotent,
 definitions-only removals; physical columns and join tables are untouched, and
 a queued job naming a deleted action fails at resolve time exactly like any
-unknown action (#346). **Type mutation is deliberately narrower:** redefining
+unknown action (#346). A `delete_link` that a **derived property still names**
+is refused with a `Conflict` (409 at `DELETE /admin/links/{from}/{name}`,
+listing the referring derived-property names), since removing the link would
+silently strand that derived column from every reader; drop the derived
+property from the referring types first (#398). **Type mutation is deliberately narrower:** redefining
 a type via the `define_type` upsert (HTTP: `POST /admin/models`) is the
 documented update path — it clears and re-inserts properties with no schema-
 evolution guard — and type *deletion* stays deferred (`#fut-ontology-type-delete`:
@@ -165,7 +169,16 @@ keeping the `Ontology` trait itself decoupled from the catalog. Define-time
 chain validation was deliberately dropped as subsumed: once every link is
 column-validated and endpoint-typed, any chain of defined links is structurally
 sound by construction, and ad-hoc multi-hop query paths correctly stay a
-read-time 400.
+read-time 400. The raw `define_type` upsert (`POST /admin/models`), which
+bypasses the `bind` seam above, now **also validates a resolvable derived
+property's aggregate column** at define time: when the property's link and
+target type are defined, the `agg` column must exist on the target and be
+numeric for `Sum`/`Avg` (ordered for `Min`/`Max`), else a `Validation` 400 —
+closing the gap where a typo'd column compiled a broken `SUM(sub."nope")` that
+500'd every reader. Validation is best-effort: an unresolvable link or
+not-yet-defined target defers (the read path keeps omitting a missing link), so
+a type carrying a derived property can still be defined before its link/target
+exist (#398).
 
 Actions are the governed write path. Part 1 delivered named `ActionDef`s invoked
 via `POST /actions/{name}` — the first live `Action::Write` enforcement — as an
