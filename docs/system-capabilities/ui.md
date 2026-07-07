@@ -38,7 +38,7 @@ dev-only gallery bundle (`buck2 build //src/ui:gallery-bundle`, `src/gallery.rs`
 never ships in the login bundle.
 
 The **Transforms admin surface** (`src/ui/src/surfaces/transforms.rs`) is the first
-product consumer of the `SqlEditor` (`#road-ui-transforms-surface`): a list+drawer
+product consumer of the `SqlEditor` (#394): a list+drawer
 surface over the `/admin/transforms` control-plane routes that lets an admin browse,
 author, run, and delete both **physical** (SQL-over-tables) and **typed**
 (ontology-vocabulary) transforms. The list is a `DataTable` of
