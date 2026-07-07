@@ -23,11 +23,6 @@ only (resolved defects are recorded in git history, and the shipped behaviour in
 - [ ] **/search can serve superseded or tombstoned cold hits after an inline-shadow mutation** `{#iss-search-cold-superseded-hits area:query status:open from:2026-07-03-overwrite-vector-rebuild-design pr:- spec:2026-07-07-search-cold-suppression-design}`
   After a COW slice-1 inline-shadow UPDATE/DELETE (`#road-cow-inline-shadow`, #331), the cold Puffin index still holds the pre-mutation vector (a stale duplicate hit) or a tombstoned identity; the hot/cold merge adds the new row version but does not *suppress* the superseded cold entry, and the query-api row-filter post-filter drops it only when row filters happen to exist (`handler.rs:607`). Cold-suppression belongs to slice 2's compaction consolidation (`fut-cow-inline-shadow`), whose fold-into-new-base commit is a replace-shaped snapshot routing through the shared `rebuild_jobs_for` seam. Surfaced by the `2026-07-03-overwrite-vector-rebuild-design` investigation.
 
-## ui
-
-- [ ] **Non-401 fetch errors leave Catalog Schema/Preview tabs stuck on "Loading…"** `{#iss-ui-swallowed-fetch-errors area:ui status:open from:2026-07-04-loom-catalog-shell-design pr:- spec:2026-07-04-loom-catalog-shell-design}`
-  The Catalog detail and preview effects swallow non-401 errors (`Err(_) => {}` / just clear the loading flag) with no error surfaced, so a 500 renders an indefinite "Loading…" (Schema) or a silent empty (Preview). The Lineage tab degrades gracefully (falls back to the current-node-only DAG); detail/preview do not. Surface a small error line consistent with the rest of the UI.
-
 ## transform
 
 - [ ] **Lost terminal FinishRunFailed leaves a run stuck Running** `{#iss-transform-run-stuck-running area:transform status:open from:2026-07-04-transform-ergonomics-design pr:#351 spec:2026-07-07-transform-run-reconciliation-design}`
