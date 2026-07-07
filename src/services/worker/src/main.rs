@@ -12,13 +12,14 @@ use std::time::Duration;
 
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, COMPACT_JOB_KIND, FLUSH_JOB_KIND, GC_JOB_KIND, JobFailure,
-    TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND,
+    STREAM_CONSOLIDATE_JOB_KIND, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND,
 };
 use control_plane_worker::Worker;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::FlightTableClient;
 use tokio_util::sync::CancellationToken;
 use worker::compact::{CompactCtx, handle_compact};
+use worker::consolidate::handle_stream_consolidate;
 use worker::transform::{TransformCtx, handle_transform, handle_typed_transform};
 
 #[tokio::main]
@@ -85,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 BUILD_VECTOR_INDEX_JOB_KIND.to_string(),
                 TRANSFORM_JOB_KIND.to_string(),
                 TYPED_TRANSFORM_JOB_KIND.to_string(),
+                STREAM_CONSOLIDATE_JOB_KIND.to_string(),
             ],
             shutdown,
             move |job| {
@@ -107,6 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         k if k == BUILD_VECTOR_INDEX_JOB_KIND => {
                             worker::handler::handle_build_vector_index(flush, worker_tuning, job)
                                 .await
+                        }
+                        k if k == STREAM_CONSOLIDATE_JOB_KIND => {
+                            handle_stream_consolidate(flush, worker_tuning, job).await
                         }
                         other => Err(JobFailure::abandon(format!("unknown job kind: {other}"))),
                     }
