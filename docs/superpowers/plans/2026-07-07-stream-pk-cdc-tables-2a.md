@@ -641,7 +641,7 @@ git commit -m "feat(stream): emit -U/+U/-D CDC events with hash bucketing and of
 
 - [ ] **Step 1: Write the failing test**
 
-Create `model_cdc_declare.rs` (`loom_fixture_test`, ingest fixture): 
+Create `model_cdc_declare.rs` (`loom_fixture_test`, ingest fixture):
 - `POST /models/{type}?mode=cdc&buckets=2` for a type WITH an identity → 2xx; assert `stream_meta(tid)` is `Some { kind: Cdc, bucket_count: 2, bucket_key: Some("<identity>") }`.
 - Same call for a type with NO identity → `400`.
 - `mode=cdc` against a table already landed as batch (or `mode=stream` log) → `400`.
