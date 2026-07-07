@@ -81,13 +81,16 @@ async fn cdc_identity_stays_in_one_bucket_across_appends() {
     // Predeclare the table as CDC (keyed on `id`) BEFORE any inline_append --
     // inline_append has no CDC-declare parameter of its own; a real caller
     // declares the table via dataset->model binding, then appends. Mirrors
-    // `stream_reserved_schema.rs`'s direct ensure_table/next_snapshot use.
-    let mut conn = pool.acquire().await.expect("acquire");
-    let at0 = next_snapshot(&mut conn, None).await.expect("next_snapshot");
-    let tid = ensure_table(&mut conn, &table.schema, &table.name, at0)
+    // `stream_reserved_schema.rs`'s direct ensure_table/next_snapshot use:
+    // `ensure_table`'s savepoint retry requires an explicit transaction
+    // (SAVEPOINT is illegal outside one), so begin a tx and commit before
+    // declaring.
+    let mut tx = pool.begin().await.expect("begin");
+    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let tid = ensure_table(&mut tx, &table.schema, &table.name, at0)
         .await
         .expect("ensure_table");
-    drop(conn);
+    tx.commit().await.expect("commit");
     cp.declare_cdc(tid, bucket_count, "id")
         .await
         .expect("declare_cdc");

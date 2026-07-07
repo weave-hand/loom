@@ -134,12 +134,15 @@ async fn cdc_update_then_delete_emits_full_change_sequence() {
 
     // Declare the table CDC (keyed on `id`) BEFORE any write, mirroring
     // stream_cdc_bucket.rs: ensure_table to get the tid, declare_cdc, then seed.
-    let mut conn = pool.acquire().await.expect("acquire");
-    let at0 = next_snapshot(&mut conn, None).await.expect("next_snapshot");
-    let tid = ensure_table(&mut conn, &table.schema, &table.name, at0)
+    // `ensure_table`'s savepoint retry requires an explicit transaction
+    // (SAVEPOINT is illegal outside one), so begin a tx and commit before
+    // declaring.
+    let mut tx = pool.begin().await.expect("begin");
+    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let tid = ensure_table(&mut tx, &table.schema, &table.name, at0)
         .await
         .expect("ensure_table");
-    drop(conn);
+    tx.commit().await.expect("commit");
     cp.declare_cdc(tid, bucket_count, "id")
         .await
         .expect("declare_cdc");

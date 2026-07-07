@@ -72,13 +72,15 @@ async fn cdc_insert_update_delete_lifecycle_via_governed_actions() {
 
     // Declare the `main.widget` table CDC (keyed on `id`, 2 buckets) BEFORE any
     // write — mirrors `stream_cdc_emission.rs`/`stream_cdc_bucket.rs`: ensure_table
-    // to get the mirror table id, then declare_cdc.
-    let mut conn = pool.acquire().await.expect("acquire");
-    let at0 = next_snapshot(&mut conn, None).await.expect("next_snapshot");
-    let tid = ensure_table(&mut conn, "main", "widget", at0)
+    // to get the mirror table id, then declare_cdc. `ensure_table`'s savepoint
+    // retry requires an explicit transaction (SAVEPOINT is illegal outside one),
+    // so use `pool.begin()` and commit before declaring.
+    let mut tx = pool.begin().await.expect("begin");
+    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let tid = ensure_table(&mut tx, "main", "widget", at0)
         .await
         .expect("ensure_table");
-    drop(conn);
+    tx.commit().await.expect("commit");
     let bucket_count = 2;
     cp.declare_cdc(tid, bucket_count, "id")
         .await
