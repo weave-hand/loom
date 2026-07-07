@@ -4,6 +4,7 @@
 use serde_json::Value;
 
 use crate::str_field;
+use crate::{CompletionColumn, CompletionSchema, CompletionTable, DatasetDetail, TypeDetail};
 
 /// Whether a transform operates on physical tables or ontology types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -384,4 +385,48 @@ pub fn form_to_body(form: &TransformForm) -> Result<Value, Vec<FieldError>> {
         return Err(errors);
     }
     Ok(build_body(form))
+}
+
+/// Build an input-scoped completion schema from each physical input's dataset detail.
+#[must_use]
+pub fn schema_from_dataset_details(inputs: &[(TableRef, DatasetDetail)]) -> CompletionSchema {
+    CompletionSchema {
+        tables: inputs
+            .iter()
+            .map(|(tref, detail)| CompletionTable {
+                schema: Some(tref.schema.clone()),
+                name: tref.name.clone(),
+                columns: detail
+                    .columns
+                    .iter()
+                    .map(|c| CompletionColumn {
+                        name: c.name.clone(),
+                        ty: c.ty.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+/// Build an input-scoped completion schema from each typed input's ontology properties.
+#[must_use]
+pub fn schema_from_types(types: &[(String, TypeDetail)]) -> CompletionSchema {
+    CompletionSchema {
+        tables: types
+            .iter()
+            .map(|(name, detail)| CompletionTable {
+                schema: None,
+                name: name.clone(),
+                columns: detail
+                    .properties
+                    .iter()
+                    .map(|p| CompletionColumn {
+                        name: p.name.clone(),
+                        ty: p.ty.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }

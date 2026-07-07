@@ -13,7 +13,7 @@ mod transforms;
 pub use transforms::{
     FieldError, OutputMode, RunRow, TableRef, TransformBody, TransformDefView, TransformForm,
     TransformIo, TransformKind, TransformSummary, form_to_body, form_to_def, parse_runs,
-    parse_transform_def, parse_transform_list,
+    parse_transform_def, parse_transform_list, schema_from_dataset_details, schema_from_types,
 };
 
 /// Design-token hex values that must be consumed *outside* the CSS layer and so
