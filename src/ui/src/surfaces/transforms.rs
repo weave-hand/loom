@@ -303,6 +303,23 @@ fn form_fingerprint(form: &TransformForm) -> String {
     format!("{}:{}", form.kind.as_str(), inputs.join(","))
 }
 
+/// A content fingerprint of the completion schema (table + column names), used
+/// so the editor remounts when the input-scoped schema arrives — the Monaco
+/// SqlEditor captures `schema` only at mount, so a stable key would otherwise
+/// keep stale (pre-fetch) completions after the input set changes.
+fn schema_fingerprint(schema: &CompletionSchema) -> String {
+    let mut parts: Vec<String> = schema
+        .tables
+        .iter()
+        .map(|t| {
+            let cols: Vec<&str> = t.columns.iter().map(|c| c.name.as_str()).collect();
+            format!("{}[{}]", t.name, cols.join(","))
+        })
+        .collect();
+    parts.sort();
+    parts.join(";")
+}
+
 #[derive(Properties, PartialEq)]
 pub struct TransformEditorProps {
     pub form: TransformForm,
@@ -457,7 +474,11 @@ pub fn transform_editor(props: &TransformEditorProps) -> Html {
     } else {
         "New transform"
     };
-    let key = form_fingerprint(&props.form);
+    let key = format!(
+        "{}:{}",
+        form_fingerprint(&props.form),
+        schema_fingerprint(&props.schema)
+    );
     let submit = props.on_submit.clone();
     let run_adhoc = props.on_run_adhoc.clone();
     let cancel = props.on_cancel.clone();
