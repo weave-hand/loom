@@ -104,6 +104,10 @@ pub struct CatalogDrawerProps {
     pub detail: Option<DatasetDetail>,
     pub preview: Option<PreviewData>,
     pub preview_loading: bool,
+    /// A non-401 fetch error for the Schema tab, surfaced in place of "Loading…".
+    pub detail_error: Option<String>,
+    /// A non-401 fetch error for the Preview tab, surfaced in place of "Loading…".
+    pub preview_error: Option<String>,
     pub active_tab: AttrValue,
     pub on_tab: Callback<AttrValue>,
     /// The assembled mini-DAG for the selected dataset. `None` while the lineage
@@ -130,6 +134,7 @@ pub fn catalog_drawer(props: &CatalogDrawerProps) -> Html {
         .null { margin-left: auto; color: var(--loom-text-mut); font-size: 11px; }
         .updated { color: var(--loom-text-mut); font-size: 12px; margin: 8px 0 2px; }
         .empty { color: var(--loom-text-mut); font-size: 13px; padding: 8px 0; }
+        .error { color: var(--loom-danger); font-size: 13px; padding: 8px 0; }
         .lin-head { display: flex; align-items: center; justify-content: space-between;
                     gap: 8px; margin: 4px 0 10px; }
         .caption { color: var(--loom-text-mut); font-size: 12px; }
@@ -162,7 +167,11 @@ pub fn catalog_drawer(props: &CatalogDrawerProps) -> Html {
     ];
 
     let body = match props.active_tab.as_str() {
-        "preview" => preview_body(props.preview.as_ref(), props.preview_loading),
+        "preview" => preview_body(
+            props.preview.as_ref(),
+            props.preview_loading,
+            props.preview_error.as_deref(),
+        ),
         "lineage" => lineage_body(
             props.lineage.as_ref(),
             props.show_full,
@@ -171,7 +180,7 @@ pub fn catalog_drawer(props: &CatalogDrawerProps) -> Html {
         "history" => html! {
             <p class="empty">{ "Per-dataset run history isn't available on this instance yet." }</p>
         },
-        _ => schema_body(props.detail.as_ref()),
+        _ => schema_body(props.detail.as_ref(), props.detail_error.as_deref()),
     };
 
     html! {
@@ -184,7 +193,10 @@ pub fn catalog_drawer(props: &CatalogDrawerProps) -> Html {
 
 /// The Schema tab: each `SchemaCol` as `name  ty  [nullable]`, name accented, `ty`
 /// monospace. The dataset's snapshot time rides above as a small "updated" line.
-fn schema_body(detail: Option<&DatasetDetail>) -> Html {
+fn schema_body(detail: Option<&DatasetDetail>, error: Option<&str>) -> Html {
+    if let Some(e) = error {
+        return html! { <p class="error">{ e.to_owned() }</p> };
+    }
     let Some(detail) = detail else {
         return html! { <p class="empty">{ "Loading…" }</p> };
     };
@@ -210,7 +222,10 @@ fn schema_body(detail: Option<&DatasetDetail>) -> Html {
 
 /// The Preview tab: a plain `<table>` of sampled rows with a "Showing N · sampled"
 /// footnote. While the fetch is in flight, a "Loading…" line.
-fn preview_body(preview: Option<&PreviewData>, loading: bool) -> Html {
+fn preview_body(preview: Option<&PreviewData>, loading: bool, error: Option<&str>) -> Html {
+    if let Some(e) = error {
+        return html! { <p class="error">{ e.to_owned() }</p> };
+    }
     if loading {
         return html! { <p class="empty">{ "Loading…" }</p> };
     }
