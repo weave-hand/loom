@@ -55,11 +55,14 @@ create table stream.stream_table (
 ```
 
 The row's **presence** is the "this is a log table" marker; `bucket_count` is
-fixed at creation. **Immutable:** a write to an existing table whose `mode`/`buckets`
-conflict with its recorded state (declaring `mode=stream` on a table with no
-`stream_table` row, omitting it on a table that has one, or a different `buckets`)
-is a `400`. A write with no `mode` to a brand-new table creates an ordinary batch
-table exactly as today.
+fixed at creation. The flag is honored at creation and **validated when present**
+on later writes; it is never *required* on later writes, because stamping is
+driven by the recorded `stream_table` row, not the request flag. **Immutable —
+`400` on:** `mode=stream` against an existing **batch** table (no conversion), or
+`mode=stream&buckets=M` where `M` ≠ the recorded `bucket_count`. A later write that
+**omits** the flag simply appends using the table's recorded mode (a stream table
+still gets stamped; a batch table stays batch). A no-`mode` write to a brand-new
+table creates an ordinary batch table exactly as today.
 
 This rides a new **`StreamTables`** concern built as the standard five-layer stack
 (core trait → memory fake → postgres adapter → testkit contract), mirroring
