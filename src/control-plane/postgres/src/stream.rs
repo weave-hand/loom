@@ -1,7 +1,101 @@
 use async_trait::async_trait;
-use control_plane_core::{BucketOffsets, ControlPlaneError, Result, StreamTables};
+use control_plane_core::{BucketOffsets, ControlPlaneError, Result, StreamTables, TableRef};
 
 use crate::{PgControlPlane, backend};
+
+/// Reconcile a write's REQUESTED stream mode (`stream_buckets`) against the mode
+/// the mirror table `tid` already records, mirroring `inline_append`'s arms exactly
+/// so the inline and direct-write Parquet paths cannot diverge. Returns
+/// `Some(bucket_count)` iff this table is a (now-)declared log table (offset
+/// stamping applies); `None` for a batch table (no stamping).
+///
+/// Rejections (all raised BEFORE any `pg_declare_stream`, per the Plan 1a fix):
+/// a `< 1` requested count → `Validation`; a batch→stream conversion of a
+/// PRE-EXISTING table → `Validation`; a bucket-count mismatch against an existing
+/// stream table → `Conflict`. For a fresh `(Some(n), None)` request on a
+/// brand-new table (`!pre_existing`) it declares the stream and honours the
+/// recorded count (a concurrent first-writer may have won the declare with a
+/// different count — re-read and reject on mismatch). Runs entirely on the
+/// caller's transaction so the declare commits iff the write does.
+///
+/// `pre_existing`: whether the table's mirror row existed BEFORE this write began
+/// (the batch→stream conversion guard). `tid`: the mirror table id (already
+/// ensured by the caller).
+pub(crate) async fn reconcile_stream_mode(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    stream_buckets: Option<i32>,
+    pre_existing: bool,
+    table: &TableRef,
+) -> Result<Option<i32>> {
+    // Validate the REQUESTED bucket count BEFORE any declare: a `< 1` request must
+    // surface as `Validation`, not as the raw `bucket_count_positive` CHECK violation
+    // that `pg_declare_stream` below would otherwise raise (an opaque `Backend` error).
+    if let Some(n) = stream_buckets
+        && n < 1
+    {
+        return Err(ControlPlaneError::Validation(format!(
+            "stream bucket_count must be >= 1, got {n}"
+        )));
+    }
+
+    let existing = pg_stream_bucket_count(&mut *conn, tid).await?;
+
+    // `effective` = Some(bucket_count) iff this table is a (now-)declared log table.
+    let effective: Option<i32> = match (stream_buckets, existing) {
+        (Some(n), Some(m)) if n != m => {
+            return Err(ControlPlaneError::Conflict(format!(
+                "stream bucket count mismatch for {}.{}: requested {n}, table has {m}",
+                table.schema, table.name
+            )));
+        }
+        (Some(_), Some(m)) => Some(m),
+        (Some(n), None) => {
+            if pre_existing {
+                return Err(ControlPlaneError::Validation(format!(
+                    "cannot convert existing batch table {}.{} to a stream table",
+                    table.schema, table.name
+                )));
+            }
+            pg_declare_stream(&mut *conn, tid, n).await?;
+            // A concurrent first-writer may have won the declare with a different
+            // count (our ON CONFLICT DO NOTHING then no-ops). Re-read the recorded
+            // count and honour it, so the rows we stamp always agree with
+            // stream_table.bucket_count.
+            let stored = pg_stream_bucket_count(&mut *conn, tid)
+                .await?
+                .ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        "stream_table row missing immediately after declare".into(),
+                    )
+                })?;
+            if stored != n {
+                return Err(ControlPlaneError::Conflict(format!(
+                    "stream bucket count mismatch for {}.{}: requested {n}, table has {stored}",
+                    table.schema, table.name
+                )));
+            }
+            Some(stored)
+        }
+        (None, existing) => existing,
+    };
+
+    // Defense in depth: a non-positive effective bucket count would otherwise
+    // reach the `row % bc` arithmetic in the callers and panic (division/remainder
+    // by zero, or a meaningless negative modulus). Reject it cleanly here — this is
+    // currently unreachable (callers only ever pass positive counts, and the DB
+    // CHECK backstops it), but a future caller threading an external `?buckets=N`
+    // value through must fail with a `Validation` error, not a panic.
+    if let Some(bc) = effective
+        && bc < 1
+    {
+        return Err(ControlPlaneError::Validation(format!(
+            "stream bucket_count must be >= 1, got {bc}"
+        )));
+    }
+
+    Ok(effective)
+}
 
 /// Allocate a contiguous run of `count` offsets for `(table_id, bucket)` on the
 /// given executor, returning the first offset. Usable inside a transaction (pass

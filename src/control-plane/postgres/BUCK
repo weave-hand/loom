@@ -272,6 +272,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-bucket-check",
+    crate = "stream_bucket_check",
+    srcs = ["tests/stream_bucket_check.rs"],
+    crate_root = "tests/stream_bucket_check.rs",
+    deps = [":postgres", "//third-party:sqlx", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "ontology",
     crate = "ontology",
     srcs = ["tests/ontology.rs"],
@@ -810,6 +818,61 @@ loom_fixture_test(
         "//third-party:arrow-schema",
         "//third-party:iceberg",
         "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-parquet-atomic",
+    crate = "stream_parquet_atomic",
+    srcs = ["tests/stream_parquet_atomic.rs"],
+    crate_root = "tests/stream_parquet_atomic.rs",
+    deps = [
+        "//src/testing:seed",
+        "//third-party:parquet",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-reserved-schema",
+    crate = "stream_reserved_schema",
+    srcs = ["tests/stream_reserved_schema.rs"],
+    crate_root = "tests/stream_reserved_schema.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-flush-persist",
+    crate = "stream_flush_persist",
+    srcs = ["tests/stream_flush_persist.rs"],
+    crate_root = "tests/stream_flush_persist.rs",
+    deps = [
+        "//src/testing:seed",
+        "//third-party:parquet",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",

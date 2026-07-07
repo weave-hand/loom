@@ -121,6 +121,16 @@ async fn flush_locked(
     // `rebuild_jobs_for`, so the dedup keys always collide across paths.
     let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;
 
+    // A stream/log table's reserved framing columns ride into the Iceberg physical
+    // schema + mirror via `append_parquet_snapshot`'s `include_framing`; `columns`
+    // above stays the plain logical (user) list either way — batch tables (`false`)
+    // are byte-identical to before this parameter existed.
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    let include_framing = crate::stream::pg_stream_bucket_count(&mut *conn, tid)
+        .await?
+        .is_some();
+    drop(conn);
+
     let snap = append_parquet_snapshot(
         pool,
         catalog,
@@ -133,6 +143,7 @@ async fn flush_locked(
             jobs: &rebuild_jobs,
             ..CommitExtras::default()
         },
+        include_framing,
     )
     .await?;
 

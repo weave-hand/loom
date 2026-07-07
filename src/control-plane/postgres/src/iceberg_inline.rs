@@ -32,7 +32,9 @@ use crate::iceberg_mirror::{
     live_table_id, next_snapshot, project_columns,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
-use crate::iceberg_type::{logical_from_iceberg, mirror_column_type, pg_type_for};
+use crate::iceberg_type::{
+    iceberg_physical_type, logical_from_iceberg, mirror_column_type, pg_type_for,
+};
 use crate::lineage::pg_emit;
 
 /// The Postgres name of a table's inline storage. `table_id` is an internal i64.
@@ -421,7 +423,27 @@ pub async fn inline_append(
     // 1. Snapshot (no Iceberg backing) + ensure mirror table/columns exist.
     let at = next_snapshot(conn, None).await?;
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
-    let pcols = columns
+
+    // Read whether this table is ALREADY a declared log table before building the
+    // mirror column list below, so a stream table's reserved framing columns can be
+    // registered in the mirror from the moment it is declared (and on every append
+    // thereafter, so the projected list always matches what's already live). Reused
+    // below by the stream-mode reconciliation, so this reads `stream.stream_table`
+    // only once per call.
+    let existing = crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?;
+    // Whether framing should be registered in the mirror for THIS append: either the
+    // table is already a declared stream table (`existing.is_some()`), or this call
+    // is declaring it for the first time (`stream_buckets.is_some()` on a BRAND NEW
+    // table, `!pre_existing`). Deliberately excludes the "existing BATCH table asked
+    // to become a stream table" case (`stream_buckets.is_some() && pre_existing &&
+    // existing.is_none()`) — that conversion is rejected below with its own
+    // `Validation` message, and must reach that check via the ORIGINAL identical-
+    // schema comparison, not get relabeled as a same-transaction non-nullable
+    // "additive" column error by the mismatched pcols/live lengths this would
+    // otherwise cause.
+    let is_stream = existing.is_some() || (stream_buckets.is_some() && !pre_existing);
+
+    let mut pcols = columns
         .iter()
         .enumerate()
         .map(|(i, c)| {
@@ -437,6 +459,31 @@ pub async fn inline_append(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    // Stream tables persist their log framing as reserved physical columns; register
+    // them in the mirror alongside the user columns so flush/read see a consistent
+    // schema. Hidden from logical reads by `is_reserved`. Ordered AFTER the user
+    // columns, matching the order `ensure_iceberg_table`'s `include_framing` appends
+    // them in the Iceberg physical schema at flush time.
+    if is_stream {
+        let base = pcols.len() as i64;
+        for (i, spec) in crate::iceberg_landing::framing_column_specs()
+            .iter()
+            .enumerate()
+        {
+            pcols.push(ProjectedColumn {
+                order: base + 1 + i as i64,
+                name: spec.name.clone(),
+                iceberg_type: iceberg_physical_type(&spec.ty)
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            format!("unknown framing logical type `{}`", spec.ty).into(),
+                        )
+                    })?
+                    .to_string(),
+                nullable: spec.nullable,
+            });
+        }
+    }
     let live = live_columns(conn, tid, at).await?;
     if live.is_empty() {
         project_columns(conn, tid, at, &pcols).await?;
@@ -455,60 +502,14 @@ pub async fn inline_append(
     // 2. Ensure inline storage exists (transactional DDL).
     ensure_inline_schema(&mut *conn, tid, columns).await?;
 
-    // Reconcile stream mode. `effective` = Some(bucket_count) iff this table is a
-    // (now-)declared log table; None => batch table (no offset stamping).
-    let existing = crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?;
-    let effective: Option<i32> = match (stream_buckets, existing) {
-        (Some(n), Some(m)) if n != m => {
-            return Err(ControlPlaneError::Conflict(format!(
-                "stream bucket count mismatch for {}.{}: requested {n}, table has {m}",
-                table.schema, table.name
-            )));
-        }
-        (Some(_), Some(m)) => Some(m),
-        (Some(n), None) => {
-            if pre_existing {
-                return Err(ControlPlaneError::Validation(format!(
-                    "cannot convert existing batch table {}.{} to a stream table",
-                    table.schema, table.name
-                )));
-            }
-            crate::stream::pg_declare_stream(&mut *conn, tid, n).await?;
-            // A concurrent first-writer may have won the declare with a different
-            // count (our ON CONFLICT DO NOTHING then no-ops). Re-read the recorded
-            // count and honour it, so the rows we stamp always agree with
-            // stream_table.bucket_count.
-            let stored = crate::stream::pg_stream_bucket_count(&mut *conn, tid)
-                .await?
-                .ok_or_else(|| {
-                    ControlPlaneError::Backend(
-                        "stream_table row missing immediately after declare".into(),
-                    )
-                })?;
-            if stored != n {
-                return Err(ControlPlaneError::Conflict(format!(
-                    "stream bucket count mismatch for {}.{}: requested {n}, table has {stored}",
-                    table.schema, table.name
-                )));
-            }
-            Some(stored)
-        }
-        (None, existing) => existing,
-    };
-
-    // Defense in depth: a non-positive effective bucket count would otherwise
-    // reach the `row % bc` arithmetic below and panic (division/remainder by
-    // zero, or a meaningless negative modulus). Reject it cleanly here — this is
-    // currently unreachable (callers only ever pass positive counts), but a future
-    // caller threading an external `?buckets=N` value through must fail with a
-    // `Validation` error, not a panic.
-    if let Some(bc) = effective
-        && bc < 1
-    {
-        return Err(ControlPlaneError::Validation(format!(
-            "stream bucket_count must be >= 1, got {bc}"
-        )));
-    }
+    // Reconcile stream mode (shared with the direct-write Parquet path). `effective`
+    // = Some(bucket_count) iff this table is a (now-)declared log table; None =>
+    // batch table (no offset stamping). Rejects a `< 1` request (Validation), a
+    // batch->stream conversion (Validation), and a bucket-count mismatch (Conflict),
+    // all BEFORE any declare — on this same transaction.
+    let effective: Option<i32> =
+        crate::stream::reconcile_stream_mode(&mut *conn, tid, stream_buckets, pre_existing, table)
+            .await?;
 
     // 3. Insert each row with the new begin_snapshot. The statement text is
     //    loop-invariant — only the binds change per row.
@@ -1113,7 +1114,6 @@ impl IcebergCatalog {
         table: &TableRef,
         at: SnapshotId,
     ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
-        use control_plane_core::Catalog;
         let mut conn = self.pool.acquire().await.map_err(backend)?;
         let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
             return Ok(None);
@@ -1122,9 +1122,15 @@ impl IcebergCatalog {
             return Ok(None);
         }
 
-        let schema = self.schema(table, at).await?;
-        let col_list = schema
-            .columns
+        // The PHYSICAL (unfiltered) column read, not the logical `schema()` — for a
+        // stream table this also carries the reserved `loom_change_kind`/`loom_bucket`/
+        // `loom_offset` framing columns (registered in the mirror at stream
+        // declaration; real physical columns of `inline_<tid>` since Plan 1a), so the
+        // flush path's SELECT and Arrow schema carry them into the written Parquet.
+        // For a batch table `physical_columns` returns exactly the user columns (no
+        // framing was ever registered), so this SELECT is byte-identical to before.
+        let columns = self.physical_columns(tid, at).await?;
+        let col_list = columns
             .iter()
             .map(|c| quote_ident(&c.name))
             .collect::<Vec<_>>()
@@ -1149,8 +1155,7 @@ impl IcebergCatalog {
 
         // Resolve every column's logical type ONCE (the mirror should never hold
         // an unrecognized one) — same failure text the per-column arms used to emit.
-        let types: Vec<BaseType> = schema
-            .columns
+        let types: Vec<BaseType> = columns
             .iter()
             .map(|c| {
                 resolve_logical(&c.ty).ok_or_else(|| {
@@ -1163,8 +1168,7 @@ impl IcebergCatalog {
 
         // Build arrow arrays per column. `column_array` indexes positional columns;
         // the data columns start at index 1 (loom_row_id is column 0), so pass `i + 1`.
-        let fields: Vec<Field> = schema
-            .columns
+        let fields: Vec<Field> = columns
             .iter()
             .zip(&types)
             .map(|(c, ty)| arrow_field(&c.name, *ty, c.nullable))

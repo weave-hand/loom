@@ -139,7 +139,9 @@ impl Tx for IcebergTx {
         //    connection (the same pre-tx create pattern `append_parquet_snapshot` uses;
         //    a bare empty table is the only artifact if the held tx later rolls back).
         for (table, cols) in &staged_creates {
-            ensure_iceberg_table(&catalog, table, cols).await?;
+            // Transform-committed tables don't carry stream framing (out of this
+            // slice's scope — Plan 1b Task 5 is the direct-write parity task).
+            ensure_iceberg_table(&catalog, table, cols, false).await?;
         }
         // 2. One snapshot for this unit of work, allocated in the held tx.
         let at = next_snapshot(&mut tx, None).await?;
