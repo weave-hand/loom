@@ -9,6 +9,12 @@ pub use completion::{
     cursor_context, sql_completions,
 };
 
+mod transforms;
+pub use transforms::{
+    OutputMode, RunRow, TableRef, TransformBody, TransformDefView, TransformIo, TransformKind,
+    TransformSummary, parse_runs, parse_transform_def, parse_transform_list,
+};
+
 /// Design-token hex values that must be consumed *outside* the CSS layer and so
 /// can't be read as `var(--loom-*)`. The `:root` custom properties in
 /// `components/global.rs` and the Monaco editor theme in `components/sql_editor.rs`
@@ -345,7 +351,7 @@ pub struct TypeDetail {
     pub identity: Option<String>,
 }
 
-fn str_field(v: &Value, k: &str) -> String {
+pub(crate) fn str_field(v: &Value, k: &str) -> String {
     v.get(k)
         .and_then(Value::as_str)
         .unwrap_or_default()
