@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use control_plane_core::{
     ActionDef, ActionName, ControlPlaneError, LinkDef, ObjectType, Ontology, Page, PageReq, Result,
-    TableRef, TypeName, VectorIndexDef,
+    TableRef, TransformBody, TransformName, TriggerNode, TypeName, VectorIndexDef,
+    validate_no_multi_def_trigger_cycle,
 };
 
 use crate::MemoryControlPlane;
@@ -31,6 +32,29 @@ impl Ontology for MemoryControlPlane {
             .types
             .get(&ty.name.0)
             .is_none_or(|prev| prev.table != ty.table);
+        if changed {
+            // Validate the data-triggered DAG against the WOULD-BE binding before
+            // committing the rebind, so a cycle-creating rebind leaves state untouched.
+            let mut type_tables: std::collections::HashMap<String, TableRef> = ont
+                .types
+                .iter()
+                .map(|(n, t)| (n.clone(), t.table.clone()))
+                .collect();
+            type_tables.insert(ty.name.0.clone(), ty.table.clone()); // the new binding wins
+            let dt: Vec<(TransformName, TransformBody)> = {
+                let t = self.transforms.lock();
+                t.defs
+                    .values()
+                    .filter(|d| d.on_input_commit)
+                    .map(|d| (d.name.clone(), d.body.clone()))
+                    .collect()
+            }; // transforms lock dropped here (ontology still held — ontology-first order)
+            let nodes: Vec<TriggerNode> = dt
+                .iter()
+                .map(|(n, b)| TriggerNode::resolve(n, b, &type_tables))
+                .collect();
+            validate_no_multi_def_trigger_cycle(&nodes)?;
+        }
         let event = changed.then(|| control_plane_core::type_table_binding_event(&ty));
         ont.types.insert(ty.name.0.clone(), ty);
         if let Some(event) = event {

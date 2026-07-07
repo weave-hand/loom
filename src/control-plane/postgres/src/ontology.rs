@@ -102,6 +102,10 @@ impl Ontology for PgControlPlane {
             .map_err(backend)?;
         }
         if binding_changed {
+            // A binding change can create a trigger cycle among data-triggered defs
+            // whose typed I/O resolves through this type. Re-validate the DAG against
+            // the just-applied binding and reject a rebind that would close a cycle.
+            crate::transforms::pg_validate_rebind_cycle(&mut tx).await?;
             crate::lineage::pg_emit(&mut *tx, &control_plane_core::type_table_binding_event(&ty))
                 .await?;
         }

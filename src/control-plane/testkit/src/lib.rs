@@ -4743,6 +4743,65 @@ where
         .await
         .unwrap();
     assert_eq!(named.items.len(), 5, "runs survive definition deletion");
+
+    // --- rebind cycle: a define_type that re-points a binding into a trigger
+    // cycle among data-triggered defs is rejected (not silently allowed) ---
+    // `tn` is a closure scoped to `ontology_contract`, NOT visible here, so
+    // define a local one (TypeName is module-level imported).
+    let tn = |s: &str| TypeName(s.to_string());
+    let ta = tref("main", "rc_a");
+    let tb = tref("main", "rc_b");
+    let tc = tref("main", "rc_c");
+    let mk_type = |name: &str, table: &TableRef| ObjectType {
+        name: tn(name),
+        table: table.clone(),
+        properties: vec![PropertyDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
+        }],
+        derived: vec![],
+        identity: Some("id".into()),
+    };
+    cp.define_type(mk_type("RcA", &ta)).await.unwrap();
+    cp.define_type(mk_type("RcB", &tb)).await.unwrap();
+    cp.define_type(mk_type("RcC", &tc)).await.unwrap();
+
+    let typed_dt = |name: &str, input: &str, output: &str| TransformDef {
+        name: TransformName(name.into()),
+        body: TransformBody::Typed {
+            inputs: vec![input.into()],
+            output: output.into(),
+            sql: format!("select * from {input}"),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: true,
+    };
+    // X: RcA -> RcB, Y: RcB -> RcC — a linear chain, no cycle at define time.
+    cp.define_transform(typed_dt("rc-x", "RcA", "RcB"))
+        .await
+        .expect("define X");
+    cp.define_transform(typed_dt("rc-y", "RcB", "RcC"))
+        .await
+        .expect("define Y");
+
+    // Rebind RcC onto RcA's table: Y now outputs where X reads → X->Y->X cycle.
+    // The rebind MUST be rejected.
+    let rebind = cp.define_type(mk_type("RcC", &ta)).await;
+    assert!(
+        matches!(
+            rebind,
+            Err(control_plane_core::ControlPlaneError::Validation(_))
+        ),
+        "a rebind that creates a trigger cycle is rejected: {rebind:?}"
+    );
+    // ... and the rejected rebind left RcC's binding untouched (no partial mutation):
+    // a subsequent same-table redefine of RcC (its ORIGINAL table) is a no-op success.
+    cp.define_type(mk_type("RcC", &tc))
+        .await
+        .expect("RcC still bound to its original table");
 }
 
 /// A `DataFile` with representative stats, copying the full 7-field literal
