@@ -43,6 +43,14 @@ pub struct CommitExtras<'a> {
     /// (the inline flush) leave this empty so already-fired data cannot
     /// re-fire on its own flush. Empty slice (the `Default`) fires nothing.
     pub data_trigger_tables: &'a [TableRef],
+    /// Reuse this ALREADY-ALLOCATED loom snapshot for the mirror projection instead
+    /// of allocating a fresh one. Used by the atomic direct-write stream path, which
+    /// must allocate the snapshot (and the mirror table row it keys offset allocation
+    /// by) on the shared tx BEFORE the Parquet write, then have this commit project
+    /// columns/files at that same snapshot — so the whole write is ONE snapshot, not
+    /// a spurious empty seed plus the commit's. `None` (the `Default`) allocates a
+    /// fresh snapshot, exactly as before this field existed (every other caller).
+    pub reuse_snapshot: Option<SnapshotId>,
 }
 
 /// Mark inline rows `loom_row_id = ANY(row_ids)` of `iceberg_mirror.inline_<table_id>`
@@ -110,6 +118,12 @@ impl SqlCatalog {
     ///
     /// Returns the mirror snapshot it allocated so callers can use it for further
     /// in-tx work (e.g. end-capping inline rows at the same snapshot).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one cohesive commit-projection call: the tx + table identity + \
+                  staged snapshot + precomputed columns/files + overwrite mode, plus \
+                  the optional reuse-snapshot for the atomic stream direct-write path"
+    )]
     async fn write_mirror(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -118,6 +132,7 @@ impl SqlCatalog {
         columns: &[ProjectedColumn],
         files: &[ProjectedFile],
         overwrite: bool,
+        reuse_snapshot: Option<SnapshotId>,
     ) -> control_plane_core::Result<SnapshotId> {
         use crate::iceberg_mirror::{
             end_cap_live_data_files, ensure_table, next_snapshot, project_files,
@@ -128,7 +143,18 @@ impl SqlCatalog {
         let name = ident.name();
 
         let conn = &mut **tx;
-        let at = next_snapshot(conn, staged_snap).await?;
+        // The atomic direct-write stream path pre-allocated the snapshot (and the
+        // mirror table row keyed by offset allocation) on this same tx before the
+        // Parquet write; reuse it so the write is ONE snapshot. Correlate it with
+        // the staged Iceberg snapshot id (set NULL at pre-allocation) for parity with
+        // the fresh-allocation path. Every other caller passes `None` → fresh alloc.
+        let at = match reuse_snapshot {
+            Some(at) => {
+                crate::iceberg_mirror::set_iceberg_snapshot_id(conn, at, staged_snap).await?;
+                at
+            }
+            None => next_snapshot(conn, staged_snap).await?,
+        };
         let tid = ensure_table(conn, &ns, name, at).await?;
         // Overwrite/replace: end-cap the pre-existing live files at `at` BEFORE
         // projecting the new ones. The new `project_files` rows are written after this
@@ -267,6 +293,7 @@ impl SqlCatalog {
                 &mirror_columns,
                 &mirror_files,
                 extras.overwrite,
+                extras.reuse_snapshot,
             )
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;

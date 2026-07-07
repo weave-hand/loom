@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update iceberg_mirror.snapshot set iceberg_snapshot_id = $1 where snapshot_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7fb82602d9453f767e8c2b254979c5037fe47df0fe8bd983f5d64697eaa1b460"
+}

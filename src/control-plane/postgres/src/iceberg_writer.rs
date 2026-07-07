@@ -24,6 +24,7 @@ use iceberg::{
     Catalog, ErrorKind, Namespace, NamespaceIdent, Result, TableCommit, TableCreation, TableIdent,
 };
 use parquet::file::properties::WriterProperties;
+use sqlx::{Postgres, Transaction as SqlxTransaction};
 
 use control_plane_core::LineageEvent;
 
@@ -32,7 +33,7 @@ use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
 /// Bound on commit retries after a lost pointer CAS. A conflict at the cap
 /// propagates the original (still retryable-flagged) error so a higher layer
 /// (e.g. the queue worker's RetryPolicy) can re-drive it.
-const COMMIT_MAX_RETRIES: u32 = 5;
+pub(crate) const COMMIT_MAX_RETRIES: u32 = 5;
 /// Base delay for exponential backoff between commit attempts.
 const COMMIT_BACKOFF_BASE: Duration = Duration::from_millis(5);
 /// Cap on the exponential backoff delay.
@@ -121,7 +122,11 @@ async fn commit_append_with_retry(
 /// different jitter offset. When `writer_path` is `None` (empty append, no data
 /// files), the jitter falls back to hashing the table identity alone. No `rand`
 /// crate — the jitter is a deterministic hash, which is enough to break ties.
-fn commit_backoff(ident: &TableIdent, attempt: u32, writer_path: Option<&str>) -> Duration {
+pub(crate) fn commit_backoff(
+    ident: &TableIdent,
+    attempt: u32,
+    writer_path: Option<&str>,
+) -> Duration {
     let exp = COMMIT_BACKOFF_BASE
         .saturating_mul(1u32 << attempt.min(16))
         .min(COMMIT_BACKOFF_CAP);
@@ -277,6 +282,151 @@ pub async fn append_batches_with_lineage(
         },
     )
     .await
+}
+
+/// A per-call `Catalog` decorator like [`CommitExtrasCatalog`], but which drives the
+/// one `update_table` the iceberg commit performs onto a **caller-provided open
+/// Postgres transaction** (via [`SqlCatalog::do_update_table_in_tx`]) rather than a
+/// fresh one — so the pointer CAS + mirror projection + extras commit or roll back
+/// with whatever the caller already staged on that tx (offset allocation, for the
+/// atomic stream direct-write path). Holds the tx behind a `tokio::sync::Mutex` (NOT
+/// `RefCell`): the `Catalog` trait is `Send + Sync`, and `Mutex<&mut Transaction>` is
+/// `Sync` because access is serialized (`&mut Transaction` is `Send`). Constructed
+/// fresh per append (holds borrows), so there is no shared state across commits.
+struct TxCommitCatalog<'a, 'c> {
+    inner: &'a SqlCatalog,
+    extras: CommitExtras<'a>,
+    tx: tokio::sync::Mutex<&'a mut SqlxTransaction<'c, Postgres>>,
+}
+
+impl std::fmt::Debug for TxCommitCatalog<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TxCommitCatalog")
+            .field("lineage", &self.extras.lineage.is_some())
+            .field("reuse_snapshot", &self.extras.reuse_snapshot.is_some())
+            .field("overwrite", &self.extras.overwrite)
+            .field("jobs", &self.extras.jobs.len())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl Catalog for TxCommitCatalog<'_, '_> {
+    /// The one method that differs: run the commit through `do_update_table_in_tx`
+    /// on the caller's open transaction (under the mutex) with the extras, so they
+    /// land or roll back atomically with what the caller already staged. On a lost
+    /// CAS this returns the retryable `CatalogCommitConflicts` WITHOUT touching the
+    /// tx — the caller (see `iceberg_landing::land_parquet`) rolls it back to free
+    /// the offset run and orphans the just-written Parquet, then retries.
+    async fn update_table(&self, commit: TableCommit) -> Result<Table> {
+        let mut guard = self.tx.lock().await;
+        self.inner
+            .do_update_table_in_tx(&mut guard, commit, self.extras.clone())
+            .await
+    }
+
+    // --- pure delegation below ---
+    async fn list_namespaces(
+        &self,
+        parent: Option<&NamespaceIdent>,
+    ) -> Result<Vec<NamespaceIdent>> {
+        self.inner.list_namespaces(parent).await
+    }
+    async fn create_namespace(
+        &self,
+        namespace: &NamespaceIdent,
+        properties: HashMap<String, String>,
+    ) -> Result<Namespace> {
+        self.inner.create_namespace(namespace, properties).await
+    }
+    async fn get_namespace(&self, namespace: &NamespaceIdent) -> Result<Namespace> {
+        self.inner.get_namespace(namespace).await
+    }
+    async fn namespace_exists(&self, namespace: &NamespaceIdent) -> Result<bool> {
+        self.inner.namespace_exists(namespace).await
+    }
+    async fn update_namespace(
+        &self,
+        namespace: &NamespaceIdent,
+        properties: HashMap<String, String>,
+    ) -> Result<()> {
+        self.inner.update_namespace(namespace, properties).await
+    }
+    async fn drop_namespace(&self, namespace: &NamespaceIdent) -> Result<()> {
+        self.inner.drop_namespace(namespace).await
+    }
+    async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
+        self.inner.list_tables(namespace).await
+    }
+    async fn create_table(
+        &self,
+        namespace: &NamespaceIdent,
+        creation: TableCreation,
+    ) -> Result<Table> {
+        self.inner.create_table(namespace, creation).await
+    }
+    async fn load_table(&self, table: &TableIdent) -> Result<Table> {
+        self.inner.load_table(table).await
+    }
+    async fn drop_table(&self, table: &TableIdent) -> Result<()> {
+        self.inner.drop_table(table).await
+    }
+    async fn table_exists(&self, table: &TableIdent) -> Result<bool> {
+        self.inner.table_exists(table).await
+    }
+    async fn rename_table(&self, src: &TableIdent, dest: &TableIdent) -> Result<()> {
+        self.inner.rename_table(src, dest).await
+    }
+    async fn register_table(&self, table: &TableIdent, metadata_location: String) -> Result<Table> {
+        self.inner.register_table(table, metadata_location).await
+    }
+    async fn purge_table(&self, table: &TableIdent) -> Result<()> {
+        self.inner.purge_table(table).await
+    }
+}
+
+/// Write `batches` as fresh (UUID-pathed) Parquet under `table`'s location and commit
+/// them as a single `fast_append`, driving the CAS commit onto the caller's OPEN
+/// Postgres transaction `tx` (via [`TxCommitCatalog`]) so the snapshot + mirror +
+/// `extras` land or roll back with whatever the caller already staged on `tx`.
+///
+/// SINGLE attempt — does NOT begin/commit `tx` and does NOT retry internally: a lost
+/// CAS returns the retryable `CatalogCommitConflicts` unchanged, WITHOUT touching
+/// `tx`. Because absolute offsets are baked into the Parquet before this write, a
+/// retry must roll back (freeing the offset run), re-allocate, re-stamp, and re-write
+/// fresh Parquet — retry/reload is therefore the caller's job (see
+/// `iceberg_landing::land_parquet`), reusing [`COMMIT_MAX_RETRIES`]/[`commit_backoff`].
+///
+/// This holds the PG transaction across the object-store Parquet write — the accepted
+/// long-tx tradeoff for the bulk stream path (per the full-atomic-parity decision);
+/// the common inline/flush path is untouched.
+pub async fn append_batches_on_tx(
+    catalog: &SqlCatalog,
+    table: &Table,
+    batches: Vec<RecordBatch>,
+    extras: CommitExtras<'_>,
+    tx: &mut SqlxTransaction<'_, Postgres>,
+) -> Result<Vec<WrittenFile>> {
+    let data_files = write_parquet(table, batches).await?;
+    let summaries: Vec<WrittenFile> = data_files
+        .iter()
+        .map(|df| WrittenFile {
+            path: df.file_path().to_string(),
+            record_count: df.record_count() as i64,
+            file_size_bytes: df.file_size_in_bytes() as i64,
+        })
+        .collect();
+
+    let wrapper = TxCommitCatalog {
+        inner: catalog,
+        extras,
+        tx: tokio::sync::Mutex::new(tx),
+    };
+    let itx = Transaction::new(table);
+    let action = itx.fast_append().add_data_files(data_files);
+    let itx = action.apply(itx)?;
+    itx.commit(&wrapper).await?;
+    Ok(summaries)
 }
 
 async fn write_parquet(table: &Table, batches: Vec<RecordBatch>) -> Result<Vec<DataFile>> {

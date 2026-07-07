@@ -59,6 +59,27 @@ pub async fn next_snapshot(
     Ok(SnapshotId(id))
 }
 
+/// Set the Iceberg-side snapshot id on an ALREADY-ALLOCATED loom snapshot. Used by
+/// the atomic direct-write stream path: it allocates the loom snapshot (via
+/// [`next_snapshot`] with `iceberg_snapshot_id = NULL`) before the Parquet write, so
+/// the staged Iceberg snapshot id is only known at commit time; this back-fills it so
+/// the reused snapshot correlates exactly like the fresh-allocation path.
+pub async fn set_iceberg_snapshot_id(
+    conn: &mut PgConnection,
+    snapshot: SnapshotId,
+    iceberg_snapshot_id: Option<i64>,
+) -> Result<()> {
+    sqlx::query!(
+        "update iceberg_mirror.snapshot set iceberg_snapshot_id = $1 where snapshot_id = $2",
+        iceberg_snapshot_id,
+        snapshot.0,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
 /// Ensure a live `iceberg_mirror.table` row exists for `(ns, name)`, returning its `table_id`.
 /// Inserts a new row beginning at `at` if none is currently live.
 pub async fn ensure_table(

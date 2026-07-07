@@ -502,70 +502,14 @@ pub async fn inline_append(
     // 2. Ensure inline storage exists (transactional DDL).
     ensure_inline_schema(&mut *conn, tid, columns).await?;
 
-    // Validate the REQUESTED bucket count BEFORE any declare: a `< 1` request must
-    // surface as `Validation`, not as the raw `bucket_count_positive` CHECK violation
-    // that `pg_declare_stream` below would otherwise raise (an opaque `Backend` error).
-    if let Some(n) = stream_buckets
-        && n < 1
-    {
-        return Err(ControlPlaneError::Validation(format!(
-            "stream bucket_count must be >= 1, got {n}"
-        )));
-    }
-
-    // Reconcile stream mode. `effective` = Some(bucket_count) iff this table is a
-    // (now-)declared log table; None => batch table (no offset stamping).
-    let effective: Option<i32> = match (stream_buckets, existing) {
-        (Some(n), Some(m)) if n != m => {
-            return Err(ControlPlaneError::Conflict(format!(
-                "stream bucket count mismatch for {}.{}: requested {n}, table has {m}",
-                table.schema, table.name
-            )));
-        }
-        (Some(_), Some(m)) => Some(m),
-        (Some(n), None) => {
-            if pre_existing {
-                return Err(ControlPlaneError::Validation(format!(
-                    "cannot convert existing batch table {}.{} to a stream table",
-                    table.schema, table.name
-                )));
-            }
-            crate::stream::pg_declare_stream(&mut *conn, tid, n).await?;
-            // A concurrent first-writer may have won the declare with a different
-            // count (our ON CONFLICT DO NOTHING then no-ops). Re-read the recorded
-            // count and honour it, so the rows we stamp always agree with
-            // stream_table.bucket_count.
-            let stored = crate::stream::pg_stream_bucket_count(&mut *conn, tid)
-                .await?
-                .ok_or_else(|| {
-                    ControlPlaneError::Backend(
-                        "stream_table row missing immediately after declare".into(),
-                    )
-                })?;
-            if stored != n {
-                return Err(ControlPlaneError::Conflict(format!(
-                    "stream bucket count mismatch for {}.{}: requested {n}, table has {stored}",
-                    table.schema, table.name
-                )));
-            }
-            Some(stored)
-        }
-        (None, existing) => existing,
-    };
-
-    // Defense in depth: a non-positive effective bucket count would otherwise
-    // reach the `row % bc` arithmetic below and panic (division/remainder by
-    // zero, or a meaningless negative modulus). Reject it cleanly here — this is
-    // currently unreachable (callers only ever pass positive counts), but a future
-    // caller threading an external `?buckets=N` value through must fail with a
-    // `Validation` error, not a panic.
-    if let Some(bc) = effective
-        && bc < 1
-    {
-        return Err(ControlPlaneError::Validation(format!(
-            "stream bucket_count must be >= 1, got {bc}"
-        )));
-    }
+    // Reconcile stream mode (shared with the direct-write Parquet path). `effective`
+    // = Some(bucket_count) iff this table is a (now-)declared log table; None =>
+    // batch table (no offset stamping). Rejects a `< 1` request (Validation), a
+    // batch->stream conversion (Validation), and a bucket-count mismatch (Conflict),
+    // all BEFORE any declare — on this same transaction.
+    let effective: Option<i32> =
+        crate::stream::reconcile_stream_mode(&mut *conn, tid, stream_buckets, pre_existing, table)
+            .await?;
 
     // 3. Insert each row with the new begin_snapshot. The statement text is
     //    loop-invariant — only the binds change per row.

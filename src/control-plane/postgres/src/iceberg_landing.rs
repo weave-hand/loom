@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, ArrayRef, ListArray, RecordBatch};
-use arrow_schema::{DataType, Schema, SchemaRef};
+use arrow_array::{Array, ArrayRef, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use arrow_select::concat::concat_batches;
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlaneError, DataFile, FileFormat, LineageEvent, NewJob, Result,
@@ -178,15 +178,7 @@ pub(crate) async fn append_parquet_snapshot(
     // registered them in the mirror at declaration — so `incoming` below matches
     // `live` (already carrying framing from declaration) instead of looking like a
     // dropped-columns schema change.
-    let full_columns: Vec<ColumnSpec> = if include_framing {
-        columns
-            .iter()
-            .cloned()
-            .chain(framing_column_specs())
-            .collect()
-    } else {
-        columns.to_vec()
-    };
+    let full_columns: Vec<ColumnSpec> = augment_with_framing(columns, include_framing);
 
     // Decide identical/create vs additive vs reject against the live mirror. We need a
     // snapshot to read live columns "as of"; live columns have begin_snapshot <= the
@@ -527,10 +519,7 @@ pub(crate) async fn ensure_iceberg_table(
     }
     let ident = TableIdent::new(ns.clone(), table.name.clone());
     if !catalog.table_exists(&ident).await.map_err(backend)? {
-        let mut cols = columns.to_vec();
-        if include_framing {
-            cols.extend(framing_column_specs());
-        }
+        let cols = augment_with_framing(columns, include_framing);
         let creation = TableCreation::builder()
             .name(table.name.clone())
             .schema(ice_schema(&cols)?)
@@ -564,6 +553,28 @@ pub(crate) fn framing_column_specs() -> Vec<ColumnSpec> {
             nullable: true,
         },
     ]
+}
+
+/// `columns` for a batch table, or `columns` + [`framing_column_specs`] (appended
+/// AFTER, in fixed order) for a stream/log table. THE single place the
+/// "user columns + framing" physical column list is built — shared by
+/// [`ensure_iceberg_table`] (Iceberg schema), [`append_parquet_snapshot`] (mirror
+/// reconcile + field-id rewrap), and the direct-write stream path — so the three
+/// sites can never drift on ordering. `include_framing == false` returns a plain
+/// clone (batch tables byte-identical to before this helper existed).
+pub(crate) fn augment_with_framing(
+    columns: &[ColumnSpec],
+    include_framing: bool,
+) -> Vec<ColumnSpec> {
+    if include_framing {
+        columns
+            .iter()
+            .cloned()
+            .chain(framing_column_specs())
+            .collect()
+    } else {
+        columns.to_vec()
+    }
 }
 
 /// How [`register_files`] folds new files into the table's live set.
@@ -684,14 +695,14 @@ fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
 
 /// The Parquet branch: ensure the namespace + table exist, then append real
 /// Parquet with an atomic lineage emit, and read the resulting mirror snapshot id
-/// back. Idempotent on namespace/table (create-if-absent). Delegates to
-/// [`append_parquet_snapshot`].
+/// back. Idempotent on namespace/table (create-if-absent).
 ///
-/// `stream_buckets`: Plan 1a scope only DECLARES the stream mode on this path
-/// (via `pg_declare_stream`), and only for a brand-new table — mirroring
-/// `inline_append`'s batch->stream conversion guard by simply skipping the
-/// declaration for a pre-existing table rather than stamping/erroring. Per-bucket
-/// offset stamping on the Parquet write path is Plan 1b scope.
+/// Routes by stream mode. A BATCH write (`stream_buckets == None` on a table that
+/// is not already a declared stream table) takes the unchanged
+/// [`append_parquet_snapshot`] path (`include_framing = false`, byte-identical). A
+/// STREAM write (the table is a declared log table, or this request declares one)
+/// takes [`land_parquet_stream`], which stamps gapless per-bucket offsets into the
+/// written Parquet atomically with the snapshot commit.
 async fn land_parquet(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -701,16 +712,39 @@ async fn land_parquet(
     lineage: LineageEvent,
     stream_buckets: Option<i32>,
 ) -> Result<SnapshotId> {
-    let pre_existing = {
+    // Read-only probe (no snapshot): does the table already exist, and is it already
+    // a declared stream table? Mirrors `inline_append`'s pre-`ensure_table` read.
+    let (pre_existing, existing_stream) = {
         let mut conn = pool.acquire().await.map_err(backend)?;
-        live_table_id(&mut conn, &table.schema, &table.name)
-            .await?
-            .is_some()
+        match live_table_id(&mut conn, &table.schema, &table.name).await? {
+            Some(tid) => (
+                true,
+                crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?,
+            ),
+            None => (false, None),
+        }
     };
 
-    // Framing persistence on the direct-write Parquet path is future scope
-    // (Plan 1b Task 5) — this path never stamps/persists framing yet.
-    let snapshot = append_parquet_snapshot(
+    // A STREAM write iff the table is already a declared log table OR this request
+    // declares stream mode. (A `stream_buckets` request against an existing BATCH
+    // table takes the stream branch too — only to be rejected with `Validation` by
+    // `reconcile_stream_mode` there, exactly as `inline_append` does.)
+    if existing_stream.is_some() || stream_buckets.is_some() {
+        return land_parquet_stream(
+            pool,
+            catalog,
+            table,
+            columns,
+            batches,
+            lineage,
+            stream_buckets,
+            pre_existing,
+        )
+        .await;
+    }
+
+    // BATCH path — unchanged.
+    append_parquet_snapshot(
         pool,
         catalog,
         table,
@@ -723,22 +757,222 @@ async fn land_parquet(
         },
         false,
     )
-    .await?;
+    .await
+}
 
-    if let Some(n) = stream_buckets
-        && !pre_existing
-    {
-        // Best-effort: this declare runs AFTER the Parquet commit above, on a
-        // separate connection/transaction, so it is not atomic with the write —
-        // idempotent-retriable on this path (Plan 1b brings the Parquet path to
-        // the inline path's full parity, incl. re-reading the recorded count).
-        let mut conn = pool.acquire().await.map_err(backend)?;
-        if let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? {
-            crate::stream::pg_declare_stream(&mut *conn, tid, n).await?;
+/// The atomic direct-write path for a stream/log table: stamp gapless per-bucket
+/// offsets into the written Parquet so the offset allocation commits **iff** the
+/// snapshot commits. The whole attempt — allocate offsets, stamp, write Parquet,
+/// CAS-commit — rides ONE Postgres transaction (via
+/// [`crate::iceberg_writer::append_batches_on_tx`], Task 4's caller-tx commit), so a
+/// rolled-back attempt frees the offset run and orphans the Parquet, and a retry
+/// re-allocates + re-writes fresh files.
+///
+/// NOTE: this holds a Postgres transaction across the object-store Parquet write for
+/// the bulk stream path — the accepted tradeoff per the full-atomic-parity decision.
+/// The common inline/flush path is untouched.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "same cohesive routing/payload/behavior params as `land`, plus the \
+              pre-resolved `pre_existing` reconcile witness threaded from the probe"
+)]
+async fn land_parquet_stream(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batches: Vec<RecordBatch>,
+    lineage: LineageEvent,
+    stream_buckets: Option<i32>,
+    pre_existing: bool,
+) -> Result<SnapshotId> {
+    // Concatenate the write's batches: offsets are assigned in row order across the
+    // whole write, and the framing columns are stamped onto the one batch.
+    let schema = batches
+        .first()
+        .map(RecordBatch::schema)
+        .ok_or_else(|| ControlPlaneError::Validation("stream land: no batches".into()))?;
+    let concat = concat_batches(&schema, &batches).map_err(backend)?;
+    let n = concat.num_rows();
+
+    // The Iceberg table, created WITH framing so its physical schema (and thus the
+    // mirror, via `columns_of` on the commit) carries loom_change_kind/bucket/offset.
+    // Idempotent + outside the tx (a rolled-back retry leaves the created table for
+    // the next attempt, exactly as the batch path leaves it). A pre-existing table's
+    // schema is untouched, so a batch table asked to convert stays framing-free and
+    // is rejected by `reconcile_stream_mode` below.
+    ensure_iceberg_table(catalog, table, columns, true).await?;
+    let ns = NamespaceIdent::new(table.schema.clone());
+    let ident = TableIdent::new(ns, table.name.clone());
+    let mut ice_table = catalog.load_table(&ident).await.map_err(backend)?;
+    let ice_arrow = Arc::new(
+        iceberg::arrow::schema_to_arrow_schema(ice_table.metadata().current_schema())
+            .map_err(backend)?,
+    );
+    let full_columns = augment_with_framing(columns, true);
+
+    // Atomic attempt loop, reusing the batch path's retry budget/backoff.
+    let mut attempt: u32 = 0;
+    loop {
+        let mut tx = pool.begin().await.map_err(backend)?;
+
+        // ONE snapshot for the whole write: allocate it (and the mirror table row it
+        // keys offset allocation by) up front, and have the commit REUSE it
+        // (`CommitExtras.reuse_snapshot`) so the write is a single snapshot rather
+        // than a spurious empty seed plus the commit's.
+        let at = next_snapshot(&mut tx, None).await?;
+        let tid = ensure_table(&mut tx, &table.schema, &table.name, at).await?;
+
+        // Reconcile stream mode on THIS tx (shared with `inline_append`). A rejected
+        // convert (`Validation`) or bucket mismatch (`Conflict`) is terminal — roll
+        // back and return, never retry.
+        let effective = match crate::stream::reconcile_stream_mode(
+            &mut tx,
+            tid,
+            stream_buckets,
+            pre_existing,
+            table,
+        )
+        .await
+        {
+            Ok(e) => e,
+            Err(e) => {
+                drop(tx.rollback().await);
+                return Err(e);
+            }
+        };
+        let Some(bc) = effective else {
+            // Unreachable: this fn is only entered for a stream write, and reconcile
+            // only returns `None` for a batch table. Fail loudly rather than write a
+            // framing-less commit into the framing-schema'd Iceberg table.
+            drop(tx.rollback().await);
+            return Err(ControlPlaneError::Backend(
+                "stream land: reconcile returned batch mode for a stream write".into(),
+            ));
+        };
+
+        // Per-row bucket = row_index % bc (bc >= 1 by reconcile, so the modulo is
+        // panic-free). Count rows per bucket, reserve a contiguous offset run per
+        // touched bucket on THIS tx, then hand out sequential offsets from each
+        // bucket's cursor — the exact scheme `inline_append` uses.
+        let bc_usize = usize::try_from(bc).map_err(|e| {
+            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
+        })?;
+        let mut counts = vec![0i64; bc_usize];
+        for row in 0..n {
+            let b = row % bc_usize;
+            let c = counts
+                .get_mut(b)
+                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
+            *c += 1;
+        }
+        let mut cursor = vec![0i64; bc_usize];
+        for (b, count) in counts.iter().enumerate() {
+            if *count > 0 {
+                let b_i32 = i32::try_from(b).map_err(|e| {
+                    ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+                })?;
+                let first = crate::stream::pg_allocate_offset(&mut *tx, tid, b_i32, *count).await?;
+                let slot = cursor.get_mut(b).ok_or_else(|| {
+                    ControlPlaneError::Backend("bucket index out of range".into())
+                })?;
+                *slot = first;
+            }
+        }
+
+        // Build the framing arrays aligned to the concatenated batch, in row order:
+        // the k-th row of bucket b gets `first_b + k`.
+        let mut buckets: Vec<i32> = Vec::with_capacity(n);
+        let mut offsets: Vec<i64> = Vec::with_capacity(n);
+        for row in 0..n {
+            let b = row % bc_usize;
+            let off = *cursor
+                .get(b)
+                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
+            {
+                let slot = cursor.get_mut(b).ok_or_else(|| {
+                    ControlPlaneError::Backend("bucket index out of range".into())
+                })?;
+                *slot += 1;
+            }
+            buckets.push(i32::try_from(b).map_err(|e| {
+                ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+            })?);
+            offsets.push(off);
+        }
+
+        // Stamp framing + rewrap under the table's field-id schema (which carries the
+        // framing fields), exactly like the batch path's `coerce_batch_to_ice`.
+        let stamped = stamp_framing(&concat, &buckets, &offsets)?;
+        let coerced = coerce_batch_to_ice(&stamped, &ice_arrow, &full_columns)?;
+
+        let extras = CommitExtras {
+            lineage: Some(&lineage),
+            data_trigger_tables: std::slice::from_ref(table),
+            reuse_snapshot: Some(at),
+            ..CommitExtras::default()
+        };
+        match crate::iceberg_writer::append_batches_on_tx(
+            catalog,
+            &ice_table,
+            vec![coerced],
+            extras,
+            &mut tx,
+        )
+        .await
+        {
+            Ok(_) => {
+                // Offsets + snapshot + framing-mirror durable together.
+                tx.commit().await.map_err(backend)?;
+                return Ok(at);
+            }
+            Err(e)
+                if e.kind() == iceberg::ErrorKind::CatalogCommitConflicts
+                    && attempt < crate::iceberg_writer::COMMIT_MAX_RETRIES =>
+            {
+                // Roll back: frees the reserved offset run + the seed snapshot/table
+                // row; the just-written Parquet is orphaned (fresh UUID next attempt).
+                drop(tx.rollback().await);
+                tokio::time::sleep(crate::iceberg_writer::commit_backoff(
+                    ice_table.identifier(),
+                    attempt,
+                    None,
+                ))
+                .await;
+                ice_table = catalog.load_table(&ident).await.map_err(backend)?;
+                attempt += 1;
+            }
+            Err(e) => {
+                drop(tx.rollback().await);
+                return Err(backend(e));
+            }
         }
     }
+}
 
-    Ok(snapshot)
+/// Append the three log-framing columns to `batch` in fixed order —
+/// `loom_change_kind` (all `"+I"`), `loom_bucket`, `loom_offset` — under a schema
+/// extended with the framing fields. The caller rewraps the result under the table's
+/// field-id schema via [`coerce_batch_to_ice`]. `buckets`/`offsets` align to `batch`'s
+/// rows in order.
+fn stamp_framing(batch: &RecordBatch, buckets: &[i32], offsets: &[i64]) -> Result<RecordBatch> {
+    let n = batch.num_rows();
+    let mut fields: Vec<Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
+    fields.push(Field::new("loom_change_kind", DataType::Utf8, false));
+    fields.push(Field::new("loom_bucket", DataType::Int32, true));
+    fields.push(Field::new("loom_offset", DataType::Int64, true));
+
+    let mut cols: Vec<ArrayRef> = batch.columns().to_vec();
+    cols.push(Arc::new(StringArray::from(vec!["+I"; n])));
+    cols.push(Arc::new(Int32Array::from(buckets.to_vec())));
+    cols.push(Arc::new(Int64Array::from(offsets.to_vec())));
+
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), cols).map_err(backend)
 }
 
 /// Replace `table`'s live data with `batches` in one Postgres transaction — the
