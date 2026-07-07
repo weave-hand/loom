@@ -209,6 +209,7 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("land");
@@ -303,6 +304,7 @@ async fn gc_reclaims_aged_inline_rows() {
         &batch(3),
         lineage(run, "wh", "inl"),
         None,
+        None,
     )
     .await
     .expect("inline_append");
@@ -353,6 +355,7 @@ async fn gc_is_a_noop_when_nothing_aged_out() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "fresh"),
+        None,
     )
     .await
     .expect("land");
@@ -401,6 +404,7 @@ async fn gc_serializes_with_concurrent_flush() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "race"),
+        None,
     )
     .await
     .expect("land");
@@ -415,6 +419,7 @@ async fn gc_serializes_with_concurrent_flush() {
         &columns(),
         &batch(2),
         lineage(run, "wh", "race"),
+        None,
         None,
     )
     .await
@@ -493,6 +498,7 @@ async fn gc_reclaims_a_dropped_table() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(run, "wh", "gone"),
+        None,
     )
     .await
     .expect("land");
@@ -507,6 +513,7 @@ async fn gc_reclaims_a_dropped_table() {
         &batch(3),
         lineage(run, "wh", "gone"),
         Some(1 << 40),
+        None,
     )
     .await
     .expect("inline_append");
@@ -576,6 +583,7 @@ async fn gc_preserves_a_within_window_dropped_table() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "recent"),
+        None,
     )
     .await
     .expect("land");
@@ -642,6 +650,7 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "reused"),
+        None,
     )
     .await
     .expect("land1");
@@ -664,6 +673,7 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "reused"),
+        None,
     )
     .await
     .expect("land2");
@@ -724,6 +734,7 @@ async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "twice"),
+        None,
     )
     .await
     .expect("land");
@@ -772,6 +783,7 @@ async fn gc_reclaims_a_dropped_table_with_vector_index() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "indexed"),
+        None,
     )
     .await
     .expect("land");

@@ -40,7 +40,7 @@ async fn inline_table_has_tombstone_column() {
         payload: serde_json::json!({ "source": "test" }),
     };
 
-    iceberg_inline::inline_append(&pool, &table, &columns, &batch, lineage, None)
+    iceberg_inline::inline_append(&pool, &table, &columns, &batch, lineage, None, None)
         .await
         .expect("inline append succeeds");
 

@@ -726,10 +726,12 @@ impl IcebergWriter {
             schema: ns.into(),
             name: name.into(),
         };
-        crate::iceberg_inline::inline_append(&self.pool, &table, &specs, &batch, lineage, None)
-            .await
-            .expect("inline_append")
-            .0
+        crate::iceberg_inline::inline_append(
+            &self.pool, &table, &specs, &batch, lineage, None, None,
+        )
+        .await
+        .expect("inline_append")
+        .0
     }
 
     /// Build a synthetic Arrow array of `rows` values for one column, typed to match its
@@ -799,10 +801,12 @@ impl IcebergWriter {
             schema: ns.into(),
             name: name.into(),
         };
-        crate::iceberg_inline::inline_append(&self.pool, &table, &specs, &batch, lineage, None)
-            .await
-            .expect_err("expected schema-evolution rejection")
-            .to_string()
+        crate::iceberg_inline::inline_append(
+            &self.pool, &table, &specs, &batch, lineage, None, None,
+        )
+        .await
+        .expect_err("expected schema-evolution rejection")
+        .to_string()
     }
 
     /// Drop the table via the vendored catalog; the mirror is marked dropped in the same

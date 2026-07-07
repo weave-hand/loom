@@ -66,6 +66,9 @@ impl LandingMaterializer for IcebergMaterializer {
                 flush_byte_threshold: self.flush_byte_threshold,
             },
             req.lineage,
+            // `LandRequest` gains a `stream_buckets` field in Task 4; for now this
+            // path never declares stream intent.
+            None,
         )
         .await
         .map_err(IngestError::from)

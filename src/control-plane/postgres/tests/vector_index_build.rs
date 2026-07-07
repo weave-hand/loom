@@ -88,6 +88,7 @@ async fn build_covers_all_rows_live_at_s() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land rows 1-2");
@@ -106,6 +107,7 @@ async fn build_covers_all_rows_live_at_s() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land rows 3-4");

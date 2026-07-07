@@ -76,6 +76,7 @@ impl IcebergActionWriter {
                 flush_byte_threshold: self.flush_byte_threshold,
             },
             event,
+            None,
         )
         .await
         .map_err(|e| EngineServingError::Engine(e.to_string()))

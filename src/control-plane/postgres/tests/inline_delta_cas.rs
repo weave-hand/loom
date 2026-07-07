@@ -87,9 +87,17 @@ async fn delta_write_and_cas_conflict() {
     let cols = vec![id_spec(), qty_spec()];
 
     // Seed the inline table via one append {id:1, qty:1}.
-    iceberg_inline::inline_append(&pool, &table, &cols, &full_row_batch(1, 1), lin(), None)
-        .await
-        .expect("seed append");
+    iceberg_inline::inline_append(
+        &pool,
+        &table,
+        &cols,
+        &full_row_batch(1, 1),
+        lin(),
+        None,
+        None,
+    )
+    .await
+    .expect("seed append");
 
     // Capture the current live version for id=1.
     let v0 = iceberg_inline::current_inline_version(
@@ -182,7 +190,7 @@ async fn tombstone_delta_marks_deleted() {
     let cols = vec![id_spec()];
 
     // Seed one row {id:1}.
-    iceberg_inline::inline_append(&pool, &table, &cols, &id_batch("id", 1), lin(), None)
+    iceberg_inline::inline_append(&pool, &table, &cols, &id_batch("id", 1), lin(), None, None)
         .await
         .expect("seed append");
 

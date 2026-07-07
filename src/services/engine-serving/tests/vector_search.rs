@@ -151,6 +151,7 @@ async fn no_bound_index_is_deterministic_error() {
         batches,
         cold_limits(),
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land row");

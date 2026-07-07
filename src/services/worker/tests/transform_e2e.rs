@@ -195,6 +195,7 @@ async fn transform_runs_over_the_wire() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&src),
+        None,
     )
     .await
     .expect("land");
@@ -458,6 +459,7 @@ async fn transform_joins_two_inputs() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&orders),
+        None,
     )
     .await
     .expect("land orders");
@@ -476,6 +478,7 @@ async fn transform_joins_two_inputs() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&customers),
+        None,
     )
     .await
     .expect("land customers");
@@ -629,6 +632,7 @@ async fn transform_chains_read_prior_output() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&src),
+        None,
     )
     .await
     .expect("land");
@@ -723,6 +727,7 @@ async fn overwrite_replaces_live_set_and_time_travels() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&src),
+        None,
     )
     .await
     .expect("land");
@@ -832,6 +837,7 @@ async fn run_lifecycle_succeeds_with_commit_snapshot() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&src),
+        None,
     )
     .await
     .expect("land");
@@ -952,6 +958,7 @@ async fn run_lifecycle_fails_terminally_on_bad_sql() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&src),
+        None,
     )
     .await
     .expect("land");

@@ -84,6 +84,7 @@ async fn hnsw_build_writes_decodable_blob_and_mirror_kind() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land rows");

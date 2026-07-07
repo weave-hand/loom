@@ -765,6 +765,7 @@ pub async fn seed_vector_type(
             flush_byte_threshold: i64::MAX,
         },
         vector_lineage_evt(run, &table),
+        None,
     )
     .await
     .expect("land rows 1-2");
@@ -782,6 +783,7 @@ pub async fn seed_vector_type(
             flush_byte_threshold: i64::MAX,
         },
         vector_lineage_evt(run, &table),
+        None,
     )
     .await
     .expect("land rows 3-4");

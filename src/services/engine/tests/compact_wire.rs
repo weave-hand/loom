@@ -135,6 +135,7 @@ async fn list_files_then_compact_over_the_wire() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
     )
     .await
     .expect("land a");
@@ -153,6 +154,7 @@ async fn list_files_then_compact_over_the_wire() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
     )
     .await
     .expect("land b");

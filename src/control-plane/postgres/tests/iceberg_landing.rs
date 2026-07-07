@@ -116,6 +116,7 @@ async fn small_request_inlines_and_emits_lineage() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(run, "wh", "small"),
+        None,
     )
     .await
     .expect("land inline");
@@ -163,6 +164,7 @@ async fn large_request_writes_parquet_and_emits_lineage() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(run, "wh", "big"),
+        None,
     )
     .await
     .expect("land parquet");
@@ -209,6 +211,7 @@ async fn reordered_columns_inline_align_by_name() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(run, "wh", "reorder_inline"),
+        None,
     )
     .await
     .expect("inline land with reordered columns");
@@ -244,6 +247,7 @@ async fn reordered_columns_parquet_align_by_name() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(run, "wh", "reorder_parquet"),
+        None,
     )
     .await
     .expect("parquet land with reordered columns");

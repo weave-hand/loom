@@ -169,6 +169,7 @@ async fn setup_with_cap(
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "chunks"),
+        None,
     )
     .await
     .expect("land vector");
@@ -264,6 +265,7 @@ async fn setup_with_mask(
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "chunks"),
+        None,
     )
     .await
     .expect("land vector");

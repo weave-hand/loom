@@ -201,6 +201,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&customers),
+        None,
     )
     .await
     .expect("land");
@@ -357,6 +358,7 @@ async fn nonconforming_result_abandons_without_commit() {
             flush_byte_threshold: i64::MAX,
         },
         seed_lineage(&customers),
+        None,
     )
     .await
     .expect("land");

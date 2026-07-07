@@ -81,6 +81,7 @@ async fn lands_and_reads_back_a_vector_column() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "chunks"),
+        None,
     )
     .await
     .expect("land vector");
@@ -153,6 +154,7 @@ async fn width_mismatch_is_rejected() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "bad"),
+        None,
     )
     .await;
     assert!(r.is_err(), "a width mismatch must be rejected, not stored");

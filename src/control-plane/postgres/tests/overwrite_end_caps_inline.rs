@@ -71,9 +71,17 @@ async fn overwrite_end_caps_stale_inline_row() {
     };
 
     // Step 1: inline-append {id:1} -> S1 (mirror-only, no Parquet).
-    let s1 = inline_append(&pool, &t, &columns(), &inline_batch(&[1]), lineage(), None)
-        .await
-        .expect("inline append id=1");
+    let s1 = inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &inline_batch(&[1]),
+        lineage(),
+        None,
+        None,
+    )
+    .await
+    .expect("inline append id=1");
 
     // Resolve the mirror table_id for direct inline-table queries.
     let tid: i64 = sqlx::query_scalar(

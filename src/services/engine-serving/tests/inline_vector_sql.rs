@@ -45,6 +45,7 @@ async fn seed(
                 flush_byte_threshold: i64::MAX,
             },
             lineage_evt(&table),
+            None,
         )
         .await
         .expect("land file rows");
@@ -63,6 +64,7 @@ async fn seed(
                 flush_byte_threshold: i64::MAX,
             },
             lineage_evt(&table),
+            None,
         )
         .await
         .expect("land inline rows");

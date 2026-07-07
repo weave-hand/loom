@@ -406,10 +406,17 @@ pub async fn inline_append(
     batch: &RecordBatch,
     lineage: LineageEvent,
     flush_threshold: Option<i64>,
+    stream_buckets: Option<i32>,
 ) -> Result<SnapshotId> {
     let mut tx = pool.begin().await.map_err(backend)?;
     // Transaction derefs to PgConnection; the helpers take `&mut PgConnection`.
     let conn: &mut PgConnection = &mut tx;
+
+    // Detect whether the table already existed (for the batch->stream conversion
+    // guard below) BEFORE `ensure_table` creates the mirror row.
+    let pre_existing = live_table_id(&mut *conn, &table.schema, &table.name)
+        .await?
+        .is_some();
 
     // 1. Snapshot (no Iceberg backing) + ensure mirror table/columns exist.
     let at = next_snapshot(conn, None).await?;
@@ -448,6 +455,30 @@ pub async fn inline_append(
     // 2. Ensure inline storage exists (transactional DDL).
     ensure_inline_schema(&mut *conn, tid, columns).await?;
 
+    // Reconcile stream mode. `effective` = Some(bucket_count) iff this table is a
+    // (now-)declared log table; None => batch table (no offset stamping).
+    let existing = crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?;
+    let effective: Option<i32> = match (stream_buckets, existing) {
+        (Some(n), Some(m)) if n != m => {
+            return Err(ControlPlaneError::Conflict(format!(
+                "stream bucket count mismatch for {}.{}: requested {n}, table has {m}",
+                table.schema, table.name
+            )));
+        }
+        (Some(_), Some(m)) => Some(m),
+        (Some(n), None) => {
+            if pre_existing {
+                return Err(ControlPlaneError::Validation(format!(
+                    "cannot convert existing batch table {}.{} to a stream table",
+                    table.schema, table.name
+                )));
+            }
+            crate::stream::pg_declare_stream(&mut *conn, tid, n).await?;
+            Some(n)
+        }
+        (None, existing) => existing,
+    };
+
     // 3. Insert each row with the new begin_snapshot. The statement text is
     //    loop-invariant — only the binds change per row.
     let col_list = columns
@@ -455,25 +486,101 @@ pub async fn inline_append(
         .map(|c| quote_ident(&c.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let placeholders = (0..columns.len())
-        .map(|i| format!("${}", i + 2)) // $1 = begin_snapshot
-        .collect::<Vec<_>>()
-        .join(", ");
-    let insert_sql = format!(
-        "insert into {} (begin_snapshot, {col_list}) values ($1, {placeholders})",
-        inline_table_name(tid),
-    );
-    for row in 0..batch.num_rows() {
-        let cells = columns
-            .iter()
-            .enumerate()
-            .map(|(c, spec)| cell_from_arrow(batch, c, row, &spec.ty))
-            .collect::<Result<Vec<_>>>()?;
-        let mut q = sqlx::query(AssertSqlSafe(insert_sql.clone())).bind(at.0);
-        for cell in &cells {
-            q = bind_cell(q, cell);
+
+    if let Some(bc) = effective {
+        // Per-row bucket = row_index % bc (v1 simplification; bc >= 1).
+        let n = batch.num_rows();
+        // Count rows per bucket and reserve a contiguous offset run per touched
+        // bucket, up front, so the per-row loop only needs to hand out offsets
+        // from an already-reserved cursor (panic-free bucket indexing: `Vec::get`/
+        // `get_mut` instead of `[]`, even though `b` is always `< bc` by construction).
+        let bc_usize = usize::try_from(bc).map_err(|e| {
+            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
+        })?;
+        let mut counts = vec![0i64; bc_usize];
+        for row in 0..n {
+            let b = row % bc_usize;
+            let c = counts
+                .get_mut(b)
+                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
+            *c += 1;
         }
-        q.execute(&mut *conn).await.map_err(backend)?;
+        // cursor[b] = next offset to assign for bucket b (first of the reserved run).
+        let mut cursor = vec![0i64; bc_usize];
+        for (b, count) in counts.iter().enumerate() {
+            if *count > 0 {
+                let b_i32 = i32::try_from(b).map_err(|e| {
+                    ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+                })?;
+                let first =
+                    crate::stream::pg_allocate_offset(&mut *conn, tid, b_i32, *count).await?;
+                let slot = cursor.get_mut(b).ok_or_else(|| {
+                    ControlPlaneError::Backend("bucket index out of range".into())
+                })?;
+                *slot = first;
+            }
+        }
+        // $1 begin_snapshot, $2 loom_bucket, $3 loom_offset, then data columns from $4.
+        let placeholders = (0..columns.len())
+            .map(|i| format!("${}", i + 4))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert_sql = format!(
+            "insert into {} (begin_snapshot, loom_bucket, loom_offset, {col_list}) \
+             values ($1, $2, $3, {placeholders})",
+            inline_table_name(tid),
+        );
+        for row in 0..n {
+            let b = row % bc_usize;
+            let offset = *cursor
+                .get(b)
+                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
+            {
+                let slot = cursor.get_mut(b).ok_or_else(|| {
+                    ControlPlaneError::Backend("bucket index out of range".into())
+                })?;
+                *slot += 1;
+            }
+            let b_i32 = i32::try_from(b).map_err(|e| {
+                ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+            })?;
+            let cells = columns
+                .iter()
+                .enumerate()
+                .map(|(c, spec)| cell_from_arrow(batch, c, row, &spec.ty))
+                .collect::<Result<Vec<_>>>()?;
+            let mut q = sqlx::query(AssertSqlSafe(insert_sql.clone()))
+                .bind(at.0)
+                .bind(b_i32)
+                .bind(offset);
+            for cell in &cells {
+                q = bind_cell(q, cell);
+            }
+            q.execute(&mut *conn).await.map_err(backend)?;
+        }
+    } else {
+        // Batch table: unchanged behaviour (loom_bucket/loom_offset stay NULL,
+        // loom_change_kind defaults to '+I').
+        let placeholders = (0..columns.len())
+            .map(|i| format!("${}", i + 2)) // $1 = begin_snapshot
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert_sql = format!(
+            "insert into {} (begin_snapshot, {col_list}) values ($1, {placeholders})",
+            inline_table_name(tid),
+        );
+        for row in 0..batch.num_rows() {
+            let cells = columns
+                .iter()
+                .enumerate()
+                .map(|(c, spec)| cell_from_arrow(batch, c, row, &spec.ty))
+                .collect::<Result<Vec<_>>>()?;
+            let mut q = sqlx::query(AssertSqlSafe(insert_sql.clone())).bind(at.0);
+            for cell in &cells {
+                q = bind_cell(q, cell);
+            }
+            q.execute(&mut *conn).await.map_err(backend)?;
+        }
     }
 
     // 3b. Flush trigger: accrue this batch's live bytes; on crossing the

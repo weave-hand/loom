@@ -144,6 +144,7 @@ async fn seed(
             flush_byte_threshold: i64::MAX,
         },
         lineage_evt(table),
+        None,
     )
     .await
     .expect("land cold");
@@ -160,6 +161,7 @@ async fn seed(
             flush_byte_threshold: i64::MAX,
         },
         lineage_evt(table),
+        None,
     )
     .await
     .expect("land hot");

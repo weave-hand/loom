@@ -92,6 +92,7 @@ async fn compact_expires_subset_and_preserves_time_travel() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("a");
@@ -108,6 +109,7 @@ async fn compact_expires_subset_and_preserves_time_travel() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("b");
@@ -124,6 +126,7 @@ async fn compact_expires_subset_and_preserves_time_travel() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("c");
@@ -181,6 +184,7 @@ async fn compact_conflicts_on_non_live_expire_path() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("a");
@@ -243,6 +247,7 @@ async fn two_concurrent_compactions_race_exactly_one_commits() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("a");
@@ -259,6 +264,7 @@ async fn two_concurrent_compactions_race_exactly_one_commits() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("b");

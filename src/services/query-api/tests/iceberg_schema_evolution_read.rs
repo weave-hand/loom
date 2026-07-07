@@ -73,6 +73,7 @@ async fn read_after_additive_land_returns_superset_with_nulls() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(),
+        None,
     )
     .await
     .expect("base land");
@@ -109,6 +110,7 @@ async fn read_after_additive_land_returns_superset_with_nulls() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(),
+        None,
     )
     .await
     .expect("additive land");

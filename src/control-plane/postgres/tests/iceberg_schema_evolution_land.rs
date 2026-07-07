@@ -141,6 +141,7 @@ async fn additive_land_evolves_mirror_and_bumps_schema_version() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4())),
+        None,
     )
     .await
     .expect("base land");
@@ -157,6 +158,7 @@ async fn additive_land_evolves_mirror_and_bumps_schema_version() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4())),
+        None,
     )
     .await
     .expect("additive land");
@@ -238,6 +240,7 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4())),
+        None,
     )
     .await
     .expect("base land");
@@ -257,6 +260,7 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4())),
+        None,
     )
     .await
     .expect_err("dropping b must be rejected");
@@ -300,6 +304,7 @@ async fn non_additive_land_is_rejected_and_mirror_unchanged() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4())),
+        None,
     )
     .await
     .expect_err("required new column must be rejected");
@@ -376,6 +381,7 @@ async fn additive_land_rejected_while_live_inline_rows_exist() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4())),
+        None,
     )
     .await
     .expect_err("additive land while live inline rows exist must be rejected");

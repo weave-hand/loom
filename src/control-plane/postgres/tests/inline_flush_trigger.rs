@@ -64,6 +64,7 @@ async fn sub_threshold_enqueues_nothing() {
         &batch(&[1, 2, 3]),
         lineage(run, &table),
         Some(1 << 40),
+        None,
     )
     .await
     .unwrap();
@@ -88,6 +89,7 @@ async fn crossing_enqueues_exactly_one_with_payload() {
         &batch(&[1, 2, 3]),
         lineage(run, &table),
         Some(1),
+        None,
     )
     .await
     .unwrap();
@@ -120,6 +122,7 @@ async fn crossing_twice_is_debounced_to_one_job() {
             &batch(&[9]),
             lineage(run, &table),
             Some(1),
+            None,
         )
         .await
         .unwrap();
@@ -143,6 +146,7 @@ async fn none_threshold_never_enqueues() {
         &one_long_col(),
         &batch(&[1]),
         lineage(run, &table),
+        None,
         None,
     )
     .await
@@ -191,6 +195,7 @@ async fn flush_resets_trigger_on_some() {
         &batch(&[1, 2, 3]),
         lineage(run, &table),
         Some(1),
+        None,
     )
     .await
     .unwrap();
@@ -231,6 +236,7 @@ async fn noop_flush_disarms_the_flag() {
         &batch(&[1]),
         lineage(run, &table),
         Some(1),
+        None,
     )
     .await
     .unwrap();
