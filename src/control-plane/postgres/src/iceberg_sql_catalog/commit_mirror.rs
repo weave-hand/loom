@@ -151,8 +151,45 @@ impl SqlCatalog {
     /// so it commits or rolls back together with the snapshot it describes; the
     /// flush path additionally passes an end-cap to retire inline rows at the
     /// same snapshot the new Parquet file becomes live.
+    ///
+    /// Thin owning wrapper around [`Self::do_update_table_in_tx`]: begins the tx,
+    /// delegates, and commits on success. On a lost CAS (or any other error from
+    /// the delegate) it rolls back its own tx before propagating the error —
+    /// preserving the delegate's contract that it never touches `tx` on the
+    /// conflict path (the delegate's caller — here — owns rollback).
     pub(crate) async fn do_update_table(
         &self,
+        commit: TableCommit,
+        extras: CommitExtras<'_>,
+    ) -> Result<Table> {
+        let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
+
+        match self.do_update_table_in_tx(&mut tx, commit, extras).await {
+            Ok(table) => {
+                tx.commit().await.map_err(from_sqlx_error)?;
+                Ok(table)
+            }
+            Err(e) => {
+                drop(tx.rollback().await);
+                Err(e)
+            }
+        }
+    }
+
+    /// [`Self::do_update_table`]'s body, parameterized over a caller-provided
+    /// transaction: the staged-metadata object-store write, the
+    /// `added_files_of`/`columns_of` reads, the CAS `UPDATE`, `write_mirror`, and
+    /// `apply_commit_extras` all run on `tx`. Does NOT `begin()` or `commit()` it —
+    /// that is the caller's responsibility (see [`Self::do_update_table`] for the
+    /// owning wrapper). Exists so a later commit path can run further work (e.g.
+    /// offset allocation) on the same tx that commits the snapshot.
+    ///
+    /// On a lost CAS (`rows_affected() == 0`) returns a retryable
+    /// `CatalogCommitConflicts` error WITHOUT touching `tx` — the caller decides
+    /// whether to roll back.
+    pub(crate) async fn do_update_table_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, Postgres>,
         commit: TableCommit,
         extras: CommitExtras<'_>,
     ) -> Result<Table> {
@@ -172,12 +209,12 @@ impl SqlCatalog {
             .write_to(staged_table.file_io(), &staged_ml)
             .await?;
 
-        // Object-store reads happen here, BEFORE begin(): load the new snapshot's
-        // manifests + Parquet footers and snapshot the staged schema. The manifests
-        // are immutable and already persisted (fast_append wrote them; write_to wrote
-        // the staged metadata above), so reading them pre-tx is identical to reading
-        // them in-tx — no read-after-write hazard, and the CAS still guards the
-        // pointer. The transaction below therefore holds only fast local PG work.
+        // Object-store reads happen here, BEFORE the CAS UPDATE: load the new
+        // snapshot's manifests + Parquet footers and snapshot the staged schema. The
+        // manifests are immutable and already persisted (fast_append wrote them;
+        // write_to wrote the staged metadata above), so reading them here is
+        // identical to reading them anywhere else in the tx — no read-after-write
+        // hazard, and the CAS still guards the pointer.
         let mirror_files = crate::iceberg_mirror::added_files_of(&staged_table)
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
@@ -187,8 +224,6 @@ impl SqlCatalog {
             .metadata()
             .current_snapshot()
             .map(|s| s.snapshot_id());
-
-        let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
 
         let update_result = self
             .execute(
@@ -212,12 +247,11 @@ impl SqlCatalog {
                     Some(&table_ident.namespace().join(".")),
                     Some(current_metadata_location.as_str()),
                 ],
-                Some(&mut tx),
+                Some(&mut *tx),
             )
             .await?;
 
         if update_result.rows_affected() == 0 {
-            drop(tx.rollback().await);
             return Err(Error::new(
                 ErrorKind::CatalogCommitConflicts,
                 format!("Commit conflicted for table: {table_ident}"),
@@ -227,7 +261,7 @@ impl SqlCatalog {
 
         let at = self
             .write_mirror(
-                &mut tx,
+                &mut *tx,
                 &table_ident,
                 staged_snap,
                 &mirror_columns,
@@ -237,11 +271,10 @@ impl SqlCatalog {
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
-        apply_commit_extras(&mut tx, at, &extras)
+        apply_commit_extras(tx, at, &extras)
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
-        tx.commit().await.map_err(from_sqlx_error)?;
         Ok(staged_table)
     }
 }
