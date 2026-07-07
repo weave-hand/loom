@@ -1463,6 +1463,23 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "missing property rejected"
     );
 
+    // unknown type -> NotFound (not Validation): the type, not the property,
+    // is what is missing. Pins postgres to the memory adapter's answer.
+    let unknown_type = VectorIndexDef {
+        name: "bad3".into(),
+        type_name: tn("Ghost"), // never defined in this contract
+        property: "embedding".into(),
+        metric: Metric::Cosine,
+        spec: IndexSpec::Flat,
+    };
+    assert!(
+        matches!(
+            o.define_vector_index(unknown_type).await,
+            Err(ControlPlaneError::NotFound(_))
+        ),
+        "unknown type is NotFound, not Validation"
+    );
+
     // --- delete_link: gone from reads, idempotent, re-definable ---
     // Uses the `customer` link (Order -> Customer) defined above; fetched before
     // deletion so the exact definition can be re-defined afterwards.

@@ -494,6 +494,9 @@ impl Ontology for PgControlPlane {
     }
 
     async fn define_vector_index(&self, def: VectorIndexDef) -> Result<()> {
+        if !object_type_exists(&self.pool, &def.type_name.0).await? {
+            return Err(ControlPlaneError::NotFound(def.type_name.0.clone()));
+        }
         let prop_ty: Option<String> = sqlx::query_scalar!(
             "select ty from ontology.property where type_name = $1 and name = $2",
             def.type_name.0,
