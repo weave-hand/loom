@@ -971,10 +971,8 @@ pub async fn write_inline_delta(
     lineage: LineageEvent,
     expected_version: i64,
 ) -> Result<SnapshotId> {
-    // The optional before-image (prior row) with its OWN positionally-aligned
-    // ColumnSpecs. Accepted for the CDC emit path (a later slice) but deliberately
-    // unused here — this write stays byte-identical whether or not it is present.
-    let _ = before;
+    // `before` (the prior row with its OWN positionally-aligned ColumnSpecs) is USED
+    // by the CDC emit branch below; a non-CDC table ignores it and stays byte-identical.
     let mut tx = pool.begin().await.map_err(backend)?;
 
     // The mutation targets an existing object, so a live mirror row must exist.
@@ -1019,9 +1017,72 @@ pub async fn write_inline_delta(
     // iceberg_mirror.snapshot row that makes the delta read-visible).
     let at = next_snapshot(&mut tx, None).await?;
 
+    // On a CDC table, a mutation emits the FULL change sequence — an update writes an
+    // adjacent (-U before-image, +U after-image) pair, a delete writes a -D carrying
+    // the full prior image — each stamped with a hash-on-identity bucket and gapless
+    // per-bucket offsets. Non-CDC tables fall through to the existing single-row inserts.
+    let meta = crate::stream::pg_stream_meta(&mut *tx, tid).await?;
+    let cdc = matches!(&meta, Some(m) if m.kind == control_plane_core::StreamKind::Cdc);
+
     // Insert one delta row. BOTH kinds carry the identity value so the merge-on-read
     // (partition by <id>) shadows/hides the file row for that id.
-    if tombstone {
+    if cdc {
+        let m = meta
+            .as_ref()
+            .ok_or_else(|| ControlPlaneError::Backend("cdc meta vanished after check".into()))?;
+        let bucket = cdc_bucket(&id_cell, m.bucket_count)?;
+        // The before-image carries its OWN columns (positionally aligned with its
+        // batch) — never `full_cols`, whose order need not match.
+        let (before_cols, before_batch) = before.ok_or_else(|| {
+            ControlPlaneError::Backend("cdc mutation requires a before-image".into())
+        })?;
+        if tombstone {
+            // Delete → one -D carrying the FULL prior image, so the changelog event is
+            // complete. loom_tombstone=true still hides the base row in merge-on-read.
+            let off = crate::stream::pg_allocate_offset(&mut *tx, tid, bucket, 1).await?;
+            write_cdc_row(
+                &mut tx,
+                tid,
+                at,
+                "-D",
+                true,
+                bucket,
+                off,
+                before_cols,
+                before_batch,
+            )
+            .await?;
+        } else {
+            // Update → adjacent (-U before-image, +U after-image), -U first, at
+            // consecutive offsets in the identity's single bucket. -U uses the
+            // before-image (its own cols+batch); +U uses the caller's after-image.
+            let first = crate::stream::pg_allocate_offset(&mut *tx, tid, bucket, 2).await?;
+            write_cdc_row(
+                &mut tx,
+                tid,
+                at,
+                "-U",
+                false,
+                bucket,
+                first,
+                before_cols,
+                before_batch,
+            )
+            .await?;
+            write_cdc_row(
+                &mut tx,
+                tid,
+                at,
+                "+U",
+                false,
+                bucket,
+                first + 1,
+                columns,
+                batch,
+            )
+            .await?;
+        }
+    } else if tombstone {
         // Tombstone: begin_snapshot, loom_tombstone=true, loom_change_kind='-D',
         // "<id_col>"=id; data NULL.
         let sql = format!(
@@ -1074,6 +1135,59 @@ pub async fn write_inline_delta(
     .await?;
     tx.commit().await.map_err(backend)?;
     Ok(at)
+}
+
+/// Insert one framed CDC inline row for the given change kind: `begin_snapshot`,
+/// `loom_tombstone`, `loom_change_kind`, `loom_bucket`, `loom_offset`, then the data
+/// columns read positionally from `cols`/`batch` row 0. The caller picks the
+/// (cols, batch) pair per row — the before-image's OWN pair for `-U`/`-D`, the
+/// after-image for `+U` — so cells always bind to the matching columns.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one framed inline-row insert; a struct would obscure the two call sites"
+)]
+async fn write_cdc_row(
+    tx: &mut sqlx::PgConnection,
+    tid: i64,
+    at: SnapshotId,
+    change_kind: &str, // '-U' | '+U' | '-D'
+    tombstone: bool,
+    bucket: i32,
+    offset: i64,
+    cols: &[ColumnSpec],
+    batch: &RecordBatch,
+) -> Result<()> {
+    let col_list = cols
+        .iter()
+        .map(|c| format!("\"{}\"", c.name.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // $1 begin_snapshot, $2 tombstone, $3 change_kind, $4 bucket, $5 offset, then data from $6.
+    let placeholders = (0..cols.len())
+        .map(|i| format!("${}", i + 6))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "insert into {} (begin_snapshot, loom_tombstone, loom_change_kind, loom_bucket, loom_offset, {col_list}) \
+         values ($1, $2, $3, $4, $5, {placeholders})",
+        inline_table_name(tid),
+    );
+    let cells = cols
+        .iter()
+        .enumerate()
+        .map(|(c, spec)| cell_from_arrow(batch, c, 0, &spec.ty))
+        .collect::<Result<Vec<_>>>()?;
+    let mut q = sqlx::query(AssertSqlSafe(sql))
+        .bind(at.0)
+        .bind(tombstone)
+        .bind(change_kind)
+        .bind(bucket)
+        .bind(offset);
+    for cell in &cells {
+        q = bind_cell(q, cell);
+    }
+    q.execute(&mut *tx).await.map_err(backend)?;
+    Ok(())
 }
 
 /// Arrow field for a logical column. Delegates to core's authoritative

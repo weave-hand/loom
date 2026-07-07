@@ -1292,3 +1292,21 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "stream-cdc-emission",
+    crate = "stream_cdc_emission",
+    srcs = ["tests/stream_cdc_emission.rs"],
+    crate_root = "tests/stream_cdc_emission.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
