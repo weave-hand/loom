@@ -72,7 +72,7 @@ pub struct MemoryControlPlane {
     lineage: Arc<Mutex<LineageState>>,
     transforms: Arc<Mutex<TransformsState>>,
     offsets: Arc<Mutex<std::collections::HashMap<(i64, i32), i64>>>,
-    stream_tables: Arc<Mutex<std::collections::HashMap<i64, i32>>>,
+    stream_tables: Arc<Mutex<std::collections::HashMap<i64, control_plane_core::StreamMeta>>>,
     lock_timeout: Duration,
 }
 

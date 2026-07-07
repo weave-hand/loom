@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use control_plane_core::{BucketOffsets, ControlPlaneError, Result, StreamTables, TableRef};
+use control_plane_core::{
+    BucketOffsets, ControlPlaneError, Result, StreamKind, StreamMeta, StreamTables, TableRef,
+};
 
 use crate::{PgControlPlane, backend};
 
@@ -190,6 +192,52 @@ pub(crate) async fn pg_stream_bucket_count<'e, E: sqlx::PgExecutor<'e>>(
     Ok(n)
 }
 
+/// Declare a PK/CDC table (idempotent, first-wins on all fields).
+pub(crate) async fn pg_declare_cdc<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table_id: i64,
+    bucket_count: i32,
+    bucket_key: &str,
+) -> Result<()> {
+    sqlx::query!(
+        "insert into stream.stream_table (table_id, bucket_count, kind, bucket_key) \
+         values ($1, $2, 'cdc', $3) on conflict (table_id) do nothing",
+        table_id,
+        bucket_count,
+        bucket_key,
+    )
+    .execute(ex)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Full stream metadata for table_id if declared, else None.
+pub(crate) async fn pg_stream_meta<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table_id: i64,
+) -> Result<Option<StreamMeta>> {
+    let row = sqlx::query!(
+        "select bucket_count, kind, bucket_key from stream.stream_table where table_id = $1",
+        table_id,
+    )
+    .fetch_optional(ex)
+    .await
+    .map_err(backend)?;
+    Ok(row.map(|r| {
+        let kind = if r.kind == "cdc" {
+            StreamKind::Cdc
+        } else {
+            StreamKind::Log
+        };
+        StreamMeta {
+            bucket_count: r.bucket_count,
+            kind,
+            bucket_key: r.bucket_key,
+        }
+    }))
+}
+
 #[async_trait]
 impl StreamTables for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -200,5 +248,15 @@ impl StreamTables for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn stream_bucket_count(&self, table_id: i64) -> Result<Option<i32>> {
         pg_stream_bucket_count(self.pool(), table_id).await
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn declare_cdc(&self, table_id: i64, bucket_count: i32, bucket_key: &str) -> Result<()> {
+        pg_declare_cdc(self.pool(), table_id, bucket_count, bucket_key).await
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>> {
+        pg_stream_meta(self.pool(), table_id).await
     }
 }
