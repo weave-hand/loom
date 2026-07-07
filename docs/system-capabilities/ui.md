@@ -37,6 +37,29 @@ dev-only gallery bundle (`buck2 build //src/ui:gallery-bundle`, `src/gallery.rs`
 `gallery.html`) renders every primitive and its variants; it has no backend and
 never ships in the login bundle.
 
+The **Transforms admin surface** (`src/ui/src/surfaces/transforms.rs`) is the first
+product consumer of the `SqlEditor` (`#road-ui-transforms-surface`): a list+drawer
+surface over the `/admin/transforms` control-plane routes that lets an admin browse,
+author, run, and delete both **physical** (SQL-over-tables) and **typed**
+(ontology-vocabulary) transforms. The list is a `DataTable` of
+name / kind / schedule / on-input-commit; selecting a row opens a drawer with a
+**Definition** tab (a metadata block + a read-only `SqlEditor` + Edit/Run/Delete
+buttons) and a **Runs** tab (the `GET /:name/runs` history as a state/trigger/timing
+table). The editor form multi-selects inputs (checkboxes) and feeds the `SqlEditor`
+an **input-scoped** `CompletionSchema` built only from the chosen inputs'
+columns/properties (physical: per-table `GET /datasets/{schema}/{table}`; typed: the
+selected ontology types' properties), remounting the editor on a schema-content key
+so fresh completions take effect despite Monaco's mount-time prop capture. Admin
+gating reuses the login session's bearer token and renders a `403` as a "requires
+admin" empty-state (no separate admin login); the selection-keyed fetches are
+**epoch-guarded** (three per-stream generation counters) so a slow prior-selection
+fetch cannot stale the current view. The nav `Pipelines` stub was renamed to
+`Transforms`. Pure parse / form-to-request / completion-schema / display logic lives
+in `loom_ui_core` (`rust_test`'d — `transforms-parse`/`-form`/`-schema`/`-display`);
+the Yew view glue is browser-verified. The shared `Shell` also gained a **resizable,
+persisted drawer** (left-edge drag handle, width clamp, localStorage) that every
+surface inherits.
+
 ## How it's built, served, and tested
 
 The crate lives inside `//src/...`, so CI and the strict pedantic/restriction
@@ -104,3 +127,9 @@ publish-time smoke test gates the image on a real `chrome-headless-shell
   (link traversal, per-type property definitions).
 - `#fut-object-explorer-filtering` — filtering and search over the object table.
 - `#fut-object-explorer-routing` — URL routing and deep-linking (`yew-router`).
+- `#iss-ui-transforms-drawer-errors` — the Transforms drawer's Run/Delete actions
+  swallow non-401 errors (no error slot on `TransformDrawer`), and a Run fired while
+  already on the Runs tab does not refetch history.
+- `#fut-ui-sql-completion-polish` — the Transforms editor works *around* Monaco's
+  mount-time prop capture with a schema-content remount key; the underlying
+  multi-editor / dedup / live-prop-swap polish is still open.
