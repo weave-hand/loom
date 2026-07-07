@@ -309,10 +309,19 @@ impl Transforms for PgControlPlane {
             .fetch_all(&mut *tx)
             .await
             .map_err(backend)?;
-            let mut bodies: Vec<(TransformName, TransformBody)> = existing
-                .into_iter()
-                .map(|r| Ok((TransformName(r.name), de_body(r.body)?)))
-                .collect::<Result<_>>()?;
+            let mut bodies: Vec<(TransformName, TransformBody)> =
+                Vec::with_capacity(existing.len() + 1);
+            for r in existing {
+                match de_body(r.body) {
+                    Ok(b) => bodies.push((TransformName(r.name), b)),
+                    Err(e) => {
+                        tracing::warn!(transform = %r.name, error = %e,
+                            "trigger-cycle scan: undecodable body skipped");
+                    }
+                }
+            }
+            // The candidate being defined is always in-memory and decodable, so
+            // the def under construction is always validated against the cycle set.
             bodies.push((def.name.clone(), def.body.clone()));
             let types = pg_type_tables(&mut *tx, &bodies).await?;
             let nodes: Vec<TriggerNode> = bodies

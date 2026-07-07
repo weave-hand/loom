@@ -575,3 +575,30 @@ async fn broken_def_body_is_skipped() {
         .expect("list_runs dep1");
     assert!(runs1.items.is_empty(), "the poisoned def never fires");
 }
+
+/// An undecodable EXISTING on_input_commit def must not 500 a subsequent define:
+/// the trigger-cycle scan skips it and validates the decodable subset.
+#[tokio::test]
+async fn define_survives_poison_existing_def() {
+    let fx = PgFixture::shared();
+    let (pg, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let input = tref("main", "input1");
+    pg.define_transform(dt_def("existing", &input, ("main", "out_existing")))
+        .await
+        .expect("define existing");
+
+    // Corrupt the existing def's body directly (bypasses define_transform).
+    sqlx::query("update transforms.transform set body = '\"nonsense\"'::jsonb where name = $1")
+        .bind("existing")
+        .execute(&pool)
+        .await
+        .expect("corrupt existing body");
+
+    // A fresh on_input_commit define runs the trigger-cycle scan over every other
+    // def — the poison one must be skipped, not fatal.
+    pg.define_transform(dt_def("fresh", &input, ("main", "out_fresh")))
+        .await
+        .expect("define fresh succeeds despite a poison existing def");
+}
