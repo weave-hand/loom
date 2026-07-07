@@ -860,6 +860,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-cdc-bucket",
+    crate = "stream_cdc_bucket",
+    srcs = ["tests/stream_cdc_bucket.rs"],
+    crate_root = "tests/stream_cdc_bucket.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-flush-persist",
     crate = "stream_flush_persist",
     srcs = ["tests/stream_flush_persist.rs"],

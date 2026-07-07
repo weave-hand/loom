@@ -524,18 +524,53 @@ pub async fn inline_append(
         .join(", ");
 
     if let Some(bc) = effective {
-        // Per-row bucket = row_index % bc (v1 simplification; bc >= 1).
+        // Per-row bucket: CDC tables hash on identity (`hash(id) % bc`, so a
+        // key's whole history stays in one bucket); log tables use row_index %
+        // bc (v1 simplification; bc >= 1).
         let n = batch.num_rows();
+        let bc_usize = usize::try_from(bc).map_err(|e| {
+            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
+        })?;
+        let meta = crate::stream::pg_stream_meta(&mut *conn, tid).await?;
+        let cdc_key: Option<String> = match &meta {
+            Some(m) if m.kind == control_plane_core::StreamKind::Cdc => m.bucket_key.clone(),
+            _ => None,
+        };
+        // Compute each row's bucket up front (so offset runs can be reserved per
+        // bucket before any row is inserted).
+        let mut row_bucket = vec![0usize; n];
+        for row in 0..n {
+            let b = match &cdc_key {
+                Some(key) => {
+                    let idx = columns.iter().position(|c| &c.name == key).ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            format!("cdc bucket_key `{key}` not in appended columns").into(),
+                        )
+                    })?;
+                    let spec = columns.get(idx).ok_or_else(|| {
+                        ControlPlaneError::Backend("bucket_key column index out of range".into())
+                    })?;
+                    let cell = cell_from_arrow(batch, idx, row, &spec.ty)?;
+                    usize::try_from(cdc_bucket(&cell, bc)?).map_err(|e| {
+                        ControlPlaneError::Backend(format!("bucket overflow: {e}").into())
+                    })?
+                }
+                None => row % bc_usize,
+            };
+            let slot = row_bucket
+                .get_mut(row)
+                .ok_or_else(|| ControlPlaneError::Backend("row index out of range".into()))?;
+            *slot = b;
+        }
         // Count rows per bucket and reserve a contiguous offset run per touched
         // bucket, up front, so the per-row loop only needs to hand out offsets
         // from an already-reserved cursor (panic-free bucket indexing: `Vec::get`/
         // `get_mut` instead of `[]`, even though `b` is always `< bc` by construction).
-        let bc_usize = usize::try_from(bc).map_err(|e| {
-            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
-        })?;
         let mut counts = vec![0i64; bc_usize];
         for row in 0..n {
-            let b = row % bc_usize;
+            let b = *row_bucket
+                .get(row)
+                .ok_or_else(|| ControlPlaneError::Backend("row index out of range".into()))?;
             let c = counts
                 .get_mut(b)
                 .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
@@ -567,7 +602,9 @@ pub async fn inline_append(
             inline_table_name(tid),
         );
         for row in 0..n {
-            let b = row % bc_usize;
+            let b = *row_bucket
+                .get(row)
+                .ok_or_else(|| ControlPlaneError::Backend("row index out of range".into()))?;
             let offset = *cursor
                 .get(b)
                 .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
@@ -820,6 +857,28 @@ fn advisory_key_for_id(tid: i64, id: &Cell) -> i64 {
         }
     }
     h.finish() as i64
+}
+
+/// The bucket for one identity of a CDC table: `stable_hash(id) % bucket_count`,
+/// so a key's whole change history (+I/-U/+U/-D) stays in one bucket (LastRow
+/// merge and per-key ordering depend on it). Reuses `advisory_key_for_id`'s
+/// deterministic, `rand`-free hash family; the modulus is taken on the unsigned
+/// value so the result is always in `0..bucket_count`.
+fn cdc_bucket(id: &Cell, bucket_count: i32) -> Result<i32> {
+    if bucket_count < 1 {
+        return Err(ControlPlaneError::Validation(format!(
+            "cdc bucket_count must be >= 1, got {bucket_count}"
+        )));
+    }
+    // advisory_key_for_id returns an i64 already tagged-per-variant; take it as u64
+    // and mod by bucket_count. `as u64` reinterprets the bits (no sign bias), and
+    // `% bucket_count` (bucket_count >= 1) yields 0..bucket_count.
+    let h = advisory_key_for_id(0, id) as u64;
+    let bc = u64::try_from(bucket_count).map_err(|e| {
+        ControlPlaneError::Backend(format!("invalid bucket_count {bucket_count}: {e}").into())
+    })?;
+    let b = (h % bc) as i32;
+    Ok(b)
 }
 
 /// The current inline version of one identity: `coalesce(max(begin_snapshot), 0)`
