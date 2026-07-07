@@ -11,6 +11,13 @@ use control_plane_core::snapshot::ColumnStat;
 use crate::backend;
 use crate::iceberg_type::logical_from_iceberg;
 
+/// Physical bookkeeping columns that must never appear in a table's logical
+/// (user-facing) schema. `loom_`-prefixed framing/bookkeeping plus the MVCC
+/// snapshot bounds (which are inline-only today, filtered here defensively).
+pub(crate) fn is_reserved(name: &str) -> bool {
+    name.starts_with("loom_") || name == "begin_snapshot" || name == "end_snapshot"
+}
+
 /// A live data file plus its per-column stats, for the pruning-aware serving
 /// provider. Concrete to Iceberg — the shared `Catalog`/`FileRef` must not grow a
 /// stats field. `column_stats` is empty for files written before per-column stats
@@ -130,6 +137,44 @@ impl IcebergCatalog {
             }
         }
         Ok(out)
+    }
+
+    /// Read the raw mirror columns for `tid` live at `at`, INCLUDING reserved
+    /// (`loom_`) columns. The logical `schema()` filters these out; the flush path
+    /// needs them to carry stream framing into Parquet.
+    #[tracing::instrument(skip(self), level = "debug")]
+    pub async fn physical_columns(&self, tid: i64, at: SnapshotId) -> Result<Vec<ColumnDef>> {
+        let rows = sqlx::query!(
+            "select column_order as \"column_order!\", column_name as \"column_name!\", column_type as \"column_type!\", nulls_allowed as \"nulls_allowed!\" \
+             from iceberg_mirror.column \
+             where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) \
+             order by column_order",
+            tid,
+            at.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.into_iter()
+            .map(|r| {
+                let ty = logical_from_iceberg(&r.column_type)
+                    .map(BaseType::canonical_name)
+                    .ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                                "catalog column type {:?} has no loom logical type",
+                                r.column_type
+                            )),
+                        )
+                    })?;
+                Ok(ColumnDef {
+                    order: r.column_order,
+                    name: r.column_name,
+                    ty: ty.to_string(),
+                    nullable: r.nulls_allowed,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
     }
 
     /// Every table currently live in the mirror (those with no `end_snapshot`),
@@ -275,38 +320,12 @@ impl Catalog for IcebergCatalog {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
         let tid = self.resolve_table(table, at).await?;
-        let rows = sqlx::query!(
-            "select column_order as \"column_order!\", column_name as \"column_name!\", column_type as \"column_type!\", nulls_allowed as \"nulls_allowed!\" \
-             from iceberg_mirror.column \
-             where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2) \
-             order by column_order",
-            tid,
-            at.0,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
-        let columns = rows
+        let columns = self
+            .physical_columns(tid, at)
+            .await?
             .into_iter()
-            .map(|r| {
-                let ty = logical_from_iceberg(&r.column_type)
-                    .map(BaseType::canonical_name)
-                    .ok_or_else(|| {
-                        ControlPlaneError::Backend(
-                            Box::<dyn std::error::Error + Send + Sync>::from(format!(
-                                "catalog column type {:?} has no loom logical type",
-                                r.column_type
-                            )),
-                        )
-                    })?;
-                Ok(ColumnDef {
-                    order: r.column_order,
-                    name: r.column_name,
-                    ty: ty.to_string(),
-                    nullable: r.nulls_allowed,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+            .filter(|c| !is_reserved(&c.name))
+            .collect();
         Ok(TableSchema { columns })
     }
 

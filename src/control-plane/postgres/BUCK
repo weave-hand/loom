@@ -818,6 +818,18 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-reserved-schema",
+    crate = "stream_reserved_schema",
+    srcs = ["tests/stream_reserved_schema.rs"],
+    crate_root = "tests/stream_reserved_schema.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "flush-suppression",
     crate = "flush_suppression",
     srcs = ["tests/flush_suppression.rs"],
