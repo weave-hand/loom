@@ -108,6 +108,15 @@ rust_test(
     deps = ["//third-party:serde_json", ":ui-core"],
 )
 
+rust_test(
+    name = "transforms-form",
+    crate = "transforms_form",
+    srcs = ["tests/transforms_form.rs"],
+    crate_root = "tests/transforms_form.rs",
+    edition = "2024",
+    deps = ["//third-party:serde_json", ":ui-core"],
+)
+
 rust_binary(
     name = "app",
     crate = "app",

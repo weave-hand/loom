@@ -11,8 +11,9 @@ pub use completion::{
 
 mod transforms;
 pub use transforms::{
-    OutputMode, RunRow, TableRef, TransformBody, TransformDefView, TransformIo, TransformKind,
-    TransformSummary, parse_runs, parse_transform_def, parse_transform_list,
+    FieldError, OutputMode, RunRow, TableRef, TransformBody, TransformDefView, TransformForm,
+    TransformIo, TransformKind, TransformSummary, form_to_body, form_to_def, parse_runs,
+    parse_transform_def, parse_transform_list,
 };
 
 /// Design-token hex values that must be consumed *outside* the CSS layer and so

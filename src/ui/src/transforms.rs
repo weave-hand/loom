@@ -236,3 +236,152 @@ pub fn parse_runs(body: &Value) -> Vec<RunRow> {
         })
         .unwrap_or_default()
 }
+
+use serde_json::json;
+
+/// The editor-form value. `inputs`/`output` are `"schema.name"` for physical
+/// transforms and bare type names for typed transforms. Empty `schedule` = none.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TransformForm {
+    pub kind: TransformKind,
+    pub name: String,
+    pub inputs: Vec<String>,
+    pub output: String,
+    pub sql: String,
+    pub schedule: String,
+    pub on_input_commit: bool,
+    pub output_mode: OutputMode,
+}
+
+/// A client-side validation failure, keyed by form field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldError {
+    pub field: String,
+    pub message: String,
+}
+
+impl FieldError {
+    fn new(field: &str, message: &str) -> Self {
+        Self {
+            field: field.to_owned(),
+            message: message.to_owned(),
+        }
+    }
+}
+
+/// Split a `"schema.name"` ref on the first `.`; no `.` → `("", whole)`.
+fn split_ref(s: &str) -> (&str, &str) {
+    match s.split_once('.') {
+        Some((schema, name)) => (schema, name),
+        None => ("", s),
+    }
+}
+
+fn table_ref_json(s: &str) -> Value {
+    let (schema, name) = split_ref(s);
+    json!({ "schema": schema, "name": name })
+}
+
+/// Validation shared by define and ad-hoc-run (everything but name/schedule).
+fn validate_body(form: &TransformForm, errors: &mut Vec<FieldError>) {
+    if form.inputs.is_empty() {
+        errors.push(FieldError::new("inputs", "select at least one input"));
+    }
+    if form.output.trim().is_empty() {
+        errors.push(FieldError::new("output", "output is required"));
+    }
+    if form.sql.trim().is_empty() {
+        errors.push(FieldError::new("sql", "SQL is required"));
+    }
+    if form.kind == TransformKind::Physical {
+        if form.inputs.iter().any(|i| !i.contains('.')) {
+            errors.push(FieldError::new(
+                "inputs",
+                "physical inputs must be schema.name",
+            ));
+        }
+        if !form.output.trim().is_empty() && !form.output.contains('.') {
+            errors.push(FieldError::new(
+                "output",
+                "physical output must be schema.name",
+            ));
+        }
+    }
+}
+
+/// Build the `TransformBody` JSON (used by both define and ad-hoc run).
+fn build_body(form: &TransformForm) -> Value {
+    match form.kind {
+        TransformKind::Physical => {
+            let inputs: Vec<Value> = form.inputs.iter().map(|s| table_ref_json(s)).collect();
+            json!({
+                "kind": "physical",
+                "inputs": inputs,
+                "output": table_ref_json(&form.output),
+                "sql": form.sql,
+                "output_mode": form.output_mode.as_str(),
+            })
+        }
+        TransformKind::Typed => json!({
+            "kind": "typed",
+            "inputs": form.inputs,
+            "output": form.output,
+            "sql": form.sql,
+            "output_mode": form.output_mode.as_str(),
+        }),
+    }
+}
+
+/// Build the full `TransformDef` (`POST /admin/transforms`). Client-side light
+/// validation; the server is the authoritative validator.
+///
+/// # Errors
+/// Returns the accumulated [`FieldError`]s when the form is not submittable.
+pub fn form_to_def(form: &TransformForm) -> Result<Value, Vec<FieldError>> {
+    let mut errors = Vec::new();
+    let name = form.name.trim();
+    if name.is_empty() {
+        errors.push(FieldError::new("name", "name is required"));
+    } else if name == "run" {
+        errors.push(FieldError::new("name", "\"run\" is reserved"));
+    }
+    validate_body(form, &mut errors);
+    let schedule = form.schedule.trim();
+    if !schedule.is_empty() && schedule.split_whitespace().count() != 5 {
+        errors.push(FieldError::new(
+            "schedule",
+            "cron needs 5 space-separated fields",
+        ));
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let def = if schedule.is_empty() {
+        json!({
+            "name": name,
+            "body": build_body(form),
+            "on_input_commit": form.on_input_commit,
+        })
+    } else {
+        json!({
+            "name": name,
+            "body": build_body(form),
+            "on_input_commit": form.on_input_commit,
+            "schedule": schedule,
+        })
+    };
+    Ok(def)
+}
+
+/// Build the ad-hoc-run body (`POST /admin/transforms/run`) — the `TransformBody` alone.
+///
+/// # Errors
+/// Returns the accumulated [`FieldError`]s when the body is not submittable.
+pub fn form_to_body(form: &TransformForm) -> Result<Value, Vec<FieldError>> {
+    let mut errors = Vec::new();
+    validate_body(form, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(build_body(form))
+}
