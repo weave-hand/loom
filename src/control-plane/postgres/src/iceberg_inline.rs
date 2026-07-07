@@ -286,7 +286,10 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
            loom_row_id bigserial primary key, \
            begin_snapshot bigint not null, \
            end_snapshot bigint, \
-           loom_tombstone boolean not null default false{cols})",
+           loom_tombstone boolean not null default false, \
+           loom_change_kind text not null default '+I', \
+           loom_bucket int, \
+           loom_offset bigint{cols})",
         inline_table_name(table_id),
     ))
 }
@@ -363,11 +366,26 @@ async fn ensure_inline_schema(
     columns: &[ColumnSpec],
 ) -> Result<()> {
     run_idempotent_ddl(&mut *conn, inline_ddl(tid, columns)?).await?;
-    let alter = format!(
+    let alter_tomb = format!(
         "alter table {} add column if not exists loom_tombstone boolean not null default false",
         inline_table_name(tid),
     );
-    run_idempotent_ddl(&mut *conn, alter).await?;
+    run_idempotent_ddl(&mut *conn, alter_tomb).await?;
+    let alter_kind = format!(
+        "alter table {} add column if not exists loom_change_kind text not null default '+I'",
+        inline_table_name(tid),
+    );
+    run_idempotent_ddl(&mut *conn, alter_kind).await?;
+    let alter_bucket = format!(
+        "alter table {} add column if not exists loom_bucket int",
+        inline_table_name(tid),
+    );
+    run_idempotent_ddl(&mut *conn, alter_bucket).await?;
+    let alter_offset = format!(
+        "alter table {} add column if not exists loom_offset bigint",
+        inline_table_name(tid),
+    );
+    run_idempotent_ddl(&mut *conn, alter_offset).await?;
     Ok(())
 }
 
@@ -796,9 +814,11 @@ pub async fn write_inline_delta(
     // Insert one delta row. BOTH kinds carry the identity value so the merge-on-read
     // (partition by <id>) shadows/hides the file row for that id.
     if tombstone {
-        // Tombstone: begin_snapshot, loom_tombstone=true, "<id_col>"=id; data NULL.
+        // Tombstone: begin_snapshot, loom_tombstone=true, loom_change_kind='-D',
+        // "<id_col>"=id; data NULL.
         let sql = format!(
-            "insert into {} (begin_snapshot, loom_tombstone, \"{}\") values ($1, true, $2)",
+            "insert into {} (begin_snapshot, loom_tombstone, loom_change_kind, \"{}\") \
+             values ($1, true, '-D', $2)",
             inline_table_name(tid),
             id_column.replace('"', "\"\""),
         );
@@ -819,8 +839,8 @@ pub async fn write_inline_delta(
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "insert into {} (begin_snapshot, loom_tombstone, {col_list}) \
-             values ($1, false, {placeholders})",
+            "insert into {} (begin_snapshot, loom_tombstone, loom_change_kind, {col_list}) \
+             values ($1, false, '+U', {placeholders})",
             inline_table_name(tid),
         );
         let cells = columns
