@@ -205,5 +205,10 @@ One spec, **two implementation plans**, each an independently shippable incremen
   to, whose inline rows form a gapless per-bucket ordered log.
 - **Plan 1b — durable persistence.** `is_reserved` logical-column filter applied at
   every logical-schema derivation site; stream-aware `flush_table` that persists +
-  registers the framing columns in Iceberg; read-exclusion verified. Deliverable:
-  the log survives flush and stays resumable, while ordinary reads stay byte-identical.
+  registers the framing columns in Iceberg; read-exclusion verified. **Also brings
+  the Parquet (large-write) path to parity:** Plan 1a's `land_parquet` only *declares*
+  the mode on a brand-new table and otherwise silently no-ops, so 1b applies the same
+  `Conflict`/`Validation` reconcile the inline path has, plus offset stamping, on the
+  Parquet path — and folds in a `bucket_count >= 1` CHECK on `stream.stream_table` as
+  DB-level hardening. Deliverable: the log survives flush and stays resumable across
+  both write paths, while ordinary reads stay byte-identical.
