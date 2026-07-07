@@ -75,8 +75,8 @@ pub use transform_job::{
 };
 pub use transforms::{
     RunOutcome, RunState, RunTrigger, TransformBody, TransformDef, TransformName, TransformRun,
-    Transforms, TriggerNode, next_cron_occurrence, validate_cron, validate_no_trigger_cycle,
-    validate_transform_def,
+    Transforms, TriggerNode, next_cron_occurrence, validate_cron,
+    validate_no_multi_def_trigger_cycle, validate_no_trigger_cycle, validate_transform_def,
 };
 pub use vector_index::{
     FlatIndex, HnswIndex, IndexKind, IndexSpec, IvfFlatIndex, Metric, VectorIndex, VectorKey,

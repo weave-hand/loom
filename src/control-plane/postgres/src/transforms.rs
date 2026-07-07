@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, RunTrigger,
     TableRef, TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode,
-    next_cron_occurrence, validate_no_trigger_cycle, validate_transform_def,
+    next_cron_occurrence, validate_no_multi_def_trigger_cycle, validate_no_trigger_cycle,
+    validate_transform_def,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -21,14 +22,14 @@ fn ser(v: &impl serde::Serialize) -> Result<serde_json::Value> {
     serde_json::to_value(v).map_err(|e| ControlPlaneError::Serialization(e.to_string()))
 }
 
-fn de_body(v: serde_json::Value) -> Result<TransformBody> {
+pub(crate) fn de_body(v: serde_json::Value) -> Result<TransformBody> {
     serde_json::from_value(v).map_err(|e| ControlPlaneError::Serialization(e.to_string()))
 }
 
 /// Resolve every typed name appearing in `bodies` to its backing table, in
 /// one query. Missing names are simply absent from the map (an unresolvable
 /// type cannot match a commit and forms no edge).
-async fn pg_type_tables<'e, E: sqlx::PgExecutor<'e>>(
+pub(crate) async fn pg_type_tables<'e, E: sqlx::PgExecutor<'e>>(
     ex: E,
     bodies: &[(TransformName, TransformBody)],
 ) -> Result<std::collections::HashMap<String, TableRef>> {
@@ -68,6 +69,32 @@ async fn pg_type_tables<'e, E: sqlx::PgExecutor<'e>>(
             )
         })
         .collect())
+}
+
+/// Re-validate the data-triggered trigger DAG against the CURRENT ontology
+/// bindings, rejecting only a MULTI-DEF cycle (self-loops stay runtime-handled).
+/// Called by `define_type` after a binding change. Runs in the caller's tx so it
+/// sees the just-applied binding.
+pub(crate) async fn pg_validate_rebind_cycle(tx: &mut sqlx::PgConnection) -> Result<()> {
+    let dt = sqlx::query!("select name, body from transforms.transform where on_input_commit",)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(backend)?;
+    let mut bodies: Vec<(TransformName, TransformBody)> = Vec::with_capacity(dt.len());
+    for r in dt {
+        match de_body(r.body) {
+            Ok(b) => bodies.push((TransformName(r.name), b)),
+            Err(e) => tracing::warn!(transform = %r.name, error = %e,
+                "rebind cycle scan: undecodable body skipped"),
+        }
+    }
+    let types = pg_type_tables(&mut *tx, &bodies).await?;
+    let nodes: Vec<TriggerNode> = bodies
+        .iter()
+        .map(|(n, b)| TriggerNode::resolve(n, b, &types))
+        .collect();
+    validate_no_multi_def_trigger_cycle(&nodes)?;
+    Ok(())
 }
 
 /// Insert a run row on any executor — callable from inside a commit

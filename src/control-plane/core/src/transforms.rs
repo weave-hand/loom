@@ -323,12 +323,31 @@ impl TriggerNode {
 /// defined. Kahn's algorithm: repeatedly remove zero-in-degree nodes; any
 /// remainder is cyclic and is named in the error.
 pub fn validate_no_trigger_cycle(nodes: &[TriggerNode]) -> Result<()> {
+    validate_trigger_cycle_impl(nodes, false)
+}
+
+/// Reject a firing cycle among data-triggered defs, but TOLERANT of single-def
+/// self-cycles (a def whose resolved output feeds its own resolved input):
+/// runtime self-skip at the commit seam already neutralizes those. Rejects only
+/// cycles spanning ≥2 distinct defs — the between-defs case a `define_type`
+/// rebind can silently create by re-pointing a type's backing table.
+pub fn validate_no_multi_def_trigger_cycle(nodes: &[TriggerNode]) -> Result<()> {
+    validate_trigger_cycle_impl(nodes, true)
+}
+
+/// Kahn's algorithm over the data-trigger edge set. When `skip_self_edges`, a
+/// def's edge to itself is not counted, so a single-def self-loop is tolerated
+/// while any cycle spanning ≥2 distinct defs is still rejected.
+fn validate_trigger_cycle_impl(nodes: &[TriggerNode], skip_self_edges: bool) -> Result<()> {
     use std::collections::HashMap;
     let mut indegree: HashMap<&str, usize> = nodes.iter().map(|n| (n.name.as_str(), 0)).collect();
     let mut succs: HashMap<&str, Vec<&str>> = HashMap::new();
     for from in nodes {
         let Some(out) = &from.output else { continue };
-        for to in nodes.iter().filter(|to| to.inputs.contains(out)) {
+        for to in nodes
+            .iter()
+            .filter(|to| (!skip_self_edges || to.name != from.name) && to.inputs.contains(out))
+        {
             succs
                 .entry(from.name.as_str())
                 .or_default()
