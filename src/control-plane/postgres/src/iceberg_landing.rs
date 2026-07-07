@@ -1108,8 +1108,19 @@ pub async fn overwrite_parquet_snapshot(
     if batches.iter().all(|b| b.num_rows() == 0) {
         return overwrite_truncate(pool, table, lineage, &rebuild_jobs).await;
     }
-    // Framing persistence on the overwrite/replace path is future scope
-    // (Plan 1b Task 5) — this path never stamps/persists framing yet.
+    // A declared stream table's physical schema carries framing; an overwrite must
+    // preserve it (else the replacement looks like a dropped-columns schema change
+    // against the live, framing-bearing mirror — see `classify_schema_change`).
+    // Batch tables stay framing-free — byte-identical to before.
+    let include_framing = {
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        match live_table_id(&mut conn, &table.schema, &table.name).await? {
+            Some(tid) => crate::stream::pg_stream_bucket_count(&mut *conn, tid)
+                .await?
+                .is_some(),
+            None => false,
+        }
+    };
     append_parquet_snapshot(
         pool,
         catalog,
@@ -1123,7 +1134,7 @@ pub async fn overwrite_parquet_snapshot(
             data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
         },
-        false,
+        include_framing,
     )
     .await
 }

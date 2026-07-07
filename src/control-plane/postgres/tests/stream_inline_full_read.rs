@@ -160,7 +160,10 @@ async fn full_read_includes_minus_u_that_live_batch_excludes() {
         .await
         .expect("inline_live_batch must not error")
         .expect("a live row must be present");
-    assert_eq!(live_tid, tid, "inline_live_batch resolves the same table id");
+    assert_eq!(
+        live_tid, tid,
+        "inline_live_batch resolves the same table id"
+    );
     let live_kinds = change_kinds_for(&pool, tid, &live_row_ids).await;
     assert!(
         !live_kinds.contains("-U"),
