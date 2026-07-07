@@ -106,9 +106,17 @@ async fn stream_overwrite_preserves_framing() {
     cp.declare_cdc(tid, 1, "id").await.expect("declare_cdc");
 
     // Insert + flush so the base holds framed file rows.
-    inline_append(&pool, &table, &cols, &id_batch(&[1, 2, 3]), lin(), None, None)
-        .await
-        .expect("seed append");
+    inline_append(
+        &pool,
+        &table,
+        &cols,
+        &id_batch(&[1, 2, 3]),
+        lin(),
+        None,
+        None,
+    )
+    .await
+    .expect("seed append");
     let run = RunId(uuid::Uuid::new_v4());
     flush_table(&catalog, &pool, &table, run)
         .await
@@ -160,9 +168,17 @@ async fn batch_overwrite_has_no_framing() {
     };
     let cols = vec![id_spec()];
 
-    inline_append(&pool, &table, &cols, &id_batch(&[1, 2, 3]), lin(), None, None)
-        .await
-        .expect("seed append");
+    inline_append(
+        &pool,
+        &table,
+        &cols,
+        &id_batch(&[1, 2, 3]),
+        lin(),
+        None,
+        None,
+    )
+    .await
+    .expect("seed append");
     let run = RunId(uuid::Uuid::new_v4());
     flush_table(&catalog, &pool, &table, run)
         .await
