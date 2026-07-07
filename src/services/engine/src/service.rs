@@ -257,6 +257,22 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         }))
     }
 
+    async fn consolidate_stream(
+        &self,
+        req: Request<pb::ConsolidateStreamRequest>,
+    ) -> std::result::Result<Response<pb::ConsolidateStreamResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let snapshot_id =
+            engine_serving::consolidate_stream(&self.cp, &self.catalog, &self.pool, &table)
+                .await
+                .map_err(serving_status)?;
+        Ok(Response::new(pb::ConsolidateStreamResponse { snapshot_id }))
+    }
+
     async fn commit_transform(
         &self,
         req: Request<pb::CommitTransformRequest>,

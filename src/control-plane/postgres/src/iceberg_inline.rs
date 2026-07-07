@@ -770,6 +770,19 @@ pub async fn has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool>
     Ok(v)
 }
 
+/// Clear `tid`'s inline-shadow flag after consolidation, re-arming the
+/// byte-trigger flush. Idempotent. AssertSqlSafe: see [`set_has_shadow`].
+pub async fn clear_has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result<()> {
+    sqlx::query(AssertSqlSafe(
+        "delete from iceberg_mirror.shadow_flag where table_id = $1",
+    ))
+    .bind(tid)
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
 /// Extract the id column's cell (row 0) from `batch`, typed by its `ColumnSpec`.
 /// The id value never crosses a crate boundary as a `Cell`/`SqlValue`: callers pass
 /// it inside an Arrow batch and name the id column, and this locates it by name.

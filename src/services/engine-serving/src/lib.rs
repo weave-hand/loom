@@ -5,12 +5,14 @@
 //! docs/superpowers/specs/2026-06-24-engine-serving-execution-wire-design.md.
 
 pub mod action_writer;
+pub mod consolidate;
 pub mod governed;
 pub mod provider;
 pub mod serving;
 pub mod vector_search;
 
 pub use action_writer::{IcebergActionWriter, StepWrite};
+pub use consolidate::consolidate_stream;
 pub use governed::{
     GovernedTableProvider, TablePolicy, execute_governed_sql_stream, policy_for, row_filter_to_expr,
 };
