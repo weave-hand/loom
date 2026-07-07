@@ -963,9 +963,20 @@ fn stamp_framing(batch: &RecordBatch, buckets: &[i32], offsets: &[i64]) -> Resul
         .iter()
         .map(|f| f.as_ref().clone())
         .collect();
-    fields.push(Field::new("loom_change_kind", DataType::Utf8, false));
-    fields.push(Field::new("loom_bucket", DataType::Int32, true));
-    fields.push(Field::new("loom_offset", DataType::Int64, true));
+    // Derive the framing fields from `framing_column_specs` (the single source of
+    // truth for the reserved log columns) so a future edit there propagates here:
+    // map each spec's logical type to its Arrow `DataType` via `BaseType`. The arrays
+    // pushed below align to this order (change_kind, bucket, offset).
+    for spec in framing_column_specs() {
+        let dt = control_plane_core::resolve_logical(&spec.ty)
+            .ok_or_else(|| {
+                ControlPlaneError::Backend(
+                    format!("stamp_framing: unknown framing type {:?}", spec.ty).into(),
+                )
+            })?
+            .arrow_data_type();
+        fields.push(Field::new(&spec.name, dt, spec.nullable));
+    }
 
     let mut cols: Vec<ArrayRef> = batch.columns().to_vec();
     cols.push(Arc::new(StringArray::from(vec!["+I"; n])));

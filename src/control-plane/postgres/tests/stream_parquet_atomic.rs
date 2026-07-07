@@ -247,3 +247,69 @@ async fn large_write_rejects_bucket_mismatch() {
         "mismatch rejected: {err:?}"
     );
 }
+
+/// Two matching (`buckets=2`) large direct-Parquet writes to the SAME stream table:
+/// the second write must NOT error (exercises the `(Some(n),Some(m)) n==m` reconcile
+/// arm + the `existing_stream.is_some()` branch on the direct path), and each bucket's
+/// per-bucket offsets must CONTINUE gaplessly across the two writes — write 1 fills
+/// `[0..k)` and write 2 continues at `[k..2k)`, never restarting at 0.
+///
+/// (The CAS-conflict/retry arm of `land_parquet_stream` — concurrent writers losing
+/// the pointer CAS — is hard to force deterministically here; it is covered
+/// structurally by that function's retry loop, not re-driven in this test.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn second_large_write_continues_per_bucket_offsets() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+
+    let table = TableRef {
+        schema: "s".into(),
+        name: "twolog".into(),
+    };
+
+    // First large write to a fresh stream table.
+    let snap1 = land_large_stream(&pool, &catalog, &table, 2, 5_000).await;
+    let ice = IcebergCatalog::new(pool.clone());
+    let first = parquet_framing(&ice, &table, snap1).await;
+    assert_gapless_per_bucket(&first);
+    assert_eq!(first.len(), 5_000, "first write framed every row");
+
+    // Second matching write to the SAME existing stream table — must not error.
+    let snap2 = land_large_stream(&pool, &catalog, &table, 2, 5_000).await;
+    assert_ne!(snap1, snap2, "second write is a new snapshot");
+
+    // At snap2 both writes' files are live (append). Each bucket's combined offsets must
+    // be gapless from 0 — a restart-at-0 second write would duplicate the low prefix and
+    // fail this.
+    let both = parquet_framing(&ice, &table, snap2).await;
+    assert_eq!(both.len(), 10_000, "both writes' rows live at snap2");
+    assert_gapless_per_bucket(&both);
+
+    // Explicit continuation: per bucket, the second write supplied exactly the high half
+    // [k..2k), continuing write 1's run [0..k) rather than overlapping it.
+    let mut first_by_bucket: HashMap<i32, usize> = HashMap::new();
+    for (b, _) in &first {
+        *first_by_bucket.entry(*b).or_default() += 1;
+    }
+    let mut both_by_bucket: HashMap<i32, Vec<i64>> = HashMap::new();
+    for (b, o) in &both {
+        both_by_bucket.entry(*b).or_default().push(*o);
+    }
+    for (bucket, mut os) in both_by_bucket {
+        os.sort_unstable();
+        let k = *first_by_bucket
+            .get(&bucket)
+            .expect("bucket present in first write") as i64;
+        let want_all: Vec<i64> = (0..os.len() as i64).collect();
+        assert_eq!(os, want_all, "bucket {bucket} gapless across both writes");
+        let second_half: Vec<i64> = os.into_iter().filter(|o| *o >= k).collect();
+        let want_second: Vec<i64> = (k..want_all.len() as i64).collect();
+        assert_eq!(
+            second_half, want_second,
+            "bucket {bucket}: second write continued at offset {k}"
+        );
+    }
+}

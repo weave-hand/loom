@@ -98,6 +98,22 @@ pub(crate) async fn apply_commit_extras(
     Ok(())
 }
 
+/// The object-store-derived inputs to a commit's PG-only tail
+/// ([`SqlCatalog::commit_mirror_in_tx`]): the staged table + its pointer
+/// locations, the staged Iceberg snapshot id, and the mirror files/columns read
+/// from the just-written staged metadata. Produced by [`SqlCatalog::stage_commit`]
+/// — the object-store STAGING half of a commit — and consumed by the PG-only tail,
+/// so the two halves cannot drift between the common short-tx path and the stream
+/// long-tx path.
+struct StagedCommit {
+    staged_table: Table,
+    current_metadata_location: String,
+    staged_metadata_location: String,
+    staged_snap: Option<i64>,
+    mirror_files: Vec<ProjectedFile>,
+    mirror_columns: Vec<ProjectedColumn>,
+}
+
 impl SqlCatalog {
     /// Physically delete an object-store file by its absolute URL (e.g. a `file://`
     /// or `s3://` Parquet path). Idempotent: a missing object is not an error —
@@ -114,7 +130,9 @@ impl SqlCatalog {
     /// type-level incapable of reading object storage inside the transaction — the
     /// property `iss-iceberg-tx-objectstore` requires (enforced by the signature,
     /// not by convention). The object-store read (`added_files_of`) and schema read
-    /// (`columns_of`) are done by the caller before `begin()`.
+    /// (`columns_of`) are done by the caller during STAGING — before `begin()` on the
+    /// common short-tx path ([`Self::do_update_table`]), or in-tx on the accepted
+    /// long-tx stream direct-write path ([`Self::do_update_table_in_tx`]).
     ///
     /// Returns the mirror snapshot it allocated so callers can use it for further
     /// in-tx work (e.g. end-capping inline rows at the same snapshot).
@@ -178,19 +196,38 @@ impl SqlCatalog {
     /// flush path additionally passes an end-cap to retire inline rows at the
     /// same snapshot the new Parquet file becomes live.
     ///
-    /// Thin owning wrapper around [`Self::do_update_table_in_tx`]: begins the tx,
-    /// delegates, and commits on success. On a lost CAS (or any other error from
-    /// the delegate) it rolls back its own tx before propagating the error —
-    /// preserving the delegate's contract that it never touches `tx` on the
-    /// conflict path (the delegate's caller — here — owns rollback).
+    /// The COMMON commit path (flush / landing / overwrite / inline-flush — every
+    /// caller except the stream direct-write path): it does ALL the object-store
+    /// STAGING ([`Self::stage_commit`] — staged-metadata `write_to`, `added_files_of`
+    /// manifest+footer read, `columns_of`) BEFORE `begin()`, then opens the tx and
+    /// runs only the PG-only tail ([`Self::commit_mirror_in_tx`]) on it. So the
+    /// commit tx holds ONLY fast local Postgres work — no `await` on object storage
+    /// between `begin()` and `commit()` — restoring the `iss-iceberg-tx-objectstore`
+    /// invariant on the hot path across S3/MinIO latency. On a lost CAS (or any other
+    /// error from the tail) it rolls back its own tx before propagating.
     pub(crate) async fn do_update_table(
         &self,
         commit: TableCommit,
         extras: CommitExtras<'_>,
     ) -> Result<Table> {
-        let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
+        // STAGING first — all object-store I/O happens here, BEFORE begin(), so the
+        // short tx opened below never awaits object storage.
+        let staged = self.stage_commit(commit).await?;
 
-        match self.do_update_table_in_tx(&mut tx, commit, extras).await {
+        let mut tx = self.connection.begin().await.map_err(from_sqlx_error)?;
+        match self
+            .commit_mirror_in_tx(
+                &mut tx,
+                staged.staged_table,
+                &staged.current_metadata_location,
+                &staged.staged_metadata_location,
+                staged.staged_snap,
+                &staged.mirror_files,
+                &staged.mirror_columns,
+                &extras,
+            )
+            .await
+        {
             Ok(table) => {
                 tx.commit().await.map_err(from_sqlx_error)?;
                 Ok(table)
@@ -202,29 +239,25 @@ impl SqlCatalog {
         }
     }
 
-    /// [`Self::do_update_table`]'s body, parameterized over a caller-provided
-    /// transaction: the staged-metadata object-store write, the
-    /// `added_files_of`/`columns_of` reads, the CAS `UPDATE`, `write_mirror`, and
-    /// `apply_commit_extras` all run on `tx`. Does NOT `begin()` or `commit()` it —
-    /// that is the caller's responsibility (see [`Self::do_update_table`] for the
-    /// owning wrapper). Exists so a later commit path can run further work (e.g.
-    /// offset allocation) on the same tx that commits the snapshot.
+    /// The STAGING half of a commit: the object-store side-effects and reads that
+    /// prepare a [`StagedCommit`] for the PG-only tail. Loads the current table,
+    /// applies the commit, writes the staged metadata, then reads the new snapshot's
+    /// manifests + Parquet footers (`added_files_of`) and staged schema
+    /// (`columns_of`). This is ALL the object-store I/O a commit performs — no
+    /// storage access happens in [`Self::commit_mirror_in_tx`].
     ///
-    /// On a lost CAS (`rows_affected() == 0`) returns a retryable
-    /// `CatalogCommitConflicts` error WITHOUT touching `tx` — the caller decides
-    /// whether to roll back.
-    pub(crate) async fn do_update_table_in_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, Postgres>,
-        commit: TableCommit,
-        extras: CommitExtras<'_>,
-    ) -> Result<Table> {
+    /// The manifests are immutable and already persisted (`fast_append` wrote them;
+    /// `write_to` wrote the staged metadata above), so reading them here — whether
+    /// before `begin()` (common path) or in-tx (stream path) — is a read of durable
+    /// state with no read-after-write hazard; the CAS in the tail still guards the
+    /// pointer.
+    async fn stage_commit(&self, commit: TableCommit) -> Result<StagedCommit> {
         let table_ident = commit.identifier().clone();
         let current_table = self.load_table(&table_ident).await?;
         let current_metadata_location = current_table.metadata_location_result()?.to_string();
 
         let staged_table = commit.apply(current_table)?;
-        let staged_metadata_location = staged_table.metadata_location_result()?;
+        let staged_metadata_location = staged_table.metadata_location_result()?.to_string();
         // iceberg main's `TableMetadata::write_to` takes a typed `&MetadataLocation`
         // (was `&str`); parse the location string commit.apply already computed. The
         // string itself is still used below as the CAS pointer value.
@@ -235,12 +268,6 @@ impl SqlCatalog {
             .write_to(staged_table.file_io(), &staged_ml)
             .await?;
 
-        // Object-store reads happen here, BEFORE the CAS UPDATE: load the new
-        // snapshot's manifests + Parquet footers and snapshot the staged schema. The
-        // manifests are immutable and already persisted (fast_append wrote them;
-        // write_to wrote the staged metadata above), so reading them here is
-        // identical to reading them anywhere else in the tx — no read-after-write
-        // hazard, and the CAS still guards the pointer.
         let mirror_files = crate::iceberg_mirror::added_files_of(&staged_table)
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
@@ -250,6 +277,83 @@ impl SqlCatalog {
             .metadata()
             .current_snapshot()
             .map(|s| s.snapshot_id());
+
+        Ok(StagedCommit {
+            staged_table,
+            current_metadata_location,
+            staged_metadata_location,
+            staged_snap,
+            mirror_files,
+            mirror_columns,
+        })
+    }
+
+    /// The LONG-TX commit variant: same commit as [`Self::do_update_table`] but with
+    /// BOTH the object-store STAGING ([`Self::stage_commit`]) AND the PG-only tail
+    /// ([`Self::commit_mirror_in_tx`]) run on a caller-provided ALREADY-OPEN
+    /// transaction `tx`. Does NOT `begin()` or `commit()` it — the caller owns that.
+    ///
+    /// Used ONLY by the stream direct-write path (`iceberg_landing::land_parquet` via
+    /// the `TxCommitCatalog` decorator), whose Parquet write is itself in-tx: it must
+    /// commit the snapshot on the SAME tx it already staged offset allocation on, so
+    /// the whole write (offsets + Parquet + snapshot) is atomic. Holding the tx across
+    /// the object-store Parquet write is the deliberate, accepted long-tx tradeoff for
+    /// the bulk stream path (the full-atomic-parity decision) — the common path
+    /// ([`Self::do_update_table`]) stages before `begin()` and is NOT affected.
+    ///
+    /// On a lost CAS (`rows_affected() == 0`) returns a retryable
+    /// `CatalogCommitConflicts` error WITHOUT touching `tx` — the caller decides
+    /// whether to roll back.
+    pub(crate) async fn do_update_table_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, Postgres>,
+        commit: TableCommit,
+        extras: CommitExtras<'_>,
+    ) -> Result<Table> {
+        // Stream long-tx path: staging runs IN the caller's tx (accepted tradeoff).
+        let staged = self.stage_commit(commit).await?;
+        self.commit_mirror_in_tx(
+            tx,
+            staged.staged_table,
+            &staged.current_metadata_location,
+            &staged.staged_metadata_location,
+            staged.staged_snap,
+            &staged.mirror_files,
+            &staged.mirror_columns,
+            &extras,
+        )
+        .await
+    }
+
+    /// The PG-only TAIL shared by both commit owners: the pointer-CAS `UPDATE`, the
+    /// lost-CAS conflict check, the mirror projection (`write_mirror`), and
+    /// `apply_commit_extras` — all on the caller's `tx`, from **precomputed** staging
+    /// inputs. Performs ZERO object-store I/O (every storage read/write was done in
+    /// [`Self::stage_commit`]), so the tx it runs on holds only fast local Postgres
+    /// work — the `iss-iceberg-tx-objectstore` invariant.
+    ///
+    /// On a lost CAS (`rows_affected() == 0`) returns a retryable
+    /// `CatalogCommitConflicts` error WITHOUT touching `tx` — the caller decides
+    /// whether to roll back.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one cohesive PG-only commit tail: the tx + the staged table and its two \
+                  pointer locations + the precomputed staged snapshot/files/columns + the \
+                  commit extras; every arg is a precomputed staging input so the body can \
+                  touch no object storage"
+    )]
+    async fn commit_mirror_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        staged_table: Table,
+        current_metadata_location: &str,
+        staged_metadata_location: &str,
+        staged_snap: Option<i64>,
+        mirror_files: &[ProjectedFile],
+        mirror_columns: &[ProjectedColumn],
+        extras: &CommitExtras<'_>,
+    ) -> Result<Table> {
+        let table_ident = staged_table.identifier().clone();
 
         let update_result = self
             .execute(
@@ -267,11 +371,11 @@ impl SqlCatalog {
                 ),
                 vec![
                     Some(staged_metadata_location),
-                    Some(current_metadata_location.as_str()),
+                    Some(current_metadata_location),
                     Some(&self.name),
                     Some(table_ident.name()),
                     Some(&table_ident.namespace().join(".")),
-                    Some(current_metadata_location.as_str()),
+                    Some(current_metadata_location),
                 ],
                 Some(&mut *tx),
             )
@@ -290,15 +394,15 @@ impl SqlCatalog {
                 &mut *tx,
                 &table_ident,
                 staged_snap,
-                &mirror_columns,
-                &mirror_files,
+                mirror_columns,
+                mirror_files,
                 extras.overwrite,
                 extras.reuse_snapshot,
             )
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
-        apply_commit_extras(tx, at, &extras)
+        apply_commit_extras(tx, at, extras)
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
