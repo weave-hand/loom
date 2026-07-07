@@ -215,9 +215,13 @@ async fn conformant_action_runs_the_insert() {
         serving: &null_serving,
     };
     let body = json!({"id": "42", "name": "gadget"});
-    let (rows, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
+    let (outcome, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
         .await
         .unwrap();
+    let rows = match outcome {
+        query_api::action::ActionOutcome::Single(rows) => rows,
+        query_api::action::ActionOutcome::Multi(_) => panic!("single-step action yields Single"),
+    };
     assert_eq!(rows.columns, vec!["id".to_string(), "name".to_string()]);
     let events = engine.events();
     assert_eq!(events.len(), 1, "conformant action writes once");

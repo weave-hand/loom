@@ -1086,3 +1086,54 @@ pub async fn post_search(
     };
     (status, json)
 }
+
+/// Drive `POST /actions/{name}` through the router (behind the auth gate) and return
+/// (status, headers, parsed JSON body). Sibling to `post_search`, but also returns
+/// headers (needed to assert `X-Loom-Run-Id`) and takes the action engine explicitly:
+/// `StubAction`'s default `write_steps` errors, so a multi-step action needs a REAL
+/// write engine (e.g. `spawn_engine_writer`) to actually commit.
+pub async fn post_action_raw(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
+    action_engine: Arc<dyn query_api::serving::ActionEngine>,
+    uri: &str,
+    body: &serde_json::Value,
+    subject: &str,
+) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
+    let token = session_token(&cp, subject).await;
+    let app = protect(
+        router(AppState {
+            cp: cp.clone() as Arc<dyn ControlPlane>,
+            serving: eng,
+            action_engine,
+            default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
+        }),
+        AuthState {
+            auth: cp.clone(),
+            session_ttl: std::time::Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
+        },
+    );
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, headers, json)
+}

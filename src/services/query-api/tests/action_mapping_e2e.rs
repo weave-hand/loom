@@ -195,7 +195,7 @@ async fn rename_param_writes_bound_property() {
         action_engine: &engine,
         serving: &serving,
     };
-    let (created, _run) = run_action(
+    let (outcome, _run) = run_action(
         "createGadget",
         json!({ "id": "7", "displayName": "Widget A" })
             .as_object()
@@ -205,6 +205,10 @@ async fn rename_param_writes_bound_property() {
     )
     .await
     .expect("rename action runs");
+    let created = match outcome {
+        query_api::action::ActionOutcome::Single(rows) => rows,
+        query_api::action::ActionOutcome::Multi(_) => panic!("single-step action yields Single"),
+    };
 
     // Returned object is keyed by PROPERTY: the bound `name`, never the param `displayName`.
     let created_json = objects_to_json(&created, None);
@@ -441,7 +445,7 @@ async fn update_targets_and_patches_via_bound_property() {
     .expect("seed insert runs");
 
     // Patch via the bound identity + bound name property.
-    let (updated, _run) = run_action(
+    let (outcome, _run) = run_action(
         "renameGadget",
         json!({ "key": "7", "displayName": "Renamed" })
             .as_object()
@@ -451,6 +455,10 @@ async fn update_targets_and_patches_via_bound_property() {
     )
     .await
     .expect("update via binds runs");
+    let updated = match outcome {
+        query_api::action::ActionOutcome::Single(rows) => rows,
+        query_api::action::ActionOutcome::Multi(_) => panic!("single-step action yields Single"),
+    };
     assert_eq!(
         objects_to_json(&updated, None)["objects"][0]["name"],
         json!("Renamed")
