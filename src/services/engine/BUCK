@@ -185,6 +185,7 @@ rust_test(
         "//third-party:serde_json",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 
