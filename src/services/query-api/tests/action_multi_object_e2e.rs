@@ -161,35 +161,7 @@ async fn order_with_lines_round_trips_with_cross_step_fk_and_one_run() {
     // createOrderWithLines: step0 inserts the Order (bind `order`); step1 & step2 each
     // insert a LineItem whose `orderId` is `@order.id` (a StepRef into the parent's
     // just-resolved identity). Two line items ⇒ two LineItem steps.
-    cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createOrderWithLines".into()),
-            steps: vec![
-                ActionStep {
-                    target: tn("Order"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("oid", "Long", true, "id")],
-                    assignments: vec![],
-                    bind: Some("order".into()),
-                },
-                ActionStep {
-                    target: tn("LineItem"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("li1", "Long", true, "id")],
-                    assignments: vec![Assignment::step_ref("orderId", "order", "id")],
-                    bind: None,
-                },
-                ActionStep {
-                    target: tn("LineItem"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("li2", "Long", true, "id")],
-                    assignments: vec![Assignment::step_ref("orderId", "order", "id")],
-                    bind: None,
-                },
-            ],
-        })
-        .await
-        .unwrap();
+    e2e_support::define_create_order_with_lines_action(&cp).await;
 
     let (subj, _role) = writer_on(&cp, &["Order", "LineItem"]).await;
     let (engine, _eg) =

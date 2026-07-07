@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, ControlPlane, Effect,
-    ObjectType, ParamDef, PolicyTarget, RoleId, SubjectId, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, Effect, ObjectType, ParamDef,
+    PolicyTarget, RoleId, SubjectId, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -25,16 +25,6 @@ use serde_json::json;
 
 fn tn(s: &str) -> TypeName {
     TypeName(s.into())
-}
-
-/// A required param renamed away from the property it writes (`binds`).
-fn param_bound(name: &str, ty: &str, required: bool, binds: &str) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: Some(binds.into()),
-    }
 }
 
 /// Grant Write on every named type to a fresh `writer` subject/role.
@@ -85,35 +75,7 @@ async fn multi_step_envelope_and_single_step_back_compat() {
         )
         .await
         .unwrap();
-    cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createOrderWithLines".into()),
-            steps: vec![
-                ActionStep {
-                    target: tn("Order"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("oid", "Long", true, "id")],
-                    assignments: vec![],
-                    bind: Some("order".into()),
-                },
-                ActionStep {
-                    target: tn("LineItem"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("li1", "Long", true, "id")],
-                    assignments: vec![Assignment::step_ref("orderId", "order", "id")],
-                    bind: None,
-                },
-                ActionStep {
-                    target: tn("LineItem"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("li2", "Long", true, "id")],
-                    assignments: vec![Assignment::step_ref("orderId", "order", "id")],
-                    bind: None,
-                },
-            ],
-        })
-        .await
-        .unwrap();
+    e2e_support::define_create_order_with_lines_action(&cp).await;
 
     // Gadget: a single-step bind-less Insert action for the back-compat check.
     cp.ontology()
