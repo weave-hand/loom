@@ -8,7 +8,7 @@ use arrow::datatypes::Schema;
 use async_trait::async_trait;
 use control_plane_core::{ColumnSpec, LineageEvent, SnapshotId, TableRef};
 
-use control_plane_postgres::iceberg_landing::{InlineLimits, land as iceberg_land};
+use control_plane_postgres::iceberg_landing::{CdcDecl, InlineLimits, land_cdc as iceberg_land};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use sqlx::PgPool;
 
@@ -31,6 +31,10 @@ pub struct LandRequest<'a> {
     pub lineage: LineageEvent,
     /// Some(n) if the caller declared this as a stream (log) table with n buckets.
     pub stream_buckets: Option<i32>,
+    /// Some(decl) if the caller declared this as a PK/CDC stream table (bucket
+    /// count + the identity column to bucket on). Mutually exclusive with
+    /// `stream_buckets` — set by the `/models/{type}?mode=cdc` path only.
+    pub cdc: Option<CdcDecl>,
 }
 
 /// The landing port: land one request and return the new snapshot id. One impl
@@ -69,6 +73,7 @@ impl LandingMaterializer for IcebergMaterializer {
             },
             req.lineage,
             req.stream_buckets,
+            req.cdc,
         )
         .await
         .map_err(IngestError::from)

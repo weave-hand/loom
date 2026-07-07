@@ -24,7 +24,7 @@ use sqlx::PgPool;
 
 use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
-use crate::iceberg_inline::inline_append;
+use crate::iceberg_inline::inline_append_decl;
 use crate::iceberg_mirror::{
     ProjectedColumn, ProjectedFile, end_cap_files_by_path, end_cap_live_data_files, ensure_table,
     live_columns_for, live_table_id, next_snapshot, project_files, reconcile_and_project,
@@ -34,6 +34,18 @@ use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
+use crate::stream::StreamDecl;
+
+/// A CDC (PK/identity-bearing) stream declaration: the requested bucket count and
+/// the identity column to bucket rows on (`hash(bucket_key) % buckets`).
+/// Constructed by callers that declare a table as a PK/CDC stream table — today
+/// only the `/models/{type}?mode=cdc` path — and threaded through `LandRequest`/
+/// [`land`] alongside the pre-existing `stream_buckets` (log-declare) parameter.
+#[derive(Clone, Debug)]
+pub struct CdcDecl {
+    pub buckets: i32,
+    pub bucket_key: String,
+}
 
 /// The inline-tier routing limits carried by [`land`]: at/below
 /// `inline_byte_limit` a request inlines (mirror-only typed rows) instead of
@@ -48,8 +60,40 @@ pub struct InlineLimits {
     pub flush_byte_threshold: i64,
 }
 
+/// Combine the two mutually-exclusive stream-declaration request shapes carried
+/// on [`land`]'s boundary (`stream_buckets` for a log declare, `cdc` for a cdc
+/// declare — each HTTP path sets at most one) into the internal [`StreamDecl`]
+/// `reconcile_stream_mode` matches on. Both `Some` is an internal-caller bug
+/// (no HTTP path ever sets both), not a client-triggerable state — surfaced as an
+/// opaque `Backend` fault rather than guessed at.
+fn combine_stream_decl(stream_buckets: Option<i32>, cdc: Option<CdcDecl>) -> Result<StreamDecl> {
+    match (stream_buckets, cdc) {
+        (Some(_), Some(_)) => Err(ControlPlaneError::Backend(
+            "land: cannot request both a log and a cdc stream declaration".into(),
+        )),
+        (Some(n), None) => Ok(StreamDecl::Log(n)),
+        (
+            None,
+            Some(CdcDecl {
+                buckets,
+                bucket_key,
+            }),
+        ) => Ok(StreamDecl::Cdc {
+            buckets,
+            bucket_key,
+        }),
+        (None, None) => Ok(StreamDecl::None),
+    }
+}
+
 /// Land an Iceberg request, routing by in-memory size per `limits` (see
 /// [`InlineLimits`]). Returns the loom mirror snapshot id either way.
+///
+/// Thin wrapper over [`land_cdc`] (with `cdc: None`) for the very large set of
+/// callers (production and test) that only ever request a log declaration or
+/// none — preserves this function's signature exactly so none of them need to
+/// change for the CDC-declare widening. The `/models/{type}?mode=cdc` path (the
+/// only CDC-declaring caller) goes through `land_cdc` directly.
 #[expect(
     clippy::too_many_arguments,
     reason = "nine cohesive positional params: routing target (pool/catalog/table/columns), \
@@ -69,6 +113,46 @@ pub async fn land(
     lineage: LineageEvent,
     stream_buckets: Option<i32>,
 ) -> Result<SnapshotId> {
+    land_cdc(
+        pool,
+        catalog,
+        table,
+        columns,
+        schema,
+        batches,
+        limits,
+        lineage,
+        stream_buckets,
+        None,
+    )
+    .await
+}
+
+/// The actual landing implementation behind [`land`], extended with an optional
+/// CDC stream declaration (`cdc`) alongside the pre-existing log-declare
+/// `stream_buckets` — see [`CdcDecl`] and [`combine_stream_decl`]. `land` is the
+/// stable, unchanged entrypoint for the many callers with no CDC intent; this
+/// entrypoint is for the one caller that does (the ingest model-bind path, via
+/// `LandRequest::cdc`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "same nine cohesive params as `land`, plus the CDC stream declaration \
+              (`cdc`), mutually exclusive with `stream_buckets` — see `combine_stream_decl`"
+)]
+pub async fn land_cdc(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    schema: SchemaRef,
+    batches: Vec<RecordBatch>,
+    limits: InlineLimits,
+    lineage: LineageEvent,
+    stream_buckets: Option<i32>,
+    cdc: Option<CdcDecl>,
+) -> Result<SnapshotId> {
+    let decl = combine_stream_decl(stream_buckets, cdc)?;
+
     // Project the decoded columns to `columns` order, by name. Both downstream
     // branches align columns POSITIONALLY (inline indexes `columns[c]` against
     // batch column `c`; the Parquet branch re-wraps under the table's schema in
@@ -79,27 +163,18 @@ pub async fn land(
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
     if bytes <= limits.inline_byte_limit {
         let batch = concat_batches(&schema, &batches).map_err(backend)?;
-        inline_append(
+        inline_append_decl(
             pool,
             table,
             columns,
             &batch,
             lineage,
             Some(limits.flush_byte_threshold),
-            stream_buckets,
+            &decl,
         )
         .await
     } else {
-        land_parquet(
-            pool,
-            catalog,
-            table,
-            columns,
-            batches,
-            lineage,
-            stream_buckets,
-        )
-        .await
+        land_parquet(pool, catalog, table, columns, batches, lineage, &decl).await
     }
 }
 
@@ -697,12 +772,12 @@ fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
 /// Parquet with an atomic lineage emit, and read the resulting mirror snapshot id
 /// back. Idempotent on namespace/table (create-if-absent).
 ///
-/// Routes by stream mode. A BATCH write (`stream_buckets == None` on a table that
-/// is not already a declared stream table) takes the unchanged
+/// Routes by stream mode. A BATCH write (`decl` is `StreamDecl::None` on a table
+/// that is not already a declared stream table) takes the unchanged
 /// [`append_parquet_snapshot`] path (`include_framing = false`, byte-identical). A
-/// STREAM write (the table is a declared log table, or this request declares one)
-/// takes [`land_parquet_stream`], which stamps gapless per-bucket offsets into the
-/// written Parquet atomically with the snapshot commit.
+/// STREAM write (the table is already a declared stream table, or this request
+/// declares one — log or cdc) takes [`land_parquet_stream`], which stamps gapless
+/// per-bucket offsets into the written Parquet atomically with the snapshot commit.
 async fn land_parquet(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -710,7 +785,7 @@ async fn land_parquet(
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
     lineage: LineageEvent,
-    stream_buckets: Option<i32>,
+    decl: &StreamDecl,
 ) -> Result<SnapshotId> {
     // Read-only probe (no snapshot): does the table already exist, and is it already
     // a declared stream table? Mirrors `inline_append`'s pre-`ensure_table` read.
@@ -725,11 +800,12 @@ async fn land_parquet(
         }
     };
 
-    // A STREAM write iff the table is already a declared log table OR this request
-    // declares stream mode. (A `stream_buckets` request against an existing BATCH
-    // table takes the stream branch too — only to be rejected with `Validation` by
-    // `reconcile_stream_mode` there, exactly as `inline_append` does.)
-    if existing_stream.is_some() || stream_buckets.is_some() {
+    // A STREAM write iff the table is already a declared stream table OR this
+    // request declares stream mode (log or cdc). (A stream-declaring request
+    // against an existing BATCH table takes the stream branch too — only to be
+    // rejected with `Validation` by `reconcile_stream_mode` there, exactly as
+    // `inline_append` does.)
+    if existing_stream.is_some() || !matches!(decl, StreamDecl::None) {
         return land_parquet_stream(
             pool,
             catalog,
@@ -737,7 +813,7 @@ async fn land_parquet(
             columns,
             batches,
             lineage,
-            stream_buckets,
+            decl,
             pre_existing,
         )
         .await;
@@ -783,7 +859,7 @@ async fn land_parquet_stream(
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
     lineage: LineageEvent,
-    stream_buckets: Option<i32>,
+    decl: &StreamDecl,
     pre_existing: bool,
 ) -> Result<SnapshotId> {
     // Concatenate the write's batches: offsets are assigned in row order across the
@@ -826,21 +902,16 @@ async fn land_parquet_stream(
         // Reconcile stream mode on THIS tx (shared with `inline_append`). A rejected
         // convert (`Validation`) or bucket mismatch (`Conflict`) is terminal — roll
         // back and return, never retry.
-        let effective = match crate::stream::reconcile_stream_mode(
-            &mut tx,
-            tid,
-            stream_buckets,
-            pre_existing,
-            table,
-        )
-        .await
-        {
-            Ok(e) => e,
-            Err(e) => {
-                drop(tx.rollback().await);
-                return Err(e);
-            }
-        };
+        let effective =
+            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, pre_existing, table)
+                .await
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    drop(tx.rollback().await);
+                    return Err(e);
+                }
+            };
         let Some(bc) = effective else {
             // Unreachable: this fn is only entered for a stream write, and reconcile
             // only returns `None` for a batch table. Fail loudly rather than write a

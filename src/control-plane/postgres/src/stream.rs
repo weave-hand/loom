@@ -5,17 +5,37 @@ use control_plane_core::{
 
 use crate::{PgControlPlane, backend};
 
-/// Reconcile a write's REQUESTED stream mode (`stream_buckets`) against the mode
-/// the mirror table `tid` already records, mirroring `inline_append`'s arms exactly
+/// A write's REQUESTED stream-mode declaration, threaded from `LandRequest` down
+/// to [`reconcile_stream_mode`]. `Log`/`Cdc` carry the requested bucket count;
+/// `Cdc` additionally carries the identity column to bucket on (the "bucket
+/// key"). Confined to this crate — the ingest-facing boundary (`land`'s public
+/// signature / `LandRequest`) instead carries the plain `Option<i32>`/
+/// `Option<CdcDecl>` pair the brief specifies, combined into this enum once
+/// inside `land`.
+#[derive(Clone, Debug)]
+pub(crate) enum StreamDecl {
+    /// No stream intent requested this write (the common batch-table case).
+    None,
+    /// Declare (or confirm) a log table with this many buckets.
+    Log(i32),
+    /// Declare (or confirm) a PK/CDC table with this many buckets, keyed on
+    /// `bucket_key` (an identity column name).
+    Cdc { buckets: i32, bucket_key: String },
+}
+
+/// Reconcile a write's REQUESTED stream mode (`decl`) against the mode the
+/// mirror table `tid` already records, mirroring `inline_append`'s arms exactly
 /// so the inline and direct-write Parquet paths cannot diverge. Returns
-/// `Some(bucket_count)` iff this table is a (now-)declared log table (offset
-/// stamping applies); `None` for a batch table (no stamping).
+/// `Some(bucket_count)` iff this table is a (now-)declared stream table (log or
+/// cdc; offset stamping applies); `None` for a batch table (no stamping).
 ///
-/// Rejections (all raised BEFORE any `pg_declare_stream`, per the Plan 1a fix):
-/// a `< 1` requested count → `Validation`; a batch→stream conversion of a
-/// PRE-EXISTING table → `Validation`; a bucket-count mismatch against an existing
-/// stream table → `Conflict`. For a fresh `(Some(n), None)` request on a
-/// brand-new table (`!pre_existing`) it declares the stream and honours the
+/// Rejections (all raised BEFORE any `pg_declare_stream`/`pg_declare_cdc`, per
+/// the Plan 1a fix): a `< 1` requested count → `Validation`; a batch→stream
+/// conversion of a PRE-EXISTING table → `Validation`; a bucket-count mismatch
+/// against an existing stream table → `Conflict`; a `Cdc` request against an
+/// already-declared table of a DIFFERENT kind (e.g. a log table) → `Validation`.
+/// For a fresh `(Some(n), None)` request on a brand-new table (`!pre_existing`)
+/// it declares the stream (as a log or cdc table, per `decl`) and honours the
 /// recorded count (a concurrent first-writer may have won the declare with a
 /// different count — re-read and reject on mismatch). Runs entirely on the
 /// caller's transaction so the declare commits iff the write does.
@@ -26,14 +46,20 @@ use crate::{PgControlPlane, backend};
 pub(crate) async fn reconcile_stream_mode(
     conn: &mut sqlx::PgConnection,
     tid: i64,
-    stream_buckets: Option<i32>,
+    decl: &StreamDecl,
     pre_existing: bool,
     table: &TableRef,
 ) -> Result<Option<i32>> {
+    let requested: Option<i32> = match decl {
+        StreamDecl::None => None,
+        StreamDecl::Log(n) | StreamDecl::Cdc { buckets: n, .. } => Some(*n),
+    };
+
     // Validate the REQUESTED bucket count BEFORE any declare: a `< 1` request must
     // surface as `Validation`, not as the raw `bucket_count_positive` CHECK violation
-    // that `pg_declare_stream` below would otherwise raise (an opaque `Backend` error).
-    if let Some(n) = stream_buckets
+    // that `pg_declare_stream`/`pg_declare_cdc` below would otherwise raise (an
+    // opaque `Backend` error).
+    if let Some(n) = requested
         && n < 1
     {
         return Err(ControlPlaneError::Validation(format!(
@@ -41,17 +67,36 @@ pub(crate) async fn reconcile_stream_mode(
         )));
     }
 
-    let existing = pg_stream_bucket_count(&mut *conn, tid).await?;
+    let existing_meta = pg_stream_meta(&mut *conn, tid).await?;
+    let existing = existing_meta.as_ref().map(|m| m.bucket_count);
 
-    // `effective` = Some(bucket_count) iff this table is a (now-)declared log table.
-    let effective: Option<i32> = match (stream_buckets, existing) {
+    // `effective` = Some(bucket_count) iff this table is a (now-)declared stream table.
+    let effective: Option<i32> = match (requested, existing) {
         (Some(n), Some(m)) if n != m => {
             return Err(ControlPlaneError::Conflict(format!(
                 "stream bucket count mismatch for {}.{}: requested {n}, table has {m}",
                 table.schema, table.name
             )));
         }
-        (Some(_), Some(m)) => Some(m),
+        (Some(_), Some(m)) => {
+            // A `Cdc` request against an already-declared table must also match its
+            // KIND, not just its bucket count — a log table with the same bucket
+            // count is not a valid cdc target. (A `Log` request is unaffected: it
+            // keeps its original count-only comparison, so log/batch behavior is
+            // unchanged.)
+            if matches!(decl, StreamDecl::Cdc { .. })
+                && existing_meta
+                    .as_ref()
+                    .is_some_and(|meta| meta.kind != StreamKind::Cdc)
+            {
+                return Err(ControlPlaneError::Validation(format!(
+                    "cannot declare {}.{} as a cdc table: already declared with a \
+                     different stream kind",
+                    table.schema, table.name
+                )));
+            }
+            Some(m)
+        }
         (Some(n), None) => {
             if pre_existing {
                 return Err(ControlPlaneError::Validation(format!(
@@ -59,7 +104,14 @@ pub(crate) async fn reconcile_stream_mode(
                     table.schema, table.name
                 )));
             }
-            pg_declare_stream(&mut *conn, tid, n).await?;
+            match decl {
+                StreamDecl::Cdc { bucket_key, .. } => {
+                    pg_declare_cdc(&mut *conn, tid, n, bucket_key).await?;
+                }
+                _ => {
+                    pg_declare_stream(&mut *conn, tid, n).await?;
+                }
+            }
             // A concurrent first-writer may have won the declare with a different
             // count (our ON CONFLICT DO NOTHING then no-ops). Re-read the recorded
             // count and honour it, so the rows we stamp always agree with

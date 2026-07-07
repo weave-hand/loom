@@ -16,6 +16,7 @@ use control_plane_core::{
     Action, COMPACT_JOB_KIND, CompactJob, ControlPlane, ControlPlaneError, DatasetId, DatasetRef,
     Decision, LineageEvent, NewJob, PolicyTarget, RunId, TableRef, TypeName,
 };
+use control_plane_postgres::iceberg_landing::CdcDecl;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -200,9 +201,14 @@ struct LandColumn {
 
 /// Query params for `POST /models/{type}`. `identity` names the column to record as the
 /// inferred type's primary key (type-absent branch only; ignored when the type exists).
+/// `mode=cdc&buckets=N` declares this type's table as a PK/CDC stream table on first
+/// creation (requires the resolved type to have a declared identity — see `land_model`);
+/// `buckets` defaults to 1 when `mode=cdc` and is otherwise ignored.
 #[derive(Deserialize)]
 pub(crate) struct ModelQuery {
     identity: Option<String>,
+    mode: Option<String>,
+    buckets: Option<i32>,
 }
 
 /// Query params for `POST /datasets/{schema}/{table}`. `mode=stream` declares the
@@ -327,6 +333,27 @@ pub(crate) async fn land_model(
         Err(e) => return Err(ApiError::internal("ingest model: get_type", e)),
     };
 
+    // `?mode=cdc&buckets=N` declares this type's table as a PK/CDC stream table on
+    // first creation. Requires a declared identity (the bucket key); immutable after.
+    let cdc_decl = if q.mode.as_deref() == Some("cdc") {
+        let n = q.buckets.unwrap_or(1);
+        if n < 1 {
+            return Err(ApiError::BadRequest(Cow::Borrowed("buckets must be >= 1")));
+        }
+        let identity = otype
+            .identity
+            .clone()
+            .ok_or(ApiError::BadRequest(Cow::Borrowed(
+                "mode=cdc requires the type to declare an identity property",
+            )))?;
+        Some(CdcDecl {
+            buckets: n,
+            bucket_key: identity,
+        })
+    } else {
+        None
+    };
+
     // 4. Derive the conformance shape from the (resolved or just-created) type.
     let shape = model_shape_from_type(&otype);
 
@@ -354,9 +381,11 @@ pub(crate) async fn land_model(
         batches: &batches,
         file_prefix: &file_prefix,
         lineage,
-        // The `/models/{type}` path never declares stream intent (Task 4 scopes
-        // the flag to `/datasets/{schema}/{table}` only).
+        // The `/models/{type}` path only ever declares CDC stream intent (via
+        // `cdc_decl` above); the log-declare flag stays scoped to
+        // `/datasets/{schema}/{table}` (Task 4).
         stream_buckets: None,
+        cdc: cdc_decl,
     };
 
     let snap = st
@@ -459,6 +488,9 @@ pub(crate) async fn land(
         file_prefix: &file_prefix,
         lineage,
         stream_buckets,
+        // The `/datasets/{schema}/{table}` path never declares cdc intent (that
+        // stays scoped to `/models/{type}?mode=cdc`).
+        cdc: None,
     };
 
     // Opaque for backend faults: a governance-fronted service must not echo
