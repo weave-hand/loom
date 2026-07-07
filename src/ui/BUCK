@@ -9,7 +9,7 @@ load("//src:loom_test.bzl", "rust_test")
 rust_library(
     name = "ui-core",
     crate = "loom_ui_core",
-    srcs = ["src/lib.rs"],
+    srcs = ["src/lib.rs", "src/completion.rs"],
     crate_root = "src/lib.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
@@ -77,6 +77,24 @@ rust_test(
     crate = "lineage_dag",
     srcs = ["tests/lineage_dag.rs"],
     crate_root = "tests/lineage_dag.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
+rust_test(
+    name = "sql-completions",
+    crate = "sql_completions",
+    srcs = ["tests/sql_completions.rs"],
+    crate_root = "tests/sql_completions.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
+rust_test(
+    name = "cursor-context",
+    crate = "cursor_context",
+    srcs = ["tests/cursor_context.rs"],
+    crate_root = "tests/cursor_context.rs",
     edition = "2024",
     deps = [":ui-core"],
 )
@@ -175,7 +193,11 @@ rust_library(
     edition = "2024",
     default_target_platform = "//platforms:wasm",
     deps = [
+        "//third-party:js-sys",
+        "//third-party:monaco",
         "//third-party:stylist",
+        "//third-party:wasm-bindgen",
+        "//third-party:web-sys",
         "//third-party:yew",
         ":ui-core",
     ],
@@ -190,6 +212,7 @@ rust_binary(
     edition = "2024",
     default_target_platform = "//platforms:wasm",
     deps = [
+        "//third-party:monaco",
         "//third-party:wasm-bindgen",
         "//third-party:web-sys",
         "//third-party:yew",
